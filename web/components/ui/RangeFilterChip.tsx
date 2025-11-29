@@ -3,6 +3,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChevronDown, X } from 'lucide-react';
 
+interface QuickRange {
+  label: string;
+  min: number | null;
+  max: number | null;
+}
+
 interface RangeFilterChipProps {
   label: string;
   min?: number | null;
@@ -12,6 +18,7 @@ interface RangeFilterChipProps {
   maxBound?: number;
   step?: number;
   precision?: number;
+  quickRanges?: QuickRange[];
   className?: string;
 }
 
@@ -24,6 +31,7 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
   maxBound = 15,
   step = 0.1,
   precision = 2,
+  quickRanges,
   className = '',
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -147,21 +155,21 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
               </div>
             </div>
 
-            {/* Quick presets for redshift */}
+            {/* Quick presets */}
             <div>
               <label className="block text-xs text-text-secondary mb-2">Quick ranges</label>
               <div className="flex flex-wrap gap-1.5">
-                {[
+                {(quickRanges ?? [
                   { label: '0-1', min: 0, max: 1 },
                   { label: '1-3', min: 1, max: 3 },
                   { label: '3-6', min: 3, max: 6 },
                   { label: '6-10', min: 6, max: 10 },
                   { label: '>10', min: 10, max: null },
-                ].map((preset) => (
+                ]).map((preset) => (
                   <button
                     key={preset.label}
                     onClick={() => {
-                      setLocalMin(preset.min.toString());
+                      setLocalMin(preset.min?.toString() ?? '');
                       setLocalMax(preset.max?.toString() ?? '');
                     }}
                     className="px-2 py-1 text-xs rounded border border-border hover:border-primary hover:text-primary transition-colors"
