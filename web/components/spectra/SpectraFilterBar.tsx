@@ -274,6 +274,13 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           maxBound={100}
           step={0.1}
           precision={1}
+          quickRanges={[
+            { label: '>3', min: 3, max: null },
+            { label: '>5', min: 5, max: null },
+            { label: '>10', min: 10, max: null },
+            { label: '>25', min: 25, max: null },
+            { label: '>50', min: 50, max: null },
+          ]}
         />
 
         {/* Quality filter */}
