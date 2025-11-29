@@ -46,6 +46,7 @@ function SpectraPageContent() {
   const [isFullDataset, setIsFullDataset] = useState(true); // true if all data loaded (client-side sort)
   const [availablePrograms, setAvailablePrograms] = useState<Program[]>([]);
   const [availableFields, setAvailableFields] = useState<string[]>([]);
+  const [availableObservations, setAvailableObservations] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -140,6 +141,7 @@ function SpectraPageContent() {
       if (!filterOptions.error) {
         setAvailablePrograms(filterOptions.programs);
         setAvailableFields(filterOptions.fields);
+        setAvailableObservations(filterOptions.observations);
       }
     } catch (err) {
       setError('Failed to fetch data');
@@ -267,6 +269,7 @@ function SpectraPageContent() {
           onFiltersChange={handleFilterChange}
           availablePrograms={availablePrograms}
           availableFields={availableFields}
+          availableObservations={availableObservations}
           isSearchDebouncing={isSearchDebouncing}
         />
       </div>

@@ -8,6 +8,7 @@ export interface FilterOptions {
   programs: number[];
   fields: string[];
   gratings: string[];
+  observations?: string[];
   redshift_quality: number[];
   // Advanced filters
   coordinate_search?: {
@@ -18,6 +19,8 @@ export interface FilterOptions {
   } | null;
   redshift_min?: number | null;
   redshift_max?: number | null;
+  max_snr_min?: number | null;
+  max_snr_max?: number | null;
   spectral_features?: number[];
   object_flags?: number[];
   dq_flags?: number[];
@@ -50,6 +53,7 @@ import type { SortColumn, SortDirection } from './spectra-types';
 export interface FilterOptionsResult {
   programs: Program[];
   fields: string[];
+  observations: string[];
   error?: string;
 }
 
@@ -156,9 +160,12 @@ export async function getSpectra(
       p_filter_programs: filters?.programs && filters.programs.length > 0 ? filters.programs : null,
       p_fields: filters?.fields && filters.fields.length > 0 ? filters.fields : null,
       p_gratings: filters?.gratings && filters.gratings.length > 0 ? filters.gratings : null,
+      p_observations: filters?.observations && filters.observations.length > 0 ? filters.observations : null,
       p_redshift_quality: filters?.redshift_quality && filters.redshift_quality.length > 0 ? filters.redshift_quality : null,
       p_redshift_min: filters?.redshift_min ?? null,
       p_redshift_max: filters?.redshift_max ?? null,
+      p_max_snr_min: filters?.max_snr_min ?? null,
+      p_max_snr_max: filters?.max_snr_max ?? null,
       p_spectral_features: spectralFeaturesMask,
       p_object_flags: objectFlagsMask,
       p_dq_flags: dqFlagsMask,
@@ -197,17 +204,13 @@ export async function getSpectra(
     const spectraObjects: SpectrumObject[] = objects.map((obj: any) => {
       const spectra: Spectrum[] = obj.spectra || [];
 
-      // Calculate max S/N across all spectra
-      const maxSnr = spectra.length > 0
-        ? Math.max(...spectra.map((s: Spectrum) => s.signal_to_noise || 0))
-        : null;
-
       return {
         id: obj.id,
         object_id: obj.object_id,
         program_id: obj.program_id,
         program_name: obj.program_name || null,
         field: obj.field,
+        observation: obj.observation || null,
         ra: obj.ra,
         dec: obj.dec,
         redshift: obj.redshift,
@@ -223,7 +226,7 @@ export async function getSpectra(
         updated_at: obj.updated_at,
         distance: obj.distance ?? null,
         spectra: spectra,
-        max_snr: maxSnr ?? undefined,
+        max_snr: obj.max_snr ?? undefined,
         num_gratings: spectra.length,
       } as SpectrumObject;
     });
@@ -381,6 +384,7 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
     return {
       programs: [],
       fields: [],
+      observations: [],
     };
   }
 
@@ -407,6 +411,7 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
       return {
         programs: [],
         fields: [],
+        observations: [],
         error: programsError.message,
       };
     }
@@ -420,15 +425,16 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
       return {
         programs: [],
         fields: [],
+        observations: [],
       };
     }
 
     const accessibleProgramIds = accessiblePrograms.map(p => p.program_id);
 
-    // Fetch unique fields from objects the user can access
+    // Fetch unique fields and observations from objects the user can access
     const { data: objectsData, error: objectsError } = await supabase
       .from('objects')
-      .select('field')
+      .select('field, observation')
       .in('program_id', accessibleProgramIds);
 
     if (objectsError) {
@@ -436,22 +442,30 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
       return {
         programs: accessiblePrograms,
         fields: [],
+        observations: [],
         error: objectsError.message,
       };
     }
 
-    // Get unique fields
+    // Get unique fields and observations
     const uniqueFields = [...new Set((objectsData || []).map(o => o.field))].sort();
+    const uniqueObservations = [...new Set(
+      (objectsData || [])
+        .map(o => o.observation)
+        .filter((obs): obs is string => obs !== null && obs !== undefined)
+    )].sort();
 
     return {
       programs: accessiblePrograms,
       fields: uniqueFields,
+      observations: uniqueObservations,
     };
   } catch (err) {
     console.error('Unexpected error fetching filter options:', err);
     return {
       programs: [],
       fields: [],
+      observations: [],
       error: 'An unexpected error occurred',
     };
   }
@@ -540,9 +554,12 @@ export async function getAdjacentObjects(
       p_filter_programs: filters?.programs && filters.programs.length > 0 ? filters.programs : null,
       p_fields: filters?.fields && filters.fields.length > 0 ? filters.fields : null,
       p_gratings: filters?.gratings && filters.gratings.length > 0 ? filters.gratings : null,
+      p_observations: filters?.observations && filters.observations.length > 0 ? filters.observations : null,
       p_redshift_quality: filters?.redshift_quality && filters.redshift_quality.length > 0 ? filters.redshift_quality : null,
       p_redshift_min: filters?.redshift_min ?? null,
       p_redshift_max: filters?.redshift_max ?? null,
+      p_max_snr_min: filters?.max_snr_min ?? null,
+      p_max_snr_max: filters?.max_snr_max ?? null,
       p_spectral_features: spectralFeaturesMask,
       p_object_flags: objectFlagsMask,
       p_dq_flags: dqFlagsMask,

@@ -50,10 +50,13 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     programs: parseNumberArray('programs'),
     fields: parseArray('fields'),
     gratings: parseArray('gratings'),
+    observations: parseArray('observations'),
     redshift_quality: parseNumberArray('quality'),
     coordinate_search: coordinateSearch,
     redshift_min: parseNumber('z_min'),
     redshift_max: parseNumber('z_max'),
+    max_snr_min: parseNumber('snr_min'),
+    max_snr_max: parseNumber('snr_max'),
     spectral_features: parseNumberArray('features'),
     object_flags: parseNumberArray('obj_flags'),
     dq_flags: parseNumberArray('dq_flags'),
@@ -107,6 +110,9 @@ export function filtersToURLParams(
   if (filters.gratings.length > 0) {
     params.set('gratings', filters.gratings.join(','));
   }
+  if (filters.observations.length > 0) {
+    params.set('observations', filters.observations.join(','));
+  }
   if (filters.redshift_quality.length > 0) {
     params.set('quality', filters.redshift_quality.join(','));
   }
@@ -121,6 +127,12 @@ export function filtersToURLParams(
   }
   if (filters.redshift_max !== null) {
     params.set('z_max', filters.redshift_max.toString());
+  }
+  if (filters.max_snr_min !== null) {
+    params.set('snr_min', filters.max_snr_min.toString());
+  }
+  if (filters.max_snr_max !== null) {
+    params.set('snr_max', filters.max_snr_max.toString());
   }
   if (filters.spectral_features.length > 0) {
     params.set('features', filters.spectral_features.join(','));

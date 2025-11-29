@@ -19,11 +19,14 @@ export interface AdvancedFilterOptions {
   programs: number[];
   fields: string[];
   gratings: string[];
+  observations: string[];
   redshift_quality: number[];
   // New filters
   coordinate_search: CoordinateSearchValue | null;
   redshift_min: number | null;
   redshift_max: number | null;
+  max_snr_min: number | null;
+  max_snr_max: number | null;
   spectral_features: number[];
   object_flags: number[];
   dq_flags: number[];
@@ -35,10 +38,13 @@ export const DEFAULT_FILTERS: AdvancedFilterOptions = {
   programs: [],
   fields: [],
   gratings: [],
+  observations: [],
   redshift_quality: [],
   coordinate_search: null,
   redshift_min: null,
   redshift_max: null,
+  max_snr_min: null,
+  max_snr_max: null,
   spectral_features: [],
   object_flags: [],
   dq_flags: [],
@@ -51,6 +57,7 @@ interface SpectraFilterBarProps {
   onFiltersChange: (filters: AdvancedFilterOptions) => void;
   availablePrograms: Program[];
   availableFields: string[];
+  availableObservations: string[];
   className?: string;
   isSearchDebouncing?: boolean;
 }
@@ -67,6 +74,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   onFiltersChange,
   availablePrograms,
   availableFields,
+  availableObservations,
   className = '',
   isSearchDebouncing = false,
 }) => {
@@ -93,6 +101,12 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   const gratingOptions: FilterOption[] = GRATINGS.map((g) => ({
     value: g,
     label: g,
+  }));
+
+  // Convert observations to filter options
+  const observationOptions: FilterOption[] = availableObservations.map((o) => ({
+    value: o,
+    label: o,
   }));
 
   // Convert quality options
@@ -132,9 +146,12 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     filters.programs.length > 0 ||
     filters.fields.length > 0 ||
     filters.gratings.length > 0 ||
+    filters.observations.length > 0 ||
     filters.redshift_quality.length > 0 ||
     filters.redshift_min !== null ||
     filters.redshift_max !== null ||
+    filters.max_snr_min !== null ||
+    filters.max_snr_max !== null ||
     filters.spectral_features.length > 0 ||
     filters.object_flags.length > 0 ||
     filters.dq_flags.length > 0 ||
@@ -220,6 +237,14 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           onChange={(selected) => updateFilter('gratings', selected as string[])}
         />
 
+        {/* Observation filter */}
+        <FilterChip
+          label="Observation"
+          options={observationOptions}
+          selected={filters.observations}
+          onChange={(selected) => updateFilter('observations', selected as string[])}
+        />
+
         {/* Divider */}
         <div className="h-6 w-px bg-border mx-1" />
 
@@ -235,6 +260,20 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           maxBound={15}
           step={0.1}
           precision={2}
+        />
+
+        {/* Max S/N range filter */}
+        <RangeFilterChip
+          label="Max S/N"
+          min={filters.max_snr_min}
+          max={filters.max_snr_max}
+          onChange={(min, max) => {
+            onFiltersChange({ ...filters, max_snr_min: min, max_snr_max: max });
+          }}
+          minBound={0}
+          maxBound={100}
+          step={0.1}
+          precision={1}
         />
 
         {/* Quality filter */}

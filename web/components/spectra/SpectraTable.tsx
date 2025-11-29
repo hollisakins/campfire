@@ -22,10 +22,12 @@ import { formatDistance } from '@/lib/utils/coordinate-parser';
 const COLUMN_TO_SERVER_NAME: Record<string, SortColumn> = {
   'object_id': 'object_id',
   'field': 'field',
+  'observation': 'observation',
   'ra': 'ra',
   'dec': 'dec',
   'redshift': 'redshift',
   'redshift_quality': 'redshift_quality',
+  'max_snr': 'max_snr',
 };
 
 interface SpectraTableProps {
