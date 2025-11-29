@@ -136,6 +136,7 @@ export interface SpectrumObject extends DbObject {
   max_snr?: number;
   num_gratings?: number;
   comments?: CommentWithUser[];
+  hasSedPlot?: boolean;
 }
 
 // Comment with user profile info
