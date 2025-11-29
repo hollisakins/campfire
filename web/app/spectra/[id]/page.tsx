@@ -13,6 +13,7 @@ import { DownloadButtons } from '@/components/spectra/DownloadButtons';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { RGBImage } from '@/components/spectra/RGBImage';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
+import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
 import { getSpectrumById, getAdjacentObjects } from '@/lib/actions/spectra';
 import { generateRGBImageUrl } from '@/lib/r2';
 import { LogIn } from 'lucide-react';
@@ -177,7 +178,9 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
                 </TabsTrigger>
               ))}
               <TabsTrigger value="redshift">REDSHIFT</TabsTrigger>
-              <TabsTrigger value="photometry">PHOTOMETRY</TabsTrigger>
+              {spectrum.hasSedPlot && (
+                <TabsTrigger value="photometry">PHOTOMETRY</TabsTrigger>
+              )}
               <TabsTrigger value="inspect">INSPECT</TabsTrigger>
               <TabsTrigger value="context">CONTEXT</TabsTrigger>
             </TabsList>
@@ -254,13 +257,11 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
           </TabsContent>
 
           {/* Photometry Tab */}
-          <TabsContent value="photometry">
-            <div className="bg-card border border-border rounded-lg p-12 text-center">
-              <p className="text-text-secondary">
-                Multi-wavelength photometry will appear here
-              </p>
-            </div>
-          </TabsContent>
+          {spectrum.hasSedPlot && (
+            <TabsContent value="photometry">
+              <SEDPlotViewer objectId={spectrum.object_id} />
+            </TabsContent>
+          )}
 
           {/* Inspect Tab */}
           <TabsContent value="inspect">

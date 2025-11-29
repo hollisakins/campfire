@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server';
 import type { SpectrumObject, Program, Spectrum } from '@/lib/types';
+import { sedPlotExists } from '@/lib/r2';
 
 export interface FilterOptions {
   // Basic filters
@@ -332,6 +333,9 @@ export async function getSpectrumById(objectId: string): Promise<{
       ? Math.max(...spectra.map(s => s.signal_to_noise || 0))
       : null;
 
+    // Check if SED plot exists for this object
+    const hasSedPlot = await sedPlotExists(data.object_id);
+
     const spectrumObject: SpectrumObject = {
       id: data.id,
       object_id: data.object_id,
@@ -354,6 +358,7 @@ export async function getSpectrumById(objectId: string): Promise<{
       spectra: spectra,
       max_snr: maxSnr ?? undefined,
       num_gratings: spectra.length,
+      hasSedPlot,
     };
 
     return {
