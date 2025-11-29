@@ -1,0 +1,4 @@
+# Region file format: DS9 version 4.1
+global color=green dashlist=8 3 width=1 font="helvetica 10 normal roman" select=1 highlite=1 dash=0 fixed=0 edit=1 move=1 delete=1 include=1 source=1
+fk5
+polygon(150.0719692,2.2166842,149.9215072,2.2713921,149.9925411,2.4664544,150.1430207,2.4117403)

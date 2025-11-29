@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAMPFIRE</title>
+    <link rel="apple-touch-icon" sizes="180x180" href="static/images/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="static/images/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="static/images/favicon-16x16.png">
+    <link rel="manifest" href="static/images/site.webmanifest">
+    <link rel="stylesheet" href="assets/css/main.css?v=20250721-9">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-container">
+            <a href="index.html" class="navbar-brand">
+                <img src="static/images/ember-logo.svg" alt="CAMPFIRE Logo" class="navbar-logo">
+                <span class="navbar-brand-text">CAMPFIRE</span>
+            </a>
+            <ul class="navbar-nav">
+                <li><a href="index.html">Home</a></li>
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle">NIRCam</a>
+                    <div class="dropdown-menu">
+                        <a href="nircam-cosmos.html">COSMOS</a>
+                        <a href="nircam-uds.html">UDS</a>
+                    </div>
+                </li>
+                <li><a href="nirspec.html">NIRSpec</a></li>
+            </ul>
+        </div>
+        
+        <!-- Unified Breadcrumb Navigation -->
+        <div class="breadcrumb-container">
+            <nav class="breadcrumb-nav" id="breadcrumbNav">
+                <!-- Breadcrumbs will be populated by JavaScript -->
+            </nav>
+        </div>
+    </nav>
+
+    <main>
+        <div class="container">
+            <div class="text-center mb-4">
+                <h1>CAMPFIRE</h1>
+                <p class="text-muted"><b>C</b>OSMOS <b>A</b>rchive of <b>M</b>ulti<b>P</b>le-<b>F</b>ield <b>I</b>nternal <b>R</b>eductions & <b>E</b>xtractions</p>
+                <p class="text-muted">(or: "its where the EMBERs go" -Ansh)</p>
+            </div>
+
+            <div class="row">
+                <div class="card">
+                    <div class="card-title">
+                        <h3>NIRCam Imaging</h3>
+                    </div>
+                    <p>Mosaics and photometric catalogs for COSMOS and UDS fields.</p>
+                    <div class="mt-3" style="display: flex; gap: 1rem; flex-wrap: wrap;">
+                        <a href="nircam-cosmos.html" class="btn btn-primary">COSMOS</a>
+                        <a href="nircam-uds.html" class="btn btn-primary">UDS</a>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <h3>NIRSpec Spectroscopy</h3>
+                    </div>
+                    <p>Reduced 1D and 2D spectra, analysis plots, and redshift fits.</p>
+                    <div class="mt-3">
+                        <a href="nirspec.html" class="btn btn-primary">Browse NIRSpec Data (coming soon)</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-4">
+                <div class="card">
+                    <div class="card-title">
+                        <h3>Usage Policy</h3>
+                    </div>
+                    <div id="usage-policy" class="markdown-content">
+                        <p>Loading usage policy...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <div class="text-center">
+                <p class="text-muted">Hosted on CANDIDE</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
+    <script src="assets/js/shared/breadcrumb_manager.js?v=20250721-9"></script>
+    <script src="assets/js/main.js"></script>
+</body>
+</html>

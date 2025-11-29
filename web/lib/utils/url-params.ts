@@ -1,0 +1,152 @@
+/**
+ * Shared utilities for URL parameter handling across the spectra catalog.
+ * Used to preserve filter, sort, and pagination state in URLs.
+ */
+
+import type { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
+import { VALID_SORT_COLUMNS } from '@/lib/actions/spectra-types';
+
+// Default page size for pagination
+export const DEFAULT_PAGE_SIZE = 50;
+
+/**
+ * Parse filter options from URL search parameters
+ */
+export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilterOptions {
+  const parseArray = (key: string): string[] => {
+    const value = searchParams.get(key);
+    return value ? value.split(',').filter(Boolean) : [];
+  };
+
+  const parseNumberArray = (key: string): number[] => {
+    const value = searchParams.get(key);
+    return value ? value.split(',').filter(Boolean).map(Number) : [];
+  };
+
+  const parseNumber = (key: string): number | null => {
+    const value = searchParams.get(key);
+    return value ? parseFloat(value) : null;
+  };
+
+  const parseBoolean = (key: string): boolean | null => {
+    const value = searchParams.get(key);
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return null;
+  };
+
+  // Parse coordinate search parameters
+  const coordRa = parseNumber('coord_ra');
+  const coordDec = parseNumber('coord_dec');
+  const coordRadius = parseNumber('coord_radius');
+  const coordUnit = searchParams.get('coord_unit') as 'degrees' | 'arcmin' | 'arcsec' | null;
+
+  const coordinateSearch = (coordRa !== null && coordDec !== null && coordRadius !== null && coordUnit !== null)
+    ? { ra: coordRa, dec: coordDec, radius: coordRadius, radius_unit: coordUnit }
+    : null;
+
+  return {
+    programs: parseNumberArray('programs'),
+    fields: parseArray('fields'),
+    gratings: parseArray('gratings'),
+    redshift_quality: parseNumberArray('quality'),
+    coordinate_search: coordinateSearch,
+    redshift_min: parseNumber('z_min'),
+    redshift_max: parseNumber('z_max'),
+    spectral_features: parseNumberArray('features'),
+    object_flags: parseNumberArray('obj_flags'),
+    dq_flags: parseNumberArray('dq_flags'),
+    inspected_only: parseBoolean('inspected'),
+    search: searchParams.get('search') || '',
+  };
+}
+
+/**
+ * Parse pagination parameters from URL search parameters
+ */
+export function parsePaginationFromURL(searchParams: URLSearchParams): { page: number; pageSize: number } {
+  const page = parseInt(searchParams.get('page') || '1', 10);
+  const pageSize = parseInt(searchParams.get('pageSize') || String(DEFAULT_PAGE_SIZE), 10);
+  return {
+    page: isNaN(page) || page < 1 ? 1 : page,
+    pageSize: isNaN(pageSize) || pageSize < 1 ? DEFAULT_PAGE_SIZE : pageSize,
+  };
+}
+
+/**
+ * Parse sorting parameters from URL search parameters
+ */
+export function parseSortingFromURL(searchParams: URLSearchParams): { sortColumn: SortColumn; sortDirection: SortDirection } {
+  const sort = searchParams.get('sort') || 'object_id';
+  const dir = searchParams.get('dir') || 'asc';
+  return {
+    sortColumn: VALID_SORT_COLUMNS.includes(sort as SortColumn) ? (sort as SortColumn) : 'object_id',
+    sortDirection: dir === 'desc' ? 'desc' : 'asc',
+  };
+}
+
+/**
+ * Convert filter state, pagination, and sorting to URL search parameters
+ */
+export function filtersToURLParams(
+  filters: AdvancedFilterOptions,
+  page: number = 1,
+  pageSize: number = DEFAULT_PAGE_SIZE,
+  sortColumn: SortColumn = 'object_id',
+  sortDirection: SortDirection = 'asc'
+): URLSearchParams {
+  const params = new URLSearchParams();
+
+  if (filters.programs.length > 0) {
+    params.set('programs', filters.programs.join(','));
+  }
+  if (filters.fields.length > 0) {
+    params.set('fields', filters.fields.join(','));
+  }
+  if (filters.gratings.length > 0) {
+    params.set('gratings', filters.gratings.join(','));
+  }
+  if (filters.redshift_quality.length > 0) {
+    params.set('quality', filters.redshift_quality.join(','));
+  }
+  if (filters.coordinate_search !== null) {
+    params.set('coord_ra', filters.coordinate_search.ra.toString());
+    params.set('coord_dec', filters.coordinate_search.dec.toString());
+    params.set('coord_radius', filters.coordinate_search.radius.toString());
+    params.set('coord_unit', filters.coordinate_search.radius_unit);
+  }
+  if (filters.redshift_min !== null) {
+    params.set('z_min', filters.redshift_min.toString());
+  }
+  if (filters.redshift_max !== null) {
+    params.set('z_max', filters.redshift_max.toString());
+  }
+  if (filters.spectral_features.length > 0) {
+    params.set('features', filters.spectral_features.join(','));
+  }
+  if (filters.object_flags.length > 0) {
+    params.set('obj_flags', filters.object_flags.join(','));
+  }
+  if (filters.dq_flags.length > 0) {
+    params.set('dq_flags', filters.dq_flags.join(','));
+  }
+  if (filters.inspected_only !== null) {
+    params.set('inspected', filters.inspected_only.toString());
+  }
+  if (filters.search) {
+    params.set('search', filters.search);
+  }
+  // Only include pagination params if not default values
+  if (page > 1) {
+    params.set('page', page.toString());
+  }
+  if (pageSize !== DEFAULT_PAGE_SIZE) {
+    params.set('pageSize', pageSize.toString());
+  }
+  // Always include sorting params for consistent navigation
+  params.set('sort', sortColumn);
+  params.set('dir', sortDirection);
+
+  return params;
+}

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAMPFIRE - NIRSpec Data</title>
+    <link rel="apple-touch-icon" sizes="180x180" href="static/images/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="static/images/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="static/images/favicon-16x16.png">
+    <link rel="manifest" href="static/images/site.webmanifest">
+    <link rel="stylesheet" href="assets/css/main.css?v=20250721-9">
+    <link rel="stylesheet" href="assets/css/nirspec.css?v=20250721-9">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-container">
+            <a href="index.html" class="navbar-brand">
+                <img src="static/images/ember-logo.svg" alt="CAMPFIRE Logo" class="navbar-logo">
+                <span class="navbar-brand-text">CAMPFIRE</span>
+            </a>
+            <ul class="navbar-nav">
+                <li><a href="index.html">Home</a></li>
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle">NIRCam</a>
+                    <div class="dropdown-menu">
+                        <a href="nircam-cosmos.html">COSMOS</a>
+                        <a href="nircam-uds.html">UDS</a>
+                    </div>
+                </li>
+                <li><a href="nirspec.html" class="active">NIRSpec</a></li>
+            </ul>
+        </div>
+        
+        <!-- Unified Breadcrumb Navigation -->
+        <div class="breadcrumb-container">
+            <nav class="breadcrumb-nav" id="breadcrumbNav">
+                <!-- Breadcrumbs will be populated by JavaScript -->
+            </nav>
+        </div>
+    </nav>
+
+    <main>
+        <div class="container">
+
+            <div class="mb-4 header-wrapper">
+                <h1>NIRSpec Spectroscopy</h1>
+                <p class="text-muted">Reduced 1D and 2D spectra, analysis plots, and redshift fits</p>
+            </div>
+
+            <!-- Data Browser -->
+            <div class="card mb-4">
+                <div class="card-title">
+                    <h3>NIRSpec Data Browser</h3>
+                </div>
+                
+                <!-- Filter Controls -->
+                <div class="filter-controls mt-3">
+                    <!-- Search Row -->
+                    <div class="filter-row search-row">
+                        <div class="search-group">
+                            <input type="text" id="searchInput" class="form-input" placeholder="Search by ID, field, or program...">
+                        </div>
+                    </div>
+                    
+                    <!-- Filter Toggle Row -->
+                    <div class="filter-row">
+                        
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="program-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Program</span>
+                                <span class="selected-count" id="program-count"></span>
+                            </button>
+                            <div id="program-checkboxes" class="checkbox-group collapsed">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="field-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Field</span>
+                                <span class="selected-count" id="field-count"></span>
+                            </button>
+                            <div id="field-checkboxes" class="checkbox-group collapsed">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="observation-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Observation</span>
+                                <span class="selected-count" id="observation-count"></span>
+                            </button>
+                            <div id="observation-checkboxes" class="checkbox-group collapsed">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="grating-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Grating</span>
+                                <span class="selected-count" id="grating-count"></span>
+                            </button>
+                            <div id="grating-checkboxes" class="checkbox-group collapsed">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="quality-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Redshift Quality</span>
+                                <span class="selected-count" id="quality-count"></span>
+                            </button>
+                            <div id="quality-checkboxes" class="checkbox-group collapsed">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+
+                        
+                        <button id="clear-filters" class="btn btn-secondary btn-sm">Clear All</button>
+                    </div>
+                    
+                    <!-- Advanced Filters Row -->
+                    <div class="filter-row advanced-filters">
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="snr-range-controls">
+                                <span class="toggle-icon">▶</span>
+                                <span>Max S/N Range</span>
+                                <span class="selected-count" id="snr-count"></span>
+                            </button>
+                            <div id="snr-range-controls" class="checkbox-group collapsed">
+                                <div class="dual-range-slider">
+                                    <div class="slider-track"></div>
+                                    <input type="range" id="snr-min-slider" class="range-slider min-slider" min="0" max="50" step="0.5" value="0">
+                                    <input type="range" id="snr-max-slider" class="range-slider max-slider" min="0" max="50" step="0.5" value="50">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="object-flags-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Object Features</span>
+                                <span class="selected-count" id="object-flags-count"></span>
+                            </button>
+                            <div id="object-flags-checkboxes" class="checkbox-group collapsed">
+                                <!-- Will be populated with flag options -->
+                            </div>
+                        </div>
+
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="dq-flags-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>DQ Flags</span>
+                                <span class="selected-count" id="dq-flags-count"></span>
+                            </button>
+                            <div id="dq-flags-checkboxes" class="checkbox-group collapsed">
+                                <!-- Will be populated with flag options -->
+                            </div>
+                        </div>
+
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="spectral-features-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Spectral Features</span>
+                                <span class="selected-count" id="spectral-features-count"></span>
+                            </button>
+                            <div id="spectral-features-checkboxes" class="checkbox-group collapsed">
+                                <!-- Will be populated with feature options -->
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="active-filters mt-2" id="active-filters">
+                        <!-- Active filter tags will be populated here -->
+                    </div>
+                    
+                    <div class="filter-summary mt-1" id="filter-summary">
+                        Selected: <span id="visible-count">0</span> of <span id="total-count">0</span> spectra
+                    </div>
+                </div>
+
+                <div class="data-table-container">
+                    <table id="dataTable" class="data-table">
+                        <thead>
+                            <tr>
+                                <th data-column="id" class="sortable">Object ID</th>
+                                <th data-column="program" class="sortable">Program</th>
+                                <th data-column="field" class="sortable">Field</th>
+                                <th data-column="ra" class="sortable">RA</th>
+                                <th data-column="dec" class="sortable">Dec</th>
+                                <th data-column="redshift" class="sortable">Redshift</th>
+                                <th data-column="quality">Quality</th>
+                                <th data-column="max_snr" class="sortable">Max S/N</th>
+                                <th data-column="gratings">Gratings</th>
+                                <th data-column="thumbnail">Preview</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tableBody">
+                            <tr>
+                                <td colspan="10" class="loading-message">Loading data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination Controls (NIRCam style) -->
+                <div id="pagination-controls" class="pagination-controls mt-3">
+                    <div class="pagination-info">
+                        <span>Show</span>
+                        <select id="items-per-page" class="form-select">
+                            <option value="25" selected>25</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                            <option value="250">250</option>
+                        </select>
+                        <span>items per page</span>
+                    </div>
+                    
+                    <div class="pagination-nav">
+                        <span id="page-info" class="page-info">1-100 of 0</span>
+                        <div class="pagination-buttons">
+                            <button id="first-page" class="btn btn-sm btn-secondary">First</button>
+                            <button id="prev-page" class="btn btn-sm btn-secondary">Previous</button>
+                            <button id="next-page" class="btn btn-sm btn-secondary">Next</button>
+                            <button id="last-page" class="btn btn-sm btn-secondary">Last</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stats footer -->
+                <div class="table-stats-footer" id="table-stats-footer">
+                    <span id="tableStatsText">Loading...</span>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <div class="text-center">
+                <p>Last updated: <span id="footerLastUpdated">-</span></p>
+                <p class="text-muted">Hosted on CANDIDE</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="assets/js/shared/breadcrumb_manager.js?v=20250721-9"></script>
+    <script src="assets/js/shared/data_loader.js?v=20250721-6"></script>
+    <script src="assets/js/shared/base_table.js?v=20250721-6"></script>
+    <script src="assets/js/shared/base_filters.js?v=20250721-6"></script>
+    <script src="assets/js/shared/download_generator.js?v=20250721-6"></script>
+    <script src="assets/js/nirspec/flag_manager.js?v=20250721-6"></script>
+    <script src="assets/js/nirspec/nirspec_filters.js?v=20250721-6"></script>
+    <script src="assets/js/nirspec/nirspec_table.js?v=20250721-6"></script>
+</body>
+</html>
