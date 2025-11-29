@@ -1,0 +1,417 @@
+# NIRSpec Visual Inspection Flag Configuration
+# This file defines all flags used in the visual inspection process
+# All multi-select categories use bitmasks for efficient storage and catalog compilation
+
+[metadata]
+version = "1.0.0"
+last_updated = "2025-01-14"
+description = "Flag definitions for NIRSpec visual inspection and quality assessment"
+
+# =============================================================================
+# REDSHIFT QUALITY - Primary confidence level (single value)
+# =============================================================================
+[redshift_quality]
+description = "Confidence level for redshift determination"
+type = "single_value"  # Only one value can be selected
+storage = "integer"     # Store as single integer value
+
+  [redshift_quality.values]
+  
+    [redshift_quality.values.0]
+    value = 0
+    label = "Not Inspected"
+    short = "None"
+    icon = "⚪"
+    color = "#e0e0e0"
+    description = "Not yet visually inspected"
+    
+    [redshift_quality.values.1]
+    value = 1
+    label = "Impossible"
+    short = "Bad"
+    icon = "🔴"
+    color = "#dc3545"
+    description = "Impossible to determine redshift from available data"
+    
+    [redshift_quality.values.2]
+    value = 2
+    label = "Tentative"
+    short = "Tent."
+    icon = "🟠"
+    color = "#ffc107"
+    description = "Redshift uncertain but plausible (~50% confidence)"
+    
+    [redshift_quality.values.3]
+    value = 3
+    label = "Probable"
+    short = "Prob."
+    icon = "🟡"
+    color = "#ff9800"
+    description = "Redshift likely correct (~80% confidence)"
+    
+    [redshift_quality.values.4]
+    value = 4
+    label = "Secure"
+    short = "Secure"
+    icon = "🟢"
+    color = "#28a745"
+    description = "Redshift definitely correct (>95% confidence)"
+
+# =============================================================================
+# SPECTRAL FEATURES - What was used to determine redshift (bitmask)
+# Uses bit flags (powers of 2) for efficient bitmask operations
+# =============================================================================
+[spectral_features]
+description = "Spectral features used for redshift determination"
+type = "multi_select"  # Multiple values can be selected
+storage = "bitmask"    # Store as single integer using bit flags
+
+  [spectral_features.flags]
+  
+    [spectral_features.flags.continuum_break]
+    bit = 0  # 2^0 = 1
+    label = "Continuum Shape"
+    short = "Cont"
+    icon = "📊"
+    color = "#e8f5e9"
+    description = "Redshift constrained by the overall continuum shape"
+    
+    [spectral_features.flags.lyman_break]
+    bit = 1  # 2^1 = 2
+    label = "Lyman Break"
+    short = "LB"
+    icon = "💧"
+    color = "#e3f2fd"
+    description = "Clear Lyman break"
+    
+    [spectral_features.flags.balmer_break]
+    bit = 2  # 2^2 = 4
+    value = 4
+    label = "Balmer Break"
+    short = "BB"
+    icon = "📈"
+    color = "#f3e5f5"
+    description = "Clear Balmer break"
+    
+    [spectral_features.flags.absorption_features]
+    bit = 3  # 2^3 = 8
+    value = 8
+    label = "Absorption Features"
+    short = "ABS"
+    icon = "〰️"
+    color = "#f1f8e9"
+    description = "Absorption lines/features identified"
+
+    [spectral_features.flags.single_emission]
+    bit = 4  # 2^4 = 16
+    value = 16
+    label = "Single Emission Line"
+    short = "1EM"
+    icon = "☝️"
+    color = "#fff3e0"
+    description = "Single emission line"
+    
+    [spectral_features.flags.multi_emission]
+    bit = 5  # 2^5 = 32
+    value = 32
+    label = "Multiple Emission Lines"
+    short = "MEM"
+    icon = "✌️"
+    color = "#ffebee"
+    description = "Multiple emission lines"
+    
+
+# =============================================================================
+# OBJECT FLAGS - Physical properties/classifications (bitmask)
+# Uses bitmask for efficient storage and querying
+# =============================================================================
+[object_flags]
+description = "Object properties and classifications"
+type = "multi_select"
+storage = "bitmask"
+
+  [object_flags.flags]
+  
+    [object_flags.flags.LRD]
+    bit = 0  # 2^0 = 1
+    value = 1
+    label = "Little Red Dot"
+    short = "LRD"
+    icon = "🔴"
+    color = "#ffcccb"
+    description = "Little red dot"
+    
+    [object_flags.flags.broad_line]
+    bit = 1  # 2^1 = 2
+    value = 2
+    label = "Broad Line"
+    short = "BL"
+    icon = "🌋"
+    color = "#c8e6c9"
+    description = "Broad emission line"
+    
+    [object_flags.flags.lya_emitter]
+    bit = 2  # 2^2 = 4
+    value = 4
+    label = "Lyα Emitter"
+    short = "LAE"
+    icon = "✨"
+    color = "#bbdefb"
+    description = "Strong Lyman-alpha emission"
+    
+    [object_flags.flags.balmer_break_galaxy]
+    bit = 3  # 2^3 = 8
+    value = 8
+    label = "Balmer Break Galaxy"
+    short = "BBG"
+    icon = "🌌"
+    color = "#e1bee7"
+    description = "Strong Balmer break indicating evolved stellar population"
+    
+    [object_flags.flags.oiii_emitter]
+    bit = 4  # 2^3 = 8
+    value = 16
+    label = "[OIII] Emitter"
+    short = "O3E"
+    icon = "⚡️"
+    color = "#fff59d"
+    description = "Strong [OIII]4959,5007 emitter"
+    
+    [object_flags.flags.ha_emitter]
+    bit = 5  # 2^3 = 8
+    value = 32
+    label = "Hα Emitter"
+    short = "HAE"
+    icon = "🔥"
+    color = "#f398adff"
+    description = "Strong H-alpha emitter"
+    
+    [object_flags.flags.passive]
+    bit = 6  # 2^4 = 16
+    value = 64
+    label = "Quiescent"
+    short = "QG"
+    icon = "😴"
+    color = "#d7ccc8"
+    description = "Quiescent galaxy with little star formation"
+    
+    [object_flags.flags.dusty]
+    bit = 7  # 2^5 = 32
+    value = 128
+    label = "Dusty"
+    short = "DUST"
+    icon = "🌫️"
+    color = "#ffccbc"
+    description = "Significant dust attenuation"
+    
+    [object_flags.flags.star]
+    bit = 8  # 2^8 = 256
+    value = 256
+    label = "Star"
+    short = "STAR"
+    icon = "⭐"
+    color = "#ffeb3b"
+    description = "Stellar spectrum"
+
+# =============================================================================
+# DATA QUALITY FLAGS - Issues with the data (bitmask)
+# =============================================================================
+[dq_flags]
+description = "Data quality issues affecting the spectrum"
+type = "multi_select"
+storage = "bitmask"
+
+  [dq_flags.flags]
+  
+    [dq_flags.flags.chip_gap]
+    bit = 0  # 2^0 = 1
+    value = 1
+    label = "Chip Gap"
+    short = "GAP"
+    icon = "⚠️"
+    color = "#fff9c4"
+    description = "Spectrum affected by detector chip gap"
+    
+    [dq_flags.flags.contamination]
+    bit = 1  # 2^1 = 2
+    value = 2
+    label = "Contamination"
+    short = "CONTAM"
+    icon = "🚫"
+    color = "#ffe0b2"
+    description = "Contamination from nearby source or open shutter"
+    
+    [dq_flags.flags.stuck_shutter]
+    bit = 2  # 2^2 = 4
+    value = 4
+    label = "Stuck Closed Shutter"
+    short = "CLOSED"
+    icon = "🔒"
+    color = "#ffcdd2"
+    description = "Possible stuck closed shutter"
+    
+    [dq_flags.flags.multiple_sources]
+    bit = 3  # 2^3 = 8
+    value = 8
+    label = "Multiple Sources"
+    short = "MULT"
+    icon = "👥"
+    color = "#b3e5fc"
+    description = "Multiple sources in slitlet"
+    
+    [dq_flags.flags.no_detection]
+    bit = 4  # 2^4 = 16
+    value = 16
+    label = "No Detection"
+    short = "NONE"
+    icon = "❌"
+    color = "#e0e0e0"
+    description = "No source detected in spectrum"
+    
+    [dq_flags.flags.low_snr]
+    bit = 5  # 2^5 = 32
+    value = 32
+    label = "Low S/N"
+    short = "SNR"
+    icon = "📉"
+    color = "#ffecb3"
+    description = "Low signal-to-noise ratio"
+    
+    [dq_flags.flags.spectral_overlap]
+    bit = 6  # 2^7 = 128
+    value = 64
+    label = "Spectral Overlap"
+    short = "OVER"
+    icon = "🔗"
+    color = "#f3e5f5"
+    description = "Spectral overlap in grating spectrum"
+    
+    [dq_flags.flags.prism_corrupted]
+    bit = 7  # 2^8 = 256
+    value = 128
+    label = "PRISM Corrupted"
+    short = "P-BAD"
+    icon = "🌈❌"
+    color = "#ffccbc"
+    description = "PRISM data corrupted or unusable"
+    
+    [dq_flags.flags.grating_corrupted]
+    bit = 8  # 2^9 = 512
+    value = 256
+    label = "Grating Corrupted"
+    short = "G-BAD"
+    icon = "🔴❌"
+    color = "#ffcdd2"
+    description = "Grating data corrupted or unusable"
+
+# # =============================================================================
+# # SPECIAL FLAGS - Additional categorizations (bitmask)
+# # =============================================================================
+# [special_flags]
+# description = "Special categorizations and notes"
+# type = "multi_select"
+# storage = "bitmask"
+
+#   [special_flags.flags]
+  
+#     [special_flags.flags.needs_review]
+#     bit = 0  # 2^0 = 1
+#     value = 1
+#     label = "Needs Review"
+#     short = "REV"
+#     icon = "🔍"
+#     color = "#fff176"
+#     description = "Requires additional review or second opinion"
+    
+#     [special_flags.flags.interesting]
+#     bit = 1  # 2^1 = 2
+#     value = 2
+#     label = "Interesting Object"
+#     short = "INT"
+#     icon = "⭐"
+#     color = "#ffd54f"
+#     description = "Scientifically interesting or unusual"
+    
+#     [special_flags.flags.followup]
+#     bit = 2  # 2^2 = 4
+#     value = 4
+#     label = "Needs Follow-up"
+#     short = "FUP"
+#     icon = "📌"
+#     color = "#ff8a65"
+#     description = "Requires follow-up observations"
+    
+#     [special_flags.flags.publication_ready]
+#     bit = 3  # 2^3 = 8
+#     value = 8
+#     label = "Publication Ready"
+#     short = "PUB"
+#     icon = "📝"
+#     color = "#a5d6a7"
+#     description = "Ready for publication/catalog"
+
+# =============================================================================
+# CATALOG OUTPUT CONFIGURATION
+# Defines how flags are compiled for survey catalogs
+# =============================================================================
+[catalog_output]
+description = "Configuration for survey catalog compilation"
+
+  [catalog_output.columns]
+  
+    # Single integer column for quality
+    [catalog_output.columns.z_quality]
+    source = "redshift_quality"
+    type = "integer"
+    description = "Redshift quality flag (0-4)"
+    
+    # Bitmask columns for all flag categories
+    [catalog_output.columns.z_features]
+    source = "spectral_features"
+    type = "bitmask"
+    description = "Spectral features bitmask"
+    
+    [catalog_output.columns.obj_flags]
+    source = "object_flags"
+    type = "bitmask"
+    description = "Object property flags bitmask"
+    
+    [catalog_output.columns.dq_flags]
+    source = "dq_flags"
+    type = "bitmask"
+    description = "Data quality flags bitmask"
+    
+    # [catalog_output.columns.spec_flags]
+    # source = "special_flags"
+    # type = "bitmask"
+    # description = "Special flags bitmask"
+
+# =============================================================================
+# MIGRATION MAPPING
+# Maps old string-based flags to new bitmask system
+# =============================================================================
+[migration]
+description = "Mapping for migrating from old string-based system"
+
+  # Map old redshift quality values to new scale
+  [migration.redshift_quality_map]
+  "-1" = 1  # Bad -> Impossible
+  "0" = 0   # None -> Not Inspected  
+  "1" = 2   # Auto -> Tentative
+  "2" = 4   # Good -> Secure
+
+  # Map old flag strings to new flag keys
+  [migration.object_flags_map]
+  "LRD" = "LRD"
+  "Broad line" = "broad_line"
+  "Lya" = "lya_emitter"
+  "Balmer break" = "balmer_break_galaxy"
+
+  [migration.dq_flags_map]
+  "Chip gap / detector gap" = "chip_gap"
+  "Contamination from open shutter" = "contamination"
+  "Possible stuck closed shutter" = "stuck_shutter"
+  "Multiple sources in slitlet" = "multiple_sources"
+  "No detection" = "no_detection"
+  "Low S/N" = "low_snr"
+  "Spectral overlap in grating" = "spectral_overlap"

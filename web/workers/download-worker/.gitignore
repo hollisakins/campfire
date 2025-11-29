@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.wrangler/
+
+# Environment
+.env
+.dev.vars
+
+# Logs
+*.log
+
+# OS
+.DS_Store

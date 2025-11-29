@@ -1,0 +1,822 @@
+# DATA_MANIFEST.toml for UDS field
+# This file defines all downloadable data products for the UDS NIRCam observations
+
+[metadata]
+field = 'UDS'
+last_updated = '2025-09-18'
+total_size = '132.8 GB'
+description = 'UDS NIRCam mosaics'
+
+# Main data files
+# Auto-generated on 2025-09-18
+
+[[files]]
+filter = 'F070W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f070w_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f070w_uds_30mas_v0p5_primer_err.fits.gz'
+size = '150.6 MB'
+
+[[files]]
+filter = 'F070W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f070w_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f070w_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '164.8 MB'
+
+[[files]]
+filter = 'F070W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f070w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f070w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '2.0 MB'
+
+[[files]]
+filter = 'F070W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f070w_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f070w_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '152.3 MB'
+
+[[files]]
+filter = 'F090W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f090w_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f090w_uds_30mas_v0p5_primer_err.fits.gz'
+size = '3.3 GB'
+
+[[files]]
+filter = 'F090W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f090w_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f090w_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '3.6 GB'
+
+[[files]]
+filter = 'F090W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f090w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f090w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '20.8 MB'
+
+[[files]]
+filter = 'F090W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f090w_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f090w_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '3.4 GB'
+
+[[files]]
+filter = 'F115W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f115w_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f115w_uds_30mas_v0p5_primer_err.fits.gz'
+size = '3.4 GB'
+
+[[files]]
+filter = 'F115W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f115w_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f115w_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '3.7 GB'
+
+[[files]]
+filter = 'F115W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f115w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f115w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '25.0 MB'
+
+[[files]]
+filter = 'F115W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f115w_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f115w_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '3.4 GB'
+
+[[files]]
+filter = 'F140M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f140m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f140m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '2.0 GB'
+
+[[files]]
+filter = 'F140M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f140m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f140m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '2.2 GB'
+
+[[files]]
+filter = 'F140M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f140m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f140m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '14.0 MB'
+
+[[files]]
+filter = 'F140M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f140m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f140m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '2.0 GB'
+
+[[files]]
+filter = 'F150W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f150w_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f150w_uds_30mas_v0p5_primer_err.fits.gz'
+size = '3.3 GB'
+
+[[files]]
+filter = 'F150W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f150w_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f150w_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '3.6 GB'
+
+[[files]]
+filter = 'F150W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f150w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f150w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '28.6 MB'
+
+[[files]]
+filter = 'F150W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f150w_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f150w_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '3.4 GB'
+
+[[files]]
+filter = 'F162M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f162m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f162m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '1.6 GB'
+
+[[files]]
+filter = 'F162M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f162m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f162m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '1.8 GB'
+
+[[files]]
+filter = 'F162M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f162m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f162m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '11.1 MB'
+
+[[files]]
+filter = 'F162M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f162m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f162m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '1.7 GB'
+
+[[files]]
+filter = 'F182M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f182m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f182m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '1.7 GB'
+
+[[files]]
+filter = 'F182M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f182m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f182m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '1.8 GB'
+
+[[files]]
+filter = 'F182M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f182m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f182m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '13.0 MB'
+
+[[files]]
+filter = 'F182M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f182m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f182m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '1.7 GB'
+
+[[files]]
+filter = 'F200W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f200w_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f200w_uds_30mas_v0p5_primer_err.fits.gz'
+size = '3.3 GB'
+
+[[files]]
+filter = 'F200W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f200w_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f200w_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '3.6 GB'
+
+[[files]]
+filter = 'F200W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f200w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f200w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '31.7 MB'
+
+[[files]]
+filter = 'F200W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f200w_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f200w_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '3.4 GB'
+
+[[files]]
+filter = 'F210M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f210m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f210m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '1.7 GB'
+
+[[files]]
+filter = 'F210M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f210m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f210m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '1.8 GB'
+
+[[files]]
+filter = 'F210M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f210m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f210m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '12.4 MB'
+
+[[files]]
+filter = 'F210M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f210m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f210m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '1.7 GB'
+
+[[files]]
+filter = 'F250M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f250m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f250m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '1.7 GB'
+
+[[files]]
+filter = 'F250M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f250m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f250m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '1.8 GB'
+
+[[files]]
+filter = 'F250M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f250m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f250m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '16.4 MB'
+
+[[files]]
+filter = 'F250M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f250m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f250m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '1.7 GB'
+
+[[files]]
+filter = 'F277W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f277w_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f277w_uds_30mas_v0p5_primer_err.fits.gz'
+size = '3.4 GB'
+
+[[files]]
+filter = 'F277W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'RMS'
+filename = 'mosaic_nircam_f277w_uds_30mas_v0p5_primer_rms.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f277w_uds_30mas_v0p5_primer_rms.fits.gz'
+size = '3.3 GB'
+
+[[files]]
+filter = 'F277W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f277w_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f277w_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '3.7 GB'
+
+[[files]]
+filter = 'F277W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f277w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f277w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '44.1 MB'
+
+[[files]]
+filter = 'F277W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f277w_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f277w_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '3.5 GB'
+
+[[files]]
+filter = 'F300M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f300m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f300m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '1.6 GB'
+
+[[files]]
+filter = 'F300M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f300m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f300m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '1.8 GB'
+
+[[files]]
+filter = 'F300M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f300m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f300m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '17.6 MB'
+
+[[files]]
+filter = 'F300M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f300m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f300m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '1.7 GB'
+
+[[files]]
+filter = 'F335M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f335m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f335m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '101.3 MB'
+
+[[files]]
+filter = 'F335M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f335m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f335m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '111.4 MB'
+
+[[files]]
+filter = 'F335M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f335m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f335m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '2.8 MB'
+
+[[files]]
+filter = 'F335M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f335m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f335m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '104.2 MB'
+
+[[files]]
+filter = 'F356W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f356w_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f356w_uds_30mas_v0p5_primer_err.fits.gz'
+size = '3.4 GB'
+
+[[files]]
+filter = 'F356W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f356w_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f356w_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '3.7 GB'
+
+[[files]]
+filter = 'F356W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f356w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f356w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '42.1 MB'
+
+[[files]]
+filter = 'F356W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f356w_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f356w_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '3.5 GB'
+
+[[files]]
+filter = 'F360M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f360m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f360m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '1.6 GB'
+
+[[files]]
+filter = 'F360M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f360m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f360m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '1.8 GB'
+
+[[files]]
+filter = 'F360M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f360m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f360m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '17.2 MB'
+
+[[files]]
+filter = 'F360M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f360m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f360m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '1.7 GB'
+
+[[files]]
+filter = 'F410M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f410m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f410m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '3.2 GB'
+
+[[files]]
+filter = 'F410M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f410m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f410m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '3.6 GB'
+
+[[files]]
+filter = 'F410M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f410m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f410m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '30.9 MB'
+
+[[files]]
+filter = 'F410M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f410m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f410m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '3.3 GB'
+
+[[files]]
+filter = 'F430M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f430m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f430m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '475.3 MB'
+
+[[files]]
+filter = 'F430M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f430m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f430m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '523.8 MB'
+
+[[files]]
+filter = 'F430M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f430m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f430m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '5.5 MB'
+
+[[files]]
+filter = 'F430M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f430m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f430m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '485.5 MB'
+
+[[files]]
+filter = 'F444W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f444w_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f444w_uds_30mas_v0p5_primer_err.fits.gz'
+size = '3.4 GB'
+
+[[files]]
+filter = 'F444W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f444w_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f444w_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '3.7 GB'
+
+[[files]]
+filter = 'F444W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f444w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f444w_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '36.3 MB'
+
+[[files]]
+filter = 'F444W'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f444w_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f444w_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '3.5 GB'
+
+[[files]]
+filter = 'F460M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f460m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f460m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '2.0 GB'
+
+[[files]]
+filter = 'F460M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f460m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f460m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '2.1 GB'
+
+[[files]]
+filter = 'F460M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f460m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f460m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '14.3 MB'
+
+[[files]]
+filter = 'F460M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f460m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f460m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '2.0 GB'
+
+[[files]]
+filter = 'F480M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'ERR'
+filename = 'mosaic_nircam_f480m_uds_30mas_v0p5_primer_err.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f480m_uds_30mas_v0p5_primer_err.fits.gz'
+size = '99.9 MB'
+
+[[files]]
+filter = 'F480M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'SCI'
+filename = 'mosaic_nircam_f480m_uds_30mas_v0p5_primer_sci.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f480m_uds_30mas_v0p5_primer_sci.fits.gz'
+size = '111.3 MB'
+
+[[files]]
+filter = 'F480M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'MASK'
+filename = 'mosaic_nircam_f480m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f480m_uds_30mas_v0p5_primer_srcmask.fits.gz'
+size = '2.3 MB'
+
+[[files]]
+filter = 'F480M'
+tile = 'primer'
+pixel_scale = '30mas'
+version = 'v0p5'
+extension = 'WHT'
+filename = 'mosaic_nircam_f480m_uds_30mas_v0p5_primer_wht.fits.gz'
+path = 'data/nircam/uds/mosaic_nircam_f480m_uds_30mas_v0p5_primer_wht.fits.gz'
+size = '102.5 MB'
+

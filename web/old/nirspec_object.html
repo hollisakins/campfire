@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAMPFIRE - NIRSpec Object Details</title>
+    <link rel="icon" type="image/x-icon" href="static/images/favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="static/images/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="static/images/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="static/images/favicon-16x16.png">
+    <link rel="stylesheet" href="assets/css/main.css?v=20250721-9">
+    <link rel="stylesheet" href="assets/css/nirspec.css?v=20250721-9">
+    <link rel="stylesheet" href="assets/css/nirspec_object.css?v=20250721-9">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-container">
+            <a href="index.html" class="navbar-brand">
+                <img src="static/images/ember-logo.svg" alt="CAMPFIRE Logo" class="navbar-logo">
+                <span class="navbar-brand-text">CAMPFIRE</span>
+            </a>
+            <ul class="navbar-nav">
+                <li><a href="index.html">Home</a></li>
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle">NIRCam</a>
+                    <div class="dropdown-menu">
+                        <a href="nircam-cosmos.html">COSMOS</a>
+                        <a href="nircam-uds.html">UDS</a>
+                    </div>
+                </li>
+                <li><a href="nirspec.html" class="active">NIRSpec</a></li>
+            </ul>
+        </div>
+        
+        <!-- Unified Breadcrumb Navigation -->
+        <div class="breadcrumb-container">
+            <nav class="breadcrumb-nav" id="breadcrumbNav">
+                <!-- Breadcrumbs will be populated by JavaScript -->
+            </nav>
+        </div>
+    </nav>
+
+    <main>
+        <!-- Hero Header Section -->
+        <section class="object-hero-header">
+            <div class="container">
+                <div class="object-hero-content">
+                    <!-- Header Top Row: Back Button + Navigation Controls -->
+                    <div class="object-hero-header-top">
+                        <a href="nirspec.html" class="btn-hero back-button" id="backToListBtn">← Back to List</a>
+                        
+                        <!-- Navigation Controls -->
+                        <div class="object-nav-controls">
+                            <button class="nav-button" id="prevObjectBtn" title="Previous object">‹</button>
+                            <div class="nav-info" id="navigationInfo">- of -</div>
+                            <button class="nav-button" id="nextObjectBtn" title="Next object">›</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Main Content Row -->
+                    <div class="object-hero-main">
+                        <div class="object-title-section">
+                            <!-- Object Title -->
+                            <h1 class="object-main-title" id="objectTitle">Loading...</h1>
+                            <div class="object-subtitle" id="objectSubtitle"></div>
+
+                            <!-- Key Metrics Badges -->
+                            <div class="metrics-badges" id="metricsBadges">
+                                <div class="metric-badge">
+                                    <div class="metric-value" id="metricMaxSN">-</div>
+                                    <div class="metric-label">Max S/N</div>
+                                </div>
+                                <div class="metric-badge">
+                                    <div class="metric-value" id="metricRedshift">-</div>
+                                    <div class="metric-label">Redshift</div>
+                                </div>
+                                <div class="metric-badge" id="qualityBadge">
+                                    <div class="metric-value" id="metricQuality">-</div>
+                                    <div class="metric-label">Quality</div>
+                                </div>
+                                <div class="metric-badge">
+                                    <div class="metric-value" id="metricGratings">-</div>
+                                    <div class="metric-label">Gratings</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Action Buttons -->
+                        <div class="object-actions">
+                            <button class="btn-hero primary" id="downloadAllBtn">
+                                📥 Download All
+                            </button>
+                            <button class="btn-hero secondary" id="inspectionFormBtn">
+                                📝 Inspection Form
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tab Navigation -->
+        <nav class="tab-navigation">
+            <div class="tab-nav-container">
+                <ul class="tab-nav-list" id="tabNavList">
+                    <!-- Dynamic tabs will be inserted here by JavaScript -->
+                </ul>
+            </div>
+        </nav>
+
+        <!-- Tab Content -->
+        <div class="tab-content-container">
+            <div class="tab-content" id="tabContent">
+                <!-- Dynamic tab panes will be inserted here by JavaScript -->
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <div class="text-center">
+                <p class="text-muted">Hosted on CANDIDE</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="assets/js/toml-parser.js"></script>
+    <script src="assets/js/shared/breadcrumb_manager.js?v=20250721-9"></script>
+    <script src="assets/js/shared/data_loader.js?v=20250721-9"></script>
+    <script src="assets/js/shared/navigation_context.js?v=20250721-9"></script>
+    <script src="assets/js/nirspec/flag_manager.js?v=20250721-6"></script>
+    <script src="assets/js/nirspec/nirspec_object.js?v=20250721-9"></script>
+</body>
+</html>

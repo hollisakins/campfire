@@ -1,0 +1,4 @@
+I'd like to update the inspection tab UI a bit. 
+For one, I'd like to require that "quality" be marked as something >0 (i.e., anything other than "Not Inspected") to avoid users inspecting objects but forgetting to actually set the quality. 
+I'd also like to change the way the flag chips display when selected: currently, the text color changes when selected, which sometimes makes it hard to read the text since I'm using relatively light/pastel colors. Instead, I'd like just the background color to change. 
+Finally, I'd like to the tighten up the layout a bit to make the inspection process more fluid and straightforward. 

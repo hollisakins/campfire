@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UDS - NIRCam Data - CAMPFIRE</title>
+    <link rel="apple-touch-icon" sizes="180x180" href="static/images/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="static/images/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="static/images/favicon-16x16.png">
+    <link rel="manifest" href="static/images/site.webmanifest">
+    <link rel="stylesheet" href="assets/css/main.css?v=20250721-9">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-container">
+            <a href="index.html" class="navbar-brand">
+                <img src="static/images/ember-logo.svg" alt="CAMPFIRE Logo" class="navbar-logo">
+                <span class="navbar-brand-text">CAMPFIRE</span>
+            </a>
+            <ul class="navbar-nav">
+                <li><a href="index.html">Home</a></li>
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle">NIRCam</a>
+                    <div class="dropdown-menu">
+                        <a href="nircam-cosmos.html">COSMOS</a>
+                        <a href="nircam-uds.html">UDS</a>
+                    </div>
+                </li>
+                <li><a href="nirspec.html">NIRSpec</a></li>
+            </ul>
+        </div>
+        
+        <!-- Unified Breadcrumb Navigation -->
+        <div class="breadcrumb-container">
+            <nav class="breadcrumb-nav" id="breadcrumbNav">
+                <!-- Breadcrumbs will be populated by JavaScript -->
+            </nav>
+        </div>
+    </nav>
+
+    <main>
+        <div class="container">
+
+            <div class="mb-4">
+                <h1>UDS NIRCam Imaging</h1>
+                <p class="text-muted">[in progress!]</p>
+            </div>
+
+            <!-- Overview Section -->
+            <div class="card mb-4">
+                <div class="card-title">
+                    <h3>Overview</h3>
+                </div>
+                <div class="card-subtitle">
+                    Exposure maps showing filter coverage across the UDS field
+                </div>
+                
+                <div class="exposure-map-viewer">
+                    <div class="filter-tabs" id="filter-tabs">
+                        <div class="loading-container">
+                            <div class="spinner"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="image-viewer" id="image-viewer">
+                        <div class="image-container" id="image-container">
+                            <div class="image-placeholder">
+                                <p class="text-muted">Select a filter to view its exposure map</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data Download Table -->
+            <div class="card mb-4">
+                <div class="card-title">
+                    <h3>Download Data</h3>
+                </div>
+                
+                <!-- Filter Controls -->
+                <div class="filter-controls mt-3">
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="filter-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Filter</span>
+                                <span class="selected-count" id="filter-count"></span>
+                            </button>
+                            <div id="filter-checkboxes" class="checkbox-group collapsed">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="tile-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Tile</span>
+                                <span class="selected-count" id="tile-count"></span>
+                            </button>
+                            <div id="tile-checkboxes" class="checkbox-group collapsed">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="pixel-scale-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Pixel Scale</span>
+                                <span class="selected-count" id="pixel-scale-count"></span>
+                            </button>
+                            <div id="pixel-scale-checkboxes" class="checkbox-group collapsed">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="version-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Version</span>
+                                <span class="selected-count" id="version-count"></span>
+                            </button>
+                            <div id="version-checkboxes" class="checkbox-group collapsed">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <button class="filter-toggle" data-target="extension-checkboxes">
+                                <span class="toggle-icon">▶</span>
+                                <span>Extension</span>
+                                <span class="selected-count" id="extension-count"></span>
+                            </button>
+                            <div id="extension-checkboxes" class="checkbox-group collapsed">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+                        
+                        <button id="clear-filters" class="btn btn-secondary btn-sm">Clear All</button>
+                    </div>
+                    
+                    <div class="active-filters mt-2" id="active-filters">
+                        <!-- Active filter tags will be populated here -->
+                    </div>
+                    
+                    <div class="filter-summary mt-1" id="filter-summary">
+                        Selected: <span id="visible-count">0</span> of <span id="total-count">0</span> files 
+                        (<span id="visible-size">0 MB</span> total)
+                    </div>
+                </div>
+                
+                <div class="data-table-container mt-3">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th data-column="filter" class="sortable">Filter</th>
+                                <th data-column="tile" class="sortable">Tile</th>
+                                <th data-column="pixel_scale" class="sortable">Pixel Scale</th>
+                                <th data-column="version" class="sortable">Version</th>
+                                <th data-column="extension" class="sortable">Extension</th>
+                                <th>Download</th>
+                            </tr>
+                        </thead>
+                        <tbody id="data-table-body">
+                            <tr>
+                                <td colspan="6" class="text-center">
+                                    <div class="loading-container">
+                                        <div class="spinner"></div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                
+                <!-- Pagination Controls -->
+                <div id="pagination-controls" class="pagination-controls mt-3" style="display: none;">
+                    <div class="pagination-info">
+                        <span>Show</span>
+                        <select id="items-per-page" class="form-select">
+                            <option value="10" selected>10</option>
+                            <option value="25">25</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
+                        <span>items per page</span>
+                    </div>
+                    
+                    <div class="pagination-nav">
+                        <span id="page-info" class="page-info">1-25 of 60</span>
+                        <div class="pagination-buttons">
+                            <button id="first-page" class="btn btn-sm btn-secondary">First</button>
+                            <button id="prev-page" class="btn btn-sm btn-secondary">Previous</button>
+                            <button id="next-page" class="btn btn-sm btn-secondary">Next</button>
+                            <button id="last-page" class="btn btn-sm btn-secondary">Last</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Download links below table -->
+                <div class="download-links mt-2">
+                    <a href="#" id="generate-curl-script">
+                        <span class="toggle-icon">▶</span>
+                        <span>Curl script to download files</span>
+                    </a>
+                </div>
+                
+                <!-- Script preview (hidden by default) -->
+                <div id="script-preview" class="script-preview mt-3" style="display: none;">
+                    <h5>Download Script Preview</h5>
+                    <pre><code id="script-content"></code></pre>
+                    <div class="script-actions mt-2">
+                        <button id="download-script" class="btn btn-primary">Download Script</button>
+                        <button id="copy-script" class="btn btn-secondary">Copy to Clipboard</button>
+                        <button id="hide-script" class="btn btn-secondary">Hide</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data Reduction Notes -->
+            <div class="card">
+                <div class="card-title">
+                    <h3>Data Reduction Notes</h3>
+                </div>
+                <div id="reduction-notes" class="markdown-content">
+                    <div class="loading-container">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <div class="text-center">
+                <p class="text-muted">Hosted on CANDIDE</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
+    <script src="assets/js/toml-parser.js"></script>
+    <script src="assets/js/shared/breadcrumb_manager.js?v=20250721-9"></script>
+    <script src="assets/js/main.js"></script>
+</body>
+</html>
