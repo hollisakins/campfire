@@ -106,9 +106,157 @@ The pipeline and CAMPFIRE communicate via the filesystem:
    - Uploads FITS to Cloudflare R2
    - Inserts records into Supabase database
 
-## Development Notes
+## Database Architecture (Supabase)
 
-- Pipeline code should remain local-only (no cloud API dependencies)
-- Metadata flows through JSON sidecar files in `products/`
-- All secrets go in `campfire/config.toml` (gitignored)
+### Schema Overview
+
+The CAMPFIRE web portal uses Supabase (PostgreSQL) for structured data with the following core tables:
+
+- **`objects`**: Main table for NIRSpec spectroscopic objects
+  - Primary key: `object_id` (text, e.g., "ember_uds_p4_123456")
+  - Core columns: `ra`, `dec`, `redshift`, `redshift_quality`, `field`, `grating`
+  - Generated column: `redshift` computed from COALESCE of manual/auto redshifts
+  - Foreign key: `program_id` → `programs` table
+  - FITS file references: `spec1d_file`, `spec2d_file` (Cloudflare R2 URLs)
+  - Metadata flags: `spectral_features`, `object_flags`, `dq_flags` (bit flags)
+  - Inspection tracking: `inspected_by`, `inspected_at`
+
+- **`programs`**: JWST program metadata
+  - Primary key: `program_id` (integer)
+  - Columns: `program_name`, `pi_name`, `is_proprietary`
+
+- **`users`**: Authentication and access control
+  - Supabase Auth integration
+  - Access codes for proprietary data
+
+### RPC Functions
+
+**`get_spectra_filtered`**: High-performance server-side filtering, sorting, and pagination
+- Supports all filter types (programs, fields, gratings, redshift ranges, coordinate search, flags)
+- Adaptive coordinate search: uses Haversine formula for great-circle distance
+- Optimized sorting: carries sort columns through CTEs to avoid JSONB extraction overhead
+- Returns: JSON array of objects with embedded program data + pagination metadata
+
+### Performance Optimizations
+
+Critical indexes for scaling to 10k+ objects:
+
+```sql
+-- Core lookup and filtering
+CREATE INDEX idx_objects_program_id ON objects(program_id);
+CREATE INDEX idx_objects_field ON objects(field);
+CREATE INDEX idx_objects_grating ON objects(grating);
+CREATE INDEX idx_objects_redshift_quality ON objects(redshift_quality);
+
+-- Coordinate search (for cone search queries)
+CREATE INDEX idx_objects_ra ON objects(ra);
+CREATE INDEX idx_objects_dec ON objects(dec);
+
+-- Redshift filtering (uses generated column)
+CREATE INDEX idx_objects_redshift_generated ON objects(redshift) WHERE redshift IS NOT NULL;
+
+-- Text search (trigram for fuzzy matching)
+CREATE INDEX idx_objects_object_id_trgm ON objects USING gin (object_id gin_trgm_ops);
+
+-- Flag filtering
+CREATE INDEX idx_objects_spectral_features ON objects(spectral_features);
+CREATE INDEX idx_objects_object_flags ON objects(object_flags);
+CREATE INDEX idx_objects_dq_flags ON objects(dq_flags);
+
+-- Inspection tracking
+CREATE INDEX idx_objects_inspected_by ON objects(inspected_by);
+```
+
+**Key Performance Notes**:
+- Search uses debouncing (500ms) to reduce database load
+- Adaptive sorting: client-side for small result sets (<5000), server-side for larger
+- Coordinate search uses indexed ra/dec with Haversine calculation
+- Text search uses GIN trigram index for fuzzy matching
+
+## Deployment & Version Control
+
+### Git Workflow
+
+The repository uses a **trunk-based development** model with automatic deployments:
+
+- **`main` branch** → Production (campfire.vercel.app)
+  - Protected branch
+  - Deploys automatically to production on push
+  - Only updated via merge from `develop`
+
+- **`develop` branch** → Staging
+  - Main development branch
+  - Deploys automatically to preview URL on push
+  - Used for testing before production
+
+- **Feature branches** → Preview deployments
+  - Create from `develop` for experimental work
+  - Each branch gets its own preview URL
+  - Delete after merging to `develop`
+
+### Deployment Process
+
+**Infrastructure:**
+- **Frontend**: Next.js deployed on Vercel
+- **Database**: Supabase PostgreSQL (hosted)
+- **Storage**: Cloudflare R2 for FITS files
+- **Auth**: Supabase Auth with email/password
+
+**Vercel Configuration:**
+- Root directory: `web/`
+- Production branch: `main`
+- Framework: Next.js (auto-detected)
+- Build command: `npm run build`
+- Install command: `npm install`
+
+**Environment Variables (set in Vercel):**
+```bash
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
+SUPABASE_SERVICE_ROLE_KEY=eyJ...  # Server-only
+
+# Cloudflare R2
+R2_ACCOUNT_ID=xxx
+R2_ACCESS_KEY_ID=xxx
+R2_SECRET_ACCESS_KEY=xxx
+R2_BUCKET_NAME=campfire-data
+R2_PUBLIC_URL=https://data.campfire.com
+```
+
+### Development Workflow
+
+1. **Make changes** on a feature branch or `develop`
+   ```bash
+   git checkout develop
+   git pull origin develop
+   # Make changes...
+   git add .
+   git commit -m "Description of changes"
+   git push origin develop
+   ```
+
+2. **Test in preview deployment**
+   - Vercel automatically deploys `develop` branch
+   - Test functionality at preview URL
+   - Verify database migrations if applicable
+
+3. **Deploy to production**
+   ```bash
+   git checkout main
+   git merge develop
+   git push origin main
+   ```
+
+4. **Database migrations** (manual step)
+   - Apply migrations via Supabase SQL Editor
+   - Located in: `web/supabase/migrations/`
+   - Test in staging environment first if possible
+
+### Important Notes
+
+- **Pipeline code** (`pipeline/`) is local-only, not deployed
+- **Large files** (FITS, raw data) are gitignored and stored in R2
+- **Secrets** never committed (use Vercel env vars or gitignored config.toml)
+- **Database schema** tracked in `web/supabase/migrations/`
 
