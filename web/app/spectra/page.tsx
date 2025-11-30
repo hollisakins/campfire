@@ -78,32 +78,43 @@ function SpectraPageContent() {
 
   // Fetch data function with adaptive sorting strategy
   const fetchData = useCallback(async () => {
+    console.group(`🔵 [fetchData] Called - Next ID will be ${requestIdRef.current + 1}`);
+    console.log(`📊 Counter: ${pendingRequestsRef.current}, Loading: ${loading}`);
+
     // Early exit if auth is still loading
     if (authLoading) {
+      console.log(`⚠️ Early exit: authLoading=true, counter=${pendingRequestsRef.current}`);
       // Clear loading only if no other requests are pending
       if (pendingRequestsRef.current === 0) {
+        console.log(`✅ Setting loading=false (counter is 0)`);
         setLoading(false);
       }
+      console.groupEnd();
       return;
     }
 
     // Skip fetch if this was triggered by a client-side sort change
     if (skipNextFetchRef.current) {
+      console.log(`⚠️ Early exit: skipNextFetchRef=true, counter=${pendingRequestsRef.current}`);
       skipNextFetchRef.current = false;
       // Clear loading only if no other requests are pending
       if (pendingRequestsRef.current === 0) {
+        console.log(`✅ Setting loading=false (counter is 0)`);
         setLoading(false);
       }
+      console.groupEnd();
       return;
     }
 
     // Assign unique request ID to detect stale responses
     requestIdRef.current += 1;
     const currentRequestId = requestIdRef.current;
+    console.log(`🆔 Request ID: ${currentRequestId}`);
 
     try {
       // Track pending requests for loading state
       // IMPORTANT: Increment inside try block to guarantee pairing with finally decrement
+      console.log(`➕ Incrementing counter: ${pendingRequestsRef.current} → ${pendingRequestsRef.current + 1}`);
       pendingRequestsRef.current++;
       setLoading(true);
       setError(null);
@@ -143,9 +154,12 @@ function SpectraPageContent() {
       );
 
       // Ignore response if a newer request has been initiated
+      console.log(`🔍 ID check after getSpectra: current=${currentRequestId}, latest=${requestIdRef.current}`);
       if (currentRequestId !== requestIdRef.current) {
+        console.log(`❌ Request ${currentRequestId} is stale, returning early`);
         return;
       }
+      console.log(`✅ Request ${currentRequestId} is current, proceeding with data update`);
 
       if (result.error) {
         setError(result.error);
@@ -168,16 +182,21 @@ function SpectraPageContent() {
       }
 
       // Fetch filter options (also check if request is still current)
+      console.log(`🔍 ID check before getFilterOptions: current=${currentRequestId}, latest=${requestIdRef.current}`);
       if (currentRequestId !== requestIdRef.current) {
+        console.log(`❌ Request ${currentRequestId} is stale, returning early`);
         return;
       }
 
       const filterOptions = await getFilterOptions();
 
       // Validate again after async call completes
+      console.log(`🔍 ID check after getFilterOptions: current=${currentRequestId}, latest=${requestIdRef.current}`);
       if (currentRequestId !== requestIdRef.current) {
+        console.log(`❌ Request ${currentRequestId} is stale, returning early`);
         return;
       }
+      console.log(`✅ Request ${currentRequestId} is current, proceeding with filter options update`);
 
       if (!filterOptions.error) {
         setAvailablePrograms(filterOptions.programs);
@@ -192,10 +211,15 @@ function SpectraPageContent() {
       }
     } finally {
       // Decrement pending requests and clear loading when all complete
+      console.log(`➖ Finally block: Decrementing counter: ${pendingRequestsRef.current} → ${pendingRequestsRef.current - 1}`);
       pendingRequestsRef.current--;
       if (pendingRequestsRef.current === 0) {
+        console.log(`✅ Counter reached 0, setting loading=false`);
         setLoading(false);
+      } else {
+        console.log(`⏳ Counter still ${pendingRequestsRef.current}, keeping loading=true`);
       }
+      console.groupEnd();
     }
   }, [
     filters.programs,
