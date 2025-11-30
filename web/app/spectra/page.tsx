@@ -53,16 +53,11 @@ function SpectraPageContent() {
   // Ref to skip fetch when sort changes in full dataset mode (client-side sorting)
   const skipNextFetchRef = useRef(false);
 
-  // Request ID tracking to prevent race conditions
-  const requestIdRef = useRef(0);
-  // Pending requests counter for loading state management
-  const pendingRequestsRef = useRef(0);
-
-  // Debounce search to avoid excessive database queries
-  // URL updates immediately for bookmarking, but database query waits 500ms
-  const { debouncedValue: debouncedSearch, isDebouncing: isSearchDebouncing } = useDebouncedValue(
-    filters.search,
-    500
+  // Debounce ALL filters to avoid excessive database queries and race conditions
+  // URL updates immediately for bookmarking, but database query waits 300ms
+  const { debouncedValue: debouncedFilters, isDebouncing } = useDebouncedValue(
+    filters,
+    300
   );
 
   // Update URL when filters, pagination, or sorting change
@@ -78,65 +73,36 @@ function SpectraPageContent() {
 
   // Fetch data function with adaptive sorting strategy
   const fetchData = useCallback(async () => {
-    console.group(`🔵 [fetchData] Called - Next ID will be ${requestIdRef.current + 1}`);
-    console.log(`📊 Counter: ${pendingRequestsRef.current}, Loading: ${loading}`);
-
-    // Early exit if auth is still loading
-    if (authLoading) {
-      console.log(`⚠️ Early exit: authLoading=true, counter=${pendingRequestsRef.current}`);
-      // Clear loading only if no other requests are pending
-      if (pendingRequestsRef.current === 0) {
-        console.log(`✅ Setting loading=false (counter is 0)`);
-        setLoading(false);
-      }
-      console.groupEnd();
-      return;
-    }
+    if (authLoading) return;
 
     // Skip fetch if this was triggered by a client-side sort change
     if (skipNextFetchRef.current) {
-      console.log(`⚠️ Early exit: skipNextFetchRef=true, counter=${pendingRequestsRef.current}`);
       skipNextFetchRef.current = false;
-      // Clear loading only if no other requests are pending
-      if (pendingRequestsRef.current === 0) {
-        console.log(`✅ Setting loading=false (counter is 0)`);
-        setLoading(false);
-      }
-      console.groupEnd();
       return;
     }
 
-    // Assign unique request ID to detect stale responses
-    requestIdRef.current += 1;
-    const currentRequestId = requestIdRef.current;
-    console.log(`🆔 Request ID: ${currentRequestId}`);
+    setLoading(true);
+    setError(null);
 
     try {
-      // Track pending requests for loading state
-      // IMPORTANT: Increment inside try block to guarantee pairing with finally decrement
-      console.log(`➕ Incrementing counter: ${pendingRequestsRef.current} → ${pendingRequestsRef.current + 1}`);
-      pendingRequestsRef.current++;
-      setLoading(true);
-      setError(null);
 
-      // Convert filters for server action (handle null vs undefined)
-      // Use debounced search value for database query
+      // Convert debounced filters for server action
       const serverFilters = {
-        programs: filters.programs,
-        fields: filters.fields,
-        gratings: filters.gratings,
-        observations: filters.observations,
-        redshift_quality: filters.redshift_quality,
-        coordinate_search: filters.coordinate_search,
-        redshift_min: filters.redshift_min,
-        redshift_max: filters.redshift_max,
-        max_snr_min: filters.max_snr_min,
-        max_snr_max: filters.max_snr_max,
-        spectral_features: filters.spectral_features,
-        object_flags: filters.object_flags,
-        dq_flags: filters.dq_flags,
-        inspected_only: filters.inspected_only,
-        search: debouncedSearch, // Use debounced value instead of immediate value
+        programs: debouncedFilters.programs,
+        fields: debouncedFilters.fields,
+        gratings: debouncedFilters.gratings,
+        observations: debouncedFilters.observations,
+        redshift_quality: debouncedFilters.redshift_quality,
+        coordinate_search: debouncedFilters.coordinate_search,
+        redshift_min: debouncedFilters.redshift_min,
+        redshift_max: debouncedFilters.redshift_max,
+        max_snr_min: debouncedFilters.max_snr_min,
+        max_snr_max: debouncedFilters.max_snr_max,
+        spectral_features: debouncedFilters.spectral_features,
+        object_flags: debouncedFilters.object_flags,
+        dq_flags: debouncedFilters.dq_flags,
+        inspected_only: debouncedFilters.inspected_only,
+        search: debouncedFilters.search,
       };
 
       // Adaptive fetch strategy:
@@ -152,14 +118,6 @@ function SpectraPageContent() {
         sortColumn,
         sortDirection
       );
-
-      // Ignore response if a newer request has been initiated
-      console.log(`🔍 ID check after getSpectra: current=${currentRequestId}, latest=${requestIdRef.current}`);
-      if (currentRequestId !== requestIdRef.current) {
-        console.log(`❌ Request ${currentRequestId} is stale, returning early`);
-        return;
-      }
-      console.log(`✅ Request ${currentRequestId} is current, proceeding with data update`);
 
       if (result.error) {
         setError(result.error);
@@ -181,68 +139,21 @@ function SpectraPageContent() {
         }
       }
 
-      // Fetch filter options (also check if request is still current)
-      console.log(`🔍 ID check before getFilterOptions: current=${currentRequestId}, latest=${requestIdRef.current}`);
-      if (currentRequestId !== requestIdRef.current) {
-        console.log(`❌ Request ${currentRequestId} is stale, returning early`);
-        return;
-      }
-
+      // Fetch filter options
       const filterOptions = await getFilterOptions();
-
-      // Validate again after async call completes
-      console.log(`🔍 ID check after getFilterOptions: current=${currentRequestId}, latest=${requestIdRef.current}`);
-      if (currentRequestId !== requestIdRef.current) {
-        console.log(`❌ Request ${currentRequestId} is stale, returning early`);
-        return;
-      }
-      console.log(`✅ Request ${currentRequestId} is current, proceeding with filter options update`);
-
       if (!filterOptions.error) {
         setAvailablePrograms(filterOptions.programs);
         setAvailableFields(filterOptions.fields);
         setAvailableObservations(filterOptions.observations);
       }
-
-      // Current request completed successfully - force clear loading state
-      // This handles case where stale requests are hung and never complete
-      console.log(`🎯 Current request ${currentRequestId} completed successfully, forcing loading=false and resetting counter`);
-      setLoading(false);
-      pendingRequestsRef.current = 0;
     } catch (err) {
-      // Only set error if this request is still current
-      if (currentRequestId === requestIdRef.current) {
-        setError('Failed to fetch data');
-        console.error(err);
-      }
+      setError('Failed to fetch data');
+      console.error(err);
     } finally {
-      // Decrement pending requests and clear loading when all complete
-      console.log(`➖ Finally block: Decrementing counter: ${pendingRequestsRef.current} → ${pendingRequestsRef.current - 1}`);
-      pendingRequestsRef.current--;
-      if (pendingRequestsRef.current === 0) {
-        console.log(`✅ Counter reached 0, setting loading=false`);
-        setLoading(false);
-      } else {
-        console.log(`⏳ Counter still ${pendingRequestsRef.current}, keeping loading=true`);
-      }
-      console.groupEnd();
+      setLoading(false);
     }
   }, [
-    filters.programs,
-    filters.fields,
-    filters.gratings,
-    filters.observations,
-    filters.redshift_quality,
-    filters.coordinate_search,
-    filters.redshift_min,
-    filters.redshift_max,
-    filters.max_snr_min,
-    filters.max_snr_max,
-    filters.spectral_features,
-    filters.object_flags,
-    filters.dq_flags,
-    filters.inspected_only,
-    debouncedSearch, // Depend on debounced search instead of immediate value
+    debouncedFilters,
     page,
     pageSize,
     sortColumn,
@@ -351,7 +262,7 @@ function SpectraPageContent() {
           availablePrograms={availablePrograms}
           availableFields={availableFields}
           availableObservations={availableObservations}
-          isSearchDebouncing={isSearchDebouncing}
+          isSearchDebouncing={isDebouncing}
         />
       </div>
 
