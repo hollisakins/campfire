@@ -55,6 +55,8 @@ function SpectraPageContent() {
 
   // Request ID tracking to prevent race conditions
   const requestIdRef = useRef(0);
+  // Pending requests counter for loading state management
+  const pendingRequestsRef = useRef(0);
 
   // Debounce search to avoid excessive database queries
   // URL updates immediately for bookmarking, but database query waits 500ms
@@ -88,12 +90,10 @@ function SpectraPageContent() {
     requestIdRef.current += 1;
     const currentRequestId = requestIdRef.current;
 
-    // Only set loading if this is the first request or we're not already loading
-    // This prevents loading state from being set by stale requests
-    if (currentRequestId === requestIdRef.current) {
-      setLoading(true);
-      setError(null);
-    }
+    // Track pending requests for loading state
+    pendingRequestsRef.current++;
+    setLoading(true);
+    setError(null);
 
     try {
       // Convert filters for server action (handle null vs undefined)
@@ -179,8 +179,9 @@ function SpectraPageContent() {
         console.error(err);
       }
     } finally {
-      // Only clear loading if this request is still current
-      if (currentRequestId === requestIdRef.current) {
+      // Decrement pending requests and clear loading when all complete
+      pendingRequestsRef.current--;
+      if (pendingRequestsRef.current === 0) {
         setLoading(false);
       }
     }
