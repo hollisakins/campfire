@@ -2,7 +2,7 @@
 """
 CAMPFIRE Deployment Script
 
-Deploys reduced NIRSpec spectra and RGB images to Supabase (metadata) and Cloudflare R2 (files).
+Deploys reduced NIRSpec spectra, RGB images, and SED plots to Supabase (metadata) and Cloudflare R2 (files).
 
 Usage:
     # Full deployment (spectra + RGB images)
@@ -10,6 +10,9 @@ Usage:
 
     # RGB images only
     python scripts/deploy.py --obs ember_uds_p4 --rgb-only
+
+    # SED plots only
+    python scripts/deploy.py --obs ember_uds_p4 --sed-only
 
     # Spectra only (no RGB)
     python scripts/deploy.py --obs cosmos_ddt --no-rgb
@@ -25,6 +28,7 @@ Behavior:
       user inspection data (redshift_inspected, quality, flags) is preserved
     - Existing objects (--force-overwrite): ALL fields reset including user inspection data
     - RGB images: Uploaded to rgb/{obs_name}/{object_id}_rgb.png
+    - SED plots: Uploaded to sed/{obs_name}/{object_id}_sed.pdf
 """
 
 import argparse
@@ -122,6 +126,17 @@ def discover_rgb_images(products_dir: Path, obs_name: str) -> list[Path]:
 
     rgb_files = sorted(obs_dir.glob('*_rgb.png'))
     return rgb_files
+
+
+def discover_sed_plots(products_dir: Path, obs_name: str) -> list[Path]:
+    """Find all *_sed.pdf files for an observation."""
+    obs_dir = products_dir / obs_name
+    if not obs_dir.exists():
+        print(f"Error: Observation directory not found: {obs_dir}")
+        sys.exit(1)
+
+    sed_files = sorted(obs_dir.glob('*_sed.pdf'))
+    return sed_files
 
 
 def discover_zfit_files(products_dir: Path, obs_name: str) -> dict[str, Path]:
@@ -708,6 +723,84 @@ def deploy_rgb_images(
     print(f"✓ Successfully uploaded {len(rgb_files)} RGB images to rgb/{obs_name}/")
 
 
+def deploy_sed_plots(
+    obs_name: str,
+    dry_run: bool,
+    project_root: Path
+) -> None:
+    """
+    Deploy SED plot PDFs for an observation to R2.
+
+    PDFs are uploaded to: sed/{obs_name}/{object_id}_sed.pdf
+    """
+    scripts_dir = project_root / 'scripts'
+    pipeline_dir = project_root / 'pipeline'
+    products_dir = pipeline_dir / 'products'
+
+    # Load configuration
+    print(f"Loading configuration...")
+    config = load_config(scripts_dir)
+    observations = load_observations(pipeline_dir)
+
+    # Validate observation exists
+    if obs_name not in observations:
+        print(f"Error: Observation '{obs_name}' not found in observations.toml")
+        print(f"Available observations: {list(observations.keys())}")
+        sys.exit(1)
+
+    obs_config = observations[obs_name]
+    print(f"Deploying SED plots for observation: {obs_name}")
+    print(f"  Field: {obs_config.get('field', 'unknown')}")
+    print()
+
+    # Discover SED plot PDFs
+    sed_files = discover_sed_plots(products_dir, obs_name)
+
+    if not sed_files:
+        print(f"No SED plots (*_sed.pdf) found in {products_dir / obs_name}")
+        print("Nothing to deploy.")
+        return
+
+    print(f"Found {len(sed_files)} SED plot PDFs")
+    print()
+
+    if dry_run:
+        print("=== DRY RUN MODE ===")
+        print("Would upload to R2:")
+        for sed_path in sed_files[:5]:
+            # Extract object_id from filename (remove _sed.pdf suffix)
+            object_id = sed_path.stem.replace('_sed', '')
+            r2_key = f"sed/{obs_name}/{sed_path.name}"
+            print(f"  - {sed_path.name} → {r2_key}")
+        if len(sed_files) > 5:
+            print(f"  ... and {len(sed_files) - 5} more")
+        return
+
+    # Check dependencies
+    if not HAS_BOTO3:
+        print("Error: boto3 required. Install with: pip install boto3")
+        sys.exit(1)
+
+    # Initialize R2 client
+    print("Connecting to R2...")
+    r2_client = get_r2_client(config)
+    bucket = config['r2']['bucket_name']
+
+    # Upload SED plot PDFs
+    print("Uploading SED plots...")
+    for i, sed_path in enumerate(sed_files, 1):
+        r2_key = f"sed/{obs_name}/{sed_path.name}"
+        print(f"  [{i}/{len(sed_files)}] {sed_path.name}")
+
+        try:
+            upload_to_r2(r2_client, bucket, sed_path, r2_key, 'application/pdf')
+        except Exception as e:
+            print(f"    ⚠️  Failed to upload: {e}")
+
+    print()
+    print(f"✓ Successfully uploaded {len(sed_files)} SED plots to sed/{obs_name}/")
+
+
 # === Main Deployment Logic ===
 
 def deploy_observation(
@@ -1013,7 +1106,7 @@ def deploy_observation(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Deploy CAMPFIRE spectra and RGB images to Supabase and R2',
+        description='Deploy CAMPFIRE spectra, RGB images, and SED plots to Supabase and R2',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1028,6 +1121,9 @@ Examples:
 
     # Deploy only RGB images (skip FITS/JSON and Supabase)
     python scripts/deploy.py --obs ember_uds_p4 --rgb-only
+
+    # Deploy only SED plots (skip FITS/JSON and Supabase)
+    python scripts/deploy.py --obs ember_uds_p4 --sed-only
 
     # Deploy spectra only (no RGB images)
     python scripts/deploy.py --obs cosmos_ddt --no-rgb
@@ -1079,6 +1175,11 @@ Examples:
         action='store_true',
         help='Only deploy zfit JSON files and update redshift_auto (skip FITS/spectrum JSON/RGB)'
     )
+    parser.add_argument(
+        '--sed-only',
+        action='store_true',
+        help='Only deploy SED plot PDFs (skip FITS files and Supabase updates)'
+    )
 
     args = parser.parse_args()
 
@@ -1087,8 +1188,8 @@ Examples:
 
     # Validate flag combinations
     if args.rgb_only:
-        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only:
-            print("Error: --rgb-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, or --zfit-only")
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.sed_only:
+            print("Error: --rgb-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, or --sed-only")
             sys.exit(1)
 
         deploy_rgb_images(
@@ -1096,9 +1197,19 @@ Examples:
             dry_run=args.dry_run,
             project_root=project_root
         )
+    elif args.sed_only:
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.rgb_only:
+            print("Error: --sed-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, or --rgb-only")
+            sys.exit(1)
+
+        deploy_sed_plots(
+            obs_name=args.obs,
+            dry_run=args.dry_run,
+            project_root=project_root
+        )
     elif args.zfit_only:
-        if args.supabase_only or args.no_rgb or args.rgb_only:
-            print("Error: --zfit-only cannot be combined with --supabase-only, --no-rgb, or --rgb-only")
+        if args.supabase_only or args.no_rgb or args.rgb_only or args.sed_only:
+            print("Error: --zfit-only cannot be combined with --supabase-only, --no-rgb, --rgb-only, or --sed-only")
             sys.exit(1)
 
         # Zfit-only deployment
