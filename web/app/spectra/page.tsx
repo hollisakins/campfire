@@ -53,6 +53,10 @@ function SpectraPageContent() {
   // Ref to skip fetch when sort changes in full dataset mode (client-side sorting)
   const skipNextFetchRef = useRef(false);
 
+  // Request cancellation and tracking to prevent race conditions
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
+
   // Debounce search to avoid excessive database queries
   // URL updates immediately for bookmarking, but database query waits 500ms
   const { debouncedValue: debouncedSearch, isDebouncing: isSearchDebouncing } = useDebouncedValue(
@@ -80,6 +84,19 @@ function SpectraPageContent() {
       skipNextFetchRef.current = false;
       return;
     }
+
+    // Cancel any in-flight request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // Create new AbortController for this request
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    // Assign unique request ID to detect stale responses
+    requestIdRef.current += 1;
+    const currentRequestId = requestIdRef.current;
 
     setLoading(true);
     setError(null);
@@ -116,8 +133,14 @@ function SpectraPageContent() {
         effectivePage,
         effectivePageSize,
         sortColumn,
-        sortDirection
+        sortDirection,
+        abortController.signal
       );
+
+      // Ignore response if a newer request has been initiated
+      if (currentRequestId !== requestIdRef.current) {
+        return;
+      }
 
       if (result.error) {
         setError(result.error);
@@ -139,7 +162,11 @@ function SpectraPageContent() {
         }
       }
 
-      // Fetch filter options
+      // Fetch filter options (also check if request is still current)
+      if (currentRequestId !== requestIdRef.current) {
+        return;
+      }
+
       const filterOptions = await getFilterOptions();
       if (!filterOptions.error) {
         setAvailablePrograms(filterOptions.programs);
@@ -147,10 +174,21 @@ function SpectraPageContent() {
         setAvailableObservations(filterOptions.observations);
       }
     } catch (err) {
-      setError('Failed to fetch data');
-      console.error(err);
+      // Ignore abort errors (request was cancelled intentionally)
+      if (err instanceof Error && err.name === 'AbortError') {
+        return;
+      }
+
+      // Only set error if this request is still current
+      if (currentRequestId === requestIdRef.current) {
+        setError('Failed to fetch data');
+        console.error(err);
+      }
     } finally {
-      setLoading(false);
+      // Only update loading state if this request is still current
+      if (currentRequestId === requestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [
     filters.programs,
@@ -179,6 +217,13 @@ function SpectraPageContent() {
   // Fetch data when filters change or user logs in
   useEffect(() => {
     fetchData();
+
+    // Cleanup: abort any pending requests on unmount
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [fetchData, user]);
 
   const handleFilterChange = (newFilters: AdvancedFilterOptions) => {
