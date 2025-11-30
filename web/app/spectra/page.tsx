@@ -203,6 +203,12 @@ function SpectraPageContent() {
         setAvailableFields(filterOptions.fields);
         setAvailableObservations(filterOptions.observations);
       }
+
+      // Current request completed successfully - force clear loading state
+      // This handles case where stale requests are hung and never complete
+      console.log(`🎯 Current request ${currentRequestId} completed successfully, forcing loading=false and resetting counter`);
+      setLoading(false);
+      pendingRequestsRef.current = 0;
     } catch (err) {
       // Only set error if this request is still current
       if (currentRequestId === requestIdRef.current) {
