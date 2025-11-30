@@ -88,8 +88,12 @@ function SpectraPageContent() {
     requestIdRef.current += 1;
     const currentRequestId = requestIdRef.current;
 
-    setLoading(true);
-    setError(null);
+    // Only set loading if this is the first request or we're not already loading
+    // This prevents loading state from being set by stale requests
+    if (currentRequestId === requestIdRef.current) {
+      setLoading(true);
+      setError(null);
+    }
 
     try {
       // Convert filters for server action (handle null vs undefined)
@@ -157,6 +161,12 @@ function SpectraPageContent() {
       }
 
       const filterOptions = await getFilterOptions();
+
+      // Validate again after async call completes
+      if (currentRequestId !== requestIdRef.current) {
+        return;
+      }
+
       if (!filterOptions.error) {
         setAvailablePrograms(filterOptions.programs);
         setAvailableFields(filterOptions.fields);
@@ -169,9 +179,10 @@ function SpectraPageContent() {
         console.error(err);
       }
     } finally {
-      // Always clear loading state when request completes
-      // Request ID tracking prevents stale data updates (via early return)
-      setLoading(false);
+      // Only clear loading if this request is still current
+      if (currentRequestId === requestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [
     filters.programs,
