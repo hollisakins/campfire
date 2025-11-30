@@ -74,8 +74,7 @@ export async function getSpectra(
   page: number = 1,
   pageSize: number = 50,
   sortColumn: SortColumn = 'object_id',
-  sortDirection: SortDirection = 'asc',
-  signal?: AbortSignal
+  sortDirection: SortDirection = 'asc'
 ): Promise<PaginatedSpectraResult> {
   const supabase = await createClient();
 
@@ -157,7 +156,7 @@ export async function getSpectra(
     }
 
     // Call the RPC function for server-side filtering, sorting, and pagination
-    let query = supabase.rpc('get_filtered_objects_paginated', {
+    const { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
       p_program_ids: accessibleProgramIds,
       p_filter_programs: filters?.programs && filters.programs.length > 0 ? filters.programs : null,
       p_fields: filters?.fields && filters.fields.length > 0 ? filters.fields : null,
@@ -181,13 +180,6 @@ export async function getSpectra(
       p_page: page,
       p_page_size: pageSize,
     });
-
-    // Add abort signal if provided
-    if (signal) {
-      query = query.abortSignal(signal);
-    }
-
-    const { data, error } = await query;
 
     if (error) {
       console.error('Error fetching spectra:', error);

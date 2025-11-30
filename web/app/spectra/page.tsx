@@ -53,8 +53,7 @@ function SpectraPageContent() {
   // Ref to skip fetch when sort changes in full dataset mode (client-side sorting)
   const skipNextFetchRef = useRef(false);
 
-  // Request cancellation and tracking to prevent race conditions
-  const abortControllerRef = useRef<AbortController | null>(null);
+  // Request ID tracking to prevent race conditions
   const requestIdRef = useRef(0);
 
   // Debounce search to avoid excessive database queries
@@ -84,15 +83,6 @@ function SpectraPageContent() {
       skipNextFetchRef.current = false;
       return;
     }
-
-    // Cancel any in-flight request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-
-    // Create new AbortController for this request
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
 
     // Assign unique request ID to detect stale responses
     requestIdRef.current += 1;
@@ -133,8 +123,7 @@ function SpectraPageContent() {
         effectivePage,
         effectivePageSize,
         sortColumn,
-        sortDirection,
-        abortController.signal
+        sortDirection
       );
 
       // Ignore response if a newer request has been initiated
@@ -174,11 +163,6 @@ function SpectraPageContent() {
         setAvailableObservations(filterOptions.observations);
       }
     } catch (err) {
-      // Ignore abort errors (request was cancelled intentionally)
-      if (err instanceof Error && err.name === 'AbortError') {
-        return;
-      }
-
       // Only set error if this request is still current
       if (currentRequestId === requestIdRef.current) {
         setError('Failed to fetch data');
@@ -217,13 +201,6 @@ function SpectraPageContent() {
   // Fetch data when filters change or user logs in
   useEffect(() => {
     fetchData();
-
-    // Cleanup: abort any pending requests on unmount
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
   }, [fetchData, user]);
 
   const handleFilterChange = (newFilters: AdvancedFilterOptions) => {
