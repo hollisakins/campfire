@@ -169,10 +169,9 @@ function SpectraPageContent() {
         console.error(err);
       }
     } finally {
-      // Only update loading state if this request is still current
-      if (currentRequestId === requestIdRef.current) {
-        setLoading(false);
-      }
+      // Always clear loading state when request completes
+      // Request ID tracking prevents stale data updates (via early return)
+      setLoading(false);
     }
   }, [
     filters.programs,
