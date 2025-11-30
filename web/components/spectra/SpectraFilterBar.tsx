@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { X, Search, Loader2 } from 'lucide-react';
+import { X, Search } from 'lucide-react';
 import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
 import { CoordinateSearchChip, CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
@@ -190,19 +190,15 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           placeholder="Search by Object ID..."
           className="w-full pl-10 pr-10 py-2 text-sm border border-border rounded-lg bg-background text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
         />
-        {/* Show loading spinner when debouncing, or clear button when there's text */}
-        {isSearchDebouncing ? (
-          <div className="absolute right-3 top-1/2 -translate-y-1/2 text-primary">
-            <Loader2 className="w-4 h-4 animate-spin" />
-          </div>
-        ) : filters.search ? (
+        {/* Show clear button when there's text */}
+        {filters.search && (
           <button
             onClick={() => updateFilter('search', '')}
             className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary"
           >
             <X className="w-4 h-4" />
           </button>
-        ) : null}
+        )}
       </div>
 
       {/* Filter chips */}
