@@ -78,11 +78,22 @@ function SpectraPageContent() {
 
   // Fetch data function with adaptive sorting strategy
   const fetchData = useCallback(async () => {
-    if (authLoading) return;
+    // Early exit if auth is still loading
+    if (authLoading) {
+      // Clear loading only if no other requests are pending
+      if (pendingRequestsRef.current === 0) {
+        setLoading(false);
+      }
+      return;
+    }
 
     // Skip fetch if this was triggered by a client-side sort change
     if (skipNextFetchRef.current) {
       skipNextFetchRef.current = false;
+      // Clear loading only if no other requests are pending
+      if (pendingRequestsRef.current === 0) {
+        setLoading(false);
+      }
       return;
     }
 
