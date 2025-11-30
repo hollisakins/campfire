@@ -101,12 +101,13 @@ function SpectraPageContent() {
     requestIdRef.current += 1;
     const currentRequestId = requestIdRef.current;
 
-    // Track pending requests for loading state
-    pendingRequestsRef.current++;
-    setLoading(true);
-    setError(null);
-
     try {
+      // Track pending requests for loading state
+      // IMPORTANT: Increment inside try block to guarantee pairing with finally decrement
+      pendingRequestsRef.current++;
+      setLoading(true);
+      setError(null);
+
       // Convert filters for server action (handle null vs undefined)
       // Use debounced search value for database query
       const serverFilters = {
