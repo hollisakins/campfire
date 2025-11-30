@@ -53,6 +53,9 @@ function SpectraPageContent() {
   // Ref to skip fetch when sort changes in full dataset mode (client-side sorting)
   const skipNextFetchRef = useRef(false);
 
+  // Track the filters for the currently in-flight request
+  const currentFetchFiltersRef = useRef<AdvancedFilterOptions | null>(null);
+
   // Debounce ALL filters to avoid excessive database queries and race conditions
   // URL updates immediately for bookmarking, but database query waits 300ms
   const { debouncedValue: debouncedFilters, isDebouncing } = useDebouncedValue(
@@ -81,11 +84,14 @@ function SpectraPageContent() {
       return;
     }
 
+    // Store reference to the filters we're fetching for
+    const fetchingFilters = debouncedFilters;
+    currentFetchFiltersRef.current = fetchingFilters;
+
     setLoading(true);
     setError(null);
 
     try {
-
       // Convert debounced filters for server action
       const serverFilters = {
         programs: debouncedFilters.programs,
@@ -119,6 +125,11 @@ function SpectraPageContent() {
         sortDirection
       );
 
+      // Only update state if this is still the current request
+      if (currentFetchFiltersRef.current !== fetchingFilters) {
+        return; // Stale request, ignore results
+      }
+
       if (result.error) {
         setError(result.error);
       } else {
@@ -139,18 +150,35 @@ function SpectraPageContent() {
         }
       }
 
+      // Check again before fetching filter options
+      if (currentFetchFiltersRef.current !== fetchingFilters) {
+        return;
+      }
+
       // Fetch filter options
       const filterOptions = await getFilterOptions();
+
+      // Final check before updating filter options
+      if (currentFetchFiltersRef.current !== fetchingFilters) {
+        return;
+      }
+
       if (!filterOptions.error) {
         setAvailablePrograms(filterOptions.programs);
         setAvailableFields(filterOptions.fields);
         setAvailableObservations(filterOptions.observations);
       }
     } catch (err) {
-      setError('Failed to fetch data');
-      console.error(err);
+      // Only set error if this is still the current request
+      if (currentFetchFiltersRef.current === fetchingFilters) {
+        setError('Failed to fetch data');
+        console.error(err);
+      }
     } finally {
-      setLoading(false);
+      // Only clear loading if this is still the current request
+      if (currentFetchFiltersRef.current === fetchingFilters) {
+        setLoading(false);
+      }
     }
   }, [
     debouncedFilters,
