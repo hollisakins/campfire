@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { Navigation } from '@/components/layout/Navigation';
 import { AuthProvider } from '@/lib/contexts/AuthContext';
+import { Analytics } from '@vercel/analytics/next';
 
 export const metadata: Metadata = {
   title: 'CAMPFIRE - JWST Spectroscopy Archive',
@@ -20,6 +21,7 @@ export default function RootLayout({
           <Navigation />
           <main>{children}</main>
         </AuthProvider>
+        <Analytics />
       </body>
     </html>
   );
