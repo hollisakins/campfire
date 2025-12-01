@@ -144,7 +144,7 @@ export const LoginForm: React.FC = () => {
         if (error) {
           setError(error.message);
         } else {
-          setSuccess('Account created! Please check your email to verify your account, then sign in.');
+          setSuccess('Account created! Please check your email to verify your account. After signing in, you can browse public programs. To access proprietary programs, you\'ll need to redeem an access code.');
           setMode('signin');
           setPassword('');
         }

@@ -7,6 +7,7 @@ import { KeyRound, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 
 interface AccessCodePromptProps {
   onSuccess?: () => void;
+  showDismiss?: boolean; // Allow dismissing the prompt (for non-blocking contexts)
 }
 
 export const AccessCodePrompt: React.FC<AccessCodePromptProps> = ({ onSuccess }) => {
@@ -67,7 +68,10 @@ export const AccessCodePrompt: React.FC<AccessCodePromptProps> = ({ onSuccess })
             Enter Access Code
           </h2>
           <p className="text-text-secondary">
-            You need an access code to view spectra. Enter the code provided by your PI or the CAMPFIRE team.
+            To access proprietary programs, you need to redeem an access code. Public programs are accessible to all users without a code.
+          </p>
+          <p className="text-sm text-text-tertiary mt-2">
+            Enter the code provided by your PI or the CAMPFIRE team.
           </p>
         </div>
 
@@ -121,14 +125,13 @@ export const AccessCodePrompt: React.FC<AccessCodePromptProps> = ({ onSuccess })
         </form>
 
         <p className="text-sm text-text-secondary text-center mt-6">
-          Don&apos;t have a code?{' '}
+          Don&apos;t have a code? Contact your PI or{' '}
           <a
             href="mailto:campfire@example.com"
             className="text-primary hover:underline"
           >
-            Contact us
-          </a>{' '}
-          to request access.
+            request access via email
+          </a>.
         </p>
       </Card>
     </div>

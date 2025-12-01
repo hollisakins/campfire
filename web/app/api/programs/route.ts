@@ -4,8 +4,9 @@ import { createClient } from '@/lib/supabase/server';
 /**
  * GET /api/programs
  *
- * Fetch all programs with their access stats.
- * Admin only.
+ * Fetch programs.
+ * - For admins: Returns all programs with access stats
+ * - For non-admins (or unauthenticated): Returns basic program list (program_id, program_name)
  */
 export async function GET() {
   const supabase = await createClient();
@@ -13,8 +14,24 @@ export async function GET() {
   // Check authentication and admin status
   const { data: { user } } = await supabase.auth.getUser();
 
+  // If not authenticated, return basic program list
   if (!user) {
-    return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    try {
+      const { data: programs, error } = await supabase
+        .from('programs')
+        .select('program_id, program_name')
+        .order('program_name', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching programs:', error);
+        return NextResponse.json({ error: 'Failed to fetch programs' }, { status: 500 });
+      }
+
+      return NextResponse.json({ programs: programs || [] });
+    } catch (error) {
+      console.error('Error:', error);
+      return NextResponse.json({ error: 'Failed to fetch programs' }, { status: 500 });
+    }
   }
 
   const { data: profile } = await supabase
@@ -23,8 +40,24 @@ export async function GET() {
     .eq('user_id', user.id)
     .single();
 
+  // If not admin, return basic program list
   if (!profile?.is_admin) {
-    return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+    try {
+      const { data: programs, error } = await supabase
+        .from('programs')
+        .select('program_id, program_name')
+        .order('program_name', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching programs:', error);
+        return NextResponse.json({ error: 'Failed to fetch programs' }, { status: 500 });
+      }
+
+      return NextResponse.json({ programs: programs || [] });
+    } catch (error) {
+      console.error('Error:', error);
+      return NextResponse.json({ error: 'Failed to fetch programs' }, { status: 500 });
+    }
   }
 
   try {

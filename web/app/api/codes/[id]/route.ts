@@ -66,7 +66,8 @@ export async function PATCH(
 /**
  * DELETE /api/codes/[id]
  *
- * Delete an access code
+ * Soft-delete an access code by setting is_active = false
+ * Preserves redemption history
  */
 export async function DELETE(
   request: NextRequest,
@@ -93,19 +94,22 @@ export async function DELETE(
   }
 
   try {
-    const { error } = await supabase
+    // Soft-delete by setting is_active to false
+    const { data: deletedCode, error } = await supabase
       .from('access_codes')
-      .delete()
-      .eq('id', id);
+      .update({ is_active: false })
+      .eq('id', id)
+      .select()
+      .single();
 
     if (error) {
-      console.error('Error deleting code:', error);
-      return NextResponse.json({ error: 'Failed to delete code' }, { status: 500 });
+      console.error('Error deactivating code:', error);
+      return NextResponse.json({ error: 'Failed to deactivate code' }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, code: deletedCode });
   } catch (error) {
     console.error('Error:', error);
-    return NextResponse.json({ error: 'Failed to delete code' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to deactivate code' }, { status: 500 });
   }
 }

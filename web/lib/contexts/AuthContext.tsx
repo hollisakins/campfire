@@ -5,16 +5,25 @@ import { User, Session } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
 import { UserProfile } from '@/lib/types';
 
+interface ProgramAccessInfo {
+  hasProprietaryAccess: boolean;
+  grantedPrograms: number[];
+  publicPrograms: number[];
+}
+
 interface AuthContextType {
   user: User | null;
   userProfile: UserProfile | null;
   session: Session | null;
   loading: boolean;
   needsProfileSetup: boolean; // True if user is authenticated but has no profile
+  needsAccessCode: boolean; // True if user has no proprietary program access
+  programAccess: ProgramAccessInfo | null;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>; // Manually refresh profile after setup
+  checkProgramAccess: () => Promise<void>; // Refresh program access state
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -25,6 +34,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [needsProfileSetup, setNeedsProfileSetup] = useState(false);
+  const [needsAccessCode, setNeedsAccessCode] = useState(false);
+  const [programAccess, setProgramAccess] = useState<ProgramAccessInfo | null>(null);
 
   const supabase = createClient();
 
@@ -75,11 +86,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (error) throw error;
       setUserProfile(data);
       setNeedsProfileSetup(false);
+
+      // Check program access after fetching profile
+      await fetchProgramAccess(userId);
     } catch (error) {
       console.error('Error fetching user profile:', error);
       setUserProfile(null);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchProgramAccess = async (userId: string) => {
+    try {
+      const response = await fetch('/api/profile/program-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch program access');
+      }
+
+      const data = await response.json();
+      setProgramAccess(data);
+      setNeedsAccessCode(!data.hasProprietaryAccess);
+    } catch (error) {
+      console.error('Error fetching program access:', error);
+      setProgramAccess(null);
+      setNeedsAccessCode(false);
+    }
+  };
+
+  const checkProgramAccess = async () => {
+    if (user) {
+      await fetchProgramAccess(user.id);
     }
   };
 
@@ -141,6 +182,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = async () => {
     await supabase.auth.signOut();
     setNeedsProfileSetup(false);
+    setNeedsAccessCode(false);
+    setProgramAccess(null);
   };
 
   const value = {
@@ -149,10 +192,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     session,
     loading,
     needsProfileSetup,
+    needsAccessCode,
+    programAccess,
     signIn,
     signUp,
     signOut,
     refreshProfile,
+    checkProgramAccess,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

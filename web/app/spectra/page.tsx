@@ -10,8 +10,9 @@ import { DownloadTableButtons } from '@/components/spectra/DownloadTableButtons'
 import { getSpectra, getFilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import type { SpectrumObject, Program } from '@/lib/types';
-import { LogIn, Loader2 } from 'lucide-react';
+import { LogIn, Loader2, Info, KeyRound } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { AccessCodePrompt } from '@/components/auth/AccessCodePrompt';
 import {
   parseFiltersFromURL,
   parsePaginationFromURL,
@@ -25,7 +26,7 @@ const FULL_DATASET_THRESHOLD = 5000;
 
 // Inner component that uses useSearchParams (must be wrapped in Suspense)
 function SpectraPageContent() {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, needsAccessCode, checkProgramAccess } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -281,6 +282,25 @@ function SpectraPageContent() {
           Browse and filter the CAMPFIRE spectroscopic catalog
         </p>
       </div>
+
+      {/* Access Code Banner for users without proprietary access */}
+      {!authLoading && user && needsAccessCode && (
+        <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-3">
+          <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-sm text-blue-900">
+              <strong>You're viewing public programs only.</strong> To access proprietary programs, redeem an access code.
+            </p>
+          </div>
+          <Link
+            href="/profile#access-code"
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors whitespace-nowrap"
+          >
+            <KeyRound className="w-4 h-4" />
+            Enter Code
+          </Link>
+        </div>
+      )}
 
       {/* Filter Bar */}
       <div className="mb-6">

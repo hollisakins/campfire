@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
+import { MultiSelect } from '@/components/ui/MultiSelect';
 import {
   Plus,
   Loader2,
@@ -13,7 +14,7 @@ import {
   Trash2,
   RefreshCw,
 } from 'lucide-react';
-import type { AccessCode } from '@/lib/types';
+import type { AccessCode, Program } from '@/lib/types';
 
 interface CodeWithRedemptions extends AccessCode {
   code_redemptions?: { id: string; user_id: string; redeemed_at: string }[];
@@ -23,6 +24,10 @@ export default function AdminCodesPage() {
   const [codes, setCodes] = useState<CodeWithRedemptions[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Program selection state
+  const [allPrograms, setAllPrograms] = useState<Program[]>([]);
+  const [selectedPrograms, setSelectedPrograms] = useState<number[]>([]);
 
   // Form state
   const [showForm, setShowForm] = useState(false);
@@ -63,6 +68,22 @@ export default function AdminCodesPage() {
     fetchCodes();
   }, [fetchCodes]);
 
+  // Fetch available programs for specific program selection
+  useEffect(() => {
+    const fetchPrograms = async () => {
+      try {
+        const response = await fetch('/api/programs');
+        const data = await response.json();
+        if (response.ok) {
+          setAllPrograms(data.programs || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch programs:', err);
+      }
+    };
+    fetchPrograms();
+  }, []);
+
   const generateRandomCode = () => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let code = 'CAMPFIRE-';
@@ -83,6 +104,16 @@ export default function AdminCodesPage() {
         description: formData.description || null,
         grants_all_programs: formData.grants_all_programs,
       };
+
+      // Add program_ids if specific programs selected
+      if (!formData.grants_all_programs) {
+        if (selectedPrograms.length === 0) {
+          setFormError('Please select at least one program');
+          setFormLoading(false);
+          return;
+        }
+        payload.program_ids = selectedPrograms;
+      }
 
       if (formData.expires_in_days) {
         const days = parseInt(formData.expires_in_days);
@@ -257,11 +288,15 @@ export default function AdminCodesPage() {
                 </label>
                 <select
                   value={formData.grants_all_programs ? 'all' : 'specific'}
-                  onChange={(e) => setFormData(prev => ({ ...prev, grants_all_programs: e.target.value === 'all' }))}
+                  onChange={(e) => {
+                    const isAll = e.target.value === 'all';
+                    setFormData(prev => ({ ...prev, grants_all_programs: isAll }));
+                    if (isAll) setSelectedPrograms([]);
+                  }}
                   className="w-full px-3 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                   <option value="all">All Programs</option>
-                  <option value="specific" disabled>Specific Programs (coming soon)</option>
+                  <option value="specific">Specific Programs</option>
                 </select>
               </div>
 
@@ -293,6 +328,19 @@ export default function AdminCodesPage() {
                 />
               </div>
             </div>
+
+            {/* Program Selection (only shown when specific programs is selected) */}
+            {!formData.grants_all_programs && (
+              <div>
+                <MultiSelect
+                  options={allPrograms.map(p => ({ id: p.program_id, name: p.program_name }))}
+                  selected={selectedPrograms}
+                  onChange={setSelectedPrograms}
+                  label="Select Programs"
+                  maxHeight="max-h-48"
+                />
+              </div>
+            )}
 
             {formError && (
               <div className="bg-red-50 border border-red-200 rounded-lg p-3">
