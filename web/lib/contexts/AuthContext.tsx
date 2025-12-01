@@ -88,7 +88,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setNeedsProfileSetup(false);
 
       // Check program access after fetching profile
-      await fetchProgramAccess(userId);
+      await fetchProgramAccess();
     } catch (error) {
       console.error('Error fetching user profile:', error);
       setUserProfile(null);
@@ -97,7 +97,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const fetchProgramAccess = async (userId: string) => {
+  const fetchProgramAccess = async () => {
     try {
       const response = await fetch('/api/profile/program-access', {
         method: 'POST',
@@ -120,7 +120,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const checkProgramAccess = async () => {
     if (user) {
-      await fetchProgramAccess(user.id);
+      await fetchProgramAccess();
     }
   };
 

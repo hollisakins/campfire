@@ -289,7 +289,7 @@ function SpectraPageContent() {
           <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
           <div className="flex-1">
             <p className="text-sm text-blue-900">
-              <strong>You're viewing public programs only.</strong> To access proprietary programs, redeem an access code.
+              <strong>You&apos;re viewing public programs only.</strong> To access proprietary programs, redeem an access code.
             </p>
           </div>
           <Link

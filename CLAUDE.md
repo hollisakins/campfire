@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository contains two main components:
 
-1. **Custom CAMPFIRE wrapper around the NIRSpec Data Reduction Pipeline** (`campfire-pipeline/`): Processes raw JWST NIRSpec data through preprocessing, spectrum extraction, and redshift fitting phases.
+1. **Custom CAMPFIRE wrapper around the NIRSpec Data Reduction Pipeline** (`pipeline/`): Processes raw JWST NIRSpec data through preprocessing, spectrum extraction, and redshift fitting phases.
 
-2. **Frontend for data access through the CAMPFIRE portal** (`campfire-web/`): COSMOS Archive of MultiPle-Field Internal Reductions & Extractions - deployment tools and web infrastructure for sharing reduced data with the research team.
+2. **Frontend for data access through the CAMPFIRE portal** (`web/`): COSMOS Archive of MultiPle-Field Internal Reductions & Extractions - deployment tools and web infrastructure for sharing reduced data with the research team.
 
 ## Project Structure
 
@@ -59,7 +59,7 @@ python scripts/reduce.py --obs ember_uds_p4 --extract --processes 4
 # - astropy, numpy, scipy, matplotlib
 ```
 
-### Deploying to CAMPFIRE (Future)
+### Deploying to CAMPFIRE
 
 ```bash
 # Deploy specific observation to cloud
@@ -241,14 +241,23 @@ R2_PUBLIC_URL=https://data.campfire.com
    - Test functionality at preview URL
    - Verify database migrations if applicable
 
-3. **Deploy to production**
+3. **Test production build locally** ⚠️ **REQUIRED before pushing to main**
+   ```bash
+   cd web
+   npm run build
+   ```
+   - This catches TypeScript errors, ESLint issues, and build failures
+   - Fix any errors before proceeding
+   - Only warnings are acceptable for deployment
+
+4. **Deploy to production**
    ```bash
    git checkout main
    git merge develop
    git push origin main
    ```
 
-4. **Database migrations** (manual step)
+5. **Database migrations** (manual step)
    - Apply migrations via Supabase SQL Editor
    - Located in: `web/supabase/migrations/`
    - Test in staging environment first if possible

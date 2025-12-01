@@ -24,7 +24,6 @@ export const MultiSelect: React.FC<MultiSelectProps> = ({
   maxHeight = 'max-h-64',
 }) => {
   const allSelected = options.length > 0 && selected.length === options.length;
-  const someSelected = selected.length > 0 && selected.length < options.length;
 
   const handleSelectAll = () => {
     onChange(options.map(opt => opt.id));
