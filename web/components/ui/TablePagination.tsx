@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Loader2 } from 'lucide-react';
 
 interface TablePaginationProps {
   pageIndex: number;
@@ -11,6 +11,7 @@ interface TablePaginationProps {
   onPageSizeChange: (pageSize: number) => void;
   pageSizeOptions?: number[];
   className?: string;
+  loading?: boolean;
 }
 
 export const TablePagination: React.FC<TablePaginationProps> = ({
@@ -21,6 +22,7 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
   onPageSizeChange,
   pageSizeOptions = [10, 25, 50, 100],
   className = '',
+  loading = false,
 }) => {
   const pageCount = Math.ceil(totalRows / pageSize);
   const canPreviousPage = pageIndex > 0;
@@ -56,7 +58,10 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
       </div>
 
       {/* Center: Row count info */}
-      <div className="text-sm text-text-secondary">
+      <div className="flex items-center gap-2 text-sm text-text-secondary">
+        {loading && (
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+        )}
         {totalRows === 0 ? (
           <span>No results</span>
         ) : (

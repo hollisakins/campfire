@@ -296,63 +296,33 @@ function SpectraPageContent() {
 
       {/* Results Container - maintains height during loading to prevent scrollbar flicker */}
       <div className="min-h-[600px]">
-        {/* Loading State */}
-        {loading && (
-          <div className="flex items-center justify-center py-16">
-            <Loader2 className="w-8 h-8 animate-spin text-primary" />
-            <span className="ml-3 text-text-secondary">Loading objects...</span>
-          </div>
-        )}
+        {/* Download Buttons - always shown to maintain vertical positioning */}
+        <DownloadTableButtons
+          totalCount={totalCount}
+          filters={filters}
+          sortColumn={sortColumn}
+          sortDirection={sortDirection}
+          loading={loading}
+        />
 
-        {/* Error State */}
-        {error && !loading && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
-            <p className="text-red-800">{error}</p>
-          </div>
-        )}
-
-        {/* Results */}
-        {!loading && !error && (
-          <>
-            {/* Download Buttons */}
-            {spectra.length > 0 && (
-              <DownloadTableButtons
-                totalCount={totalCount}
-                filters={filters}
-                sortColumn={sortColumn}
-                sortDirection={sortDirection}
-              />
-            )}
-
-            {/* Empty State */}
-            {spectra.length === 0 ? (
-              <div className="text-center py-16 bg-card border border-border rounded-lg">
-                <p className="text-text-secondary">
-                  No results found.
-                </p>
-                <p className="text-text-secondary text-sm mt-2">
-                  If you&apos;re looking for proprietary data, you may need to enter an access code on your profile page.
-                </p>
-              </div>
-            ) : (
-              <SpectraTable
-                spectra={spectra}
-                total={totalCount}
-                page={isFullDataset ? 1 : page}
-                pageSize={isFullDataset ? spectra.length : pageSize}
-                totalPages={isFullDataset ? 1 : totalPages}
-                onPageChange={handlePageChange}
-                onPageSizeChange={handlePageSizeChange}
-                isFullDataset={isFullDataset}
-                sortColumn={sortColumn}
-                sortDirection={sortDirection}
-                onSortChange={handleSortChange}
-                hasCoordinateSearch={filters.coordinate_search !== null}
-                currentFilterParams={filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection)}
-              />
-            )}
-          </>
-        )}
+        {/* Table - always shown (handles loading/error states internally) */}
+        <SpectraTable
+          spectra={spectra}
+          total={totalCount}
+          page={isFullDataset ? 1 : page}
+          pageSize={isFullDataset ? spectra.length : pageSize}
+          totalPages={isFullDataset ? 1 : totalPages}
+          onPageChange={handlePageChange}
+          onPageSizeChange={handlePageSizeChange}
+          isFullDataset={isFullDataset}
+          sortColumn={sortColumn}
+          sortDirection={sortDirection}
+          onSortChange={handleSortChange}
+          hasCoordinateSearch={filters.coordinate_search !== null}
+          currentFilterParams={filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection)}
+          loading={loading}
+          error={error}
+        />
       </div>
     </div>
   );

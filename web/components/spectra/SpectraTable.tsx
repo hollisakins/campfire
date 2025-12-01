@@ -11,7 +11,7 @@ import {
   SortingState,
   ColumnDef,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ArrowUp, ArrowDown, Eye, EyeOff, Server } from 'lucide-react';
+import { ArrowUpDown, ArrowUp, ArrowDown, Eye, EyeOff, Server, Loader2 } from 'lucide-react';
 import { SpectrumObject, QUALITY_LABELS } from '@/lib/types';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { Card } from '@/components/ui/Card';
@@ -48,6 +48,9 @@ interface SpectraTableProps {
   hasCoordinateSearch?: boolean;
   // Current filter params to preserve in detail page links
   currentFilterParams?: URLSearchParams;
+  // Loading and error states
+  loading?: boolean;
+  error?: string | null;
 }
 
 // Helper to get quality label and color
@@ -86,6 +89,30 @@ const SortableHeader: React.FC<{
   );
 };
 
+// Skeleton row component for loading state
+const TableSkeletonRow: React.FC<{ columns: ColumnDef<SpectrumObject>[] }> = ({ columns }) => (
+  <tr className="animate-pulse">
+    {columns.map((col, i) => (
+      <td
+        key={i}
+        className="px-4 py-3 whitespace-nowrap"
+        style={{ width: `${col.minSize || 150}px` }}
+      >
+        <div className="h-4 bg-gray-200 rounded w-full"></div>
+      </td>
+    ))}
+  </tr>
+);
+
+// Skeleton component showing multiple loading rows
+const TableSkeleton: React.FC<{ rows: number; columns: ColumnDef<SpectrumObject>[] }> = ({ rows, columns }) => (
+  <>
+    {Array.from({ length: rows }).map((_, i) => (
+      <TableSkeletonRow key={i} columns={columns} />
+    ))}
+  </>
+);
+
 export const SpectraTable: React.FC<SpectraTableProps> = ({
   spectra,
   total,
@@ -100,6 +127,8 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   onSortChange,
   hasCoordinateSearch = false,
   currentFilterParams,
+  loading = false,
+  error = null,
 }) => {
   // Internal sorting state for client-side mode
   // Initialize from props, then manage independently
@@ -169,6 +198,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   // Distance column definition (conditional)
   const distanceColumn: ColumnDef<SpectrumObject> = {
     accessorKey: 'distance',
+    minSize: 100,
     header: ({ column }) => (
       <SortableHeader column={column}>Distance</SortableHeader>
     ),
@@ -189,6 +219,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
     () => [
       {
         accessorKey: 'object_id',
+        minSize: 300,
         header: ({ column }) => (
           <SortableHeader column={column}>Object ID</SortableHeader>
         ),
@@ -204,6 +235,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       },
       {
         accessorKey: 'field',
+        minSize: 80,
         header: ({ column }) => (
           <SortableHeader column={column}>Field</SortableHeader>
         ),
@@ -214,6 +246,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       },
       {
         accessorKey: 'ra',
+        minSize: 110,
         header: ({ column }) => (
           <SortableHeader column={column}>RA</SortableHeader>
         ),
@@ -226,6 +259,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       },
       {
         accessorKey: 'dec',
+        minSize: 110,
         header: ({ column }) => (
           <SortableHeader column={column}>Dec</SortableHeader>
         ),
@@ -240,6 +274,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       ...(hasCoordinateSearch ? [distanceColumn] : []),
       {
         accessorKey: 'redshift',
+        minSize: 90,
         header: ({ column }) => (
           <SortableHeader column={column}>Redshift</SortableHeader>
         ),
@@ -256,6 +291,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       },
       {
         accessorKey: 'redshift_quality',
+        minSize: 90,
         header: ({ column }) => (
           <SortableHeader column={column}>Quality</SortableHeader>
         ),
@@ -272,6 +308,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       },
       {
         id: 'num_gratings',
+        minSize: 80,
         accessorFn: (row) => row.num_gratings || row.spectra.length,
         header: ({ column }) => (
           <SortableHeader column={column} className="justify-center">
@@ -287,6 +324,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       },
       {
         id: 'max_snr',
+        minSize: 90,
         accessorFn: (row) => row.max_snr ?? 0,
         header: ({ column }) => (
           <SortableHeader column={column}>Max S/N</SortableHeader>
@@ -300,6 +338,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       },
       {
         id: 'inspected',
+        minSize: 90,
         accessorFn: (row) => row.redshift_quality > 0,
         header: ({ column }) => (
           <SortableHeader column={column} className="justify-center">
@@ -373,6 +412,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
                   <th
                     key={header.id}
                     className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider"
+                    style={{ width: `${header.getSize()}px` }}
                   >
                     {header.isPlaceholder
                       ? null
@@ -383,53 +423,81 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
             ))}
           </thead>
           <tbody className="bg-white divide-y divide-border">
-            {table.getRowModel().rows.map((row) => (
-              <tr
-                key={row.id}
-                className="hover:bg-card-hover transition-colors"
-              >
-                {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="px-4 py-3 whitespace-nowrap">
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                ))}
+            {loading ? (
+              // Loading state: show skeleton rows
+              <TableSkeleton
+                rows={isFullDataset ? Math.min(pageSize, 10) : pageSize}
+                columns={columns}
+              />
+            ) : error ? (
+              // Error state: show error message
+              <tr>
+                <td colSpan={hasCoordinateSearch ? 9 : 8} className="px-4 py-16 text-center">
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4 inline-block">
+                    <p className="text-red-800">{error}</p>
+                  </div>
+                </td>
               </tr>
-            ))}
+            ) : spectra.length === 0 ? (
+              // Empty state: show message
+              <tr>
+                <td colSpan={hasCoordinateSearch ? 9 : 8} className="px-4 py-12 text-center text-text-secondary">
+                  No results found.
+                  <p className="text-sm mt-2">
+                    If you&apos;re looking for proprietary data, you may need to enter an access code on your profile page.
+                  </p>
+                </td>
+              </tr>
+            ) : (
+              // Data rows
+              table.getRowModel().rows.map((row) => (
+                <tr
+                  key={row.id}
+                  className="hover:bg-card-hover transition-colors"
+                >
+                  {row.getVisibleCells().map((cell) => (
+                    <td
+                      key={cell.id}
+                      className="px-4 py-3 whitespace-nowrap"
+                      style={{ width: `${cell.column.getSize()}px` }}
+                    >
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
 
-      {spectra.length === 0 ? (
-        <div className="text-center py-12 text-text-secondary">
-          No spectra found matching the current filters.
-        </div>
-      ) : (
-        <div className="border-t border-border">
-          <TablePagination
-            pageIndex={table.getState().pagination.pageIndex}
-            pageSize={table.getState().pagination.pageSize}
-            totalRows={total}
-            onPageChange={(pageIndex) => {
-              if (isFullDataset) {
-                // Client-side pagination - update internal state
-                setInternalPagination(prev => ({ ...prev, pageIndex }));
-              } else {
-                // Server-side pagination - notify parent
-                onPageChange(pageIndex + 1);
-              }
-            }}
-            onPageSizeChange={(newPageSize) => {
-              if (isFullDataset) {
-                // Client-side pagination - update internal state
-                setInternalPagination({ pageIndex: 0, pageSize: newPageSize });
-              } else {
-                // Server-side pagination - notify parent
-                onPageSizeChange(newPageSize);
-              }
-            }}
-          />
-        </div>
-      )}
+      {/* Always show pagination footer */}
+      <div className="border-t border-border">
+        <TablePagination
+          pageIndex={table.getState().pagination.pageIndex}
+          pageSize={table.getState().pagination.pageSize}
+          totalRows={total}
+          loading={loading}
+          onPageChange={(pageIndex) => {
+            if (isFullDataset) {
+              // Client-side pagination - update internal state
+              setInternalPagination(prev => ({ ...prev, pageIndex }));
+            } else {
+              // Server-side pagination - notify parent
+              onPageChange(pageIndex + 1);
+            }
+          }}
+          onPageSizeChange={(newPageSize) => {
+            if (isFullDataset) {
+              // Client-side pagination - update internal state
+              setInternalPagination({ pageIndex: 0, pageSize: newPageSize });
+            } else {
+              // Server-side pagination - notify parent
+              onPageSizeChange(newPageSize);
+            }
+          }}
+        />
+      </div>
     </Card>
   );
 };

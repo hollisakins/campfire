@@ -12,6 +12,7 @@ interface DownloadTableButtonsProps {
   filters: AdvancedFilterOptions;
   sortColumn: SortColumn;
   sortDirection: SortDirection;
+  loading?: boolean;
 }
 
 export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
@@ -19,6 +20,7 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
   filters,
   sortColumn,
   sortDirection,
+  loading = false,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [csvLoading, setCsvLoading] = useState(false);
@@ -26,7 +28,7 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const FITS_LIMIT = 200;
-  const fitsDisabled = totalCount > FITS_LIMIT;
+  const fitsDisabled = totalCount > FITS_LIMIT || loading;
 
   const handleCsvDownload = async () => {
     setCsvLoading(true);
@@ -82,24 +84,30 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
     }
   };
 
-  if (totalCount === 0) {
-    return null; // Don't show download buttons if no results
-  }
-
   return (
     <Card className="mb-4">
       {/* Collapsible Header */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full p-3 flex items-center justify-between hover:bg-background-hover transition-colors"
+        disabled={loading}
+        className="w-full p-3 min-h-[52px] flex items-center justify-between hover:bg-background-hover transition-colors disabled:cursor-not-allowed disabled:opacity-70"
       >
         <div className="flex items-center gap-2">
-          <span className="text-sm text-text-secondary">
-            {totalCount.toLocaleString()} {totalCount === 1 ? 'object' : 'objects'} found
-          </span>
-          <span className="text-text-secondary">|</span>
-          <Download className="w-4 h-4 text-text-secondary" />
-          <h3 className="text-sm font-semibold text-text-primary">Download Results</h3>
+          {loading ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin text-text-secondary" />
+              <span className="text-sm text-text-secondary">Loading objects...</span>
+            </>
+          ) : (
+            <>
+              <span className="text-sm text-text-secondary">
+                {totalCount.toLocaleString()} {totalCount === 1 ? 'object' : 'objects'} found
+              </span>
+              <span className="text-text-secondary">|</span>
+              <Download className="w-4 h-4 text-text-secondary" />
+              <h3 className="text-sm font-semibold text-text-primary">Download Results</h3>
+            </>
+          )}
         </div>
         <ChevronDown
           className={`w-4 h-4 text-text-secondary transition-transform ${isExpanded ? 'rotate-180' : ''}`}
@@ -117,8 +125,9 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
             {/* CSV Download Button */}
             <button
               onClick={handleCsvDownload}
-              disabled={csvLoading}
+              disabled={csvLoading || loading}
               className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+              title={loading ? 'Please wait while objects are loading' : 'Download CSV table'}
             >
               {csvLoading ? (
                 <>
@@ -138,7 +147,13 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
               onClick={handleFitsDownload}
               disabled={fitsLoading || fitsDisabled}
               className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
-              title={fitsDisabled ? `Limited to ${FITS_LIMIT} objects. Please refine filters.` : 'Download FITS files as ZIP'}
+              title={
+                loading
+                  ? 'Please wait while objects are loading'
+                  : totalCount > FITS_LIMIT
+                    ? `Limited to ${FITS_LIMIT} objects. Please refine filters.`
+                    : 'Download FITS files as ZIP'
+              }
             >
               {fitsLoading ? (
                 <>
