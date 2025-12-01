@@ -14,8 +14,6 @@ import {
   Loader2,
   LogIn,
   Check,
-  Lock,
-  Globe,
   AlertCircle,
   CheckCircle,
   Edit2,
@@ -218,9 +216,7 @@ export default function ProfilePage() {
     );
   }
 
-  const publicPrograms = profileData.programs.filter(p => p.is_public);
   const grantedPrograms = profileData.programs.filter(p => p.access_type === 'granted');
-  const lockedPrograms = profileData.programs.filter(p => p.access_type === 'none');
 
   return (
     <div className="container mx-auto px-4 py-8">

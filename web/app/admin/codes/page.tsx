@@ -333,7 +333,7 @@ export default function AdminCodesPage() {
             {!formData.grants_all_programs && (
               <div>
                 <MultiSelect
-                  options={allPrograms.map(p => ({ id: p.program_id, name: p.program_name }))}
+                  options={allPrograms.map(p => ({ id: p.program_id, name: p.program_name || `Program ${p.program_id}` }))}
                   selected={selectedPrograms}
                   onChange={setSelectedPrograms}
                   label="Select Programs"
