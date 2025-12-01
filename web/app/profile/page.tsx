@@ -21,6 +21,8 @@ import {
   Edit2,
   Save,
   X,
+  Key,
+  ChevronRight,
 } from 'lucide-react';
 
 interface ProgramWithAccess extends Program {
@@ -303,14 +305,16 @@ export default function ProfilePage() {
         </Card>
 
         {/* Access Code Entry */}
-        <Card className="p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <KeyRound className="w-5 h-5 text-primary" />
-            <h2 className="text-lg font-semibold text-text-primary">Enter Access Code</h2>
+        <Card className="p-6" id="access-code">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
+              <KeyRound className="w-5 h-5 text-primary" />
+            </div>
+            <h2 className="text-lg font-semibold text-text-primary">Access Codes</h2>
           </div>
 
           <p className="text-sm text-text-secondary mb-4">
-            Have an access code? Enter it below to unlock additional programs.
+            Enter an access code below to gain access to proprietary programs. Public programs are accessible to all users.
           </p>
 
           {redeemError && (
@@ -347,116 +351,91 @@ export default function ProfilePage() {
               )}
             </Button>
           </form>
-        </Card>
 
-        {/* Program Access */}
-        <Card className="p-6">
-          <h2 className="text-lg font-semibold text-text-primary mb-4">Program Access</h2>
-
-          <div className="space-y-4">
-            {/* Public Programs */}
-            {publicPrograms.length > 0 && (
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <Globe className="w-4 h-4 text-blue-600" />
-                  <h3 className="text-sm font-medium text-text-secondary">Public Programs</h3>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {publicPrograms.map((program) => (
-                    <div
-                      key={program.program_id}
-                      className="flex items-center gap-2 px-3 py-2 bg-blue-50 rounded-lg"
-                    >
-                      <Check className="w-4 h-4 text-blue-600 flex-shrink-0" />
-                      <span className="text-sm text-blue-900 truncate">
-                        {program.program_name || `Program ${program.program_id}`}
+          {/* Redemption History */}
+          {profileData.redemptions.length > 0 && (
+            <div className="mt-6 pt-6 border-t border-border">
+              <h3 className="text-sm font-semibold text-text-primary mb-3">Redemption History</h3>
+              <div className="space-y-2">
+                {profileData.redemptions.map((redemption) => (
+                  <div
+                    key={redemption.id}
+                    className="flex items-center justify-between py-2 border-b border-border last:border-0"
+                  >
+                    <div>
+                      <span className="font-mono text-sm text-text-primary">
+                        {redemption.access_codes.code}
                       </span>
+                      {redemption.access_codes.description && (
+                        <span className="text-sm text-text-secondary ml-2">
+                          ({redemption.access_codes.description})
+                        </span>
+                      )}
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Granted Programs */}
-            {grantedPrograms.length > 0 && (
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <KeyRound className="w-4 h-4 text-green-600" />
-                  <h3 className="text-sm font-medium text-text-secondary">Unlocked Programs</h3>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {grantedPrograms.map((program) => (
-                    <div
-                      key={program.program_id}
-                      className="flex items-center gap-2 px-3 py-2 bg-green-50 rounded-lg"
-                    >
-                      <Check className="w-4 h-4 text-green-600 flex-shrink-0" />
-                      <span className="text-sm text-green-900 truncate">
-                        {program.program_name || `Program ${program.program_id}`}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Proprietary Programs */}
-            {lockedPrograms.length > 0 && (
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <Lock className="w-4 h-4 text-gray-400" />
-                  <h3 className="text-sm font-medium text-text-secondary">Proprietary Programs</h3>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {lockedPrograms.map((program) => (
-                    <div
-                      key={program.program_id}
-                      className="flex items-center gap-2 px-3 py-2 bg-gray-100 rounded-lg"
-                    >
-                      <Lock className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                      <span className="text-sm text-gray-600 truncate">
-                        {program.program_name || `Program ${program.program_id}`}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {profileData.programs.length === 0 && (
-              <p className="text-sm text-text-secondary">No programs in the database yet.</p>
-            )}
-          </div>
-        </Card>
-
-        {/* Redemption History */}
-        {profileData.redemptions.length > 0 && (
-          <Card className="p-6">
-            <h2 className="text-lg font-semibold text-text-primary mb-4">Redemption History</h2>
-            <div className="space-y-2">
-              {profileData.redemptions.map((redemption) => (
-                <div
-                  key={redemption.id}
-                  className="flex items-center justify-between py-2 border-b border-border last:border-0"
-                >
-                  <div>
-                    <span className="font-mono text-sm text-text-primary">
-                      {redemption.access_codes.code}
+                    <span className="text-sm text-text-secondary">
+                      {new Date(redemption.redeemed_at).toLocaleDateString()}
                     </span>
-                    {redemption.access_codes.description && (
-                      <span className="text-sm text-text-secondary ml-2">
-                        ({redemption.access_codes.description})
-                      </span>
-                    )}
                   </div>
-                  <span className="text-sm text-text-secondary">
-                    {new Date(redemption.redeemed_at).toLocaleDateString()}
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+
+        {/* Program Access - Only show if user has granted programs */}
+        {grantedPrograms.length > 0 && (
+          <Card className="p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
+                <Key className="w-5 h-5 text-primary" />
+              </div>
+              <h2 className="text-lg font-semibold text-text-primary">Proprietary Program Access</h2>
+            </div>
+
+            <p className="text-sm text-text-secondary mb-4">
+              You have access to the following proprietary programs:
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {grantedPrograms.map((program) => (
+                <div
+                  key={program.program_id}
+                  className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-200 rounded-lg"
+                >
+                  <Check className="w-4 h-4 text-green-600 flex-shrink-0" />
+                  <span className="text-sm text-text-primary truncate">
+                    {program.program_name || `Program ${program.program_id}`}
                   </span>
                 </div>
               ))}
             </div>
           </Card>
         )}
+
+        {/* API Keys */}
+        <Link href="/profile/api-keys" className="block">
+          <Card className="p-6 hover:bg-background-hover transition-colors cursor-pointer">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
+                  <Key className="w-6 h-6 text-purple-600" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-semibold text-text-primary">API Keys</h2>
+                    <span className="inline-flex px-2 py-0.5 text-xs font-medium bg-yellow-100 text-yellow-800 rounded-full">
+                      Experimental
+                    </span>
+                  </div>
+                  <p className="text-sm text-text-secondary">
+                    Manage API keys for the Python client (experimental preview)
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="w-5 h-5 text-text-secondary" />
+            </div>
+          </Card>
+        </Link>
       </div>
     </div>
   );

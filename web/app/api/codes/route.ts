@@ -114,6 +114,7 @@ export async function POST(request: NextRequest) {
         max_uses: max_uses || null,
         created_by: user.id,
         is_active: true,
+        use_count: 0,
       })
       .select()
       .single();

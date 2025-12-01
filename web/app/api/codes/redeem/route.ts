@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 
 /**
  * POST /api/codes/redeem
@@ -94,6 +94,14 @@ export async function POST(request: NextRequest) {
       programIds = accessCode.program_ids;
     }
 
+    // Validate that code grants at least one program
+    if (programIds.length === 0) {
+      return NextResponse.json(
+        { error: 'This code does not grant access to any programs' },
+        { status: 400 }
+      );
+    }
+
     // Grant program access
     if (programIds.length > 0) {
       const accessRecords = programIds.map(programId => ({
@@ -132,11 +140,17 @@ export async function POST(request: NextRequest) {
       // Don't fail - access was already granted
     }
 
-    // Increment use count
-    await supabase
+    // Increment use count using service client to bypass RLS
+    const serviceClient = createServiceClient();
+    const { error: incrementError } = await serviceClient
       .from('access_codes')
       .update({ use_count: accessCode.use_count + 1 })
       .eq('id', accessCode.id);
+
+    if (incrementError) {
+      console.error('Error incrementing use count:', incrementError);
+      // Don't fail - access was already granted
+    }
 
     return NextResponse.json({
       success: true,
