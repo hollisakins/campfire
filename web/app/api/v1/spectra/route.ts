@@ -75,7 +75,8 @@ export async function GET(request: NextRequest) {
     }
 
     // Check if user has access to this program
-    const programId = (spectrum.objects as any).program_id;
+    const objects = spectrum.objects as { program_id: number } | { program_id: number }[];
+    const programId = Array.isArray(objects) ? objects[0].program_id : objects.program_id;
     if (!accessibleProgramIds.includes(programId)) {
       return NextResponse.json(
         { error: 'Access denied to this file' },

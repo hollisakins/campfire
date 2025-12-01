@@ -14,7 +14,7 @@ export async function getAccessiblePrograms(userId: string): Promise<number[]> {
     .select('program_id')
     .eq('user_id', userId);
 
-  const explicitAccessIds = (accessData || []).map((a: any) => a.program_id);
+  const explicitAccessIds = (accessData || []).map((a: { program_id: number }) => a.program_id);
 
   // Get public programs
   const { data: publicPrograms } = await supabase
@@ -22,7 +22,7 @@ export async function getAccessiblePrograms(userId: string): Promise<number[]> {
     .select('program_id')
     .eq('is_public', true);
 
-  const publicProgramIds = (publicPrograms || []).map((p: any) => p.program_id);
+  const publicProgramIds = (publicPrograms || []).map((p: { program_id: number }) => p.program_id);
 
   // Combine and deduplicate
   return [...new Set([...publicProgramIds, ...explicitAccessIds])];
