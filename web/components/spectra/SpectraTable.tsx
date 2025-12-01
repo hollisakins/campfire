@@ -11,7 +11,7 @@ import {
   SortingState,
   ColumnDef,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ArrowUp, ArrowDown, Eye, EyeOff, Server, Loader2 } from 'lucide-react';
+import { ArrowUpDown, ArrowUp, ArrowDown, Eye, EyeOff } from 'lucide-react';
 import { SpectrumObject, QUALITY_LABELS } from '@/lib/types';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { Card } from '@/components/ui/Card';
@@ -394,15 +394,6 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
 
   return (
     <Card className="overflow-hidden">
-      {/* Server-side mode indicator */}
-      {!isFullDataset && (
-        <div className="flex items-center gap-2 text-xs text-text-secondary px-4 py-2 bg-amber-50 border-b border-amber-200">
-          <Server className="w-3.5 h-3.5" />
-          <span>
-            Large dataset ({total.toLocaleString()} results) — sorting and pagination are server-side
-          </span>
-        </div>
-      )}
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="bg-card border-b border-border">
