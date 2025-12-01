@@ -55,9 +55,12 @@ export async function validateApiKey(request: NextRequest): Promise<string | nul
   // Update last_used_at timestamp asynchronously (don't wait for it)
   supabase.rpc('update_api_key_last_used', {
     key_hash_input: keyHash
-  }).then(() => {}).catch((err) => {
-    console.error('Failed to update API key last_used_at:', err);
-  });
+  }).then(
+    () => {},
+    (err) => {
+      console.error('Failed to update API key last_used_at:', err);
+    }
+  );
 
   return result.user_id;
 }
