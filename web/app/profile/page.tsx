@@ -246,9 +246,16 @@ export default function ProfilePage() {
                     autoFocus
                   />
                 ) : (
-                  <h1 className="text-xl font-semibold text-text-primary">
-                    {profileData.profile.full_name}
-                  </h1>
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-xl font-semibold text-text-primary">
+                      {profileData.profile.full_name}
+                    </h1>
+                    {profileData.profile.is_group_account && (
+                      <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-800 rounded">
+                        Group Account
+                      </span>
+                    )}
+                  </div>
                 )}
                 <p className="text-text-secondary">{profileData.email}</p>
               </div>
@@ -282,10 +289,12 @@ export default function ProfilePage() {
                   </Button>
                 </>
               ) : (
-                <Button variant="secondary" size="sm" onClick={() => setIsEditing(true)}>
-                  <Edit2 className="w-4 h-4 mr-2" />
-                  Edit
-                </Button>
+                !profileData.profile.is_group_account && (
+                  <Button variant="secondary" size="sm" onClick={() => setIsEditing(true)}>
+                    <Edit2 className="w-4 h-4 mr-2" />
+                    Edit
+                  </Button>
+                )
               )}
             </div>
           </div>
@@ -301,7 +310,8 @@ export default function ProfilePage() {
         </Card>
 
         {/* Access Code Entry */}
-        <Card className="p-6" id="access-code">
+        {!profileData.profile.is_group_account && (
+          <Card className="p-6" id="access-code">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
               <KeyRound className="w-5 h-5 text-primary" />
@@ -377,6 +387,7 @@ export default function ProfilePage() {
             </div>
           )}
         </Card>
+        )}
 
         {/* Program Access - Only show if user has granted programs */}
         {grantedPrograms.length > 0 && (
@@ -409,7 +420,8 @@ export default function ProfilePage() {
         )}
 
         {/* API Keys */}
-        <Link href="/profile/api-keys" className="block">
+        {!profileData.profile.is_group_account && (
+          <Link href="/profile/api-keys" className="block">
           <Card className="p-6 hover:bg-background-hover transition-colors cursor-pointer">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -432,6 +444,7 @@ export default function ProfilePage() {
             </div>
           </Card>
         </Link>
+        )}
       </div>
     </div>
   );

@@ -351,18 +351,21 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
               options={spectralFeatureOptions}
               selected={spectralFeatures}
               onChange={setSpectralFeatures}
+              disabled={!canEdit}
             />
             <FilterChip
               label="Object Type"
               options={objectFlagOptions}
               selected={objectFlags}
               onChange={setObjectFlags}
+              disabled={!canEdit}
             />
             <FilterChip
               label="Data Quality"
               options={dqFlagOptions}
               selected={dqFlags}
               onChange={setDqFlags}
+              disabled={!canEdit}
             />
           </div>
         </div>

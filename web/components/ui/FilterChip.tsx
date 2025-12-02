@@ -80,6 +80,7 @@ interface FilterChipProps {
   onChange: (selected: (string | number)[]) => void;
   multiSelect?: boolean;
   className?: string;
+  disabled?: boolean;
 }
 
 export const FilterChip: React.FC<FilterChipProps> = ({
@@ -89,6 +90,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   onChange,
   multiSelect = true,
   className = '',
+  disabled = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -132,10 +134,11 @@ export const FilterChip: React.FC<FilterChipProps> = ({
     <div ref={containerRef} className={`relative inline-block ${className}`}>
       {/* Chip Button */}
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => !disabled && setIsOpen(!isOpen)}
         className={`
           inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium
           border transition-all duration-150
+          ${disabled ? 'opacity-60 cursor-not-allowed' : ''}
           ${isActive
             ? 'bg-primary/10 border-primary text-primary'
             : 'bg-card border-border text-text-secondary hover:border-text-secondary hover:text-text-primary'
@@ -154,7 +157,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
       </button>
 
       {/* Dropdown */}
-      {isOpen && (
+      {isOpen && !disabled && (
         <div className="absolute z-50 mt-1 min-w-[240px] max-w-[320px] max-h-[400px] overflow-y-auto bg-background border border-border rounded-lg shadow-lg">
           {/* Chips container */}
           <div className="p-3 flex flex-wrap gap-2">
