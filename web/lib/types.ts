@@ -182,3 +182,76 @@ export function decodeBitmaskFlags(bitmask: number, category: string, allFlags: 
     flag => flag.category === category && flag.bit_position !== null && (bitmask & flag.value) > 0
   );
 }
+
+// ============================================
+// Activity Feed Types
+// ============================================
+
+export type ActivityType = 'comment' | 'inspection';
+
+export interface BaseActivity {
+  id: string;                    // "comment-{id}" or "audit-{id}"
+  type: ActivityType;
+  object_db_id: number;
+  object_display_id: string;     // e.g., "ember_uds_p4_123456"
+  user_id: string;
+  timestamp: string;
+  user_profile?: UserProfile;
+}
+
+export interface CommentActivity extends BaseActivity {
+  type: 'comment';
+  content: string;
+  edited_at: string | null;
+}
+
+export interface InspectionActivity extends BaseActivity {
+  type: 'inspection';
+  field_name: string;
+  old_value: number | null;
+  new_value: number | null;
+}
+
+export type Activity = CommentActivity | InspectionActivity;
+
+export interface ActivityFeedResponse {
+  activities: Activity[];
+  total_count: number;
+  page: number;
+  page_size: number;
+  has_next_page: boolean;
+}
+
+// Helper functions for activity formatting
+export function formatActivityField(fieldName: string, value: number | null): string {
+  if (value === null) return 'none';
+
+  switch (fieldName) {
+    case 'redshift_quality':
+      const quality = QUALITY_LABELS.find(q => q.value === value);
+      return quality ? `${quality.icon} ${quality.label}` : `${value}`;
+
+    case 'redshift_inspected':
+      return value.toFixed(4);
+
+    // For bitmask fields, just show the numeric value (decoding would be complex)
+    case 'spectral_features':
+    case 'object_flags':
+    case 'dq_flags':
+      return `${value}`;
+
+    default:
+      return `${value}`;
+  }
+}
+
+export function formatFieldName(fieldName: string): string {
+  const names: Record<string, string> = {
+    'redshift_quality': 'Redshift Quality',
+    'redshift_inspected': 'Redshift (Manual)',
+    'spectral_features': 'Spectral Features',
+    'object_flags': 'Object Flags',
+    'dq_flags': 'Data Quality',
+  };
+  return names[fieldName] || fieldName;
+}

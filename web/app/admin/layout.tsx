@@ -4,9 +4,10 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import { Shield, KeyRound, Users, Loader2, AlertTriangle, FolderOpen } from 'lucide-react';
+import { Shield, KeyRound, Users, Loader2, AlertTriangle, FolderOpen, Activity } from 'lucide-react';
 
 const adminNavItems = [
+  { href: '/admin/activity', label: 'Activity', icon: Activity },
   { href: '/admin/codes', label: 'Access Codes', icon: KeyRound },
   { href: '/admin/users', label: 'Users', icon: Users },
   { href: '/admin/programs', label: 'Programs', icon: FolderOpen },
