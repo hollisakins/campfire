@@ -39,14 +39,18 @@ export default function AdminActivityPage() {
   }, [fetchActivity]);
 
   const formatTimestamp = (timestamp: string) => {
-    const date = new Date(timestamp);
+    // Database timestamps are UTC without timezone indicator
+    // Append 'Z' to ensure proper UTC parsing
+    const date = new Date(timestamp.endsWith('Z') ? timestamp : `${timestamp}Z`);
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffMins = Math.floor(diffMs / 60000);
     const diffHours = Math.floor(diffMins / 60);
     const diffDays = Math.floor(diffHours / 24);
 
-    if (diffMins < 60) {
+    if (diffMins < 1) {
+      return 'just now';
+    } else if (diffMins < 60) {
       return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
     } else if (diffHours < 24) {
       return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
