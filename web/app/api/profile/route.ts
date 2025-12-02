@@ -90,6 +90,20 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
   }
 
+  // Check if user is a group account
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('is_group_account')
+    .eq('user_id', user.id)
+    .single();
+
+  if (profile?.is_group_account) {
+    return NextResponse.json(
+      { error: 'Group accounts cannot edit their profile' },
+      { status: 403 }
+    );
+  }
+
   try {
     const body = await request.json();
     const { full_name } = body;
