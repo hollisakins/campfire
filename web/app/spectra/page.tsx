@@ -89,9 +89,9 @@ function SpectraPageContent() {
     }
   }, [spectraResult]);
 
-  // Determine loading state: show skeletons on initial load or when fetching after filter change
-  // isPending keeps inputs responsive during transition
-  const loading = isLoading || (isPending && isFetching);
+  // Show skeletons whenever fetching (including on filter changes)
+  // useTransition keeps inputs responsive during state updates
+  const loading = isFetching;
 
   // Update URL when filters, pagination, or sorting change
   useEffect(() => {
