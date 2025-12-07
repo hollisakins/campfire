@@ -1,18 +1,15 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo, Suspense, useRef } from 'react';
+import React, { useState, useEffect, useMemo, Suspense, useTransition } from 'react';
 import Link from 'next/link';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { SpectraTable } from '@/components/spectra/SpectraTable';
 import { SpectraFilterBar, AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
 import { DownloadTableButtons } from '@/components/spectra/DownloadTableButtons';
-import { getSpectra, getFilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
-import type { SpectrumObject, Program } from '@/lib/types';
 import { LogIn, Loader2, Info, KeyRound } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import { AccessCodePrompt } from '@/components/auth/AccessCodePrompt';
 import {
   parseFiltersFromURL,
   parsePaginationFromURL,
@@ -20,49 +17,81 @@ import {
   filtersToURLParams,
 } from '@/lib/utils/url-params';
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
+import { useSpectraQuery } from '@/lib/hooks/useSpectraQuery';
+import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
 
 // Threshold for adaptive sorting: if total results <= this, use client-side sorting
 const FULL_DATASET_THRESHOLD = 5000;
 
 // Inner component that uses useSearchParams (must be wrapped in Suspense)
 function SpectraPageContent() {
-  const { user, loading: authLoading, needsAccessCode, checkProgramAccess } = useAuth();
+  const { user, loading: authLoading, needsAccessCode } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+
+  // useTransition for non-blocking state updates
+  const [isPending, startTransition] = useTransition();
 
   // Parse filters, pagination, and sorting from URL on initial load
   const initialFilters = useMemo(() => parseFiltersFromURL(searchParams), [searchParams]);
   const initialPagination = useMemo(() => parsePaginationFromURL(searchParams), [searchParams]);
   const initialSorting = useMemo(() => parseSortingFromURL(searchParams), [searchParams]);
 
+  // UI state (kept local)
   const [filters, setFilters] = useState<AdvancedFilterOptions>(initialFilters);
   const [page, setPage] = useState(initialPagination.page);
   const [pageSize, setPageSize] = useState(initialPagination.pageSize);
   const [sortColumn, setSortColumn] = useState<SortColumn>(initialSorting.sortColumn);
   const [sortDirection, setSortDirection] = useState<SortDirection>(initialSorting.sortDirection);
-  const [spectra, setSpectra] = useState<SpectrumObject[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
-  const [isFullDataset, setIsFullDataset] = useState(true); // true if all data loaded (client-side sort)
-  const [availablePrograms, setAvailablePrograms] = useState<Program[]>([]);
-  const [availableFields, setAvailableFields] = useState<string[]>([]);
-  const [availableObservations, setAvailableObservations] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [isFullDataset, setIsFullDataset] = useState(true);
 
-  // Ref to skip fetch when sort changes in full dataset mode (client-side sorting)
-  const skipNextFetchRef = useRef(false);
+  // Debounce filters to avoid excessive database queries
+  const { debouncedValue: debouncedFilters, isDebouncing } = useDebouncedValue(filters, 300);
 
-  // Track the filters for the currently in-flight request
-  const currentFetchFiltersRef = useRef<AdvancedFilterOptions | null>(null);
+  // Determine effective page/pageSize for query based on adaptive mode
+  const effectivePageSize = isFullDataset ? FULL_DATASET_THRESHOLD : pageSize;
+  const effectivePage = isFullDataset ? 1 : page;
 
-  // Debounce ALL filters to avoid excessive database queries and race conditions
-  // URL updates immediately for bookmarking, but database query waits 300ms
-  const { debouncedValue: debouncedFilters, isDebouncing } = useDebouncedValue(
-    filters,
-    300
-  );
+  // TanStack Query for spectra data
+  const {
+    data: spectraResult,
+    isLoading,
+    isFetching,
+    error: queryError,
+  } = useSpectraQuery({
+    filters: debouncedFilters,
+    page: effectivePage,
+    pageSize: effectivePageSize,
+    sortColumn,
+    sortDirection,
+    enabled: !authLoading && !!user,
+  });
+
+  // TanStack Query for filter options (programs, fields, observations)
+  const { data: filterOptionsResult } = useFilterOptionsQuery(!authLoading && !!user);
+
+  // Derive values from query results
+  const spectra = spectraResult?.spectra ?? [];
+  const totalCount = spectraResult?.total ?? 0;
+  const totalPages = spectraResult?.totalPages ?? 0;
+  const error = queryError ? 'Failed to fetch data' : spectraResult?.error ?? null;
+
+  // Derive available filter options
+  const availablePrograms = filterOptionsResult?.programs ?? [];
+  const availableFields = filterOptionsResult?.fields ?? [];
+  const availableObservations = filterOptionsResult?.observations ?? [];
+
+  // Update isFullDataset when query results change
+  useEffect(() => {
+    if (spectraResult) {
+      setIsFullDataset(spectraResult.isComplete);
+    }
+  }, [spectraResult]);
+
+  // Determine loading state: show skeletons on initial load or when fetching after filter change
+  // isPending keeps inputs responsive during transition
+  const loading = isLoading || (isPending && isFetching);
 
   // Update URL when filters, pagination, or sorting change
   useEffect(() => {
@@ -75,132 +104,13 @@ function SpectraPageContent() {
     }
   }, [filters, page, pageSize, sortColumn, sortDirection, pathname, router, searchParams]);
 
-  // Fetch data function with adaptive sorting strategy
-  const fetchData = useCallback(async () => {
-    if (authLoading) return;
-
-    // Skip fetch if this was triggered by a client-side sort change
-    if (skipNextFetchRef.current) {
-      skipNextFetchRef.current = false;
-      return;
-    }
-
-    // Store reference to the filters we're fetching for
-    const fetchingFilters = debouncedFilters;
-    currentFetchFiltersRef.current = fetchingFilters;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      // Convert debounced filters for server action
-      const serverFilters = {
-        programs: debouncedFilters.programs,
-        fields: debouncedFilters.fields,
-        gratings: debouncedFilters.gratings,
-        observations: debouncedFilters.observations,
-        redshift_quality: debouncedFilters.redshift_quality,
-        coordinate_search: debouncedFilters.coordinate_search,
-        redshift_min: debouncedFilters.redshift_min,
-        redshift_max: debouncedFilters.redshift_max,
-        max_snr_min: debouncedFilters.max_snr_min,
-        max_snr_max: debouncedFilters.max_snr_max,
-        spectral_features: debouncedFilters.spectral_features,
-        object_flags: debouncedFilters.object_flags,
-        dq_flags: debouncedFilters.dq_flags,
-        inspected_only: debouncedFilters.inspected_only,
-        search: debouncedFilters.search,
-      };
-
-      // Adaptive fetch strategy:
-      // - If we expect a small dataset, try to fetch all (up to FULL_DATASET_THRESHOLD)
-      // - If dataset is large, use server-side pagination and sorting
-      const effectivePageSize = isFullDataset ? FULL_DATASET_THRESHOLD : pageSize;
-      const effectivePage = isFullDataset ? 1 : page;
-
-      const result = await getSpectra(
-        serverFilters,
-        effectivePage,
-        effectivePageSize,
-        sortColumn,
-        sortDirection
-      );
-
-      // Only update state if this is still the current request
-      if (currentFetchFiltersRef.current !== fetchingFilters) {
-        return; // Stale request, ignore results
-      }
-
-      if (result.error) {
-        setError(result.error);
-      } else {
-        setSpectra(result.spectra);
-        setTotalCount(result.total);
-
-        // Determine if we have the complete dataset
-        const hasCompleteData = result.isComplete;
-        setIsFullDataset(hasCompleteData);
-
-        // Set pagination values based on mode
-        if (hasCompleteData) {
-          // Client-side mode: all data loaded, pagination handled by table
-          setTotalPages(1);
-        } else {
-          // Server-side mode: use server pagination
-          setTotalPages(result.totalPages);
-        }
-      }
-
-      // Check again before fetching filter options
-      if (currentFetchFiltersRef.current !== fetchingFilters) {
-        return;
-      }
-
-      // Fetch filter options
-      const filterOptions = await getFilterOptions();
-
-      // Final check before updating filter options
-      if (currentFetchFiltersRef.current !== fetchingFilters) {
-        return;
-      }
-
-      if (!filterOptions.error) {
-        setAvailablePrograms(filterOptions.programs);
-        setAvailableFields(filterOptions.fields);
-        setAvailableObservations(filterOptions.observations);
-      }
-    } catch (err) {
-      // Only set error if this is still the current request
-      if (currentFetchFiltersRef.current === fetchingFilters) {
-        setError('Failed to fetch data');
-        console.error(err);
-      }
-    } finally {
-      // Only clear loading if this is still the current request
-      if (currentFetchFiltersRef.current === fetchingFilters) {
-        setLoading(false);
-      }
-    }
-  }, [
-    debouncedFilters,
-    page,
-    pageSize,
-    sortColumn,
-    sortDirection,
-    isFullDataset,
-    authLoading
-  ]);
-
-  // Fetch data when filters change or user logs in
-  useEffect(() => {
-    fetchData();
-  }, [fetchData, user]);
-
+  // Handle filter changes with useTransition for non-blocking updates
   const handleFilterChange = (newFilters: AdvancedFilterOptions) => {
-    setFilters(newFilters);
-    // Reset to page 1 and assume full dataset mode when filters change
-    setPage(1);
-    setIsFullDataset(true);
+    startTransition(() => {
+      setFilters(newFilters);
+      setPage(1);
+      setIsFullDataset(true);
+    });
   };
 
   const handlePageChange = (newPage: number) => {
@@ -214,17 +124,16 @@ function SpectraPageContent() {
   };
 
   // Handle sort changes from table
-  // In full dataset mode, table handles sorting internally (no refetch needed)
+  // In full dataset mode, table handles sorting internally (client-side, no refetch needed)
   // In paginated mode, we need to refetch with new sort params
   const handleSortChange = (column: SortColumn, direction: SortDirection) => {
-    // In full dataset mode, skip the fetch - table handles sorting client-side
-    if (isFullDataset) {
-      skipNextFetchRef.current = true;
-    } else {
+    if (!isFullDataset) {
       // Reset to page 1 when sort changes in server-side mode
       setPage(1);
     }
     // Always update URL state for bookmarkability
+    // In full dataset mode, the query key changes but TanStack Query will use cached data
+    // since the filter params haven't changed, only sort params
     setSortColumn(column);
     setSortDirection(direction);
   };

@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { Navigation } from '@/components/layout/Navigation';
 import { AuthProvider } from '@/lib/contexts/AuthContext';
+import { QueryProvider } from '@/lib/providers/QueryProvider';
 import { Analytics } from '@vercel/analytics/next';
 
 export const metadata: Metadata = {
@@ -17,10 +18,12 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased min-h-screen bg-background">
-        <AuthProvider>
-          <Navigation />
-          <main>{children}</main>
-        </AuthProvider>
+        <QueryProvider>
+          <AuthProvider>
+            <Navigation />
+            <main>{children}</main>
+          </AuthProvider>
+        </QueryProvider>
         <Analytics />
       </body>
     </html>
