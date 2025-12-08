@@ -8,11 +8,20 @@ Usage:
     # Full deployment (spectra + RGB images)
     python scripts/deploy.py --obs cosmos_ddt
 
+    # Deploy specific source IDs only
+    python scripts/deploy.py --obs cosmos_ddt --source-ids 12345 67890
+
     # RGB images only
     python scripts/deploy.py --obs ember_uds_p4 --rgb-only
 
+    # RGB images for specific source IDs
+    python scripts/deploy.py --obs ember_uds_p4 --rgb-only --source-ids 12345
+
     # SED plots only
     python scripts/deploy.py --obs ember_uds_p4 --sed-only
+
+    # SED plots for specific source IDs
+    python scripts/deploy.py --obs ember_uds_p4 --sed-only --source-ids 12345 67890
 
     # Spectra only (no RGB)
     python scripts/deploy.py --obs cosmos_ddt --no-rgb
@@ -160,6 +169,66 @@ def discover_zfit_files(products_dir: Path, obs_name: str) -> dict[str, Path]:
         zfit_map[base] = zfit_path
 
     return zfit_map
+
+
+def filter_files_by_source_ids(files: list[Path], source_ids: list[str], obs_name: str) -> list[Path]:
+    """
+    Filter file list to only include files matching the specified source IDs.
+
+    Handles multiple filename patterns:
+    - Spectra: {obs_name}_{grating}_{filter}_{source_id}_spec.fits
+    - RGB: {obs_name}_{source_id}_rgb.png
+    - SED: {obs_name}_{source_id}_sed.pdf
+    - Zfit: {obs_name}_{grating}_{filter}_{source_id}_zfit.fits
+
+    Args:
+        files: List of file paths to filter
+        source_ids: List of allowed source IDs (as strings)
+        obs_name: Observation name (needed to extract source_id correctly)
+
+    Returns:
+        Filtered list of files matching the allowed source IDs
+    """
+    if not source_ids:
+        return files
+
+    # Convert source_ids to set for faster lookup
+    allowed_ids = set(source_ids)
+    filtered = []
+
+    for file_path in files:
+        filename = file_path.name
+        extracted_id = None
+
+        # Determine file type and extract source_id accordingly
+        if filename.endswith('_spec.fits') or filename.endswith('_zfit.fits'):
+            # FITS files: use parse_fits_filename logic
+            try:
+                parsed = parse_fits_filename(filename)
+                extracted_id = parsed['source_id']
+            except ValueError:
+                # If parsing fails, skip this file
+                continue
+
+        elif filename.endswith('_rgb.png'):
+            # RGB: {obs_name}_{source_id}_rgb.png
+            base = filename.replace('_rgb.png', '')
+            # Remove obs_name prefix
+            if base.startswith(obs_name + '_'):
+                extracted_id = base[len(obs_name) + 1:]
+
+        elif filename.endswith('_sed.pdf'):
+            # SED: {obs_name}_{source_id}_sed.pdf
+            base = filename.replace('_sed.pdf', '')
+            # Remove obs_name prefix
+            if base.startswith(obs_name + '_'):
+                extracted_id = base[len(obs_name) + 1:]
+
+        # Include file if source_id matches
+        if extracted_id and extracted_id in allowed_ids:
+            filtered.append(file_path)
+
+    return filtered
 
 
 def parse_fits_filename(filename: str) -> dict:
@@ -524,6 +593,21 @@ def upsert_program(supabase: 'Client', program_id: int, programs_config: dict) -
     supabase.table('programs').upsert(data, on_conflict='program_id').execute()
 
 
+def refresh_filter_options(supabase: 'Client') -> None:
+    """
+    Refresh the filter options materialized view after deployment.
+
+    This updates the cached list of fields and observations shown in the web UI filter dropdowns.
+    """
+    print("  Refreshing filter options cache...")
+    try:
+        supabase.rpc('refresh_filter_options').execute()
+        print("  ✓ Filter options cache refreshed")
+    except Exception as e:
+        print(f"  ⚠ Warning: Failed to refresh filter options cache: {e}")
+        print("    Run manually in Supabase: SELECT refresh_filter_options();")
+
+
 def upsert_object(supabase: 'Client', metadata: dict, obs_config: dict, force_overwrite: bool = False) -> None:
     """
     Upsert an object record.
@@ -648,12 +732,16 @@ def upload_to_r2(r2_client, bucket: str, local_path: Path, r2_key: str, content_
 def deploy_rgb_images(
     obs_name: str,
     dry_run: bool,
-    project_root: Path
+    project_root: Path,
+    source_ids: list[str] | None = None
 ) -> None:
     """
     Deploy RGB images for an observation to R2.
 
     Images are uploaded to: rgb/{obs_name}/{object_id}_rgb.png
+
+    Args:
+        source_ids: Optional list of source IDs to filter deployment to specific objects
     """
     scripts_dir = project_root / 'scripts'
     pipeline_dir = project_root / 'pipeline'
@@ -678,12 +766,23 @@ def deploy_rgb_images(
     # Discover RGB images
     rgb_files = discover_rgb_images(products_dir, obs_name)
 
-    if not rgb_files:
-        print(f"No RGB images (*_rgb.png) found in {products_dir / obs_name}")
-        print("Nothing to deploy.")
-        return
+    # Filter by source IDs if specified
+    if source_ids:
+        original_count = len(rgb_files)
+        rgb_files = filter_files_by_source_ids(rgb_files, source_ids, obs_name)
+        print(f"Found {original_count} RGB images, filtered to {len(rgb_files)} matching source IDs: {', '.join(source_ids)}")
 
-    print(f"Found {len(rgb_files)} RGB images")
+        if not rgb_files:
+            print(f"Error: No RGB images found matching source IDs: {', '.join(source_ids)}")
+            print("Nothing to deploy.")
+            return
+    else:
+        if not rgb_files:
+            print(f"No RGB images (*_rgb.png) found in {products_dir / obs_name}")
+            print("Nothing to deploy.")
+            return
+        print(f"Found {len(rgb_files)} RGB images")
+
     print()
 
     if dry_run:
@@ -726,12 +825,16 @@ def deploy_rgb_images(
 def deploy_sed_plots(
     obs_name: str,
     dry_run: bool,
-    project_root: Path
+    project_root: Path,
+    source_ids: list[str] | None = None
 ) -> None:
     """
     Deploy SED plot PDFs for an observation to R2.
 
     PDFs are uploaded to: sed/{obs_name}/{object_id}_sed.pdf
+
+    Args:
+        source_ids: Optional list of source IDs to filter deployment to specific objects
     """
     scripts_dir = project_root / 'scripts'
     pipeline_dir = project_root / 'pipeline'
@@ -756,12 +859,23 @@ def deploy_sed_plots(
     # Discover SED plot PDFs
     sed_files = discover_sed_plots(products_dir, obs_name)
 
-    if not sed_files:
-        print(f"No SED plots (*_sed.pdf) found in {products_dir / obs_name}")
-        print("Nothing to deploy.")
-        return
+    # Filter by source IDs if specified
+    if source_ids:
+        original_count = len(sed_files)
+        sed_files = filter_files_by_source_ids(sed_files, source_ids, obs_name)
+        print(f"Found {original_count} SED plot PDFs, filtered to {len(sed_files)} matching source IDs: {', '.join(source_ids)}")
 
-    print(f"Found {len(sed_files)} SED plot PDFs")
+        if not sed_files:
+            print(f"Error: No SED plots found matching source IDs: {', '.join(source_ids)}")
+            print("Nothing to deploy.")
+            return
+    else:
+        if not sed_files:
+            print(f"No SED plots (*_sed.pdf) found in {products_dir / obs_name}")
+            print("Nothing to deploy.")
+            return
+        print(f"Found {len(sed_files)} SED plot PDFs")
+
     print()
 
     if dry_run:
@@ -811,7 +925,8 @@ def deploy_observation(
     force_overwrite: bool,
     include_rgb: bool,
     zfit_only: bool,
-    project_root: Path
+    project_root: Path,
+    source_ids: list[str] | None = None
 ) -> None:
     """
     Deploy an observation to Supabase and R2.
@@ -819,6 +934,7 @@ def deploy_observation(
     Args:
         zfit_only: If True, only deploy zfit JSON files and update redshift_auto
                    (skip FITS, spectrum JSON, and RGB uploads)
+        source_ids: Optional list of source IDs to filter deployment to specific objects
     """
     scripts_dir = project_root / 'scripts'
     pipeline_dir = project_root / 'pipeline'
@@ -845,13 +961,33 @@ def deploy_observation(
 
     # Discover FITS files
     fits_files = discover_fits_files(products_dir, obs_name)
-    print(f"Found {len(fits_files)} spectrum files")
+
+    # Filter by source IDs if specified
+    if source_ids:
+        original_count = len(fits_files)
+        fits_files = filter_files_by_source_ids(fits_files, source_ids, obs_name)
+        print(f"Found {original_count} spectrum files, filtered to {len(fits_files)} matching source IDs: {', '.join(source_ids)}")
+
+        if not fits_files:
+            print(f"Error: No files found matching source IDs: {', '.join(source_ids)}")
+            sys.exit(1)
+    else:
+        print(f"Found {len(fits_files)} spectrum files")
 
     # Discover RGB images (if including RGB)
     rgb_files = []
     if include_rgb:
         rgb_files = discover_rgb_images(products_dir, obs_name)
-        if rgb_files:
+
+        # Filter by source IDs if specified
+        if source_ids and rgb_files:
+            original_count = len(rgb_files)
+            rgb_files = filter_files_by_source_ids(rgb_files, source_ids, obs_name)
+            if rgb_files:
+                print(f"Found {original_count} RGB images, filtered to {len(rgb_files)}")
+            else:
+                print(f"No RGB images found matching specified source IDs")
+        elif rgb_files:
             print(f"Found {len(rgb_files)} RGB images")
         else:
             print(f"No RGB images found (skipping)")
@@ -872,8 +1008,26 @@ def deploy_observation(
     # Discover and process zfit files for redshift determination
     print(f"Discovering zfit files...")
     zfit_map = discover_zfit_files(products_dir, obs_name)
+
+    # Filter zfit_map by source IDs if specified
+    if source_ids and zfit_map:
+        original_count = len(zfit_map)
+        # Filter zfit files (need to convert dict values to list, filter, then rebuild dict)
+        zfit_files = list(zfit_map.values())
+        filtered_zfit_files = filter_files_by_source_ids(zfit_files, source_ids, obs_name)
+        # Rebuild map with filtered files
+        zfit_map = {}
+        for zfit_path in filtered_zfit_files:
+            base = zfit_path.stem.replace('_zfit', '')
+            zfit_map[base] = zfit_path
+        print(f"Found {original_count} zfit files, filtered to {len(zfit_map)}")
+
     zfit_data_map = {}  # Maps spec filename base -> zfit data dict (initialized for later use)
-    print(f"Found {len(zfit_map)} zfit files")
+
+    if not source_ids or zfit_map:
+        if not source_ids:
+            print(f"Found {len(zfit_map)} zfit files")
+        # If source_ids specified, count was already printed above
 
     # Read zfit data and associate with spectra
     for metadata in all_metadata:
@@ -1084,6 +1238,10 @@ def deploy_observation(
                 except Exception as e:
                     print(f"    ⚠️  Failed to upload: {e}")
 
+        # Refresh filter options cache (updates field/observation dropdowns in web UI)
+        print()
+        refresh_filter_options(supabase)
+
         print()
         if zfit_only:
             print(f"✓ Successfully deployed {len(zfit_data_map)} zfit JSONs and updated redshift_auto for {len(object_ids)} objects")
@@ -1113,6 +1271,9 @@ Examples:
     # Deploy spectra and RGB images
     python scripts/deploy.py --obs cosmos_ddt
 
+    # Deploy specific source IDs only
+    python scripts/deploy.py --obs cosmos_ddt --source-ids 12345 67890
+
     # Deploy with dry-run
     python scripts/deploy.py --obs cosmos_ddt --dry-run
 
@@ -1121,6 +1282,9 @@ Examples:
 
     # Deploy only RGB images (skip FITS/JSON and Supabase)
     python scripts/deploy.py --obs ember_uds_p4 --rgb-only
+
+    # Deploy RGB images for specific source IDs
+    python scripts/deploy.py --obs ember_uds_p4 --rgb-only --source-ids 12345
 
     # Deploy only SED plots (skip FITS/JSON and Supabase)
     python scripts/deploy.py --obs ember_uds_p4 --sed-only
@@ -1180,6 +1344,12 @@ Examples:
         action='store_true',
         help='Only deploy SED plot PDFs (skip FITS files and Supabase updates)'
     )
+    parser.add_argument(
+        '--source-ids',
+        nargs='+',
+        metavar='ID',
+        help='Deploy only specific source IDs (e.g., --source-ids 12345 67890)'
+    )
 
     args = parser.parse_args()
 
@@ -1195,7 +1365,8 @@ Examples:
         deploy_rgb_images(
             obs_name=args.obs,
             dry_run=args.dry_run,
-            project_root=project_root
+            project_root=project_root,
+            source_ids=args.source_ids
         )
     elif args.sed_only:
         if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.rgb_only:
@@ -1205,7 +1376,8 @@ Examples:
         deploy_sed_plots(
             obs_name=args.obs,
             dry_run=args.dry_run,
-            project_root=project_root
+            project_root=project_root,
+            source_ids=args.source_ids
         )
     elif args.zfit_only:
         if args.supabase_only or args.no_rgb or args.rgb_only or args.sed_only:
@@ -1221,7 +1393,8 @@ Examples:
             force_overwrite=args.force_overwrite,
             include_rgb=False,  # Skip RGB in zfit-only mode
             zfit_only=True,
-            project_root=project_root
+            project_root=project_root,
+            source_ids=args.source_ids
         )
     else:
         # Normal deployment (with or without RGB)
@@ -1235,7 +1408,8 @@ Examples:
             force_overwrite=args.force_overwrite,
             include_rgb=include_rgb,
             zfit_only=False,
-            project_root=project_root
+            project_root=project_root,
+            source_ids=args.source_ids
         )
 
 
