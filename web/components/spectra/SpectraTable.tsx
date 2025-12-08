@@ -11,8 +11,10 @@ import {
   SortingState,
   ColumnDef,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ArrowUp, ArrowDown, Eye, EyeOff } from 'lucide-react';
+import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { SpectrumObject, QUALITY_LABELS } from '@/lib/types';
+import { RGBThumbnail } from './RGBThumbnail';
+import { SpectrumThumbnail } from './SpectrumThumbnail';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
@@ -218,8 +220,19 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   const columns = useMemo<ColumnDef<SpectrumObject>[]>(
     () => [
       {
+        id: 'rgb_thumbnail',
+        size: 56,
+        minSize: 56,
+        maxSize: 56,
+        header: () => <span className="sr-only">Image</span>,
+        cell: ({ row }) => (
+          <RGBThumbnail objectId={row.original.object_id} size={48} />
+        ),
+        enableSorting: false,
+      },
+      {
         accessorKey: 'object_id',
-        minSize: 300,
+        minSize: 260,
         header: ({ column }) => (
           <SortableHeader column={column}>Object ID</SortableHeader>
         ),
@@ -307,6 +320,15 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         sortingFn: 'basic',
       },
       {
+        id: 'spectrum_thumbnail',
+        minSize: 130,
+        header: () => <span>Thumbnail</span>,
+        cell: ({ row }) => (
+          <SpectrumThumbnail objectId={row.original.object_id} width={120} height={40} />
+        ),
+        enableSorting: false,
+      },
+      {
         id: 'num_gratings',
         minSize: 80,
         accessorFn: (row) => row.num_gratings || row.spectra.length,
@@ -334,29 +356,6 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
             {row.original.max_snr ? row.original.max_snr.toFixed(1) : 'N/A'}
           </span>
         ),
-        sortingFn: 'basic',
-      },
-      {
-        id: 'inspected',
-        minSize: 90,
-        accessorFn: (row) => row.redshift_quality > 0,
-        header: ({ column }) => (
-          <SortableHeader column={column} className="justify-center">
-            Inspected
-          </SortableHeader>
-        ),
-        cell: ({ row }) => {
-          const isInspected = row.original.redshift_quality > 0;
-          return (
-            <div className="flex justify-center">
-              {isInspected ? (
-                <Eye className="w-4 h-4 text-green-600" />
-              ) : (
-                <EyeOff className="w-4 h-4 text-text-secondary opacity-50" />
-              )}
-            </div>
-          );
-        },
         sortingFn: 'basic',
       },
     ],
@@ -423,7 +422,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
             ) : error ? (
               // Error state: show error message
               <tr>
-                <td colSpan={hasCoordinateSearch ? 9 : 8} className="px-4 py-16 text-center">
+                <td colSpan={hasCoordinateSearch ? 11 : 10} className="px-4 py-16 text-center">
                   <div className="bg-red-50 border border-red-200 rounded-lg p-4 inline-block">
                     <p className="text-red-800">{error}</p>
                   </div>
@@ -432,7 +431,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
             ) : spectra.length === 0 ? (
               // Empty state: show message
               <tr>
-                <td colSpan={hasCoordinateSearch ? 9 : 8} className="px-4 py-12 text-center text-text-secondary">
+                <td colSpan={hasCoordinateSearch ? 11 : 10} className="px-4 py-12 text-center text-text-secondary">
                   No results found.
                   <p className="text-sm mt-2">
                     If you&apos;re looking for proprietary data, you may need to enter an access code on your profile page.
