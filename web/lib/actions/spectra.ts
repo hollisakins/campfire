@@ -434,31 +434,25 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
       };
     }
 
-    const accessibleProgramIds = accessiblePrograms.map(p => p.program_id);
+    // Fetch fields and observations from materialized view (cached, refreshed after deployments)
+    const { data: filterData, error: filterError } = await supabase
+      .from('mv_filter_options')
+      .select('fields, observations')
+      .single();
 
-    // Fetch unique fields and observations from objects the user can access
-    const { data: objectsData, error: objectsError } = await supabase
-      .from('objects')
-      .select('field, observation')
-      .in('program_id', accessibleProgramIds);
-
-    if (objectsError) {
-      console.error('Error fetching fields:', objectsError);
+    if (filterError) {
+      console.error('Error fetching filter options:', filterError);
       return {
         programs: accessiblePrograms,
         fields: [],
         observations: [],
-        error: objectsError.message,
+        error: filterError.message,
       };
     }
 
-    // Get unique fields and observations
-    const uniqueFields = [...new Set((objectsData || []).map(o => o.field))].sort();
-    const uniqueObservations = [...new Set(
-      (objectsData || [])
-        .map(o => o.observation)
-        .filter((obs): obs is string => obs !== null && obs !== undefined)
-    )].sort();
+    // Extract fields and observations from materialized view
+    const uniqueFields = filterData?.fields || [];
+    const uniqueObservations = filterData?.observations || [];
 
     return {
       programs: accessiblePrograms,
