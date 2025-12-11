@@ -8,13 +8,13 @@ import { InspectionPanel } from '@/components/spectra/InspectionPanel';
 import { SpectrumPlot } from '@/components/spectra/SpectrumPlot';
 import { RedshiftFitSummary } from '@/components/spectra/RedshiftFitSummary';
 import { RedshiftFitPlot } from '@/components/spectra/RedshiftFitPlot';
-import { Pagination } from '@/components/spectra/Pagination';
+import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
 import { DownloadButtons } from '@/components/spectra/DownloadButtons';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { RGBImage } from '@/components/spectra/RGBImage';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
-import { getSpectrumById, getAdjacentObjects } from '@/lib/actions/spectra';
+import { getSpectrumById } from '@/lib/actions/spectra';
 import { generateRGBImageUrl } from '@/lib/r2';
 import { LogIn } from 'lucide-react';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
@@ -39,11 +39,16 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
     }
   });
 
-  const filters = parseFiltersFromURL(urlParams);
-  const { sortColumn, sortDirection } = parseSortingFromURL(urlParams);
+  // Fetch spectrum data and RGB image URL in parallel for better performance
+  const [spectrumResult, rgbImageUrl] = await Promise.all([
+    getSpectrumById(objectId),
+    generateRGBImageUrl(objectId).catch((error) => {
+      console.error('Failed to generate RGB image URL:', error);
+      return null;
+    }),
+  ]);
 
-  // Fetch the spectrum data
-  const { spectrum, error, isAuthenticated } = await getSpectrumById(objectId);
+  const { spectrum, isAuthenticated } = spectrumResult;
 
   // Show login prompt if not authenticated
   if (!isAuthenticated) {
@@ -86,21 +91,10 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
     notFound();
   }
 
-  // Get pagination info (respecting filters and sorting from URL)
-  const { previous, next, currentIndex, total } = await getAdjacentObjects(
-    objectId,
-    filters,
-    sortColumn,
-    sortDirection
-  );
-
-  // Generate RGB image URL (try to load, will show fallback if not found)
-  let rgbImageUrl: string | null = null;
-  try {
-    rgbImageUrl = await generateRGBImageUrl(spectrum.object_id);
-  } catch (error) {
-    console.error('Failed to generate RGB image URL:', error);
-  }
+  // Parse filters and sorting from URL for navigation
+  const filters = parseFiltersFromURL(urlParams);
+  const { sortColumn, sortDirection } = parseSortingFromURL(urlParams);
+  const filterStr = urlParams.toString();
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -114,9 +108,9 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               { label: spectrum.object_id },
             ]}
           />
-          {urlParams.toString() && (
+          {filterStr && (
             <Link
-              href={`/spectra?${urlParams.toString()}`}
+              href={`/spectra?${filterStr}`}
               className="text-sm text-primary hover:text-primary-hover flex items-center gap-1"
             >
               ← Back to Filtered List
@@ -124,12 +118,13 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
           )}
         </div>
 
-        {/* Pagination */}
-        <Pagination
-          current={currentIndex}
-          total={total}
-          prevHref={previous ? `/spectra/${encodeURIComponent(previous)}?${urlParams.toString()}` : undefined}
-          nextHref={next ? `/spectra/${encodeURIComponent(next)}?${urlParams.toString()}` : undefined}
+        {/* Navigation */}
+        <ObjectNavigation
+          objectId={objectId}
+          filters={filters}
+          sortColumn={sortColumn}
+          sortDirection={sortDirection}
+          filterStr={filterStr}
         />
       </div>
 

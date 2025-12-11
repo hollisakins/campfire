@@ -1,0 +1,179 @@
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { lookupInCache, isAtCacheBoundary } from '@/lib/navigation-cache';
+import { getAdjacentObjectIds, type FilterOptions } from '@/lib/actions/spectra';
+import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
+
+interface ObjectNavigationProps {
+  objectId: string;
+  filters: Partial<FilterOptions>;
+  sortColumn: SortColumn;
+  sortDirection: SortDirection;
+  filterStr: string; // URL params string for navigation links
+  className?: string;
+}
+
+interface NavState {
+  prev: string | null;
+  next: string | null;
+  index: number;
+  total: number;
+  loading: boolean;
+  source: 'cache' | 'server' | 'none';
+}
+
+/**
+ * Client component for object detail page navigation.
+ * Uses hybrid approach: sessionStorage cache for instant lookup,
+ * falls back to server query when cache misses.
+ */
+export function ObjectNavigation({
+  objectId,
+  filters,
+  sortColumn,
+  sortDirection,
+  filterStr,
+  className = '',
+}: ObjectNavigationProps) {
+  const [nav, setNav] = useState<NavState>({
+    prev: null,
+    next: null,
+    index: 0,
+    total: 0,
+    loading: true,
+    source: 'none',
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadNavigation() {
+      // First, try sessionStorage cache for instant response
+      const sortKey = `${sortColumn}_${sortDirection}`;
+      const cached = lookupInCache(objectId, filterStr, sortKey);
+
+      if (cached) {
+        // Check if we're at a boundary and might need server data
+        const boundary = isAtCacheBoundary(objectId);
+
+        // If we have valid prev/next from cache, use it
+        if (!boundary.atStart && !boundary.atEnd) {
+          if (!cancelled) {
+            setNav({
+              prev: cached.prev,
+              next: cached.next,
+              index: cached.index,
+              total: cached.total,
+              loading: false,
+              source: 'cache',
+            });
+          }
+          return;
+        }
+
+        // At boundary - show cached data but fetch server data for missing direction
+        if (!cancelled) {
+          setNav({
+            prev: cached.prev,
+            next: cached.next,
+            index: cached.index,
+            total: cached.total,
+            loading: true, // Still loading the missing prev/next
+            source: 'cache',
+          });
+        }
+      }
+
+      // Fall back to server query
+      try {
+        const result = await getAdjacentObjectIds(
+          objectId,
+          filters,
+          sortColumn,
+          sortDirection
+        );
+
+        if (!cancelled) {
+          setNav({
+            prev: result.prev,
+            next: result.next,
+            index: result.currentIndex,
+            total: result.total,
+            loading: false,
+            source: 'server',
+          });
+        }
+      } catch (error) {
+        console.error('Failed to fetch adjacent objects:', error);
+        if (!cancelled) {
+          // Keep cached data if available, otherwise show unknown state
+          setNav(prev => ({
+            ...prev,
+            loading: false,
+            source: prev.source === 'cache' ? 'cache' : 'none',
+          }));
+        }
+      }
+    }
+
+    loadNavigation();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [objectId, filters, sortColumn, sortDirection, filterStr]);
+
+  // Build navigation URLs
+  const prevHref = nav.prev
+    ? `/spectra/${encodeURIComponent(nav.prev)}${filterStr ? `?${filterStr}` : ''}`
+    : undefined;
+
+  const nextHref = nav.next
+    ? `/spectra/${encodeURIComponent(nav.next)}${filterStr ? `?${filterStr}` : ''}`
+    : undefined;
+
+  return (
+    <div className={`flex items-center space-x-4 ${className}`}>
+      {prevHref ? (
+        <Link
+          href={prevHref}
+          className="p-2 rounded-lg hover:bg-card transition-colors text-text-primary"
+          aria-label="Previous object"
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </Link>
+      ) : (
+        <div className="p-2 text-text-secondary opacity-50">
+          <ChevronLeft className="w-5 h-5" />
+        </div>
+      )}
+
+      <span className="text-sm font-medium text-text-primary min-w-[60px] text-center">
+        {nav.loading ? (
+          <Loader2 className="w-4 h-4 animate-spin inline" />
+        ) : nav.index > 0 && nav.total > 0 ? (
+          `${nav.index} of ${nav.total}`
+        ) : (
+          '? of ?'
+        )}
+      </span>
+
+      {nextHref ? (
+        <Link
+          href={nextHref}
+          className="p-2 rounded-lg hover:bg-card transition-colors text-text-primary"
+          aria-label="Next object"
+        >
+          <ChevronRight className="w-5 h-5" />
+        </Link>
+      ) : (
+        <div className="p-2 text-text-secondary opacity-50">
+          <ChevronRight className="w-5 h-5" />
+        </div>
+      )}
+    </div>
+  );
+}

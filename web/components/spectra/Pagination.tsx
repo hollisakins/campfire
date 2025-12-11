@@ -34,7 +34,7 @@ export const Pagination: React.FC<PaginationProps> = ({
       )}
 
       <span className="text-sm font-medium text-text-primary">
-        {current} of {total}
+        {current > 0 && total > 0 ? `${current} of ${total}` : '? of ?'}
       </span>
 
       {nextHref ? (

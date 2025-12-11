@@ -19,6 +19,7 @@ import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
 import { formatDistance } from '@/lib/utils/coordinate-parser';
+import { setNavCache } from '@/lib/navigation-cache';
 
 // Map TanStack Table column IDs to server column names
 const COLUMN_TO_SERVER_NAME: Record<string, SortColumn> = {
@@ -236,14 +237,40 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         header: ({ column }) => (
           <SortableHeader column={column}>Object ID</SortableHeader>
         ),
-        cell: ({ row }) => (
-          <Link
-            href={`/spectra/${encodeURIComponent(row.original.object_id)}${currentFilterParams ? `?${currentFilterParams.toString()}` : ''}`}
-            className="text-sm font-mono text-primary hover:underline"
-          >
-            {row.original.object_id}
-          </Link>
-        ),
+        cell: ({ row, table }) => {
+          // Get all visible object IDs for navigation cache
+          const rows = table.getRowModel().rows;
+          const visibleIds = rows.map(r => r.original.object_id);
+
+          // Calculate page start for absolute positioning
+          const pageIndex = table.getState().pagination.pageIndex;
+          const pageSize = table.getState().pagination.pageSize;
+          const pageStart = pageIndex * pageSize;
+
+          // Build filter params string for URL
+          const filterStr = currentFilterParams?.toString() || '';
+
+          // Store navigation cache on click for instant prev/next lookup
+          const handleClick = () => {
+            setNavCache({
+              ids: visibleIds,
+              filters: filterStr,
+              sort: `${sortColumn}_${sortDirection}`,
+              pageStart,
+              total,
+            });
+          };
+
+          return (
+            <Link
+              href={`/spectra/${encodeURIComponent(row.original.object_id)}${filterStr ? `?${filterStr}` : ''}`}
+              onClick={handleClick}
+              className="text-sm font-mono text-primary hover:underline"
+            >
+              {row.original.object_id}
+            </Link>
+          );
+        },
         sortingFn: 'alphanumeric',
       },
       {

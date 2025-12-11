@@ -471,15 +471,16 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
 }
 
 /**
- * Get adjacent object IDs for pagination on detail page.
+ * Get adjacent object IDs for navigation on detail page.
+ * Uses a lightweight server query optimized for finding just prev/next.
  */
-export async function getAdjacentObjects(
+export async function getAdjacentObjectIds(
   currentObjectId: string,
   filters?: Partial<FilterOptions>,
   sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc'
 ): Promise<{
-  previous: string | null;
+  prev: string | null;
   next: string | null;
   currentIndex: number;
   total: number;
@@ -489,7 +490,7 @@ export async function getAdjacentObjects(
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
-    return { previous: null, next: null, currentIndex: 0, total: 0 };
+    return { prev: null, next: null, currentIndex: 0, total: 0 };
   }
 
   try {
@@ -513,7 +514,7 @@ export async function getAdjacentObjects(
     const accessibleProgramIds = [...new Set([...publicProgramIds, ...explicitAccessIds])];
 
     if (accessibleProgramIds.length === 0) {
-      return { previous: null, next: null, currentIndex: 0, total: 0 };
+      return { prev: null, next: null, currentIndex: 0, total: 0 };
     }
 
     // Prepare bitmask filters (combine arrays into single mask)
@@ -539,16 +540,15 @@ export async function getAdjacentObjects(
       coordDec = filters.coordinate_search.dec;
       const { radius, radius_unit } = filters.coordinate_search;
 
-      // Convert radius to degrees based on unit
       radiusDegrees =
         radius_unit === 'degrees' ? radius :
         radius_unit === 'arcmin' ? radius / 60 :
         radius / 3600;  // arcsec
     }
 
-    // Call the same RPC function but fetch all results (large page size)
-    // to get the complete filtered and sorted object list
-    const { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
+    // Call the lightweight RPC function
+    const { data, error } = await supabase.rpc('get_adjacent_objects', {
+      p_current_object_id: currentObjectId,
       p_program_ids: accessibleProgramIds,
       p_filter_programs: filters?.programs && filters.programs.length > 0 ? filters.programs : null,
       p_fields: filters?.fields && filters.fields.length > 0 ? filters.fields : null,
@@ -557,8 +557,6 @@ export async function getAdjacentObjects(
       p_redshift_quality: filters?.redshift_quality && filters.redshift_quality.length > 0 ? filters.redshift_quality : null,
       p_redshift_min: filters?.redshift_min ?? null,
       p_redshift_max: filters?.redshift_max ?? null,
-      p_max_snr_min: filters?.max_snr_min ?? null,
-      p_max_snr_max: filters?.max_snr_max ?? null,
       p_spectral_features: spectralFeaturesMask,
       p_object_flags: objectFlagsMask,
       p_dq_flags: dqFlagsMask,
@@ -569,40 +567,27 @@ export async function getAdjacentObjects(
       p_radius_degrees: radiusDegrees,
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,
-      p_page: 1,
-      p_page_size: 1000000, // Large number to get all results
     });
 
-    if (error || !data) {
+    if (error) {
       console.error('Error fetching adjacent objects:', error);
-      return { previous: null, next: null, currentIndex: 0, total: 0 };
+      return { prev: null, next: null, currentIndex: 0, total: 0 };
     }
 
-    // The RPC returns a single row with objects array and total_count
-    const result = data?.[0] || { objects: [], total_count: 0 };
-    const objects = result.objects || [];
-    const totalCount = Number(result.total_count) || 0;
-
-    // Extract object_ids from the result
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const objectIds = objects.map((obj: any) => obj.object_id);
-
-    // Find current object's index in the filtered list
-    const currentIndex = objectIds.indexOf(currentObjectId);
-
-    if (currentIndex === -1) {
-      // Current object not in filtered set
-      return { previous: null, next: null, currentIndex: 0, total: totalCount };
+    // RPC returns a single row
+    const result = data?.[0];
+    if (!result) {
+      return { prev: null, next: null, currentIndex: 0, total: 0 };
     }
 
     return {
-      previous: currentIndex > 0 ? objectIds[currentIndex - 1] : null,
-      next: currentIndex < objectIds.length - 1 ? objectIds[currentIndex + 1] : null,
-      currentIndex: currentIndex + 1, // 1-indexed for display
-      total: totalCount,
+      prev: result.prev_object_id || null,
+      next: result.next_object_id || null,
+      currentIndex: Number(result.current_index) || 0,
+      total: Number(result.total_count) || 0,
     };
   } catch (err) {
-    console.error('Error in getAdjacentObjects:', err);
-    return { previous: null, next: null, currentIndex: 0, total: 0 };
+    console.error('Error in getAdjacentObjectIds:', err);
+    return { prev: null, next: null, currentIndex: 0, total: 0 };
   }
 }
