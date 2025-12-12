@@ -93,16 +93,17 @@ function SpectraPageContent() {
   // useTransition keeps inputs responsive during state updates
   const loading = isFetching;
 
-  // Update URL when filters, pagination, or sorting change
+  // Update URL when debounced filters, pagination, or sorting change
+  // Using debouncedFilters prevents URL updates on every keystroke, improving performance
   useEffect(() => {
-    const params = filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection);
+    const params = filtersToURLParams(debouncedFilters, page, pageSize, sortColumn, sortDirection);
     const newSearch = params.toString();
     const currentSearch = searchParams.toString();
 
     if (newSearch !== currentSearch) {
       router.replace(`${pathname}${newSearch ? `?${newSearch}` : ''}`, { scroll: false });
     }
-  }, [filters, page, pageSize, sortColumn, sortDirection, pathname, router, searchParams]);
+  }, [debouncedFilters, page, pageSize, sortColumn, sortDirection, pathname, router, searchParams]);
 
   // Handle filter changes with useTransition for non-blocking updates
   const handleFilterChange = (newFilters: AdvancedFilterOptions) => {

@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Search } from 'lucide-react';
 import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
@@ -78,6 +78,38 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   className = '',
   isSearchDebouncing = false,
 }) => {
+  // Local state for search input to keep it responsive during typing
+  const [localSearch, setLocalSearch] = useState(filters.search);
+
+  // Track the last value WE sent to the parent to distinguish our echoes from external changes
+  const lastSentValueRef = useRef(filters.search);
+
+  // Sync from props ONLY for external changes (e.g., URL navigation), not our own echoes
+  useEffect(() => {
+    // If this is the value we just sent, it's our own echo - ignore it
+    if (filters.search === lastSentValueRef.current) {
+      return;
+    }
+    // External change (e.g., URL navigation) - sync to local state
+    setLocalSearch(filters.search);
+    lastSentValueRef.current = filters.search;
+  }, [filters.search]);
+
+  // Debounce updates to parent - only propagate after 300ms of no typing
+  useEffect(() => {
+    // Skip if values are already in sync
+    if (localSearch === filters.search) return;
+
+    const timer = setTimeout(() => {
+      // Update the ref BEFORE calling parent to mark this as "our" change
+      lastSentValueRef.current = localSearch;
+      onFiltersChange({ ...filters, search: localSearch });
+    }, 300);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localSearch]); // Intentionally exclude filters and onFiltersChange to prevent loops
+
   const updateFilter = <K extends keyof AdvancedFilterOptions>(
     key: K,
     value: AdvancedFilterOptions[K]
@@ -185,15 +217,15 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
         <input
           type="text"
-          value={filters.search}
-          onChange={(e) => updateFilter('search', e.target.value)}
+          value={localSearch}
+          onChange={(e) => setLocalSearch(e.target.value)}
           placeholder="Search by Object ID..."
           className="w-full pl-10 pr-10 py-2 text-sm border border-border rounded-lg bg-background text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
         />
         {/* Show clear button when there's text */}
-        {filters.search && (
+        {localSearch && (
           <button
-            onClick={() => updateFilter('search', '')}
+            onClick={() => setLocalSearch('')}
             className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary"
           >
             <X className="w-4 h-4" />
