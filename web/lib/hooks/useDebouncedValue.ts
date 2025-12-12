@@ -1,4 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
+
+/**
+ * Compares two values for equality, using JSON comparison for objects.
+ */
+function isEqual<T>(a: T, b: T): boolean {
+  if (typeof a === 'object' && a !== null && typeof b === 'object' && b !== null) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return a === b;
+}
 
 /**
  * Debounces a value and provides loading state to indicate when debouncing is active.
@@ -25,24 +35,34 @@ export function useDebouncedValue<T>(
 ): { debouncedValue: T; isDebouncing: boolean } {
   const [debouncedValue, setDebouncedValue] = useState<T>(value);
   const [isDebouncing, setIsDebouncing] = useState<boolean>(false);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    // If the value changes, mark as debouncing
-    if (value !== debouncedValue) {
+    // Use deep equality for objects, reference equality for primitives
+    const hasChanged = !isEqual(value, debouncedValue);
+
+    if (hasChanged) {
       setIsDebouncing(true);
     }
 
+    // Clear any existing timeout
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+
     // Set up a timer to update the debounced value after the delay
-    const timer = setTimeout(() => {
+    timeoutRef.current = setTimeout(() => {
       setDebouncedValue(value);
       setIsDebouncing(false);
     }, delay);
 
-    // Clean up the timer if value changes before delay expires
+    // Clean up the timer on unmount or value change
     return () => {
-      clearTimeout(timer);
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
     };
-  }, [value, delay, debouncedValue]);
+  }, [value, delay]); // Removed debouncedValue from dependencies to prevent re-triggering loops
 
   return { debouncedValue, isDebouncing };
 }
