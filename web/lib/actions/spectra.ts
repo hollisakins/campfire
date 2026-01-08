@@ -376,6 +376,50 @@ export async function getSpectrumById(objectId: string): Promise<{
 }
 
 /**
+ * Fetch minimal object metadata for Open Graph tags (no auth required).
+ * This is safe because it only returns basic info (object_id, redshift, program_name, field),
+ * not the actual spectrum data or FITS files.
+ */
+export async function getObjectMetadata(objectId: string): Promise<{
+  object_id: string;
+  redshift: number | null;
+  program_name: string | null;
+  field: string;
+} | null> {
+  const supabase = await createClient();
+
+  try {
+    const { data, error } = await supabase
+      .from('objects')
+      .select(`
+        object_id,
+        redshift,
+        field,
+        programs:program_id (program_name)
+      `)
+      .eq('object_id', objectId)
+      .single();
+
+    if (error || !data) {
+      return null;
+    }
+
+    // Handle the programs relation - cast through unknown to handle Supabase type inference
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const programData = data.programs as any;
+
+    return {
+      object_id: data.object_id,
+      redshift: data.redshift,
+      program_name: programData?.program_name || null,
+      field: data.field,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch available filter options (programs and fields the user has access to).
  * Includes public programs + programs the user has explicit access to.
  */
