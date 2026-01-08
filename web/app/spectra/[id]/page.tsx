@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { Metadata } from 'next';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { MetricCards } from '@/components/spectra/MetricCards';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
@@ -10,6 +11,7 @@ import { RedshiftFitSummary } from '@/components/spectra/RedshiftFitSummary';
 import { RedshiftFitPlot } from '@/components/spectra/RedshiftFitPlot';
 import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
 import { DownloadButtons } from '@/components/spectra/DownloadButtons';
+import { CopyLinkButton } from '@/components/spectra/CopyLinkButton';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { RGBImage } from '@/components/spectra/RGBImage';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
@@ -22,6 +24,42 @@ import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params
 interface SpectrumDetailPageProps {
   params: Promise<{ id: string }>;
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}
+
+export async function generateMetadata({ params }: SpectrumDetailPageProps): Promise<Metadata> {
+  const { id } = await params;
+  const objectId = decodeURIComponent(id);
+  const { spectrum } = await getSpectrumById(objectId);
+
+  if (!spectrum) {
+    return { title: 'Object Not Found - CAMPFIRE' };
+  }
+
+  const redshiftText = spectrum.redshift !== null
+    ? `z = ${spectrum.redshift.toFixed(4)}`
+    : 'z = unknown';
+
+  const description = `${objectId} | ${redshiftText}`;
+
+  return {
+    title: `${objectId} - CAMPFIRE`,
+    description,
+    openGraph: {
+      title: objectId,
+      description: `${redshiftText} | ${spectrum.program_name || spectrum.field}`,
+      images: [{
+        url: `/api/og-image/${encodeURIComponent(objectId)}`,
+        width: 300,
+        height: 300,
+        alt: `RGB thumbnail for ${objectId}`,
+      }],
+    },
+    twitter: {
+      card: 'summary',
+      title: objectId,
+      description: `${redshiftText} | ${spectrum.program_name || spectrum.field}`,
+    },
+  };
 }
 
 export default async function SpectrumDetailPage({ params, searchParams }: SpectrumDetailPageProps) {
@@ -160,6 +198,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
             {/* Action Buttons */}
             <div className="flex gap-4 mb-6">
               <DownloadButtons spectra={spectrum.spectra} objectId={spectrum.object_id} />
+              <CopyLinkButton objectId={spectrum.object_id} />
             </div>
 
             {/* Tab Navigation */}
