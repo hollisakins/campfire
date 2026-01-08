@@ -1,6 +1,6 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 import type { SpectrumObject, Program, Spectrum } from '@/lib/types';
 import { sedPlotExists } from '@/lib/r2';
 
@@ -377,6 +377,7 @@ export async function getSpectrumById(objectId: string): Promise<{
 
 /**
  * Fetch minimal object metadata for Open Graph tags (no auth required).
+ * Uses service role to bypass RLS since this is called by social media crawlers.
  * This is safe because it only returns basic info (object_id, redshift, program_name, field),
  * not the actual spectrum data or FITS files.
  */
@@ -386,9 +387,10 @@ export async function getObjectMetadata(objectId: string): Promise<{
   program_name: string | null;
   field: string;
 } | null> {
-  const supabase = await createClient();
-
   try {
+    // Use service role client to bypass RLS for social media crawlers
+    const supabase = createServiceClient();
+
     const { data, error } = await supabase
       .from('objects')
       .select(`
