@@ -16,7 +16,7 @@ import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { RGBImage } from '@/components/spectra/RGBImage';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
-import { getSpectrumById } from '@/lib/actions/spectra';
+import { getSpectrumById, getObjectMetadata } from '@/lib/actions/spectra';
 import { generateRGBImageUrl } from '@/lib/r2';
 import { LogIn } from 'lucide-react';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
@@ -29,14 +29,16 @@ interface SpectrumDetailPageProps {
 export async function generateMetadata({ params }: SpectrumDetailPageProps): Promise<Metadata> {
   const { id } = await params;
   const objectId = decodeURIComponent(id);
-  const { spectrum } = await getSpectrumById(objectId);
 
-  if (!spectrum) {
+  // Use lightweight metadata fetch (no auth required) for OG tags
+  const metadata = await getObjectMetadata(objectId);
+
+  if (!metadata) {
     return { title: 'Object Not Found - CAMPFIRE' };
   }
 
-  const redshiftText = spectrum.redshift !== null
-    ? `z = ${spectrum.redshift.toFixed(4)}`
+  const redshiftText = metadata.redshift !== null
+    ? `z = ${metadata.redshift.toFixed(4)}`
     : 'z = unknown';
 
   const description = `${objectId} | ${redshiftText}`;
@@ -46,7 +48,7 @@ export async function generateMetadata({ params }: SpectrumDetailPageProps): Pro
     description,
     openGraph: {
       title: objectId,
-      description: `${redshiftText} | ${spectrum.program_name || spectrum.field}`,
+      description: `${redshiftText} | ${metadata.program_name || metadata.field}`,
       images: [{
         url: `/api/og-image/${encodeURIComponent(objectId)}`,
         width: 300,
@@ -57,7 +59,7 @@ export async function generateMetadata({ params }: SpectrumDetailPageProps): Pro
     twitter: {
       card: 'summary',
       title: objectId,
-      description: `${redshiftText} | ${spectrum.program_name || spectrum.field}`,
+      description: `${redshiftText} | ${metadata.program_name || metadata.field}`,
     },
   };
 }
