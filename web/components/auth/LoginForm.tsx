@@ -1,23 +1,21 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { createClient } from '@/lib/supabase/client';
-import { AlertCircle, CheckCircle, Loader2, Lock } from 'lucide-react';
+import { AlertCircle, Loader2 } from 'lucide-react';
 
 export const LoginForm: React.FC = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { signIn, signUp, needsProfileSetup, user, loading: authLoading } = useAuth();
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const { signIn, needsProfileSetup, user, loading: authLoading } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [fullName, setFullName] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [processingCallback, setProcessingCallback] = useState(false);
 
@@ -123,32 +121,14 @@ export const LoginForm: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSuccess(null);
     setLoading(true);
 
     try {
-      if (mode === 'signin') {
-        const { error } = await signIn(email, password);
-        if (error) {
-          setError(error.message);
-        }
-        // Don't redirect here - let the useEffect handle it based on profile status
-      } else {
-        if (password.length < 6) {
-          setError('Password must be at least 6 characters');
-          setLoading(false);
-          return;
-        }
-
-        const { error } = await signUp(email, password, fullName);
-        if (error) {
-          setError(error.message);
-        } else {
-          setSuccess('Account created! Please check your email to verify your account. After signing in, you can browse public programs. To access proprietary programs, you\'ll need to redeem an access code.');
-          setMode('signin');
-          setPassword('');
-        }
+      const { error } = await signIn(email, password);
+      if (error) {
+        setError(error.message);
       }
+      // Don't redirect here - let the useEffect handle it based on profile status
     } catch {
       setError('An unexpected error occurred');
     } finally {
@@ -171,7 +151,7 @@ export const LoginForm: React.FC = () => {
   return (
     <Card className="w-full max-w-md p-8">
       <h2 className="text-2xl font-bold text-text-primary mb-6 text-center">
-        {mode === 'signin' ? 'Sign In to CAMPFIRE' : 'Create Account'}
+        Sign In to CAMPFIRE
       </h2>
 
       {error && (
@@ -181,35 +161,7 @@ export const LoginForm: React.FC = () => {
         </div>
       )}
 
-      {success && (
-        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-start gap-2">
-          <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-green-800">{success}</p>
-        </div>
-      )}
-
       <form onSubmit={handleSubmit} className="space-y-4">
-        {mode === 'signup' && (
-          <div>
-            <label htmlFor="fullName" className="block text-sm font-medium text-text-primary mb-2">
-              Full Name
-            </label>
-            <input
-              id="fullName"
-              type="text"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              className="w-full px-4 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-              placeholder="Jane Doe"
-              required
-              disabled={loading}
-            />
-            <p className="text-xs text-text-secondary mt-1">
-              This is your display name shown to other team members. You&apos;ll sign in using your email address.
-            </p>
-          </div>
-        )}
-
         <div>
           <label htmlFor="email" className="block text-sm font-medium text-text-primary mb-2">
             Email
@@ -241,57 +193,23 @@ export const LoginForm: React.FC = () => {
             minLength={6}
             disabled={loading}
           />
-          {mode === 'signup' && (
-            <p className="text-xs text-text-secondary mt-1">
-              Your password is encrypted and securely stored. Team administrators cannot see your password.
-            </p>
-          )}
         </div>
 
-        {/* Security Note - only shown in signup mode */}
-        {mode === 'signup' && (
-          <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-            <div className="flex items-start gap-2">
-              <Lock className="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" />
-              <p className="text-xs text-blue-800">
-                All passwords are encrypted using industry-standard security. Your credentials are never visible to administrators.
-              </p>
-            </div>
-          </div>
-        )}
-
         <Button type="submit" variant="primary" className="w-full mt-6" disabled={loading}>
-          {loading
-            ? (mode === 'signin' ? 'Signing In...' : 'Creating Account...')
-            : (mode === 'signin' ? 'Sign In' : 'Create Account')
-          }
+          {loading ? 'Signing In...' : 'Sign In'}
         </Button>
       </form>
 
       <div className="mt-6 text-center">
-        {mode === 'signin' ? (
-          <p className="text-sm text-text-secondary">
-            Don&apos;t have an account?{' '}
-            <button
-              type="button"
-              onClick={() => { setMode('signup'); setError(null); setSuccess(null); }}
-              className="text-primary hover:underline font-medium"
-            >
-              Sign up
-            </button>
-          </p>
-        ) : (
-          <p className="text-sm text-text-secondary">
-            Already have an account?{' '}
-            <button
-              type="button"
-              onClick={() => { setMode('signin'); setError(null); setSuccess(null); }}
-              className="text-primary hover:underline font-medium"
-            >
-              Sign in
-            </button>
-          </p>
-        )}
+        <p className="text-sm text-text-secondary">
+          Don&apos;t have an account?{' '}
+          <Link
+            href="/request-access"
+            className="text-primary hover:underline font-medium"
+          >
+            Request access
+          </Link>
+        </p>
       </div>
     </Card>
   );

@@ -51,6 +51,24 @@ export interface UserProgramAccess {
   granted_by: string | null;
 }
 
+// Account request status types
+export type AccountRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export interface AccountRequest {
+  id: number;
+  email: string;
+  full_name: string;
+  status: AccountRequestStatus;
+  is_admin: boolean;
+  can_comment: boolean;
+  program_ids: number[];
+  created_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  reviewed_by_name?: string; // Joined from user_profiles
+  rejection_reason: string | null;
+}
+
 export interface DbObject {
   id: number;
   object_id: string;

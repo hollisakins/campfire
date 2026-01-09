@@ -21,7 +21,8 @@
     "plotly.js": "^3.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-plotly.js": "^2.6.0"
+    "react-plotly.js": "^2.6.0",
+    "resend": "^6.7.0"
   },
   "devDependencies": {
     "@types/node": "^22",
