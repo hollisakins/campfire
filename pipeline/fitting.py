@@ -38,7 +38,8 @@ import multiprocessing as mp
 from multiprocessing import Pool
 mp.set_start_method('fork') 
 
-from spectres.spectral_resampling_numba import spectres_numba as spectres
+from spectres import spectres
+# from spectres.spectral_resampling_numba import spectres_numba as spectres
 
 
 def air_to_vac(wav_air):
@@ -60,6 +61,12 @@ def get_wavelength_sampling(wav_min, wav_max, R_curve_file, oversample=4):
         x.append(x[-1] + dwav)
     return np.array(x)
 
+def MBB(lam,T,pivot,beta): #modified black body with hard H_infinity cut
+    temp=planck(lam,T)*(pivot/lam)**beta
+    for i in range(6,20): #create smoother balmer break
+        temp[lam<4*.0912*(i**2/(i**2-4))]=temp[lam<4*.0912*(i**2/(i**2-4))]*0.85
+    temp[lam<4*.0912]=0
+    return temp
 
 def resample_to_nonuniform_grid(old_wav, old_grid, R_curve_file, oversample=4):
     """
@@ -321,6 +328,7 @@ def main():
     parser = argparse.ArgumentParser(description='NIRSpec Redshift Fitting Script')
     parser.add_argument('--config', type=str, default='config.toml', help='Path to configuration file (default: config.toml)')
     parser.add_argument('--obs', type=str, required=True, help='Observation name from observations.toml')
+    parser.add_argument('--source-ids', nargs='+', type=int, help='Individual source IDs to restrict processing to')
     args = parser.parse_args()
     config_path=args.config
     with open(config_path, 'r') as f: config = toml.load(f)
@@ -487,6 +495,31 @@ def main():
                             broadline_templates['grid']
                             ))
 
+        #make modified blackbody templates
+        logger.info('Creating modified blackbody templates')
+        
+        mod_blackbody_templates = np.zeros((1, len(zgrid), len(spec_wavs)))
+        for i in range(len(zgrid)):
+            z = zgrid[i]
+            fnu = MBB(template_wav/(1+z),T=3973,pivot=0.55,beta=0.6656)  #https://arxiv.org/pdf/2511.21820
+            fnu=fnu/np.max(fnu)
+            fnu[~np.isfinite(fnu)]=0
+            fnu[fnu<1e-3]=0
+            mod_blackbody_templates[0,i,:] = fnu
+        mod_blackbody_templates = {
+            'templates': list(temperatures),
+            'redshifts': zgrid,
+            'wavelengths': spec_wavs/1e4,
+            'grid': mod_blackbody_templates
+        }
+            
+        templates = np.vstack((continuum_templates['grid'], 
+                            line_templates['grid'], 
+                            blackbody_templates['grid'],
+                            mod_blackbody_templates['grid'],
+                            broadline_templates['grid']
+                            ))
+    
         logger.info('Resampling template grid to non-uniform wavelength grid')
         convolved_wav, temp_grid = resample_to_nonuniform_grid(template_wav, templates, file_paths['r_curve_file'], oversample=4)
         convolved_wav=convolved_wav.astype('float32')
@@ -497,6 +530,7 @@ def main():
         
         all_spec_files= np.array(sorted(glob.glob(file_paths['input_path']+f'/*{grating.lower()}*_spec.fits')))
         spec_files=[]
+
         
         if not overwrite: #check which files need to be processed if not overwriting
             spec_files=[]
@@ -507,6 +541,19 @@ def main():
                 if os.path.exists(zfit_file): logger.info(f"Zfit file already exists for {base_name}, skipping")
                 else: spec_files.append(spec_file)
         else: spec_files=all_spec_files
+
+        if args.source_ids is not None:
+            actual_spec_files = []
+            for spec_file in spec_files:
+                # check source ID 
+                source_id = int(spec_file.split('_')[-2])
+                if source_id in args.source_ids: 
+                    actual_spec_files.append(spec_file)
+                else:
+                    continue
+            spec_files = actual_spec_files
+                    
+
 
         logger.info(f"Starting redshift fitting for {len(spec_files)} objects using {ncores} cores")
         start_time=time.time()

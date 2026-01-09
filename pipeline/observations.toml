@@ -53,6 +53,48 @@
 #     files = ['jw06368028001_*', 'jw06368029001_*', 'jw06368030001_*']
 #     gratings = ['PRISM']
 
+[capers_egs_p1]
+    field = 'egs'
+    data_subdir='6368'
+    files = 'jw06368044001*'
+    gratings = ['PRISM']
+
+[capers_egs_p2]
+    field = 'egs'
+    data_subdir='6368'
+    files = 'jw06368047001*'
+    gratings = ['PRISM']
+
+[capers_egs_p3]
+    field = 'egs'
+    data_subdir='6368'
+    files = 'jw06368049001*'
+    gratings = ['PRISM']
+
+[capers_egs_p4]
+    field = 'egs'
+    data_subdir='6368'
+    files = 'jw06368053001*'
+    gratings = ['PRISM']
+
+[capers_egs_p5]
+    field = 'egs'
+    data_subdir='6368'
+    files = 'jw06368055001*'
+    gratings = ['PRISM']
+
+[capers_egs_p6]
+    field = 'egs'
+    data_subdir='6368'
+    files = 'jw06368065001*'
+    gratings = ['PRISM']
+
+[capers_egs_p7]
+    field = 'egs'
+    data_subdir='6368'
+    files = 'jw06368061001*'
+    gratings = ['PRISM']
+
 [rubies_uds_p11]
     field = 'uds'
     data_subdir='4233'
@@ -125,6 +167,46 @@
     files = 'jw04233004003*'
     gratings = ['PRISM', 'G395M']
 
+[rubies_egs_p51]
+    field = 'egs'
+    data_subdir='4233'
+    files = 'jw04233005001*'
+    gratings = ['PRISM', 'G395M']
+
+[rubies_egs_p52]
+    field = 'egs'
+    data_subdir='4233'
+    files = 'jw04233005002*'
+    gratings = ['PRISM', 'G395M']
+
+[rubies_egs_p53]
+    field = 'egs'
+    data_subdir='4233'
+    files = 'jw04233005003*'
+    gratings = ['PRISM', 'G395M']
+
+[rubies_egs_p61]
+    field = 'egs'
+    data_subdir='4233'
+    files = 'jw04233006001*'
+    gratings = ['PRISM', 'G395M']
+
+[rubies_egs_p62]
+    field = 'egs'
+    data_subdir='4233'
+    files = 'jw04233006002*'
+    gratings = ['PRISM', 'G395M']
+
+[rubies_egs_p63]
+    field = 'egs'
+    data_subdir='4233'
+    files = 'jw04233006003*'
+    gratings = ['PRISM', 'G395M']
+
+
+
+
+
 [ember_uds_p1]
     field = 'uds'
     data_subdir='7076'
@@ -149,6 +231,41 @@
     files = 'jw07076001001*'
     gratings = ['PRISM', 'G395M']
 
+[ember_cosmos_p3]
+    field = 'cosmos'
+    data_subdir = '7076'
+    files = 'jw07076003001*'
+    gratings = ['PRISM', 'G395M']
+
+[ember_cosmos_p4]
+    field = 'cosmos'
+    data_subdir = '7076'
+    files = 'jw07076004001*'
+    gratings = ['PRISM', 'G395M']
+
+[ember_cosmos_p5]
+    field = 'cosmos'
+    data_subdir = '7076'
+    files = 'jw07076005001*'
+    gratings = ['PRISM', 'G395M']
+
+[ember_cosmos_p12]
+    field = 'cosmos'
+    data_subdir = '7076'
+    files = 'jw07076012001*'
+    gratings = ['PRISM', 'G395M']
+
+[ember_cosmos_p14]
+    field = 'cosmos'
+    data_subdir = '7076'
+    files = 'jw07076014001*'
+    gratings = ['PRISM', 'G395M']
+
+[ember_cosmos_p13]
+    field = 'cosmos'
+    data_subdir = '7076'
+    files = 'jw07076013001*'
+    gratings = ['PRISM', 'G395M']
 
 
 
@@ -188,4 +305,28 @@
     field = 'cosmos'
     data_subdir = '5224'
     files = 'jw05224005001*'
+    gratings = ['PRISM']
+
+[ceers_ddt]
+    field = 'egs'
+    data_subdir = '2750'
+    files = 'jw02750002001*'
+    gratings = ['PRISM']
+
+[zenith_p9]
+    field = 'cosmos'
+    data_subdir = '7417'
+    files = 'jw07417009001*'
+    gratings = ['PRISM']
+
+[zenith_p16]
+    field = 'cosmos'
+    data_subdir = '7417'
+    files = 'jw07417016001*'
+    gratings = ['PRISM']
+
+[zenith_p17]
+    field = 'cosmos'
+    data_subdir = '7417'
+    files = 'jw07417017001*'
     gratings = ['PRISM']
