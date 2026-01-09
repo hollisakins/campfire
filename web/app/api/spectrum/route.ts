@@ -9,6 +9,10 @@ export interface SpectrumData {
   snr_2d: number[][];
   n_spatial: number;
   n_wave: number;
+  // Cross-dispersion profile data
+  profile: number[];       // Collapsed spatial profile (normalized)
+  profile_fit: number[];   // Optimal extraction weight (normalized)
+  profile_pix: number[];   // Pixel positions (centered on source)
 }
 
 /**
