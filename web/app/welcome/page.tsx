@@ -17,6 +17,7 @@ import {
 interface PendingInvite {
   id: number;
   email: string;
+  full_name: string | null;
   program_ids: number[];
   is_admin: boolean;
   can_comment: boolean;
@@ -77,8 +78,8 @@ export default function WelcomePage() {
       setPrograms(data.programs || []);
       setUserEmail(data.invite.email);
 
-      // Set default name from email
-      setFullName(data.invite.email.split('@')[0] || '');
+      // Set name from invite if available, otherwise extract from email
+      setFullName(data.invite.full_name || data.invite.email.split('@')[0] || '');
 
       setLoading(false);
     } catch (err) {
