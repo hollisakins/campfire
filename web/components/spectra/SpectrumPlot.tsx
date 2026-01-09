@@ -297,13 +297,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         title: { text: 'Wavelength (μm)' },
         gridcolor: '#e2e8f0',
         zerolinecolor: '#e2e8f0',
-        domain: [0, 0.88],
+        domain: [0, 0.90],
       },
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
         gridcolor: '#e2e8f0',
         zerolinecolor: '#e2e8f0',
-        domain: [0.90, 0.98],
+        domain: [0.92, 1.0],
         anchor: 'y3' as const,
         showticklabels: false,
         range: [-0.3, 1.2],
@@ -340,7 +340,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
       hovermode: 'x unified' as const,
       showlegend: true,
       legend: {
-        x: 0.94,
+        x: 0.96,
         xanchor: 'center' as const,
         y: 0.75,
         yanchor: 'top' as const,
