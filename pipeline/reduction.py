@@ -43,6 +43,11 @@ DEFAULT_STAGE1_CONFIG = {
     'mask_science_regions': True, 
     'cleanup_uncal': True, 
     'cleanup_rateints': True, 
+    'subtract_background': True,
+    'box_size': 8,
+    'sigma_clip': True,
+    'bkg_estimator': 'median',
+    'plot': True,
 }
 
 DEFAULT_STAGE2_CONFIG = {
@@ -109,7 +114,7 @@ class MetaFile:
     @property
     def unique_source_ids(self):
         ids = np.unique(self.shutter_table['source_id'][self.shutter_table['msa_metadata_id']==self.msametid])
-        return ids[ids!=0]
+        return ids[ids>0]
     
 
     def filter_by_source_id(self, 
@@ -523,6 +528,204 @@ def flag_pixels_for_shutter(input_model, shutter_row, shutter_col, shutter_quadr
     return result
 
 
+def mask_slits(input_model, mask):
+    """
+    Flag pixels within science regions.
+
+    Find pixels located within MOS or fixed slit footprints
+    and flag them in the mask, so that they do not get used.
+
+    Adapted from jwst.clean_flicker_noise.clean_flicker_noise 
+    to extend the masks to cover the full traces
+
+    Parameters
+    ----------
+    input_model : `~jwst.datamodels.JwstDataModel`
+        Science data model.
+
+    mask : array-like of bool
+        2D input mask that will be updated. True indicates background
+        pixels to be used. Slit regions will be set to False.
+
+    Returns
+    -------
+    mask : array-like of bool
+        2D output mask with additional flags for slit pixels
+    """
+    from gwcs.utils import _toindex
+    from jwst.assign_wcs import AssignWcsStep, nirspec
+
+    # Get the slits from the WCS object
+    slits = input_model.meta.wcs.get_transform("gwa", "slit_frame").slits
+
+    # Loop over the slits, marking all the pixels within each bounding
+    # box as False (do not use) in the mask.
+    match input_model.meta.instrument.grating:
+        case 'PRISM':
+            dxlo, dxhi = 10, 25
+        case 'G395M': 
+            dxlo, dxhi = 10, 120
+        case _: 
+            raise NotImplementedError
+
+    for slit in slits:
+        slit_wcs = nirspec.nrs_wcs_set_input(input_model, slit.name)
+        xlo, xhi = _toindex(slit_wcs.bounding_box[0])
+        ylo, yhi = _toindex(slit_wcs.bounding_box[1])
+        xlo = np.max([0, xlo-dxlo])
+        xhi = np.min([2048, xhi+dxhi])
+        ylo += 3
+        yhi -= 3
+        mask[..., ylo:yhi, xlo:xhi] = False
+
+    return mask
+
+# import jwst
+# jwst.clean_flicker_noise.clean_flicker_noise.mask_slits = mask_slits
+
+def subtract_background_from_rate_file(
+        rate_file: str,
+        box_size: int = 8,
+        sigma_clip: bool = True,
+        bkg_estimator: str = 'median',
+        plot: bool = True,
+        save_backup: bool = False,
+        pictureframe_dir: str = None,
+    ):
+    from stdatamodels import util as stutil
+    from jwst.datamodels import ImageModel
+    from jwst.clean_flicker_noise.clean_flicker_noise import _make_processed_rate_image
+    from astropy.stats import median_absolute_deviation
+
+    with ImageModel(rate_file) as model:
+        
+        for entry in model.history:
+            if 'Subtracted pedestal, rescaled variance' in entry['description']:
+                log(f'Variance rescaling already done for {os.path.basename(rate_file)}, skipping...')
+                return
+
+        log(f'Subtracting background and rescaling variance for {os.path.basename(rate_file)}')
+        processed_model = _make_processed_rate_image(model, single_mask=True, input_dir=os.path.dirname(rate_file), exp_type="NRS_MSASPEC", mask_science_regions=True, flat=None)
+        
+        mask_file = rate_file.replace('_rate.fits','_mask.fits')
+        if not os.path.exists(mask_file): 
+            raise FileNotFoundError("No mask file found!")
+        log(f'Using existing mask {os.path.basename(mask_file)}')
+        mask = np.array(fits.getdata(mask_file,ext=1),dtype=bool)
+
+        new_mask = ~mask_slits(processed_model, mask)
+        new_mask |= model.dq>0
+
+
+        detector = 'nrs2' 
+        if 'nrs1' in rate_file:
+            detector = 'nrs1'
+        
+        if pictureframe_dir:
+            log(f'Subtracting "picture frame" template files')
+            if detector == 'nrs1':
+                pictureframe_file = os.path.join(pictureframe_dir,'jwst_nirspec_pictureframe_0002.fits')
+            else:
+                pictureframe_file = os.path.join(pictureframe_dir,'jwst_nirspec_pictureframe_0001.fits')
+
+            pictureframe_template = fits.getdata(pictureframe_file)
+            
+            # rescale the picture frame template so that its ~close to the data median
+            pictureframe_template *= np.nanmedian(model.data[~new_mask])
+
+            coeffs = np.linspace(0.5, 1.5, 100)
+            var = np.zeros_like(coeffs)
+            for i,c in enumerate(coeffs):
+                sub = model.data - c*pictureframe_template
+                sub[new_mask] = np.nan
+                sigma_mad = median_absolute_deviation(sub, ignore_nan=True)
+                var[i] = sigma_mad**2
+
+            bkg2d = pictureframe_template * coeffs[np.argmin(var)]
+        else:
+            bkg2d = np.zeros_like(model.data)
+
+
+        from photutils.background import Background2D, MedianBackground
+        from astropy.stats import SigmaClip
+        match bkg_estimator:
+            case 'median': 
+                bkg_est = MedianBackground()
+            case _:
+                bkg_est = None
+        if sigma_clip: 
+            sclip = SigmaClip(sigma=3.0, maxiters=5)
+        else:
+            sclip = None
+
+        bkg = Background2D(
+            model.data-bkg2d,
+            box_size=box_size,
+            filter_size=(3,3),
+            mask=new_mask,
+            sigma_clip=sclip,
+            bkg_estimator=bkg_est,
+        )
+
+        bkg2d += bkg.background
+
+        rate_masked = model.data - bkg2d
+        rate_masked[new_mask] = np.nan
+
+        col = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
+        rate_masked = rate_masked - col
+
+        full_row_masked = np.sum(np.isfinite(rate_masked),axis=1)==0
+        rate_masked[full_row_masked,:] = np.nanmedian(rate_masked) 
+        row = np.nanmedian(rate_masked, axis=1)[:,np.newaxis]
+
+        rate_new = model.data - bkg2d - col - row
+
+        if plot:
+            from astropy.visualization import ImageNormalize, ZScaleInterval
+            norm = ImageNormalize(model.data[~new_mask], interval=ZScaleInterval())
+            fig, ax = plt.subplots(2,3,figsize=(8,6),sharex=True,sharey=True)
+            ax[0,0].imshow(model.data, norm=norm)
+            ax[0,0].set_title('Raw rate file')
+            ax[0,1].imshow(bkg2d, norm=norm)
+            if pictureframe_dir:
+                ax[0,1].set_title('Picture frame (+2D bkg model)')
+            else:
+                ax[0,1].set_title('Modeled 2D background')
+            ax[0,2].imshow(model.data-bkg2d, norm=norm)
+            ax[0,2].set_title('Raw - 2D')
+            ax[1,0].imshow(np.zeros_like(model.data)+col, norm=norm)
+            ax[1,0].set_title('Column 1/f')
+            ax[1,1].imshow(np.zeros_like(model.data)+row, norm=norm)
+            ax[1,1].set_title('Row 1/f')
+            ax[1,2].imshow(model.data-bkg2d-col-row, norm=norm)
+            ax[1,2].set_title('Final (raw-2D-col-row)')
+            plot_file = rate_file.replace('_rate.fits','_bkg.pdf')
+            log(f'Saving to {plot_file}')
+            plt.savefig(plot_file)
+            plt.close()
+
+        model.data = rate_new
+
+        nsci = model.data / np.sqrt(model.var_rnoise)
+        from astropy.stats import sigma_clipped_stats
+        rms = sigma_clipped_stats(nsci[~new_mask])[2]
+        log(f'Scaling up VAR_RNOISE by {rms**2:.2f}')
+        model.var_rnoise = model.var_rnoise * rms**2
+
+
+        log(f"Saving to {os.path.basename(rate_file)}")
+        time = datetime.now()
+        stepdescription = f"Subtracted pedestal, rescaled variance {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        substr = stutil.create_history_entry(stepdescription)
+        model.history.append(substr)
+
+        if save_backup:
+            shutil.copy2(rate_file, rate_file.replace('_rate.fits', '_rate_before_bkgsub.fits'))
+
+        model.save(rate_file)
+
+
             
 def run_stage1_single_uncal(
         uncal_file, 
@@ -547,7 +750,8 @@ def run_stage1_single_uncal(
         steps = {
                 'clean_flicker_noise' :{
                     'skip': not do_clean_flicker_noise,
-                    'mask_science_regions':mask_science_regions
+                    'mask_science_regions':mask_science_regions,
+                    'save_mask': True,
                 },
                 'jump': {
                     'skip': False, # testing, should be False normally
@@ -690,9 +894,26 @@ def run_stage2a_single_rate(
                 },
                 'resample_spec':{
                     'skip': True,
-                }
-                # 'flat_field':{'override_fflat':'modified_jwst_nirspec_fflat_0163.fits'}
-                }
+                },
+                # for extended wavelength range testing
+                # 'pathloss':{
+                #     'skip':True,
+                # },
+                # 'flat_field':{
+                #     'skip': True,
+                #     #'override_fflat':'modified_jwst_nirspec_fflat_0163.fits'
+                # },
+                # 'photom':{
+                #     'skip': True,
+                # },
+                # 'wavecorr':{
+                #     'skip':True,
+                # },
+                # 'assign_wcs':{
+                #     'skip':False,
+                #     'override_wavelengthrange': '/Users/hba423/simmons/crds/references/jwst/nirspec/jwst_nirspec_wavelengthrange_0008_ext5p5.asdf',
+                # },
+            }
             
             log(f"Running Spec2Pipeline for {prod_name}")
             try:
@@ -886,15 +1107,16 @@ def resample_single_exposure(
         from jwst.datamodels import MultiSlitModel, ImageModel
         from jwst.pixel_replace import PixelReplaceStep
         from jwst.resample import ResampleSpecStep
-        from jwst.pathloss import PathLossStep
         pixel_replace = PixelReplaceStep()
         resample_spec = ResampleSpecStep() # do these need args? 
-        pathloss = PathLossStep()
 
         model = MultiSlitModel(cal_file)
         
         resampled = model.copy()
-        resampled = pathloss.call(resampled, inverse=True)
+        if resampled.meta.cal_step.pathloss == 'COMPLETE':
+            from jwst.pathloss import PathLossStep
+            pathloss = PathLossStep()
+            resampled = pathloss.call(resampled, inverse=True)
         resampled = pixel_replace.call(resampled)
         resampled = resample_spec.call(resampled)
         s2d_file_out = cal_file.replace('_cal.fits', '_s2d.fits')
@@ -1191,9 +1413,17 @@ def run_stage2b_single_slitlet(
         elif len(cal_files) in [2, 3, 5]:
             # Load cal files as MultiSlitModels, but undo any pathloss corrections
             models = []
+            do_pathloss = []
             for cal_file in cal_files:
                 model = MultiSlitModel(cal_file)
-                inverted = pathloss.call(model, inverse=True)
+                if 'COMPLETE' in model.meta.cal_step.pathloss.upper():
+                    log(f'Inverting the pathloss for {os.path.basename(cal_file)}')
+                    inverted = pathloss.call(model, inverse=True)
+                    do_pathloss.append(True)
+                else:
+                    inverted = model
+                    do_pathloss.append(False)
+                    
                 models.append(inverted)
 
             shapes = [model[0].data.shape for model in models]
@@ -1211,6 +1441,7 @@ def run_stage2b_single_slitlet(
             for i in range(len(cal_files)):
                 science = models[i][0]
 
+
                 bkg = [mod[0] for j,mod in enumerate(models) if j != i]
                 
                 if bkg_overrides is not None:
@@ -1219,7 +1450,7 @@ def run_stage2b_single_slitlet(
                         nods_to_use = bkg_overrides[str(nods[i])]
                         print(nods_to_use)
                         log(f'{os.path.basename(cal_files[i])}: Only using nods {nods_to_use} for bkg subtraction for nod {nods[i]}')
-                        bkg = [b for n,b in zip(nods,bkg) if n in nods_to_use]
+                        bkg = [b[0] for n,b in zip(nods,models) if n in nods_to_use]
                 
                 bkgsub = bkg_subtract.call(science, bkg)
 
@@ -1241,7 +1472,8 @@ def run_stage2b_single_slitlet(
                     result = unpad_model(result, padding_info[i])
 
                 # apply the pathloss correction again
-                result = pathloss.call(result)
+                if do_pathloss[i]:
+                    result = pathloss.call(result)
 
 
 
@@ -1461,6 +1693,7 @@ def opt_ext_single_source(
       plot_profiles = False,
       plot_optext = False,
       overwrite = False,
+      version = 'v0.1',
     ):
     """
     Runs an optimal extraction routine and saves an msaexp-style "_spec.fits" file (combining 2D and 1D) for a single object.
@@ -1492,7 +1725,15 @@ def opt_ext_single_source(
                     'S_MSBSUB','S_MSAFLG','S_NSCLEN','S_OUTLIR','S_PTHLOS','S_PHOTOM','S_PXREPL','S_RAMP',
                     'S_REFPIX','S_RESAMP','S_SATURA','S_SRCTYP','S_SUPERB','S_WAVCOR','NDRIZ','RESWHT',
                     'PIXFRAC','PXSCLRT']:
-        ph[keyword] = (x1d['PRIMARY'].header[keyword], x1d['PRIMARY'].header.comments[keyword])
+        try:
+            ph[keyword] = (x1d['PRIMARY'].header[keyword], x1d['PRIMARY'].header.comments[keyword])
+        except KeyError:
+            log(f'Keyword {keyword} not found')
+            continue
+        
+    ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
+    ph['CMPFRVER'] = (version, 'Version of CAMPFIRE reduction')
+
     primary = fits.PrimaryHDU(header=ph)
 
     # Optimal extraction
@@ -1735,6 +1976,7 @@ class ReductionEngine:
         paths = self.config.get('paths', {})
         self.data_dir = paths.get('data_dir')
         self.products_dir = paths.get('products_dir')
+        self.pictureframe_dir = paths.get('pictureframe_dir')
         
         # Get version from config and substitute in paths
         # pipeline_config = self.config.get('pipeline', {})
@@ -1745,6 +1987,7 @@ class ReductionEngine:
         # Create base directories if they don't exist
         os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(self.products_dir, exist_ok=True)
+        os.makedirs(self.pictureframe_dir, exist_ok=True)
         
         log("Initialized ReductionEngine")
         
@@ -1791,6 +2034,18 @@ class ReductionEngine:
             log(f'Processing {len(uncal_files)} uncal files')
             for uncal_file in uncal_files:
                 run_stage1_single_uncal(uncal_file, obs.workspace_dir, **kwargs)
+
+                if config['subtract_background'] and config['do_clean_flicker_noise']:
+                    rate_file = uncal_file.replace('_uncal.fits','_rate.fits')
+                    subtract_background_from_rate_file(
+                        os.path.join(obs.workspace_dir, rate_file), 
+                        box_size = config.get('box_size',8), 
+                        sigma_clip = config.get('sigma_clip',True),
+                        bkg_estimator = config.get('bkg_estimator','median'),
+                        plot = config.get('plot', True),
+                        save_backup = False,
+                        pictureframe_dir = self.pictureframe_dir,
+                    )
             
         else:
             log(f'Multiprocessing {len(uncal_files)} uncal files across {n_processes} workers')
@@ -1804,7 +2059,20 @@ class ReductionEngine:
             )
             with Pool(processes=n_processes) as pool:
                 pool.map(process_func, uncal_files)
-        
+
+            if config['subtract_background'] and config['do_clean_flicker_noise']:
+                rate_files = [os.path.join(obs.workspace_dir, f.replace('_uncal.fits','_rate.fits')) for f in uncal_files]
+                process_func = partial(
+                    subtract_background_from_rate_file,
+                    box_size = config.get('box_size',8), 
+                    sigma_clip = config.get('sigma_clip',True),
+                    bkg_estimator = config.get('bkg_estimator','median'),
+                    plot = config.get('plot', True),
+                    save_backup = False,
+                    pictureframe_dir = self.pictureframe_dir,
+                )
+                with Pool(processes=n_processes) as pool:
+                    pool.map(process_func, rate_files)
 
 
     def run_stage2a(
@@ -2009,6 +2277,7 @@ class ReductionEngine:
         overwrite=False,
     ):    
 
+        version = self.config.get('pipeline')['version']
         config = self.config.get('stage3', DEFAULT_STAGE3_CONFIG)
         
         bkg_subtraction_method = config.get('method', DEFAULT_STAGE3_CONFIG['method']) # nodded or local
@@ -2064,7 +2333,8 @@ class ReductionEngine:
                     # if we're combining all dithers (or, if there is only one dither) proceed from here
                     product_name = f"{obs.name}_{filter_grating}_{source_id}"
                     if len(target_files)==0: 
-                        raise Exception("This shouldn't happen!")
+                        continue
+                        #raise Exception("This shouldn't happen!")
                     
                     # TODO handle overwrite?
                     if os.path.exists(obs.workspace_dir + product_name + "_spec.fits") and not overwrite:
@@ -2085,13 +2355,13 @@ class ReductionEngine:
                 pool.starmap(worker, tasks)
     
             tasks2 = [(task[2], task[1]) for task in tasks]
-            worker = partial(opt_ext_single_source, plot_profiles=plot_profiles, plot_optext=plot_optext)
+            worker = partial(opt_ext_single_source, plot_profiles=plot_profiles, plot_optext=plot_optext, version=version)
             with Pool(n_processes) as pool:
                 pool.starmap(worker, tasks2)
         else:
             for target_file_names, workspace_dir, product_name in tasks:
                 run_stage3_single_source(target_file_names, workspace_dir, product_name, **kwargs)
-                opt_ext_single_source(product_name, workspace_dir, plot_profiles=plot_profiles, plot_optext=plot_optext)
+                opt_ext_single_source(product_name, workspace_dir, plot_profiles=plot_profiles, plot_optext=plot_optext, version=version)
 
 
     

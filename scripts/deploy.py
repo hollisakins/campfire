@@ -6,6 +6,7 @@ Deploys reduced NIRSpec spectra, RGB images, and SED plots to Supabase (metadata
 
 Usage:
     # Full deployment (spectra + RGB images)
+    # Version is read from CMPFRVER header in FITS files (defaults to v0.1 if missing)
     python scripts/deploy.py --obs cosmos_ddt
 
     # Deploy specific source IDs only
@@ -28,7 +29,6 @@ Usage:
 
     # Other options
     python scripts/deploy.py --obs cosmos_ddt --dry-run
-    python scripts/deploy.py --obs ember_uds_p4 --version v0.2
     python scripts/deploy.py --obs cosmos_ddt --force-overwrite  # Reset inspection data
 
 Behavior:
@@ -45,9 +45,27 @@ import json
 import sys
 from pathlib import Path
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import NamedTuple
 
 import numpy as np
 from astropy.io import fits
+
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    # Fallback: simple progress indicator
+    def tqdm(iterable=None, total=None, desc=None, unit=None):
+        if iterable is not None:
+            return iterable
+        # For context manager usage, return a dummy class
+        class DummyProgress:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def update(self, n=1): pass
+        return DummyProgress()
 
 # Third-party imports for cloud services
 try:
@@ -424,6 +442,9 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
                     redshift_auto = float(val)
                     break
 
+        # Get reduction version from FITS header
+        reduction_version = primary.get('CMPFRVER', 'v0.1')
+
         return {
             # From filename parsing
             'object_id': object_id,
@@ -437,6 +458,7 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
             'date_obs': primary.get('DATE-OBS', ''),
             'exposure_time': float(primary.get('EFFEXPTM', 0)),
             'cal_ver': primary.get('CAL_VER', ''),
+            'reduction_version': reduction_version,
 
             # From SCI header
             'ra': float(sci.get('SRCRA', 0)),
@@ -673,15 +695,14 @@ def upsert_spectrum(
     supabase: 'Client',
     object_id: str,
     metadata: dict,
-    fits_r2_path: str,
-    version: str
+    fits_r2_path: str
 ) -> None:
     """Upsert a spectrum record."""
     data = {
         'object_id': object_id,
         'grating': metadata['grating'],
         'fits_path': fits_r2_path,
-        'reduction_version': version,
+        'reduction_version': metadata['reduction_version'],
         'signal_to_noise': metadata['signal_to_noise'],
     }
 
@@ -694,6 +715,182 @@ def upsert_spectrum(
     else:
         # Insert new
         supabase.table('spectra').insert(data).execute()
+
+
+def batch_upsert_objects(
+    supabase: 'Client',
+    metadata_list: list[dict],
+    obs_config: dict,
+    force_overwrite: bool,
+    batch_size: int = 500
+) -> int:
+    """
+    Upsert objects in batches for improved performance.
+
+    Args:
+        supabase: Supabase client
+        metadata_list: List of metadata dicts from FITS files
+        obs_config: Observation configuration
+        force_overwrite: If True, reset inspection data
+        batch_size: Records per batch (default: 500)
+
+    Returns:
+        Number of objects upserted
+    """
+    # Deduplicate by object_id (only one record per object)
+    seen = set()
+    unique_metadata = []
+    for m in metadata_list:
+        if m['object_id'] not in seen:
+            seen.add(m['object_id'])
+            unique_metadata.append(m)
+
+    if not unique_metadata:
+        return 0
+
+    # Get existing object IDs
+    object_ids = [m['object_id'] for m in unique_metadata]
+    existing = set(check_existing_objects(supabase, object_ids))
+
+    # Prepare records for insert vs update
+    new_records = []
+    update_records = []
+
+    for m in unique_metadata:
+        object_id = m['object_id']
+        is_existing = object_id in existing
+
+        if is_existing and not force_overwrite:
+            # UPDATE existing object - only pipeline fields
+            data = {
+                'object_id': object_id,  # Needed for on_conflict
+                'program_id': m['program_id'],
+                'field': obs_config.get('field', ''),
+                'ra': m['ra'],
+                'dec': m['dec'],
+                'redshift_auto': m.get('redshift_auto'),
+            }
+            update_records.append(data)
+        elif is_existing and force_overwrite:
+            # FORCE UPDATE - reset all fields
+            data = {
+                'object_id': object_id,
+                'program_id': m['program_id'],
+                'field': obs_config.get('field', ''),
+                'ra': m['ra'],
+                'dec': m['dec'],
+                'redshift_auto': m.get('redshift_auto'),
+                'redshift_inspected': None,
+                'redshift_quality': 0,
+                'spectral_features': 0,
+                'object_flags': 0,
+                'dq_flags': 0,
+                'last_inspected_at': None,
+                'last_inspected_by': None,
+            }
+            update_records.append(data)
+        else:
+            # INSERT new object
+            data = {
+                'object_id': object_id,
+                'program_id': m['program_id'],
+                'field': obs_config.get('field', ''),
+                'ra': m['ra'],
+                'dec': m['dec'],
+                'redshift_auto': m.get('redshift_auto'),
+                'redshift_inspected': None,
+                'redshift_quality': 0,
+                'spectral_features': 0,
+                'object_flags': 0,
+                'dq_flags': 0,
+                'last_inspected_at': None,
+                'last_inspected_by': None,
+            }
+            new_records.append(data)
+
+    # Batch insert new records
+    for i in range(0, len(new_records), batch_size):
+        batch = new_records[i:i + batch_size]
+        supabase.table('objects').insert(batch).execute()
+
+    # Batch upsert updates (uses on_conflict to update existing)
+    for i in range(0, len(update_records), batch_size):
+        batch = update_records[i:i + batch_size]
+        supabase.table('objects').upsert(batch, on_conflict='object_id').execute()
+
+    return len(unique_metadata)
+
+
+def batch_upsert_spectra(
+    supabase: 'Client',
+    metadata_list: list[dict],
+    obs_name: str,
+    batch_size: int = 500
+) -> int:
+    """
+    Upsert spectra in batches for improved performance.
+
+    Args:
+        supabase: Supabase client
+        metadata_list: List of metadata dicts from FITS files
+        obs_name: Observation name (for building R2 paths)
+        batch_size: Records per batch (default: 500)
+
+    Returns:
+        Number of spectra upserted
+    """
+    if not metadata_list:
+        return 0
+
+    # Build spectrum records with composite keys for lookup
+    spectrum_records = []
+    for m in metadata_list:
+        fits_r2_key = f"spectra/{obs_name}/{m['fits_filename']}"
+        data = {
+            'object_id': m['object_id'],
+            'grating': m['grating'],
+            'fits_path': fits_r2_key,
+            'reduction_version': m['reduction_version'],
+            'signal_to_noise': m['signal_to_noise'],
+        }
+        spectrum_records.append(data)
+
+    # Get all existing spectra for these object_ids to determine insert vs update
+    object_ids = list(set(r['object_id'] for r in spectrum_records))
+
+    # Fetch existing spectra in batches (to handle large queries)
+    existing_map = {}  # (object_id, grating) -> id
+    for i in range(0, len(object_ids), batch_size):
+        batch_ids = object_ids[i:i + batch_size]
+        existing = supabase.table('spectra').select('id,object_id,grating').in_('object_id', batch_ids).execute()
+        for row in existing.data:
+            key = (row['object_id'], row['grating'])
+            existing_map[key] = row['id']
+
+    # Split into new vs existing records
+    new_records = []
+    update_records = []
+
+    for record in spectrum_records:
+        key = (record['object_id'], record['grating'])
+        if key in existing_map:
+            # Add id for update
+            record_with_id = {**record, 'id': existing_map[key]}
+            update_records.append(record_with_id)
+        else:
+            new_records.append(record)
+
+    # Batch insert new records
+    for i in range(0, len(new_records), batch_size):
+        batch = new_records[i:i + batch_size]
+        supabase.table('spectra').insert(batch).execute()
+
+    # Batch update existing records (upsert with id as conflict key)
+    for i in range(0, len(update_records), batch_size):
+        batch = update_records[i:i + batch_size]
+        supabase.table('spectra').upsert(batch, on_conflict='id').execute()
+
+    return len(spectrum_records)
 
 
 # === R2 Integration ===
@@ -727,6 +924,62 @@ def upload_to_r2(r2_client, bucket: str, local_path: Path, r2_key: str, content_
         r2_key,
         ExtraArgs=extra_args if extra_args else None
     )
+
+
+class UploadTask(NamedTuple):
+    """Represents a file to be uploaded to R2."""
+    local_path: Path
+    r2_key: str
+    content_type: str
+
+
+def upload_files_parallel(
+    r2_client,
+    bucket: str,
+    tasks: list[UploadTask],
+    max_workers: int = 12,
+    desc: str = "Uploading"
+) -> tuple[int, int, list[str]]:
+    """
+    Upload multiple files to R2 in parallel with progress bar.
+
+    Args:
+        r2_client: boto3 S3 client configured for R2
+        bucket: R2 bucket name
+        tasks: List of UploadTask namedtuples
+        max_workers: Maximum parallel upload threads (default: 12)
+        desc: Description for progress bar
+
+    Returns:
+        Tuple of (success_count, failure_count, failed_file_messages)
+    """
+    if not tasks:
+        return 0, 0, []
+
+    success, failed = 0, 0
+    failed_files = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_task = {
+            executor.submit(
+                upload_to_r2, r2_client, bucket,
+                task.local_path, task.r2_key, task.content_type
+            ): task
+            for task in tasks
+        }
+
+        with tqdm(total=len(tasks), desc=desc, unit="file") as pbar:
+            for future in as_completed(future_to_task):
+                task = future_to_task[future]
+                try:
+                    future.result()
+                    success += 1
+                except Exception as e:
+                    failed += 1
+                    failed_files.append(f"{task.local_path.name}: {e}")
+                pbar.update(1)
+
+    return success, failed, failed_files
 
 
 def deploy_rgb_images(
@@ -807,19 +1060,33 @@ def deploy_rgb_images(
     r2_client = get_r2_client(config)
     bucket = config['r2']['bucket_name']
 
-    # Upload RGB images
-    print("Uploading RGB images...")
-    for i, rgb_path in enumerate(rgb_files, 1):
-        r2_key = f"rgb/{obs_name}/{rgb_path.name}"
-        print(f"  [{i}/{len(rgb_files)}] {rgb_path.name}")
+    # Build upload tasks
+    upload_tasks = [
+        UploadTask(
+            local_path=rgb_path,
+            r2_key=f"rgb/{obs_name}/{rgb_path.name}",
+            content_type='image/png'
+        )
+        for rgb_path in rgb_files
+    ]
 
-        try:
-            upload_to_r2(r2_client, bucket, rgb_path, r2_key, 'image/png')
-        except Exception as e:
-            print(f"    ⚠️  Failed to upload: {e}")
+    # Upload RGB images in parallel
+    print("Uploading RGB images...")
+    success, failed, failed_files = upload_files_parallel(
+        r2_client, bucket, upload_tasks,
+        max_workers=12, desc="RGB images"
+    )
+
+    # Report failures
+    if failed_files:
+        print(f"\n⚠️  {failed} uploads failed:")
+        for msg in failed_files[:5]:
+            print(f"    - {msg}")
+        if len(failed_files) > 5:
+            print(f"    ... and {len(failed_files) - 5} more")
 
     print()
-    print(f"✓ Successfully uploaded {len(rgb_files)} RGB images to rgb/{obs_name}/")
+    print(f"✓ Successfully uploaded {success}/{len(rgb_files)} RGB images to rgb/{obs_name}/")
 
 
 def deploy_sed_plots(
@@ -900,41 +1167,61 @@ def deploy_sed_plots(
     r2_client = get_r2_client(config)
     bucket = config['r2']['bucket_name']
 
-    # Upload SED plot PDFs
-    print("Uploading SED plots...")
-    for i, sed_path in enumerate(sed_files, 1):
-        r2_key = f"sed/{obs_name}/{sed_path.name}"
-        print(f"  [{i}/{len(sed_files)}] {sed_path.name}")
+    # Build upload tasks
+    upload_tasks = [
+        UploadTask(
+            local_path=sed_path,
+            r2_key=f"sed/{obs_name}/{sed_path.name}",
+            content_type='application/pdf'
+        )
+        for sed_path in sed_files
+    ]
 
-        try:
-            upload_to_r2(r2_client, bucket, sed_path, r2_key, 'application/pdf')
-        except Exception as e:
-            print(f"    ⚠️  Failed to upload: {e}")
+    # Upload SED plots in parallel
+    print("Uploading SED plots...")
+    success, failed, failed_files = upload_files_parallel(
+        r2_client, bucket, upload_tasks,
+        max_workers=12, desc="SED plots"
+    )
+
+    # Report failures
+    if failed_files:
+        print(f"\n⚠️  {failed} uploads failed:")
+        for msg in failed_files[:5]:
+            print(f"    - {msg}")
+        if len(failed_files) > 5:
+            print(f"    ... and {len(failed_files) - 5} more")
 
     print()
-    print(f"✓ Successfully uploaded {len(sed_files)} SED plots to sed/{obs_name}/")
+    print(f"✓ Successfully uploaded {success}/{len(sed_files)} SED plots to sed/{obs_name}/")
 
 
 # === Main Deployment Logic ===
 
 def deploy_observation(
     obs_name: str,
-    version: str,
     dry_run: bool,
     supabase_only: bool,
     force_overwrite: bool,
     include_rgb: bool,
+    include_sed: bool,
     zfit_only: bool,
     project_root: Path,
-    source_ids: list[str] | None = None
+    source_ids: list[str] | None = None,
+    auto_approve: bool = False
 ) -> None:
     """
     Deploy an observation to Supabase and R2.
 
+    Version is read from CMPFRVER header in each FITS file.
+
     Args:
+        include_rgb: If True, include RGB images in deployment
+        include_sed: If True, include SED plot PDFs in deployment
         zfit_only: If True, only deploy zfit JSON files and update redshift_auto
-                   (skip FITS, spectrum JSON, and RGB uploads)
+                   (skip FITS, spectrum JSON, RGB, and SED uploads)
         source_ids: Optional list of source IDs to filter deployment to specific objects
+        auto_approve: If True, skip confirmation prompts (useful for scripting)
     """
     scripts_dir = project_root / 'scripts'
     pipeline_dir = project_root / 'pipeline'
@@ -956,7 +1243,6 @@ def deploy_observation(
     print(f"Deploying observation: {obs_name}")
     print(f"  Field: {obs_config.get('field', 'unknown')}")
     print(f"  Gratings: {obs_config.get('gratings', [])}")
-    print(f"  Version: {version}")
     print()
 
     # Discover FITS files
@@ -991,6 +1277,24 @@ def deploy_observation(
             print(f"Found {len(rgb_files)} RGB images")
         else:
             print(f"No RGB images found (skipping)")
+
+    # Discover SED plots (if including SED)
+    sed_files = []
+    if include_sed:
+        sed_files = discover_sed_plots(products_dir, obs_name)
+
+        # Filter by source IDs if specified
+        if source_ids and sed_files:
+            original_count = len(sed_files)
+            sed_files = filter_files_by_source_ids(sed_files, source_ids, obs_name)
+            if sed_files:
+                print(f"Found {original_count} SED plots, filtered to {len(sed_files)}")
+            else:
+                print(f"No SED plots found matching specified source IDs")
+        elif sed_files:
+            print(f"Found {len(sed_files)} SED plots")
+        else:
+            print(f"No SED plots found (skipping)")
 
     # Read metadata from all files
     print(f"Reading FITS metadata...")
@@ -1101,6 +1405,8 @@ def deploy_observation(
                     print(f"  - {len(zfit_data_map)} zfit JSON files (redshift fits + chi² curves)")
                 if rgb_files:
                     print(f"  - {len(rgb_files)} RGB images")
+                if sed_files:
+                    print(f"  - {len(sed_files)} SED plots")
             print()
         print("Would upsert to Supabase:")
         if not zfit_only:
@@ -1143,13 +1449,22 @@ def deploy_observation(
         print(f"  Found {len(existing)} existing objects")
         if force_overwrite:
             print("  ⚠️  FORCE OVERWRITE mode: inspection data will be RESET!")
-            response = input(f"  Are you sure you want to reset all inspection data? [y/N]: ")
+            if not auto_approve:
+                response = input(f"  Are you sure you want to reset all inspection data? [y/N]: ")
+                if response.lower() != 'y':
+                    print("Aborted.")
+                    sys.exit(0)
+            else:
+                print("  (auto-approved)")
         else:
             print("  (inspection data will be preserved)")
-            response = input(f"  Update pipeline data for existing objects? [y/N]: ")
-        if response.lower() != 'y':
-            print("Aborted.")
-            sys.exit(0)
+            if not auto_approve:
+                response = input(f"  Update pipeline data for existing objects? [y/N]: ")
+                if response.lower() != 'y':
+                    print("Aborted.")
+                    sys.exit(0)
+            else:
+                print("  (auto-approved)")
     else:
         print("  No existing objects found")
     print()
@@ -1167,76 +1482,100 @@ def deploy_observation(
             print(f"  ✓ {pid} ({program_name})")
         print()
 
-        # Process each spectrum
-        print("Processing spectra...")
-        upserted_objects = set()  # Track which objects we've already upserted
+        # === PHASE 1: Generate all JSON files ===
+        upload_tasks = []  # Collect all upload tasks
+        r2_prefix = f"spectra/{obs_name}"
 
-        for i, metadata in enumerate(all_metadata, 1):
-            fits_path = metadata['fits_path']
-            print(f"  [{i}/{len(all_metadata)}] {fits_path.name}")
+        if not supabase_only:
+            print("Generating JSON files...")
+            for metadata in tqdm(all_metadata, desc="Generating", unit="file"):
+                fits_path = metadata['fits_path']
+                spec_base = fits_path.stem.replace('_spec', '')
+                zfit_path = zfit_map.get(spec_base)
 
-            # R2 path (used in database even if not uploading)
-            r2_prefix = f"spectra/{obs_name}"
-            fits_r2_key = f"{r2_prefix}/{fits_path.name}"
-
-            # Check if zfit file exists for this spectrum
-            spec_base = fits_path.stem.replace('_spec', '')
-            zfit_path = zfit_map.get(spec_base)
-
-            # Generate and upload files to R2 (unless supabase_only)
-            if not supabase_only:
                 if zfit_only:
-                    # Zfit-only mode: only generate and upload zfit JSON
+                    # Zfit-only mode: only generate zfit JSON
                     if zfit_path:
                         zfit_json_path = generate_zfit_json(zfit_path, temp_dir)
-                        zfit_json_r2_key = f"{r2_prefix}/{zfit_json_path.name}"
-                        upload_to_r2(r2_client, bucket, zfit_json_path, zfit_json_r2_key, 'application/json')
+                        upload_tasks.append(UploadTask(
+                            local_path=zfit_json_path,
+                            r2_key=f"{r2_prefix}/{zfit_json_path.name}",
+                            content_type='application/json'
+                        ))
                 else:
-                    # Normal mode: upload FITS, spectrum JSON, and zfit JSON
-                    # Generate spectrum JSON (without zfit data)
-                    json_path = generate_spectrum_json(fits_path, temp_dir)
-                    json_r2_key = f"{r2_prefix}/{json_path.name}"
+                    # Normal mode: FITS, spectrum JSON, and zfit JSON
+                    # Add FITS file
+                    upload_tasks.append(UploadTask(
+                        local_path=fits_path,
+                        r2_key=f"{r2_prefix}/{fits_path.name}",
+                        content_type='application/fits'
+                    ))
 
-                    # Generate zfit JSON if available
+                    # Generate and add spectrum JSON
+                    json_path = generate_spectrum_json(fits_path, temp_dir)
+                    upload_tasks.append(UploadTask(
+                        local_path=json_path,
+                        r2_key=f"{r2_prefix}/{json_path.name}",
+                        content_type='application/json'
+                    ))
+
+                    # Generate and add zfit JSON if available
                     if zfit_path:
                         zfit_json_path = generate_zfit_json(zfit_path, temp_dir)
-                        zfit_json_r2_key = f"{r2_prefix}/{zfit_json_path.name}"
+                        upload_tasks.append(UploadTask(
+                            local_path=zfit_json_path,
+                            r2_key=f"{r2_prefix}/{zfit_json_path.name}",
+                            content_type='application/json'
+                        ))
 
-                    # Upload FITS and JSON files
-                    upload_to_r2(r2_client, bucket, fits_path, fits_r2_key, 'application/fits')
-                    upload_to_r2(r2_client, bucket, json_path, json_r2_key, 'application/json')
+            # Add RGB images to upload tasks
+            if rgb_files and not zfit_only:
+                for rgb_path in rgb_files:
+                    upload_tasks.append(UploadTask(
+                        local_path=rgb_path,
+                        r2_key=f"rgb/{obs_name}/{rgb_path.name}",
+                        content_type='image/png'
+                    ))
 
-                    # Upload zfit JSON if generated
-                    if zfit_path:
-                        upload_to_r2(r2_client, bucket, zfit_json_path, zfit_json_r2_key, 'application/json')
+            # Add SED plots to upload tasks
+            if sed_files and not zfit_only:
+                for sed_path in sed_files:
+                    upload_tasks.append(UploadTask(
+                        local_path=sed_path,
+                        r2_key=f"sed/{obs_name}/{sed_path.name}",
+                        content_type='application/pdf'
+                    ))
 
-            # Upsert object (only once per unique object_id)
-            object_id = metadata['object_id']
-            if object_id not in upserted_objects:
-                upsert_object(supabase, metadata, obs_config, force_overwrite)
-                upserted_objects.add(object_id)
+            print(f"Prepared {len(upload_tasks)} files for upload")
+            print()
 
-            # Upsert spectrum (uses string object_id directly)
-            upsert_spectrum(
-                supabase,
-                object_id,
-                metadata,
-                fits_r2_key,
-                version
+        # === PHASE 2: Parallel R2 uploads ===
+        if not supabase_only and upload_tasks:
+            print("Uploading files to R2...")
+            success, failed, failed_files = upload_files_parallel(
+                r2_client, bucket, upload_tasks,
+                max_workers=12, desc="R2 uploads"
             )
 
-        # Upload RGB images (if present, not supabase_only, and not zfit_only)
-        if rgb_files and not supabase_only and not zfit_only:
-            print()
-            print("Uploading RGB images...")
-            for i, rgb_path in enumerate(rgb_files, 1):
-                r2_key = f"rgb/{obs_name}/{rgb_path.name}"
-                print(f"  [{i}/{len(rgb_files)}] {rgb_path.name}")
+            # Report failures
+            if failed_files:
+                print(f"\n⚠️  {failed} uploads failed:")
+                for msg in failed_files[:10]:
+                    print(f"    - {msg}")
+                if len(failed_files) > 10:
+                    print(f"    ... and {len(failed_files) - 10} more")
 
-                try:
-                    upload_to_r2(r2_client, bucket, rgb_path, r2_key, 'image/png')
-                except Exception as e:
-                    print(f"    ⚠️  Failed to upload: {e}")
+            print(f"\n✓ Uploaded {success}/{len(upload_tasks)} files to R2")
+            print()
+
+        # === PHASE 3: Batch Supabase upserts ===
+        print("Upserting objects to Supabase...")
+        num_objects = batch_upsert_objects(supabase, all_metadata, obs_config, force_overwrite)
+        print(f"  ✓ Upserted {num_objects} objects")
+
+        print("Upserting spectra to Supabase...")
+        num_spectra = batch_upsert_spectra(supabase, all_metadata, obs_name)
+        print(f"  ✓ Upserted {num_spectra} spectra")
 
         # Refresh filter options cache (updates field/observation dropdowns in web UI)
         print()
@@ -1292,6 +1631,12 @@ Examples:
     # Deploy spectra only (no RGB images)
     python scripts/deploy.py --obs cosmos_ddt --no-rgb
 
+    # Deploy spectra only (no SED plots)
+    python scripts/deploy.py --obs cosmos_ddt --no-sed
+
+    # Deploy spectra only (no RGB or SED)
+    python scripts/deploy.py --obs cosmos_ddt --no-rgb --no-sed
+
     # Other options
     python scripts/deploy.py --obs cosmos_ddt --supabase-only
     python scripts/deploy.py --obs ember_uds_p4 --version v0.2
@@ -1303,11 +1648,6 @@ Examples:
         '--obs',
         required=True,
         help='Observation name (must match key in observations.toml)'
-    )
-    parser.add_argument(
-        '--version',
-        default='v0.1',
-        help='Reduction version tag (default: v0.1)'
     )
     parser.add_argument(
         '--dry-run',
@@ -1345,6 +1685,16 @@ Examples:
         help='Only deploy SED plot PDFs (skip FITS files and Supabase updates)'
     )
     parser.add_argument(
+        '--no-sed',
+        action='store_true',
+        help='Skip SED plot deployment (only deploy spectra and optionally RGB)'
+    )
+    parser.add_argument(
+        '--auto-approve',
+        action='store_true',
+        help='Skip confirmation prompts (useful for scripting deployments)'
+    )
+    parser.add_argument(
         '--source-ids',
         nargs='+',
         metavar='ID',
@@ -1358,8 +1708,8 @@ Examples:
 
     # Validate flag combinations
     if args.rgb_only:
-        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.sed_only:
-            print("Error: --rgb-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, or --sed-only")
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.sed_only or args.no_sed:
+            print("Error: --rgb-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, --sed-only, or --no-sed")
             sys.exit(1)
 
         deploy_rgb_images(
@@ -1369,8 +1719,8 @@ Examples:
             source_ids=args.source_ids
         )
     elif args.sed_only:
-        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.rgb_only:
-            print("Error: --sed-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, or --rgb-only")
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.rgb_only or args.no_sed:
+            print("Error: --sed-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, --rgb-only, or --no-sed")
             sys.exit(1)
 
         deploy_sed_plots(
@@ -1380,36 +1730,39 @@ Examples:
             source_ids=args.source_ids
         )
     elif args.zfit_only:
-        if args.supabase_only or args.no_rgb or args.rgb_only or args.sed_only:
-            print("Error: --zfit-only cannot be combined with --supabase-only, --no-rgb, --rgb-only, or --sed-only")
+        if args.supabase_only or args.no_rgb or args.rgb_only or args.sed_only or args.no_sed:
+            print("Error: --zfit-only cannot be combined with --supabase-only, --no-rgb, --rgb-only, --sed-only, or --no-sed")
             sys.exit(1)
 
         # Zfit-only deployment
         deploy_observation(
             obs_name=args.obs,
-            version=args.version,
             dry_run=args.dry_run,
             supabase_only=False,  # Need R2 for zfit JSON uploads
             force_overwrite=args.force_overwrite,
             include_rgb=False,  # Skip RGB in zfit-only mode
+            include_sed=False,  # Skip SED in zfit-only mode
             zfit_only=True,
             project_root=project_root,
-            source_ids=args.source_ids
+            source_ids=args.source_ids,
+            auto_approve=args.auto_approve
         )
     else:
-        # Normal deployment (with or without RGB)
+        # Normal deployment (with or without RGB/SED)
         include_rgb = not args.no_rgb
+        include_sed = not args.no_sed
 
         deploy_observation(
             obs_name=args.obs,
-            version=args.version,
             dry_run=args.dry_run,
             supabase_only=args.supabase_only,
             force_overwrite=args.force_overwrite,
             include_rgb=include_rgb,
+            include_sed=include_sed,
             zfit_only=False,
             project_root=project_root,
-            source_ids=args.source_ids
+            source_ids=args.source_ids,
+            auto_approve=args.auto_approve
         )
 
 

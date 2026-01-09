@@ -63,13 +63,19 @@ def make_nircam_rgb_cutout(field, tile, coord, cutout_width=3*u.arcsec):
             image_data = COSMOS_IMAGE_DATA
         case 'uds':
             image_data = UDS_IMAGE_DATA
+        case 'egs':
+            image_data = EGS_IMAGE_DATA
         case _:
             raise NotImplementedError
 
     cutouts = {}
     for band in ['f115w','f150w','f182m','f200w','f210m','f277w','f356w','f444w']:
         
-        filepath = image_data[band]
+        try:
+            filepath = image_data[band]
+        except KeyError:
+            continue
+
         if '{tile}' in filepath:
             filepath = filepath.replace('{tile}', tile)
         if '{ext}' in filepath:
@@ -115,12 +121,20 @@ def make_nircam_rgb_cutout(field, tile, coord, cutout_width=3*u.arcsec):
         rgb_dict['f277w'] = {'colors':np.array([0.1, 0.9, 0.0]), 'data':cutouts['f277w'].data}
         rgb_dict['f444w'] = {'colors':np.array([1.0, 0.0, 0.0]), 'data':cutouts['f444w'].data}
     
+    elif np.all(np.isin(['f115w','f150w','f200w','f444w'], list(cutouts.keys()))):
+        rgb_dict = {}
+        rgb_dict['f115w'] = {'colors':np.array([0.0, 0.0, 1.0]), 'data':cutouts['f115w'].data}
+        rgb_dict['f150w'] = {'colors':np.array([0.0, 0.3, 0.8]), 'data':cutouts['f150w'].data}
+        rgb_dict['f200w'] = {'colors':np.array([0.1, 0.9, 0.0]), 'data':cutouts['f200w'].data}
+        rgb_dict['f444w'] = {'colors':np.array([1.0, 0.0, 0.0]), 'data':cutouts['f444w'].data}
+    
     else:
+        print(cutouts.keys())
         raise RuntimeError("Couldn't find necessary cutouts to make RGB!")
 
     from htools.utils.imaging import gen_rgb_image
     imrgb = gen_rgb_image(rgb_dict, noisesig=2.0, noiselum=0.12, satpercent=0.01)
-    wcs = cutouts['f277w'].wcs
+    wcs = cutouts['f444w'].wcs
     ps = wcs.proj_plane_pixel_scales()[0].to(u.arcsec).value
     size = np.shape(cutout.data)[0]
     extent = [-size*ps/2, size*ps/2, -size*ps/2, size*ps/2]
@@ -147,6 +161,15 @@ UDS_IMAGE_DATA = {
         'f210m': '/V/maurice/mosaics/uds/f210m/mosaic_nircam_f210m_uds_30mas_v0p5_primer_{ext}.fits',
         'f356w': '/V/maurice/mosaics/uds/f356w/mosaic_nircam_f356w_uds_30mas_v0p5_primer_{ext}.fits',
         'f444w': '/V/maurice/mosaics/uds/f444w/mosaic_nircam_f444w_uds_30mas_v0p5_primer_{ext}.fits',
+    }
+
+EGS_IMAGE_DATA = {
+        'f115w': '/V/maurice/mosaics/egs/ceers_nrc_f115w_{ext}.fits',
+        'f150w': '/V/maurice/mosaics/egs/ceers_nrc_f150w_{ext}.fits',
+        'f200w': '/V/maurice/mosaics/egs/ceers_nrc_f200w_{ext}.fits',
+        'f277w': '/V/maurice/mosaics/egs/ceers_nrc_f277w_{ext}.fits',
+        'f356w': '/V/maurice/mosaics/egs/ceers_nrc_f356w_{ext}.fits',
+        'f444w': '/V/maurice/mosaics/egs/ceers_nrc_f444w_{ext}.fits',
     }
 
 def get_source_pos(spec_file):
@@ -203,8 +226,12 @@ def plot_single_object(spec_files, field, output, cutout_width=3*u.arcsec, overr
 
     for t in exp:
         pa = (t['v3pa']-360+138.5)*u.deg
-        # if field=='cosmos':
-        #     pa += 20*u.deg
+        if field=='cosmos':
+            pa -= 20*u.deg
+        elif field=='egs':
+            pa -= 130.3*u.deg
+            # pa = 45*u.deg
+
         if ~np.isfinite(t['source_xpos']) or t['source_xpos']==0:
             dx = np.nanmedian(exp['source_xpos'])*0.27*u.arcsec
         else:
@@ -214,7 +241,15 @@ def plot_single_object(spec_files, field, output, cutout_width=3*u.arcsec, overr
         else:
             dy = t['source_ypos']*0.53*u.arcsec
 
+        # print(source_c.dec.value)
+        # print(np.cos(np.radians(source_c.dec.value)))
+        # dy *= np.cos(np.radians(source_c.dec.value))
+        # dx *= np.cos(np.radians(source_c.dec.value))
+
         shutter_c = source_c.directional_offset_by(-pa, dy).directional_offset_by(90*u.deg-pa, dx)
+        # separation = shutter_c.separation(source_c) * np.cos(np.radians(source_c.dec.value))
+        # position_angle = shutter_c.position_angle(source_c)
+        # shutter_c = source_c.directional_offset_by(position_angle, separation)
         match t['shutter_state']:
             case '1x1':
                 pass
@@ -236,11 +271,11 @@ def plot_single_object(spec_files, field, output, cutout_width=3*u.arcsec, overr
         for i in [-1,0,1]:
             c = shutter_c.directional_offset_by(-pa, i*0.53*u.arcsec)
             p = mpl.patches.Rectangle(
-                ((c.ra.value-source_c.ra.value-0.22/3600/2)*3600, (c.dec.value-source_c.dec.value-0.46/3600/2)*3600), 
+                ((c.ra.value-source_c.ra.value-0.22/3600/2)*3600*np.cos(np.radians(source_c.dec.value)), (c.dec.value-source_c.dec.value-0.46/3600/2)*3600), 
                 width=0.22, height=0.46,
                 facecolor='none', 
                 edgecolor='lime',
-                angle=pa.value,
+                angle=pa.to('deg').value,
                 rotation_point='center',
                 zorder=10000,
                 alpha=alpha,
@@ -333,6 +368,8 @@ def main():
                         help='Overwrite existing products')
     parser.add_argument('--skip-shifts', action='store_true',
                         help='Skip fitting astrometric shifts')
+    parser.add_argument('--approve-shifts', action='store_true',
+                        help='Auto approve astrometric shifts')
     
     args = parser.parse_args()
     skip_shifts = args.skip_shifts
@@ -355,9 +392,14 @@ def main():
             case 'uds':
                 ref_cat = fits.open('/V/maurice/primeruds_photom_v0.89.fits')
                 ref_coords = SkyCoord(ref_cat[1].data['RA'], ref_cat[1].data['DEC'], unit='deg')
+            case 'egs':
+                ref_cat = fits.open('/V/maurice/ceers_photom_v0.9.fits')
+                ref_coords = SkyCoord(ref_cat[1].data['RA'], ref_cat[1].data['DEC'], unit='deg')
             case 'cosmos':
                 ref_cat = fits.open('/research/COSMOS-3D/catalog_cosmos_v1.1_merged.fits')
                 ref_coords = SkyCoord(ref_cat[1].data['ra'], ref_cat[1].data['dec'], unit='deg')
+            case _:
+                raise NotImplementedError
 
         # Discover *_spec.fits files 
         srcids = sorted(list(set([int(f.split('_')[-2]) for f in glob.glob(f'products/{obs}/{obs}_*_spec.fits')])))
@@ -377,10 +419,13 @@ def main():
 
 
         # dra_interp, ddec_interp = fit_offsets(msa_coords, ref_coords, method='rbf', smoothing=0.01, plot=True)
-        dra_interp, ddec_interp = fit_offsets(msa_coords, ref_coords, method='poly2d', smoothing=0.01, plot=True)
-        cont = input('Satisfied with offset fits [Y/n]? ')
-        if not cont == 'Y':
-            return
+        if not args.approve_shifts:
+            dra_interp, ddec_interp = fit_offsets(msa_coords, ref_coords, method='poly2d', smoothing=0.01, plot=True)
+            cont = input('Satisfied with offset fits [Y/n]? ')
+            if not cont == 'Y':
+                return
+        else:
+            dra_interp, ddec_interp = fit_offsets(msa_coords, ref_coords, method='poly2d', smoothing=0.01, plot=False)
     else:
         srcids = sorted(list(set([int(f.split('_')[-2]) for f in glob.glob(f'products/{obs}/{obs}_*_spec.fits')])))
         object_ids = [f'{obs}_{i}' for i in srcids]
@@ -391,8 +436,8 @@ def main():
         object_id = object_ids[i]
         srcid = srcids[i]
         # print(object_id)
-        # if object_id not in ['ember_cosmos_p1_633865']:
-        #     continue
+        # if object_id not in ['capers_egs_p5_16994']:
+            # continue
         
         spec_files = glob.glob(f'products/{obs}/{obs}_*_{srcid}_spec.fits')
         

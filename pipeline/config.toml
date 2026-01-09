@@ -1,7 +1,5 @@
 [pipeline]
     version = "v0.2"
-    date = "2025-08-18"
-    description = "Initial pipeline version"
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
@@ -11,6 +9,7 @@
 [paths]
     data_dir = "/Users/hba423/simmons/campfire/pipeline/data" # Raw data (uncals) from MAST 
     products_dir = "/Users/hba423/simmons/campfire/pipeline/products" # Reduced data products (split by observation)
+    pictureframe_dir = "/Users/hba423/simmons/campfire/pipeline/templates/pictureframe"
     continuum_templates_file = "/Users/hba423/simmons/campfire/pipeline/templates/continuum_templates.pickle"
 
 [paths.r_curve_files]
@@ -26,6 +25,11 @@
     mask_science_regions = true
     cleanup_uncal = true
     cleanup_rateints = true
+    subtract_background = true
+    box_size = 8
+    sigma_clip = true
+    bkg_estimator = 'median'
+    plot = true
 
 [stage2]
     set_stellarity = 1.0

@@ -44,3 +44,10 @@
     pi_name = "A. de Graaff"
     description = "Red Unknowns: Bright Infrared Extragalactic Survey"
     is_public = true
+
+[[programs]]
+    program_id = 2750
+    program_name = "CEERS-DDT"
+    pi_name = "P. Arrabal Haro"
+    description = "Spectroscopic follow-up of ultra high-z candidates in CEERS"
+    is_public = true
