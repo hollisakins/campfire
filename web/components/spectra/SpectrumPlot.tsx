@@ -340,9 +340,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
       hovermode: 'x unified' as const,
       showlegend: true,
       legend: {
-        x: 1.02,
-        xanchor: 'left' as const,
-        y: 0.7,
+        x: 0.94,
+        xanchor: 'center' as const,
+        y: 0.75,
         yanchor: 'top' as const,
         bgcolor: 'rgba(255,255,255,0.9)',
         bordercolor: '#e2e8f0',
