@@ -99,10 +99,12 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       }
 
       // Create pending_invites record (reusing existing invite flow)
+      // Include full_name so it's pre-populated on the welcome page
       const { error: inviteError } = await serviceClient
         .from('pending_invites')
         .insert({
           email: accountRequest.email,
+          full_name: accountRequest.full_name,
           program_ids,
           is_admin,
           can_comment,

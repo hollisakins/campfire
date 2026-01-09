@@ -53,6 +53,7 @@ export async function GET() {
       invite: {
         id: invite.id,
         email: invite.email,
+        full_name: invite.full_name,
         program_ids: invite.program_ids,
         is_admin: invite.is_admin,
         can_comment: invite.can_comment,
