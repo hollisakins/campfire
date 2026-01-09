@@ -137,25 +137,40 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
     const waveMin = Math.min(...wave);
     const waveMax = Math.max(...wave);
 
+    // Build step-function coordinates for cross-dispersion profile
+    // Using 'vh' (vertical-horizontal) pattern to match matplotlib's where='post'
+    const buildStepCoords = (xVals: number[], yVals: number[]) => {
+      const stepX: number[] = [];
+      const stepY: number[] = [];
+      for (let i = 0; i < xVals.length; i++) {
+        // Start of step (vertical line up)
+        stepX.push(xVals[i]);
+        stepY.push(i === 0 ? yVals[0] - 0.5 : yVals[i - 1] + 0.5);
+        // End of step (at current y)
+        stepX.push(xVals[i]);
+        stepY.push(yVals[i] + 0.5);
+      }
+      return { stepX, stepY };
+    };
+
+    // Check if profile data exists (for backwards compatibility)
+    const hasProfile = data.profile && data.profile_fit && data.profile_pix;
+
     // Combined traces for stacked subplots
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const traces: any[] = [
-      // 2D S/N heatmap (top subplot)
+      // 2D S/N heatmap (top-left subplot)
       {
         z: data.snr_2d,
         x: data.wave,
+        y: hasProfile ? data.profile_pix : undefined,
         type: 'heatmap' as const,
         colorscale: 'Viridis',
         zmin: colorMin,
         zmax: colorMax,
-        colorbar: {
-          title: { text: 'S/N' },
-          titleside: 'right',
-          len: 0.2,
-          y: 0.9,
-        },
-        hovertemplate: 'λ: %{x:.3f} μm<br>S/N: %{z:.1f}<extra></extra>',
-        xaxis: 'x',
+        showscale: false, // Remove colorbar - using profile panel instead
+        hovertemplate: 'λ: %{x:.3f} μm<br>y: %{y:.1f} pix<br>S/N: %{z:.1f}<extra></extra>',
+        xaxis: 'x2',
         yaxis: 'y2',
       },
       // Error band (bottom subplot)
@@ -189,6 +204,56 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
       },
     ];
 
+    // Add cross-dispersion profile traces if data exists
+    if (hasProfile) {
+      const { stepX: profStepX, stepY: profStepY } = buildStepCoords(data.profile, data.profile_pix);
+      const { stepX: fitStepX, stepY: fitStepY } = buildStepCoords(data.profile_fit, data.profile_pix);
+
+      // Optimal extraction weight fill (red, behind the profile line)
+      traces.push({
+        x: [...fitStepX, 0, 0],
+        y: [...fitStepY, fitStepY[fitStepY.length - 1], fitStepY[0]],
+        fill: 'toself',
+        fillcolor: 'rgba(239, 68, 68, 0.3)',
+        line: { color: 'transparent' },
+        name: 'Extraction weight',
+        hoverinfo: 'skip' as const,
+        showlegend: false,
+        xaxis: 'x3',
+        yaxis: 'y3',
+      });
+
+      // Cross-dispersion profile line (black step function)
+      traces.push({
+        x: profStepX,
+        y: profStepY,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: 'Spatial profile',
+        line: {
+          color: '#000000',
+          width: 1.5,
+        },
+        hovertemplate: 'Profile: %{x:.2f}<br>y: %{y:.1f} pix<extra></extra>',
+        showlegend: false,
+        xaxis: 'x3',
+        yaxis: 'y3',
+      });
+
+      // Zero line for profile panel
+      traces.push({
+        x: [0, 0],
+        y: [-10, 10],
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        line: { color: '#e2e8f0', width: 1 },
+        hoverinfo: 'skip' as const,
+        showlegend: false,
+        xaxis: 'x3',
+        yaxis: 'y3',
+      });
+    }
+
     // Add emission line markers if enabled
     if (showEmissionLines) {
       const visibleLines = EMISSION_LINES
@@ -219,7 +284,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
       });
     }
 
-    // Layout configuration
+    // Layout configuration with profile panel
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout: any = {
       uirevision: 'constant', // Preserve zoom/pan state across updates
@@ -227,26 +292,59 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         text: `${grating} Spectrum`,
         font: { size: 16, color: '#0f172a' },
       },
+      // X-axis for 1D spectrum (bottom, full width)
       xaxis: {
         title: { text: 'Wavelength (μm)' },
         gridcolor: '#e2e8f0',
         zerolinecolor: '#e2e8f0',
         domain: [0, 1],
+        anchor: 'y' as const,
       },
+      // X-axis for 2D heatmap (top-left, narrower to make room for profile)
+      xaxis2: {
+        gridcolor: '#e2e8f0',
+        zerolinecolor: '#e2e8f0',
+        domain: [0, 0.88],
+        anchor: 'y2' as const,
+        matches: 'x' as const, // Link range to xaxis
+        showticklabels: false,
+      },
+      // X-axis for profile panel (top-right, narrow)
+      xaxis3: {
+        gridcolor: '#e2e8f0',
+        zerolinecolor: '#e2e8f0',
+        domain: [0.90, 0.98],
+        anchor: 'y3' as const,
+        showticklabels: false,
+        range: [-0.3, 1.2],
+        fixedrange: true,
+      },
+      // Y-axis for 1D spectrum (bottom)
       yaxis: {
         title: { text: fluxLabel },
         gridcolor: '#e2e8f0',
         zerolinecolor: '#e2e8f0',
         exponentformat: 'e' as const,
         domain: [0, 0.7],
-      },
-      yaxis2: {
-        title: { text: 'Spatial' },
-        gridcolor: '#e2e8f0',
-        domain: [0.78, 1],
         anchor: 'x' as const,
       },
-      margin: { l: 80, r: 120, t: 50, b: 50 },
+      // Y-axis for 2D heatmap (top-left)
+      yaxis2: {
+        title: { text: 'y [pix]' },
+        gridcolor: '#e2e8f0',
+        domain: [0.78, 1],
+        anchor: 'x2' as const,
+        range: [-10, 10],
+      },
+      // Y-axis for profile panel (top-right, matches yaxis2)
+      yaxis3: {
+        gridcolor: '#e2e8f0',
+        domain: [0.78, 1],
+        anchor: 'x3' as const,
+        matches: 'y2' as const, // Link range to yaxis2
+        showticklabels: false,
+      },
+      margin: { l: 80, r: 80, t: 50, b: 50 },
       paper_bgcolor: 'white',
       plot_bgcolor: 'white',
       hovermode: 'x unified' as const,

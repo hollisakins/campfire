@@ -479,16 +479,18 @@ def read_spectrum_data(fits_path: Path) -> dict:
     """
     Read spectrum data for JSON export (Plotly).
 
-    Returns 1D data (wave, fnu, fnu_err) and 2D S/N data for heatmap display.
+    Returns 1D data (wave, fnu, fnu_err), 2D S/N data for heatmap display,
+    and cross-dispersion profile data.
     Uses compact precision to minimize file size:
     - 6 decimal places for wavelength and flux values
-    - 2 decimal places for S/N values
+    - 2 decimal places for S/N and profile values
     """
     with fits.open(fits_path) as hdul:
         spec1d = hdul['SPEC1D'].data
         sci = hdul['SCI'].data
         err = hdul['ERR'].data
         wave_2d = hdul['WAVELENGTH'].data
+        prof1d = hdul['PROF1D'].data
 
         # 1D spectrum data with compact precision
         wave = [round(x, 6) for x in spec1d['wave'].tolist()]
@@ -504,6 +506,34 @@ def read_spectrum_data(fits_path: Path) -> dict:
         # Convert to compact format (2 decimal places)
         snr_2d_list = [[round(x, 2) for x in row] for row in snr_2d.tolist()]
 
+        # Cross-dispersion profile data
+        # Collapsed spatial profile (median along wavelength axis)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            collapsed = np.nanmedian(sci, axis=1)
+
+        # Find center as weighted centroid of positive flux
+        ypos = prof1d['ypos']
+        opt_weight = prof1d['opt']
+
+        # Compute center from optimal extraction weight
+        valid_opt = opt_weight > 0
+        if np.any(valid_opt):
+            cen = np.average(ypos[valid_opt], weights=opt_weight[valid_opt])
+        else:
+            cen = np.median(ypos)
+
+        # Center the pixel positions
+        pix_centered = ypos - cen
+
+        # Normalize profiles for display
+        with np.errstate(divide='ignore', invalid='ignore'):
+            # Normalize collapsed profile to peak of 1
+            collapsed_norm = collapsed / np.nanmax(np.abs(collapsed[valid_opt])) if np.any(valid_opt) else collapsed
+            collapsed_norm = np.where(np.isfinite(collapsed_norm), collapsed_norm, 0)
+
+            # Normalize optimal weight to peak of 1
+            opt_norm = opt_weight / np.nanmax(opt_weight) if np.nanmax(opt_weight) > 0 else opt_weight
+
         return {
             'wave': wave,
             'fnu': fnu,
@@ -511,6 +541,10 @@ def read_spectrum_data(fits_path: Path) -> dict:
             'snr_2d': snr_2d_list,
             'n_spatial': sci.shape[0],
             'n_wave': sci.shape[1],
+            # Cross-dispersion profile data
+            'profile': [round(float(x), 3) for x in collapsed_norm.tolist()],
+            'profile_fit': [round(float(x), 3) for x in opt_norm.tolist()],
+            'profile_pix': [round(float(x), 2) for x in pix_centered.tolist()],
         }
 
 
@@ -1196,6 +1230,129 @@ def deploy_sed_plots(
     print(f"✓ Successfully uploaded {success}/{len(sed_files)} SED plots to sed/{obs_name}/")
 
 
+def deploy_spectrum_json(
+    obs_name: str,
+    dry_run: bool,
+    project_root: Path,
+    source_ids: list[str] | None = None
+) -> None:
+    """
+    Deploy only spectrum JSON files for an observation to R2.
+
+    This regenerates and uploads JSON files (with 1D spectrum, 2D S/N, and
+    cross-dispersion profile data) without re-uploading FITS files or
+    updating Supabase.
+
+    JSON files are uploaded to: spectra/{obs_name}/{filename}.json
+
+    Args:
+        source_ids: Optional list of source IDs to filter deployment to specific objects
+    """
+    scripts_dir = project_root / 'scripts'
+    pipeline_dir = project_root / 'pipeline'
+    products_dir = pipeline_dir / 'products'
+
+    # Load configuration
+    print(f"Loading configuration...")
+    config = load_config(scripts_dir)
+    observations = load_observations(pipeline_dir)
+
+    # Validate observation exists
+    if obs_name not in observations:
+        print(f"Error: Observation '{obs_name}' not found in observations.toml")
+        print(f"Available observations: {list(observations.keys())}")
+        sys.exit(1)
+
+    obs_config = observations[obs_name]
+    print(f"Deploying spectrum JSON files for observation: {obs_name}")
+    print(f"  Field: {obs_config.get('field', 'unknown')}")
+    print()
+
+    # Discover FITS files (we need these to generate JSON)
+    fits_files = discover_fits_files(products_dir, obs_name)
+
+    # Filter by source IDs if specified
+    if source_ids:
+        original_count = len(fits_files)
+        fits_files = filter_files_by_source_ids(fits_files, source_ids, obs_name)
+        print(f"Found {original_count} spectrum files, filtered to {len(fits_files)} matching source IDs: {', '.join(source_ids)}")
+
+        if not fits_files:
+            print(f"Error: No spectrum files found matching source IDs: {', '.join(source_ids)}")
+            print("Nothing to deploy.")
+            return
+    else:
+        print(f"Found {len(fits_files)} spectrum files")
+
+    print()
+
+    if dry_run:
+        print("=== DRY RUN MODE ===")
+        print("Would generate and upload JSON files to R2:")
+        for fits_path in fits_files[:5]:
+            json_name = fits_path.stem + '.json'
+            r2_key = f"spectra/{obs_name}/{json_name}"
+            print(f"  - {fits_path.name} → {r2_key}")
+        if len(fits_files) > 5:
+            print(f"  ... and {len(fits_files) - 5} more")
+        return
+
+    # Check dependencies
+    if not HAS_BOTO3:
+        print("Error: boto3 required. Install with: pip install boto3")
+        sys.exit(1)
+
+    # Initialize R2 client
+    print("Connecting to R2...")
+    r2_client = get_r2_client(config)
+    bucket = config['r2']['bucket_name']
+
+    # Create temp directory for generated files
+    temp_dir = products_dir / obs_name / '.deploy_temp'
+    temp_dir.mkdir(exist_ok=True)
+
+    try:
+        # Generate JSON files
+        print("Generating spectrum JSON files...")
+        upload_tasks = []
+        r2_prefix = f"spectra/{obs_name}"
+
+        for fits_path in tqdm(fits_files, desc="Generating", unit="file"):
+            json_path = generate_spectrum_json(fits_path, temp_dir)
+            upload_tasks.append(UploadTask(
+                local_path=json_path,
+                r2_key=f"{r2_prefix}/{json_path.name}",
+                content_type='application/json'
+            ))
+
+        print(f"Prepared {len(upload_tasks)} JSON files for upload")
+        print()
+
+        # Upload JSON files in parallel
+        print("Uploading JSON files...")
+        success, failed, failed_files = upload_files_parallel(
+            r2_client, bucket, upload_tasks,
+            max_workers=12, desc="JSON files"
+        )
+
+        # Report failures
+        if failed_files:
+            print(f"\n⚠️  {failed} uploads failed:")
+            for msg in failed_files[:5]:
+                print(f"    - {msg}")
+            if len(failed_files) > 5:
+                print(f"    ... and {len(failed_files) - 5} more")
+
+        print()
+        print(f"✓ Successfully uploaded {success}/{len(fits_files)} spectrum JSON files to spectra/{obs_name}/")
+
+    finally:
+        # Cleanup temp files
+        import shutil
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+
+
 # === Main Deployment Logic ===
 
 def deploy_observation(
@@ -1619,6 +1776,9 @@ Examples:
     # Deploy only zfit JSONs and update redshift_auto (after re-running fitting)
     python scripts/deploy.py --obs cosmos_ddt --zfit-only
 
+    # Deploy only spectrum JSON files (regenerate with updated profile data)
+    python scripts/deploy.py --obs cosmos_ddt --json-only
+
     # Deploy only RGB images (skip FITS/JSON and Supabase)
     python scripts/deploy.py --obs ember_uds_p4 --rgb-only
 
@@ -1680,6 +1840,11 @@ Examples:
         help='Only deploy zfit JSON files and update redshift_auto (skip FITS/spectrum JSON/RGB)'
     )
     parser.add_argument(
+        '--json-only',
+        action='store_true',
+        help='Only deploy spectrum JSON files (skip FITS uploads and Supabase updates)'
+    )
+    parser.add_argument(
         '--sed-only',
         action='store_true',
         help='Only deploy SED plot PDFs (skip FITS files and Supabase updates)'
@@ -1708,8 +1873,8 @@ Examples:
 
     # Validate flag combinations
     if args.rgb_only:
-        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.sed_only or args.no_sed:
-            print("Error: --rgb-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, --sed-only, or --no-sed")
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.json_only or args.sed_only or args.no_sed:
+            print("Error: --rgb-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, --json-only, --sed-only, or --no-sed")
             sys.exit(1)
 
         deploy_rgb_images(
@@ -1719,8 +1884,8 @@ Examples:
             source_ids=args.source_ids
         )
     elif args.sed_only:
-        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.rgb_only or args.no_sed:
-            print("Error: --sed-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, --rgb-only, or --no-sed")
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.json_only or args.rgb_only or args.no_sed:
+            print("Error: --sed-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, --json-only, --rgb-only, or --no-sed")
             sys.exit(1)
 
         deploy_sed_plots(
@@ -1730,8 +1895,8 @@ Examples:
             source_ids=args.source_ids
         )
     elif args.zfit_only:
-        if args.supabase_only or args.no_rgb or args.rgb_only or args.sed_only or args.no_sed:
-            print("Error: --zfit-only cannot be combined with --supabase-only, --no-rgb, --rgb-only, --sed-only, or --no-sed")
+        if args.supabase_only or args.no_rgb or args.rgb_only or args.json_only or args.sed_only or args.no_sed:
+            print("Error: --zfit-only cannot be combined with --supabase-only, --no-rgb, --rgb-only, --json-only, --sed-only, or --no-sed")
             sys.exit(1)
 
         # Zfit-only deployment
@@ -1746,6 +1911,17 @@ Examples:
             project_root=project_root,
             source_ids=args.source_ids,
             auto_approve=args.auto_approve
+        )
+    elif args.json_only:
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.rgb_only or args.zfit_only or args.sed_only or args.no_sed:
+            print("Error: --json-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --rgb-only, --zfit-only, --sed-only, or --no-sed")
+            sys.exit(1)
+
+        deploy_spectrum_json(
+            obs_name=args.obs,
+            dry_run=args.dry_run,
+            project_root=project_root,
+            source_ids=args.source_ids
         )
     else:
         # Normal deployment (with or without RGB/SED)
