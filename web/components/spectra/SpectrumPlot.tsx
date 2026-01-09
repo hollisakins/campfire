@@ -159,7 +159,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
     // Combined traces for stacked subplots
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const traces: any[] = [
-      // 2D S/N heatmap (top-left subplot)
+      // 2D S/N heatmap (top-left subplot, shares xaxis with 1D spectrum)
       {
         z: data.snr_2d,
         x: data.wave,
@@ -170,7 +170,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         zmax: colorMax,
         showscale: false, // Remove colorbar - using profile panel instead
         hovertemplate: 'λ: %{x:.3f} μm<br>y: %{y:.1f} pix<br>S/N: %{z:.1f}<extra></extra>',
-        xaxis: 'x2',
+        xaxis: 'x',
         yaxis: 'y2',
       },
       // Error band (bottom subplot)
@@ -219,7 +219,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         name: 'Extraction weight',
         hoverinfo: 'skip' as const,
         showlegend: false,
-        xaxis: 'x3',
+        xaxis: 'x2',
         yaxis: 'y3',
       });
 
@@ -236,7 +236,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         },
         hovertemplate: 'Profile: %{x:.2f}<br>y: %{y:.1f} pix<extra></extra>',
         showlegend: false,
-        xaxis: 'x3',
+        xaxis: 'x2',
         yaxis: 'y3',
       });
 
@@ -249,7 +249,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         line: { color: '#e2e8f0', width: 1 },
         hoverinfo: 'skip' as const,
         showlegend: false,
-        xaxis: 'x3',
+        xaxis: 'x2',
         yaxis: 'y3',
       });
     }
@@ -292,25 +292,15 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         text: `${grating} Spectrum`,
         font: { size: 16, color: '#0f172a' },
       },
-      // X-axis for 1D spectrum (bottom, full width)
+      // X-axis: Shared wavelength axis for both 2D and 1D spectra (linked zoom/pan)
       xaxis: {
         title: { text: 'Wavelength (μm)' },
         gridcolor: '#e2e8f0',
         zerolinecolor: '#e2e8f0',
-        domain: [0, 1],
-        anchor: 'y' as const,
-      },
-      // X-axis for 2D heatmap (top-left, narrower to make room for profile)
-      xaxis2: {
-        gridcolor: '#e2e8f0',
-        zerolinecolor: '#e2e8f0',
         domain: [0, 0.88],
-        anchor: 'y2' as const,
-        matches: 'x' as const, // Link range to xaxis
-        showticklabels: false,
       },
       // X-axis for profile panel (top-right, narrow)
-      xaxis3: {
+      xaxis2: {
         gridcolor: '#e2e8f0',
         zerolinecolor: '#e2e8f0',
         domain: [0.90, 0.98],
@@ -333,14 +323,14 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         title: { text: 'y [pix]' },
         gridcolor: '#e2e8f0',
         domain: [0.78, 1],
-        anchor: 'x2' as const,
+        anchor: 'x' as const,
         range: [-10, 10],
       },
       // Y-axis for profile panel (top-right, matches yaxis2)
       yaxis3: {
         gridcolor: '#e2e8f0',
         domain: [0.78, 1],
-        anchor: 'x3' as const,
+        anchor: 'x2' as const,
         matches: 'y2' as const, // Link range to yaxis2
         showticklabels: false,
       },
