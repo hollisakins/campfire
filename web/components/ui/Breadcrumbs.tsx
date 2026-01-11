@@ -23,17 +23,17 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({ items, className = '' 
             {item.href && !isLast ? (
               <Link
                 href={item.href}
-                className="text-text-secondary hover:text-primary transition-colors"
+                className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors"
               >
                 {item.label}
               </Link>
             ) : (
-              <span className={isLast ? 'text-text-primary font-medium' : 'text-text-secondary'}>
+              <span className={isLast ? 'text-text-primary dark:text-slate-100 font-medium' : 'text-text-secondary dark:text-slate-400'}>
                 {item.label}
               </span>
             )}
             {!isLast && (
-              <ChevronRight className="w-4 h-4 text-text-secondary" />
+              <ChevronRight className="w-4 h-4 text-text-secondary dark:text-slate-500" />
             )}
           </React.Fragment>
         );

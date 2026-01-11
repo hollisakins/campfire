@@ -41,12 +41,12 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
   return (
     <div className={`flex items-center justify-between gap-4 py-3 px-4 ${className}`}>
       {/* Left side: Page size selector */}
-      <div className="flex items-center gap-2 text-sm text-text-secondary">
+      <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400">
         <span>Show</span>
         <select
           value={pageSize}
           onChange={handlePageSizeChange}
-          className="px-2 py-1 border border-border rounded-md bg-background text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+          className="px-2 py-1 border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-800 text-text-primary dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
         >
           {pageSizeOptions.map((size) => (
             <option key={size} value={size}>
@@ -58,7 +58,7 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
       </div>
 
       {/* Center: Row count info */}
-      <div className="flex items-center gap-2 text-sm text-text-secondary">
+      <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400">
         {loading && (
           <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
         )}
@@ -66,11 +66,11 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
           <span>No results</span>
         ) : (
           <span>
-            Showing <span className="font-medium text-text-primary">{startRow.toLocaleString()}</span>
+            Showing <span className="font-medium text-text-primary dark:text-slate-100">{startRow.toLocaleString()}</span>
             {' - '}
-            <span className="font-medium text-text-primary">{endRow.toLocaleString()}</span>
+            <span className="font-medium text-text-primary dark:text-slate-100">{endRow.toLocaleString()}</span>
             {' of '}
-            <span className="font-medium text-text-primary">{totalRows.toLocaleString()}</span>
+            <span className="font-medium text-text-primary dark:text-slate-100">{totalRows.toLocaleString()}</span>
           </span>
         )}
       </div>
@@ -84,8 +84,8 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
           className={`
             p-1.5 rounded-md transition-colors
             ${canPreviousPage
-              ? 'hover:bg-card text-text-secondary hover:text-text-primary'
-              : 'text-border cursor-not-allowed'
+              ? 'hover:bg-card dark:hover:bg-slate-700 text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-100'
+              : 'text-border dark:text-slate-600 cursor-not-allowed'
             }
           `}
           title="First page"
@@ -100,8 +100,8 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
           className={`
             p-1.5 rounded-md transition-colors
             ${canPreviousPage
-              ? 'hover:bg-card text-text-secondary hover:text-text-primary'
-              : 'text-border cursor-not-allowed'
+              ? 'hover:bg-card dark:hover:bg-slate-700 text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-100'
+              : 'text-border dark:text-slate-600 cursor-not-allowed'
             }
           `}
           title="Previous page"
@@ -111,7 +111,7 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
 
         {/* Page indicator */}
         <div className="flex items-center gap-1 px-2">
-          <span className="text-sm text-text-secondary">Page</span>
+          <span className="text-sm text-text-secondary dark:text-slate-400">Page</span>
           <input
             type="number"
             value={pageIndex + 1}
@@ -122,9 +122,9 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
             }}
             min={1}
             max={pageCount || 1}
-            className="w-12 px-2 py-1 text-sm text-center border border-border rounded-md bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+            className="w-12 px-2 py-1 text-sm text-center border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
           />
-          <span className="text-sm text-text-secondary">of {pageCount || 1}</span>
+          <span className="text-sm text-text-secondary dark:text-slate-400">of {pageCount || 1}</span>
         </div>
 
         {/* Next page */}
@@ -134,8 +134,8 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
           className={`
             p-1.5 rounded-md transition-colors
             ${canNextPage
-              ? 'hover:bg-card text-text-secondary hover:text-text-primary'
-              : 'text-border cursor-not-allowed'
+              ? 'hover:bg-card dark:hover:bg-slate-700 text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-100'
+              : 'text-border dark:text-slate-600 cursor-not-allowed'
             }
           `}
           title="Next page"
@@ -150,8 +150,8 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
           className={`
             p-1.5 rounded-md transition-colors
             ${canNextPage
-              ? 'hover:bg-card text-text-secondary hover:text-text-primary'
-              : 'text-border cursor-not-allowed'
+              ? 'hover:bg-card dark:hover:bg-slate-700 text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-100'
+              : 'text-border dark:text-slate-600 cursor-not-allowed'
             }
           `}
           title="Last page"

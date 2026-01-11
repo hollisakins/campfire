@@ -267,11 +267,11 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
       {/* Inspection Card */}
       <Card className="p-6 mb-4">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-text-primary">
+          <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
             Inspection
           </h3>
           {initialData.last_inspected_at && (
-            <span className="text-xs text-text-secondary">
+            <span className="text-xs text-text-secondary dark:text-slate-400">
               Last edited: {formatDate(initialData.last_inspected_at)}
               {lastInspectorName && ` by ${lastInspectorName}`}
             </span>
@@ -280,16 +280,16 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
 
         {/* Save status messages */}
         {saveError && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
-            <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-red-800">{saveError}</p>
+          <div className="mb-4 p-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg flex items-start gap-2">
+            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-red-800 dark:text-red-400">{saveError}</p>
           </div>
         )}
 
         {saveSuccess && (
-          <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-start gap-2">
-            <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-green-800">Changes saved successfully</p>
+          <div className="mb-4 p-3 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded-lg flex items-start gap-2">
+            <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-green-800 dark:text-green-400">Changes saved successfully</p>
           </div>
         )}
 
@@ -298,19 +298,19 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
           {/* Left side: Redshift info */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
-              <span className="text-text-secondary">Redshift:</span>
-              <span className="font-mono font-semibold text-text-primary">
+              <span className="text-text-secondary dark:text-slate-400">Redshift:</span>
+              <span className="font-mono font-semibold text-text-primary dark:text-slate-100">
                 {currentRedshift?.toFixed(4) ?? '—'}
               </span>
-              <span className="text-xs text-text-secondary">
+              <span className="text-xs text-text-secondary dark:text-slate-400">
                 ({redshiftInspected ? 'overridden' : 'auto-fit'})
               </span>
             </div>
 
-            <span className="text-border">|</span>
+            <span className="text-border dark:text-slate-600">|</span>
 
             <div className="flex items-center gap-2">
-              <label className="text-text-secondary">Override?</label>
+              <label className="text-text-secondary dark:text-slate-400">Override?</label>
               <input
                 type="number"
                 step="0.0001"
@@ -318,21 +318,21 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
                 onChange={e => setRedshiftInspected(e.target.value)}
                 placeholder="Leave blank to use auto"
                 disabled={!canEdit}
-                className="w-64 px-2 py-1 text-sm font-mono border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
+                className="w-64 px-2 py-1 text-sm font-mono border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
               />
             </div>
 
-            <span className="text-border">|</span>
+            <span className="text-border dark:text-slate-600">|</span>
 
             <div className="flex items-center gap-2">
-              <label className="text-text-secondary">
-                Quality<span className="text-red-500">*</span>:
+              <label className="text-text-secondary dark:text-slate-400">
+                Quality<span className="text-red-500 dark:text-red-400">*</span>:
               </label>
               <select
                 value={redshiftQuality}
                 onChange={e => setRedshiftQuality(parseInt(e.target.value))}
                 disabled={!canEdit}
-                className="px-2 py-1 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
+                className="px-2 py-1 text-sm border border-border dark:border-slate-600 rounded focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
                 style={{ backgroundColor: qualityDef.color }}
               >
                 {REDSHIFT_QUALITY.map(q => (
@@ -374,12 +374,12 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
         {canEdit && (
           <div className="flex justify-end items-center gap-3">
             {hasChanges && (
-              <p className="text-xs text-amber-600">
+              <p className="text-xs text-amber-600 dark:text-amber-400">
                 You have unsaved changes
               </p>
             )}
             {redshiftQuality === 0 && (
-              <p className="text-xs text-amber-600 flex items-center gap-1">
+              <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
                 <AlertCircle className="w-3 h-3" />
                 Please set redshift quality before saving
               </p>
@@ -410,14 +410,14 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
       <Card className="p-6">
         <div className="flex items-center gap-2 mb-4">
           <MessageSquare className="w-5 h-5 text-primary" />
-          <h4 className="font-medium text-text-primary">
+          <h4 className="font-medium text-text-primary dark:text-slate-100">
             Discussion ({comments.length})
           </h4>
         </div>
 
         {commentError && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-            <p className="text-sm text-red-800">{commentError}</p>
+          <div className="mb-4 p-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg">
+            <p className="text-sm text-red-800 dark:text-red-400">{commentError}</p>
           </div>
         )}
 
@@ -428,7 +428,7 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
               value={newComment}
               onChange={e => setNewComment(e.target.value)}
               placeholder="Add a comment..."
-              className="w-full px-4 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary resize-none text-sm"
+              className="w-full px-4 py-2 border border-border dark:border-slate-600 rounded-lg bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary resize-none text-sm"
               rows={2}
               disabled={commentSubmitting}
             />
@@ -447,18 +447,18 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
         )}
 
         {!user && (
-          <div className="mb-4 p-4 bg-card border border-border rounded-lg text-center">
-            <p className="text-sm text-text-secondary">Sign in to add comments</p>
+          <div className="mb-4 p-4 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg text-center">
+            <p className="text-sm text-text-secondary dark:text-slate-400">Sign in to add comments</p>
           </div>
         )}
 
         {/* Comments List */}
         {commentsLoading ? (
-          <div className="text-center py-4 text-text-secondary text-sm">
+          <div className="text-center py-4 text-text-secondary dark:text-slate-400 text-sm">
             Loading comments...
           </div>
         ) : comments.length === 0 ? (
-          <div className="text-center py-4 text-text-secondary text-sm">
+          <div className="text-center py-4 text-text-secondary dark:text-slate-400 text-sm">
             No comments yet
           </div>
         ) : (
@@ -466,17 +466,17 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
             {comments.map(comment => (
               <div
                 key={comment.id}
-                className="p-3 bg-card border border-border rounded-lg"
+                className="p-3 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg"
               >
                 <div className="flex items-start justify-between mb-1">
-                  <span className="font-medium text-text-primary text-sm">
+                  <span className="font-medium text-text-primary dark:text-slate-100 text-sm">
                     {comment.user_profile?.full_name || 'Unknown User'}
                   </span>
-                  <span className="text-xs text-text-secondary">
+                  <span className="text-xs text-text-secondary dark:text-slate-500">
                     {formatDate(comment.created_at)}
                   </span>
                 </div>
-                <p className="text-sm text-text-primary whitespace-pre-wrap">
+                <p className="text-sm text-text-primary dark:text-slate-100 whitespace-pre-wrap">
                   {comment.content}
                 </p>
               </div>

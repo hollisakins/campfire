@@ -214,19 +214,19 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     <div className={`space-y-3 ${className}`}>
       {/* Search bar */}
       <div className="relative max-w-md">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary dark:text-slate-400" />
         <input
           type="text"
           value={localSearch}
           onChange={(e) => setLocalSearch(e.target.value)}
           placeholder="Search by Object ID..."
-          className="w-full pl-10 pr-10 py-2 text-sm border border-border rounded-lg bg-background text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+          className="w-full pl-10 pr-10 py-2 text-sm border border-border dark:border-slate-700 rounded-lg bg-background dark:bg-slate-800 text-text-primary dark:text-slate-100 placeholder:text-text-secondary dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
         />
         {/* Show clear button when there's text */}
         {localSearch && (
           <button
             onClick={() => setLocalSearch('')}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary"
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200"
           >
             <X className="w-4 h-4" />
           </button>
@@ -274,7 +274,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         />
 
         {/* Divider */}
-        <div className="h-6 w-px bg-border mx-1" />
+        <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
 
         {/* Redshift range filter */}
         <RangeFilterChip
@@ -329,7 +329,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         />
 
         {/* Divider */}
-        <div className="h-6 w-px bg-border mx-1" />
+        <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
 
         {/* Spectral features filter */}
         <FilterChip
@@ -358,10 +358,10 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         {/* Clear all button */}
         {hasActiveFilters && (
           <>
-            <div className="h-6 w-px bg-border mx-1" />
+            <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
             <button
               onClick={handleClearAll}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
             >
               <X className="w-3.5 h-3.5" />
               Clear all

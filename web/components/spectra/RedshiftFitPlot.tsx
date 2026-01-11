@@ -17,7 +17,9 @@ import {
   getFluxLabel,
   getHoverLabel,
   createEmissionLineTraces,
+  getPlotColors,
 } from './plotting-utils';
+import { useTheme } from '@/lib/contexts/ThemeContext';
 
 // Dynamic import of Plotly to avoid SSR issues
 const Plot = dynamic(() => import('react-plotly.js'), {
@@ -40,6 +42,7 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
   grating,
   initialRedshift,
 }) => {
+  const { resolvedTheme } = useTheme();
   const [spectrumData, setSpectrumData] = useState<SpectrumData | null>(null);
   const [fitData, setFitData] = useState<RedshiftFitData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -261,47 +264,54 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
       yaxis: 'y2',
     });
 
+    // Get theme-aware colors for Plotly
+    const colors = getPlotColors();
+
     // Layout configuration
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout: any = {
       uirevision: 'constant',
       title: {
         text: `${grating} Redshift Fit (z = ${fitData.redshift.toFixed(4)}, χ² = ${fitData.chi2_min.toFixed(2)}, conf = ${fitData.confidence.toFixed(1)}%)`,
-        font: { size: 16, color: '#0f172a' },
+        font: { size: 16, color: colors.text },
       },
       // Top subplot (spectrum + model)
       xaxis: {
-        title: { text: 'Wavelength (μm)' },
-        gridcolor: '#e2e8f0',
-        zerolinecolor: '#e2e8f0',
+        title: { text: 'Wavelength (μm)', font: { color: colors.text } },
+        tickfont: { color: colors.textSecondary },
+        gridcolor: colors.grid,
+        zerolinecolor: colors.grid,
         domain: [0, 1],
         anchor: 'y' as const,
       },
       yaxis: {
-        title: { text: fluxLabel },
-        gridcolor: '#e2e8f0',
-        zerolinecolor: '#e2e8f0',
+        title: { text: fluxLabel, font: { color: colors.text } },
+        tickfont: { color: colors.textSecondary },
+        gridcolor: colors.grid,
+        zerolinecolor: colors.grid,
         exponentformat: 'e' as const,
         domain: [0.4, 1],
       },
       // Bottom subplot (chi² curve)
       xaxis2: {
-        title: { text: 'Redshift' },
-        gridcolor: '#e2e8f0',
-        zerolinecolor: '#e2e8f0',
+        title: { text: 'Redshift', font: { color: colors.text } },
+        tickfont: { color: colors.textSecondary },
+        gridcolor: colors.grid,
+        zerolinecolor: colors.grid,
         domain: [0, 1],
         anchor: 'y2' as const,
       },
       yaxis2: {
-        title: { text: 'χ²' },
+        title: { text: 'χ²', font: { color: colors.text } },
+        tickfont: { color: colors.textSecondary },
         type: 'log' as const,
-        gridcolor: '#e2e8f0',
-        zerolinecolor: '#e2e8f0',
+        gridcolor: colors.grid,
+        zerolinecolor: colors.grid,
         domain: [0, 0.3],
       },
       margin: { l: 80, r: 120, t: 50, b: 50 },
-      paper_bgcolor: 'white',
-      plot_bgcolor: 'white',
+      paper_bgcolor: colors.paper,
+      plot_bgcolor: colors.bg,
       hovermode: 'closest' as const,
       showlegend: true,
       legend: {
@@ -309,30 +319,30 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
         xanchor: 'left' as const,
         y: 1,
         yanchor: 'top' as const,
-        bgcolor: 'rgba(255,255,255,0.9)',
-        bordercolor: '#e2e8f0',
+        bgcolor: colors.paper,
+        bordercolor: colors.grid,
         borderwidth: 1,
-        font: { size: 10 },
+        font: { size: 10, color: colors.text },
       },
     };
 
     return { traces, layout };
-  }, [spectrumData, fitData, processedData, fluxUnit, showEmissionLines, redshift, grating]);
+  }, [spectrumData, fitData, processedData, fluxUnit, showEmissionLines, redshift, grating, resolvedTheme]);
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-[700px] bg-card border border-border rounded-lg">
+      <div className="flex items-center justify-center h-[700px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
         <Loader2 className="w-6 h-6 animate-spin text-primary mr-3" />
-        <span className="text-text-secondary">Loading redshift fit...</span>
+        <span className="text-text-secondary dark:text-slate-400">Loading redshift fit...</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-[700px] bg-card border border-border rounded-lg">
-        <AlertCircle className="w-8 h-8 text-red-500 mb-3" />
-        <p className="text-text-secondary">{error}</p>
+      <div className="flex flex-col items-center justify-center h-[700px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
+        <AlertCircle className="w-8 h-8 text-red-500 dark:text-red-400 mb-3" />
+        <p className="text-text-secondary dark:text-slate-400">{error}</p>
       </div>
     );
   }
@@ -342,9 +352,9 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
   }
 
   return (
-    <div className="bg-white border border-border rounded-lg overflow-hidden">
+    <div className="bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
       {/* Controls */}
-      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-gray-50">
+      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border dark:border-slate-700 bg-gray-50 dark:bg-slate-900">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
 
         <ControlDivider />

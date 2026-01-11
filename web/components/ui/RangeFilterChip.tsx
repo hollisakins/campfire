@@ -103,7 +103,7 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
           border transition-all duration-150
           ${isActive
             ? 'bg-primary/10 border-primary text-primary'
-            : 'bg-card border-border text-text-secondary hover:border-text-secondary hover:text-text-primary'
+            : 'bg-card dark:bg-slate-800 border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200'
           }
         `}
       >
@@ -120,12 +120,12 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-[280px] bg-background border border-border rounded-lg shadow-lg p-4">
+        <div className="absolute z-50 mt-1 w-[280px] bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg p-4">
           <div className="space-y-4">
             {/* Range inputs */}
             <div className="flex items-center gap-2">
               <div className="flex-1">
-                <label className="block text-xs text-text-secondary mb-1">Min</label>
+                <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">Min</label>
                 <input
                   type="number"
                   value={localMin}
@@ -135,12 +135,12 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
                   min={minBound}
                   max={maxBound}
                   step={step}
-                  className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  className="w-full px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                 />
               </div>
-              <span className="text-text-secondary mt-5">—</span>
+              <span className="text-text-secondary dark:text-slate-400 mt-5">—</span>
               <div className="flex-1">
-                <label className="block text-xs text-text-secondary mb-1">Max</label>
+                <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">Max</label>
                 <input
                   type="number"
                   value={localMax}
@@ -150,14 +150,14 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
                   min={minBound}
                   max={maxBound}
                   step={step}
-                  className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  className="w-full px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                 />
               </div>
             </div>
 
             {/* Quick presets */}
             <div>
-              <label className="block text-xs text-text-secondary mb-2">Quick ranges</label>
+              <label className="block text-xs text-text-secondary dark:text-slate-400 mb-2">Quick ranges</label>
               <div className="flex flex-wrap gap-1.5">
                 {(quickRanges ?? [
                   { label: '0-1', min: 0, max: 1 },
@@ -172,7 +172,7 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
                       setLocalMin(preset.min?.toString() ?? '');
                       setLocalMax(preset.max?.toString() ?? '');
                     }}
-                    className="px-2 py-1 text-xs rounded border border-border hover:border-primary hover:text-primary transition-colors"
+                    className="px-2 py-1 text-xs rounded border border-border dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300 hover:border-primary hover:text-primary transition-colors"
                   >
                     {preset.label}
                   </button>
@@ -181,13 +181,13 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
             </div>
 
             {/* Action buttons */}
-            <div className="flex gap-2 pt-2 border-t border-border">
+            <div className="flex gap-2 pt-2 border-t border-border dark:border-slate-700">
               <button
                 onClick={() => {
                   setLocalMin('');
                   setLocalMax('');
                 }}
-                className="flex-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
+                className="flex-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
               >
                 Clear
               </button>

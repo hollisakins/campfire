@@ -114,8 +114,8 @@ export const ChipSelect: React.FC<ChipSelectProps> = ({
               border transition-all duration-150
               ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}
               ${isSelected
-                ? 'border-transparent text-gray-900'
-                : 'border-border bg-card/50 text-text-secondary hover:bg-card hover:text-text-primary'
+                ? 'border-transparent text-gray-900 dark:text-slate-100'
+                : 'border-border dark:border-slate-700 bg-card/50 dark:bg-slate-800/50 text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200'
               }
             `}
             style={

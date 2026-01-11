@@ -7,6 +7,7 @@ import type { SpectrumData } from '@/app/api/spectrum/route';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
+import { getPlotColors } from './plotting-utils';
 
 // Dynamic import of Plotly to avoid SSR issues
 const Plot = dynamic(() => import('react-plotly.js'), {
@@ -38,21 +39,6 @@ const EMISSION_LINES = [
   { name: 'Paβ', wave: 1.2822, color: '#dc2626' },       // red-600
   { name: 'Paα', wave: 1.8751, color: '#b91c1c' },       // red-700 (longest)
 ];
-
-// Helper to get Plotly colors from CSS variables
-function getPlotColors(): { bg: string; paper: string; grid: string; text: string; textSecondary: string } {
-  if (typeof window === 'undefined') {
-    return { bg: '#ffffff', paper: '#f8fafc', grid: '#e2e8f0', text: '#0f172a', textSecondary: '#64748b' };
-  }
-  const style = getComputedStyle(document.documentElement);
-  return {
-    bg: style.getPropertyValue('--plot-bg').trim() || '#ffffff',
-    paper: style.getPropertyValue('--plot-paper').trim() || '#f8fafc',
-    grid: style.getPropertyValue('--plot-grid').trim() || '#e2e8f0',
-    text: style.getPropertyValue('--plot-text').trim() || '#0f172a',
-    textSecondary: style.getPropertyValue('--plot-text-secondary').trim() || '#64748b',
-  };
-}
 
 interface SpectrumPlotProps {
   fitsPath: string;

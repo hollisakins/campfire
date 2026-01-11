@@ -27,37 +27,37 @@ export const CoordinateDisplay: React.FC<CoordinateDisplayProps> = ({ ra, dec })
 
   return (
     <div className="flex items-center gap-2 text-sm">
-      <span className="text-text-secondary">Coordinates:</span>
+      <span className="text-text-secondary dark:text-slate-400">Coordinates:</span>
 
       {/* Decimal Degrees */}
       <button
         onClick={() => copyToClipboard(coords.decimal.combined, setCopiedDecimal)}
-        className="inline-flex items-center gap-1 hover:bg-gray-100 px-2 py-1 rounded transition-colors group"
+        className="inline-flex items-center gap-1 hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors group"
         title="Click to copy decimal coordinates"
       >
-        <span className="font-mono text-text-primary">
+        <span className="font-mono text-text-primary dark:text-slate-100">
           {coords.decimal.combined}
         </span>
         {copiedDecimal ? (
-          <Check className="w-3 h-3 text-green-600" />
+          <Check className="w-3 h-3 text-green-600 dark:text-green-400" />
         ) : (
-          <Copy className="w-3 h-3 text-gray-400 group-hover:text-gray-600" />
+          <Copy className="w-3 h-3 text-gray-400 dark:text-slate-500 group-hover:text-gray-600 dark:group-hover:text-slate-300" />
         )}
       </button>
 
       {/* Sexagesimal */}
       <button
         onClick={() => copyToClipboard(coords.sexagesimal.combined, setCopiedSexagesimal)}
-        className="inline-flex items-center gap-1 hover:bg-gray-100 px-2 py-1 rounded transition-colors group"
+        className="inline-flex items-center gap-1 hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors group"
         title="Click to copy sexagesimal coordinates"
       >
-        <span className="font-mono text-text-primary">
+        <span className="font-mono text-text-primary dark:text-slate-100">
           {coords.sexagesimal.combined}
         </span>
         {copiedSexagesimal ? (
-          <Check className="w-3 h-3 text-green-600" />
+          <Check className="w-3 h-3 text-green-600 dark:text-green-400" />
         ) : (
-          <Copy className="w-3 h-3 text-gray-400 group-hover:text-gray-600" />
+          <Copy className="w-3 h-3 text-gray-400 dark:text-slate-500 group-hover:text-gray-600 dark:group-hover:text-slate-300" />
         )}
       </button>
     </div>

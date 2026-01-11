@@ -86,7 +86,7 @@ const SortableHeader: React.FC<{
       ) : sorted === 'desc' ? (
         <ArrowDown className="w-3.5 h-3.5 text-primary" />
       ) : (
-        <ArrowUpDown className="w-3.5 h-3.5 text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity" />
+        <ArrowUpDown className="w-3.5 h-3.5 text-text-secondary dark:text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
       )}
     </button>
   );
@@ -101,7 +101,7 @@ const TableSkeletonRow: React.FC<{ columns: ColumnDef<SpectrumObject>[] }> = ({ 
         className="px-4 py-3 whitespace-nowrap"
         style={{ width: `${col.minSize || 150}px` }}
       >
-        <div className="h-4 bg-gray-200 rounded w-full"></div>
+        <div className="h-4 bg-gray-200 dark:bg-slate-700 rounded w-full"></div>
       </td>
     ))}
   </tr>
@@ -206,7 +206,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       <SortableHeader column={column}>Distance</SortableHeader>
     ),
     cell: ({ row }) => (
-      <span className="text-sm font-mono text-text-primary">
+      <span className="text-sm font-mono text-text-primary dark:text-slate-100">
         {row.original.distance != null ? formatDistance(row.original.distance) : 'N/A'}
       </span>
     ),
@@ -280,7 +280,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Field</SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm text-text-primary uppercase">{row.original.field}</span>
+          <span className="text-sm text-text-primary dark:text-slate-100 uppercase">{row.original.field}</span>
         ),
         sortingFn: 'alphanumeric',
       },
@@ -291,7 +291,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>RA</SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary">
+          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
             {row.original.ra.toFixed(6)}
           </span>
         ),
@@ -304,7 +304,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Dec</SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary">
+          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
             {row.original.dec.toFixed(6)}
           </span>
         ),
@@ -319,7 +319,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Redshift</SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary">
+          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
             {row.original.redshift !== null ? row.original.redshift.toFixed(4) : 'N/A'}
           </span>
         ),
@@ -340,7 +340,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           return (
             <div className="flex items-center gap-1.5">
               <span>{quality.icon}</span>
-              <span className="text-sm text-text-primary">{quality.short}</span>
+              <span className="text-sm text-text-primary dark:text-slate-100">{quality.short}</span>
             </div>
           );
         },
@@ -365,7 +365,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           </SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm text-text-primary text-center block">
+          <span className="text-sm text-text-primary dark:text-slate-100 text-center block">
             {row.original.num_gratings || row.original.spectra.length}
           </span>
         ),
@@ -379,7 +379,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Max S/N</SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary">
+          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
             {row.original.max_snr ? row.original.max_snr.toFixed(1) : 'N/A'}
           </span>
         ),
@@ -422,13 +422,13 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
     <Card className="overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
                   <th
                     key={header.id}
-                    className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider"
+                    className="px-4 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider"
                     style={{ width: `${header.getSize()}px` }}
                   >
                     {header.isPlaceholder
@@ -439,7 +439,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
               </tr>
             ))}
           </thead>
-          <tbody className="bg-white divide-y divide-border">
+          <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
             {loading ? (
               // Loading state: show skeleton rows
               <TableSkeleton
@@ -450,15 +450,15 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
               // Error state: show error message
               <tr>
                 <td colSpan={hasCoordinateSearch ? 11 : 10} className="px-4 py-16 text-center">
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-4 inline-block">
-                    <p className="text-red-800">{error}</p>
+                  <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4 inline-block">
+                    <p className="text-red-800 dark:text-red-400">{error}</p>
                   </div>
                 </td>
               </tr>
             ) : spectra.length === 0 ? (
               // Empty state: show message
               <tr>
-                <td colSpan={hasCoordinateSearch ? 11 : 10} className="px-4 py-12 text-center text-text-secondary">
+                <td colSpan={hasCoordinateSearch ? 11 : 10} className="px-4 py-12 text-center text-text-secondary dark:text-slate-400">
                   No results found.
                   <p className="text-sm mt-2">
                     If you&apos;re looking for proprietary data, you may need to enter an access code on your profile page.
@@ -470,7 +470,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
               table.getRowModel().rows.map((row) => (
                 <tr
                   key={row.id}
-                  className="hover:bg-card-hover transition-colors"
+                  className="hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
                 >
                   {row.getVisibleCells().map((cell) => (
                     <td
@@ -489,7 +489,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       </div>
 
       {/* Always show pagination footer */}
-      <div className="border-t border-border">
+      <div className="border-t border-border dark:border-slate-700">
         <TablePagination
           pageIndex={table.getState().pagination.pageIndex}
           pageSize={table.getState().pagination.pageSize}

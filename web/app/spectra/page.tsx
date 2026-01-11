@@ -152,13 +152,13 @@ function SpectraPageContent() {
         />
 
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
-            <LogIn className="w-8 h-8 text-text-secondary" />
+          <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
+            <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
           </div>
-          <h2 className="text-2xl font-semibold text-text-primary mb-2">
+          <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
             Sign in to view spectra
           </h2>
-          <p className="text-text-secondary mb-6 max-w-md">
+          <p className="text-text-secondary dark:text-slate-400 mb-6 max-w-md">
             Access to NIRSpec spectra requires authentication. Please sign in with your
             CAMPFIRE account to browse the catalog.
           </p>
@@ -187,18 +187,18 @@ function SpectraPageContent() {
 
       {/* Page Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-text-primary mb-2">NIRSpec Spectra</h1>
-        <p className="text-text-secondary">
+        <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100 mb-2">NIRSpec Spectra</h1>
+        <p className="text-text-secondary dark:text-slate-400">
           Browse and filter the CAMPFIRE spectroscopic catalog
         </p>
       </div>
 
       {/* Access Code Banner for users without proprietary access */}
       {!authLoading && user && needsAccessCode && (
-        <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-3">
-          <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+        <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-900 rounded-lg flex items-start gap-3">
+          <Info className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
           <div className="flex-1">
-            <p className="text-sm text-blue-900">
+            <p className="text-sm text-blue-900 dark:text-blue-200">
               <strong>You&apos;re viewing public programs only.</strong> To access proprietary programs, redeem an access code.
             </p>
           </div>
@@ -271,7 +271,7 @@ function SpectraPageLoading() {
       />
       <div className="flex items-center justify-center py-16">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
-        <span className="ml-3 text-text-secondary">Loading...</span>
+        <span className="ml-3 text-text-secondary dark:text-slate-400">Loading...</span>
       </div>
     </div>
   );

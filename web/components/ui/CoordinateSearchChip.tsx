@@ -139,7 +139,7 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
           border transition-all duration-150
           ${isActive
             ? 'bg-primary/10 border-primary text-primary'
-            : 'bg-card border-border text-text-secondary hover:border-text-secondary hover:text-text-primary'
+            : 'bg-card dark:bg-slate-800 border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200'
           }
         `}
       >
@@ -157,11 +157,11 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-[320px] bg-background border border-border rounded-lg shadow-lg p-4">
+        <div className="absolute z-50 mt-1 w-[320px] bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg p-4">
           <div className="space-y-4">
             {/* Coordinate input */}
             <div>
-              <label className="block text-xs text-text-secondary mb-1">
+              <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">
                 Coordinates (RA Dec)
               </label>
               <input
@@ -170,21 +170,21 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
                 onChange={(e) => setCoordInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="150.5 -2.3  or  10h02m30s -02d18m00s"
-                className={`w-full px-3 py-2 text-sm border rounded-md bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
-                  ${validationError ? 'border-red-500' : 'border-border'}
+                className={`w-full px-3 py-2 text-sm border rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
+                  ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border dark:border-slate-600'}
                 `}
               />
               {validationError && (
-                <p className="text-xs text-red-500 mt-1">{validationError}</p>
+                <p className="text-xs text-red-500 dark:text-red-400 mt-1">{validationError}</p>
               )}
-              <p className="text-xs text-text-secondary mt-1">
+              <p className="text-xs text-text-secondary dark:text-slate-400 mt-1">
                 Decimal or hmsdms
               </p>
             </div>
 
             {/* Radius input with units */}
             <div>
-              <label className="block text-xs text-text-secondary mb-1">
+              <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">
                 Search radius (max 1 degree)
               </label>
               <div className="flex gap-2">
@@ -196,12 +196,12 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
                   placeholder="1"
                   min="0"
                   step="0.1"
-                  className="w-24 px-3 py-2 text-sm border border-border rounded-md bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  className="w-24 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                 />
                 <select
                   value={unitInput}
                   onChange={(e) => setUnitInput(e.target.value as 'degrees' | 'arcmin' | 'arcsec')}
-                  className="flex-1 px-3 py-2 text-sm border border-border rounded-md bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  className="flex-1 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                 >
                   <option value="arcsec">arcseconds</option>
                   <option value="arcmin">arcminutes</option>
@@ -211,7 +211,7 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
             </div>
 
             {/* Action buttons */}
-            <div className="flex gap-2 pt-2 border-t border-border">
+            <div className="flex gap-2 pt-2 border-t border-border dark:border-slate-700">
               <button
                 onClick={() => {
                   setCoordInput('');
@@ -219,7 +219,7 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
                   setUnitInput('arcmin');
                   setValidationError(null);
                 }}
-                className="flex-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
+                className="flex-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
               >
                 Clear
               </button>
