@@ -12,7 +12,54 @@ export interface UserProfile {
   is_group_account: boolean;
   can_comment: boolean;
   is_admin?: boolean;
+  preferences?: UserPreferences;
 }
+
+// ============================================
+// User Preferences
+// ============================================
+
+export type ThemeSetting = 'light' | 'dark' | 'system';
+export type FluxUnit = 'fnu' | 'flambda';
+export type Colorscale2D = 'Viridis' | 'Plasma' | 'Inferno' | 'Magma' | 'Cividis' | 'Greys';
+
+export interface SpectrumPreferences {
+  fluxUnit: FluxUnit;
+  colorscale2D: Colorscale2D;
+  snrMin: number;
+  snrMax: number;
+  spectrumColor: string;
+}
+
+export interface UserPreferences {
+  theme: ThemeSetting;
+  spectrum: SpectrumPreferences;
+}
+
+export const DEFAULT_SPECTRUM_PREFERENCES: SpectrumPreferences = {
+  fluxUnit: 'flambda',
+  colorscale2D: 'Viridis',
+  snrMin: -5,
+  snrMax: 10,
+  spectrumColor: '#c026d3',
+};
+
+export const DEFAULT_USER_PREFERENCES: UserPreferences = {
+  theme: 'system',
+  spectrum: DEFAULT_SPECTRUM_PREFERENCES,
+};
+
+// Preset spectrum colors that work well in both light and dark modes
+export const SPECTRUM_COLOR_PRESETS = [
+  { color: '#c026d3', name: 'Magenta' },
+  { color: '#2563eb', name: 'Blue' },
+  { color: '#059669', name: 'Emerald' },
+  { color: '#dc2626', name: 'Red' },
+  { color: '#ea580c', name: 'Orange' },
+  { color: '#7c3aed', name: 'Violet' },
+  { color: '#0891b2', name: 'Cyan' },
+  { color: '#65a30d', name: 'Lime' },
+];
 
 export interface AccessCode {
   id: string;

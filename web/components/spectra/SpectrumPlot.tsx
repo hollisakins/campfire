@@ -4,12 +4,15 @@ import React, { useState, useEffect, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { Loader2, AlertCircle } from 'lucide-react';
 import type { SpectrumData } from '@/app/api/spectrum/route';
+import { usePreferences } from '@/lib/contexts/PreferencesContext';
+import { useTheme } from '@/lib/contexts/ThemeContext';
+import type { Colorscale2D, FluxUnit } from '@/lib/types';
 
 // Dynamic import of Plotly to avoid SSR issues
 const Plot = dynamic(() => import('react-plotly.js'), {
   ssr: false,
   loading: () => (
-    <div className="flex items-center justify-center h-[700px] bg-card border border-border rounded-lg">
+    <div className="flex items-center justify-center h-[700px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
       <Loader2 className="w-6 h-6 animate-spin text-primary" />
     </div>
   ),
@@ -36,7 +39,20 @@ const EMISSION_LINES = [
   { name: 'Paα', wave: 1.8751, color: '#b91c1c' },       // red-700 (longest)
 ];
 
-type FluxUnit = 'fnu' | 'flambda';
+// Helper to get Plotly colors from CSS variables
+function getPlotColors(): { bg: string; paper: string; grid: string; text: string; textSecondary: string } {
+  if (typeof window === 'undefined') {
+    return { bg: '#ffffff', paper: '#f8fafc', grid: '#e2e8f0', text: '#0f172a', textSecondary: '#64748b' };
+  }
+  const style = getComputedStyle(document.documentElement);
+  return {
+    bg: style.getPropertyValue('--plot-bg').trim() || '#ffffff',
+    paper: style.getPropertyValue('--plot-paper').trim() || '#f8fafc',
+    grid: style.getPropertyValue('--plot-grid').trim() || '#e2e8f0',
+    text: style.getPropertyValue('--plot-text').trim() || '#0f172a',
+    textSecondary: style.getPropertyValue('--plot-text-secondary').trim() || '#64748b',
+  };
+}
 
 interface SpectrumPlotProps {
   fitsPath: string;
@@ -45,15 +61,33 @@ interface SpectrumPlotProps {
 }
 
 export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, initialRedshift }) => {
+  const { spectrumPreferences } = usePreferences();
+  const { resolvedTheme } = useTheme();
+
   const [data, setData] = useState<SpectrumData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [fluxUnit, setFluxUnit] = useState<FluxUnit>('flambda');
+  const [fluxUnit, setFluxUnit] = useState<FluxUnit>(spectrumPreferences.fluxUnit);
+  const [colorscale, setColorscale] = useState<Colorscale2D>(spectrumPreferences.colorscale2D);
   const [showEmissionLines, setShowEmissionLines] = useState(false);
   const [redshift, setRedshift] = useState(initialRedshift ?? 0);
   const [redshiftInput, setRedshiftInput] = useState((initialRedshift ?? 0).toFixed(4));
-  const [colorMin, setColorMin] = useState(-5);
-  const [colorMax, setColorMax] = useState(10);
+  const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
+  const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);
+  const [spectrumColor, setSpectrumColor] = useState(spectrumPreferences.spectrumColor);
+
+  // Update state when preferences change
+  useEffect(() => {
+    setFluxUnit(spectrumPreferences.fluxUnit);
+    setColorscale(spectrumPreferences.colorscale2D);
+    setColorMin(spectrumPreferences.snrMin);
+    setColorMax(spectrumPreferences.snrMax);
+    setSpectrumColor(spectrumPreferences.spectrumColor);
+  }, [spectrumPreferences]);
+
+  // Get current plot colors based on theme
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const plotColors = useMemo(() => getPlotColors(), [resolvedTheme]);
 
   // Convert f_nu to f_lambda: f_λ = f_ν * c / λ²
   // f_nu is in μJy (1 μJy = 10^-29 erg/s/cm²/Hz), wavelength in μm
@@ -165,7 +199,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         x: data.wave,
         y: hasProfile ? data.profile_pix : undefined,
         type: 'heatmap' as const,
-        colorscale: 'Viridis',
+        colorscale: colorscale,
         zmin: colorMin,
         zmax: colorMax,
         showscale: false, // Remove colorbar - using profile panel instead
@@ -178,7 +212,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         x: [...wave, ...wave.slice().reverse()],
         y: [...upperBound, ...lowerBound.slice().reverse()],
         fill: 'toself',
-        fillcolor: 'rgba(192, 38, 211, 0.15)',
+        fillcolor: spectrumColor + '26', // Add 15% opacity (hex 26 ≈ 15%)
         line: { color: 'transparent', shape: 'hvh' },
         name: '1σ error',
         hoverinfo: 'skip' as const,
@@ -194,7 +228,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         mode: 'lines' as const,
         name: 'Flux',
         line: {
-          color: '#c026d3',
+          color: spectrumColor,
           width: 1.5,
           shape: 'hvh',
         },
@@ -223,7 +257,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         yaxis: 'y3',
       });
 
-      // Cross-dispersion profile line (black step function)
+      // Cross-dispersion profile line (adapts to theme)
       traces.push({
         x: profStepX,
         y: profStepY,
@@ -231,7 +265,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         mode: 'lines' as const,
         name: 'Spatial profile',
         line: {
-          color: '#000000',
+          color: plotColors.text,
           width: 1.5,
         },
         hovertemplate: 'Profile: %{x:.2f}<br>y: %{y:.1f} pix<extra></extra>',
@@ -246,7 +280,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         y: [-10, 10],
         type: 'scatter' as const,
         mode: 'lines' as const,
-        line: { color: '#e2e8f0', width: 1 },
+        line: { color: plotColors.grid, width: 1 },
         hoverinfo: 'skip' as const,
         showlegend: false,
         xaxis: 'x2',
@@ -290,19 +324,20 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
       uirevision: 'constant', // Preserve zoom/pan state across updates
       title: {
         text: `${grating} Spectrum`,
-        font: { size: 16, color: '#0f172a' },
+        font: { size: 16, color: plotColors.text },
       },
       // X-axis: Shared wavelength axis for both 2D and 1D spectra (linked zoom/pan)
       xaxis: {
-        title: { text: 'Wavelength (μm)' },
-        gridcolor: '#e2e8f0',
-        zerolinecolor: '#e2e8f0',
+        title: { text: 'Wavelength (μm)', font: { color: plotColors.text } },
+        gridcolor: plotColors.grid,
+        zerolinecolor: plotColors.grid,
+        tickfont: { color: plotColors.text },
         domain: [0, 0.90],
       },
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
-        gridcolor: '#e2e8f0',
-        zerolinecolor: '#e2e8f0',
+        gridcolor: plotColors.grid,
+        zerolinecolor: plotColors.grid,
         domain: [0.92, 1.0],
         anchor: 'y3' as const,
         showticklabels: false,
@@ -311,32 +346,34 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
       },
       // Y-axis for 1D spectrum (bottom)
       yaxis: {
-        title: { text: fluxLabel },
-        gridcolor: '#e2e8f0',
-        zerolinecolor: '#e2e8f0',
+        title: { text: fluxLabel, font: { color: plotColors.text } },
+        gridcolor: plotColors.grid,
+        zerolinecolor: plotColors.grid,
+        tickfont: { color: plotColors.text },
         exponentformat: 'e' as const,
         domain: [0, 0.7],
         anchor: 'x' as const,
       },
       // Y-axis for 2D heatmap (top-left)
       yaxis2: {
-        title: { text: 'y [pix]' },
-        gridcolor: '#e2e8f0',
+        title: { text: 'y [pix]', font: { color: plotColors.text } },
+        gridcolor: plotColors.grid,
+        tickfont: { color: plotColors.text },
         domain: [0.78, 1],
         anchor: 'x' as const,
         range: [-10, 10],
       },
       // Y-axis for profile panel (top-right, matches yaxis2)
       yaxis3: {
-        gridcolor: '#e2e8f0',
+        gridcolor: plotColors.grid,
         domain: [0.78, 1],
         anchor: 'x2' as const,
         matches: 'y2' as const, // Link range to yaxis2
         showticklabels: false,
       },
       margin: { l: 80, r: 80, t: 50, b: 50 },
-      paper_bgcolor: 'white',
-      plot_bgcolor: 'white',
+      paper_bgcolor: plotColors.paper,
+      plot_bgcolor: plotColors.bg,
       hovermode: 'x unified' as const,
       showlegend: true,
       legend: {
@@ -344,31 +381,31 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         xanchor: 'center' as const,
         y: 0.75,
         yanchor: 'top' as const,
-        bgcolor: 'rgba(255,255,255,0.9)',
-        bordercolor: '#e2e8f0',
+        bgcolor: plotColors.paper,
+        bordercolor: plotColors.grid,
         borderwidth: 1,
-        font: { size: 10 },
+        font: { size: 10, color: plotColors.text },
         tracegroupgap: 2,
       },
     };
 
     return { traces, layout };
-  }, [data, processedData, fluxUnit, colorMin, colorMax, showEmissionLines, redshift, grating]);
+  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, spectrumColor, plotColors, showEmissionLines, redshift, grating]);
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-[700px] bg-card border border-border rounded-lg">
+      <div className="flex items-center justify-center h-[700px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
         <Loader2 className="w-6 h-6 animate-spin text-primary mr-3" />
-        <span className="text-text-secondary">Loading spectrum...</span>
+        <span className="text-text-secondary dark:text-slate-400">Loading spectrum...</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-[700px] bg-card border border-border rounded-lg">
+      <div className="flex flex-col items-center justify-center h-[700px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
         <AlertCircle className="w-8 h-8 text-red-500 mb-3" />
-        <p className="text-text-secondary">{error}</p>
+        <p className="text-text-secondary dark:text-slate-400">{error}</p>
         <button
           onClick={() => window.location.reload()}
           className="mt-4 px-4 py-2 text-sm text-primary hover:underline"
@@ -384,19 +421,19 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
   }
 
   return (
-    <div className="bg-white border border-border rounded-lg overflow-hidden">
+    <div className="bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
       {/* Controls */}
-      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-gray-50">
+      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border dark:border-slate-700 bg-gray-50 dark:bg-slate-900">
         {/* Flux unit toggle */}
         <div className="flex items-center gap-2">
-          <span className="text-sm text-text-secondary">Units:</span>
-          <div className="flex rounded-md overflow-hidden border border-border">
+          <span className="text-sm text-text-secondary dark:text-slate-400">Units:</span>
+          <div className="flex rounded-md overflow-hidden border border-border dark:border-slate-600">
             <button
               onClick={() => setFluxUnit('fnu')}
               className={`px-3 py-1 text-sm transition-colors ${
                 fluxUnit === 'fnu'
                   ? 'bg-primary text-white'
-                  : 'bg-white text-text-secondary hover:bg-gray-100'
+                  : 'bg-white dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700'
               }`}
             >
               fν
@@ -406,7 +443,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
               className={`px-3 py-1 text-sm transition-colors ${
                 fluxUnit === 'flambda'
                   ? 'bg-primary text-white'
-                  : 'bg-white text-text-secondary hover:bg-gray-100'
+                  : 'bg-white dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700'
               }`}
             >
               fλ
@@ -415,31 +452,31 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         </div>
 
         {/* Divider */}
-        <div className="h-6 w-px bg-border" />
+        <div className="h-6 w-px bg-border dark:bg-slate-600" />
 
         {/* 2D color scale controls */}
         <div className="flex items-center gap-2">
-          <span className="text-sm text-text-secondary">2D scale:</span>
+          <span className="text-sm text-text-secondary dark:text-slate-400">2D scale:</span>
           <input
             type="number"
             value={colorMin}
             onChange={(e) => setColorMin(parseFloat(e.target.value) || 0)}
             step={1}
-            className="w-16 px-2 py-1 text-sm border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-16 px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
             title="Color minimum (S/N)"
           />
-          <span className="text-sm text-text-secondary">to</span>
+          <span className="text-sm text-text-secondary dark:text-slate-400">to</span>
           <input
             type="number"
             value={colorMax}
             onChange={(e) => setColorMax(parseFloat(e.target.value) || 0)}
             step={1}
-            className="w-16 px-2 py-1 text-sm border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-16 px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
             title="Color maximum (S/N)"
           />
           <button
-            onClick={() => { setColorMin(-5); setColorMax(10); }}
-            className="px-2 py-1 text-xs text-text-secondary hover:text-text-primary border border-border rounded hover:bg-gray-100"
+            onClick={() => { setColorMin(spectrumPreferences.snrMin); setColorMax(spectrumPreferences.snrMax); }}
+            className="px-2 py-1 text-xs text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-100 border border-border dark:border-slate-600 rounded hover:bg-gray-100 dark:hover:bg-slate-700"
             title="Reset to default"
           >
             Reset
@@ -447,7 +484,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         </div>
 
         {/* Divider */}
-        <div className="h-6 w-px bg-border" />
+        <div className="h-6 w-px bg-border dark:bg-slate-600" />
 
         {/* Emission lines toggle */}
         <div className="flex items-center gap-2">
@@ -456,16 +493,16 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
               type="checkbox"
               checked={showEmissionLines}
               onChange={(e) => setShowEmissionLines(e.target.checked)}
-              className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+              className="w-4 h-4 rounded border-border dark:border-slate-600 text-primary focus:ring-primary"
             />
-            <span className="text-sm text-text-secondary">Emission lines</span>
+            <span className="text-sm text-text-secondary dark:text-slate-400">Emission lines</span>
           </label>
         </div>
 
         {/* Redshift slider (only shown when emission lines are enabled) */}
         {showEmissionLines && (
           <div className="flex items-center gap-2 flex-1 max-w-md">
-            <span className="text-sm text-text-secondary">z =</span>
+            <span className="text-sm text-text-secondary dark:text-slate-400">z =</span>
             <input
               type="text"
               value={redshiftInput}
@@ -484,7 +521,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
                   e.currentTarget.blur();
                 }
               }}
-              className="w-20 px-2 py-1 text-sm border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
+              className="w-20 px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
             />
             <input
               type="range"
@@ -497,7 +534,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
               min={0}
               max={15}
               step={0.01}
-              className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary"
+              className="flex-1 h-2 bg-gray-200 dark:bg-slate-600 rounded-lg appearance-none cursor-pointer accent-primary"
             />
           </div>
         )}

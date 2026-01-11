@@ -3,13 +3,24 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Flame, LogOut, User, Shield } from 'lucide-react';
+import { Flame, LogOut, User, Shield, Sun, Moon, Monitor } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { useTheme } from '@/lib/contexts/ThemeContext';
 
 export const Navigation: React.FC = () => {
   const pathname = usePathname();
   const router = useRouter();
   const { user, userProfile, signOut } = useAuth();
+  const { theme, setTheme } = useTheme();
+
+  const cycleTheme = () => {
+    const themes: Array<'light' | 'dark' | 'system'> = ['light', 'system', 'dark'];
+    const currentIndex = themes.indexOf(theme);
+    const nextIndex = (currentIndex + 1) % themes.length;
+    setTheme(themes[nextIndex]);
+  };
+
+  const ThemeIcon = theme === 'dark' ? Moon : theme === 'light' ? Sun : Monitor;
 
   const isActive = (path: string) => {
     if (path === '/') return pathname === '/';
@@ -28,7 +39,7 @@ export const Navigation: React.FC = () => {
   };
 
   return (
-    <nav className="bg-header text-white shadow-md">
+    <nav className="bg-header dark:bg-slate-900 text-white shadow-md">
       <div className="container mx-auto px-4 py-4">
         <div className="flex items-center justify-between">
           {/* Logo */}
@@ -55,9 +66,19 @@ export const Navigation: React.FC = () => {
               </Link>
             ))}
 
+            {/* Theme Toggle */}
+            <button
+              onClick={cycleTheme}
+              className="flex items-center space-x-1 text-sm text-gray-300 hover:text-white transition-colors"
+              aria-label={`Current theme: ${theme}. Click to change.`}
+              title={`Theme: ${theme}`}
+            >
+              <ThemeIcon className="w-4 h-4" />
+            </button>
+
             {/* User Menu */}
             {user ? (
-              <div className="flex items-center space-x-4 ml-4 pl-4 border-l border-gray-600">
+              <div className="flex items-center space-x-4 ml-4 pl-4 border-l border-gray-600 dark:border-slate-700">
                 {userProfile?.is_admin && (
                   <Link
                     href="/admin"
@@ -85,7 +106,7 @@ export const Navigation: React.FC = () => {
             ) : (
               <Link
                 href="/login"
-                className="text-sm font-medium text-gray-300 hover:text-white transition-colors ml-4 pl-4 border-l border-gray-600"
+                className="text-sm font-medium text-gray-300 hover:text-white transition-colors ml-4 pl-4 border-l border-gray-600 dark:border-slate-700"
               >
                 Sign In
               </Link>

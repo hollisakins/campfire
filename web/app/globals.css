@@ -6,6 +6,26 @@
   --foreground-rgb: 15, 23, 42;
   --background-start-rgb: 255, 255, 255;
   --background-end-rgb: 255, 255, 255;
+
+  /* Plotly chart colors (read via JavaScript) */
+  --plot-bg: #ffffff;
+  --plot-paper: #f8fafc;
+  --plot-grid: #e2e8f0;
+  --plot-text: #0f172a;
+  --plot-text-secondary: #64748b;
+}
+
+/* Dark mode Plotly colors */
+.dark {
+  --foreground-rgb: 241, 245, 249;
+  --background-start-rgb: 15, 23, 42;
+  --background-end-rgb: 15, 23, 42;
+
+  --plot-bg: #0f172a;
+  --plot-paper: #1e293b;
+  --plot-grid: #334155;
+  --plot-text: #f1f5f9;
+  --plot-text-secondary: #94a3b8;
 }
 
 body {
