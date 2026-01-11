@@ -13,14 +13,14 @@ interface FluxUnitToggleProps {
 export const FluxUnitToggle: React.FC<FluxUnitToggleProps> = ({ fluxUnit, onChange }) => {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-sm text-text-secondary">Units:</span>
-      <div className="flex rounded-md overflow-hidden border border-border">
+      <span className="text-sm text-text-secondary dark:text-slate-400">Units:</span>
+      <div className="flex rounded-md overflow-hidden border border-border dark:border-slate-600">
         <button
           onClick={() => onChange('fnu')}
           className={`px-3 py-1 text-sm transition-colors ${
             fluxUnit === 'fnu'
               ? 'bg-primary text-white'
-              : 'bg-white text-text-secondary hover:bg-gray-100'
+              : 'bg-white dark:bg-slate-700 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-600'
           }`}
         >
           fν
@@ -30,7 +30,7 @@ export const FluxUnitToggle: React.FC<FluxUnitToggleProps> = ({ fluxUnit, onChan
           className={`px-3 py-1 text-sm transition-colors ${
             fluxUnit === 'flambda'
               ? 'bg-primary text-white'
-              : 'bg-white text-text-secondary hover:bg-gray-100'
+              : 'bg-white dark:bg-slate-700 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-600'
           }`}
         >
           fλ
@@ -56,9 +56,9 @@ export const EmissionLinesControl: React.FC<EmissionLinesControlProps> = ({
           type="checkbox"
           checked={showEmissionLines}
           onChange={(e) => onChange(e.target.checked)}
-          className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+          className="w-4 h-4 rounded border-border dark:border-slate-600 text-primary focus:ring-primary dark:bg-slate-700"
         />
-        <span className="text-sm text-text-secondary">Emission lines</span>
+        <span className="text-sm text-text-secondary dark:text-slate-400">Emission lines</span>
       </label>
     </div>
   );
@@ -111,14 +111,14 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
 
   return (
     <div className="flex items-center gap-2 flex-1 max-w-md">
-      <span className="text-sm text-text-secondary">z =</span>
+      <span className="text-sm text-text-secondary dark:text-slate-400">z =</span>
       <input
         type="text"
         value={inputValue}
         onChange={(e) => setInputValue(e.target.value)}
         onBlur={handleInputBlur}
         onKeyDown={handleInputKeyDown}
-        className="w-20 px-2 py-1 text-sm border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
+        className="w-20 px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
       />
       <input
         type="range"
@@ -127,12 +127,12 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
         min={min}
         max={max}
         step={step}
-        className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary"
+        className="flex-1 h-2 bg-gray-200 dark:bg-slate-600 rounded-lg appearance-none cursor-pointer accent-primary"
       />
     </div>
   );
 };
 
 export const ControlDivider: React.FC = () => {
-  return <div className="h-6 w-px bg-border" />;
+  return <div className="h-6 w-px bg-border dark:bg-slate-600" />;
 };

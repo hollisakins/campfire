@@ -81,7 +81,7 @@ export default function AdminProgramsPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold text-text-primary">Programs</h1>
+        <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100">Programs</h1>
         <Button variant="secondary" size="sm" onClick={fetchPrograms}>
           <RefreshCw className="w-4 h-4 mr-2" />
           Refresh
@@ -89,13 +89,13 @@ export default function AdminProgramsPage() {
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-          <p className="text-red-800">{error}</p>
+        <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4 mb-6">
+          <p className="text-red-800 dark:text-red-400">{error}</p>
         </div>
       )}
 
-      <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-        <p className="text-sm text-blue-800">
+      <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-900 rounded-lg">
+        <p className="text-sm text-blue-800 dark:text-blue-300">
           <strong>Public programs</strong> are visible to all authenticated users.{' '}
           <strong>Private programs</strong> require users to redeem an access code.
         </p>
@@ -103,32 +103,32 @@ export default function AdminProgramsPage() {
 
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Program
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 PI
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Objects
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Users with Access
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Visibility
               </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Actions
               </th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-border">
+          <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
             {programs.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-6 py-12 text-center text-text-secondary">
+                <td colSpan={6} className="px-6 py-12 text-center text-text-secondary dark:text-slate-400">
                   No programs found.
                 </td>
               </tr>
@@ -137,26 +137,26 @@ export default function AdminProgramsPage() {
                 <tr key={program.program_id}>
                   <td className="px-6 py-4">
                     <div>
-                      <div className="text-sm font-medium text-text-primary">
+                      <div className="text-sm font-medium text-text-primary dark:text-slate-100">
                         {program.program_name || `Program ${program.program_id}`}
                       </div>
-                      <div className="text-xs text-text-secondary">
+                      <div className="text-xs text-text-secondary dark:text-slate-400">
                         ID: {program.program_id}
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-sm text-text-secondary">
+                  <td className="px-6 py-4 text-sm text-text-secondary dark:text-slate-400">
                     {program.pi_name || '—'}
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex items-center gap-1 text-sm text-text-primary">
-                      <FileText className="w-4 h-4 text-text-secondary" />
+                    <div className="flex items-center gap-1 text-sm text-text-primary dark:text-slate-100">
+                      <FileText className="w-4 h-4 text-text-secondary dark:text-slate-400" />
                       {program.object_count}
                     </div>
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex items-center gap-1 text-sm text-text-primary">
-                      <Users className="w-4 h-4 text-text-secondary" />
+                    <div className="flex items-center gap-1 text-sm text-text-primary dark:text-slate-100">
+                      <Users className="w-4 h-4 text-text-secondary dark:text-slate-400" />
                       {program.is_public ? 'All' : program.user_access_count}
                     </div>
                   </td>
@@ -164,8 +164,8 @@ export default function AdminProgramsPage() {
                     <span
                       className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full ${
                         program.is_public
-                          ? 'bg-blue-100 text-blue-800'
-                          : 'bg-gray-100 text-gray-800'
+                          ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-300'
+                          : 'bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-300'
                       }`}
                     >
                       {program.is_public ? (

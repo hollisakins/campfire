@@ -12,13 +12,13 @@ export default function Home() {
           <div className="flex items-center justify-center mb-4">
             <Flame className="w-16 h-16 text-primary" />
           </div>
-          <h1 className="text-5xl font-bold text-text-primary mb-4">
+          <h1 className="text-5xl font-bold text-text-primary dark:text-slate-100 mb-4">
             CAMPFIRE
           </h1>
-          <p className="text-xl text-text-secondary mb-2">
+          <p className="text-xl text-text-secondary dark:text-slate-400 mb-2">
             COSMOS Archive of MultiPle-Field Internal Reductions & Extractions
           </p>
-          <p className="text-lg text-text-secondary">
+          <p className="text-lg text-text-secondary dark:text-slate-400">
             Internal archive for JWST NIRCam imaging and NIRSpec spectroscopy data
           </p>
         </div>
@@ -29,9 +29,9 @@ export default function Home() {
           <Card className="p-8">
             <div className="flex items-center mb-4">
               <Camera className="w-8 h-8 text-primary mr-3" />
-              <h2 className="text-2xl font-bold text-text-primary">NIRCam</h2>
+              <h2 className="text-2xl font-bold text-text-primary dark:text-slate-100">NIRCam</h2>
             </div>
-            <p className="text-text-secondary mb-6">
+            <p className="text-text-secondary dark:text-slate-400 mb-6">
               Browse and download reduced NIRCam imaging mosaics from multiple survey fields.
             </p>
             <Link href="/nircam">
@@ -45,9 +45,9 @@ export default function Home() {
           <Card className="p-8">
             <div className="flex items-center mb-4">
               <Sparkles className="w-8 h-8 text-primary mr-3" />
-              <h2 className="text-2xl font-bold text-text-primary">NIRSpec</h2>
+              <h2 className="text-2xl font-bold text-text-primary dark:text-slate-100">NIRSpec</h2>
             </div>
-            <p className="text-text-secondary mb-6">
+            <p className="text-text-secondary dark:text-slate-400 mb-6">
               Explore reduced spectroscopy data with interactive tools and quality assessments.
             </p>
             <Link href="/spectra">
@@ -60,10 +60,10 @@ export default function Home() {
 
         {/* Info Section */}
         <Card className="p-6">
-          <h3 className="text-lg font-semibold text-text-primary mb-3">
+          <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100 mb-3">
             Access & Authentication
           </h3>
-          <p className="text-text-secondary text-sm">
+          <p className="text-text-secondary dark:text-slate-400 text-sm">
             CAMPFIRE contains proprietary JWST data. Access is restricted to team members with
             valid credentials. If you need access, please contact the program PI.
           </p>

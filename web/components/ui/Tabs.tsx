@@ -32,7 +32,7 @@ interface TabsListProps {
 
 export const TabsList: React.FC<TabsListProps> = ({ children, className = '' }) => {
   return (
-    <div className={`flex border-b border-border ${className}`}>
+    <div className={`flex border-b border-border dark:border-slate-700 ${className}`}>
       {children}
     </div>
   );
@@ -58,7 +58,7 @@ export const TabsTrigger: React.FC<TabsTriggerProps> = ({ value, children, class
         px-6 py-3 font-medium text-sm transition-colors relative
         ${isActive
           ? 'text-primary'
-          : 'text-text-secondary hover:text-text-primary'
+          : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
         }
         ${className}
       `}

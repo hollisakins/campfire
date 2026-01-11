@@ -20,10 +20,10 @@ export const RGBImage: React.FC<RGBImageProps> = ({
   if (!rgbImageUrl || imageError) {
     return (
       <div
-        className="bg-gray-200 rounded-lg flex items-center justify-center"
+        className="bg-gray-200 dark:bg-slate-700 rounded-lg flex items-center justify-center"
         style={{ width: size, height: size }}
       >
-        <p className="text-gray-500 text-sm text-center px-4">
+        <p className="text-gray-500 dark:text-slate-400 text-sm text-center px-4">
           No RGB image available
         </p>
       </div>
@@ -32,7 +32,7 @@ export const RGBImage: React.FC<RGBImageProps> = ({
 
   return (
     <div
-      className="relative rounded-lg overflow-hidden border border-gray-300"
+      className="relative rounded-lg overflow-hidden border border-gray-300 dark:border-slate-600"
       style={{ width: size, height: size }}
     >
       <Image

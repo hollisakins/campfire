@@ -332,11 +332,11 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
                 value={redshiftQuality}
                 onChange={e => setRedshiftQuality(parseInt(e.target.value))}
                 disabled={!canEdit}
-                className="px-2 py-1 text-sm border border-border dark:border-slate-600 rounded focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
+                className="px-2 py-1 text-sm border border-border dark:border-slate-600 rounded text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
                 style={{ backgroundColor: qualityDef.color }}
               >
                 {REDSHIFT_QUALITY.map(q => (
-                  <option key={q.value} value={q.value}>
+                  <option key={q.value} value={q.value} className="bg-white text-gray-900">
                     {q.icon} {q.label}
                   </option>
                 ))}

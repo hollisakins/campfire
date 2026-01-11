@@ -24,22 +24,22 @@ export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
   if (hasError) {
     return (
       <div
-        className="bg-gray-100 rounded flex items-center justify-center"
+        className="bg-gray-100 dark:bg-slate-700 rounded flex items-center justify-center"
         style={{ width, height }}
       >
-        <span className="text-gray-400 text-xs">--</span>
+        <span className="text-gray-400 dark:text-slate-500 text-xs">--</span>
       </div>
     );
   }
 
   return (
     <div
-      className="relative rounded overflow-hidden"
+      className="relative rounded overflow-hidden bg-gray-100 dark:bg-slate-700"
       style={{ width, height }}
     >
       {isLoading && (
         <div
-          className="absolute inset-0 bg-gray-100 animate-pulse"
+          className="absolute inset-0 bg-gray-100 dark:bg-slate-700 animate-pulse"
           style={{ width, height }}
         />
       )}
