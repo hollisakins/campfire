@@ -1,0 +1,2 @@
+
+A while back we discussed creating a Python API for CAMPFIRE to allow users to query the database and download spectra from within a notebook. I would like your help brainstorming this feature and your advice on how to best set this up. I think it would be very useful for users, particularly to perform selections based on the visual inspection results and object/data quality flags. 

@@ -23,15 +23,17 @@ export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
 
-  // Build URL with flux unit preference
-  const thumbnailUrl = `/api/spectrum-thumbnail?object_id=${encodeURIComponent(objectId)}&flux_unit=${spectrumPreferences.fluxUnit}`;
+  // Build URL with flux unit preference and accent color
+  // Encode color without the # prefix to avoid URL issues
+  const colorParam = encodeURIComponent(accentColorHex);
+  const thumbnailUrl = `/api/spectrum-thumbnail?object_id=${encodeURIComponent(objectId)}&flux_unit=${spectrumPreferences.fluxUnit}&color=${colorParam}`;
 
   // Placeholder for loading/error states
   if (hasError) {
     return (
       <div
-        className="bg-gray-100 dark:bg-slate-700 rounded flex items-center justify-center"
-        style={{ width, height, color: accentColorHex }}
+        className="flex items-center justify-center"
+        style={{ width, height }}
       >
         <span className="text-gray-400 dark:text-slate-500 text-xs">--</span>
       </div>
@@ -40,12 +42,12 @@ export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
 
   return (
     <div
-      className="relative rounded overflow-hidden bg-gray-100 dark:bg-slate-700"
-      style={{ width, height, color: accentColorHex }}
+      className="relative"
+      style={{ width, height }}
     >
       {isLoading && (
         <div
-          className="absolute inset-0 bg-gray-100 dark:bg-slate-700 animate-pulse"
+          className="absolute inset-0 bg-gray-200 dark:bg-slate-700 animate-pulse rounded"
           style={{ width, height }}
         />
       )}
