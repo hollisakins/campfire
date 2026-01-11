@@ -41,7 +41,7 @@ export const SettingsCard: React.FC = () => {
           Appearance
         </h3>
 
-        <div className="space-y-4">
+        <div className="space-y-6">
           <div>
             <label className="text-sm text-text-secondary dark:text-slate-400 mb-2 block">Theme</label>
             <div className="flex rounded-lg border border-border dark:border-slate-600 overflow-hidden w-fit">
@@ -66,6 +66,38 @@ export const SettingsCard: React.FC = () => {
                     <Icon className="w-4 h-4" />
                     {option.label}
                   </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Accent Color */}
+          <div>
+            <label className="text-sm text-text-secondary dark:text-slate-400 mb-2 block flex items-center gap-2">
+              <Palette className="w-4 h-4" />
+              Accent Color
+            </label>
+            <p className="text-xs text-text-secondary dark:text-slate-500 mb-3">
+              Affects buttons, links, and spectrum plot throughout the site
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {ACCENT_COLORS.map((color) => {
+                const displayColor = resolvedTheme === 'dark' ? color.dark : color.light;
+                return (
+                  <button
+                    key={color.name}
+                    onClick={() => updateAccentColor(color.name)}
+                    className={`
+                      w-10 h-10 rounded-lg border-2 transition-all
+                      ${accentColor === color.name
+                        ? 'border-text-primary dark:border-slate-100 scale-110'
+                        : 'border-transparent hover:scale-105'
+                      }
+                    `}
+                    style={{ backgroundColor: displayColor }}
+                    title={color.label}
+                    aria-label={`Select ${color.label} accent color`}
+                  />
                 );
               })}
             </div>
@@ -142,38 +174,6 @@ export const SettingsCard: React.FC = () => {
                 onChange={(e) => updateSpectrumPreferences({ snrMax: parseFloat(e.target.value) || 0 })}
                 className="w-20 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
               />
-            </div>
-          </div>
-
-          {/* Accent Color */}
-          <div>
-            <label className="text-sm text-text-secondary dark:text-slate-400 mb-2 block flex items-center gap-2">
-              <Palette className="w-4 h-4" />
-              Accent Color
-            </label>
-            <p className="text-xs text-text-secondary dark:text-slate-500 mb-3">
-              Affects buttons, links, and spectrum plot throughout the site
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {ACCENT_COLORS.map((color) => {
-                const displayColor = resolvedTheme === 'dark' ? color.dark : color.light;
-                return (
-                  <button
-                    key={color.name}
-                    onClick={() => updateAccentColor(color.name)}
-                    className={`
-                      w-10 h-10 rounded-lg border-2 transition-all
-                      ${accentColor === color.name
-                        ? 'border-text-primary dark:border-slate-100 scale-110'
-                        : 'border-transparent hover:scale-105'
-                      }
-                    `}
-                    style={{ backgroundColor: displayColor }}
-                    title={color.label}
-                    aria-label={`Select ${color.label} accent color`}
-                  />
-                );
-              })}
             </div>
           </div>
         </div>
