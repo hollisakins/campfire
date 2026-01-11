@@ -367,11 +367,11 @@ export default function ApiKeysPage() {
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-2">
-                        <code className="text-sm font-mono text-text-primary bg-gray-100 px-2 py-1 rounded">
+                        <code className="text-sm font-mono text-text-primary dark:text-slate-100 bg-gray-100 dark:bg-slate-700 px-2 py-1 rounded">
                           {key.key_prefix}
                         </code>
                         {!key.is_active && (
-                          <span className="text-xs px-2 py-1 bg-red-100 text-red-700 rounded">
+                          <span className="text-xs px-2 py-1 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded">
                             Revoked
                           </span>
                         )}
@@ -388,7 +388,7 @@ export default function ApiKeysPage() {
                             Last used {new Date(key.last_used_at).toLocaleDateString()}
                           </span>
                         )}
-                        {!key.last_used_at && <span className="text-gray-400">Never used</span>}
+                        {!key.last_used_at && <span className="text-gray-400 dark:text-slate-500">Never used</span>}
                       </div>
                     </div>
 
@@ -396,7 +396,7 @@ export default function ApiKeysPage() {
                       variant="secondary"
                       size="sm"
                       onClick={() => handleDeleteKey(key.id)}
-                      className="flex items-center gap-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                      className="flex items-center gap-2 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30"
                     >
                       <Trash2 className="w-4 h-4" />
                       Delete
@@ -409,30 +409,30 @@ export default function ApiKeysPage() {
         </Card>
 
         {/* Documentation Card */}
-        <Card className="p-6 bg-blue-50 border-blue-200">
-          <h3 className="text-lg font-semibold text-blue-900 mb-2">Using Your API Key</h3>
-          <p className="text-sm text-blue-800 mb-4">
+        <Card className="p-6 bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-900">
+          <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100 mb-2">Using Your API Key</h3>
+          <p className="text-sm text-blue-800 dark:text-blue-300 mb-4">
             Use your API key with the CAMPFIRE Python client to query and download spectra programmatically.
           </p>
 
-          <div className="bg-white rounded-lg p-4 font-mono text-sm border border-blue-200">
-            <div className="text-gray-600 mb-2"># Install the Python client</div>
-            <div className="text-gray-900 mb-4">pip install campfire-api</div>
+          <div className="bg-white dark:bg-slate-800 rounded-lg p-4 font-mono text-sm border border-blue-200 dark:border-slate-700">
+            <div className="text-gray-600 dark:text-slate-400 mb-2"># Install the Python client</div>
+            <div className="text-gray-900 dark:text-slate-100 mb-4">pip install campfire-api</div>
 
-            <div className="text-gray-600 mb-2"># Set your API key</div>
-            <div className="text-gray-900 mb-4">export CAMPFIRE_API_KEY=sk_live_...</div>
+            <div className="text-gray-600 dark:text-slate-400 mb-2"># Set your API key</div>
+            <div className="text-gray-900 dark:text-slate-100 mb-4">export CAMPFIRE_API_KEY=sk_live_...</div>
 
-            <div className="text-gray-600 mb-2"># Use the client</div>
-            <div className="text-gray-900">from campfire import Campfire</div>
-            <div className="text-gray-900">cf = Campfire()</div>
-            <div className="text-gray-900">results = cf.query_objects(limit=10)</div>
+            <div className="text-gray-600 dark:text-slate-400 mb-2"># Use the client</div>
+            <div className="text-gray-900 dark:text-slate-100">from campfire import Campfire</div>
+            <div className="text-gray-900 dark:text-slate-100">cf = Campfire()</div>
+            <div className="text-gray-900 dark:text-slate-100">results = cf.query_objects(limit=10)</div>
           </div>
 
           <div className="mt-4">
             <a
               href="/python/README.md"
               target="_blank"
-              className="text-sm text-blue-700 hover:text-blue-800 underline"
+              className="text-sm text-blue-700 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline"
             >
               View full Python client documentation →
             </a>

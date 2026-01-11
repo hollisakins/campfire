@@ -62,20 +62,20 @@ export default function RequestStatusPage() {
       case 'rejected':
         return <XCircle className="w-8 h-8 text-red-600" />;
       case 'not_found':
-        return <Search className="w-8 h-8 text-gray-400" />;
+        return <Search className="w-8 h-8 text-gray-400 dark:text-slate-500" />;
     }
   };
 
   const getStatusColor = (status: RequestStatus) => {
     switch (status) {
       case 'pending':
-        return 'bg-yellow-100';
+        return 'bg-yellow-100 dark:bg-yellow-900/30';
       case 'approved':
-        return 'bg-green-100';
+        return 'bg-green-100 dark:bg-green-900/30';
       case 'rejected':
-        return 'bg-red-100';
+        return 'bg-red-100 dark:bg-red-900/30';
       case 'not_found':
-        return 'bg-gray-100';
+        return 'bg-gray-100 dark:bg-slate-700';
     }
   };
 
