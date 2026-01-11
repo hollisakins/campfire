@@ -19,6 +19,9 @@ const Plot = dynamic(() => import('react-plotly.js'), {
   ),
 });
 
+// Available colorscale options (display names)
+const COLORSCALE_OPTIONS: Colorscale2D[] = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Greys'];
+
 // Common emission lines with rest wavelengths in microns
 // Colors assigned as rainbow from blue (short λ) to red (long λ)
 const EMISSION_LINES = [
@@ -185,7 +188,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         x: data.wave,
         y: hasProfile ? data.profile_pix : undefined,
         type: 'heatmap' as const,
-        colorscale: colorscale,
+        colorscale: colorscale.toLowerCase(),
         zmin: colorMin,
         zmax: colorMax,
         showscale: false, // Remove colorbar - using profile panel instead
@@ -467,6 +470,18 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
           >
             Reset
           </button>
+          <select
+            value={colorscale}
+            onChange={(e) => setColorscale(e.target.value as Colorscale2D)}
+            className="px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+            title="Colormap"
+          >
+            {COLORSCALE_OPTIONS.map((scale) => (
+              <option key={scale} value={scale}>
+                {scale}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Divider */}
