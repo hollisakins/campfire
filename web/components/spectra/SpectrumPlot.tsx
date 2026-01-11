@@ -22,6 +22,61 @@ const Plot = dynamic(() => import('react-plotly.js'), {
 // Available colorscale options (display names)
 const COLORSCALE_OPTIONS: Colorscale2D[] = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Greys'];
 
+// Custom colorscale definitions for scales not built into Plotly.js
+// Plasma, Inferno, and Magma are matplotlib colormaps not available in Plotly.js
+// Values sampled from https://bids.github.io/colormap/
+type PlotlyColorscale = string | Array<[number, string]>;
+
+const CUSTOM_COLORSCALES: Record<string, PlotlyColorscale> = {
+  Viridis: 'Viridis',
+  Cividis: 'Cividis',
+  Greys: 'Greys',
+  Plasma: [
+    [0, '#0d0887'],
+    [0.1, '#41049d'],
+    [0.2, '#6a00a8'],
+    [0.3, '#8f0da4'],
+    [0.4, '#b12a90'],
+    [0.5, '#cc4778'],
+    [0.6, '#e16462'],
+    [0.7, '#f2844b'],
+    [0.8, '#fca636'],
+    [0.9, '#fcce25'],
+    [1, '#f0f921'],
+  ],
+  Inferno: [
+    [0, '#000004'],
+    [0.1, '#1b0c41'],
+    [0.2, '#4a0c6b'],
+    [0.3, '#781c6d'],
+    [0.4, '#a52c60'],
+    [0.5, '#cf4446'],
+    [0.6, '#ed6925'],
+    [0.7, '#fb9b06'],
+    [0.8, '#f7d13d'],
+    [0.9, '#fcffa4'],
+    [1, '#fcffa4'],
+  ],
+  Magma: [
+    [0, '#000004'],
+    [0.1, '#180f3d'],
+    [0.2, '#440f76'],
+    [0.3, '#721f81'],
+    [0.4, '#9e2f7f'],
+    [0.5, '#cd4071'],
+    [0.6, '#f1605d'],
+    [0.7, '#fd9668'],
+    [0.8, '#feca8d'],
+    [0.9, '#fcfdbf'],
+    [1, '#fcfdbf'],
+  ],
+};
+
+// Get the Plotly-compatible colorscale value
+const getPlotlyColorscale = (name: Colorscale2D): PlotlyColorscale => {
+  return CUSTOM_COLORSCALES[name] || 'Viridis';
+};
+
 // Common emission lines with rest wavelengths in microns
 // Colors assigned as rainbow from blue (short λ) to red (long λ)
 const EMISSION_LINES = [
@@ -188,7 +243,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         x: data.wave,
         y: hasProfile ? data.profile_pix : undefined,
         type: 'heatmap' as const,
-        colorscale: colorscale.toLowerCase(),
+        colorscale: getPlotlyColorscale(colorscale),
         zmin: colorMin,
         zmax: colorMax,
         showscale: false, // Remove colorbar - using profile panel instead
