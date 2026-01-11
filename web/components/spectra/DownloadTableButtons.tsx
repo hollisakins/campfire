@@ -104,8 +104,8 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
                 {totalCount.toLocaleString()} {totalCount === 1 ? 'object' : 'objects'} found
               </span>
               <span className="text-text-secondary">|</span>
-              <Download className="w-4 h-4 text-text-secondary" />
-              <h3 className="text-sm font-semibold text-text-primary">Download Results</h3>
+              <Download className="w-4 h-4 text-text-secondary dark:text-slate-400" />
+              <h3 className="text-sm font-semibold text-text-primary dark:text-slate-100">Download Results</h3>
             </>
           )}
         </div>
@@ -171,7 +171,7 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
 
           {/* Warning/Info Messages */}
           {fitsDisabled && (
-            <div className="mt-3 flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-2">
+            <div className="mt-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-2">
               <span className="flex-shrink-0 mt-0.5">⚠️</span>
               <span>
                 FITS download is limited to {FITS_LIMIT} objects. Your current filters return{' '}
@@ -193,7 +193,7 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
 
           {/* Error Message */}
           {error && (
-            <div className="mt-3 flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">
+            <div className="mt-3 flex items-start gap-2 text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-md p-2">
               <span className="flex-shrink-0 mt-0.5">❌</span>
               <span>{error}</span>
             </div>
