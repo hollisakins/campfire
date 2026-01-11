@@ -104,13 +104,13 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
         />
 
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
-            <LogIn className="w-8 h-8 text-text-secondary" />
+          <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
+            <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
           </div>
-          <h2 className="text-2xl font-semibold text-text-primary mb-2">
+          <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
             Sign in to view this spectrum
           </h2>
-          <p className="text-text-secondary mb-6 max-w-md">
+          <p className="text-text-secondary dark:text-slate-400 mb-6 max-w-md">
             Access to spectrum details requires authentication. Please sign in with your
             CAMPFIRE account.
           </p>
@@ -176,10 +176,10 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
           <div className="flex-1" style={{ minHeight: '350px' }}>
             {/* Header */}
             <div className="mb-4">
-              <h1 className="text-3xl font-bold font-mono text-text-primary mb-2">
+              <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100 mb-2">
                 {spectrum.object_id}
               </h1>
-              <div className="text-sm text-text-secondary space-x-4 mb-3">
+              <div className="text-sm text-text-secondary dark:text-slate-400 space-x-4 mb-3">
                 <span>Program: {spectrum.program_name || `ID ${spectrum.program_id}`}</span>
                 <span>-</span>
                 <span>Field: {spectrum.field}</span>
@@ -259,13 +259,13 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               {spectrum.spectra.map((spec, index) => (
                 <details key={index} className="group" open={index === 0}>
                   <summary className="cursor-pointer list-none">
-                    <div className="bg-card border border-border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                    <div className="bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg p-4 hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors">
                       <div className="flex items-center justify-between">
-                        <h3 className="text-lg font-semibold text-text-primary">
+                        <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
                           {spec.grating} Redshift Fit
                         </h3>
                         <svg
-                          className="w-5 h-5 text-text-secondary transition-transform group-open:rotate-180"
+                          className="w-5 h-5 text-text-secondary dark:text-slate-400 transition-transform group-open:rotate-180"
                           fill="none"
                           stroke="currentColor"
                           viewBox="0 0 24 24"

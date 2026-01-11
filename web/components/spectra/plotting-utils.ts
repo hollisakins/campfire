@@ -5,6 +5,32 @@
 // Flux unit types
 export type FluxUnit = 'fnu' | 'flambda';
 
+// Plot color type
+export interface PlotColors {
+  bg: string;
+  paper: string;
+  grid: string;
+  text: string;
+  textSecondary: string;
+}
+
+/**
+ * Get Plotly colors from CSS variables for theme-aware charts
+ */
+export function getPlotColors(): PlotColors {
+  if (typeof window === 'undefined') {
+    return { bg: '#ffffff', paper: '#f8fafc', grid: '#e2e8f0', text: '#0f172a', textSecondary: '#64748b' };
+  }
+  const style = getComputedStyle(document.documentElement);
+  return {
+    bg: style.getPropertyValue('--plot-bg').trim() || '#ffffff',
+    paper: style.getPropertyValue('--plot-paper').trim() || '#f8fafc',
+    grid: style.getPropertyValue('--plot-grid').trim() || '#e2e8f0',
+    text: style.getPropertyValue('--plot-text').trim() || '#0f172a',
+    textSecondary: style.getPropertyValue('--plot-text-secondary').trim() || '#64748b',
+  };
+}
+
 // Common emission lines with rest wavelengths in microns
 // Colors assigned as rainbow from blue (short λ) to red (long λ)
 export const EMISSION_LINES = [

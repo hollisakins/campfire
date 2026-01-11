@@ -141,7 +141,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
           ${disabled ? 'opacity-60 cursor-not-allowed' : ''}
           ${isActive
             ? 'bg-primary/10 border-primary text-primary'
-            : 'bg-card border-border text-text-secondary hover:border-text-secondary hover:text-text-primary'
+            : 'bg-card dark:bg-slate-800 border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200'
           }
         `}
       >
@@ -158,7 +158,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && !disabled && (
-        <div className="absolute z-50 mt-1 min-w-[240px] max-w-[320px] max-h-[400px] overflow-y-auto bg-background border border-border rounded-lg shadow-lg">
+        <div className="absolute z-50 mt-1 min-w-[240px] max-w-[320px] max-h-[400px] overflow-y-auto bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
           {/* Chips container */}
           <div className="p-3 flex flex-wrap gap-2">
             {options.map((option) => {
@@ -171,8 +171,8 @@ export const FilterChip: React.FC<FilterChipProps> = ({
                     inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm
                     border transition-all duration-150
                     ${isSelected
-                      ? 'border-transparent text-gray-900'
-                      : 'border-border bg-card/50 text-text-secondary hover:bg-card hover:text-text-primary'
+                      ? 'border-transparent text-gray-900 dark:text-slate-100'
+                      : 'border-border dark:border-slate-700 bg-card/50 dark:bg-slate-800/50 text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200'
                     }
                   `}
                   style={
@@ -203,13 +203,13 @@ export const FilterChip: React.FC<FilterChipProps> = ({
 
           {/* Clear all button */}
           {multiSelect && selected.length > 0 && (
-            <div className="border-t border-border p-2">
+            <div className="border-t border-border dark:border-slate-700 p-2">
               <button
                 onClick={() => {
                   onChange([]);
                   setIsOpen(false);
                 }}
-                className="w-full px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-card rounded-md text-left"
+                className="w-full px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card dark:hover:bg-slate-700 rounded-md text-left"
               >
                 Clear all
               </button>

@@ -11,16 +11,16 @@ export const Badge: React.FC<BadgeProps> = ({ value, label, className = '', comp
   return (
     <div
       className={`
-        bg-card border border-border rounded-xl
+        bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-xl
         flex flex-col items-center justify-center
         ${compact ? 'px-3 py-2' : 'px-6 py-4'}
         ${className}
       `}
     >
-      <div className={`font-bold text-text-primary ${compact ? 'text-xl' : 'text-3xl'}`}>
+      <div className={`font-bold text-text-primary dark:text-slate-100 ${compact ? 'text-xl' : 'text-3xl'}`}>
         {value}
       </div>
-      <div className={`font-medium text-text-secondary uppercase tracking-wide ${compact ? 'text-[10px] mt-0.5' : 'text-xs mt-1'}`}>
+      <div className={`font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wide ${compact ? 'text-[10px] mt-0.5' : 'text-xs mt-1'}`}>
         {label}
       </div>
     </div>
