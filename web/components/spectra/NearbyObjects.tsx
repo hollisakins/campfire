@@ -77,7 +77,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
       <Card>
         <div className="p-8 text-center">
           <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          <p className="text-text-secondary mt-4">Finding nearby objects...</p>
+          <p className="text-text-secondary dark:text-slate-400 mt-4">Finding nearby objects...</p>
         </div>
       </Card>
     );
@@ -87,7 +87,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
     return (
       <Card>
         <div className="p-8 text-center">
-          <p className="text-red-500">{error}</p>
+          <p className="text-red-500 dark:text-red-400">{error}</p>
         </div>
       </Card>
     );
@@ -97,7 +97,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
     return (
       <Card>
         <div className="p-8 text-center">
-          <p className="text-text-secondary">
+          <p className="text-text-secondary dark:text-slate-400">
             No other objects found within 1 arcminute
           </p>
         </div>
@@ -108,9 +108,9 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
   return (
     <Card>
       <div className="p-6">
-        <h3 className="text-lg font-semibold text-text-primary mb-4">
+        <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100 mb-4">
           Nearby Objects
-          <span className="text-sm font-normal text-text-secondary ml-2">
+          <span className="text-sm font-normal text-text-secondary dark:text-slate-400 ml-2">
             ({nearbyObjects.length} found within 1 arcmin)
           </span>
         </h3>
@@ -118,23 +118,23 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-border">
-                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary">
+              <tr className="border-b border-border dark:border-slate-700">
+                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary dark:text-slate-400">
                   Object ID
                 </th>
-                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary">
+                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary dark:text-slate-400">
                   Distance
                 </th>
-                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary">
+                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary dark:text-slate-400">
                   RA
                 </th>
-                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary">
+                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary dark:text-slate-400">
                   Dec
                 </th>
-                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary">
+                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary dark:text-slate-400">
                   Redshift
                 </th>
-                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary">
+                <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary dark:text-slate-400">
                   Quality
                 </th>
               </tr>
@@ -145,7 +145,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
                 return (
                   <tr
                     key={obj.id}
-                    className="border-b border-border hover:bg-background-hover transition-colors"
+                    className="border-b border-border dark:border-slate-700 hover:bg-background-hover dark:hover:bg-slate-700 transition-colors"
                   >
                     <td className="py-3 px-4">
                       <Link
@@ -156,31 +156,31 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
                       </Link>
                     </td>
                     <td className="py-3 px-4">
-                      <span className="text-sm font-mono text-text-primary">
+                      <span className="text-sm font-mono text-text-primary dark:text-slate-100">
                         {obj.distance != null
                           ? formatDistance(obj.distance)
                           : 'N/A'}
                       </span>
                     </td>
                     <td className="py-3 px-4">
-                      <span className="text-sm font-mono text-text-primary">
+                      <span className="text-sm font-mono text-text-primary dark:text-slate-100">
                         {obj.ra.toFixed(6)}
                       </span>
                     </td>
                     <td className="py-3 px-4">
-                      <span className="text-sm font-mono text-text-primary">
+                      <span className="text-sm font-mono text-text-primary dark:text-slate-100">
                         {obj.dec.toFixed(6)}
                       </span>
                     </td>
                     <td className="py-3 px-4">
-                      <span className="text-sm font-mono text-text-primary">
+                      <span className="text-sm font-mono text-text-primary dark:text-slate-100">
                         {obj.redshift !== null ? obj.redshift.toFixed(4) : 'N/A'}
                       </span>
                     </td>
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-2">
                         <span className="text-sm">{quality.icon}</span>
-                        <span className="text-xs text-text-secondary">
+                        <span className="text-xs text-text-secondary dark:text-slate-400">
                           {quality.label}
                         </span>
                       </div>

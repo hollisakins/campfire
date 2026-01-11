@@ -22,22 +22,22 @@ export const RGBThumbnail: React.FC<RGBThumbnailProps> = ({
   if (hasError) {
     return (
       <div
-        className="bg-gray-200 rounded flex items-center justify-center"
+        className="bg-gray-200 dark:bg-slate-700 rounded flex items-center justify-center"
         style={{ width: size, height: size }}
       >
-        <span className="text-gray-400 text-xs">N/A</span>
+        <span className="text-gray-400 dark:text-slate-500 text-xs">N/A</span>
       </div>
     );
   }
 
   return (
     <div
-      className="relative rounded overflow-hidden border border-gray-200"
+      className="relative rounded overflow-hidden border border-gray-200 dark:border-slate-600"
       style={{ width: size, height: size }}
     >
       {isLoading && (
         <div
-          className="absolute inset-0 bg-gray-200 animate-pulse"
+          className="absolute inset-0 bg-gray-200 dark:bg-slate-700 animate-pulse"
           style={{ width: size, height: size }}
         />
       )}

@@ -70,7 +70,7 @@ export default function AdminActivityPage() {
       <div className="p-8">
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary">Loading activity...</span>
+          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading activity...</span>
         </div>
       </div>
     );
@@ -79,8 +79,8 @@ export default function AdminActivityPage() {
   if (error) {
     return (
       <div className="p-8">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800">{error}</p>
+        <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4">
+          <p className="text-red-800 dark:text-red-400">{error}</p>
         </div>
       </div>
     );
@@ -92,8 +92,8 @@ export default function AdminActivityPage() {
     <div className="p-8">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-semibold text-text-primary">User Activity</h1>
-          <p className="text-sm text-text-secondary mt-1">
+          <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100">User Activity</h1>
+          <p className="text-sm text-text-secondary dark:text-slate-400 mt-1">
             Recent comments and inspection changes from users
           </p>
         </div>
@@ -105,54 +105,54 @@ export default function AdminActivityPage() {
 
       {activities.length === 0 ? (
         <Card className="p-8 text-center">
-          <p className="text-text-secondary">No activity yet</p>
+          <p className="text-text-secondary dark:text-slate-400">No activity yet</p>
         </Card>
       ) : (
         <Card className="overflow-hidden">
           <table className="w-full">
-            <thead className="bg-card border-b border-border">
+            <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                   Type
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                   User
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                   Object
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                   Details
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                   Time
                 </th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-border">
+            <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
               {activities.map((activity) => (
-                <tr key={activity.id} className="hover:bg-gray-50">
+                <tr key={activity.id} className="hover:bg-gray-50 dark:hover:bg-slate-700">
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       {activity.type === 'comment' ? (
                         <>
-                          <MessageSquare className="w-4 h-4 text-blue-600" />
-                          <span className="text-sm text-text-primary">Comment</span>
+                          <MessageSquare className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                          <span className="text-sm text-text-primary dark:text-slate-100">Comment</span>
                         </>
                       ) : (
                         <>
-                          <Edit3 className="w-4 h-4 text-green-600" />
-                          <span className="text-sm text-text-primary">Inspection</span>
+                          <Edit3 className="w-4 h-4 text-green-600 dark:text-green-400" />
+                          <span className="text-sm text-text-primary dark:text-slate-100">Inspection</span>
                         </>
                       )}
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm text-text-primary">
+                    <div className="text-sm text-text-primary dark:text-slate-100">
                       {activity.user_profile?.full_name || 'Unknown User'}
                     </div>
                     {activity.user_profile?.is_group_account && (
-                      <span className="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded">
+                      <span className="text-xs px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-300 rounded">
                         Group
                       </span>
                     )}
@@ -167,7 +167,7 @@ export default function AdminActivityPage() {
                   </td>
                   <td className="px-6 py-4">
                     {activity.type === 'comment' ? (
-                      <div className="text-sm text-text-secondary max-w-md">
+                      <div className="text-sm text-text-secondary dark:text-slate-400 max-w-md">
                         <span className="line-clamp-2">{activity.content}</span>
                         {activity.edited_at && (
                           <span className="text-xs italic ml-1">(edited)</span>
@@ -175,10 +175,10 @@ export default function AdminActivityPage() {
                       </div>
                     ) : (
                       <div className="text-sm">
-                        <span className="text-text-secondary">
+                        <span className="text-text-secondary dark:text-slate-400">
                           {formatFieldName(activity.field_name)}:
                         </span>
-                        <span className="ml-2 text-text-primary">
+                        <span className="ml-2 text-text-primary dark:text-slate-100">
                           {formatActivityField(activity.field_name, activity.old_value)}
                           {' → '}
                           {formatActivityField(activity.field_name, activity.new_value)}
@@ -186,7 +186,7 @@ export default function AdminActivityPage() {
                       </div>
                     )}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-text-secondary">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-text-secondary dark:text-slate-400">
                     {formatTimestamp(activity.timestamp)}
                   </td>
                 </tr>
@@ -196,8 +196,8 @@ export default function AdminActivityPage() {
 
           {/* Pagination */}
           {data && data.total_count > data.page_size && (
-            <div className="px-6 py-4 border-t border-border flex items-center justify-between">
-              <div className="text-sm text-text-secondary">
+            <div className="px-6 py-4 border-t border-border dark:border-slate-700 flex items-center justify-between">
+              <div className="text-sm text-text-secondary dark:text-slate-400">
                 Showing {(page - 1) * data.page_size + 1} to{' '}
                 {Math.min(page * data.page_size, data.total_count)} of {data.total_count} activities
               </div>

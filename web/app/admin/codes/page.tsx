@@ -222,7 +222,7 @@ export default function AdminCodesPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold text-text-primary">Access Codes</h1>
+        <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100">Access Codes</h1>
         <div className="flex gap-2">
           <Button variant="secondary" size="sm" onClick={fetchCodes}>
             <RefreshCw className="w-4 h-4 mr-2" />
@@ -236,20 +236,20 @@ export default function AdminCodesPage() {
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-          <p className="text-red-800">{error}</p>
+        <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4 mb-6">
+          <p className="text-red-800 dark:text-red-400">{error}</p>
         </div>
       )}
 
       {/* Create Code Form */}
       {showForm && (
         <Card className="p-6 mb-6">
-          <h2 className="text-lg font-semibold text-text-primary mb-4">Create New Code</h2>
+          <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100 mb-4">Create New Code</h2>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-text-primary mb-1">
+                <label className="block text-sm font-medium text-text-primary dark:text-slate-100 mb-1">
                   Code
                 </label>
                 <div className="flex gap-2">
@@ -258,7 +258,7 @@ export default function AdminCodesPage() {
                     value={formData.code}
                     onChange={(e) => setFormData(prev => ({ ...prev, code: e.target.value.toUpperCase() }))}
                     placeholder="CAMPFIRE-2024"
-                    className="flex-1 px-3 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary font-mono uppercase"
+                    className="flex-1 px-3 py-2 border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary font-mono uppercase"
                     required
                   />
                   <Button type="button" variant="secondary" size="sm" onClick={generateRandomCode}>
@@ -268,7 +268,7 @@ export default function AdminCodesPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-text-primary mb-1">
+                <label className="block text-sm font-medium text-text-primary dark:text-slate-100 mb-1">
                   Description
                 </label>
                 <input
@@ -276,14 +276,14 @@ export default function AdminCodesPage() {
                   value={formData.description}
                   onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
                   placeholder="Core team access"
-                  className="w-full px-3 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-3 py-2 border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-3 gap-4">
               <div>
-                <label className="block text-sm font-medium text-text-primary mb-1">
+                <label className="block text-sm font-medium text-text-primary dark:text-slate-100 mb-1">
                   Access Level
                 </label>
                 <select
@@ -293,7 +293,7 @@ export default function AdminCodesPage() {
                     setFormData(prev => ({ ...prev, grants_all_programs: isAll }));
                     if (isAll) setSelectedPrograms([]);
                   }}
-                  className="w-full px-3 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-3 py-2 border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                   <option value="all">All Programs</option>
                   <option value="specific">Specific Programs</option>
@@ -301,7 +301,7 @@ export default function AdminCodesPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-text-primary mb-1">
+                <label className="block text-sm font-medium text-text-primary dark:text-slate-100 mb-1">
                   Expires In (days)
                 </label>
                 <input
@@ -310,12 +310,12 @@ export default function AdminCodesPage() {
                   onChange={(e) => setFormData(prev => ({ ...prev, expires_in_days: e.target.value }))}
                   placeholder="Never"
                   min="1"
-                  className="w-full px-3 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-3 py-2 border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-text-primary mb-1">
+                <label className="block text-sm font-medium text-text-primary dark:text-slate-100 mb-1">
                   Max Uses
                 </label>
                 <input
@@ -324,7 +324,7 @@ export default function AdminCodesPage() {
                   onChange={(e) => setFormData(prev => ({ ...prev, max_uses: e.target.value }))}
                   placeholder="Unlimited"
                   min="1"
-                  className="w-full px-3 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-3 py-2 border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
                 />
               </div>
             </div>
@@ -343,8 +343,8 @@ export default function AdminCodesPage() {
             )}
 
             {formError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">{formError}</p>
+              <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-3">
+                <p className="text-red-800 dark:text-red-400 text-sm">{formError}</p>
               </div>
             )}
 
@@ -370,35 +370,35 @@ export default function AdminCodesPage() {
       {/* Codes List */}
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Code
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Description
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Access
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Uses
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Expires
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Status
               </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Actions
               </th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-border">
+          <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
             {codes.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-6 py-12 text-center text-text-secondary">
+                <td colSpan={7} className="px-6 py-12 text-center text-text-secondary dark:text-slate-400">
                   No access codes yet. Create one to get started.
                 </td>
               </tr>
@@ -407,41 +407,41 @@ export default function AdminCodesPage() {
                 <tr key={code.id} className={!code.is_active ? 'opacity-50' : ''}>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-sm font-medium text-text-primary">
+                      <span className="font-mono text-sm font-medium text-text-primary dark:text-slate-100">
                         {code.code}
                       </span>
                       <button
                         onClick={() => copyCode(code.code)}
-                        className="text-text-secondary hover:text-primary transition-colors"
+                        className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors"
                         title="Copy code"
                       >
                         {copiedCode === code.code ? (
-                          <Check className="w-4 h-4 text-green-600" />
+                          <Check className="w-4 h-4 text-green-600 dark:text-green-400" />
                         ) : (
                           <Copy className="w-4 h-4" />
                         )}
                       </button>
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-sm text-text-secondary">
+                  <td className="px-6 py-4 text-sm text-text-secondary dark:text-slate-400">
                     {code.description || '—'}
                   </td>
-                  <td className="px-6 py-4 text-sm text-text-primary">
+                  <td className="px-6 py-4 text-sm text-text-primary dark:text-slate-100">
                     {code.grants_all_programs ? 'All programs' : 'Specific'}
                   </td>
-                  <td className="px-6 py-4 text-sm text-text-primary">
+                  <td className="px-6 py-4 text-sm text-text-primary dark:text-slate-100">
                     {code.use_count}
                     {code.max_uses ? ` / ${code.max_uses}` : ''}
                   </td>
-                  <td className="px-6 py-4 text-sm text-text-secondary">
+                  <td className="px-6 py-4 text-sm text-text-secondary dark:text-slate-400">
                     {formatDate(code.expires_at)}
                   </td>
                   <td className="px-6 py-4">
                     <span
                       className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
                         code.is_active
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-gray-100 text-gray-800'
+                          ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300'
+                          : 'bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-300'
                       }`}
                     >
                       {code.is_active ? 'Active' : 'Disabled'}
@@ -451,18 +451,18 @@ export default function AdminCodesPage() {
                     <div className="flex items-center justify-end gap-2">
                       <button
                         onClick={() => toggleCodeActive(code)}
-                        className="text-text-secondary hover:text-primary transition-colors"
+                        className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors"
                         title={code.is_active ? 'Disable' : 'Enable'}
                       >
                         {code.is_active ? (
-                          <ToggleRight className="w-5 h-5 text-green-600" />
+                          <ToggleRight className="w-5 h-5 text-green-600 dark:text-green-400" />
                         ) : (
                           <ToggleLeft className="w-5 h-5" />
                         )}
                       </button>
                       <button
                         onClick={() => deleteCode(code)}
-                        className="text-text-secondary hover:text-red-600 transition-colors"
+                        className="text-text-secondary dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
                         title="Delete"
                       >
                         <Trash2 className="w-5 h-5" />

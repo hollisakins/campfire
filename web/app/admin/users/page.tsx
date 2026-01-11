@@ -287,7 +287,7 @@ export default function AdminUsersPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold text-text-primary">Users</h1>
+        <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100">Users</h1>
         <div className="flex gap-2">
           <Button variant="primary" size="sm" onClick={() => setShowInviteForm(true)}>
             <UserPlus className="w-4 h-4 mr-2" />
@@ -301,8 +301,8 @@ export default function AdminUsersPage() {
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-          <p className="text-red-800">{error}</p>
+        <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4 mb-6">
+          <p className="text-red-800 dark:text-red-400">{error}</p>
         </div>
       )}
 
@@ -310,7 +310,7 @@ export default function AdminUsersPage() {
       {showInviteForm && (
         <Card className="mb-6 p-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+            <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100 flex items-center gap-2">
               <Mail className="w-5 h-5" />
               Invite New User
             </h2>
@@ -319,22 +319,22 @@ export default function AdminUsersPage() {
                 setShowInviteForm(false);
                 setInviteError(null);
               }}
-              className="text-text-secondary hover:text-text-primary"
+              className="text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-100"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
           {inviteError && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
-              <p className="text-sm text-red-800">{inviteError}</p>
+            <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-3 mb-4">
+              <p className="text-sm text-red-800 dark:text-red-400">{inviteError}</p>
             </div>
           )}
 
           <div className="space-y-4">
             {/* Email */}
             <div>
-              <label className="block text-sm font-medium text-text-primary mb-1">
+              <label className="block text-sm font-medium text-text-primary dark:text-slate-100 mb-1">
                 Email Address
               </label>
               <input
@@ -342,13 +342,13 @@ export default function AdminUsersPage() {
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
                 placeholder="user@example.com"
-                className="w-full px-4 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full px-4 py-2 border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
               />
             </div>
 
             {/* Program Access */}
             <div>
-              <label className="block text-sm font-medium text-text-primary mb-2">
+              <label className="block text-sm font-medium text-text-primary dark:text-slate-100 mb-2">
                 Program Access
               </label>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -362,8 +362,8 @@ export default function AdminUsersPage() {
                         flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left
                         transition-colors
                         ${selected
-                          ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
+                          : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-400 hover:bg-gray-200 dark:hover:bg-slate-600'
                         }
                       `}
                     >
@@ -398,18 +398,18 @@ export default function AdminUsersPage() {
                   type="checkbox"
                   checked={inviteCanComment}
                   onChange={(e) => setInviteCanComment(e.target.checked)}
-                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                  className="w-4 h-4 rounded border-border dark:border-slate-600 text-primary focus:ring-primary dark:bg-slate-700"
                 />
-                <span className="text-sm text-text-primary">Can comment/inspect</span>
+                <span className="text-sm text-text-primary dark:text-slate-100">Can comment/inspect</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={inviteIsAdmin}
                   onChange={(e) => setInviteIsAdmin(e.target.checked)}
-                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                  className="w-4 h-4 rounded border-border dark:border-slate-600 text-primary focus:ring-primary dark:bg-slate-700"
                 />
-                <span className="text-sm text-text-primary">Admin privileges</span>
+                <span className="text-sm text-text-primary dark:text-slate-100">Admin privileges</span>
               </label>
             </div>
 
@@ -451,22 +451,22 @@ export default function AdminUsersPage() {
       {/* Pending Invites */}
       {invites.length > 0 && (
         <Card className="mb-6 p-4">
-          <h3 className="text-sm font-medium text-text-primary mb-3">
+          <h3 className="text-sm font-medium text-text-primary dark:text-slate-100 mb-3">
             Pending Invites ({invites.length})
           </h3>
           <div className="space-y-2">
             {invites.map((invite) => (
               <div
                 key={invite.id}
-                className="flex items-center justify-between py-2 px-3 bg-yellow-50 border border-yellow-200 rounded-lg"
+                className="flex items-center justify-between py-2 px-3 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-900 rounded-lg"
               >
                 <div className="flex items-center gap-3">
-                  <Mail className="w-4 h-4 text-yellow-600" />
+                  <Mail className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
                   <div>
-                    <span className="text-sm font-medium text-text-primary">
+                    <span className="text-sm font-medium text-text-primary dark:text-slate-100">
                       {invite.email}
                     </span>
-                    <div className="text-xs text-text-secondary">
+                    <div className="text-xs text-text-secondary dark:text-slate-400">
                       {invite.program_ids.length} programs ·
                       Invited {formatDate(invite.created_at)}
                       {invite.invited_by_name && ` by ${invite.invited_by_name}`}
@@ -475,7 +475,7 @@ export default function AdminUsersPage() {
                 </div>
                 <button
                   onClick={() => cancelInvite(invite.id)}
-                  className="text-text-secondary hover:text-red-600 transition-colors"
+                  className="text-text-secondary dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
                   title="Cancel invite"
                 >
                   <X className="w-4 h-4" />
@@ -488,49 +488,49 @@ export default function AdminUsersPage() {
 
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 User
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Joined
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Program Access
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Role
               </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-text-secondary uppercase tracking-wider">
+              <th className="px-6 py-3 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Actions
               </th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-border">
+          <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
             {users.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-6 py-12 text-center text-text-secondary">
+                <td colSpan={5} className="px-6 py-12 text-center text-text-secondary dark:text-slate-400">
                   No users found.
                 </td>
               </tr>
             ) : (
               users.map((user) => (
                 <React.Fragment key={user.user_id}>
-                  <tr className={expandedUser === user.user_id ? 'bg-gray-50' : ''}>
+                  <tr className={expandedUser === user.user_id ? 'bg-gray-50 dark:bg-slate-700' : ''}>
                     <td className="px-6 py-4">
                       <div className="flex items-center">
                         <div>
-                          <div className="text-sm font-medium text-text-primary">
+                          <div className="text-sm font-medium text-text-primary dark:text-slate-100">
                             {user.full_name}
                           </div>
                           {user.is_group_account && (
-                            <span className="text-xs text-text-secondary">(Group account)</span>
+                            <span className="text-xs text-text-secondary dark:text-slate-400">(Group account)</span>
                           )}
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-sm text-text-secondary">
+                    <td className="px-6 py-4 text-sm text-text-secondary dark:text-slate-400">
                       {formatDate(user.created_at)}
                     </td>
                     <td className="px-6 py-4">
@@ -552,8 +552,8 @@ export default function AdminUsersPage() {
                       <span
                         className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
                           user.is_admin
-                            ? 'bg-purple-100 text-purple-800'
-                            : 'bg-gray-100 text-gray-800'
+                            ? 'bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-300'
+                            : 'bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-300'
                         }`}
                       >
                         {user.is_admin ? 'Admin' : 'User'}
@@ -564,7 +564,7 @@ export default function AdminUsersPage() {
                         <button
                           onClick={() => toggleAdmin(user)}
                           disabled={savingUser === user.user_id}
-                          className="text-text-secondary hover:text-primary transition-colors disabled:opacity-50"
+                          className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors disabled:opacity-50"
                           title={user.is_admin ? 'Remove admin' : 'Make admin'}
                         >
                           {user.is_admin ? (
@@ -575,7 +575,7 @@ export default function AdminUsersPage() {
                         </button>
                         <button
                           onClick={() => deleteUser(user)}
-                          className="text-text-secondary hover:text-red-600 transition-colors"
+                          className="text-text-secondary dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
                           title="Delete user"
                         >
                           <Trash2 className="w-5 h-5" />
@@ -587,10 +587,10 @@ export default function AdminUsersPage() {
                   {/* Expanded row for program access */}
                   {expandedUser === user.user_id && (
                     <tr>
-                      <td colSpan={5} className="px-6 py-4 bg-gray-50 border-t border-border">
+                      <td colSpan={5} className="px-6 py-4 bg-gray-50 dark:bg-slate-700 border-t border-border dark:border-slate-600">
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
-                            <span className="text-sm font-medium text-text-primary">
+                            <span className="text-sm font-medium text-text-primary dark:text-slate-100">
                               Program Access
                             </span>
                             <div className="flex gap-2">
@@ -614,7 +614,7 @@ export default function AdminUsersPage() {
                           </div>
 
                           {programs.length === 0 ? (
-                            <p className="text-sm text-text-secondary">
+                            <p className="text-sm text-text-secondary dark:text-slate-400">
                               No programs available in the database.
                             </p>
                           ) : (
@@ -630,8 +630,8 @@ export default function AdminUsersPage() {
                                       flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left
                                       transition-colors disabled:opacity-50
                                       ${hasAccess
-                                        ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                        ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
+                                        : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-400 hover:bg-gray-200 dark:hover:bg-slate-600'
                                       }
                                     `}
                                   >
@@ -646,7 +646,7 @@ export default function AdminUsersPage() {
                           )}
 
                           {savingUser === user.user_id && (
-                            <div className="flex items-center gap-2 text-sm text-text-secondary">
+                            <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400">
                               <Loader2 className="w-4 h-4 animate-spin" />
                               Saving changes...
                             </div>

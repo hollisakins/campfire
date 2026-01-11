@@ -161,13 +161,13 @@ export default function ProfilePage() {
         />
 
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
-            <LogIn className="w-8 h-8 text-text-secondary" />
+          <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
+            <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
           </div>
-          <h2 className="text-2xl font-semibold text-text-primary mb-2">
+          <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
             Sign in to view your profile
           </h2>
-          <p className="text-text-secondary mb-6 max-w-md">
+          <p className="text-text-secondary dark:text-slate-400 mb-6 max-w-md">
             Please sign in to manage your profile and access codes.
           </p>
           <Link
@@ -194,7 +194,7 @@ export default function ProfilePage() {
         />
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary">Loading profile...</span>
+          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading profile...</span>
         </div>
       </div>
     );
@@ -210,8 +210,8 @@ export default function ProfilePage() {
           ]}
           className="mb-6"
         />
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800">{error || 'Failed to load profile'}</p>
+        <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4">
+          <p className="text-red-800 dark:text-red-400">{error || 'Failed to load profile'}</p>
         </div>
       </div>
     );
@@ -243,22 +243,22 @@ export default function ProfilePage() {
                     type="text"
                     value={editName}
                     onChange={(e) => setEditName(e.target.value)}
-                    className="text-xl font-semibold text-text-primary px-2 py-1 border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="text-xl font-semibold text-text-primary dark:text-slate-100 px-2 py-1 border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-primary"
                     autoFocus
                   />
                 ) : (
                   <div className="flex items-center gap-2">
-                    <h1 className="text-xl font-semibold text-text-primary">
+                    <h1 className="text-xl font-semibold text-text-primary dark:text-slate-100">
                       {profileData.profile.full_name}
                     </h1>
                     {profileData.profile.is_group_account && (
-                      <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-800 rounded">
+                      <span className="text-xs px-2 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-300 rounded">
                         Group Account
                       </span>
                     )}
                   </div>
                 )}
-                <p className="text-text-secondary">{profileData.email}</p>
+                <p className="text-text-secondary dark:text-slate-400">{profileData.email}</p>
               </div>
             </div>
 
@@ -300,8 +300,8 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between pt-4 border-t border-border">
-            <p className="text-sm text-text-secondary">
+          <div className="flex items-center justify-between pt-4 border-t border-border dark:border-slate-700">
+            <p className="text-sm text-text-secondary dark:text-slate-400">
               Member since {new Date(profileData.profile.created_at).toLocaleDateString()}
             </p>
             <Button variant="secondary" size="sm" onClick={handleSignOut}>
@@ -320,24 +320,24 @@ export default function ProfilePage() {
             <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
               <KeyRound className="w-5 h-5 text-primary" />
             </div>
-            <h2 className="text-lg font-semibold text-text-primary">Access Codes</h2>
+            <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">Access Codes</h2>
           </div>
 
-          <p className="text-sm text-text-secondary mb-4">
+          <p className="text-sm text-text-secondary dark:text-slate-400 mb-4">
             Enter an access code below to gain access to proprietary programs. Public programs are accessible to all users.
           </p>
 
           {redeemError && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
-              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-              <p className="text-sm text-red-800">{redeemError}</p>
+            <div className="mb-4 p-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg flex items-start gap-2">
+              <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-red-800 dark:text-red-400">{redeemError}</p>
             </div>
           )}
 
           {redeemSuccess && (
-            <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-start gap-2">
-              <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-              <p className="text-sm text-green-800">{redeemSuccess}</p>
+            <div className="mb-4 p-3 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded-lg flex items-start gap-2">
+              <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-green-800 dark:text-green-400">{redeemSuccess}</p>
             </div>
           )}
 
@@ -347,7 +347,7 @@ export default function ProfilePage() {
               value={accessCode}
               onChange={(e) => setAccessCode(e.target.value.toUpperCase())}
               placeholder="CAMPFIRE-XXXXXX"
-              className="flex-1 px-4 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary font-mono uppercase"
+              className="flex-1 px-4 py-2 border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary font-mono uppercase"
               disabled={redeemLoading}
             />
             <Button type="submit" variant="primary" disabled={redeemLoading || !accessCode.trim()}>
@@ -364,25 +364,25 @@ export default function ProfilePage() {
 
           {/* Redemption History */}
           {profileData.redemptions.length > 0 && (
-            <div className="mt-6 pt-6 border-t border-border">
-              <h3 className="text-sm font-semibold text-text-primary mb-3">Redemption History</h3>
+            <div className="mt-6 pt-6 border-t border-border dark:border-slate-700">
+              <h3 className="text-sm font-semibold text-text-primary dark:text-slate-100 mb-3">Redemption History</h3>
               <div className="space-y-2">
                 {profileData.redemptions.map((redemption) => (
                   <div
                     key={redemption.id}
-                    className="flex items-center justify-between py-2 border-b border-border last:border-0"
+                    className="flex items-center justify-between py-2 border-b border-border dark:border-slate-700 last:border-0"
                   >
                     <div>
-                      <span className="font-mono text-sm text-text-primary">
+                      <span className="font-mono text-sm text-text-primary dark:text-slate-100">
                         {redemption.access_codes.code}
                       </span>
                       {redemption.access_codes.description && (
-                        <span className="text-sm text-text-secondary ml-2">
+                        <span className="text-sm text-text-secondary dark:text-slate-400 ml-2">
                           ({redemption.access_codes.description})
                         </span>
                       )}
                     </div>
-                    <span className="text-sm text-text-secondary">
+                    <span className="text-sm text-text-secondary dark:text-slate-400">
                       {new Date(redemption.redeemed_at).toLocaleDateString()}
                     </span>
                   </div>
@@ -400,10 +400,10 @@ export default function ProfilePage() {
               <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
                 <Key className="w-5 h-5 text-primary" />
               </div>
-              <h2 className="text-lg font-semibold text-text-primary">Proprietary Program Access</h2>
+              <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">Proprietary Program Access</h2>
             </div>
 
-            <p className="text-sm text-text-secondary mb-4">
+            <p className="text-sm text-text-secondary dark:text-slate-400 mb-4">
               You have access to the following proprietary programs:
             </p>
 
@@ -411,10 +411,10 @@ export default function ProfilePage() {
               {grantedPrograms.map((program) => (
                 <div
                   key={program.program_id}
-                  className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-200 rounded-lg"
+                  className="flex items-center gap-2 px-3 py-2 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded-lg"
                 >
-                  <Check className="w-4 h-4 text-green-600 flex-shrink-0" />
-                  <span className="text-sm text-text-primary truncate">
+                  <Check className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0" />
+                  <span className="text-sm text-text-primary dark:text-slate-100 truncate">
                     {program.program_name || `Program ${program.program_id}`}
                   </span>
                 </div>
@@ -426,25 +426,25 @@ export default function ProfilePage() {
         {/* API Keys */}
         {!profileData.profile.is_group_account && (
           <Link href="/profile/api-keys" className="block">
-          <Card className="p-6 hover:bg-background-hover transition-colors cursor-pointer">
+          <Card className="p-6 hover:bg-background-hover dark:hover:bg-slate-700 transition-colors cursor-pointer">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
-                  <Key className="w-6 h-6 text-purple-600" />
+                <div className="w-12 h-12 bg-purple-100 dark:bg-purple-900 rounded-full flex items-center justify-center">
+                  <Key className="w-6 h-6 text-purple-600 dark:text-purple-400" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <h2 className="text-lg font-semibold text-text-primary">API Keys</h2>
-                    <span className="inline-flex px-2 py-0.5 text-xs font-medium bg-yellow-100 text-yellow-800 rounded-full">
+                    <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">API Keys</h2>
+                    <span className="inline-flex px-2 py-0.5 text-xs font-medium bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-300 rounded-full">
                       Experimental
                     </span>
                   </div>
-                  <p className="text-sm text-text-secondary">
+                  <p className="text-sm text-text-secondary dark:text-slate-400">
                     Manage API keys for the Python client (experimental preview)
                   </p>
                 </div>
               </div>
-              <ChevronRight className="w-5 h-5 text-text-secondary" />
+              <ChevronRight className="w-5 h-5 text-text-secondary dark:text-slate-400" />
             </div>
           </Card>
         </Link>
