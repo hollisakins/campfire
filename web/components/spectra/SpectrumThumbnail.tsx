@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { usePreferences } from '@/lib/contexts/PreferencesContext';
 
 interface SpectrumThumbnailProps {
   objectId: string;
@@ -11,21 +12,26 @@ interface SpectrumThumbnailProps {
 /**
  * Displays a small spectrum sparkline thumbnail for quick visual inspection.
  * Fetches SVG from /api/spectrum-thumbnail endpoint.
+ * Uses user's accent color and flux unit preference.
  */
 export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
   objectId,
   width = 120,
   height = 32,
 }) => {
+  const { accentColorHex, spectrumPreferences } = usePreferences();
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+
+  // Build URL with flux unit preference
+  const thumbnailUrl = `/api/spectrum-thumbnail?object_id=${encodeURIComponent(objectId)}&flux_unit=${spectrumPreferences.fluxUnit}`;
 
   // Placeholder for loading/error states
   if (hasError) {
     return (
       <div
         className="bg-gray-100 dark:bg-slate-700 rounded flex items-center justify-center"
-        style={{ width, height }}
+        style={{ width, height, color: accentColorHex }}
       >
         <span className="text-gray-400 dark:text-slate-500 text-xs">--</span>
       </div>
@@ -35,7 +41,7 @@ export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
   return (
     <div
       className="relative rounded overflow-hidden bg-gray-100 dark:bg-slate-700"
-      style={{ width, height }}
+      style={{ width, height, color: accentColorHex }}
     >
       {isLoading && (
         <div
@@ -45,7 +51,7 @@ export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
       )}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={`/api/spectrum-thumbnail?object_id=${encodeURIComponent(objectId)}`}
+        src={thumbnailUrl}
         alt={`Spectrum for ${objectId}`}
         width={width}
         height={height}

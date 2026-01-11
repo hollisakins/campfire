@@ -16,6 +16,15 @@ interface SpectrumData {
 }
 
 /**
+ * Convert f_nu to f_lambda: f_λ = f_ν * c / λ²
+ * f_nu is in μJy (1 μJy = 10^-29 erg/s/cm²/Hz), wavelength in μm
+ * f_λ (erg/s/cm²/Å) = f_ν (μJy) * 2.998e-19 / λ_μm²
+ */
+function convertToFlambda(fnuVal: number, wavelength: number): number {
+  return fnuVal * 2.998e-19 / (wavelength * wavelength);
+}
+
+/**
  * Downsample spectrum data to a target number of points
  */
 function downsampleSpectrum(
@@ -104,29 +113,31 @@ function generateSVGPath(fnu: number[]): string {
 
 /**
  * Generate complete SVG string
+ * Uses currentColor for stroke so the color can be set via CSS inheritance
+ * Transparent background for dark mode compatibility
  */
-function generateSVG(fnu: number[], hasData: boolean = true): string {
-  if (!hasData || fnu.length === 0) {
+function generateSVG(flux: number[], hasData: boolean = true): string {
+  if (!hasData || flux.length === 0) {
     // Return a placeholder SVG with a simple horizontal line
+    // Uses a muted currentColor (30% opacity) for the placeholder
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}" width="${SVG_WIDTH}" height="${SVG_HEIGHT}">
-  <rect width="100%" height="100%" fill="#f3f4f6"/>
-  <line x1="${PADDING}" y1="${SVG_HEIGHT / 2}" x2="${SVG_WIDTH - PADDING}" y2="${SVG_HEIGHT / 2}" stroke="#d1d5db" stroke-width="1"/>
+  <line x1="${PADDING}" y1="${SVG_HEIGHT / 2}" x2="${SVG_WIDTH - PADDING}" y2="${SVG_HEIGHT / 2}" stroke="currentColor" stroke-opacity="0.3" stroke-width="1"/>
 </svg>`;
   }
 
-  const path = generateSVGPath(fnu);
+  const path = generateSVGPath(flux);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}" width="${SVG_WIDTH}" height="${SVG_HEIGHT}">
-  <rect width="100%" height="100%" fill="#f8fafc"/>
-  <path d="${path}" fill="none" stroke="#3b82f6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="${path}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
 }
 
 /**
- * GET /api/spectrum-thumbnail?object_id=<object_id>
+ * GET /api/spectrum-thumbnail?object_id=<object_id>&flux_unit=<fnu|flambda>
  *
  * Generates an SVG sparkline thumbnail of the spectrum for the given object.
  * Selects grating by priority: PRISM > G395M > G235M > G140M
+ * Supports flux_unit parameter to display as fnu (default) or flambda
  */
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
@@ -143,9 +154,10 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  // Get object_id from query parameters
+  // Get query parameters
   const searchParams = request.nextUrl.searchParams;
   const objectId = searchParams.get('object_id');
+  const fluxUnit = searchParams.get('flux_unit') || 'fnu';
 
   if (!objectId) {
     return new Response(generateSVG([], false), {
@@ -215,9 +227,16 @@ export async function GET(request: NextRequest) {
 
     const data: SpectrumData = await response.json();
 
-    // Downsample and generate SVG
-    const { fnu } = downsampleSpectrum(data.wave, data.fnu, 100);
-    const svg = generateSVG(fnu, true);
+    // Downsample spectrum data
+    const { wave, fnu } = downsampleSpectrum(data.wave, data.fnu, 100);
+
+    // Convert to flambda if requested
+    const flux = fluxUnit === 'flambda'
+      ? fnu.map((f, i) => convertToFlambda(f, wave[i]))
+      : fnu;
+
+    // Generate SVG
+    const svg = generateSVG(flux, true);
 
     return new Response(svg, {
       headers: {
