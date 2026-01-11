@@ -7,6 +7,10 @@
   --background-start-rgb: 255, 255, 255;
   --background-end-rgb: 255, 255, 255;
 
+  /* Accent color (applied dynamically by AccentColorContext) */
+  --primary: #c026d3;
+  --primary-hover: #a21caf;
+
   /* Plotly chart colors (read via JavaScript) */
   --plot-bg: #ffffff;
   --plot-paper: #f8fafc;
@@ -15,9 +19,13 @@
   --plot-text-secondary: #64748b;
 }
 
-/* Dark mode Plotly colors */
+/* Dark mode colors */
 .dark {
   --foreground-rgb: 241, 245, 249;
+
+  /* Accent color - muted/pale for dark mode (applied dynamically) */
+  --primary: #e879f9;
+  --primary-hover: #f0abfc;
   --background-start-rgb: 15, 23, 42;
   --background-end-rgb: 15, 23, 42;
 

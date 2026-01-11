@@ -23,16 +23,57 @@ export type ThemeSetting = 'light' | 'dark' | 'system';
 export type FluxUnit = 'fnu' | 'flambda';
 export type Colorscale2D = 'Viridis' | 'Plasma' | 'Inferno' | 'Magma' | 'Cividis' | 'Greys';
 
+// ============================================
+// Accent Color System
+// ============================================
+
+export type AccentColorName = 'magenta' | 'blue' | 'emerald' | 'red' | 'orange' | 'violet' | 'cyan' | 'lime';
+
+export interface AccentColor {
+  name: AccentColorName;
+  label: string;
+  light: string;      // Vibrant for light mode
+  dark: string;       // Muted/pale for dark mode
+  hover: {
+    light: string;
+    dark: string;
+  };
+}
+
+// Accent colors with light/dark mode variants
+// Dark mode uses more muted/pale versions for better contrast
+export const ACCENT_COLORS: AccentColor[] = [
+  { name: 'magenta', label: 'Magenta', light: '#c026d3', dark: '#e879f9', hover: { light: '#a21caf', dark: '#f0abfc' } },
+  { name: 'blue', label: 'Blue', light: '#2563eb', dark: '#60a5fa', hover: { light: '#1d4ed8', dark: '#93c5fd' } },
+  { name: 'emerald', label: 'Emerald', light: '#059669', dark: '#34d399', hover: { light: '#047857', dark: '#6ee7b7' } },
+  { name: 'red', label: 'Red', light: '#dc2626', dark: '#f87171', hover: { light: '#b91c1c', dark: '#fca5a5' } },
+  { name: 'orange', label: 'Orange', light: '#ea580c', dark: '#fb923c', hover: { light: '#c2410c', dark: '#fdba74' } },
+  { name: 'violet', label: 'Violet', light: '#7c3aed', dark: '#a78bfa', hover: { light: '#6d28d9', dark: '#c4b5fd' } },
+  { name: 'cyan', label: 'Cyan', light: '#0891b2', dark: '#22d3ee', hover: { light: '#0e7490', dark: '#67e8f9' } },
+  { name: 'lime', label: 'Lime', light: '#65a30d', dark: '#a3e635', hover: { light: '#4d7c0f', dark: '#bef264' } },
+];
+
+export const DEFAULT_ACCENT_COLOR: AccentColorName = 'magenta';
+
+// Helper to get accent color by name
+export function getAccentColor(name: AccentColorName): AccentColor {
+  return ACCENT_COLORS.find(c => c.name === name) || ACCENT_COLORS[0];
+}
+
+// ============================================
+// User Preferences
+// ============================================
+
 export interface SpectrumPreferences {
   fluxUnit: FluxUnit;
   colorscale2D: Colorscale2D;
   snrMin: number;
   snrMax: number;
-  spectrumColor: string;
 }
 
 export interface UserPreferences {
   theme: ThemeSetting;
+  accentColor: AccentColorName;
   spectrum: SpectrumPreferences;
 }
 
@@ -41,25 +82,13 @@ export const DEFAULT_SPECTRUM_PREFERENCES: SpectrumPreferences = {
   colorscale2D: 'Viridis',
   snrMin: -5,
   snrMax: 10,
-  spectrumColor: '#c026d3',
 };
 
 export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   theme: 'system',
+  accentColor: DEFAULT_ACCENT_COLOR,
   spectrum: DEFAULT_SPECTRUM_PREFERENCES,
 };
-
-// Preset spectrum colors that work well in both light and dark modes
-export const SPECTRUM_COLOR_PRESETS = [
-  { color: '#c026d3', name: 'Magenta' },
-  { color: '#2563eb', name: 'Blue' },
-  { color: '#059669', name: 'Emerald' },
-  { color: '#dc2626', name: 'Red' },
-  { color: '#ea580c', name: 'Orange' },
-  { color: '#7c3aed', name: 'Violet' },
-  { color: '#0891b2', name: 'Cyan' },
-  { color: '#65a30d', name: 'Lime' },
-];
 
 export interface AccessCode {
   id: string;

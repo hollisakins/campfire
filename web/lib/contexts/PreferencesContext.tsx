@@ -6,18 +6,24 @@ import type {
   UserPreferences,
   SpectrumPreferences,
   ThemeSetting,
+  AccentColorName,
 } from '@/lib/types';
 import {
   DEFAULT_USER_PREFERENCES,
   DEFAULT_SPECTRUM_PREFERENCES,
+  DEFAULT_ACCENT_COLOR,
+  getAccentColor,
 } from '@/lib/types';
 import { useTheme } from './ThemeContext';
 
 interface PreferencesContextValue {
   preferences: UserPreferences;
   spectrumPreferences: SpectrumPreferences;
+  accentColor: AccentColorName;
+  accentColorHex: string; // Current hex value (respects light/dark mode)
   isLoading: boolean;
   updateTheme: (theme: ThemeSetting) => void;
+  updateAccentColor: (color: AccentColorName) => void;
   updateSpectrumPreferences: (prefs: Partial<SpectrumPreferences>) => void;
 }
 
@@ -49,9 +55,20 @@ function useDebouncedCallback<T extends (...args: Parameters<T>) => void>(
   );
 }
 
+// Apply accent color CSS variables to document root
+function applyAccentColorCSS(colorName: AccentColorName, isDark: boolean) {
+  if (typeof document === 'undefined') return;
+
+  const color = getAccentColor(colorName);
+  const root = document.documentElement;
+
+  root.style.setProperty('--primary', isDark ? color.dark : color.light);
+  root.style.setProperty('--primary-hover', isDark ? color.hover.dark : color.hover.light);
+}
+
 export function PreferencesProvider({ children }: { children: React.ReactNode }) {
   const { user, userProfile } = useAuth();
-  const { setTheme } = useTheme();
+  const { setTheme, resolvedTheme } = useTheme();
   const [preferences, setPreferences] = useState<UserPreferences>(DEFAULT_USER_PREFERENCES);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -62,6 +79,7 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
       const savedPrefs = userProfile.preferences as Partial<UserPreferences>;
       setPreferences({
         theme: savedPrefs.theme || DEFAULT_USER_PREFERENCES.theme,
+        accentColor: savedPrefs.accentColor || DEFAULT_ACCENT_COLOR,
         spectrum: {
           ...DEFAULT_SPECTRUM_PREFERENCES,
           ...(savedPrefs.spectrum || {}),
@@ -75,6 +93,11 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
     }
     setIsLoading(false);
   }, [userProfile, setTheme]);
+
+  // Apply accent color CSS whenever accent color or theme changes
+  useEffect(() => {
+    applyAccentColorCSS(preferences.accentColor, resolvedTheme === 'dark');
+  }, [preferences.accentColor, resolvedTheme]);
 
   // Save preferences to API
   const saveToApi = useCallback(async (prefs: Partial<UserPreferences>) => {
@@ -103,6 +126,14 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
     }
   }, [user, setTheme, debouncedSave]);
 
+  const updateAccentColor = useCallback((accentColor: AccentColorName) => {
+    setPreferences(prev => ({ ...prev, accentColor }));
+
+    if (user) {
+      debouncedSave({ accentColor });
+    }
+  }, [user, debouncedSave]);
+
   const updateSpectrumPreferences = useCallback((prefs: Partial<SpectrumPreferences>) => {
     setPreferences(prev => ({
       ...prev,
@@ -114,13 +145,19 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
     }
   }, [user, debouncedSave]);
 
+  // Get current accent color hex based on theme
+  const accentColorHex = getAccentColor(preferences.accentColor)[resolvedTheme === 'dark' ? 'dark' : 'light'];
+
   return (
     <PreferencesContext.Provider
       value={{
         preferences,
         spectrumPreferences: preferences.spectrum,
+        accentColor: preferences.accentColor,
+        accentColorHex,
         isLoading,
         updateTheme,
+        updateAccentColor,
         updateSpectrumPreferences,
       }}
     >

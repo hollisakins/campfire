@@ -105,7 +105,7 @@ interface SpectrumPlotProps {
 }
 
 export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, initialRedshift }) => {
-  const { spectrumPreferences } = usePreferences();
+  const { spectrumPreferences, accentColorHex } = usePreferences();
   const { resolvedTheme } = useTheme();
 
   const [data, setData] = useState<SpectrumData | null>(null);
@@ -118,7 +118,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
   const [redshiftInput, setRedshiftInput] = useState((initialRedshift ?? 0).toFixed(4));
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
   const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);
-  const [spectrumColor, setSpectrumColor] = useState(spectrumPreferences.spectrumColor);
 
   // Update state when preferences change
   useEffect(() => {
@@ -126,7 +125,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
     setColorscale(spectrumPreferences.colorscale2D);
     setColorMin(spectrumPreferences.snrMin);
     setColorMax(spectrumPreferences.snrMax);
-    setSpectrumColor(spectrumPreferences.spectrumColor);
   }, [spectrumPreferences]);
 
   // Get current plot colors based on theme
@@ -256,7 +254,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         x: [...wave, ...wave.slice().reverse()],
         y: [...upperBound, ...lowerBound.slice().reverse()],
         fill: 'toself',
-        fillcolor: spectrumColor + '26', // Add 15% opacity (hex 26 ≈ 15%)
+        fillcolor: accentColorHex + '26', // Add 15% opacity (hex 26 ≈ 15%)
         line: { color: 'transparent', shape: 'hvh' },
         name: '1σ error',
         hoverinfo: 'skip' as const,
@@ -272,7 +270,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         mode: 'lines' as const,
         name: 'Flux',
         line: {
-          color: spectrumColor,
+          color: accentColorHex,
           width: 1.5,
           shape: 'hvh',
         },
@@ -434,7 +432,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
     };
 
     return { traces, layout };
-  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, spectrumColor, plotColors, showEmissionLines, redshift, grating]);
+  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating]);
 
   if (loading) {
     return (

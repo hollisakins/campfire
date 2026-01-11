@@ -10,8 +10,8 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        primary: '#c026d3',      // Magenta accent
-        'primary-hover': '#a21caf',
+        primary: 'var(--primary)',
+        'primary-hover': 'var(--primary-hover)',
         header: '#475569',       // Dark slate header
         background: '#ffffff',
         card: '#f8fafc',         // Light card background

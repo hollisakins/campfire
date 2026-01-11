@@ -6,13 +6,13 @@ import { Card } from '@/components/ui/Card';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { ThemeSetting, Colorscale2D, FluxUnit } from '@/lib/types';
-import { SPECTRUM_COLOR_PRESETS } from '@/lib/types';
+import { ACCENT_COLORS } from '@/lib/types';
 
 const COLORSCALE_OPTIONS: Colorscale2D[] = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Greys'];
 
 export const SettingsCard: React.FC = () => {
-  const { theme, setTheme } = useTheme();
-  const { spectrumPreferences, updateTheme, updateSpectrumPreferences } = usePreferences();
+  const { theme, setTheme, resolvedTheme } = useTheme();
+  const { spectrumPreferences, accentColor, updateTheme, updateAccentColor, updateSpectrumPreferences } = usePreferences();
 
   const themeOptions: { value: ThemeSetting; icon: React.ElementType; label: string }[] = [
     { value: 'light', icon: Sun, label: 'Light' },
@@ -145,29 +145,35 @@ export const SettingsCard: React.FC = () => {
             </div>
           </div>
 
-          {/* Spectrum Color */}
+          {/* Accent Color */}
           <div>
             <label className="text-sm text-text-secondary dark:text-slate-400 mb-2 block flex items-center gap-2">
               <Palette className="w-4 h-4" />
-              Spectrum Line Color
+              Accent Color
             </label>
+            <p className="text-xs text-text-secondary dark:text-slate-500 mb-3">
+              Affects buttons, links, and spectrum plot throughout the site
+            </p>
             <div className="flex flex-wrap gap-2">
-              {SPECTRUM_COLOR_PRESETS.map((preset) => (
-                <button
-                  key={preset.color}
-                  onClick={() => updateSpectrumPreferences({ spectrumColor: preset.color })}
-                  className={`
-                    w-10 h-10 rounded-lg border-2 transition-all
-                    ${spectrumPreferences.spectrumColor === preset.color
-                      ? 'border-text-primary dark:border-slate-100 scale-110'
-                      : 'border-transparent hover:scale-105'
-                    }
-                  `}
-                  style={{ backgroundColor: preset.color }}
-                  title={preset.name}
-                  aria-label={`Select ${preset.name} color`}
-                />
-              ))}
+              {ACCENT_COLORS.map((color) => {
+                const displayColor = resolvedTheme === 'dark' ? color.dark : color.light;
+                return (
+                  <button
+                    key={color.name}
+                    onClick={() => updateAccentColor(color.name)}
+                    className={`
+                      w-10 h-10 rounded-lg border-2 transition-all
+                      ${accentColor === color.name
+                        ? 'border-text-primary dark:border-slate-100 scale-110'
+                        : 'border-transparent hover:scale-105'
+                      }
+                    `}
+                    style={{ backgroundColor: displayColor }}
+                    title={color.label}
+                    aria-label={`Select ${color.label} accent color`}
+                  />
+                );
+              })}
             </div>
           </div>
         </div>
