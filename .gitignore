@@ -40,6 +40,7 @@ pipeline/data/
 pipeline/products/
 pipeline/templates/*.pickle
 pipeline/templates/*.fits
+pipeline/templates/pictureframe/
 
 # CRDS cache
 crds/
