@@ -22,6 +22,7 @@ import {
   Key,
   ChevronRight,
 } from 'lucide-react';
+import { SettingsCard } from '@/components/settings/SettingsCard';
 
 interface ProgramWithAccess extends Program {
   has_access: boolean;
@@ -308,6 +309,9 @@ export default function ProfilePage() {
             </Button>
           </div>
         </Card>
+
+        {/* Settings */}
+        <SettingsCard />
 
         {/* Access Code Entry */}
         {!profileData.profile.is_group_account && (

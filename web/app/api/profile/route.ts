@@ -106,28 +106,51 @@ export async function PATCH(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { full_name } = body;
+    const { full_name, preferences } = body;
 
     const updates: Record<string, unknown> = {};
     if (typeof full_name === 'string' && full_name.trim()) {
       updates.full_name = full_name.trim();
     }
 
+    // Handle preferences update (merge with existing)
+    if (preferences !== undefined) {
+      // First get current preferences
+      const { data: currentProfile } = await supabase
+        .from('user_profiles')
+        .select('preferences')
+        .eq('user_id', user.id)
+        .single();
+
+      const currentPrefs = currentProfile?.preferences || {};
+
+      // Deep merge preferences
+      updates.preferences = {
+        ...currentPrefs,
+        ...preferences,
+        spectrum: preferences.spectrum
+          ? { ...(currentPrefs.spectrum || {}), ...preferences.spectrum }
+          : currentPrefs.spectrum,
+      };
+    }
+
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: 'No updates provided' }, { status: 400 });
     }
 
-    const { error } = await supabase
+    const { data: updatedProfile, error } = await supabase
       .from('user_profiles')
       .update(updates)
-      .eq('user_id', user.id);
+      .eq('user_id', user.id)
+      .select('preferences')
+      .single();
 
     if (error) {
       console.error('Error updating profile:', error);
       return NextResponse.json({ error: 'Failed to update profile' }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, preferences: updatedProfile?.preferences });
   } catch (error) {
     console.error('Error:', error);
     return NextResponse.json({ error: 'Failed to update profile' }, { status: 500 });
