@@ -113,40 +113,45 @@ function generateSVGPath(fnu: number[]): string {
 
 /**
  * Generate complete SVG string
- * Uses currentColor for stroke so the color can be set via CSS inheritance
- * Transparent background for dark mode compatibility
+ * Transparent background for seamless table integration
  */
-function generateSVG(flux: number[], hasData: boolean = true): string {
+function generateSVG(flux: number[], color: string, hasData: boolean = true): string {
   if (!hasData || flux.length === 0) {
-    // Return a placeholder SVG with a simple horizontal line
-    // Uses a muted currentColor (30% opacity) for the placeholder
+    // Return a placeholder SVG with a simple horizontal line (muted color)
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}" width="${SVG_WIDTH}" height="${SVG_HEIGHT}">
-  <line x1="${PADDING}" y1="${SVG_HEIGHT / 2}" x2="${SVG_WIDTH - PADDING}" y2="${SVG_HEIGHT / 2}" stroke="currentColor" stroke-opacity="0.3" stroke-width="1"/>
+  <line x1="${PADDING}" y1="${SVG_HEIGHT / 2}" x2="${SVG_WIDTH - PADDING}" y2="${SVG_HEIGHT / 2}" stroke="${color}" stroke-opacity="0.3" stroke-width="1"/>
 </svg>`;
   }
 
   const path = generateSVGPath(flux);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}" width="${SVG_WIDTH}" height="${SVG_HEIGHT}">
-  <path d="${path}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="${path}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
 }
 
 /**
- * GET /api/spectrum-thumbnail?object_id=<object_id>&flux_unit=<fnu|flambda>
+ * GET /api/spectrum-thumbnail?object_id=<object_id>&flux_unit=<fnu|flambda>&color=<hex>
  *
  * Generates an SVG sparkline thumbnail of the spectrum for the given object.
  * Selects grating by priority: PRISM > G395M > G235M > G140M
  * Supports flux_unit parameter to display as fnu (default) or flambda
+ * Supports color parameter for stroke color (default: #3b82f6 blue)
  */
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
+
+  // Get query parameters
+  const searchParams = request.nextUrl.searchParams;
+  const objectId = searchParams.get('object_id');
+  const fluxUnit = searchParams.get('flux_unit') || 'fnu';
+  const color = searchParams.get('color') || '#3b82f6'; // Default to blue
 
   // Check authentication
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
-    return new Response(generateSVG([], false), {
+    return new Response(generateSVG([], color, false), {
       status: 401,
       headers: {
         'Content-Type': 'image/svg+xml',
@@ -154,13 +159,8 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  // Get query parameters
-  const searchParams = request.nextUrl.searchParams;
-  const objectId = searchParams.get('object_id');
-  const fluxUnit = searchParams.get('flux_unit') || 'fnu';
-
   if (!objectId) {
-    return new Response(generateSVG([], false), {
+    return new Response(generateSVG([], color, false), {
       status: 400,
       headers: {
         'Content-Type': 'image/svg+xml',
@@ -176,7 +176,7 @@ export async function GET(request: NextRequest) {
       .eq('object_id', objectId);
 
     if (spectraError || !spectra || spectra.length === 0) {
-      return new Response(generateSVG([], false), {
+      return new Response(generateSVG([], color, false), {
         headers: {
           'Content-Type': 'image/svg+xml',
           'Cache-Control': 'public, max-age=86400',
@@ -204,7 +204,7 @@ export async function GET(request: NextRequest) {
 
     // Check if R2 is configured
     if (signedUrl.startsWith('#download-placeholder')) {
-      return new Response(generateSVG([], false), {
+      return new Response(generateSVG([], color, false), {
         headers: {
           'Content-Type': 'image/svg+xml',
           'Cache-Control': 'public, max-age=86400',
@@ -217,7 +217,7 @@ export async function GET(request: NextRequest) {
 
     if (!response.ok) {
       console.error('Failed to fetch spectrum JSON:', response.status);
-      return new Response(generateSVG([], false), {
+      return new Response(generateSVG([], color, false), {
         headers: {
           'Content-Type': 'image/svg+xml',
           'Cache-Control': 'public, max-age=86400',
@@ -236,7 +236,7 @@ export async function GET(request: NextRequest) {
       : fnu;
 
     // Generate SVG
-    const svg = generateSVG(flux, true);
+    const svg = generateSVG(flux, color, true);
 
     return new Response(svg, {
       headers: {
@@ -246,7 +246,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error('Error generating spectrum thumbnail:', error);
-    return new Response(generateSVG([], false), {
+    return new Response(generateSVG([], color, false), {
       headers: {
         'Content-Type': 'image/svg+xml',
         'Cache-Control': 'public, max-age=3600', // 1 hour cache for errors
