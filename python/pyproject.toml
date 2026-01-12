@@ -29,7 +29,11 @@ dependencies = [
     "requests>=2.28.0",
     "tqdm>=4.65.0",
     "numpy>=1.24.0",
+    "click>=8.0.0",
 ]
+
+[project.scripts]
+campfire = "campfire.cli:main"
 
 [project.optional-dependencies]
 plotting = [
