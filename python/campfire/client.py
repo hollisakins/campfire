@@ -25,16 +25,12 @@ class Campfire:
 
     Query and download NIRSpec spectroscopic data from the CAMPFIRE archive.
 
-    Authentication is handled in the following priority order:
-    1. Explicit api_key parameter
-    2. CAMPFIRE_API_KEY environment variable
-    3. Stored credentials from 'campfire login' (~/.campfire/credentials)
+    Authentication uses stored credentials from 'campfire login'. Run one of:
+    - `campfire login` for browser-based authentication (recommended)
+    - `campfire login --api-key` to paste an API key (for headless systems)
 
     Parameters
     ----------
-    api_key : str, optional
-        API key for authentication. If not provided, uses environment variable
-        or stored credentials.
     base_url : str, optional
         Base URL for the API. If not provided, uses CAMPFIRE_API_URL environment
         variable or defaults to production CAMPFIRE server.
@@ -43,20 +39,19 @@ class Campfire:
 
     Examples
     --------
-    >>> # Using stored credentials (recommended)
+    >>> # First, authenticate via command line:
+    >>> # $ campfire login
+    >>>
+    >>> # Then use the client:
     >>> from campfire import Campfire
-    >>> cf = Campfire()  # Uses credentials from 'campfire login'
+    >>> cf = Campfire()
     >>> results = cf.query_objects(programs=['EMBER-UDS'], redshift_range=(2.0, 4.0))
-
-    >>> # Using explicit API key
-    >>> cf = Campfire(api_key='sk_live_...')
     """
 
     DEFAULT_BASE_URL = "https://campfire.hollisakins.com/api/v1"
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         auto_refresh: bool = True,
     ):
@@ -65,20 +60,8 @@ class Campfire:
         self._auto_refresh = auto_refresh
         self._token_manager = None
 
-        # Authentication priority:
-        # 1. Explicit api_key parameter
-        # 2. CAMPFIRE_API_KEY environment variable
-        # 3. Stored credentials from ~/.campfire/credentials
-
-        if api_key:
-            self._auth_token = api_key
-            self._auth_type = "api_key"
-        elif os.environ.get("CAMPFIRE_API_KEY"):
-            self._auth_token = os.environ["CAMPFIRE_API_KEY"]
-            self._auth_type = "api_key"
-        else:
-            # Try to load stored credentials
-            self._load_stored_credentials()
+        # Load credentials from ~/.campfire/credentials
+        self._load_stored_credentials()
 
         # Validate API key format if using API key
         if self._auth_type == "api_key" and not self._auth_token.startswith("sk_"):
@@ -104,8 +87,7 @@ class Campfire:
 
             if not self._token_manager.has_credentials():
                 raise AuthenticationError(
-                    "No credentials found. Run 'campfire login' or provide api_key parameter "
-                    "or set CAMPFIRE_API_KEY environment variable."
+                    "No credentials found. Run 'campfire login' to authenticate."
                 )
 
             if self._token_manager.is_api_key():
@@ -119,8 +101,7 @@ class Campfire:
 
         except ImportError:
             raise AuthenticationError(
-                "No credentials found. Provide api_key parameter or set CAMPFIRE_API_KEY "
-                "environment variable."
+                "No credentials found. Run 'campfire login' to authenticate."
             )
 
     def _update_auth_header(self):
