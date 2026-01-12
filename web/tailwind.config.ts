@@ -27,7 +27,21 @@ const config: Config = {
       },
       borderRadius: {
         'card': '0.75rem',
-      }
+      },
+      keyframes: {
+        'fade-in': {
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
+        },
+        'zoom-in': {
+          '0%': { opacity: '0', transform: 'scale(0.95)' },
+          '100%': { opacity: '1', transform: 'scale(1)' },
+        },
+      },
+      animation: {
+        'fade-in': 'fade-in 200ms ease-out',
+        'zoom-in': 'zoom-in 200ms ease-out',
+      },
     }
   },
   plugins: [],

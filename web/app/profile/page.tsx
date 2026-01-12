@@ -7,7 +7,7 @@ import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import type { Program, UserProfile } from '@/lib/types';
+import type { Program, UserProfile, ProfileStats, ProfileRecentComments } from '@/lib/types';
 import {
   User,
   KeyRound,
@@ -23,6 +23,8 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { SettingsCard } from '@/components/settings/SettingsCard';
+import { ProfileStats as ProfileStatsCard } from '@/components/profile/ProfileStats';
+import { CommentHistory } from '@/components/profile/CommentHistory';
 
 interface ProgramWithAccess extends Program {
   has_access: boolean;
@@ -43,6 +45,8 @@ interface ProfileData {
   email: string;
   programs: ProgramWithAccess[];
   redemptions: Redemption[];
+  stats: ProfileStats;
+  recent_comments: ProfileRecentComments;
 }
 
 export default function ProfilePage() {
@@ -309,6 +313,15 @@ export default function ProfilePage() {
             </Button>
           </div>
         </Card>
+
+        {/* Activity Stats */}
+        <ProfileStatsCard stats={profileData.stats} />
+
+        {/* Comment History */}
+        <CommentHistory
+          initialComments={profileData.recent_comments.items}
+          totalCount={profileData.recent_comments.total_count}
+        />
 
         {/* Settings */}
         <SettingsCard />

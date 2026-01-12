@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Search } from 'lucide-react';
+import { X, Search, ChevronDown } from 'lucide-react';
 import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
 import { CoordinateSearchChip, CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
@@ -12,6 +12,9 @@ import {
   DQ_FLAGS,
 } from '@/lib/flags';
 import type { Program } from '@/lib/types';
+
+// Search scope type for the search bar
+export type SearchScope = 'object_id' | 'my_comments' | 'all_comments';
 
 // Extended filter options for advanced filtering
 export interface AdvancedFilterOptions {
@@ -32,6 +35,7 @@ export interface AdvancedFilterOptions {
   dq_flags: number[];
   inspected_only: boolean | null;
   search: string;
+  search_scope: SearchScope;
 }
 
 export const DEFAULT_FILTERS: AdvancedFilterOptions = {
@@ -50,7 +54,15 @@ export const DEFAULT_FILTERS: AdvancedFilterOptions = {
   dq_flags: [],
   inspected_only: null,
   search: '',
+  search_scope: 'object_id',
 };
+
+// Search scope options with labels and placeholders
+const SEARCH_SCOPE_OPTIONS: { value: SearchScope; label: string; placeholder: string }[] = [
+  { value: 'object_id', label: 'Object ID', placeholder: 'Search by Object ID...' },
+  { value: 'my_comments', label: 'My Comments', placeholder: 'Search my comments...' },
+  { value: 'all_comments', label: 'All Comments', placeholder: 'Search all comments...' },
+];
 
 interface SpectraFilterBarProps {
   filters: AdvancedFilterOptions;
@@ -80,6 +92,9 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
 }) => {
   // Local state for search input to keep it responsive during typing
   const [localSearch, setLocalSearch] = useState(filters.search);
+  // Local state for scope dropdown
+  const [scopeDropdownOpen, setScopeDropdownOpen] = useState(false);
+  const scopeDropdownRef = useRef<HTMLDivElement>(null);
 
   // Track the last value WE sent to the parent to distinguish our echoes from external changes
   const lastSentValueRef = useRef(filters.search);
@@ -109,6 +124,26 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localSearch]); // Intentionally exclude filters and onFiltersChange to prevent loops
+
+  // Close scope dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (scopeDropdownRef.current && !scopeDropdownRef.current.contains(event.target as Node)) {
+        setScopeDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Get current scope option
+  const currentScope = SEARCH_SCOPE_OPTIONS.find(s => s.value === filters.search_scope) || SEARCH_SCOPE_OPTIONS[0];
+
+  // Handle scope change
+  const handleScopeChange = (scope: SearchScope) => {
+    onFiltersChange({ ...filters, search_scope: scope });
+    setScopeDropdownOpen(false);
+  };
 
   const updateFilter = <K extends keyof AdvancedFilterOptions>(
     key: K,
@@ -212,25 +247,56 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
 
   return (
     <div className={`space-y-3 ${className}`}>
-      {/* Search bar */}
-      <div className="relative max-w-md">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary dark:text-slate-400" />
-        <input
-          type="text"
-          value={localSearch}
-          onChange={(e) => setLocalSearch(e.target.value)}
-          placeholder="Search by Object ID..."
-          className="w-full pl-10 pr-10 py-2 text-sm border border-border dark:border-slate-700 rounded-lg bg-background dark:bg-slate-800 text-text-primary dark:text-slate-100 placeholder:text-text-secondary dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-        />
-        {/* Show clear button when there's text */}
-        {localSearch && (
+      {/* Search bar with scope dropdown */}
+      <div className="relative max-w-md flex" ref={scopeDropdownRef}>
+        {/* Scope dropdown button */}
+        <div className="relative">
           <button
-            onClick={() => setLocalSearch('')}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200"
+            onClick={() => setScopeDropdownOpen(!scopeDropdownOpen)}
+            className="flex items-center gap-1 px-3 py-2 text-sm border border-r-0 border-border dark:border-slate-700 rounded-l-lg bg-card dark:bg-slate-800 text-text-primary dark:text-slate-100 hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
           >
-            <X className="w-4 h-4" />
+            <span className="whitespace-nowrap">{currentScope.label}</span>
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${scopeDropdownOpen ? 'rotate-180' : ''}`} />
           </button>
-        )}
+          {/* Dropdown menu */}
+          {scopeDropdownOpen && (
+            <div className="absolute top-full left-0 mt-1 w-40 bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg z-50 py-1">
+              {SEARCH_SCOPE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => handleScopeChange(option.value)}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-card-hover dark:hover:bg-slate-700 transition-colors ${
+                    filters.search_scope === option.value
+                      ? 'text-primary font-medium'
+                      : 'text-text-primary dark:text-slate-100'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {/* Search input */}
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary dark:text-slate-400" />
+          <input
+            type="text"
+            value={localSearch}
+            onChange={(e) => setLocalSearch(e.target.value)}
+            placeholder={currentScope.placeholder}
+            className="w-full pl-10 pr-10 py-2 text-sm border border-border dark:border-slate-700 rounded-r-lg bg-background dark:bg-slate-800 text-text-primary dark:text-slate-100 placeholder:text-text-secondary dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+          />
+          {/* Show clear button when there's text */}
+          {localSearch && (
+            <button
+              onClick={() => setLocalSearch('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filter chips */}

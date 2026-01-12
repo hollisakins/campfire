@@ -60,8 +60,8 @@ export default function RequestAccessPage() {
             {result.status === 'pending' && (
               <>
                 <div className="flex items-center justify-center mb-6">
-                  <div className="w-16 h-16 rounded-full bg-yellow-100 flex items-center justify-center">
-                    <Clock className="w-8 h-8 text-yellow-600" />
+                  <div className="w-16 h-16 rounded-full bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
+                    <Clock className="w-8 h-8 text-yellow-600 dark:text-yellow-400" />
                   </div>
                 </div>
                 <h2 className="text-2xl font-bold text-text-primary mb-4 text-center">
@@ -70,7 +70,7 @@ export default function RequestAccessPage() {
                 <p className="text-text-secondary text-center mb-6">
                   {result.message}
                 </p>
-                <div className="bg-gray-50 rounded-lg p-4 mb-6">
+                <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-4 mb-6">
                   <p className="text-sm text-text-secondary">
                     <strong>What happens next?</strong>
                   </p>
@@ -86,8 +86,8 @@ export default function RequestAccessPage() {
             {result.status === 'approved' && (
               <>
                 <div className="flex items-center justify-center mb-6">
-                  <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center">
-                    <CheckCircle className="w-8 h-8 text-green-600" />
+                  <div className="w-16 h-16 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+                    <CheckCircle className="w-8 h-8 text-green-600 dark:text-green-400" />
                   </div>
                 </div>
                 <h2 className="text-2xl font-bold text-text-primary mb-4 text-center">
@@ -102,8 +102,8 @@ export default function RequestAccessPage() {
             {result.status === 'rejected' && (
               <>
                 <div className="flex items-center justify-center mb-6">
-                  <div className="w-16 h-16 rounded-full bg-red-100 flex items-center justify-center">
-                    <AlertCircle className="w-8 h-8 text-red-600" />
+                  <div className="w-16 h-16 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+                    <AlertCircle className="w-8 h-8 text-red-600 dark:text-red-400" />
                   </div>
                 </div>
                 <h2 className="text-2xl font-bold text-text-primary mb-4 text-center">
@@ -152,9 +152,9 @@ export default function RequestAccessPage() {
           </p>
 
           {error && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
-              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-              <p className="text-sm text-red-800">{error}</p>
+            <div className="mb-4 p-3 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg flex items-start gap-2">
+              <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
             </div>
           )}
 

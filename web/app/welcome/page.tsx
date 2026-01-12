@@ -158,8 +158,8 @@ export default function WelcomePage() {
       <div className="container mx-auto px-4 py-12">
         <div className="flex items-center justify-center min-h-[60vh]">
           <Card className="w-full max-w-md p-8 text-center">
-            <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <AlertCircle className="w-8 h-8 text-red-600" />
+            <div className="w-16 h-16 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+              <AlertCircle className="w-8 h-8 text-red-600 dark:text-red-400" />
             </div>
             <h2 className="text-xl font-semibold text-text-primary mb-2">
               Unable to Complete Setup
@@ -192,16 +192,16 @@ export default function WelcomePage() {
 
           {/* Show granted programs */}
           {programs.length > 0 && (
-            <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+            <div className="mb-6 p-4 bg-green-50 dark:bg-green-950/50 border border-green-200 dark:border-green-800 rounded-lg">
               <div className="flex items-center gap-2 mb-2">
-                <CheckCircle className="w-5 h-5 text-green-600" />
-                <span className="font-medium text-green-800">
+                <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
+                <span className="font-medium text-green-800 dark:text-green-200">
                   You&apos;ve been granted access to:
                 </span>
               </div>
               <ul className="ml-7 space-y-1">
                 {programs.map((program) => (
-                  <li key={program.program_id} className="text-sm text-green-700">
+                  <li key={program.program_id} className="text-sm text-green-700 dark:text-green-300">
                     {program.program_name || `Program ${program.program_id}`}
                   </li>
                 ))}
@@ -210,9 +210,9 @@ export default function WelcomePage() {
           )}
 
           {error && (
-            <div className="mb-6 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
-              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-              <p className="text-sm text-red-800">{error}</p>
+            <div className="mb-6 p-3 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg flex items-start gap-2">
+              <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
             </div>
           )}
 
@@ -222,7 +222,7 @@ export default function WelcomePage() {
               <label className="block text-sm font-medium text-text-primary mb-2">
                 Email
               </label>
-              <div className="flex items-center gap-2 px-4 py-2 bg-gray-50 border border-border rounded-lg text-text-secondary">
+              <div className="flex items-center gap-2 px-4 py-2 bg-gray-50 dark:bg-slate-800 border border-border rounded-lg text-text-secondary">
                 <User className="w-4 h-4" />
                 {userEmail}
               </div>
@@ -291,10 +291,10 @@ export default function WelcomePage() {
             </div>
 
             {/* Security Note */}
-            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="p-3 bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 rounded-lg">
               <div className="flex items-start gap-2">
-                <Lock className="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" />
-                <p className="text-xs text-blue-800">
+                <Lock className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-blue-800 dark:text-blue-200">
                   All passwords are encrypted using industry-standard security. Your credentials are never visible to administrators.
                 </p>
               </div>

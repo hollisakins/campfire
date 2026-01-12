@@ -53,6 +53,18 @@
 #     files = ['jw06368028001_*', 'jw06368029001_*', 'jw06368030001_*']
 #     gratings = ['PRISM']
 
+# [capers_uds_p4]
+#     field = 'uds'
+#     data_subdir='6368'
+#     files = 'jw06368031*'
+#     gratings = ['PRISM']
+
+# [capers_uds_p6]
+#     field = 'uds'
+#     data_subdir='6368'
+#     files = 'jw06368040*'
+#     gratings = ['PRISM']
+
 [capers_egs_p1]
     field = 'egs'
     data_subdir='6368'
