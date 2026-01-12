@@ -79,6 +79,18 @@ Get your API key from your CAMPFIRE profile settings. Then either:
 1. Pass it directly: `Campfire(api_key='sk_live_...')`
 2. Set environment variable: `export CAMPFIRE_API_KEY=sk_live_...`
 
+## Custom Base URL
+
+By default, the client connects to `https://campfire.hollisakins.com/api/v1`. You can override this for development or testing:
+
+```python
+# Connect to local development server
+cf = Campfire(base_url="http://localhost:3000/api/v1")
+
+# Connect to staging environment
+cf = Campfire(base_url="https://dev.campfire.hollisakins.com/api/v1")
+```
+
 ## Examples
 
 ### Query high-redshift galaxies

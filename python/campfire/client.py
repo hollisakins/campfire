@@ -41,7 +41,7 @@ class Campfire:
     >>> print(f"Found {len(results)} objects")
     """
 
-    DEFAULT_BASE_URL = "https://campfire.vercel.app/api/v1"
+    DEFAULT_BASE_URL = "https://campfire.hollisakins.com/api/v1"
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         """Initialize the CAMPFIRE client."""
