@@ -14,6 +14,15 @@ from .exceptions import (
     ValidationError,
     APIError,
 )
+from .flags import (
+    SpectralFeatures,
+    ObjectFlags,
+    DQFlags,
+    FlagQuery,
+    list_flags,
+    decode_flags,
+    encode_flags,
+)
 
 # Lazy import for plotting to avoid requiring plotly for basic usage
 def __getattr__(name):
@@ -27,12 +36,21 @@ def __getattr__(name):
 __version__ = "0.1.0"
 __all__ = [
     "Campfire",
+    # Exceptions
     "CampfireError",
     "AuthenticationError",
     "NotFoundError",
     "DownloadError",
     "ValidationError",
     "APIError",
+    # Flags
+    "SpectralFeatures",
+    "ObjectFlags",
+    "DQFlags",
+    "FlagQuery",
+    "list_flags",
+    "decode_flags",
+    "encode_flags",
     # Plotting (lazy loaded)
     "plot_spectrum",
     "plot_redshift_fit",
