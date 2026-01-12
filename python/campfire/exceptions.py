@@ -24,3 +24,8 @@ class DownloadError(CampfireError):
 class ValidationError(CampfireError):
     """Raised when input validation fails."""
     pass
+
+
+class APIError(CampfireError):
+    """Raised when the API returns an unexpected error."""
+    pass

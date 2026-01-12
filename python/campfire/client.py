@@ -13,6 +13,7 @@ from .exceptions import (
     NotFoundError,
     DownloadError,
     ValidationError,
+    APIError,
 )
 
 __version__ = "0.1.0"
@@ -405,3 +406,186 @@ class Campfire:
                         print(f"Failed to download {fits_path}: {e}")
 
         return results
+
+    # -------------------------------------------------------------------------
+    # Metadata Methods
+    # -------------------------------------------------------------------------
+
+    def get_metadata(self) -> dict:
+        """
+        Get all available metadata in a single call.
+
+        Returns
+        -------
+        dict
+            Dictionary with keys: programs, fields, gratings, observations.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> meta = cf.get_metadata()
+        >>> print(meta['fields'])
+        ['COSMOS', 'UDS', ...]
+        """
+        url = f"{self.base_url}/metadata"
+        response = self.session.get(url)
+
+        if response.status_code == 401:
+            raise AuthenticationError("Invalid or expired API key")
+        elif response.status_code != 200:
+            raise APIError(f"API error: {response.status_code} - {response.text}")
+
+        return response.json()
+
+    def get_programs(self) -> Table:
+        """
+        List available programs with metadata.
+
+        Returns
+        -------
+        astropy.table.Table
+            Table with columns: program_id, program_name, pi_name, is_public.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> programs = cf.get_programs()
+        >>> print(programs)
+        """
+        metadata = self.get_metadata()
+        programs = metadata.get("programs", [])
+
+        if len(programs) == 0:
+            return Table()
+
+        return Table(rows=programs)
+
+    def get_fields(self) -> List[str]:
+        """
+        List available field names.
+
+        Returns
+        -------
+        list of str
+            List of field names (e.g., ['COSMOS', 'UDS']).
+        """
+        metadata = self.get_metadata()
+        return metadata.get("fields", [])
+
+    def get_gratings(self) -> List[str]:
+        """
+        List available grating types.
+
+        Returns
+        -------
+        list of str
+            List of grating names (e.g., ['PRISM', 'G395M']).
+        """
+        metadata = self.get_metadata()
+        return metadata.get("gratings", [])
+
+    def get_observations(self) -> List[str]:
+        """
+        List available observation names.
+
+        Returns
+        -------
+        list of str
+            List of observation names (e.g., ['ember_uds_p4']).
+        """
+        metadata = self.get_metadata()
+        return metadata.get("observations", [])
+
+    # -------------------------------------------------------------------------
+    # Spectrum Data Methods (for plotting)
+    # -------------------------------------------------------------------------
+
+    def get_spectrum_data(
+        self,
+        object_id: str,
+        grating: str,
+    ) -> dict:
+        """
+        Fetch spectrum JSON data for plotting.
+
+        Parameters
+        ----------
+        object_id : str
+            Object ID to fetch spectrum for.
+        grating : str
+            Grating type (e.g., 'PRISM', 'G395M').
+
+        Returns
+        -------
+        dict
+            Spectrum data with keys: wave, fnu, fnu_err, snr_2d, n_spatial,
+            n_wave, profile, profile_fit, profile_pix.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> data = cf.get_spectrum_data('ember_uds_p4_123456', 'PRISM')
+        >>> # Use with plotting module
+        >>> from campfire.plotting import plot_spectrum
+        >>> fig = plot_spectrum(data, redshift=2.5)
+        """
+        url = f"{self.base_url}/spectrum"
+        params = {"object_id": object_id, "grating": grating}
+
+        response = self.session.get(url, params=params)
+
+        if response.status_code == 401:
+            raise AuthenticationError("Invalid or expired API key")
+        elif response.status_code == 403:
+            raise AuthenticationError("Access denied to this object")
+        elif response.status_code == 404:
+            raise NotFoundError(f"No {grating} spectrum found for {object_id}")
+        elif response.status_code != 200:
+            raise APIError(f"API error: {response.status_code} - {response.text}")
+
+        return response.json()
+
+    def get_redshift_fit_data(
+        self,
+        object_id: str,
+        grating: str,
+    ) -> dict:
+        """
+        Fetch redshift fitting results for plotting.
+
+        Parameters
+        ----------
+        object_id : str
+            Object ID to fetch fit for.
+        grating : str
+            Grating type (e.g., 'PRISM', 'G395M').
+
+        Returns
+        -------
+        dict
+            Fit data with keys: redshift, chi2_min, confidence, z_grid,
+            chi2_grid, model_wave, model_fnu.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> fit_data = cf.get_redshift_fit_data('ember_uds_p4_123456', 'PRISM')
+        >>> print(f"Best-fit redshift: z={fit_data['redshift']:.4f}")
+        """
+        url = f"{self.base_url}/redshift-fit"
+        params = {"object_id": object_id, "grating": grating}
+
+        response = self.session.get(url, params=params)
+
+        if response.status_code == 401:
+            raise AuthenticationError("Invalid or expired API key")
+        elif response.status_code == 403:
+            raise AuthenticationError("Access denied to this object")
+        elif response.status_code == 404:
+            raise NotFoundError(
+                f"No redshift fit data found for {object_id} ({grating})"
+            )
+        elif response.status_code != 200:
+            raise APIError(f"API error: {response.status_code} - {response.text}")
+
+        return response.json()
