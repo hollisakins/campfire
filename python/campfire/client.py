@@ -36,7 +36,8 @@ class Campfire:
         API key for authentication. If not provided, uses environment variable
         or stored credentials.
     base_url : str, optional
-        Base URL for the API. Defaults to production CAMPFIRE server.
+        Base URL for the API. If not provided, uses CAMPFIRE_API_URL environment
+        variable or defaults to production CAMPFIRE server.
     auto_refresh : bool, optional
         If True (default), automatically refresh OAuth tokens when they expire.
 
@@ -60,7 +61,7 @@ class Campfire:
         auto_refresh: bool = True,
     ):
         """Initialize the CAMPFIRE client."""
-        self.base_url = base_url or self.DEFAULT_BASE_URL
+        self.base_url = base_url or os.environ.get("CAMPFIRE_API_URL") or self.DEFAULT_BASE_URL
         self._auto_refresh = auto_refresh
         self._token_manager = None
 
