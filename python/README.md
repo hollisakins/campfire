@@ -7,6 +7,12 @@ Python client for querying and downloading NIRSpec spectroscopic data from the C
 ```bash
 cd python
 pip install -e .
+
+# With plotting support
+pip install -e ".[plotting]"
+
+# With all optional dependencies
+pip install -e ".[all]"
 ```
 
 ## Quick Start
@@ -52,6 +58,16 @@ paths = cf.download_spectra(
   - Progress bars
   - Batch downloads
 
+- **Metadata discovery**:
+  - List available programs, fields, gratings, observations
+  - Explore the archive before querying
+
+- **Interactive plotting** (requires `plotly`):
+  - Multi-panel spectrum viewer (1D + 2D heatmap)
+  - Redshift fitting visualization
+  - Emission line overlays
+  - Flux unit conversion (fν ↔ fλ)
+
 - **Astropy integration**:
   - Returns `astropy.table.Table` objects
   - Works seamlessly with astropy ecosystem
@@ -87,6 +103,24 @@ nearby = cf.query_objects(
 )
 ```
 
+### Explore available metadata
+
+```python
+cf = Campfire()
+
+# List all programs you have access to
+programs = cf.get_programs()
+print(programs)
+
+# Get available fields and gratings
+print("Fields:", cf.get_fields())
+print("Gratings:", cf.get_gratings())
+print("Observations:", cf.get_observations())
+
+# Or get everything at once
+metadata = cf.get_metadata()
+```
+
 ### Download all PRISM spectra for a program
 
 ```python
@@ -98,6 +132,46 @@ paths = cf.download_spectra(
     gratings=['PRISM'],
     show_progress=True
 )
+```
+
+### Plot a spectrum (interactive Plotly)
+
+```python
+from campfire import Campfire
+from campfire.plotting import plot_spectrum, plot_redshift_fit
+
+cf = Campfire()
+
+# Fetch spectrum data for plotting
+spec_data = cf.get_spectrum_data('ember_uds_p4_123456', 'PRISM')
+
+# Create multi-panel plot with 2D heatmap
+fig = plot_spectrum(
+    spec_data,
+    redshift=2.5,
+    show_emission_lines=True,
+    flux_unit='fnu',  # or 'flambda'
+)
+fig.show()
+
+# Plot redshift fitting results
+fit_data = cf.get_redshift_fit_data('ember_uds_p4_123456', 'PRISM')
+fig = plot_redshift_fit(fit_data, spectrum_data=spec_data)
+fig.show()
+```
+
+### Simple 1D spectrum plot
+
+```python
+from campfire.plotting import plot_spectrum_simple
+
+# Lightweight plot without 2D heatmap
+fig = plot_spectrum_simple(
+    spec_data,
+    redshift=2.5,
+    show_emission_lines=True
+)
+fig.show()
 ```
 
 ### Cross-match with your catalog
@@ -129,7 +203,7 @@ matches = campfire_objects[idx][sep < 1*u.arcsec]
 
 Main client class for interacting with CAMPFIRE.
 
-#### Methods
+#### Query Methods
 
 ##### `query_objects(**filters)`
 
@@ -156,6 +230,40 @@ Query objects with optional filters.
 
 **Returns:** `astropy.table.Table`
 
+#### Metadata Methods
+
+##### `get_metadata()`
+
+Get all available metadata in one call.
+
+**Returns:** `dict` with keys: `programs`, `fields`, `gratings`, `observations`
+
+##### `get_programs()`
+
+List available programs with metadata.
+
+**Returns:** `astropy.table.Table` with columns: `program_id`, `program_name`, `pi_name`, `is_public`
+
+##### `get_fields()`
+
+List available field names.
+
+**Returns:** `list[str]`
+
+##### `get_gratings()`
+
+List available grating types.
+
+**Returns:** `list[str]`
+
+##### `get_observations()`
+
+List available observation names.
+
+**Returns:** `list[str]`
+
+#### Download Methods
+
 ##### `download_spectrum(fits_path, output_path=None, overwrite=False)`
 
 Download a single FITS file.
@@ -179,6 +287,81 @@ Download multiple spectra.
 
 **Returns:** `dict` mapping `object_id` to `{grating: filepath}`
 
+#### Plotting Data Methods
+
+##### `get_spectrum_data(object_id, grating)`
+
+Fetch spectrum JSON data for plotting.
+
+**Parameters:**
+- `object_id` (str): Object ID
+- `grating` (str): Grating type (e.g., 'PRISM', 'G395M')
+
+**Returns:** `dict` with keys: `wave`, `fnu`, `fnu_err`, `snr_2d`, `profile`, etc.
+
+##### `get_redshift_fit_data(object_id, grating)`
+
+Fetch redshift fitting results for plotting.
+
+**Parameters:**
+- `object_id` (str): Object ID
+- `grating` (str): Grating type
+
+**Returns:** `dict` with keys: `redshift`, `chi2_min`, `confidence`, `z_grid`, `chi2_grid`, `model_wave`, `model_fnu`
+
+### Plotting Functions
+
+These require installing with `pip install -e ".[plotting]"`.
+
+##### `plot_spectrum(spectrum_data, ...)`
+
+Create multi-panel spectrum plot with 2D S/N heatmap.
+
+**Parameters:**
+- `spectrum_data` (dict): From `get_spectrum_data()`
+- `redshift` (float): Redshift for emission lines (default: 0.0)
+- `flux_unit` (str): `'fnu'` or `'flambda'` (default: 'fnu')
+- `show_errors` (bool): Show error band (default: True)
+- `show_emission_lines` (bool): Show emission line markers (default: False)
+- `colormap` (str): Heatmap colormap (default: 'viridis')
+- `snr_range` (tuple): S/N range for heatmap (default: (-5, 10))
+
+**Returns:** `plotly.graph_objects.Figure`
+
+##### `plot_redshift_fit(fit_data, spectrum_data=None, ...)`
+
+Create redshift fitting plot with chi-squared curve.
+
+**Parameters:**
+- `fit_data` (dict): From `get_redshift_fit_data()`
+- `spectrum_data` (dict): Optional observed spectrum overlay
+- `flux_unit` (str): `'fnu'` or `'flambda'`
+- `show_emission_lines` (bool): Show emission line markers
+
+**Returns:** `plotly.graph_objects.Figure`
+
+##### `plot_spectrum_simple(spectrum_data, ...)`
+
+Create simple 1D spectrum plot (no 2D heatmap).
+
+**Parameters:** Same as `plot_spectrum()` but without heatmap options.
+
+**Returns:** `plotly.graph_objects.Figure`
+
+### Helper Functions
+
+##### `convert_flux_units(fnu, wavelength, to_unit='flambda')`
+
+Convert between flux units.
+
+##### `get_emission_lines(redshift, wave_min=None, wave_max=None)`
+
+Get emission lines with observed wavelengths at given redshift.
+
+##### `EMISSION_LINES`
+
+List of common emission lines with rest wavelengths.
+
 ## Development
 
 ```bash
@@ -187,6 +370,9 @@ pip install -e ".[dev]"
 
 # Run tests
 pytest
+
+# Run tests with coverage
+pytest --cov=campfire
 
 # Format code
 black campfire/
