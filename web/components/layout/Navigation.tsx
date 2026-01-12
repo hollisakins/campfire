@@ -31,6 +31,7 @@ export const Navigation: React.FC = () => {
     { href: '/', label: 'Home' },
     { href: '/nircam', label: 'NIRCam' },
     { href: '/spectra', label: 'NIRSpec' },
+    { href: '/docs', label: 'Docs' },
   ];
 
   const handleSignOut = async () => {
