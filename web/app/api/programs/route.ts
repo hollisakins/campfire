@@ -61,43 +61,34 @@ export async function GET() {
   }
 
   try {
-    // Fetch all programs
-    const { data: programs, error: programsError } = await supabase
-      .from('programs')
-      .select('*')
-      .order('program_name');
+    // Fetch all programs and stats in parallel using efficient RPC
+    const [programsResult, statsResult] = await Promise.all([
+      supabase
+        .from('programs')
+        .select('*')
+        .order('program_name'),
+      supabase.rpc('get_program_stats')
+    ]);
 
-    if (programsError) {
-      console.error('Error fetching programs:', programsError);
+    if (programsResult.error) {
+      console.error('Error fetching programs:', programsResult.error);
       return NextResponse.json({ error: 'Failed to fetch programs' }, { status: 500 });
     }
 
-    // Fetch object counts per program
-    const { data: objectCounts } = await supabase
-      .from('objects')
-      .select('program_id');
-
-    // Count objects per program
-    const countsByProgram: Record<number, number> = {};
-    for (const obj of objectCounts || []) {
-      countsByProgram[obj.program_id] = (countsByProgram[obj.program_id] || 0) + 1;
-    }
-
-    // Fetch user access counts per program
-    const { data: accessCounts } = await supabase
-      .from('user_program_access')
-      .select('program_id');
-
-    const accessByProgram: Record<number, number> = {};
-    for (const access of accessCounts || []) {
-      accessByProgram[access.program_id] = (accessByProgram[access.program_id] || 0) + 1;
+    // Build lookup maps from aggregated stats
+    const statsMap = new Map<number, { object_count: number; user_access_count: number }>();
+    for (const stat of statsResult.data || []) {
+      statsMap.set(stat.program_id, {
+        object_count: Number(stat.object_count) || 0,
+        user_access_count: Number(stat.user_access_count) || 0,
+      });
     }
 
     // Combine data
-    const programsWithStats = (programs || []).map(p => ({
+    const programsWithStats = (programsResult.data || []).map(p => ({
       ...p,
-      object_count: countsByProgram[p.program_id] || 0,
-      user_access_count: accessByProgram[p.program_id] || 0,
+      object_count: statsMap.get(p.program_id)?.object_count || 0,
+      user_access_count: statsMap.get(p.program_id)?.user_access_count || 0,
     }));
 
     return NextResponse.json({ programs: programsWithStats });

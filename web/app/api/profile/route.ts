@@ -64,46 +64,11 @@ export async function GET() {
       .eq('user_id', user.id)
       .order('redeemed_at', { ascending: false });
 
-    // Fetch user stats: objects inspected (COUNT DISTINCT via raw SQL)
-    // Supabase client doesn't support COUNT DISTINCT, so we use raw SQL
-    const { data: distinctObjectsData } = await supabase
-      .rpc('count_distinct_inspected_objects', { p_user_id: user.id });
-    const objectsInspected = distinctObjectsData ?? 0;
+    // Fetch user stats using batched RPC (reduces 5 queries to 1)
+    const { data: statsData } = await supabase
+      .rpc('get_user_profile_stats', { p_user_id: user.id });
 
-    // Fetch user stats: comments posted
-    const { count: commentsPosted } = await supabase
-      .from('comments')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .eq('is_deleted', false);
-
-    // Fetch last activity timestamp (most recent comment or inspection)
-    const { data: lastComment } = await supabase
-      .from('comments')
-      .select('created_at')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    const { data: lastInspection } = await supabase
-      .from('flag_audit_log')
-      .select('changed_at')
-      .eq('user_id', user.id)
-      .order('changed_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    // Compare timestamps to find the most recent activity
-    const lastCommentTime = lastComment?.created_at ? new Date(lastComment.created_at).getTime() : 0;
-    const lastInspectionTime = lastInspection?.changed_at ? new Date(lastInspection.changed_at).getTime() : 0;
-
-    let lastActivity: string | null = null;
-    if (lastCommentTime > 0 || lastInspectionTime > 0) {
-      lastActivity = lastCommentTime > lastInspectionTime
-        ? lastComment!.created_at
-        : lastInspection!.changed_at;
-    }
+    const userStats = statsData as { objects_inspected: number; comments_posted: number; last_activity: string | null } | null;
 
     // Fetch recent comments with object info (for comment history)
     // Note: comments.object_id is FK to objects.id (many-to-one), so Supabase returns single object
@@ -146,9 +111,9 @@ export async function GET() {
       programs: programsWithAccess,
       redemptions: redemptions || [],
       stats: {
-        objects_inspected: objectsInspected || 0,
-        comments_posted: commentsPosted || 0,
-        last_activity: lastActivity,
+        objects_inspected: userStats?.objects_inspected || 0,
+        comments_posted: userStats?.comments_posted || 0,
+        last_activity: userStats?.last_activity || null,
       },
       recent_comments: {
         items: commentHistoryItems,

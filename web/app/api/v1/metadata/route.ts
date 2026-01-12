@@ -61,10 +61,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Fetch fields and observations from materialized view
+    // Fetch fields, observations, and gratings from materialized view
+    // This is much more efficient than querying the spectra table directly
     const { data: filterData, error: filterError } = await supabase
       .from('mv_filter_options')
-      .select('fields, observations')
+      .select('fields, observations, gratings')
       .single();
 
     if (filterError) {
@@ -72,27 +73,17 @@ export async function GET(request: NextRequest) {
       // Continue with empty arrays if materialized view fails
     }
 
-    // Fetch distinct gratings from spectra table
-    const { data: gratingData, error: gratingError } = await supabase
-      .from('spectra')
-      .select('grating')
-      .order('grating');
-
-    if (gratingError) {
-      console.error('Error fetching gratings:', gratingError);
-    }
-
-    // Get unique gratings
-    const uniqueGratings = gratingData
-      ? [...new Set(gratingData.map(g => g.grating))].filter(Boolean).sort()
-      : [];
-
-    return NextResponse.json({
+    const response = NextResponse.json({
       programs: programs || [],
       fields: filterData?.fields || [],
-      gratings: uniqueGratings,
+      gratings: filterData?.gratings || [],
       observations: filterData?.observations || [],
     });
+
+    // Cache for 5 minutes - filter options only change on data deployments
+    response.headers.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
+
+    return response;
   } catch (error) {
     console.error('Error in API /v1/metadata:', error);
     return NextResponse.json(
