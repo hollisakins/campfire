@@ -25,47 +25,125 @@ class Campfire:
 
     Query and download NIRSpec spectroscopic data from the CAMPFIRE archive.
 
+    Authentication is handled in the following priority order:
+    1. Explicit api_key parameter
+    2. CAMPFIRE_API_KEY environment variable
+    3. Stored credentials from 'campfire login' (~/.campfire/credentials)
+
     Parameters
     ----------
     api_key : str, optional
-        API key for authentication. If not provided, reads from CAMPFIRE_API_KEY
-        environment variable.
+        API key for authentication. If not provided, uses environment variable
+        or stored credentials.
     base_url : str, optional
         Base URL for the API. Defaults to production CAMPFIRE server.
+    auto_refresh : bool, optional
+        If True (default), automatically refresh OAuth tokens when they expire.
 
     Examples
     --------
+    >>> # Using stored credentials (recommended)
     >>> from campfire import Campfire
-    >>> cf = Campfire(api_key='sk_live_...')
+    >>> cf = Campfire()  # Uses credentials from 'campfire login'
     >>> results = cf.query_objects(programs=['EMBER-UDS'], redshift_range=(2.0, 4.0))
-    >>> print(f"Found {len(results)} objects")
+
+    >>> # Using explicit API key
+    >>> cf = Campfire(api_key='sk_live_...')
     """
 
     DEFAULT_BASE_URL = "https://campfire.hollisakins.com/api/v1"
 
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        auto_refresh: bool = True,
+    ):
         """Initialize the CAMPFIRE client."""
-        self.api_key = api_key or os.environ.get("CAMPFIRE_API_KEY")
-        if not self.api_key:
-            raise AuthenticationError(
-                "API key required. Provide via api_key parameter or CAMPFIRE_API_KEY environment variable."
-            )
+        self.base_url = base_url or self.DEFAULT_BASE_URL
+        self._auto_refresh = auto_refresh
+        self._token_manager = None
 
-        if not self.api_key.startswith("sk_"):
+        # Authentication priority:
+        # 1. Explicit api_key parameter
+        # 2. CAMPFIRE_API_KEY environment variable
+        # 3. Stored credentials from ~/.campfire/credentials
+
+        if api_key:
+            self._auth_token = api_key
+            self._auth_type = "api_key"
+        elif os.environ.get("CAMPFIRE_API_KEY"):
+            self._auth_token = os.environ["CAMPFIRE_API_KEY"]
+            self._auth_type = "api_key"
+        else:
+            # Try to load stored credentials
+            self._load_stored_credentials()
+
+        # Validate API key format if using API key
+        if self._auth_type == "api_key" and not self._auth_token.startswith("sk_"):
             raise ValidationError(
                 "Invalid API key format. Keys should start with 'sk_'"
             )
 
-        self.base_url = base_url or self.DEFAULT_BASE_URL
-
-        # Create session with auth header
+        # Create session
         self.session = requests.Session()
         self.session.headers.update(
             {
-                "Authorization": f"Bearer {self.api_key}",
                 "User-Agent": f"campfire-python/{__version__}",
             }
         )
+        self._update_auth_header()
+
+    def _load_stored_credentials(self):
+        """Load credentials from ~/.campfire/credentials."""
+        try:
+            from .auth.tokens import TokenManager
+
+            self._token_manager = TokenManager(self.base_url)
+
+            if not self._token_manager.has_credentials():
+                raise AuthenticationError(
+                    "No credentials found. Run 'campfire login' or provide api_key parameter "
+                    "or set CAMPFIRE_API_KEY environment variable."
+                )
+
+            if self._token_manager.is_api_key():
+                self._auth_token = self._token_manager.get_valid_token(auto_refresh=False)
+                self._auth_type = "api_key"
+            else:
+                self._auth_token = self._token_manager.get_valid_token(
+                    auto_refresh=self._auto_refresh
+                )
+                self._auth_type = "oauth"
+
+        except ImportError:
+            raise AuthenticationError(
+                "No credentials found. Provide api_key parameter or set CAMPFIRE_API_KEY "
+                "environment variable."
+            )
+
+    def _update_auth_header(self):
+        """Update the session's Authorization header."""
+        self.session.headers["Authorization"] = f"Bearer {self._auth_token}"
+
+    def _ensure_valid_token(self):
+        """Ensure we have a valid token, refreshing if necessary."""
+        if self._auth_type != "oauth" or not self._auto_refresh:
+            return
+
+        if self._token_manager and self._token_manager.needs_refresh():
+            try:
+                self._auth_token = self._token_manager.get_valid_token(auto_refresh=True)
+                self._update_auth_header()
+            except AuthenticationError:
+                # If refresh fails, continue with current token
+                # The request will fail with 401 and user will know to re-login
+                pass
+
+    def _make_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Make an authenticated request, refreshing token if needed."""
+        self._ensure_valid_token()
+        return self.session.request(method, url, **kwargs)
 
     def query_objects(
         self,
@@ -201,10 +279,10 @@ class Campfire:
 
         # Make request
         url = f"{self.base_url}/objects"
-        response = self.session.get(url, params=params)
+        response = self._make_request("GET", url, params=params)
 
         if response.status_code == 401:
-            raise AuthenticationError("Invalid or expired API key")
+            raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
         elif response.status_code == 403:
             raise AuthenticationError("Access denied")
         elif response.status_code != 200:
@@ -270,10 +348,10 @@ class Campfire:
         url = f"{self.base_url}/spectra"
         params = {"path": fits_path}
 
-        response = self.session.get(url, params=params)
+        response = self._make_request("GET", url, params=params)
 
         if response.status_code == 401:
-            raise AuthenticationError("Invalid or expired API key")
+            raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
         elif response.status_code == 403:
             raise AuthenticationError("Access denied to this file")
         elif response.status_code == 404:
@@ -428,10 +506,10 @@ class Campfire:
         ['COSMOS', 'UDS', ...]
         """
         url = f"{self.base_url}/metadata"
-        response = self.session.get(url)
+        response = self._make_request("GET", url)
 
         if response.status_code == 401:
-            raise AuthenticationError("Invalid or expired API key")
+            raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
         elif response.status_code != 200:
             raise APIError(f"API error: {response.status_code} - {response.text}")
 
@@ -532,10 +610,10 @@ class Campfire:
         url = f"{self.base_url}/spectrum"
         params = {"object_id": object_id, "grating": grating}
 
-        response = self.session.get(url, params=params)
+        response = self._make_request("GET", url, params=params)
 
         if response.status_code == 401:
-            raise AuthenticationError("Invalid or expired API key")
+            raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
         elif response.status_code == 403:
             raise AuthenticationError("Access denied to this object")
         elif response.status_code == 404:
@@ -575,10 +653,10 @@ class Campfire:
         url = f"{self.base_url}/redshift-fit"
         params = {"object_id": object_id, "grating": grating}
 
-        response = self.session.get(url, params=params)
+        response = self._make_request("GET", url, params=params)
 
         if response.status_code == 401:
-            raise AuthenticationError("Invalid or expired API key")
+            raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
         elif response.status_code == 403:
             raise AuthenticationError("Access denied to this object")
         elif response.status_code == 404:

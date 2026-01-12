@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import { validateAccessToken } from '@/lib/auth/tokens';
 
 /**
  * Hash an API key using SHA-256
@@ -11,8 +12,38 @@ export function hashApiKey(apiKey: string): string {
 }
 
 /**
+ * Validate authentication from request headers
+ * Supports both API keys (sk_*) and JWT access tokens
+ * Returns user_id if valid, null otherwise
+ */
+export async function validateAuth(request: NextRequest): Promise<string | null> {
+  // Get token from Authorization header
+  const authHeader = request.headers.get('authorization');
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+
+  const token = authHeader.replace('Bearer ', '');
+
+  if (!token) {
+    return null;
+  }
+
+  // Route to appropriate validator based on token format
+  if (token.startsWith('sk_')) {
+    // API key authentication
+    return validateApiKeyToken(token);
+  } else {
+    // JWT access token authentication
+    return validateAccessToken(token);
+  }
+}
+
+/**
  * Validate API key from request headers
  * Returns user_id if valid, null otherwise
+ * @deprecated Use validateAuth instead for unified auth handling
  */
 export async function validateApiKey(request: NextRequest): Promise<string | null> {
   // Get API key from Authorization header
@@ -28,6 +59,14 @@ export async function validateApiKey(request: NextRequest): Promise<string | nul
     return null;
   }
 
+  return validateApiKeyToken(apiKey);
+}
+
+/**
+ * Validate an API key token string
+ * Internal function used by both validateAuth and validateApiKey
+ */
+async function validateApiKeyToken(apiKey: string): Promise<string | null> {
   // Create service role client to bypass RLS
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
