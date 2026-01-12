@@ -27,6 +27,7 @@ export interface FilterOptions {
   dq_flags?: number[];
   inspected_only?: boolean | null;
   search?: string;
+  search_scope?: 'object_id' | 'my_comments' | 'all_comments';
 }
 
 export interface SpectraResult {
@@ -155,6 +156,18 @@ export async function getSpectra(
         radius / 3600;  // arcsec
     }
 
+    // Determine search routing based on scope
+    const searchText = filters?.search?.trim() || null;
+    const searchScope = filters?.search_scope || 'object_id';
+    const isCommentSearch = searchScope === 'my_comments' || searchScope === 'all_comments';
+
+    // Only pass object_id search when scope is 'object_id'
+    const objectIdSearch = searchScope === 'object_id' ? searchText : null;
+    // Only pass comment search when scope is comment-based
+    const commentSearch = isCommentSearch ? searchText : null;
+    const commentSearchScope = isCommentSearch ? (searchScope === 'my_comments' ? 'just_me' : 'everyone') : null;
+    const commentUserId = isCommentSearch ? user.id : null;
+
     // Call the RPC function for server-side filtering, sorting, and pagination
     const { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
       p_program_ids: accessibleProgramIds,
@@ -170,11 +183,14 @@ export async function getSpectra(
       p_spectral_features: spectralFeaturesMask,
       p_object_flags: objectFlagsMask,
       p_dq_flags: dqFlagsMask,
-      p_search: filters?.search?.trim() || null,
+      p_search: objectIdSearch,
       p_inspected_only: filters?.inspected_only ?? null,
       p_coord_ra: coordRa,
       p_coord_dec: coordDec,
       p_radius_degrees: radiusDegrees,
+      p_comment_search: commentSearch,
+      p_comment_search_scope: commentSearchScope,
+      p_comment_user_id: commentUserId,
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,
       p_page: page,
@@ -592,6 +608,16 @@ export async function getAdjacentObjectIds(
         radius / 3600;  // arcsec
     }
 
+    // Determine search routing based on scope
+    const searchText = filters?.search?.trim() || null;
+    const searchScope = filters?.search_scope || 'object_id';
+    const isCommentSearch = searchScope === 'my_comments' || searchScope === 'all_comments';
+
+    const objectIdSearch = searchScope === 'object_id' ? searchText : null;
+    const commentSearch = isCommentSearch ? searchText : null;
+    const commentSearchScope = isCommentSearch ? (searchScope === 'my_comments' ? 'just_me' : 'everyone') : null;
+    const commentUserId = isCommentSearch ? user.id : null;
+
     // Call the lightweight RPC function
     const { data, error } = await supabase.rpc('get_adjacent_objects', {
       p_current_object_id: currentObjectId,
@@ -606,11 +632,14 @@ export async function getAdjacentObjectIds(
       p_spectral_features: spectralFeaturesMask,
       p_object_flags: objectFlagsMask,
       p_dq_flags: dqFlagsMask,
-      p_search: filters?.search?.trim() || null,
+      p_search: objectIdSearch,
       p_inspected_only: filters?.inspected_only ?? null,
       p_coord_ra: coordRa,
       p_coord_dec: coordDec,
       p_radius_degrees: radiusDegrees,
+      p_comment_search: commentSearch,
+      p_comment_search_scope: commentSearchScope,
+      p_comment_user_id: commentUserId,
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,
     });

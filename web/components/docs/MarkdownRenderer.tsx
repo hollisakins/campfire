@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -46,12 +46,28 @@ function headingToId(text: string): string {
 }
 
 export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRendererProps) {
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
+
   useEffect(() => {
     if (onTOCChange) {
       const headings = extractHeadings(content);
       onTOCChange(headings);
     }
   }, [content, onTOCChange]);
+
+  // ESC key handler for lightbox
+  useEffect(() => {
+    if (!lightbox) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setLightbox(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [lightbox]);
 
   const components: Components = {
     // Headings with anchor links
@@ -199,13 +215,14 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       <em className="italic">{children}</em>
     ),
 
-    // Images (for screenshots)
+    // Images (for screenshots) - clickable to open lightbox
     img: ({ src, alt }) => (
       <figure className="my-6">
         <img
-          src={src}
+          src={typeof src === 'string' ? src : undefined}
           alt={alt || ''}
-          className="rounded-lg border border-border dark:border-slate-700 shadow-sm max-w-full"
+          className="rounded-lg border border-border dark:border-slate-700 shadow-sm max-w-full cursor-pointer hover:opacity-90 transition-opacity"
+          onClick={() => typeof src === 'string' && setLightbox({ src, alt: alt || '' })}
         />
         {alt && (
           <figcaption className="mt-2 text-center text-sm text-text-secondary dark:text-slate-400 italic">
@@ -217,14 +234,56 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
   };
 
   return (
-    <div className="prose-campfire">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
-        components={components}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
+    <>
+      <div className="prose-campfire">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeHighlight]}
+          components={components}
+        >
+          {content}
+        </ReactMarkdown>
+      </div>
+
+      {/* Image Lightbox */}
+      {lightbox && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image preview"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
+          onClick={() => setLightbox(null)}
+        >
+          {/* Overlay */}
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" />
+
+          {/* Content */}
+          <div
+            className="relative z-10 flex flex-col items-center animate-zoom-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={lightbox.src}
+              alt={lightbox.alt}
+              className="max-w-[90vw] max-h-[85vh] object-contain rounded-lg shadow-2xl"
+            />
+            {lightbox.alt && (
+              <p className="mt-4 text-white/90 text-center text-sm max-w-2xl">
+                {lightbox.alt}
+              </p>
+            )}
+            <button
+              onClick={() => setLightbox(null)}
+              className="absolute -top-2 -right-2 w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+              aria-label="Close preview"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

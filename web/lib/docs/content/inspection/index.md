@@ -33,7 +33,7 @@ The spectrum detail page has six tabs:
 | **INSPECT** | Set redshift quality, tag features, and classify the object |
 | **CONTEXT** | Find nearby objects within 1 arcminute |
 
-![Spectrum detail page overview](./images/inspection-overview.png)
+![Spectrum detail page overview](/docs/inspection-overview.png)
 
 ## The Inspect Panel
 
@@ -65,7 +65,7 @@ Classify the object type and flag any data quality issues. See [Flags](/docs/ins
 
 ## Keyboard Shortcuts
 
-The spectrum plots support standard Plotly interactions:
+The spectrum plots support standard Plotly interactions. 
 
 - **Scroll** to zoom in/out
 - **Click and drag** to pan
@@ -73,6 +73,6 @@ The spectrum plots support standard Plotly interactions:
 
 ## Next Steps
 
-- [Understanding Redshift Quality](/docs/inspection/redshift-quality) - Learn the five quality levels
+- [Redshift Quality](/docs/inspection/redshift-quality) - Learn the five quality levels
 - [Spectral Features](/docs/inspection/spectral-features) - What each feature tag means
 - [Flags](/docs/inspection/flags) - Object types and data quality flags

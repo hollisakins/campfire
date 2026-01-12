@@ -19,6 +19,7 @@ import nirspecContent from '@/lib/docs/content/reduction/nirspec.md';
 import nircamContent from '@/lib/docs/content/reduction/nircam.md';
 import dataProductsContent from '@/lib/docs/content/data-products/index.md';
 import fitsColumnsContent from '@/lib/docs/content/data-products/fits-columns.md';
+import usageContent from '@/lib/docs/content/usage/index.md';
 import apiContent from '@/lib/docs/content/api/index.md';
 
 // Content registry
@@ -34,6 +35,7 @@ const contentMap: Record<string, string> = {
   'reduction/nircam': nircamContent,
   'data-products': dataProductsContent,
   'data-products/fits-columns': fitsColumnsContent,
+  'usage': usageContent,
   'api': apiContent,
 };
 

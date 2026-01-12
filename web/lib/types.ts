@@ -248,6 +248,30 @@ export interface FilterState {
 }
 
 // ============================================
+// Profile Stats & Activity Types
+// ============================================
+
+export interface ProfileStats {
+  objects_inspected: number;
+  comments_posted: number;
+  last_activity: string | null;
+}
+
+export interface CommentHistoryItem {
+  id: number;
+  content: string;
+  created_at: string;
+  edited_at: string | null;
+  object_db_id: number;
+  object_display_id: string;
+}
+
+export interface ProfileRecentComments {
+  items: CommentHistoryItem[];
+  total_count: number;
+}
+
+// ============================================
 // Constants
 // ============================================
 

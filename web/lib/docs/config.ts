@@ -5,6 +5,7 @@ import {
   Telescope,
   Database,
   Code,
+  NotebookPen,
   type LucideIcon
 } from 'lucide-react';
 
@@ -97,6 +98,12 @@ export const docsNav: DocPage[] = [
         description: 'Column definitions and header keywords',
       },
     ],
+  },
+  {
+    title: 'Usage Guidelines',
+    slug: 'usage',
+    icon: NotebookPen,
+    description: 'Guidelines for using and publishing with CAMPFIRE data products',
   },
   {
     title: 'API Reference',

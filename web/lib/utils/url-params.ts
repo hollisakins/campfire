@@ -3,9 +3,12 @@
  * Used to preserve filter, sort, and pagination state in URLs.
  */
 
-import type { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import type { AdvancedFilterOptions, SearchScope } from '@/components/spectra/SpectraFilterBar';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { VALID_SORT_COLUMNS } from '@/lib/actions/spectra-types';
+
+// Valid search scope values
+const VALID_SEARCH_SCOPES: SearchScope[] = ['object_id', 'my_comments', 'all_comments'];
 
 // Default page size for pagination
 export const DEFAULT_PAGE_SIZE = 50;
@@ -46,6 +49,12 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     ? { ra: coordRa, dec: coordDec, radius: coordRadius, radius_unit: coordUnit }
     : null;
 
+  // Parse search scope (default to 'object_id')
+  const scopeParam = searchParams.get('scope');
+  const searchScope: SearchScope = VALID_SEARCH_SCOPES.includes(scopeParam as SearchScope)
+    ? (scopeParam as SearchScope)
+    : 'object_id';
+
   return {
     programs: parseNumberArray('programs'),
     fields: parseArray('fields'),
@@ -62,6 +71,7 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     dq_flags: parseNumberArray('dq_flags'),
     inspected_only: parseBoolean('inspected'),
     search: searchParams.get('search') || '',
+    search_scope: searchScope,
   };
 }
 
@@ -148,6 +158,10 @@ export function filtersToURLParams(
   }
   if (filters.search) {
     params.set('search', filters.search);
+  }
+  // Only include search_scope if not default
+  if (filters.search_scope && filters.search_scope !== 'object_id') {
+    params.set('scope', filters.search_scope);
   }
   // Only include pagination params if not default values
   if (page > 1) {
