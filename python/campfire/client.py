@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Optional, List, Union, Tuple
+from typing import Optional, List, Union, Tuple, Type
 import requests
 from astropy.table import Table
 from astropy.io import fits
@@ -14,6 +14,14 @@ from .exceptions import (
     DownloadError,
     ValidationError,
     APIError,
+)
+from .flags import (
+    FlagQuery,
+    QueryableFlag,
+    SpectralFeatures,
+    ObjectFlags,
+    DQFlags,
+    parse_flag_input,
 )
 
 __version__ = "0.1.0"
@@ -136,9 +144,13 @@ class Campfire:
         redshift_range: Optional[Tuple[float, float]] = None,
         redshift_quality: Optional[List[int]] = None,
         max_snr_range: Optional[Tuple[float, float]] = None,
-        spectral_features: Optional[int] = None,
-        object_flags: Optional[int] = None,
-        dq_flags: Optional[int] = None,
+        spectral_features: Optional[
+            Union[int, str, List[str], SpectralFeatures, FlagQuery]
+        ] = None,
+        object_flags: Optional[
+            Union[int, str, List[str], ObjectFlags, FlagQuery]
+        ] = None,
+        dq_flags: Optional[Union[int, str, List[str], DQFlags, FlagQuery]] = None,
         inspected_only: Optional[bool] = None,
         search: Optional[str] = None,
         cone_search: Optional[Tuple[float, float, float]] = None,
@@ -166,12 +178,17 @@ class Campfire:
             Quality codes to include.
         max_snr_range : tuple of (float, float), optional
             (min, max) maximum SNR range.
-        spectral_features : int, optional
-            Bit mask for spectral features.
-        object_flags : int, optional
-            Bit mask for object flags.
-        dq_flags : int, optional
-            Bit mask for DQ flags.
+        spectral_features : int, str, list, SpectralFeatures, or FlagQuery, optional
+            Filter by spectral features. Accepts:
+            - int: Legacy bitmask (match any)
+            - str: Single flag name
+            - list of str: Multiple flag names (match any)
+            - SpectralFeatures: Single flag enum
+            - FlagQuery: Complex query with |, &, ~ operators
+        object_flags : int, str, list, ObjectFlags, or FlagQuery, optional
+            Filter by object flags. Same input types as spectral_features.
+        dq_flags : int, str, list, DQFlags, or FlagQuery, optional
+            Filter by data quality flags. Same input types as spectral_features.
         inspected_only : bool, optional
             If True, only return visually inspected objects.
         search : str, optional
@@ -194,17 +211,27 @@ class Campfire:
 
         Examples
         --------
+        >>> from campfire.flags import ObjectFlags, DQFlags, SpectralFeatures
         >>> cf = Campfire()
+        >>>
         >>> # Query high-z galaxies with good redshift quality
         >>> results = cf.query_objects(
         ...     redshift_range=(3.0, 6.0),
         ...     redshift_quality=[2, 3],
         ...     inspected_only=True
         ... )
-        >>> # Cone search around coordinates
-        >>> nearby = cf.query_objects(
-        ...     cone_search=(150.0, 2.5, 5.0)  # RA, Dec, radius in arcsec
+        >>>
+        >>> # Filter by flags using numpy-style operators
+        >>> # Has LRD OR LAE, but NOT broad line
+        >>> results = cf.query_objects(
+        ...     object_flags=(ObjectFlags.LRD | ObjectFlags.LYA_EMITTER) & ~ObjectFlags.BROAD_LINE
         ... )
+        >>>
+        >>> # Simple string-based filtering (like web app)
+        >>> results = cf.query_objects(object_flags=['LRD', 'LYA_EMITTER'])
+        >>>
+        >>> # Exclude contaminated objects
+        >>> results = cf.query_objects(dq_flags=~DQFlags.CONTAMINATION)
         """
         # Build query parameters
         params = {
@@ -238,14 +265,18 @@ class Campfire:
         if redshift_quality:
             params["redshift_quality"] = ",".join(str(q) for q in redshift_quality)
 
-        if spectral_features is not None:
-            params["spectral_features"] = spectral_features
+        # Process flag parameters with numpy-style query support
+        sf_query = parse_flag_input(spectral_features, SpectralFeatures)
+        if sf_query:
+            params.update(sf_query.to_params("spectral_features"))
 
-        if object_flags is not None:
-            params["object_flags"] = object_flags
+        of_query = parse_flag_input(object_flags, ObjectFlags)
+        if of_query:
+            params.update(of_query.to_params("object_flags"))
 
-        if dq_flags is not None:
-            params["dq_flags"] = dq_flags
+        dq_query = parse_flag_input(dq_flags, DQFlags)
+        if dq_query:
+            params.update(dq_query.to_params("dq_flags"))
 
         if inspected_only is not None:
             params["inspected_only"] = "true" if inspected_only else "false"

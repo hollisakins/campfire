@@ -4,6 +4,36 @@ import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms } from '@/lib/api-helpers';
 
 /**
+ * Flag query parameters for include/exclude filtering
+ */
+interface FlagQueryParams {
+  include_any: number | null;
+  include_all: number | null;
+  exclude: number | null;
+}
+
+/**
+ * Parse flag query parameters from URL search params.
+ * Supports both new multi-mode params and legacy single param.
+ *
+ * New params: prefix_include_any, prefix_include_all, prefix_exclude
+ * Legacy: prefix (treated as include_any for backward compatibility)
+ */
+function parseFlagQuery(params: URLSearchParams, prefix: string): FlagQueryParams {
+  const includeAny = params.get(`${prefix}_include_any`);
+  const includeAll = params.get(`${prefix}_include_all`);
+  const exclude = params.get(`${prefix}_exclude`);
+  const legacy = params.get(prefix); // Backward compatibility
+
+  return {
+    // Legacy single param is treated as include_any
+    include_any: includeAny ? parseInt(includeAny, 10) : (legacy ? parseInt(legacy, 10) : null),
+    include_all: includeAll ? parseInt(includeAll, 10) : null,
+    exclude: exclude ? parseInt(exclude, 10) : null,
+  };
+}
+
+/**
  * GET /api/v1/objects
  *
  * Query objects with filters for the Python API.
@@ -19,9 +49,14 @@ import { getAccessiblePrograms } from '@/lib/api-helpers';
  * - max_snr_min: minimum max SNR (float)
  * - max_snr_max: maximum max SNR (float)
  * - redshift_quality: comma-separated list of quality codes (e.g., "1,2,3")
- * - spectral_features: bit mask for spectral features (integer)
- * - object_flags: bit mask for object flags (integer)
- * - dq_flags: bit mask for DQ flags (integer)
+ *
+ * Flag filters (each supports three modes):
+ * - spectral_features: legacy single mask (match any)
+ * - spectral_features_include_any: match any of these flags (OR)
+ * - spectral_features_include_all: must have all of these flags (AND)
+ * - spectral_features_exclude: must NOT have any of these flags (NOT)
+ * (same pattern for object_flags and dq_flags)
+ *
  * - inspected_only: "true" to filter to inspected objects only
  * - search: text search on object_id
  * - ra: right ascension for cone search (degrees)
@@ -110,10 +145,10 @@ export async function GET(request: NextRequest) {
     const maxSnrMin = searchParams.get('max_snr_min');
     const maxSnrMax = searchParams.get('max_snr_max');
 
-    // Bitmask filters
-    const spectralFeatures = searchParams.get('spectral_features');
-    const objectFlags = searchParams.get('object_flags');
-    const dqFlags = searchParams.get('dq_flags');
+    // Bitmask filters (support both legacy single param and new multi-mode params)
+    const spectralFeaturesQuery = parseFlagQuery(searchParams, 'spectral_features');
+    const objectFlagsQuery = parseFlagQuery(searchParams, 'object_flags');
+    const dqFlagsQuery = parseFlagQuery(searchParams, 'dq_flags');
 
     // Inspected only filter
     let inspectedOnly: boolean | null = null;
@@ -170,9 +205,15 @@ export async function GET(request: NextRequest) {
       p_redshift_max: redshiftMax ? parseFloat(redshiftMax) : null,
       p_max_snr_min: maxSnrMin ? parseFloat(maxSnrMin) : null,
       p_max_snr_max: maxSnrMax ? parseFloat(maxSnrMax) : null,
-      p_spectral_features: spectralFeatures ? parseInt(spectralFeatures, 10) : null,
-      p_object_flags: objectFlags ? parseInt(objectFlags, 10) : null,
-      p_dq_flags: dqFlags ? parseInt(dqFlags, 10) : null,
+      p_spectral_features_include_any: spectralFeaturesQuery.include_any,
+      p_spectral_features_include_all: spectralFeaturesQuery.include_all,
+      p_spectral_features_exclude: spectralFeaturesQuery.exclude,
+      p_object_flags_include_any: objectFlagsQuery.include_any,
+      p_object_flags_include_all: objectFlagsQuery.include_all,
+      p_object_flags_exclude: objectFlagsQuery.exclude,
+      p_dq_flags_include_any: dqFlagsQuery.include_any,
+      p_dq_flags_include_all: dqFlagsQuery.include_all,
+      p_dq_flags_exclude: dqFlagsQuery.exclude,
       p_search: search?.trim() || null,
       p_inspected_only: inspectedOnly,
       p_coord_ra: coordRa,
