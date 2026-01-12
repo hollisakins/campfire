@@ -1,0 +1,230 @@
+'use client';
+
+import React, { useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
+import type { Components } from 'react-markdown';
+
+export interface TOCItem {
+  id: string;
+  text: string;
+  level: number;
+}
+
+interface MarkdownRendererProps {
+  content: string;
+  onTOCChange?: (toc: TOCItem[]) => void;
+}
+
+// Extract headings from markdown for TOC
+function extractHeadings(markdown: string): TOCItem[] {
+  const headingRegex = /^(#{2,4})\s+(.+)$/gm;
+  const headings: TOCItem[] = [];
+  let match;
+
+  while ((match = headingRegex.exec(markdown)) !== null) {
+    const level = match[1].length;
+    const text = match[2].trim();
+    const id = text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-');
+
+    headings.push({ id, text, level });
+  }
+
+  return headings;
+}
+
+// Generate id from heading text
+function headingToId(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-');
+}
+
+export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRendererProps) {
+  useEffect(() => {
+    if (onTOCChange) {
+      const headings = extractHeadings(content);
+      onTOCChange(headings);
+    }
+  }, [content, onTOCChange]);
+
+  const components: Components = {
+    // Headings with anchor links
+    h1: ({ children }) => (
+      <h1 className="text-3xl font-bold text-text-primary dark:text-slate-100 mt-8 mb-4 first:mt-0">
+        {children}
+      </h1>
+    ),
+    h2: ({ children }) => {
+      const text = String(children);
+      const id = headingToId(text);
+      return (
+        <h2 id={id} className="text-2xl font-semibold text-text-primary dark:text-slate-100 mt-8 mb-4 scroll-mt-4 group">
+          <a href={`#${id}`} className="no-underline hover:underline">
+            {children}
+          </a>
+          <span className="opacity-0 group-hover:opacity-100 ml-2 text-text-secondary">#</span>
+        </h2>
+      );
+    },
+    h3: ({ children }) => {
+      const text = String(children);
+      const id = headingToId(text);
+      return (
+        <h3 id={id} className="text-xl font-semibold text-text-primary dark:text-slate-100 mt-6 mb-3 scroll-mt-4 group">
+          <a href={`#${id}`} className="no-underline hover:underline">
+            {children}
+          </a>
+          <span className="opacity-0 group-hover:opacity-100 ml-2 text-text-secondary">#</span>
+        </h3>
+      );
+    },
+    h4: ({ children }) => {
+      const text = String(children);
+      const id = headingToId(text);
+      return (
+        <h4 id={id} className="text-lg font-semibold text-text-primary dark:text-slate-100 mt-4 mb-2 scroll-mt-4 group">
+          <a href={`#${id}`} className="no-underline hover:underline">
+            {children}
+          </a>
+          <span className="opacity-0 group-hover:opacity-100 ml-2 text-text-secondary">#</span>
+        </h4>
+      );
+    },
+
+    // Paragraphs
+    p: ({ children }) => (
+      <p className="text-text-primary dark:text-slate-300 leading-7 mb-4">
+        {children}
+      </p>
+    ),
+
+    // Lists
+    ul: ({ children }) => (
+      <ul className="list-disc list-outside ml-6 mb-4 space-y-2 text-text-primary dark:text-slate-300">
+        {children}
+      </ul>
+    ),
+    ol: ({ children }) => (
+      <ol className="list-decimal list-outside ml-6 mb-4 space-y-2 text-text-primary dark:text-slate-300">
+        {children}
+      </ol>
+    ),
+    li: ({ children }) => (
+      <li className="leading-7">{children}</li>
+    ),
+
+    // Links
+    a: ({ href, children }) => (
+      <a
+        href={href}
+        className="text-primary hover:underline"
+        target={href?.startsWith('http') ? '_blank' : undefined}
+        rel={href?.startsWith('http') ? 'noopener noreferrer' : undefined}
+      >
+        {children}
+      </a>
+    ),
+
+    // Code
+    code: ({ className, children }) => {
+      const isInline = !className;
+      if (isInline) {
+        return (
+          <code className="bg-card dark:bg-slate-800 px-1.5 py-0.5 rounded text-sm font-mono text-primary">
+            {children}
+          </code>
+        );
+      }
+      return (
+        <code className={className}>
+          {children}
+        </code>
+      );
+    },
+    pre: ({ children }) => (
+      <pre className="bg-slate-900 dark:bg-slate-950 text-slate-100 rounded-lg p-4 overflow-x-auto mb-4 text-sm">
+        {children}
+      </pre>
+    ),
+
+    // Blockquotes
+    blockquote: ({ children }) => (
+      <blockquote className="border-l-4 border-primary pl-4 italic text-text-secondary dark:text-slate-400 mb-4">
+        {children}
+      </blockquote>
+    ),
+
+    // Tables
+    table: ({ children }) => (
+      <div className="overflow-x-auto mb-4">
+        <table className="min-w-full border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+          {children}
+        </table>
+      </div>
+    ),
+    thead: ({ children }) => (
+      <thead className="bg-card dark:bg-slate-800">{children}</thead>
+    ),
+    tbody: ({ children }) => (
+      <tbody className="divide-y divide-border dark:divide-slate-700">{children}</tbody>
+    ),
+    tr: ({ children }) => (
+      <tr className="hover:bg-card-hover dark:hover:bg-slate-800/50">{children}</tr>
+    ),
+    th: ({ children }) => (
+      <th className="px-4 py-2 text-left font-semibold text-text-primary dark:text-slate-200">
+        {children}
+      </th>
+    ),
+    td: ({ children }) => (
+      <td className="px-4 py-2 text-text-primary dark:text-slate-300">{children}</td>
+    ),
+
+    // Horizontal rule
+    hr: () => (
+      <hr className="border-border dark:border-slate-700 my-8" />
+    ),
+
+    // Strong and emphasis
+    strong: ({ children }) => (
+      <strong className="font-semibold text-text-primary dark:text-slate-100">{children}</strong>
+    ),
+    em: ({ children }) => (
+      <em className="italic">{children}</em>
+    ),
+
+    // Images (for screenshots)
+    img: ({ src, alt }) => (
+      <figure className="my-6">
+        <img
+          src={src}
+          alt={alt || ''}
+          className="rounded-lg border border-border dark:border-slate-700 shadow-sm max-w-full"
+        />
+        {alt && (
+          <figcaption className="mt-2 text-center text-sm text-text-secondary dark:text-slate-400 italic">
+            {alt}
+          </figcaption>
+        )}
+      </figure>
+    ),
+  };
+
+  return (
+    <div className="prose-campfire">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={components}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
