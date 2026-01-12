@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { validateApiKey } from '@/lib/api-auth';
+import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms } from '@/lib/api-helpers';
 
 /**
@@ -18,12 +18,12 @@ import { getAccessiblePrograms } from '@/lib/api-helpers';
  * }
  */
 export async function GET(request: NextRequest) {
-  // Validate API key
-  const userId = await validateApiKey(request);
+  // Validate authentication (API key or JWT)
+  const userId = await validateAuth(request);
 
   if (!userId) {
     return NextResponse.json(
-      { error: 'Invalid or missing API key' },
+      { error: 'Invalid or missing authentication' },
       { status: 401 }
     );
   }

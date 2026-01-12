@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { validateApiKey } from '@/lib/api-auth';
+import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms } from '@/lib/api-helpers';
 import { generateDownloadUrl } from '@/lib/r2';
 
@@ -31,7 +31,7 @@ export interface SpectrumData {
  */
 export async function GET(request: NextRequest) {
   // Validate API key
-  const userId = await validateApiKey(request);
+  const userId = await validateAuth(request);
 
   if (!userId) {
     return NextResponse.json(
