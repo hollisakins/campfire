@@ -313,6 +313,7 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
       paper_bgcolor: colors.paper,
       plot_bgcolor: colors.bg,
       hovermode: 'closest' as const,
+      hoverdistance: 20,
       showlegend: true,
       legend: {
         x: 1.02,
