@@ -152,7 +152,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       const isInline = !className;
       if (isInline) {
         return (
-          <code className="bg-card dark:bg-slate-800 px-1.5 py-0.5 rounded text-sm font-mono text-primary">
+          <code className="bg-[var(--code-bg)] px-1.5 py-0.5 rounded text-sm font-mono text-[var(--code-text)]">
             {children}
           </code>
         );
@@ -164,7 +164,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       );
     },
     pre: ({ children }) => (
-      <pre className="bg-slate-900 dark:bg-slate-950 text-slate-100 rounded-lg p-4 overflow-x-auto mb-4 text-sm">
+      <pre className="bg-[var(--code-bg)] text-[var(--code-text)] rounded-lg p-4 overflow-x-auto mb-4 text-sm border border-border dark:border-slate-700">
         {children}
       </pre>
     ),

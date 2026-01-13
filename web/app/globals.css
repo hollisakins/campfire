@@ -17,6 +17,22 @@
   --plot-grid: #e2e8f0;
   --plot-text: #0f172a;
   --plot-text-secondary: #64748b;
+
+  /* Code block theming - Light mode (GitHub Light inspired) */
+  --code-bg: #f6f8fa;
+  --code-text: #24292e;
+  --code-keyword: #d73a49;
+  --code-string: #032f62;
+  --code-comment: #6a737d;
+  --code-function: #6f42c1;
+  --code-number: #005cc5;
+  --code-builtin: #e36209;
+  --code-tag: #22863a;
+  --code-attribute: #005cc5;
+  --code-addition: #22863a;
+  --code-addition-bg: #f0fff4;
+  --code-deletion: #b31d28;
+  --code-deletion-bg: #ffeef0;
 }
 
 /* Dark mode colors */
@@ -34,6 +50,22 @@
   --plot-grid: #334155;
   --plot-text: #f1f5f9;
   --plot-text-secondary: #94a3b8;
+
+  /* Code block theming - Dark mode (GitHub Dark Dimmed for less contrast) */
+  --code-bg: #22272e;
+  --code-text: #adbac7;
+  --code-keyword: #f47067;
+  --code-string: #96d0ff;
+  --code-comment: #768390;
+  --code-function: #dcbdfb;
+  --code-number: #6cb6ff;
+  --code-builtin: #f69d50;
+  --code-tag: #8ddb8c;
+  --code-attribute: #6cb6ff;
+  --code-addition: #b4f1b4;
+  --code-addition-bg: #1b4721;
+  --code-deletion: #ffd8d3;
+  --code-deletion-bg: #78191b;
 }
 
 body {
@@ -50,4 +82,113 @@ body {
   .text-balance {
     text-wrap: balance;
   }
+}
+
+/* Syntax Highlighting - using CSS variables for theme support */
+pre code.hljs {
+  display: block;
+  overflow-x: auto;
+  padding: 1em;
+}
+
+code.hljs {
+  padding: 3px 5px;
+}
+
+.hljs {
+  color: var(--code-text);
+  background: var(--code-bg);
+}
+
+/* Keywords: if, else, return, const, let, class, function, etc. */
+.hljs-keyword,
+.hljs-doctag,
+.hljs-meta .hljs-keyword,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-type,
+.hljs-variable.language_ {
+  color: var(--code-keyword);
+}
+
+/* Functions and class names */
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.class_.inherited__,
+.hljs-title.function_ {
+  color: var(--code-function);
+}
+
+/* Numbers, constants, attributes */
+.hljs-attr,
+.hljs-attribute,
+.hljs-literal,
+.hljs-meta,
+.hljs-number,
+.hljs-operator,
+.hljs-variable,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--code-number);
+}
+
+/* Strings */
+.hljs-regexp,
+.hljs-string,
+.hljs-meta .hljs-string {
+  color: var(--code-string);
+}
+
+/* Built-ins and symbols */
+.hljs-built_in,
+.hljs-symbol {
+  color: var(--code-builtin);
+}
+
+/* Comments */
+.hljs-comment,
+.hljs-code,
+.hljs-formula {
+  color: var(--code-comment);
+  font-style: italic;
+}
+
+/* HTML/JSX tags */
+.hljs-name,
+.hljs-quote,
+.hljs-selector-tag,
+.hljs-selector-pseudo {
+  color: var(--code-tag);
+}
+
+/* Diff additions and deletions */
+.hljs-addition {
+  color: var(--code-addition);
+  background-color: var(--code-addition-bg);
+}
+
+.hljs-deletion {
+  color: var(--code-deletion);
+  background-color: var(--code-deletion-bg);
+}
+
+/* Section headings */
+.hljs-section {
+  color: var(--code-number);
+  font-weight: bold;
+}
+
+/* Markup list bullets */
+.hljs-bullet {
+  color: var(--code-builtin);
+}
+
+/* Emphasis and strong */
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: bold;
 }
