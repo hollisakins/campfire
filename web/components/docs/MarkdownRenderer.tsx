@@ -46,6 +46,24 @@ function headingToId(text: string): string {
     .replace(/\s+/g, '-');
 }
 
+// Recursively extract text content from React children
+function extractTextFromChildren(children: React.ReactNode): string {
+  if (typeof children === 'string') return children;
+  if (typeof children === 'number') return String(children);
+  if (!children) return '';
+
+  if (Array.isArray(children)) {
+    return children.map(extractTextFromChildren).join('');
+  }
+
+  if (React.isValidElement(children)) {
+    const props = children.props as { children?: React.ReactNode };
+    return extractTextFromChildren(props.children);
+  }
+
+  return '';
+}
+
 export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRendererProps) {
   const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
 
@@ -78,7 +96,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       </h1>
     ),
     h2: ({ children }) => {
-      const text = String(children);
+      const text = extractTextFromChildren(children);
       const id = headingToId(text);
       return (
         <h2 id={id} className="text-2xl font-semibold text-text-primary dark:text-slate-100 mt-8 mb-4 scroll-mt-4 group">
@@ -90,7 +108,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       );
     },
     h3: ({ children }) => {
-      const text = String(children);
+      const text = extractTextFromChildren(children);
       const id = headingToId(text);
       return (
         <h3 id={id} className="text-xl font-semibold text-text-primary dark:text-slate-100 mt-6 mb-3 scroll-mt-4 group">
@@ -102,7 +120,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       );
     },
     h4: ({ children }) => {
-      const text = String(children);
+      const text = extractTextFromChildren(children);
       const id = headingToId(text);
       return (
         <h4 id={id} className="text-lg font-semibold text-text-primary dark:text-slate-100 mt-4 mb-2 scroll-mt-4 group">

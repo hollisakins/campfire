@@ -90,13 +90,13 @@ export default function DocsLayout({
         <aside
           className={`
             fixed inset-0 z-40
-            lg:left-auto lg:right-auto lg:top-20 lg:h-[calc(100vh-5rem)] lg:z-0
+            lg:static lg:z-0
             w-64 lg:w-56 flex-shrink-0
             bg-background dark:bg-slate-900 lg:bg-transparent
             transform transition-transform duration-200 ease-in-out
             ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-            overflow-y-auto
-            p-4 lg:p-0 lg:pr-4
+            overflow-y-auto lg:overflow-visible
+            p-4 lg:p-0
           `}
         >
           {/* Mobile close button area */}
@@ -130,9 +130,6 @@ export default function DocsLayout({
             onClick={() => setSidebarOpen(false)}
           />
         )}
-
-        {/* Spacer for fixed sidebar on desktop */}
-        <div className="hidden lg:block lg:w-56 flex-shrink-0" />
 
         {/* Main Content */}
         <main className="flex-1 min-w-0 max-w-4xl">
