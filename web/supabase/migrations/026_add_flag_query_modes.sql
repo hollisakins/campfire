@@ -1,13 +1,15 @@
 -- Migration 026: Add flag query modes (include_any, include_all, exclude)
--- Extends the RPC function to support three-mode flag filtering:
---   1. include_any: (flags & mask) != 0 - at least one bit matches (OR semantics)
---   2. include_all: (flags & mask) = mask - all bits must match (AND semantics)
---   3. exclude: (flags & mask) = 0 - no bits can match (NOT semantics)
+-- Extends the RPC function to support three-mode flag filtering for Python API
+-- while maintaining backward compatibility with web app's single-mask parameters.
 --
--- This enables numpy-style flag queries from the Python client:
---   (ObjectFlags.LRD | ObjectFlags.LAE) & ~ObjectFlags.BROAD_LINE
+-- New params for Python client:
+--   - p_*_include_any: (flags & mask) != 0 - at least one bit matches (OR)
+--   - p_*_include_all: (flags & mask) = mask - all bits must match (AND)
+--   - p_*_exclude: (flags & mask) = 0 - no bits can match (NOT)
 --
--- Backward compatibility: Legacy single-mask parameters are treated as include_any
+-- Backward compatibility:
+--   - Old single-mask params (p_spectral_features, p_object_flags, p_dq_flags)
+--     are treated as include_any when new params are not provided
 
 DROP FUNCTION IF EXISTS get_filtered_objects_paginated;
 
@@ -25,23 +27,28 @@ CREATE OR REPLACE FUNCTION get_filtered_objects_paginated(
   p_redshift_max DOUBLE PRECISION DEFAULT NULL,
   p_max_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_max_snr_max DOUBLE PRECISION DEFAULT NULL,
-  -- NEW: Three-mode flag filters (replace single-mask parameters)
-  -- spectral_features
+  -- LEGACY: Single-mask parameters (for web app backward compatibility)
+  p_spectral_features INTEGER DEFAULT NULL,
+  p_object_flags INTEGER DEFAULT NULL,
+  p_dq_flags INTEGER DEFAULT NULL,
+  -- NEW: Three-mode flag filters for Python API
   p_spectral_features_include_any INTEGER DEFAULT NULL,
   p_spectral_features_include_all INTEGER DEFAULT NULL,
   p_spectral_features_exclude INTEGER DEFAULT NULL,
-  -- object_flags
   p_object_flags_include_any INTEGER DEFAULT NULL,
   p_object_flags_include_all INTEGER DEFAULT NULL,
   p_object_flags_exclude INTEGER DEFAULT NULL,
-  -- dq_flags
   p_dq_flags_include_any INTEGER DEFAULT NULL,
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
-  -- Other filters
+  -- Object ID search
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
-  -- Coordinate search parameters (cone search with Haversine distance)
+  -- Comment search parameters (from migration 019)
+  p_comment_search TEXT DEFAULT NULL,
+  p_comment_search_scope TEXT DEFAULT NULL,  -- 'just_me' or 'everyone'
+  p_comment_user_id UUID DEFAULT NULL,
+  -- Coordinate search parameters
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
@@ -63,12 +70,44 @@ DECLARE
   v_filtered_program_ids INTEGER[];
   v_grating_object_ids TEXT[];
   v_coord_search_active BOOLEAN;
+  v_comment_search_active BOOLEAN;
+  -- Effective flag masks (merge legacy + new params)
+  v_sf_include_any INTEGER;
+  v_sf_include_all INTEGER;
+  v_sf_exclude INTEGER;
+  v_of_include_any INTEGER;
+  v_of_include_all INTEGER;
+  v_of_exclude INTEGER;
+  v_dq_include_any INTEGER;
+  v_dq_include_all INTEGER;
+  v_dq_exclude INTEGER;
 BEGIN
   -- Calculate offset
   v_offset := (p_page - 1) * p_page_size;
 
   -- Check if coordinate search is active
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
+
+  -- Check if comment search is active
+  v_comment_search_active := (
+    p_comment_search IS NOT NULL
+    AND p_comment_search != ''
+    AND p_comment_search_scope IN ('just_me', 'everyone')
+  );
+
+  -- Merge legacy single-mask params with new multi-mode params
+  -- Legacy params are treated as include_any when new params are NULL
+  v_sf_include_any := COALESCE(p_spectral_features_include_any, p_spectral_features);
+  v_sf_include_all := p_spectral_features_include_all;
+  v_sf_exclude := p_spectral_features_exclude;
+
+  v_of_include_any := COALESCE(p_object_flags_include_any, p_object_flags);
+  v_of_include_all := p_object_flags_include_all;
+  v_of_exclude := p_object_flags_exclude;
+
+  v_dq_include_any := COALESCE(p_dq_flags_include_any, p_dq_flags);
+  v_dq_include_all := p_dq_flags_include_all;
+  v_dq_exclude := p_dq_flags_exclude;
 
   -- Validate sort direction
   IF p_sort_direction NOT IN ('asc', 'desc') THEN
@@ -110,7 +149,6 @@ BEGIN
       WHERE s.grating = ANY(p_gratings)
     ) INTO v_grating_object_ids;
 
-    -- If no objects have matching gratings, return empty
     IF v_grating_object_ids IS NULL OR array_length(v_grating_object_ids, 1) IS NULL THEN
       RETURN QUERY SELECT
         '[]'::JSONB as objects,
@@ -126,7 +164,6 @@ BEGIN
   WITH filtered_objects AS (
     SELECT
       o.*,
-      -- Calculate Haversine distance ONCE
       CASE
         WHEN v_coord_search_active THEN
           2 * DEGREES(ASIN(SQRT(
@@ -140,7 +177,7 @@ BEGIN
     WHERE
       -- Program access control
       o.program_id = ANY(v_filtered_program_ids)
-      -- Grating filter (via pre-queried object IDs)
+      -- Grating filter
       AND (v_grating_object_ids IS NULL OR o.object_id = ANY(v_grating_object_ids))
       -- Field filter
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
@@ -154,22 +191,19 @@ BEGIN
       -- Max S/N range filters
       AND (p_max_snr_min IS NULL OR o.max_snr >= p_max_snr_min)
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
-      -- NEW: Spectral features filter (three modes)
-      -- include_any: at least one flag must be set (OR semantics)
-      AND (p_spectral_features_include_any IS NULL OR (o.spectral_features & p_spectral_features_include_any) != 0)
-      -- include_all: all flags must be set (AND semantics)
-      AND (p_spectral_features_include_all IS NULL OR (o.spectral_features & p_spectral_features_include_all) = p_spectral_features_include_all)
-      -- exclude: none of these flags can be set (NOT semantics)
-      AND (p_spectral_features_exclude IS NULL OR (o.spectral_features & p_spectral_features_exclude) = 0)
-      -- NEW: Object flags filter (three modes)
-      AND (p_object_flags_include_any IS NULL OR (o.object_flags & p_object_flags_include_any) != 0)
-      AND (p_object_flags_include_all IS NULL OR (o.object_flags & p_object_flags_include_all) = p_object_flags_include_all)
-      AND (p_object_flags_exclude IS NULL OR (o.object_flags & p_object_flags_exclude) = 0)
-      -- NEW: DQ flags filter (three modes)
-      AND (p_dq_flags_include_any IS NULL OR (o.dq_flags & p_dq_flags_include_any) != 0)
-      AND (p_dq_flags_include_all IS NULL OR (o.dq_flags & p_dq_flags_include_all) = p_dq_flags_include_all)
-      AND (p_dq_flags_exclude IS NULL OR (o.dq_flags & p_dq_flags_exclude) = 0)
-      -- Text search
+      -- Spectral features filter (three modes)
+      AND (v_sf_include_any IS NULL OR (COALESCE(o.spectral_features, 0) & v_sf_include_any) != 0)
+      AND (v_sf_include_all IS NULL OR (COALESCE(o.spectral_features, 0) & v_sf_include_all) = v_sf_include_all)
+      AND (v_sf_exclude IS NULL OR (COALESCE(o.spectral_features, 0) & v_sf_exclude) = 0)
+      -- Object flags filter (three modes)
+      AND (v_of_include_any IS NULL OR (COALESCE(o.object_flags, 0) & v_of_include_any) != 0)
+      AND (v_of_include_all IS NULL OR (COALESCE(o.object_flags, 0) & v_of_include_all) = v_of_include_all)
+      AND (v_of_exclude IS NULL OR (COALESCE(o.object_flags, 0) & v_of_exclude) = 0)
+      -- DQ flags filter (three modes)
+      AND (v_dq_include_any IS NULL OR (COALESCE(o.dq_flags, 0) & v_dq_include_any) != 0)
+      AND (v_dq_include_all IS NULL OR (COALESCE(o.dq_flags, 0) & v_dq_include_all) = v_dq_include_all)
+      AND (v_dq_exclude IS NULL OR (COALESCE(o.dq_flags, 0) & v_dq_exclude) = 0)
+      -- Object ID text search
       AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%')
       -- Inspected only filter
       AND (
@@ -177,7 +211,21 @@ BEGIN
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND o.redshift_quality = 0)
       )
-      -- Coordinate search: bounding box pre-filter
+      -- Comment search filter
+      AND (
+        NOT v_comment_search_active
+        OR EXISTS (
+          SELECT 1 FROM comments c
+          WHERE c.object_id = o.id
+            AND c.is_deleted = false
+            AND c.content ILIKE '%' || p_comment_search || '%'
+            AND (
+              p_comment_search_scope = 'everyone'
+              OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
+            )
+        )
+      )
+      -- Coordinate search bounding box pre-filter
       AND (
         NOT v_coord_search_active
         OR (
@@ -186,17 +234,14 @@ BEGIN
         )
       )
   ),
-  -- Filter by actual Haversine distance
   distance_filtered AS (
     SELECT fo.*
     FROM filtered_objects fo
     WHERE NOT v_coord_search_active OR fo.distance <= p_radius_degrees
   ),
-  -- Count total matching rows
   counted AS (
     SELECT COUNT(*) as cnt FROM distance_filtered
   ),
-  -- Sort all filtered objects
   sorted_objects AS (
     SELECT df.*
     FROM distance_filtered df
@@ -220,14 +265,12 @@ BEGIN
       CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN df.max_snr END DESC NULLS LAST,
       df.object_id ASC
   ),
-  -- Take only the requested page
   paginated AS (
     SELECT so.*
     FROM sorted_objects so
     LIMIT p_page_size
     OFFSET v_offset
   ),
-  -- Join related data and build JSONB objects
   with_relations AS (
     SELECT
       jsonb_build_object(
@@ -285,7 +328,6 @@ BEGIN
     FROM paginated p
     LEFT JOIN programs pr ON pr.program_id = p.program_id
   )
-  -- Aggregate into JSONB array with proper sorting
   SELECT
     COALESCE(
       (
@@ -319,27 +361,20 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- Grant execute permission to authenticated users
 GRANT EXECUTE ON FUNCTION get_filtered_objects_paginated TO authenticated;
 
--- Update function comment
 COMMENT ON FUNCTION get_filtered_objects_paginated IS
 'Server-side filtering, sorting, and pagination for the NIRSpec objects catalog.
 
-FEATURES:
-- Row-level security via p_program_ids parameter
-- Three-mode flag filters (spectral_features, object_flags, dq_flags):
-  * include_any: (flags & mask) != 0 - match any of these flags (OR)
-  * include_all: (flags & mask) = mask - must have all of these flags (AND)
-  * exclude: (flags & mask) = 0 - must not have any of these flags (NOT)
-- Haversine cone search for coordinate-based queries
-- Dynamic sorting by: object_id, field, observation, ra, dec, redshift, redshift_quality, max_snr, distance
+FLAG FILTERING (three modes per flag type):
+- include_any: (flags & mask) != 0 - match any of these flags (OR)
+- include_all: (flags & mask) = mask - must have all of these flags (AND)
+- exclude: (flags & mask) = 0 - must not have any of these flags (NOT)
 
 BACKWARD COMPATIBILITY:
-- Legacy single-mask parameters are handled by the API layer, which passes them as include_any
+- Legacy params (p_spectral_features, p_object_flags, p_dq_flags) treated as include_any
 
 RETURNS:
 - objects: JSONB array of objects with nested spectra and program name
-- total_count: Total matching rows (for pagination UI)
-- page: Current page number
-- page_size: Rows per page';
+- total_count: Total matching rows
+- page/page_size: Pagination info';
