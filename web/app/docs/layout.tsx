@@ -90,12 +90,13 @@ export default function DocsLayout({
         <aside
           className={`
             fixed inset-0 z-40
-            lg:static lg:z-0
+            lg:sticky lg:top-24 lg:self-start lg:z-0
+            lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto
             w-64 lg:w-56 flex-shrink-0
             bg-background dark:bg-slate-900 lg:bg-transparent
             transform transition-transform duration-200 ease-in-out
             ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-            overflow-y-auto lg:overflow-visible
+            overflow-y-auto
             p-4 lg:p-0
           `}
         >
