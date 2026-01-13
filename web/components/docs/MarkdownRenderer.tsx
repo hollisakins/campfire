@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { Components } from 'react-markdown';
+import { CodeBlock } from './CodeBlock';
 
 export interface TOCItem {
   id: string;
@@ -163,11 +164,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
         </code>
       );
     },
-    pre: ({ children }) => (
-      <pre className="bg-[var(--code-bg)] text-[var(--code-text)] rounded-lg p-4 overflow-x-auto mb-4 text-sm border border-border dark:border-slate-700">
-        {children}
-      </pre>
-    ),
+    pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
 
     // Blockquotes
     blockquote: ({ children }) => (
