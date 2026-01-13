@@ -41,13 +41,17 @@ export const EMISSION_LINES = [
   { name: '[OII]', wave: 0.3727, color: '#0ea5e9' },     // sky-500
   { name: 'Hδ', wave: 0.4102, color: '#06b6d4' },        // cyan-500
   { name: 'Hγ', wave: 0.4341, color: '#14b8a6' },        // teal-500
+  { name: '[OIII]', wave: 0.436321, color: '#0d9488' },  // teal-600 (auroral)
   { name: 'Hβ', wave: 0.4861, color: '#10b981' },        // emerald-500
   { name: '[OIII]₁', wave: 0.4959, color: '#22c55e' },   // green-500
   { name: '[OIII]₂', wave: 0.5007, color: '#84cc16' },   // lime-500
+  { name: 'HeI', wave: 0.5875624, color: '#a3e635' },    // lime-400
   { name: 'Hα', wave: 0.6563, color: '#eab308' },        // yellow-500
   { name: '[NII]', wave: 0.6584, color: '#f59e0b' },     // amber-500
   { name: '[SII]₁', wave: 0.6717, color: '#f97316' },    // orange-500
   { name: '[SII]₂', wave: 0.6731, color: '#ef4444' },    // red-500
+  { name: '[SIII]₁', wave: 0.90686, color: '#e11d48' },  // rose-600
+  { name: '[SIII]₂', wave: 0.95311, color: '#be123c' },  // rose-700
   { name: 'Paβ', wave: 1.2822, color: '#dc2626' },       // red-600
   { name: 'Paα', wave: 1.8751, color: '#b91c1c' },       // red-700 (longest)
 ];
