@@ -44,6 +44,27 @@ function findParentH2Id(activeId: string, groups: TOCGroup[]): string | null {
   return null;
 }
 
+// Format TOC item text - render code in monospace without backticks
+function formatTocText(text: string): React.ReactNode {
+  // Check if the entire text is wrapped in backticks
+  if (text.startsWith('`') && text.endsWith('`')) {
+    return <code className="font-mono">{text.slice(1, -1)}</code>;
+  }
+
+  // Check for inline code segments within the text
+  const parts = text.split(/(`[^`]+`)/g);
+  if (parts.length === 1) {
+    return text;
+  }
+
+  return parts.map((part, i) => {
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return <code key={i} className="font-mono">{part.slice(1, -1)}</code>;
+    }
+    return part;
+  });
+}
+
 export default function TableOfContents({ items }: TableOfContentsProps) {
   const [activeId, setActiveId] = useState<string>('');
 
@@ -99,7 +120,7 @@ export default function TableOfContents({ items }: TableOfContentsProps) {
                 }
               `}
             >
-              {group.parent.text}
+              {formatTocText(group.parent.text)}
             </a>
 
             {/* Subsections - only visible when this section is active */}
@@ -117,7 +138,7 @@ export default function TableOfContents({ items }: TableOfContentsProps) {
                         }
                       `}
                     >
-                      {child.text}
+                      {formatTocText(child.text)}
                     </a>
                   </li>
                 ))}
