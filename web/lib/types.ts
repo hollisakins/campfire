@@ -332,12 +332,18 @@ export interface InspectionActivity extends BaseActivity {
 
 export type Activity = CommentActivity | InspectionActivity;
 
+export interface ActivityUser {
+  user_id: string;
+  full_name: string;
+}
+
 export interface ActivityFeedResponse {
   activities: Activity[];
   total_count: number;
   page: number;
   page_size: number;
   has_next_page: boolean;
+  available_users: ActivityUser[];
 }
 
 // Helper functions for activity formatting
