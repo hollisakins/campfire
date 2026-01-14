@@ -4,9 +4,25 @@ import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Loader2, RefreshCw, MessageSquare, Edit3, ChevronLeft, ChevronRight } from 'lucide-react';
-import type { ActivityFeedResponse } from '@/lib/types';
+import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
+import { Loader2, RefreshCw, MessageSquare, Edit3, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import type { ActivityFeedResponse, ActivityUser } from '@/lib/types';
 import { formatActivityField, formatFieldName } from '@/lib/types';
+
+// Activity type filter options
+const TYPE_OPTIONS: FilterOption[] = [
+  { value: 'comment', label: 'Comment' },
+  { value: 'inspection', label: 'Inspection' },
+];
+
+// Inspection field type filter options
+const FIELD_OPTIONS: FilterOption[] = [
+  { value: 'redshift_quality', label: 'Redshift Quality' },
+  { value: 'redshift_inspected', label: 'Redshift (Manual)' },
+  { value: 'spectral_features', label: 'Spectral Features' },
+  { value: 'object_flags', label: 'Object Flags' },
+  { value: 'dq_flags', label: 'DQ Flags' },
+];
 
 export default function AdminActivityPage() {
   const [data, setData] = useState<ActivityFeedResponse | null>(null);
@@ -14,12 +30,39 @@ export default function AdminActivityPage() {
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
 
+  // Filter state
+  const [typeFilter, setTypeFilter] = useState<string[]>([]);
+  const [userFilter, setUserFilter] = useState<string[]>([]);
+  const [fieldFilter, setFieldFilter] = useState<string[]>([]);
+
+  // Build user filter options from API response
+  const userOptions: FilterOption[] = (data?.available_users || []).map((user: ActivityUser) => ({
+    value: user.user_id,
+    label: user.full_name,
+  }));
+
   const fetchActivity = useCallback(async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const response = await fetch(`/api/admin/activity?page=${page}&page_size=50`);
+      // Build query params with filters
+      const params = new URLSearchParams({
+        page: page.toString(),
+        page_size: '50',
+      });
+
+      if (typeFilter.length > 0) {
+        params.set('type', typeFilter.join(','));
+      }
+      if (userFilter.length > 0) {
+        params.set('user_id', userFilter.join(','));
+      }
+      if (fieldFilter.length > 0) {
+        params.set('field_name', fieldFilter.join(','));
+      }
+
+      const response = await fetch(`/api/admin/activity?${params.toString()}`);
       const result = await response.json();
 
       if (!response.ok) {
@@ -32,11 +75,40 @@ export default function AdminActivityPage() {
     } finally {
       setLoading(false);
     }
-  }, [page]);
+  }, [page, typeFilter, userFilter, fieldFilter]);
 
   useEffect(() => {
     fetchActivity();
   }, [fetchActivity]);
+
+  // Reset to page 1 when filters change
+  const handleTypeFilterChange = (selected: (string | number)[]) => {
+    setTypeFilter(selected as string[]);
+    setPage(1);
+  };
+
+  const handleUserFilterChange = (selected: (string | number)[]) => {
+    setUserFilter(selected as string[]);
+    setPage(1);
+  };
+
+  const handleFieldFilterChange = (selected: (string | number)[]) => {
+    setFieldFilter(selected as string[]);
+    setPage(1);
+  };
+
+  // Check if any filters are active
+  const hasActiveFilters = typeFilter.length > 0 || userFilter.length > 0 || fieldFilter.length > 0;
+
+  const handleClearAll = () => {
+    setTypeFilter([]);
+    setUserFilter([]);
+    setFieldFilter([]);
+    setPage(1);
+  };
+
+  // Field filter is disabled when only comments are selected
+  const isFieldFilterDisabled = typeFilter.length === 1 && typeFilter[0] === 'comment';
 
   const formatTimestamp = (timestamp: string) => {
     // Database timestamps are UTC without timezone indicator
@@ -101,6 +173,46 @@ export default function AdminActivityPage() {
           <RefreshCw className="w-4 h-4 mr-2" />
           Refresh
         </Button>
+      </div>
+
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <FilterChip
+          label="Type"
+          options={TYPE_OPTIONS}
+          selected={typeFilter}
+          onChange={handleTypeFilterChange}
+        />
+
+        <FilterChip
+          label="User"
+          options={userOptions}
+          selected={userFilter}
+          onChange={handleUserFilterChange}
+          disabled={userOptions.length === 0}
+        />
+
+        <FilterChip
+          label="Field"
+          options={FIELD_OPTIONS}
+          selected={fieldFilter}
+          onChange={handleFieldFilterChange}
+          disabled={isFieldFilterDisabled}
+        />
+
+        {/* Clear all button */}
+        {hasActiveFilters && (
+          <>
+            <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
+            <button
+              onClick={handleClearAll}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+              Clear all
+            </button>
+          </>
+        )}
       </div>
 
       {activities.length === 0 ? (
