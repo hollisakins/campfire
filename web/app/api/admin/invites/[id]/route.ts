@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 
 /**
  * DELETE /api/admin/invites/[id]
@@ -32,8 +32,11 @@ export async function DELETE(
     );
   }
 
+  // Use service client for admin operations
+  const serviceClient = createServiceClient();
+
   // Check admin permission
-  const { data: profile } = await supabase
+  const { data: profile } = await serviceClient
     .from('user_profiles')
     .select('is_admin')
     .eq('user_id', user.id)
@@ -48,7 +51,7 @@ export async function DELETE(
 
   try {
     // Check if invite exists and is not yet accepted
-    const { data: invite, error: fetchError } = await supabase
+    const { data: invite, error: fetchError } = await serviceClient
       .from('pending_invites')
       .select('id, email, accepted_at')
       .eq('id', inviteId)
@@ -69,7 +72,7 @@ export async function DELETE(
     }
 
     // Delete the invite
-    const { error: deleteError } = await supabase
+    const { error: deleteError } = await serviceClient
       .from('pending_invites')
       .delete()
       .eq('id', inviteId);
