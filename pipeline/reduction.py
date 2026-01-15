@@ -867,6 +867,12 @@ def run_stage2a_single_rate(
             else:
                 cards.append(('STKSHTRS', 'N/A', 'Stuck shutters masked'))
 
+            # Skip extraction if all shutters are stuck closed
+            if len(source_metafile.shutter_table) == 0:
+                log(f'All shutters marked as stuck closed for {prod_name}, skipping extraction')
+                assert 1==2 
+                continue  # Skip to next source_id in the loop
+
             source_metafile.write(obs.workspace_dir, overwrite=True)
 
             # update rate file header to point to the right metafile
@@ -2433,6 +2439,8 @@ def main():
         log(f"Running stage3 for observation {obs.name}")
         engine.run_stage3(obs, source_ids=args.source_ids, n_processes=args.processes, overwrite=args.overwrite)
 
+    if not args.stage1 and not args.stage2a and not args.stage2b and not args.stage3:
+        raise RuntimeError("No stages to run!")
 
     
     # try:

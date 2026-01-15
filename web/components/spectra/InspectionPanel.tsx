@@ -299,12 +299,25 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <span className="text-text-secondary dark:text-slate-400">Redshift:</span>
-              <span className="font-mono font-semibold text-text-primary dark:text-slate-100">
-                {currentRedshift?.toFixed(4) ?? '—'}
-              </span>
-              <span className="text-xs text-text-secondary dark:text-slate-400">
-                ({redshiftInspected ? 'overridden' : 'auto-fit'})
-              </span>
+              {redshiftQuality === 1 ? (
+                <>
+                  <span className="font-mono text-text-secondary dark:text-slate-400 line-through">
+                    {currentRedshift?.toFixed(4) ?? '—'}
+                  </span>
+                  <span className="text-xs text-red-500 dark:text-red-400">
+                    (excluded)
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="font-mono font-semibold text-text-primary dark:text-slate-100">
+                    {currentRedshift?.toFixed(4) ?? '—'}
+                  </span>
+                  <span className="text-xs text-text-secondary dark:text-slate-400">
+                    ({redshiftInspected ? 'overridden' : 'auto-fit'})
+                  </span>
+                </>
+              )}
             </div>
 
             <span className="text-border dark:text-slate-600">|</span>
