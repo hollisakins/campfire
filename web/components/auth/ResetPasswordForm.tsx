@@ -20,9 +20,43 @@ export const ResetPasswordForm: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  // Check for valid reset token in URL hash
+  // Check for valid reset token in URL (either code or hash-based)
   useEffect(() => {
     const validateToken = async () => {
+      const supabase = createClient();
+
+      // Check for PKCE code parameter (modern flow)
+      const urlParams = new URLSearchParams(window.location.search);
+      const code = urlParams.get('code');
+
+      if (code) {
+        try {
+          // Exchange code for session
+          const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+
+          if (exchangeError) {
+            console.error('Code exchange error:', exchangeError);
+            setError('Invalid or expired reset link. Please request a new password reset.');
+            setValidatingToken(false);
+            return;
+          }
+
+          // Valid token - code exchange successful
+          setHasValidToken(true);
+          setValidatingToken(false);
+
+          // Clear the code from URL for cleaner UX
+          window.history.replaceState(null, '', window.location.pathname);
+          return;
+        } catch (err) {
+          console.error('Error exchanging code:', err);
+          setError('Failed to validate reset link. Please try again.');
+          setValidatingToken(false);
+          return;
+        }
+      }
+
+      // Fall back to hash-based flow (legacy)
       const hash = window.location.hash;
 
       if (!hash || !hash.includes('access_token')) {
@@ -45,8 +79,6 @@ export const ResetPasswordForm: React.FC = () => {
         }
 
         if (accessToken && refreshToken) {
-          const supabase = createClient();
-
           // Set the session with the tokens
           const { error: sessionError } = await supabase.auth.setSession({
             access_token: accessToken,
