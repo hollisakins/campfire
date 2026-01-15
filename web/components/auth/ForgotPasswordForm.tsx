@@ -82,7 +82,7 @@ export const ForgotPasswordForm: React.FC = () => {
           </div>
 
           <Button
-            variant="outline"
+            variant="secondary"
             className="w-full"
             onClick={() => {
               setSuccess(false);

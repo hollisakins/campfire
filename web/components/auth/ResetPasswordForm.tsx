@@ -179,7 +179,7 @@ export const ResetPasswordForm: React.FC = () => {
           </Button>
 
           <Button
-            variant="outline"
+            variant="secondary"
             className="w-full"
             onClick={() => router.push('/login')}
           >
