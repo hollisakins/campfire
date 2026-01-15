@@ -1,17 +1,26 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/lib/contexts/AuthContext';
 import { AlertCircle, CheckCircle, ArrowLeft } from 'lucide-react';
 
 export const ForgotPasswordForm: React.FC = () => {
+  const { user } = useAuth();
   const [email, setEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Pre-fill email if user is logged in
+  useEffect(() => {
+    if (user?.email) {
+      setEmail(user.email);
+    }
+  }, [user]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,21 +48,26 @@ export const ForgotPasswordForm: React.FC = () => {
     }
   };
 
+  const backLink = user ? '/profile' : '/login';
+  const backText = user ? 'Back to Profile' : 'Back to Sign In';
+
   return (
     <Card className="w-full max-w-md p-8">
       <div className="mb-6">
         <Link
-          href="/login"
+          href={backLink}
           className="inline-flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition-colors mb-4"
         >
           <ArrowLeft className="w-4 h-4" />
-          Back to Sign In
+          {backText}
         </Link>
         <h2 className="text-2xl font-bold text-text-primary text-center">
-          Reset Your Password
+          {user ? 'Change Your Password' : 'Reset Your Password'}
         </h2>
         <p className="text-text-secondary text-center mt-2">
-          Enter your email address and we&apos;ll send you a link to reset your password.
+          {user
+            ? "We'll send you a link to securely change your password."
+            : "Enter your email address and we'll send you a link to reset your password."}
         </p>
       </div>
 
@@ -91,10 +105,10 @@ export const ForgotPasswordForm: React.FC = () => {
 
           <div className="text-center">
             <Link
-              href="/login"
+              href={backLink}
               className="text-sm text-primary hover:underline font-medium"
             >
-              Return to Sign In
+              {user ? 'Return to Profile' : 'Return to Sign In'}
             </Link>
           </div>
         </div>
@@ -125,14 +139,16 @@ export const ForgotPasswordForm: React.FC = () => {
             {loading ? 'Sending Reset Link...' : 'Send Reset Link'}
           </Button>
 
-          <div className="text-center mt-4">
-            <Link
-              href="/login"
-              className="text-sm text-text-secondary hover:text-text-primary"
-            >
-              Remember your password? <span className="text-primary font-medium">Sign in</span>
-            </Link>
-          </div>
+          {!user && (
+            <div className="text-center mt-4">
+              <Link
+                href="/login"
+                className="text-sm text-text-secondary hover:text-text-primary"
+              >
+                Remember your password? <span className="text-primary font-medium">Sign in</span>
+              </Link>
+            </div>
+          )}
         </form>
       )}
     </Card>
