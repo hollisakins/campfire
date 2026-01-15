@@ -71,7 +71,42 @@ export async function POST(
       );
     }
 
-    // Resend invite email via Supabase Admin API
+    // Check if user already exists in auth.users
+    const { data: existingUsers } = await serviceClient.auth.admin.listUsers();
+    const existingUser = existingUsers?.users?.find(
+      u => u.email?.toLowerCase() === invite.email.toLowerCase()
+    );
+
+    if (existingUser) {
+      // Check if user has completed profile setup
+      const { data: userProfile } = await serviceClient
+        .from('user_profiles')
+        .select('user_id')
+        .eq('user_id', existingUser.id)
+        .single();
+
+      if (userProfile) {
+        return NextResponse.json(
+          { error: 'User has already completed registration. They can log in directly.' },
+          { status: 400 }
+        );
+      }
+
+      // User exists but hasn't completed profile - delete and resend
+      const { error: deleteError } = await serviceClient.auth.admin.deleteUser(
+        existingUser.id
+      );
+
+      if (deleteError) {
+        console.error('Error deleting incomplete user:', deleteError);
+        return NextResponse.json(
+          { error: 'Failed to reset invite. Please try again.' },
+          { status: 500 }
+        );
+      }
+    }
+
+    // Send (or resend) invite email via Supabase Admin API
     const { error: authError } = await serviceClient.auth.admin.inviteUserByEmail(
       invite.email,
       {
