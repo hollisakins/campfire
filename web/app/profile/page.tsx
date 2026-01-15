@@ -348,6 +348,28 @@ export default function ProfilePage() {
           </Link>
         )}
 
+        {/* Change Email */}
+        {!profileData.profile.is_group_account && (
+          <Link href="/profile/change-email">
+            <Card className="p-6 hover:bg-background-hover dark:hover:bg-slate-700 transition-colors cursor-pointer">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900 rounded-full flex items-center justify-center">
+                    <User className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">Change Email Address</h2>
+                    <p className="text-sm text-text-secondary dark:text-slate-400">
+                      Update your account email address
+                    </p>
+                  </div>
+                </div>
+                <ChevronRight className="w-5 h-5 text-text-secondary dark:text-slate-400" />
+              </div>
+            </Card>
+          </Link>
+        )}
+
         {/* Access Code Entry */}
         {!profileData.profile.is_group_account && (
           <Card className="p-6" id="access-code">
