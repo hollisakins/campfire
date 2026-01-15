@@ -50,6 +50,7 @@ export default function AdminUsersPage() {
   const [inviteCanComment, setInviteCanComment] = useState(true);
   const [sendingInvite, setSendingInvite] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
+  const [resendingInvite, setResendingInvite] = useState<number | null>(null);
 
   const fetchInvites = useCallback(async () => {
     try {
@@ -146,6 +147,28 @@ export default function AdminUsersPage() {
       fetchInvites();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to cancel invite');
+    }
+  };
+
+  const resendInvite = async (inviteId: number, email: string) => {
+    setResendingInvite(inviteId);
+
+    try {
+      const response = await fetch(`/api/admin/invites/${inviteId}/resend`, {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to resend invite');
+      }
+
+      alert(data.message || `Invite resent to ${email}`);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to resend invite');
+    } finally {
+      setResendingInvite(null);
     }
   };
 
@@ -473,13 +496,27 @@ export default function AdminUsersPage() {
                     </div>
                   </div>
                 </div>
-                <button
-                  onClick={() => cancelInvite(invite.id)}
-                  className="text-text-secondary dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                  title="Cancel invite"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => resendInvite(invite.id, invite.email)}
+                    disabled={resendingInvite === invite.id}
+                    className="text-text-secondary dark:text-slate-400 hover:text-primary dark:hover:text-primary transition-colors disabled:opacity-50"
+                    title="Resend invite email"
+                  >
+                    {resendingInvite === invite.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4" />
+                    )}
+                  </button>
+                  <button
+                    onClick={() => cancelInvite(invite.id)}
+                    className="text-text-secondary dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                    title="Cancel invite"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
