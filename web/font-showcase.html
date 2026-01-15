@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CAMPFIRE Font Pairing Comparison</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&family=Source+Code+Pro:wght@400;500;600&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-card: #f8fafc;
+      --text: #0f172a;
+      --text-secondary: #64748b;
+      --border: #e2e8f0;
+      --primary: #c026d3;
+      --primary-hover: #a21caf;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      background: #f1f5f9;
+      color: var(--text);
+      padding: 2rem;
+    }
+
+    .page-header {
+      max-width: 1400px;
+      margin: 0 auto 2rem;
+    }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+      color: var(--text-secondary);
+      font-size: 1rem;
+    }
+
+    .showcase-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .showcase-card {
+      background: var(--bg);
+      border: 2px solid var(--border);
+      border-radius: 1rem;
+      overflow: hidden;
+    }
+
+    .showcase-card.current {
+      border-color: var(--primary);
+    }
+
+    .showcase-header {
+      padding: 1rem 1.5rem;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .showcase-card.current .showcase-header {
+      background: #fdf4ff;
+    }
+
+    .showcase-title {
+      font-size: 1.125rem;
+      font-weight: 700;
+      margin-bottom: 0.25rem;
+    }
+
+    .showcase-card.current .showcase-title {
+      color: var(--primary);
+    }
+
+    .showcase-fonts {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+    }
+
+    .showcase-body {
+      padding: 1.5rem;
+    }
+
+    /* Font family assignments */
+    .demo-current {
+      font-family: ui-sans-serif, system-ui, sans-serif;
+    }
+    .demo-current .mono {
+      font-family: ui-monospace, 'Courier New', monospace;
+    }
+
+    .demo-roboto {
+      font-family: 'Roboto', sans-serif;
+    }
+    .demo-roboto .mono {
+      font-family: 'Roboto Mono', monospace;
+    }
+
+    .demo-source {
+      font-family: 'Source Sans 3', sans-serif;
+    }
+    .demo-source .mono {
+      font-family: 'Source Code Pro', monospace;
+    }
+
+    /* Demo page components */
+    .demo-nav {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 1.5rem;
+    }
+
+    .demo-logo {
+      font-weight: 700;
+      font-size: 1.125rem;
+      color: var(--primary);
+    }
+
+    .demo-nav-links {
+      display: flex;
+      gap: 1rem;
+      font-size: 0.875rem;
+    }
+
+    .demo-nav-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+    }
+
+    .demo-page-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+
+    .demo-page-subtitle {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      margin-bottom: 1.5rem;
+    }
+
+    .demo-object-header {
+      display: flex;
+      align-items: baseline;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .demo-object-id {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+
+    .demo-object-meta {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+    }
+
+    .demo-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .demo-stat {
+      background: var(--bg-card);
+      padding: 0.75rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border);
+    }
+
+    .demo-stat-label {
+      font-size: 0.625rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+    }
+
+    .demo-stat-value {
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+
+    .demo-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8125rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .demo-table th {
+      text-align: left;
+      padding: 0.5rem 0.5rem;
+      font-size: 0.6875rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .demo-table td {
+      padding: 0.5rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .demo-table .id-link {
+      color: var(--primary);
+      text-decoration: none;
+    }
+
+    .demo-table .id-link:hover {
+      text-decoration: underline;
+    }
+
+    .demo-code-section {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      overflow: hidden;
+    }
+
+    .demo-code-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 0.75rem;
+      background: #1e293b;
+      font-size: 0.75rem;
+      color: #94a3b8;
+    }
+
+    .demo-code-block {
+      padding: 0.75rem;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      overflow-x: auto;
+    }
+
+    .demo-inline-code {
+      background: #e2e8f0;
+      padding: 0.125rem 0.375rem;
+      border-radius: 0.25rem;
+      font-size: 0.8125rem;
+      color: var(--primary);
+    }
+
+    .demo-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .demo-input {
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+      width: 200px;
+    }
+
+    .demo-form-row {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .demo-form-label {
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      min-width: 60px;
+    }
+
+    .comparison-note {
+      max-width: 1400px;
+      margin: 2rem auto 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+    }
+
+    .comparison-note h2 {
+      font-size: 1.125rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+    }
+
+    .comparison-note ul {
+      list-style: disc;
+      margin-left: 1.5rem;
+      line-height: 1.8;
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      background: #dbeafe;
+      color: #1e40af;
+      border-radius: 9999px;
+      font-size: 0.6875rem;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="page-header">
+    <h1>CAMPFIRE Font Pairing Comparison</h1>
+    <p class="subtitle">Comparing complete font families (sans-serif + monospace) in context. Each card shows how the pairing looks across typical CAMPFIRE UI elements.</p>
+  </div>
+
+  <div class="showcase-grid">
+
+    <!-- Current Implementation -->
+    <div class="showcase-card current">
+      <div class="showcase-header">
+        <div class="showcase-title">Current Implementation</div>
+        <div class="showcase-fonts">Sans: ui-sans-serif (SF Pro / Segoe UI) &bull; Mono: ui-monospace (SF Mono / Cascadia)</div>
+      </div>
+      <div class="showcase-body demo-current">
+
+        <div class="demo-nav">
+          <div class="demo-logo">CAMPFIRE</div>
+          <div class="demo-nav-links">
+            <a href="#">Spectra</a>
+            <a href="#">NIRCam</a>
+            <a href="#">Docs</a>
+          </div>
+        </div>
+
+        <div class="demo-object-header">
+          <div class="demo-object-id mono">ember_uds_p4_123456</div>
+          <span class="tag">PRISM</span>
+        </div>
+
+        <div class="demo-stats">
+          <div class="demo-stat">
+            <div class="demo-stat-label">RA</div>
+            <div class="demo-stat-value mono">150.123456</div>
+          </div>
+          <div class="demo-stat">
+            <div class="demo-stat-label">Dec</div>
+            <div class="demo-stat-value mono">-2.456789</div>
+          </div>
+          <div class="demo-stat">
+            <div class="demo-stat-label">Redshift</div>
+            <div class="demo-stat-value mono">7.2345</div>
+          </div>
+          <div class="demo-stat">
+            <div class="demo-stat-label">S/N</div>
+            <div class="demo-stat-value mono">12.4</div>
+          </div>
+        </div>
+
+        <table class="demo-table">
+          <tr>
+            <th>Object ID</th>
+            <th>RA</th>
+            <th>Dec</th>
+            <th>z</th>
+          </tr>
+          <tr>
+            <td><a href="#" class="id-link mono">ember_uds_p4_123456</a></td>
+            <td class="mono">150.123456</td>
+            <td class="mono">-2.456789</td>
+            <td class="mono">7.2345</td>
+          </tr>
+          <tr>
+            <td><a href="#" class="id-link mono">capers_cosmos_789</a></td>
+            <td class="mono">150.789012</td>
+            <td class="mono">2.345678</td>
+            <td class="mono">4.5678</td>
+          </tr>
+        </table>
+
+        <div class="demo-form-row">
+          <span class="demo-form-label">Redshift</span>
+          <input type="text" class="demo-input mono" value="7.2345" style="width: 120px;">
+          <button class="demo-button">Save</button>
+        </div>
+
+        <p style="font-size: 0.875rem; margin-bottom: 1rem;">
+          Install the client with <code class="demo-inline-code mono">pip install campfire-client</code>
+        </p>
+
+        <div class="demo-code-section">
+          <div class="demo-code-header">
+            <span class="mono">example.py</span>
+          </div>
+          <pre class="demo-code-block mono">from campfire import Client
+client = Client()
+spectra = client.spectra.list(
+    field="COSMOS",
+    redshift_min=5.0,
+    limit=100
+)</pre>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Roboto + Roboto Mono -->
+    <div class="showcase-card">
+      <div class="showcase-header">
+        <div class="showcase-title">Roboto + Roboto Mono</div>
+        <div class="showcase-fonts">Google's font family. Clean, neutral, widely used.</div>
+      </div>
+      <div class="showcase-body demo-roboto">
+
+        <div class="demo-nav">
+          <div class="demo-logo">CAMPFIRE</div>
+          <div class="demo-nav-links">
+            <a href="#">Spectra</a>
+            <a href="#">NIRCam</a>
+            <a href="#">Docs</a>
+          </div>
+        </div>
+
+        <div class="demo-object-header">
+          <div class="demo-object-id mono">ember_uds_p4_123456</div>
+          <span class="tag">PRISM</span>
+        </div>
+
+        <div class="demo-stats">
+          <div class="demo-stat">
+            <div class="demo-stat-label">RA</div>
+            <div class="demo-stat-value mono">150.123456</div>
+          </div>
+          <div class="demo-stat">
+            <div class="demo-stat-label">Dec</div>
+            <div class="demo-stat-value mono">-2.456789</div>
+          </div>
+          <div class="demo-stat">
+            <div class="demo-stat-label">Redshift</div>
+            <div class="demo-stat-value mono">7.2345</div>
+          </div>
+          <div class="demo-stat">
+            <div class="demo-stat-label">S/N</div>
+            <div class="demo-stat-value mono">12.4</div>
+          </div>
+        </div>
+
+        <table class="demo-table">
+          <tr>
+            <th>Object ID</th>
+            <th>RA</th>
+            <th>Dec</th>
+            <th>z</th>
+          </tr>
+          <tr>
+            <td><a href="#" class="id-link mono">ember_uds_p4_123456</a></td>
+            <td class="mono">150.123456</td>
+            <td class="mono">-2.456789</td>
+            <td class="mono">7.2345</td>
+          </tr>
+          <tr>
+            <td><a href="#" class="id-link mono">capers_cosmos_789</a></td>
+            <td class="mono">150.789012</td>
+            <td class="mono">2.345678</td>
+            <td class="mono">4.5678</td>
+          </tr>
+        </table>
+
+        <div class="demo-form-row">
+          <span class="demo-form-label">Redshift</span>
+          <input type="text" class="demo-input mono" value="7.2345" style="width: 120px;">
+          <button class="demo-button">Save</button>
+        </div>
+
+        <p style="font-size: 0.875rem; margin-bottom: 1rem;">
+          Install the client with <code class="demo-inline-code mono">pip install campfire-client</code>
+        </p>
+
+        <div class="demo-code-section">
+          <div class="demo-code-header">
+            <span class="mono">example.py</span>
+          </div>
+          <pre class="demo-code-block mono">from campfire import Client
+client = Client()
+spectra = client.spectra.list(
+    field="COSMOS",
+    redshift_min=5.0,
+    limit=100
+)</pre>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Source Sans 3 + Source Code Pro -->
+    <div class="showcase-card">
+      <div class="showcase-header">
+        <div class="showcase-title">Source Sans 3 + Source Code Pro</div>
+        <div class="showcase-fonts">Adobe's font family. Slightly more character, excellent readability.</div>
+      </div>
+      <div class="showcase-body demo-source">
+
+        <div class="demo-nav">
+          <div class="demo-logo">CAMPFIRE</div>
+          <div class="demo-nav-links">
+            <a href="#">Spectra</a>
+            <a href="#">NIRCam</a>
+            <a href="#">Docs</a>
+          </div>
+        </div>
+
+        <div class="demo-object-header">
+          <div class="demo-object-id mono">ember_uds_p4_123456</div>
+          <span class="tag">PRISM</span>
+        </div>
+
+        <div class="demo-stats">
+          <div class="demo-stat">
+            <div class="demo-stat-label">RA</div>
+            <div class="demo-stat-value mono">150.123456</div>
+          </div>
+          <div class="demo-stat">
+            <div class="demo-stat-label">Dec</div>
+            <div class="demo-stat-value mono">-2.456789</div>
+          </div>
+          <div class="demo-stat">
+            <div class="demo-stat-label">Redshift</div>
+            <div class="demo-stat-value mono">7.2345</div>
+          </div>
+          <div class="demo-stat">
+            <div class="demo-stat-label">S/N</div>
+            <div class="demo-stat-value mono">12.4</div>
+          </div>
+        </div>
+
+        <table class="demo-table">
+          <tr>
+            <th>Object ID</th>
+            <th>RA</th>
+            <th>Dec</th>
+            <th>z</th>
+          </tr>
+          <tr>
+            <td><a href="#" class="id-link mono">ember_uds_p4_123456</a></td>
+            <td class="mono">150.123456</td>
+            <td class="mono">-2.456789</td>
+            <td class="mono">7.2345</td>
+          </tr>
+          <tr>
+            <td><a href="#" class="id-link mono">capers_cosmos_789</a></td>
+            <td class="mono">150.789012</td>
+            <td class="mono">2.345678</td>
+            <td class="mono">4.5678</td>
+          </tr>
+        </table>
+
+        <div class="demo-form-row">
+          <span class="demo-form-label">Redshift</span>
+          <input type="text" class="demo-input mono" value="7.2345" style="width: 120px;">
+          <button class="demo-button">Save</button>
+        </div>
+
+        <p style="font-size: 0.875rem; margin-bottom: 1rem;">
+          Install the client with <code class="demo-inline-code mono">pip install campfire-client</code>
+        </p>
+
+        <div class="demo-code-section">
+          <div class="demo-code-header">
+            <span class="mono">example.py</span>
+          </div>
+          <pre class="demo-code-block mono">from campfire import Client
+client = Client()
+spectra = client.spectra.list(
+    field="COSMOS",
+    redshift_min=5.0,
+    limit=100
+)</pre>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <div class="comparison-note">
+    <h2>Quick Comparison</h2>
+    <ul>
+      <li><strong>Current (System fonts)</strong> - No external font loading, but appearance varies by OS. SF Mono can appear thin on macOS.</li>
+      <li><strong>Roboto family</strong> - Very neutral and clean. Roboto Mono is slightly condensed. Excellent for data-heavy interfaces. ~50KB total.</li>
+      <li><strong>Source family</strong> - Slightly more character and warmth. Source Code Pro has excellent number differentiation. Popular in scientific/technical contexts. ~60KB total.</li>
+    </ul>
+    <p style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.875rem;">
+      Both Google Font options will load quickly and provide consistent appearance across all platforms.
+    </p>
+  </div>
+
+</body>
+</html>

@@ -41,29 +41,48 @@
     files = 'jw06368019001*'
     gratings = ['PRISM']
 
-# [capers_uds_p2]
-#     field = 'uds'
-#     data_subdir='6368'
-#     files = ['jw06368025001_*', 'jw06368026001_*', 'jw06368027001_*']
-#     gratings = ['PRISM']
+[capers_uds_p1]
+    field = 'uds'
+    data_subdir='6368'
+    files = ['jw06368022001_*', 'jw06368023001_*', 'jw06368024001_*']
+    gratings = ['PRISM']
 
-# [capers_uds_p3]
-#     field = 'uds'
-#     data_subdir='6368'
-#     files = ['jw06368028001_*', 'jw06368029001_*', 'jw06368030001_*']
-#     gratings = ['PRISM']
+[capers_uds_p2]
+    field = 'uds'
+    data_subdir='6368'
+    files = ['jw06368025001_*', 'jw06368027001_*']
+    gratings = ['PRISM']
 
-# [capers_uds_p4]
-#     field = 'uds'
-#     data_subdir='6368'
-#     files = 'jw06368031*'
-#     gratings = ['PRISM']
+[capers_uds_p3]
+    field = 'uds'
+    data_subdir='6368'
+    files = ['jw06368029001_*', 'jw06368030001_*']
+    gratings = ['PRISM']
 
-# [capers_uds_p6]
-#     field = 'uds'
-#     data_subdir='6368'
-#     files = 'jw06368040*'
-#     gratings = ['PRISM']
+[capers_uds_p4]
+    field = 'uds'
+    data_subdir='6368'
+    files = 'jw06368031*'
+    gratings = ['PRISM']
+
+[capers_uds_p5]
+    field = 'uds'
+    data_subdir='6368'
+    files = ['jw06368034*','jw06368035*']
+    gratings = ['PRISM']
+
+[capers_uds_p6]
+    field = 'uds'
+    data_subdir='6368'
+    files = 'jw06368037*'
+    gratings = ['PRISM']
+
+[capers_uds_p7]
+    field = 'uds'
+    data_subdir='6368'
+    files = 'jw06368040*'
+    gratings = ['PRISM']
+
 
 [capers_egs_p1]
     field = 'egs'

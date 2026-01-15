@@ -101,17 +101,22 @@ class FlagQuery:
         return params
 
 
-class QueryableFlag(IntFlag):
+def queryable(cls):
     """
-    IntFlag subclass with numpy-style query operators.
+    Decorator that adds query operators to a Flag class.
 
-    Supports:
-        - Flag | Flag : match any (OR)
-        - Flag & Flag : must have all (AND)
-        - ~Flag : exclude (NOT)
+    Must be applied after class creation to override the operators
+    that Python's enum metaclass copies from the base Flag class.
+
+    Example
+    -------
+    @queryable
+    class ObjectFlags(QueryableFlag):
+        LRD = 1
+        BROAD_LINE = 2
     """
 
-    def __or__(self, other: Union["QueryableFlag", FlagQuery, int]) -> FlagQuery:
+    def _or(self, other):
         """Flag | Flag = match any of these (OR)."""
         if isinstance(other, FlagQuery):
             return FlagQuery(
@@ -119,11 +124,11 @@ class QueryableFlag(IntFlag):
                 include_all=other.include_all,
                 exclude=other.exclude,
             )
-        elif isinstance(other, (int, QueryableFlag)):
+        elif isinstance(other, int):
             return FlagQuery(include_any=int(self) | int(other))
         return NotImplemented
 
-    def __and__(self, other: Union["QueryableFlag", FlagQuery, int]) -> FlagQuery:
+    def _and(self, other):
         """Flag & Flag = must have all (AND)."""
         if isinstance(other, FlagQuery):
             return FlagQuery(
@@ -131,23 +136,47 @@ class QueryableFlag(IntFlag):
                 include_all=int(self) | other.include_all,
                 exclude=other.exclude,
             )
-        elif isinstance(other, (int, QueryableFlag)):
+        elif isinstance(other, int):
             return FlagQuery(include_all=int(self) | int(other))
         return NotImplemented
 
-    def __invert__(self) -> FlagQuery:
+    def _invert(self):
         """~Flag = exclude this flag (NOT)."""
         return FlagQuery(exclude=int(self))
 
-    def __ror__(self, other):
+    def _ror(self, other):
         """Support: other | Flag."""
-        return self.__or__(other)
+        return _or(self, other)
 
-    def __rand__(self, other):
+    def _rand(self, other):
         """Support: other & Flag."""
-        return self.__and__(other)
+        return _and(self, other)
+
+    cls.__or__ = _or
+    cls.__and__ = _and
+    cls.__invert__ = _invert
+    cls.__ror__ = _ror
+    cls.__rand__ = _rand
+    return cls
 
 
+class QueryableFlag(IntFlag):
+    """
+    IntFlag subclass marker for queryable flags.
+
+    Note: Operators are applied via @queryable decorator, not inheritance,
+    because Python's enum metaclass overwrites inherited operators.
+
+    Supports:
+        - Flag | Flag : match any (OR)
+        - Flag & Flag : must have all (AND)
+        - ~Flag : exclude (NOT)
+    """
+
+    pass
+
+
+@queryable
 class SpectralFeatures(QueryableFlag):
     """
     Spectral features used for redshift determination.
@@ -175,6 +204,7 @@ class SpectralFeatures(QueryableFlag):
     """Multiple emission lines detected."""
 
 
+@queryable
 class ObjectFlags(QueryableFlag):
     """
     Object properties and classifications.
@@ -211,6 +241,7 @@ class ObjectFlags(QueryableFlag):
     """Stellar spectrum (not a galaxy)."""
 
 
+@queryable
 class DQFlags(QueryableFlag):
     """
     Data quality flags.
