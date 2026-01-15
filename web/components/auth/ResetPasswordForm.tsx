@@ -25,38 +25,29 @@ export const ResetPasswordForm: React.FC = () => {
     const validateToken = async () => {
       const supabase = createClient();
 
-      // Check for recovery token in query parameter
+      // Check if there's a code parameter (means we were redirected from Supabase after verification)
       const urlParams = new URLSearchParams(window.location.search);
-      const token = urlParams.get('code');
+      const code = urlParams.get('code');
 
-      if (token) {
-        try {
-          // Verify the recovery token
-          const { error: verifyError } = await supabase.auth.verifyOtp({
-            token_hash: token,
-            type: 'recovery',
-          });
+      if (code) {
+        // Supabase has already verified the token and should have set a session
+        // Just check if we have a valid session
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
-          if (verifyError) {
-            console.error('Token verification error:', verifyError);
-            setError('Invalid or expired reset link. Please request a new password reset.');
-            setValidatingToken(false);
-            return;
-          }
-
-          // Valid token - verification successful
-          setHasValidToken(true);
-          setValidatingToken(false);
-
-          // Clear the token from URL for cleaner UX
-          window.history.replaceState(null, '', window.location.pathname);
-          return;
-        } catch (err) {
-          console.error('Error verifying token:', err);
-          setError('Failed to validate reset link. Please try again.');
+        if (sessionError || !session) {
+          console.error('Session error:', sessionError);
+          setError('Invalid or expired reset link. Please request a new password reset.');
           setValidatingToken(false);
           return;
         }
+
+        // Valid session exists
+        setHasValidToken(true);
+        setValidatingToken(false);
+
+        // Clear the code from URL for cleaner UX
+        window.history.replaceState(null, '', window.location.pathname);
+        return;
       }
 
       // Fall back to hash-based flow (legacy)
