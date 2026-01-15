@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 
 /**
  * POST /api/admin/invites/[id]/resend
@@ -32,8 +32,11 @@ export async function POST(
     );
   }
 
+  // Use service client for admin operations
+  const serviceClient = createServiceClient();
+
   // Check admin permission
-  const { data: profile } = await supabase
+  const { data: profile } = await serviceClient
     .from('user_profiles')
     .select('is_admin')
     .eq('user_id', user.id)
@@ -48,7 +51,7 @@ export async function POST(
 
   try {
     // Check if invite exists and is not yet accepted
-    const { data: invite, error: fetchError } = await supabase
+    const { data: invite, error: fetchError } = await serviceClient
       .from('pending_invites')
       .select('id, email, accepted_at')
       .eq('id', inviteId)
@@ -69,7 +72,7 @@ export async function POST(
     }
 
     // Resend invite email via Supabase Admin API
-    const { error: authError } = await supabase.auth.admin.inviteUserByEmail(
+    const { error: authError } = await serviceClient.auth.admin.inviteUserByEmail(
       invite.email,
       {
         redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/login`,
