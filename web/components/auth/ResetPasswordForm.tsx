@@ -25,31 +25,34 @@ export const ResetPasswordForm: React.FC = () => {
     const validateToken = async () => {
       const supabase = createClient();
 
-      // Check for PKCE code parameter (modern flow)
+      // Check for recovery token in query parameter
       const urlParams = new URLSearchParams(window.location.search);
-      const code = urlParams.get('code');
+      const token = urlParams.get('code');
 
-      if (code) {
+      if (token) {
         try {
-          // Exchange code for session
-          const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+          // Verify the recovery token
+          const { error: verifyError } = await supabase.auth.verifyOtp({
+            token_hash: token,
+            type: 'recovery',
+          });
 
-          if (exchangeError) {
-            console.error('Code exchange error:', exchangeError);
+          if (verifyError) {
+            console.error('Token verification error:', verifyError);
             setError('Invalid or expired reset link. Please request a new password reset.');
             setValidatingToken(false);
             return;
           }
 
-          // Valid token - code exchange successful
+          // Valid token - verification successful
           setHasValidToken(true);
           setValidatingToken(false);
 
-          // Clear the code from URL for cleaner UX
+          // Clear the token from URL for cleaner UX
           window.history.replaceState(null, '', window.location.pathname);
           return;
         } catch (err) {
-          console.error('Error exchanging code:', err);
+          console.error('Error verifying token:', err);
           setError('Failed to validate reset link. Please try again.');
           setValidatingToken(false);
           return;
