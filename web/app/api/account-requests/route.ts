@@ -88,14 +88,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Send admin notification email (non-blocking)
+    // Send admin notification email (non-blocking, but log the result)
     sendAdminNotification({
       email: normalizedEmail,
       full_name: trimmedName,
       created_at: newRequest.created_at,
-    }).catch(err => {
-      console.error('Failed to send admin notification:', err);
-    });
+    })
+      .then(result => {
+        if (result.success) {
+          console.log('Admin notification sent for request:', newRequest.id);
+        } else {
+          console.error('Admin notification failed for request:', newRequest.id, result.error);
+        }
+      })
+      .catch(err => {
+        console.error('Admin notification threw error for request:', newRequest.id, err);
+      });
 
     return NextResponse.json({
       success: true,

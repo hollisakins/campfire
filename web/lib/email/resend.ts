@@ -38,8 +38,8 @@ export async function sendAdminNotification(request: AccountRequestNotification)
   });
 
   try {
-    const { error } = await resend.emails.send({
-      from: 'CAMPFIRE <noreply@resend.dev>', // Use Resend's default domain for testing
+    const { data, error } = await resend.emails.send({
+      from: 'CAMPFIRE <team@campfire.hollisakins.com>',
       to: adminEmail,
       subject: `New Account Request: ${request.full_name}`,
       html: `
@@ -91,6 +91,12 @@ ${appUrl}/admin/requests
       console.error('Failed to send admin notification:', error);
       return { success: false, error: error.message };
     }
+
+    console.log('Admin notification sent successfully:', {
+      id: data?.id,
+      to: adminEmail,
+      requester: request.full_name
+    });
 
     return { success: true };
   } catch (err) {
