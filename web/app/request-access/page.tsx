@@ -79,6 +79,9 @@ export default function RequestAccessPage() {
                     <li>2. You&apos;ll receive an email when approved</li>
                     <li>3. Follow the email link to set your password</li>
                   </ul>
+                  <p className="text-sm text-text-secondary mt-3">
+                    <strong>Note:</strong> Please check your spam or junk folder if you don&apos;t see the approval email in your inbox.
+                  </p>
                 </div>
               </>
             )}
