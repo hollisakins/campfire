@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { generateDownloadUrl } from '@/lib/r2';
+import { trackDownload, extractObjectIdFromFitsPath } from '@/lib/actions/download-tracking';
 
 /**
  * GET /api/download?path=<fits_path>
@@ -64,6 +65,16 @@ export async function GET(request: NextRequest) {
         { status: 503 }
       );
     }
+
+    // Track download (fire-and-forget)
+    const objectId = await extractObjectIdFromFitsPath(fitsPath);
+    trackDownload({
+      userId: user.id,
+      downloadType: 'fits_single',
+      objectIds: objectId ? [objectId] : undefined,
+      objectCount: 1,
+      fileCount: 1,
+    });
 
     return NextResponse.json({ url: signedUrl });
   } catch (error) {
@@ -152,6 +163,19 @@ export async function POST(request: NextRequest) {
 
       urls[path] = signedUrl;
     }
+
+    // Track batch download (fire-and-forget)
+    const objectIdPromises = paths.map(extractObjectIdFromFitsPath);
+    const objectIds = (await Promise.all(objectIdPromises))
+      .filter((id): id is string => id !== null);
+    const uniqueObjectIds = [...new Set(objectIds)];
+    trackDownload({
+      userId: user.id,
+      downloadType: 'fits_batch',
+      objectIds: uniqueObjectIds,
+      objectCount: uniqueObjectIds.length,
+      fileCount: paths.length,
+    });
 
     return NextResponse.json({ urls });
   } catch (error) {

@@ -4,6 +4,8 @@ import { getSpectra } from './spectra';
 import type { SpectrumObject } from '@/lib/types';
 import type { SortColumn, SortDirection } from './spectra-types';
 import { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import { trackDownload } from './download-tracking';
+import { createClient } from '@/lib/supabase/server';
 
 // JWT signing using Web Crypto API
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_DOWNLOAD_URL || 'http://localhost:8787';
@@ -30,6 +32,10 @@ export async function generateCSV(
   sortDirection: SortDirection = 'asc'
 ): Promise<{ csv: string | null; error: string | null }> {
   try {
+    // Get user for tracking
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
     // Fetch all results (no pagination limit for CSV export)
     // We'll use a high limit - adjust if datasets grow beyond this
     const result = await getSpectra(
@@ -59,6 +65,19 @@ export async function generateCSV(
 
     // Convert to CSV format
     const csv = spectraToCsv(result.spectra, filters.coordinate_search !== null);
+
+    // Track CSV download (fire-and-forget)
+    if (user) {
+      const objectIds = result.spectra.map(s => s.object_id);
+      trackDownload({
+        userId: user.id,
+        downloadType: 'csv',
+        objectIds,
+        objectCount: objectIds.length,
+        fileCount: 1,
+        filterSnapshot: filters as unknown as Record<string, unknown>,
+      });
+    }
 
     return { csv, error: null };
   } catch (error) {
@@ -170,6 +189,10 @@ export async function generateFitsDownloadUrl(
       return { url: null, error: 'Server configuration error: JWT secret not set' };
     }
 
+    // Get user for tracking
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
     // Fetch filtered results (limit to 200 objects)
     const result = await getSpectra(
       {
@@ -228,6 +251,19 @@ export async function generateFitsDownloadUrl(
 
     // Construct Worker URL
     const url = `${WORKER_URL}?token=${token}`;
+
+    // Track ZIP download (fire-and-forget)
+    if (user) {
+      const objectIds = result.spectra.map(s => s.object_id);
+      trackDownload({
+        userId: user.id,
+        downloadType: 'fits_zip',
+        objectIds,
+        objectCount: objectIds.length,
+        fileCount: files.length,
+        filterSnapshot: filters as unknown as Record<string, unknown>,
+      });
+    }
 
     return { url, error: null };
   } catch (error) {
