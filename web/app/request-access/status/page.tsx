@@ -180,6 +180,14 @@ export default function RequestStatusPage() {
                 </div>
               )}
 
+              {(result.status === 'pending' || result.status === 'approved') && (
+                <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg">
+                  <p className="text-sm text-blue-800 dark:text-blue-200">
+                    <strong>Note:</strong> Please check your spam or junk folder if you don&apos;t see the approval email in your inbox.
+                  </p>
+                </div>
+              )}
+
               {result.status === 'not_found' && (
                 <div className="mt-4">
                   <Link href="/request-access">
