@@ -26,7 +26,7 @@ export const DownloadButtons: React.FC<DownloadButtonsProps> = ({ spectra, objec
       const response = await fetch('/api/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths }),
+        body: JSON.stringify({ paths, context: 'object_detail' }),
       });
 
       if (!response.ok) {

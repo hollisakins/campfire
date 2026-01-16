@@ -60,6 +60,7 @@ const TIME_RANGE_OPTIONS: FilterOption[] = [
 // Download type labels
 const DOWNLOAD_TYPE_LABELS: Record<string, string> = {
   fits_single: 'Single FITS',
+  fits_object: 'Object FITS',
   fits_batch: 'Batch FITS',
   fits_zip: 'ZIP Archive',
   csv: 'CSV Export',
@@ -71,6 +72,8 @@ function DownloadTypeIcon({ type }: { type: string }) {
   switch (type) {
     case 'fits_single':
       return <File className="w-4 h-4 text-blue-600 dark:text-blue-400" />;
+    case 'fits_object':
+      return <Download className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />;
     case 'fits_batch':
       return <Download className="w-4 h-4 text-green-600 dark:text-green-400" />;
     case 'fits_zip':
@@ -132,7 +135,18 @@ export default function AdminDownloadsPage() {
   };
 
   const formatTimestamp = (timestamp: string) => {
-    const date = new Date(timestamp.endsWith('Z') ? timestamp : `${timestamp}Z`);
+    // Handle Postgres timestamp format: "2026-01-16 21:59:56.727337+00"
+    // Convert to ISO format: "2026-01-16T21:59:56.727337+00:00"
+    let isoTimestamp = timestamp;
+    if (timestamp.includes(' ') && !timestamp.includes('T')) {
+      isoTimestamp = timestamp.replace(' ', 'T');
+    }
+    if (isoTimestamp.endsWith('+00')) {
+      isoTimestamp = isoTimestamp + ':00';
+    } else if (!isoTimestamp.endsWith('Z') && !isoTimestamp.includes('+')) {
+      isoTimestamp = isoTimestamp + 'Z';
+    }
+    const date = new Date(isoTimestamp);
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffMins = Math.floor(diffMs / 60000);

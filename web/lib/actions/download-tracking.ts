@@ -3,7 +3,7 @@
 import { createServiceClient } from '@/lib/supabase/server';
 import { headers } from 'next/headers';
 
-export type DownloadType = 'fits_single' | 'fits_batch' | 'fits_zip' | 'csv' | 'sed_plot';
+export type DownloadType = 'fits_single' | 'fits_object' | 'fits_batch' | 'fits_zip' | 'csv' | 'sed_plot';
 
 export interface TrackDownloadParams {
   userId: string;

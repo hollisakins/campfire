@@ -5,7 +5,7 @@
 CREATE TABLE download_log (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  download_type TEXT NOT NULL CHECK (download_type IN ('fits_single', 'fits_batch', 'fits_zip', 'csv', 'sed_plot')),
+  download_type TEXT NOT NULL CHECK (download_type IN ('fits_single', 'fits_object', 'fits_batch', 'fits_zip', 'csv', 'sed_plot')),
   object_count INTEGER,
   file_count INTEGER,
   object_ids TEXT[],            -- Array for "most downloaded" queries

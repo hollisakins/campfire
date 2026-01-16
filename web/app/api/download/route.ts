@@ -107,7 +107,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { paths } = body;
+    const { paths, context } = body; // context: 'object_detail' for single object downloads
 
     if (!paths || !Array.isArray(paths) || paths.length === 0) {
       return NextResponse.json(
@@ -169,9 +169,11 @@ export async function POST(request: NextRequest) {
     const objectIds = (await Promise.all(objectIdPromises))
       .filter((id): id is string => id !== null);
     const uniqueObjectIds = [...new Set(objectIds)];
+    // Use 'fits_object' for single object downloads from detail page
+    const downloadType = context === 'object_detail' ? 'fits_object' : 'fits_batch';
     trackDownload({
       userId: user.id,
-      downloadType: 'fits_batch',
+      downloadType,
       objectIds: uniqueObjectIds,
       objectCount: uniqueObjectIds.length,
       fileCount: paths.length,
