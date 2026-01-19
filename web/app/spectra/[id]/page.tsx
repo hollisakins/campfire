@@ -179,10 +179,34 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100 mb-2">
                 {spectrum.object_id}
               </h1>
-              <div className="text-sm text-text-secondary dark:text-slate-400 space-x-4 mb-3">
-                <span>Program: {spectrum.program_name || `ID ${spectrum.program_id}`}</span>
-                <span>-</span>
-                <span>Field: {spectrum.field}</span>
+              <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
+                <span>Program:</span>
+                <Link
+                  href={`/spectra?programs=${spectrum.program_id}`}
+                  className="inline-flex items-center hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors text-text-primary dark:text-slate-100"
+                >
+                  {spectrum.program_name || `ID ${spectrum.program_id}`}
+                </Link>
+                <span>·</span>
+                <span>Field:</span>
+                <Link
+                  href={`/spectra?fields=${spectrum.field}`}
+                  className="inline-flex items-center hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors text-text-primary dark:text-slate-100"
+                >
+                  {spectrum.field}
+                </Link>
+                {spectrum.observation && (
+                  <>
+                    <span>·</span>
+                    <span>Observation:</span>
+                    <Link
+                      href={`/spectra?observations=${spectrum.observation}`}
+                      className="inline-flex items-center hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors text-text-primary dark:text-slate-100"
+                    >
+                      {spectrum.observation}
+                    </Link>
+                  </>
+                )}
               </div>
               <CoordinateDisplay ra={spectrum.ra} dec={spectrum.dec} />
             </div>

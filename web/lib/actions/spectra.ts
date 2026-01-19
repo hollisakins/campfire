@@ -358,6 +358,7 @@ export async function getSpectrumById(objectId: string): Promise<{
       program_id: data.program_id,
       program_name: data.programs?.program_name || null,
       field: data.field,
+      observation: data.observation,
       ra: data.ra,
       dec: data.dec,
       redshift: data.redshift,

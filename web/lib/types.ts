@@ -150,6 +150,7 @@ export interface DbObject {
   object_id: string;
   program_id: number;
   field: string;
+  observation?: string | null;
   ra: number;
   dec: number;
   redshift: number | null;           // Computed: COALESCE(redshift_inspected, redshift_auto)
