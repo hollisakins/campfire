@@ -202,8 +202,13 @@ export async function GET(request: NextRequest) {
       : selectedSpectrum.thumbnail_svg_fnu;
 
     if (cachedSvg) {
-      // Return cached SVG directly (uses default blue color)
-      return new Response(cachedSvg, {
+      // Apply custom color if different from default (simple string replace)
+      const DEFAULT_COLOR = '#3b82f6';
+      const finalSvg = color !== DEFAULT_COLOR
+        ? cachedSvg.replace(new RegExp(DEFAULT_COLOR, 'g'), color)
+        : cachedSvg;
+
+      return new Response(finalSvg, {
         headers: {
           'Content-Type': 'image/svg+xml',
           'Cache-Control': 'public, max-age=86400', // 24 hour cache
