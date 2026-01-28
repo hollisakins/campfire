@@ -249,6 +249,31 @@ def filter_files_by_source_ids(files: list[Path], source_ids: list[str], obs_nam
     return filtered
 
 
+def extract_object_ids_from_sed_files(sed_files: list[Path], obs_name: str) -> set[str]:
+    """
+    Extract object_ids from SED plot filenames.
+
+    SED filename pattern: {obs_name}_{source_id}_sed.pdf
+    Returns set of object_ids (format: {obs_name}_{source_id})
+
+    Args:
+        sed_files: List of SED file paths
+        obs_name: Observation name
+
+    Returns:
+        Set of object_ids that have SED plots
+    """
+    object_ids = set()
+    for sed_path in sed_files:
+        # Pattern: {obs_name}_{source_id}_sed.pdf
+        filename = sed_path.name
+        if filename.endswith('_sed.pdf'):
+            # Remove _sed.pdf suffix to get object_id
+            object_id = filename.replace('_sed.pdf', '')
+            object_ids.add(object_id)
+    return object_ids
+
+
 def parse_fits_filename(filename: str) -> dict:
     """
     Parse a FITS filename to extract components.
@@ -472,7 +497,111 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
 
             # File reference
             'fits_filename': fits_path.name,
+
+            # Pre-generated SVG thumbnails for the spectrum (both flux units)
+            'thumbnail_svg_fnu': generate_spectrum_thumbnail_svg(
+                spec1d['wave'].tolist(),
+                spec1d['fnu'].tolist(),
+                flux_unit='fnu'
+            ),
+            'thumbnail_svg_flambda': generate_spectrum_thumbnail_svg(
+                spec1d['wave'].tolist(),
+                spec1d['fnu'].tolist(),
+                flux_unit='flambda'
+            ),
         }
+
+
+def convert_fnu_to_flambda(fnu_val: float, wavelength: float) -> float:
+    """
+    Convert f_nu to f_lambda: f_λ = f_ν * c / λ²
+    f_nu is in μJy (1 μJy = 10^-29 erg/s/cm²/Hz), wavelength in μm
+    f_λ (erg/s/cm²/Å) = f_ν (μJy) * 2.998e-19 / λ_μm²
+    """
+    return fnu_val * 2.998e-19 / (wavelength * wavelength)
+
+
+def generate_spectrum_thumbnail_svg(
+    wave: list,
+    fnu: list,
+    flux_unit: str = 'fnu',
+    color: str = '#3b82f6'
+) -> str:
+    """
+    Generate an SVG sparkline thumbnail from spectrum data.
+
+    Args:
+        wave: Wavelength array (in microns)
+        fnu: Flux array in f_nu units (may contain NaN/None values)
+        flux_unit: 'fnu' or 'flambda' - determines how flux is displayed
+        color: SVG stroke color (default: blue)
+
+    Returns:
+        SVG string for the thumbnail
+    """
+    SVG_WIDTH = 120
+    SVG_HEIGHT = 40
+    PADDING = 3
+
+    # Filter out invalid values and pair with wavelength
+    valid_pairs = []
+    for w, f in zip(wave, fnu):
+        if f is not None and not np.isnan(f) and np.isfinite(f):
+            # Convert to flambda if requested
+            flux_val = convert_fnu_to_flambda(float(f), float(w)) if flux_unit == 'flambda' else float(f)
+            valid_pairs.append((w, flux_val))
+
+    if len(valid_pairs) == 0:
+        # Return placeholder SVG with a simple horizontal line
+        return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}" width="{SVG_WIDTH}" height="{SVG_HEIGHT}">
+  <line x1="{PADDING}" y1="{SVG_HEIGHT // 2}" x2="{SVG_WIDTH - PADDING}" y2="{SVG_HEIGHT // 2}" stroke="{color}" stroke-opacity="0.3" stroke-width="1"/>
+</svg>'''
+
+    # Downsample to ~100 points if needed
+    target_points = 100
+    if len(valid_pairs) > target_points:
+        step = len(valid_pairs) // target_points
+        downsampled = [valid_pairs[i] for i in range(0, len(valid_pairs), step)]
+        # Ensure we include the last point
+        if downsampled[-1] != valid_pairs[-1]:
+            downsampled.append(valid_pairs[-1])
+        valid_pairs = downsampled
+
+    # Extract flux values for normalization
+    flux_values = [f for _, f in valid_pairs]
+    min_fnu = min(flux_values)
+    max_fnu = max(flux_values)
+    flux_range = max_fnu - min_fnu
+
+    # Avoid division by zero
+    if flux_range == 0:
+        # Flat line in the middle
+        y = SVG_HEIGHT // 2
+        return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}" width="{SVG_WIDTH}" height="{SVG_HEIGHT}">
+  <line x1="{PADDING}" y1="{y}" x2="{SVG_WIDTH - PADDING}" y2="{y}" stroke="{color}" stroke-width="1.5"/>
+</svg>'''
+
+    plot_width = SVG_WIDTH - 2 * PADDING
+    plot_height = SVG_HEIGHT - 2 * PADDING
+
+    # Generate path points
+    path_points = []
+    for i, (_, flux) in enumerate(valid_pairs):
+        x = PADDING + (i / (len(valid_pairs) - 1)) * plot_width
+        # Normalize and invert Y (SVG Y increases downward)
+        normalized_y = (flux - min_fnu) / flux_range
+        y = PADDING + (1 - normalized_y) * plot_height
+
+        if i == 0:
+            path_points.append(f'M {x:.1f} {y:.1f}')
+        else:
+            path_points.append(f'L {x:.1f} {y:.1f}')
+
+    path = ' '.join(path_points)
+
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}" width="{SVG_WIDTH}" height="{SVG_HEIGHT}">
+  <path d="{path}" fill="none" stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>'''
 
 
 def read_spectrum_data(fits_path: Path) -> dict:
@@ -756,6 +885,7 @@ def batch_upsert_objects(
     metadata_list: list[dict],
     obs_config: dict,
     force_overwrite: bool,
+    objects_with_sed: set[str] | None = None,
     batch_size: int = 500
 ) -> int:
     """
@@ -766,6 +896,7 @@ def batch_upsert_objects(
         metadata_list: List of metadata dicts from FITS files
         obs_config: Observation configuration
         force_overwrite: If True, reset inspection data
+        objects_with_sed: Set of object_ids that have SED plots (for has_sed_plot column)
         batch_size: Records per batch (default: 500)
 
     Returns:
@@ -782,6 +913,10 @@ def batch_upsert_objects(
     if not unique_metadata:
         return 0
 
+    # Default to empty set if not provided
+    if objects_with_sed is None:
+        objects_with_sed = set()
+
     # Get existing object IDs
     object_ids = [m['object_id'] for m in unique_metadata]
     existing = set(check_existing_objects(supabase, object_ids))
@@ -793,6 +928,7 @@ def batch_upsert_objects(
     for m in unique_metadata:
         object_id = m['object_id']
         is_existing = object_id in existing
+        has_sed = object_id in objects_with_sed
 
         if is_existing and not force_overwrite:
             # UPDATE existing object - only pipeline fields
@@ -803,6 +939,7 @@ def batch_upsert_objects(
                 'ra': m['ra'],
                 'dec': m['dec'],
                 'redshift_auto': m.get('redshift_auto'),
+                'has_sed_plot': has_sed,
             }
             update_records.append(data)
         elif is_existing and force_overwrite:
@@ -814,6 +951,7 @@ def batch_upsert_objects(
                 'ra': m['ra'],
                 'dec': m['dec'],
                 'redshift_auto': m.get('redshift_auto'),
+                'has_sed_plot': has_sed,
                 'redshift_inspected': None,
                 'redshift_quality': 0,
                 'spectral_features': 0,
@@ -832,6 +970,7 @@ def batch_upsert_objects(
                 'ra': m['ra'],
                 'dec': m['dec'],
                 'redshift_auto': m.get('redshift_auto'),
+                'has_sed_plot': has_sed,
                 'redshift_inspected': None,
                 'redshift_quality': 0,
                 'spectral_features': 0,
@@ -886,6 +1025,8 @@ def batch_upsert_spectra(
             'fits_path': fits_r2_key,
             'reduction_version': m['reduction_version'],
             'signal_to_noise': m['signal_to_noise'],
+            'thumbnail_svg_fnu': m.get('thumbnail_svg_fnu'),  # Pre-generated SVG thumbnail (f_nu)
+            'thumbnail_svg_flambda': m.get('thumbnail_svg_flambda'),  # Pre-generated SVG thumbnail (f_lambda)
         }
         spectrum_records.append(data)
 
@@ -1123,6 +1264,32 @@ def deploy_rgb_images(
     print(f"✓ Successfully uploaded {success}/{len(rgb_files)} RGB images to rgb/{obs_name}/")
 
 
+def update_has_sed_plot(supabase: 'Client', object_ids: set[str], batch_size: int = 500) -> int:
+    """
+    Update has_sed_plot = true for the given object IDs.
+
+    Args:
+        supabase: Supabase client
+        object_ids: Set of object_ids that have SED plots
+        batch_size: Records per batch (default: 500)
+
+    Returns:
+        Number of objects updated
+    """
+    if not object_ids:
+        return 0
+
+    object_id_list = list(object_ids)
+    updated = 0
+
+    for i in range(0, len(object_id_list), batch_size):
+        batch = object_id_list[i:i + batch_size]
+        supabase.table('objects').update({'has_sed_plot': True}).in_('object_id', batch).execute()
+        updated += len(batch)
+
+    return updated
+
+
 def deploy_sed_plots(
     obs_name: str,
     dry_run: bool,
@@ -1130,9 +1297,10 @@ def deploy_sed_plots(
     source_ids: list[str] | None = None
 ) -> None:
     """
-    Deploy SED plot PDFs for an observation to R2.
+    Deploy SED plot PDFs for an observation to R2 and update has_sed_plot in Supabase.
 
     PDFs are uploaded to: sed/{obs_name}/{object_id}_sed.pdf
+    Also updates the has_sed_plot column in the objects table.
 
     Args:
         source_ids: Optional list of source IDs to filter deployment to specific objects
@@ -1177,29 +1345,39 @@ def deploy_sed_plots(
             return
         print(f"Found {len(sed_files)} SED plot PDFs")
 
+    # Extract object IDs from SED files for database update
+    objects_with_sed = extract_object_ids_from_sed_files(sed_files, obs_name)
+    print(f"  {len(objects_with_sed)} unique object IDs")
     print()
 
     if dry_run:
         print("=== DRY RUN MODE ===")
         print("Would upload to R2:")
         for sed_path in sed_files[:5]:
-            # Extract object_id from filename (remove _sed.pdf suffix)
-            object_id = sed_path.stem.replace('_sed', '')
             r2_key = f"sed/{obs_name}/{sed_path.name}"
             print(f"  - {sed_path.name} → {r2_key}")
         if len(sed_files) > 5:
             print(f"  ... and {len(sed_files) - 5} more")
+        print()
+        print("Would update in Supabase:")
+        print(f"  - Set has_sed_plot=true for {len(objects_with_sed)} objects")
         return
 
     # Check dependencies
     if not HAS_BOTO3:
         print("Error: boto3 required. Install with: pip install boto3")
         sys.exit(1)
+    if not HAS_SUPABASE:
+        print("Error: supabase-py required. Install with: pip install supabase")
+        sys.exit(1)
 
-    # Initialize R2 client
+    # Initialize clients
     print("Connecting to R2...")
     r2_client = get_r2_client(config)
     bucket = config['r2']['bucket_name']
+
+    print("Connecting to Supabase...")
+    supabase = get_supabase_client(config)
 
     # Build upload tasks
     upload_tasks = [
@@ -1226,8 +1404,14 @@ def deploy_sed_plots(
         if len(failed_files) > 5:
             print(f"    ... and {len(failed_files) - 5} more")
 
+    # Update has_sed_plot in Supabase
     print()
-    print(f"✓ Successfully uploaded {success}/{len(sed_files)} SED plots to sed/{obs_name}/")
+    print("Updating has_sed_plot in Supabase...")
+    num_updated = update_has_sed_plot(supabase, objects_with_sed)
+    print(f"  ✓ Updated {num_updated} objects")
+
+    print()
+    print(f"✓ Successfully deployed {success}/{len(sed_files)} SED plots to sed/{obs_name}/")
 
 
 def deploy_spectrum_json(
@@ -1351,6 +1535,122 @@ def deploy_spectrum_json(
         import shutil
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
+
+
+def deploy_thumbnails(
+    obs_name: str,
+    dry_run: bool,
+    project_root: Path,
+    source_ids: list[str] | None = None
+) -> None:
+    """
+    Regenerate and update spectrum thumbnail SVGs in Supabase.
+
+    This reads FITS files to generate thumbnail SVGs (both fnu and flambda)
+    and updates the spectra table without re-uploading any files to R2.
+
+    Args:
+        source_ids: Optional list of source IDs to filter to specific objects
+    """
+    scripts_dir = project_root / 'scripts'
+    pipeline_dir = project_root / 'pipeline'
+    products_dir = pipeline_dir / 'products'
+
+    # Load configuration
+    print(f"Loading configuration...")
+    config = load_config(scripts_dir)
+    observations = load_observations(pipeline_dir)
+
+    # Validate observation exists
+    if obs_name not in observations:
+        print(f"Error: Observation '{obs_name}' not found in observations.toml")
+        print(f"Available observations: {list(observations.keys())}")
+        sys.exit(1)
+
+    obs_config = observations[obs_name]
+    print(f"Regenerating spectrum thumbnails for observation: {obs_name}")
+    print(f"  Field: {obs_config.get('field', 'unknown')}")
+    print()
+
+    # Discover FITS files
+    fits_files = discover_fits_files(products_dir, obs_name)
+
+    # Filter by source IDs if specified
+    if source_ids:
+        original_count = len(fits_files)
+        fits_files = filter_files_by_source_ids(fits_files, source_ids, obs_name)
+        print(f"Found {original_count} spectrum files, filtered to {len(fits_files)} matching source IDs: {', '.join(source_ids)}")
+
+        if not fits_files:
+            print(f"Error: No spectrum files found matching source IDs: {', '.join(source_ids)}")
+            print("Nothing to deploy.")
+            return
+    else:
+        print(f"Found {len(fits_files)} spectrum files")
+
+    print()
+
+    if dry_run:
+        print("=== DRY RUN MODE ===")
+        print("Would regenerate thumbnails and update Supabase for:")
+        for fits_path in fits_files[:5]:
+            print(f"  - {fits_path.name}")
+        if len(fits_files) > 5:
+            print(f"  ... and {len(fits_files) - 5} more")
+        return
+
+    # Check dependencies
+    if not HAS_SUPABASE:
+        print("Error: supabase-py required. Install with: pip install supabase")
+        sys.exit(1)
+
+    # Initialize Supabase client
+    print("Connecting to Supabase...")
+    supabase = get_supabase_client(config)
+
+    # Generate thumbnails and update database
+    print("Generating and updating thumbnails...")
+    updated = 0
+    errors = []
+
+    for fits_path in tqdm(fits_files, desc="Processing", unit="file"):
+        try:
+            # Read spectrum data from FITS
+            with fits.open(fits_path) as hdul:
+                spec1d = hdul['SPEC1D'].data
+                wave = spec1d['wave'].tolist()
+                fnu = spec1d['fnu'].tolist()
+
+            # Generate both thumbnail variants
+            svg_fnu = generate_spectrum_thumbnail_svg(wave, fnu, flux_unit='fnu')
+            svg_flambda = generate_spectrum_thumbnail_svg(wave, fnu, flux_unit='flambda')
+
+            # Parse filename to get object_id and grating
+            parsed = parse_fits_filename(fits_path.name)
+            object_id = f"{obs_name}_{parsed['source_id']}"
+            grating = parsed['grating']
+
+            # Update database
+            supabase.table('spectra').update({
+                'thumbnail_svg_fnu': svg_fnu,
+                'thumbnail_svg_flambda': svg_flambda,
+            }).eq('object_id', object_id).eq('grating', grating).execute()
+
+            updated += 1
+
+        except Exception as e:
+            errors.append(f"{fits_path.name}: {e}")
+
+    # Report results
+    if errors:
+        print(f"\n⚠️  {len(errors)} errors occurred:")
+        for msg in errors[:5]:
+            print(f"    - {msg}")
+        if len(errors) > 5:
+            print(f"    ... and {len(errors) - 5} more")
+
+    print()
+    print(f"✓ Successfully updated thumbnails for {updated}/{len(fits_files)} spectra")
 
 
 # === Main Deployment Logic ===
@@ -1726,8 +2026,13 @@ def deploy_observation(
             print()
 
         # === PHASE 3: Batch Supabase upserts ===
+        # Build set of object_ids that have SED plots
+        objects_with_sed = extract_object_ids_from_sed_files(sed_files, obs_name) if sed_files else set()
+        if objects_with_sed:
+            print(f"  {len(objects_with_sed)} objects have SED plots")
+
         print("Upserting objects to Supabase...")
-        num_objects = batch_upsert_objects(supabase, all_metadata, obs_config, force_overwrite)
+        num_objects = batch_upsert_objects(supabase, all_metadata, obs_config, force_overwrite, objects_with_sed)
         print(f"  ✓ Upserted {num_objects} objects")
 
         print("Upserting spectra to Supabase...")
@@ -1785,8 +2090,11 @@ Examples:
     # Deploy RGB images for specific source IDs
     python scripts/deploy.py --obs ember_uds_p4 --rgb-only --source-ids 12345
 
-    # Deploy only SED plots (skip FITS/JSON and Supabase)
+    # Deploy only SED plots and update has_sed_plot in Supabase
     python scripts/deploy.py --obs ember_uds_p4 --sed-only
+
+    # Regenerate spectrum thumbnail SVGs only (no R2 uploads)
+    python scripts/deploy.py --obs ember_uds_p4 --thumbnail-only
 
     # Deploy spectra only (no RGB images)
     python scripts/deploy.py --obs cosmos_ddt --no-rgb
@@ -1847,12 +2155,17 @@ Examples:
     parser.add_argument(
         '--sed-only',
         action='store_true',
-        help='Only deploy SED plot PDFs (skip FITS files and Supabase updates)'
+        help='Only deploy SED plot PDFs and update has_sed_plot in Supabase'
     )
     parser.add_argument(
         '--no-sed',
         action='store_true',
         help='Skip SED plot deployment (only deploy spectra and optionally RGB)'
+    )
+    parser.add_argument(
+        '--thumbnail-only',
+        action='store_true',
+        help='Only regenerate spectrum thumbnail SVGs in Supabase (no R2 uploads)'
     )
     parser.add_argument(
         '--auto-approve',
@@ -1873,8 +2186,8 @@ Examples:
 
     # Validate flag combinations
     if args.rgb_only:
-        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.json_only or args.sed_only or args.no_sed:
-            print("Error: --rgb-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, --json-only, --sed-only, or --no-sed")
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.json_only or args.sed_only or args.no_sed or args.thumbnail_only:
+            print("Error: --rgb-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, --json-only, --sed-only, --no-sed, or --thumbnail-only")
             sys.exit(1)
 
         deploy_rgb_images(
@@ -1884,8 +2197,8 @@ Examples:
             source_ids=args.source_ids
         )
     elif args.sed_only:
-        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.json_only or args.rgb_only or args.no_sed:
-            print("Error: --sed-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, --json-only, --rgb-only, or --no-sed")
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.zfit_only or args.json_only or args.rgb_only or args.no_sed or args.thumbnail_only:
+            print("Error: --sed-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --zfit-only, --json-only, --rgb-only, --no-sed, or --thumbnail-only")
             sys.exit(1)
 
         deploy_sed_plots(
@@ -1895,8 +2208,8 @@ Examples:
             source_ids=args.source_ids
         )
     elif args.zfit_only:
-        if args.supabase_only or args.no_rgb or args.rgb_only or args.json_only or args.sed_only or args.no_sed:
-            print("Error: --zfit-only cannot be combined with --supabase-only, --no-rgb, --rgb-only, --json-only, --sed-only, or --no-sed")
+        if args.supabase_only or args.no_rgb or args.rgb_only or args.json_only or args.sed_only or args.no_sed or args.thumbnail_only:
+            print("Error: --zfit-only cannot be combined with --supabase-only, --no-rgb, --rgb-only, --json-only, --sed-only, --no-sed, or --thumbnail-only")
             sys.exit(1)
 
         # Zfit-only deployment
@@ -1913,11 +2226,22 @@ Examples:
             auto_approve=args.auto_approve
         )
     elif args.json_only:
-        if args.supabase_only or args.force_overwrite or args.no_rgb or args.rgb_only or args.zfit_only or args.sed_only or args.no_sed:
-            print("Error: --json-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --rgb-only, --zfit-only, --sed-only, or --no-sed")
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.rgb_only or args.zfit_only or args.sed_only or args.no_sed or args.thumbnail_only:
+            print("Error: --json-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --rgb-only, --zfit-only, --sed-only, --no-sed, or --thumbnail-only")
             sys.exit(1)
 
         deploy_spectrum_json(
+            obs_name=args.obs,
+            dry_run=args.dry_run,
+            project_root=project_root,
+            source_ids=args.source_ids
+        )
+    elif args.thumbnail_only:
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.rgb_only or args.zfit_only or args.sed_only or args.no_sed or args.json_only:
+            print("Error: --thumbnail-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --rgb-only, --zfit-only, --sed-only, --no-sed, or --json-only")
+            sys.exit(1)
+
+        deploy_thumbnails(
             obs_name=args.obs,
             dry_run=args.dry_run,
             project_root=project_root,

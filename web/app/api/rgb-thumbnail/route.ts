@@ -61,9 +61,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Redirect to the signed URL
-    // Use 302 (temporary) so browsers don't cache the redirect permanently
-    return Response.redirect(signedUrl, 302);
+    // Redirect to the signed URL with cache headers
+    // Use 302 (temporary) redirect with 30-minute cache (half of 1hr URL expiry)
+    // This reduces repeat API calls within the same session
+    return new Response(null, {
+      status: 302,
+      headers: {
+        'Location': signedUrl,
+        'Cache-Control': 'private, max-age=1800', // 30 min cache
+      },
+    });
   } catch (error) {
     console.error('Error generating RGB thumbnail URL:', error);
     return new Response(

@@ -1,7 +1,7 @@
 // Cloudflare R2 client setup
 // This is a placeholder for future integration with R2 storage
 
-import { S3Client, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 // Placeholder credentials (will be replaced with environment variables)
@@ -116,32 +116,3 @@ export function generateSEDPlotPath(objectId: string): string {
   return `sed/${observation}/${objectId}_sed.pdf`;
 }
 
-/**
- * Check if a file exists in R2
- * @param filePath - Path to the file in R2
- * @returns Promise<boolean> - true if file exists, false otherwise
- */
-export async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    const command = new HeadObjectCommand({
-      Bucket: R2_BUCKET_NAME,
-      Key: filePath,
-    });
-
-    await r2Client.send(command);
-    return true;
-  } catch (error) {
-    // HeadObject throws an error if file doesn't exist
-    return false;
-  }
-}
-
-/**
- * Check if a SED plot exists for an object
- * @param objectId - Full object ID
- * @returns Promise<boolean> - true if SED plot exists, false otherwise
- */
-export async function sedPlotExists(objectId: string): Promise<boolean> {
-  const sedPath = generateSEDPlotPath(objectId);
-  return fileExists(sedPath);
-}

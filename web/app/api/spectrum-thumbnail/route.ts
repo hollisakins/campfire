@@ -169,10 +169,10 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Get available spectra for this object
+    // Get available spectra for this object, including cached thumbnails
     const { data: spectra, error: spectraError } = await supabase
       .from('spectra')
-      .select('grating, fits_path')
+      .select('grating, fits_path, thumbnail_svg_fnu, thumbnail_svg_flambda')
       .eq('object_id', objectId);
 
     if (spectraError || !spectra || spectra.length === 0) {
@@ -196,6 +196,22 @@ export async function GET(request: NextRequest) {
       selectedSpectrum = spectra[0];
     }
 
+    // Check for cached thumbnail based on requested flux unit
+    const cachedSvg = fluxUnit === 'flambda'
+      ? selectedSpectrum.thumbnail_svg_flambda
+      : selectedSpectrum.thumbnail_svg_fnu;
+
+    if (cachedSvg) {
+      // Return cached SVG directly (uses default blue color)
+      return new Response(cachedSvg, {
+        headers: {
+          'Content-Type': 'image/svg+xml',
+          'Cache-Control': 'public, max-age=86400', // 24 hour cache
+        },
+      });
+    }
+
+    // Fallback to R2 fetch for missing thumbnails (backward compatibility)
     // Get JSON path from FITS path
     const jsonPath = selectedSpectrum.fits_path.replace('.fits', '.json');
 
