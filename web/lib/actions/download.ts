@@ -43,10 +43,13 @@ export async function generateCSV(
         programs: filters.programs,
         fields: filters.fields,
         gratings: filters.gratings,
+        observations: filters.observations,
         redshift_quality: filters.redshift_quality,
         coordinate_search: filters.coordinate_search,
         redshift_min: filters.redshift_min,
         redshift_max: filters.redshift_max,
+        max_snr_min: filters.max_snr_min,
+        max_snr_max: filters.max_snr_max,
         spectral_features: filters.spectral_features,
         object_flags: filters.object_flags,
         dq_flags: filters.dq_flags,
@@ -54,7 +57,7 @@ export async function generateCSV(
         search: filters.search,
       },
       1, // page
-      10000, // pageSize - high limit to get all results
+      50000, // pageSize - limit for CSV export
       sortColumn,
       sortDirection
     );
@@ -199,10 +202,13 @@ export async function generateFitsDownloadUrl(
         programs: filters.programs,
         fields: filters.fields,
         gratings: filters.gratings,
+        observations: filters.observations,
         redshift_quality: filters.redshift_quality,
         coordinate_search: filters.coordinate_search,
         redshift_min: filters.redshift_min,
         redshift_max: filters.redshift_max,
+        max_snr_min: filters.max_snr_min,
+        max_snr_max: filters.max_snr_max,
         spectral_features: filters.spectral_features,
         object_flags: filters.object_flags,
         dq_flags: filters.dq_flags,

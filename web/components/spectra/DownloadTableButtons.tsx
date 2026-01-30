@@ -27,7 +27,9 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
   const [fitsLoading, setFitsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const CSV_LIMIT = 50000;
   const FITS_LIMIT = 200;
+  const csvWillTruncate = totalCount > CSV_LIMIT;
   const fitsDisabled = totalCount > FITS_LIMIT || loading;
 
   const handleCsvDownload = async () => {
@@ -127,7 +129,13 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
               onClick={handleCsvDownload}
               disabled={csvLoading || loading}
               className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
-              title={loading ? 'Please wait while objects are loading' : 'Download CSV table'}
+              title={
+                loading
+                  ? 'Please wait while objects are loading'
+                  : csvWillTruncate
+                    ? `CSV will be limited to ${CSV_LIMIT.toLocaleString()} objects`
+                    : 'Download CSV table'
+              }
             >
               {csvLoading ? (
                 <>
@@ -170,12 +178,32 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
           </div>
 
           {/* Warning/Info Messages */}
-          {fitsDisabled && (
+          {csvWillTruncate && (
+            <div className="mt-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-2">
+              <span className="flex-shrink-0 mt-0.5">⚠️</span>
+              <span>
+                CSV download is limited to {CSV_LIMIT.toLocaleString()} objects. Your current filters return{' '}
+                {totalCount.toLocaleString()} objects. The exported CSV will contain the first{' '}
+                {CSV_LIMIT.toLocaleString()} results based on your sort order.
+              </span>
+            </div>
+          )}
+
+          {fitsDisabled && !csvWillTruncate && (
             <div className="mt-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-2">
               <span className="flex-shrink-0 mt-0.5">⚠️</span>
               <span>
                 FITS download is limited to {FITS_LIMIT} objects. Your current filters return{' '}
                 {totalCount.toLocaleString()} objects. Please refine your filters to download spectroscopic data.
+              </span>
+            </div>
+          )}
+
+          {fitsDisabled && csvWillTruncate && (
+            <div className="mt-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-2">
+              <span className="flex-shrink-0 mt-0.5">⚠️</span>
+              <span>
+                FITS download is limited to {FITS_LIMIT} objects. Please refine your filters to download spectroscopic data.
               </span>
             </div>
           )}
