@@ -1,21 +1,16 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Search, ChevronDown } from 'lucide-react';
+import { X, Search, ChevronDown, SlidersHorizontal } from 'lucide-react';
 import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
-import { FilterChipWithMode, type FilterMode } from '@/components/ui/FilterChipWithMode';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
-import { CoordinateSearchChip, CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
-import {
-  REDSHIFT_QUALITY,
-  SPECTRAL_FEATURES,
-  OBJECT_FLAGS,
-  DQ_FLAGS,
-} from '@/lib/flags';
+import { AdvancedFiltersPanel } from './AdvancedFiltersPanel';
+import { REDSHIFT_QUALITY } from '@/lib/flags';
 import type { Program } from '@/lib/types';
+import type { CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
 
-// Re-export FilterMode for use by other modules
-export type { FilterMode } from '@/components/ui/FilterChipWithMode';
+// FilterMode type for filter modes
+export type FilterMode = 'any' | 'all' | 'none';
 
 // Search scope type for the search bar
 export type SearchScope = 'object_id' | 'my_comments' | 'all_comments';
@@ -88,8 +83,6 @@ interface SpectraFilterBarProps {
   isSearchDebouncing?: boolean;
 }
 
-const GRATINGS = ['PRISM', 'G140M', 'G235M', 'G395M'];
-
 const INSPECTION_OPTIONS: FilterOption[] = [
   { value: 'inspected', label: 'Inspected only' },
   { value: 'not_inspected', label: 'Not inspected only' },
@@ -102,13 +95,14 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   availableFields,
   availableObservations,
   className = '',
-  isSearchDebouncing = false,
 }) => {
   // Local state for search input to keep it responsive during typing
   const [localSearch, setLocalSearch] = useState(filters.search);
   // Local state for scope dropdown
   const [scopeDropdownOpen, setScopeDropdownOpen] = useState(false);
   const scopeDropdownRef = useRef<HTMLDivElement>(null);
+  // Panel state
+  const [panelOpen, setPanelOpen] = useState(false);
 
   // Track the last value WE sent to the parent to distinguish our echoes from external changes
   const lastSentValueRef = useRef(filters.search);
@@ -178,12 +172,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     label: f,
   }));
 
-  // Convert gratings to filter options
-  const gratingOptions: FilterOption[] = GRATINGS.map((g) => ({
-    value: g,
-    label: g,
-  }));
-
   // Convert observations to filter options
   const observationOptions: FilterOption[] = availableObservations.map((o) => ({
     value: o,
@@ -198,49 +186,49 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     color: q.color,
   }));
 
-  // Convert spectral features
-  const spectralFeatureOptions: FilterOption[] = SPECTRAL_FEATURES.map((f) => ({
-    value: f.value,
-    label: f.label,
-    icon: f.icon,
-    color: f.color,
-  }));
+  // Count panel-only active filters
+  const panelFilterCount =
+    (filters.coordinate_search !== null ? 1 : 0) +
+    (filters.gratings?.length ?? 0) +
+    (filters.max_snr_min !== null ? 1 : 0) +
+    (filters.max_snr_max !== null ? 1 : 0) +
+    (filters.spectral_features?.length ?? 0) +
+    (filters.object_flags?.length ?? 0) +
+    (filters.dq_flags?.length ?? 0);
 
-  // Convert object flags
-  const objectFlagOptions: FilterOption[] = OBJECT_FLAGS.map((f) => ({
-    value: f.value,
-    label: f.label,
-    icon: f.icon,
-    color: f.color,
-  }));
-
-  // Convert DQ flags
-  const dqFlagOptions: FilterOption[] = DQ_FLAGS.map((f) => ({
-    value: f.value,
-    label: f.label,
-    icon: f.icon,
-    color: f.color,
-  }));
-
-  // Check if any filters are active
+  // Check if any filters are active (including panel filters)
   const hasActiveFilters =
     filters.programs.length > 0 ||
     filters.fields.length > 0 ||
-    filters.gratings.length > 0 ||
     filters.observations.length > 0 ||
     filters.redshift_quality.length > 0 ||
     filters.redshift_min !== null ||
     filters.redshift_max !== null ||
-    filters.max_snr_min !== null ||
-    filters.max_snr_max !== null ||
-    filters.spectral_features.length > 0 ||
-    filters.object_flags.length > 0 ||
-    filters.dq_flags.length > 0 ||
     filters.inspected_only !== null ||
-    filters.search.length > 0;
+    filters.search.length > 0 ||
+    panelFilterCount > 0;
 
   const handleClearAll = () => {
+    setLocalSearch('');
     onFiltersChange(DEFAULT_FILTERS);
+  };
+
+  const clearPanelFilters = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onFiltersChange({
+      ...filters,
+      coordinate_search: null,
+      gratings: [],
+      gratings_mode: 'any',
+      max_snr_min: null,
+      max_snr_max: null,
+      spectral_features: [],
+      spectral_features_mode: 'any',
+      object_flags: [],
+      object_flags_mode: 'any',
+      dq_flags: [],
+      dq_flags_mode: 'any',
+    });
   };
 
   // Handle inspection filter (single select with special values)
@@ -315,12 +303,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
 
       {/* Filter chips */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* Coordinate search filter */}
-        <CoordinateSearchChip
-          value={filters.coordinate_search}
-          onChange={(value) => updateFilter('coordinate_search', value)}
-        />
-
         {/* Program filter */}
         <FilterChip
           label="Program"
@@ -335,17 +317,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           options={fieldOptions}
           selected={filters.fields}
           onChange={(selected) => updateFilter('fields', selected as string[])}
-        />
-
-        {/* Grating filter - with mode toggle (objects can have multiple gratings) */}
-        <FilterChipWithMode
-          label="Grating"
-          options={gratingOptions}
-          selected={filters.gratings}
-          onChange={(selected) => updateFilter('gratings', selected as string[])}
-          mode={filters.gratings_mode}
-          onModeChange={(mode) => updateFilter('gratings_mode', mode)}
-          showModeToggle={true}
         />
 
         {/* Observation filter */}
@@ -373,27 +344,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           precision={2}
         />
 
-        {/* Max S/N range filter */}
-        <RangeFilterChip
-          label="Max S/N"
-          min={filters.max_snr_min}
-          max={filters.max_snr_max}
-          onChange={(min, max) => {
-            onFiltersChange({ ...filters, max_snr_min: min, max_snr_max: max });
-          }}
-          minBound={0}
-          maxBound={100}
-          step={0.1}
-          precision={1}
-          quickRanges={[
-            { label: '>3', min: 3, max: null },
-            { label: '>5', min: 5, max: null },
-            { label: '>10', min: 10, max: null },
-            { label: '>25', min: 25, max: null },
-            { label: '>50', min: 50, max: null },
-          ]}
-        />
-
         {/* Quality filter */}
         <FilterChip
           label="Quality"
@@ -414,38 +364,34 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         {/* Divider */}
         <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
 
-        {/* Spectral features filter - with mode toggle (bitmask) */}
-        <FilterChipWithMode
-          label="Features"
-          options={spectralFeatureOptions}
-          selected={filters.spectral_features}
-          onChange={(selected) => updateFilter('spectral_features', selected as number[])}
-          mode={filters.spectral_features_mode}
-          onModeChange={(mode) => updateFilter('spectral_features_mode', mode)}
-          showModeToggle={true}
-        />
-
-        {/* Object flags filter - with mode toggle (bitmask) */}
-        <FilterChipWithMode
-          label="Object Type"
-          options={objectFlagOptions}
-          selected={filters.object_flags}
-          onChange={(selected) => updateFilter('object_flags', selected as number[])}
-          mode={filters.object_flags_mode}
-          onModeChange={(mode) => updateFilter('object_flags_mode', mode)}
-          showModeToggle={true}
-        />
-
-        {/* DQ flags filter - with mode toggle (bitmask) */}
-        <FilterChipWithMode
-          label="Data Quality"
-          options={dqFlagOptions}
-          selected={filters.dq_flags}
-          onChange={(selected) => updateFilter('dq_flags', selected as number[])}
-          mode={filters.dq_flags_mode}
-          onModeChange={(mode) => updateFilter('dq_flags_mode', mode)}
-          showModeToggle={true}
-        />
+        {/* Advanced Filters button */}
+        <button
+          onClick={() => setPanelOpen(true)}
+          className={`
+            inline-flex items-center gap-1.5 px-3 h-8 rounded-full text-sm font-medium
+            border transition-all duration-200
+            ${panelFilterCount > 0
+              ? 'bg-primary/10 border-primary text-primary'
+              : 'bg-card dark:bg-slate-800 border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200'
+            }
+          `}
+        >
+          <SlidersHorizontal className="w-4 h-4" />
+          <span>Advanced</span>
+          {panelFilterCount > 0 && (
+            <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-primary text-white">
+              {panelFilterCount}
+            </span>
+          )}
+          {panelFilterCount > 0 ? (
+            <X
+              className="w-3.5 h-3.5 hover:text-primary-hover cursor-pointer"
+              onClick={clearPanelFilters}
+            />
+          ) : (
+            <ChevronDown className="w-3.5 h-3.5" />
+          )}
+        </button>
 
         {/* Clear all button */}
         {hasActiveFilters && (
@@ -461,6 +407,14 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           </>
         )}
       </div>
+
+      {/* Advanced Filters Panel */}
+      <AdvancedFiltersPanel
+        isOpen={panelOpen}
+        onClose={() => setPanelOpen(false)}
+        filters={filters}
+        onFiltersChange={onFiltersChange}
+      />
     </div>
   );
 };
