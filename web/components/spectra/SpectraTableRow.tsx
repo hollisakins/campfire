@@ -6,11 +6,12 @@ import type { SpectrumObject } from '@/lib/types';
 
 interface SpectraTableRowProps {
   row: Row<SpectrumObject>;
+  visibleColumnIds: string; // Comma-separated list of visible column IDs for memo comparison
 }
 
 /**
  * Memoized table row component to prevent unnecessary re-renders.
- * Only re-renders when the underlying data (object_id) changes.
+ * Re-renders when the underlying data or visible columns change.
  */
 const SpectraTableRowComponent: React.FC<SpectraTableRowProps> = ({ row }) => {
   return (
@@ -28,10 +29,12 @@ const SpectraTableRowComponent: React.FC<SpectraTableRowProps> = ({ row }) => {
   );
 };
 
-// Custom comparison function: only re-render if the row's data ID changes
-// This prevents re-renders during sorting/pagination state changes
+// Custom comparison function: re-render if row data or visible columns change
 export const SpectraTableRow = memo(SpectraTableRowComponent, (prevProps, nextProps) => {
-  return prevProps.row.original.id === nextProps.row.original.id;
+  return (
+    prevProps.row.original.id === nextProps.row.original.id &&
+    prevProps.visibleColumnIds === nextProps.visibleColumnIds
+  );
 });
 
 SpectraTableRow.displayName = 'SpectraTableRow';

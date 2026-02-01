@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown, X } from 'lucide-react';
+import { ChevronDown, X, Check } from 'lucide-react';
 
 export interface FilterOption {
   value: string | number;
@@ -73,6 +73,11 @@ function darkenColor(hex: string, percent: number): string {
   return '#' + ((rHex << 16) | (gHex << 8) | bHex).toString(16).padStart(6, '0');
 }
 
+interface ShortcutButton {
+  label: string;
+  values: (string | number)[];
+}
+
 interface FilterChipProps {
   label: string;
   options: FilterOption[];
@@ -81,6 +86,7 @@ interface FilterChipProps {
   multiSelect?: boolean;
   className?: string;
   disabled?: boolean;
+  shortcut?: ShortcutButton;
 }
 
 export const FilterChip: React.FC<FilterChipProps> = ({
@@ -91,6 +97,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   multiSelect = true,
   className = '',
   disabled = false,
+  shortcut,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -158,58 +165,67 @@ export const FilterChip: React.FC<FilterChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && !disabled && (
-        <div className="absolute z-50 mt-1 min-w-[240px] max-w-[320px] max-h-[400px] overflow-y-auto bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
-          {/* Chips container */}
-          <div className="p-3 flex flex-wrap gap-2">
+        <div className="absolute z-50 mt-1 min-w-[200px] max-w-[280px] max-h-[400px] overflow-y-auto bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
+          {/* Checkbox list */}
+          <div className="p-1">
             {options.map((option) => {
               const isSelected = selected.includes(option.value);
               return (
                 <button
                   key={option.value}
                   onClick={() => handleToggle(option.value)}
-                  className={`
-                    inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm
-                    border transition-all duration-150
-                    ${isSelected
-                      ? 'border-transparent text-gray-900 dark:text-slate-100'
-                      : 'border-border dark:border-slate-700 bg-card/50 dark:bg-slate-800/50 text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200'
-                    }
-                  `}
-                  style={
-                    isSelected && option.color
-                      ? {
-                          backgroundColor: `${option.color}60`,
-                          borderColor: darkenColor(option.color, 30),
-                        }
-                      : isSelected
-                        ? {
-                            backgroundColor: 'rgb(192 38 211 / 0.4)',
-                            borderColor: darkenColor('#c026d3', 30),
-                          }
-                        : undefined
-                  }
+                  className="w-full flex items-center gap-3 px-3 py-2 text-sm text-left hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors"
                 >
+                  {/* Checkbox */}
+                  <div
+                    className={`
+                      w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all duration-200
+                      ${isSelected ? 'bg-primary border-primary scale-110' : 'border-border dark:border-slate-600'}
+                    `}
+                    style={
+                      isSelected && option.color
+                        ? { backgroundColor: option.color, borderColor: darkenColor(option.color, 30) }
+                        : undefined
+                    }
+                  >
+                    {isSelected && <Check className="w-3 h-3 text-white" />}
+                  </div>
+
                   {/* Icon */}
-                  {option.icon && (
-                    <span className="text-sm">{option.icon}</span>
-                  )}
+                  {option.icon && <span className="text-sm">{option.icon}</span>}
 
                   {/* Label */}
-                  <span>{option.label}</span>
+                  <span className={isSelected ? 'text-text-primary dark:text-slate-100' : 'text-text-secondary dark:text-slate-400'}>
+                    {option.label}
+                  </span>
                 </button>
               );
             })}
           </div>
 
+          {/* Shortcut button */}
+          {shortcut && (
+            <div className="border-t border-border dark:border-slate-700 p-2">
+              <button
+                onClick={() => {
+                  onChange(shortcut.values);
+                }}
+                className="w-full px-3 py-1.5 text-sm text-primary hover:text-primary-hover hover:bg-primary/10 rounded-md text-left transition-colors font-medium"
+              >
+                {shortcut.label}
+              </button>
+            </div>
+          )}
+
           {/* Clear all button */}
           {multiSelect && selected.length > 0 && (
-            <div className="border-t border-border dark:border-slate-700 p-2">
+            <div className={`${shortcut ? 'px-2 pb-2' : 'border-t border-border dark:border-slate-700 p-2'}`}>
               <button
                 onClick={() => {
                   onChange([]);
                   setIsOpen(false);
                 }}
-                className="w-full px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card dark:hover:bg-slate-700 rounded-md text-left"
+                className="w-full px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card dark:hover:bg-slate-700 rounded-md text-left transition-colors"
               >
                 Clear all
               </button>

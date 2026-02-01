@@ -91,7 +91,7 @@ export const ColumnVisibilityDropdown: React.FC<ColumnVisibilityDropdownProps> =
       {isOpen && (
         <div className="absolute right-0 z-50 mt-2 w-64 max-h-[400px] overflow-y-auto bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
           {/* Header with quick actions */}
-          <div className="sticky top-0 bg-background dark:bg-slate-800 border-b border-border dark:border-slate-700 p-2 flex gap-2">
+          <div className="sticky top-0 z-10 bg-background dark:bg-slate-800 border-b border-border dark:border-slate-700 p-2 flex gap-2">
             <button
               onClick={showAll}
               className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-xs rounded bg-slate-100 dark:bg-slate-700 text-text-secondary dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"

@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useEffect } from 'react';
-import { X, Info } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { X, Info, Check } from 'lucide-react';
 import { InlineMultiFilter } from '@/components/ui/InlineMultiFilter';
 import { InlineRange } from '@/components/ui/InlineRange';
-import { CoordinateSearchChip } from '@/components/ui/CoordinateSearchChip';
+import { parseCoordinates, convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import {
   SPECTRAL_FEATURES,
   OBJECT_FLAGS,
@@ -34,6 +34,94 @@ export function AdvancedFiltersPanel({
   filters,
   onFiltersChange,
 }: AdvancedFiltersPanelProps) {
+  // Local state for coordinate search form
+  const [coordInput, setCoordInput] = useState('');
+  const [radiusInput, setRadiusInput] = useState('1');
+  const [unitInput, setUnitInput] = useState<'degrees' | 'arcmin' | 'arcsec'>('arcmin');
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  // Sync local state with filter value
+  useEffect(() => {
+    if (filters.coordinate_search) {
+      setCoordInput(`${filters.coordinate_search.ra.toFixed(6)} ${filters.coordinate_search.dec.toFixed(6)}`);
+      setRadiusInput(filters.coordinate_search.radius.toString());
+      setUnitInput(filters.coordinate_search.radius_unit);
+    } else {
+      setCoordInput('');
+      setRadiusInput('1');
+      setUnitInput('arcmin');
+    }
+  }, [filters.coordinate_search]);
+
+  // Validate coordinates on input change
+  useEffect(() => {
+    if (coordInput.trim() === '') {
+      setValidationError(null);
+      return;
+    }
+    const parsed = parseCoordinates(coordInput);
+    if (parsed === null) {
+      setValidationError('Invalid format. Use: "150.5 -2.3" or "10h02m30s -02d18m00s"');
+    } else {
+      setValidationError(null);
+    }
+  }, [coordInput]);
+
+  // Apply coordinate search
+  const handleApplyCoordSearch = () => {
+    if (coordInput.trim() === '') {
+      onFiltersChange({ ...filters, coordinate_search: null });
+      return;
+    }
+
+    const parsed = parseCoordinates(coordInput);
+    if (parsed === null) {
+      setValidationError('Invalid coordinate format');
+      return;
+    }
+
+    const radius = parseFloat(radiusInput);
+    if (isNaN(radius) || radius <= 0) {
+      setValidationError('Radius must be a positive number');
+      return;
+    }
+
+    // Validate max radius (1 degree)
+    const radiusDegrees = convertRadiusToDegrees(radius, unitInput);
+    if (radiusDegrees > 1) {
+      setValidationError('Maximum search radius is 1 degree');
+      return;
+    }
+
+    onFiltersChange({
+      ...filters,
+      coordinate_search: {
+        ra: parsed.ra,
+        dec: parsed.dec,
+        radius,
+        radius_unit: unitInput,
+      },
+    });
+  };
+
+  // Clear coordinate search
+  const handleClearCoordSearch = () => {
+    setCoordInput('');
+    setRadiusInput('1');
+    setUnitInput('arcmin');
+    setValidationError(null);
+    onFiltersChange({ ...filters, coordinate_search: null });
+  };
+
+  // Handle Enter key in inputs
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleApplyCoordSearch();
+    }
+  };
+
+  const isCoordSearchActive = filters.coordinate_search !== null;
+
   // Close panel on escape key
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -154,15 +242,86 @@ export function AdvancedFiltersPanel({
 
         {/* Panel Content */}
         <div className="flex-1 overflow-y-auto">
-          {/* Position Search Section */}
+          {/* Position Search Section - Inline Form */}
           <div className="p-4 border-b border-border dark:border-slate-700">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 mb-3">
-              Position Search
-            </h3>
-            <CoordinateSearchChip
-              value={filters.coordinate_search}
-              onChange={(value) => onFiltersChange({ ...filters, coordinate_search: value })}
-            />
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500">
+                Position Search
+              </h3>
+              {isCoordSearchActive && (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Active</span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              {/* Coordinate input */}
+              <div>
+                <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">
+                  Coordinates (RA Dec)
+                </label>
+                <input
+                  type="text"
+                  value={coordInput}
+                  onChange={(e) => setCoordInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="150.5 -2.3  or  10h02m30s -02d18m00s"
+                  className={`w-full px-3 py-2 text-sm border rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
+                    ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border dark:border-slate-600'}
+                  `}
+                />
+                {validationError && (
+                  <p className="text-xs text-red-500 dark:text-red-400 mt-1">{validationError}</p>
+                )}
+              </div>
+
+              {/* Radius input with units */}
+              <div>
+                <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">
+                  Search radius (max 1 degree)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    value={radiusInput}
+                    onChange={(e) => setRadiusInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="1"
+                    min="0"
+                    step="0.1"
+                    className="w-24 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  />
+                  <select
+                    value={unitInput}
+                    onChange={(e) => setUnitInput(e.target.value as 'degrees' | 'arcmin' | 'arcsec')}
+                    className="flex-1 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  >
+                    <option value="arcsec">arcseconds</option>
+                    <option value="arcmin">arcminutes</option>
+                    <option value="degrees">degrees</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={handleClearCoordSearch}
+                  className="flex-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 border border-border dark:border-slate-600 rounded-md hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
+                >
+                  Clear
+                </button>
+                <button
+                  onClick={handleApplyCoordSearch}
+                  disabled={validationError !== null && coordInput.trim() !== ''}
+                  className="flex-1 px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* Gratings Section */}

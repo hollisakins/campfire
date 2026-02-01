@@ -27,6 +27,8 @@ import {
   useColumnVisibility,
   type ColumnDefinition,
 } from '@/components/ui/ColumnVisibilityDropdown';
+import { DownloadDropdown } from './DownloadTableButtons';
+import type { AdvancedFilterOptions } from './SpectraFilterBar';
 
 // Column visibility configuration
 const SPECTRA_COLUMNS: ColumnDefinition[] = [
@@ -77,6 +79,8 @@ interface SpectraTableProps {
   // Loading and error states
   loading?: boolean;
   error?: string | null;
+  // Download props
+  filters?: AdvancedFilterOptions;
 }
 
 // Helper to get quality label and color
@@ -155,6 +159,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   currentFilterParams,
   loading = false,
   error = null,
+  filters,
 }) => {
   // Column visibility state with localStorage persistence
   const [columnVisibility, setColumnVisibility] = useColumnVisibility(
@@ -378,7 +383,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       {
         id: 'spectrum_thumbnail',
         minSize: 130,
-        header: () => <span>Thumbnail</span>,
+        header: () => <span className="normal-case">Spectrum</span>,
         cell: ({ row }) => (
           <SpectrumThumbnailInline spectra={row.original.spectra} width={120} height={40} />
         ),
@@ -405,7 +410,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         minSize: 90,
         accessorFn: (row) => row.max_snr ?? 0,
         header: ({ column }) => (
-          <SortableHeader column={column}>Max S/N</SortableHeader>
+          <SortableHeader column={column}>S/N</SortableHeader>
         ),
         cell: ({ row }) => (
           <span className="text-sm font-mono text-text-primary dark:text-slate-100">
@@ -421,7 +426,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Observation</SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm text-text-primary dark:text-slate-100">
+          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
             {row.original.observation || 'N/A'}
           </span>
         ),
@@ -478,6 +483,9 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   // Count visible columns for colspan calculations
   const visibleColumnCount = table.getVisibleLeafColumns().length;
 
+  // Get visible column IDs string for row memoization
+  const visibleColumnIds = table.getVisibleLeafColumns().map(c => c.id).join(',');
+
   // Filter columns for visibility dropdown - exclude distance when not in coord search mode
   const availableColumnsForDropdown = useMemo(() => {
     return SPECTRA_COLUMNS.filter(col => col.id !== 'distance' || hasCoordinateSearch);
@@ -485,16 +493,27 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
 
   return (
     <Card className="overflow-hidden">
-      {/* Table header with column visibility dropdown */}
+      {/* Table header with column visibility and download dropdowns */}
       <div className="flex items-center justify-between px-4 py-2 bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
         <div className="text-sm text-text-secondary dark:text-slate-400">
           {loading ? 'Loading...' : `${total.toLocaleString()} objects`}
         </div>
-        <ColumnVisibilityDropdown
-          columns={availableColumnsForDropdown}
-          visibility={columnVisibility}
-          onChange={setColumnVisibility}
-        />
+        <div className="flex items-center gap-1">
+          {filters && (
+            <DownloadDropdown
+              totalCount={total}
+              filters={filters}
+              sortColumn={sortColumn}
+              sortDirection={sortDirection}
+              loading={loading}
+            />
+          )}
+          <ColumnVisibilityDropdown
+            columns={availableColumnsForDropdown}
+            visibility={columnVisibility}
+            onChange={setColumnVisibility}
+          />
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -545,7 +564,11 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
             ) : (
               // Data rows - using memoized row component to prevent unnecessary re-renders
               table.getRowModel().rows.map((row) => (
-                <SpectraTableRow key={row.id} row={row} />
+                <SpectraTableRow
+                  key={row.id}
+                  row={row}
+                  visibleColumnIds={visibleColumnIds}
+                />
               ))
             )}
           </tbody>

@@ -83,10 +83,8 @@ interface SpectraFilterBarProps {
   isSearchDebouncing?: boolean;
 }
 
-const INSPECTION_OPTIONS: FilterOption[] = [
-  { value: 'inspected', label: 'Inspected only' },
-  { value: 'not_inspected', label: 'Not inspected only' },
-];
+// Shortcut for "All inspected" quality values (everything except "Not Inspected")
+const INSPECTED_QUALITY_VALUES = [1, 2, 3, 4]; // Impossible, Tentative, Probable, Secure
 
 export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   filters,
@@ -204,7 +202,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     filters.redshift_quality.length > 0 ||
     filters.redshift_min !== null ||
     filters.redshift_max !== null ||
-    filters.inspected_only !== null ||
     filters.search.length > 0 ||
     panelFilterCount > 0;
 
@@ -230,22 +227,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
       dq_flags_mode: 'any',
     });
   };
-
-  // Handle inspection filter (single select with special values)
-  const handleInspectionChange = (selected: (string | number)[]) => {
-    if (selected.length === 0) {
-      updateFilter('inspected_only', null);
-    } else {
-      updateFilter('inspected_only', selected[0] === 'inspected');
-    }
-  };
-
-  const inspectionSelected: (string | number)[] =
-    filters.inspected_only === null
-      ? []
-      : filters.inspected_only
-        ? ['inspected']
-        : ['not_inspected'];
 
   return (
     <div className={`space-y-3 ${className}`}>
@@ -344,21 +325,13 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           precision={2}
         />
 
-        {/* Quality filter */}
+        {/* Quality filter with "All inspected" shortcut */}
         <FilterChip
           label="Quality"
           options={qualityOptions}
           selected={filters.redshift_quality}
           onChange={(selected) => updateFilter('redshift_quality', selected as number[])}
-        />
-
-        {/* Inspection status filter */}
-        <FilterChip
-          label="Inspected"
-          options={INSPECTION_OPTIONS}
-          selected={inspectionSelected}
-          onChange={handleInspectionChange}
-          multiSelect={false}
+          shortcut={{ label: 'All inspected', values: INSPECTED_QUALITY_VALUES }}
         />
 
         {/* Divider */}

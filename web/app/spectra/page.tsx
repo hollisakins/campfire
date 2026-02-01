@@ -6,7 +6,6 @@ import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { SpectraTable } from '@/components/spectra/SpectraTable';
 import { SpectraFilterBar, AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
-import { DownloadTableButtons } from '@/components/spectra/DownloadTableButtons';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { LogIn, Loader2, Info, KeyRound } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
@@ -19,9 +18,6 @@ import {
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useSpectraQuery } from '@/lib/hooks/useSpectraQuery';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
-
-// Threshold for adaptive sorting: if total results <= this, use client-side sorting
-const FULL_DATASET_THRESHOLD = 5000;
 
 // Inner component that uses useSearchParams (must be wrapped in Suspense)
 function SpectraPageContent() {
@@ -44,14 +40,13 @@ function SpectraPageContent() {
   const [pageSize, setPageSize] = useState(initialPagination.pageSize);
   const [sortColumn, setSortColumn] = useState<SortColumn>(initialSorting.sortColumn);
   const [sortDirection, setSortDirection] = useState<SortDirection>(initialSorting.sortDirection);
-  const [isFullDataset, setIsFullDataset] = useState(true);
+  const [isFullDataset, setIsFullDataset] = useState(false);
 
   // Debounce filters to avoid excessive database queries
   const { debouncedValue: debouncedFilters, isDebouncing } = useDebouncedValue(filters, 300);
 
-  // Determine effective page/pageSize for query based on adaptive mode
-  const effectivePageSize = isFullDataset ? FULL_DATASET_THRESHOLD : pageSize;
-  const effectivePage = isFullDataset ? 1 : page;
+  // Always use normal pagination for queries - server-side sorting is fast
+  // The isFullDataset flag only determines client vs server sorting AFTER data arrives
 
   // TanStack Query for spectra data
   const {
@@ -61,8 +56,8 @@ function SpectraPageContent() {
     error: queryError,
   } = useSpectraQuery({
     filters: debouncedFilters,
-    page: effectivePage,
-    pageSize: effectivePageSize,
+    page,
+    pageSize,
     sortColumn,
     sortDirection,
     enabled: !authLoading && !!user,
@@ -110,7 +105,7 @@ function SpectraPageContent() {
     startTransition(() => {
       setFilters(newFilters);
       setPage(1);
-      setIsFullDataset(true);
+      // Don't reset isFullDataset - let the query response determine this
     });
   };
 
@@ -226,22 +221,13 @@ function SpectraPageContent() {
 
       {/* Results Container - maintains height during loading to prevent scrollbar flicker */}
       <div className="min-h-[600px]">
-        {/* Download Buttons - always shown to maintain vertical positioning */}
-        <DownloadTableButtons
-          totalCount={totalCount}
-          filters={filters}
-          sortColumn={sortColumn}
-          sortDirection={sortDirection}
-          loading={loading}
-        />
-
         {/* Table - always shown (handles loading/error states internally) */}
         <SpectraTable
           spectra={spectra}
           total={totalCount}
-          page={isFullDataset ? 1 : page}
-          pageSize={isFullDataset ? spectra.length : pageSize}
-          totalPages={isFullDataset ? 1 : totalPages}
+          page={page}
+          pageSize={pageSize}
+          totalPages={totalPages}
           onPageChange={handlePageChange}
           onPageSizeChange={handlePageSizeChange}
           isFullDataset={isFullDataset}
@@ -252,6 +238,7 @@ function SpectraPageContent() {
           currentFilterParams={filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection)}
           loading={loading}
           error={error}
+          filters={filters}
         />
       </div>
     </div>

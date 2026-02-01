@@ -1,13 +1,12 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Download, FileText, Package, Loader2, ChevronDown } from 'lucide-react';
-import { Card } from '@/components/ui/Card';
 import { generateCSV, generateCsvFilename, generateFitsDownloadUrl } from '@/lib/actions/download';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { AdvancedFilterOptions } from './SpectraFilterBar';
 
-interface DownloadTableButtonsProps {
+interface DownloadDropdownProps {
   totalCount: number;
   filters: AdvancedFilterOptions;
   sortColumn: SortColumn;
@@ -15,22 +14,34 @@ interface DownloadTableButtonsProps {
   loading?: boolean;
 }
 
-export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
+export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
   totalCount,
   filters,
   sortColumn,
   sortDirection,
   loading = false,
 }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
   const [csvLoading, setCsvLoading] = useState(false);
   const [fitsLoading, setFitsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const CSV_LIMIT = 50000;
   const FITS_LIMIT = 200;
   const csvWillTruncate = totalCount > CSV_LIMIT;
   const fitsDisabled = totalCount > FITS_LIMIT || loading;
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const handleCsvDownload = async () => {
     setCsvLoading(true);
@@ -87,48 +98,38 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
   };
 
   return (
-    <Card className="mb-4">
-      {/* Collapsible Header */}
+    <div ref={containerRef} className="relative">
+      {/* Dropdown Toggle Button */}
       <button
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={() => setIsOpen(!isOpen)}
         disabled={loading}
-        className="w-full p-3 min-h-[52px] flex items-center justify-between hover:bg-background-hover transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        <div className="flex items-center gap-2">
-          {loading ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin text-text-secondary" />
-              <span className="text-sm text-text-secondary">Loading objects...</span>
-            </>
-          ) : (
-            <>
-              <span className="text-sm text-text-secondary">
-                {totalCount.toLocaleString()} {totalCount === 1 ? 'object' : 'objects'} found
-              </span>
-              <span className="text-text-secondary">|</span>
-              <Download className="w-4 h-4 text-text-secondary dark:text-slate-400" />
-              <h3 className="text-sm font-semibold text-text-primary dark:text-slate-100">Download Results</h3>
-            </>
-          )}
-        </div>
-        <ChevronDown
-          className={`w-4 h-4 text-text-secondary transition-transform ${isExpanded ? 'rotate-180' : ''}`}
-        />
+        <Download className="w-4 h-4" />
+        <span>Download</span>
+        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      {/* Expandable Content */}
-      {isExpanded && (
-        <div className="px-4 pb-4 border-t border-border">
-          <p className="text-xs text-text-secondary mt-3 mb-4">
-            Export filtered results as CSV metadata or download FITS spectroscopic data files
-          </p>
+      {/* Dropdown Panel */}
+      {isOpen && (
+        <div className="absolute right-0 z-50 mt-1 w-[320px] bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
+          {/* Header */}
+          <div className="px-4 py-3 border-b border-border dark:border-slate-700">
+            <div className="text-sm font-medium text-text-primary dark:text-slate-100">
+              Download Results
+            </div>
+            <div className="text-xs text-text-secondary dark:text-slate-400 mt-0.5">
+              {loading ? 'Loading...' : `${totalCount.toLocaleString()} ${totalCount === 1 ? 'object' : 'objects'}`}
+            </div>
+          </div>
 
-          <div className="flex gap-2">
+          {/* Download Buttons */}
+          <div className="p-3 space-y-2">
             {/* CSV Download Button */}
             <button
               onClick={handleCsvDownload}
               disabled={csvLoading || loading}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-left hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               title={
                 loading
                   ? 'Please wait while objects are loading'
@@ -138,23 +139,25 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
               }
             >
               {csvLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Generating...
-                </>
+                <Loader2 className="w-4 h-4 animate-spin text-primary" />
               ) : (
-                <>
-                  <FileText className="w-4 h-4" />
-                  CSV Table
-                </>
+                <FileText className="w-4 h-4 text-text-secondary dark:text-slate-400" />
               )}
+              <div className="flex-1">
+                <div className="font-medium text-text-primary dark:text-slate-100">
+                  {csvLoading ? 'Generating...' : 'CSV Table'}
+                </div>
+                <div className="text-xs text-text-secondary dark:text-slate-400">
+                  Object metadata and properties
+                </div>
+              </div>
             </button>
 
             {/* FITS ZIP Download Button */}
             <button
               onClick={handleFitsDownload}
               disabled={fitsLoading || fitsDisabled}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-left hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               title={
                 loading
                   ? 'Please wait while objects are loading'
@@ -164,70 +167,48 @@ export const DownloadTableButtons: React.FC<DownloadTableButtonsProps> = ({
               }
             >
               {fitsLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Preparing...
-                </>
+                <Loader2 className="w-4 h-4 animate-spin text-primary" />
               ) : (
-                <>
-                  <Package className="w-4 h-4" />
-                  FITS ZIP
-                </>
+                <Package className="w-4 h-4 text-text-secondary dark:text-slate-400" />
               )}
+              <div className="flex-1">
+                <div className="font-medium text-text-primary dark:text-slate-100">
+                  {fitsLoading ? 'Preparing...' : 'FITS ZIP'}
+                </div>
+                <div className="text-xs text-text-secondary dark:text-slate-400">
+                  Spectroscopic data files
+                </div>
+              </div>
             </button>
           </div>
 
           {/* Warning/Info Messages */}
-          {csvWillTruncate && (
-            <div className="mt-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-2">
-              <span className="flex-shrink-0 mt-0.5">⚠️</span>
-              <span>
-                CSV download is limited to {CSV_LIMIT.toLocaleString()} objects. Your current filters return{' '}
-                {totalCount.toLocaleString()} objects. The exported CSV will contain the first{' '}
-                {CSV_LIMIT.toLocaleString()} results based on your sort order.
-              </span>
-            </div>
-          )}
+          {(csvWillTruncate || fitsDisabled || error) && (
+            <div className="px-3 pb-3 space-y-2">
+              {csvWillTruncate && (
+                <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-2">
+                  <span className="flex-shrink-0 mt-0.5">⚠️</span>
+                  <span>CSV limited to {CSV_LIMIT.toLocaleString()} objects</span>
+                </div>
+              )}
 
-          {fitsDisabled && !csvWillTruncate && (
-            <div className="mt-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-2">
-              <span className="flex-shrink-0 mt-0.5">⚠️</span>
-              <span>
-                FITS download is limited to {FITS_LIMIT} objects. Your current filters return{' '}
-                {totalCount.toLocaleString()} objects. Please refine your filters to download spectroscopic data.
-              </span>
-            </div>
-          )}
+              {fitsDisabled && totalCount > FITS_LIMIT && (
+                <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-2">
+                  <span className="flex-shrink-0 mt-0.5">⚠️</span>
+                  <span>FITS limited to {FITS_LIMIT} objects</span>
+                </div>
+              )}
 
-          {fitsDisabled && csvWillTruncate && (
-            <div className="mt-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-2">
-              <span className="flex-shrink-0 mt-0.5">⚠️</span>
-              <span>
-                FITS download is limited to {FITS_LIMIT} objects. Please refine your filters to download spectroscopic data.
-              </span>
-            </div>
-          )}
-
-          {!fitsDisabled && totalCount > 0 && (
-            <div className="mt-3 text-xs text-text-secondary">
-              <span className="flex items-center gap-1">
-                <span>✓</span>
-                <span>
-                  Ready to download {totalCount.toLocaleString()} {totalCount === 1 ? 'object' : 'objects'}
-                </span>
-              </span>
-            </div>
-          )}
-
-          {/* Error Message */}
-          {error && (
-            <div className="mt-3 flex items-start gap-2 text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-md p-2">
-              <span className="flex-shrink-0 mt-0.5">❌</span>
-              <span>{error}</span>
+              {error && (
+                <div className="flex items-start gap-2 text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-md p-2">
+                  <span className="flex-shrink-0 mt-0.5">❌</span>
+                  <span>{error}</span>
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
-    </Card>
+    </div>
   );
 };
