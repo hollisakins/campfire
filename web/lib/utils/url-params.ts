@@ -3,12 +3,15 @@
  * Used to preserve filter, sort, and pagination state in URLs.
  */
 
-import type { AdvancedFilterOptions, SearchScope } from '@/components/spectra/SpectraFilterBar';
+import type { AdvancedFilterOptions, SearchScope, FilterMode } from '@/components/spectra/SpectraFilterBar';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { VALID_SORT_COLUMNS } from '@/lib/actions/spectra-types';
 
 // Valid search scope values
 const VALID_SEARCH_SCOPES: SearchScope[] = ['object_id', 'my_comments', 'all_comments'];
+
+// Valid filter mode values
+const VALID_FILTER_MODES: FilterMode[] = ['any', 'all', 'none'];
 
 // Default page size for pagination
 export const DEFAULT_PAGE_SIZE = 50;
@@ -37,6 +40,14 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     if (value === 'true') return true;
     if (value === 'false') return false;
     return null;
+  };
+
+  const parseMode = (key: string): FilterMode => {
+    const value = searchParams.get(key);
+    if (VALID_FILTER_MODES.includes(value as FilterMode)) {
+      return value as FilterMode;
+    }
+    return 'any';
   };
 
   // Parse coordinate search parameters
@@ -72,6 +83,11 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     inspected_only: parseBoolean('inspected'),
     search: searchParams.get('search') || '',
     search_scope: searchScope,
+    // Filter modes (default to 'any')
+    gratings_mode: parseMode('gratings_mode'),
+    spectral_features_mode: parseMode('features_mode'),
+    object_flags_mode: parseMode('obj_flags_mode'),
+    dq_flags_mode: parseMode('dq_flags_mode'),
   };
 }
 
@@ -162,6 +178,19 @@ export function filtersToURLParams(
   // Only include search_scope if not default
   if (filters.search_scope && filters.search_scope !== 'object_id') {
     params.set('scope', filters.search_scope);
+  }
+  // Only include filter modes if not default ('any') and filter is active
+  if (filters.gratings.length > 0 && filters.gratings_mode && filters.gratings_mode !== 'any') {
+    params.set('gratings_mode', filters.gratings_mode);
+  }
+  if (filters.spectral_features.length > 0 && filters.spectral_features_mode && filters.spectral_features_mode !== 'any') {
+    params.set('features_mode', filters.spectral_features_mode);
+  }
+  if (filters.object_flags.length > 0 && filters.object_flags_mode && filters.object_flags_mode !== 'any') {
+    params.set('obj_flags_mode', filters.object_flags_mode);
+  }
+  if (filters.dq_flags.length > 0 && filters.dq_flags_mode && filters.dq_flags_mode !== 'any') {
+    params.set('dq_flags_mode', filters.dq_flags_mode);
   }
   // Only include pagination params if not default values
   if (page > 1) {

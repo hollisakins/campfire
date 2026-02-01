@@ -10,6 +10,7 @@ import {
   flexRender,
   SortingState,
   ColumnDef,
+  VisibilityState,
 } from '@tanstack/react-table';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { SpectrumObject, QUALITY_LABELS } from '@/lib/types';
@@ -21,6 +22,27 @@ import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
 import { formatDistance } from '@/lib/utils/coordinate-parser';
 import { setNavCache } from '@/lib/navigation-cache';
+import {
+  ColumnVisibilityDropdown,
+  useColumnVisibility,
+  type ColumnDefinition,
+} from '@/components/ui/ColumnVisibilityDropdown';
+
+// Column visibility configuration
+const SPECTRA_COLUMNS: ColumnDefinition[] = [
+  { id: 'rgb_thumbnail', label: 'RGB Image', defaultVisible: true },
+  { id: 'object_id', label: 'Object ID', alwaysVisible: true },
+  { id: 'field', label: 'Field', defaultVisible: true },
+  { id: 'ra', label: 'RA', defaultVisible: true },
+  { id: 'dec', label: 'Dec', defaultVisible: true },
+  { id: 'distance', label: 'Distance', defaultVisible: true },  // Only shown when coord search active
+  { id: 'redshift', label: 'Redshift', alwaysVisible: true },
+  { id: 'redshift_quality', label: 'Quality', alwaysVisible: true },
+  { id: 'spectrum_thumbnail', label: 'Spectrum', defaultVisible: true },
+  { id: 'num_gratings', label: 'Gratings', defaultVisible: true },
+  { id: 'max_snr', label: 'Max S/N', defaultVisible: true },
+  { id: 'observation', label: 'Observation', defaultVisible: false },
+];
 
 // Map TanStack Table column IDs to server column names
 const COLUMN_TO_SERVER_NAME: Record<string, SortColumn> = {
@@ -134,6 +156,12 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   loading = false,
   error = null,
 }) => {
+  // Column visibility state with localStorage persistence
+  const [columnVisibility, setColumnVisibility] = useColumnVisibility(
+    SPECTRA_COLUMNS,
+    'campfire-spectra-columns'
+  );
+
   // Internal sorting state for client-side mode
   // Initialize from props, then manage independently
   // When coordinate search is active, default to sorting by distance
@@ -386,9 +414,36 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         ),
         sortingFn: 'basic',
       },
+      {
+        accessorKey: 'observation',
+        minSize: 150,
+        header: ({ column }) => (
+          <SortableHeader column={column}>Observation</SortableHeader>
+        ),
+        cell: ({ row }) => (
+          <span className="text-sm text-text-primary dark:text-slate-100">
+            {row.original.observation || 'N/A'}
+          </span>
+        ),
+        sortingFn: 'alphanumeric',
+      },
     ],
     [hasCoordinateSearch, currentFilterParams]
   );
+
+  // Convert column visibility state to TanStack Table format
+  const tableColumnVisibility = useMemo<VisibilityState>(() => {
+    const visibility: VisibilityState = {};
+    SPECTRA_COLUMNS.forEach(col => {
+      // Distance column is special - only visible when coordinate search is active AND user hasn't hidden it
+      if (col.id === 'distance') {
+        visibility[col.id] = hasCoordinateSearch && (columnVisibility[col.id] !== false);
+      } else {
+        visibility[col.id] = columnVisibility[col.id] !== false;
+      }
+    });
+    return visibility;
+  }, [columnVisibility, hasCoordinateSearch]);
 
   // Internal pagination state for client-side mode
   const [internalPagination, setInternalPagination] = useState({
@@ -405,6 +460,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         pageIndex: page - 1, // TanStack uses 0-based index
         pageSize,
       },
+      columnVisibility: tableColumnVisibility,
     },
     // Adaptive pagination: client-side for full dataset, server-side otherwise
     manualPagination: !isFullDataset,
@@ -419,8 +475,28 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
     getPaginationRowModel: isFullDataset ? getPaginationRowModel() : undefined,
   });
 
+  // Count visible columns for colspan calculations
+  const visibleColumnCount = table.getVisibleLeafColumns().length;
+
+  // Filter columns for visibility dropdown - exclude distance when not in coord search mode
+  const availableColumnsForDropdown = useMemo(() => {
+    return SPECTRA_COLUMNS.filter(col => col.id !== 'distance' || hasCoordinateSearch);
+  }, [hasCoordinateSearch]);
+
   return (
     <Card className="overflow-hidden">
+      {/* Table header with column visibility dropdown */}
+      <div className="flex items-center justify-between px-4 py-2 bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
+        <div className="text-sm text-text-secondary dark:text-slate-400">
+          {loading ? 'Loading...' : `${total.toLocaleString()} objects`}
+        </div>
+        <ColumnVisibilityDropdown
+          columns={availableColumnsForDropdown}
+          visibility={columnVisibility}
+          onChange={setColumnVisibility}
+        />
+      </div>
+
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
@@ -442,15 +518,15 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           </thead>
           <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
             {loading ? (
-              // Loading state: show skeleton rows
+              // Loading state: show skeleton rows matching visible columns
               <TableSkeleton
                 rows={isFullDataset ? Math.min(pageSize, 10) : pageSize}
-                columns={columns}
+                columns={table.getVisibleLeafColumns().map(c => c.columnDef)}
               />
             ) : error ? (
               // Error state: show error message
               <tr>
-                <td colSpan={hasCoordinateSearch ? 11 : 10} className="px-4 py-16 text-center">
+                <td colSpan={visibleColumnCount} className="px-4 py-16 text-center">
                   <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4 inline-block">
                     <p className="text-red-800 dark:text-red-400">{error}</p>
                   </div>
@@ -459,7 +535,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
             ) : spectra.length === 0 ? (
               // Empty state: show message
               <tr>
-                <td colSpan={hasCoordinateSearch ? 11 : 10} className="px-4 py-12 text-center text-text-secondary dark:text-slate-400">
+                <td colSpan={visibleColumnCount} className="px-4 py-12 text-center text-text-secondary dark:text-slate-400">
                   No results found.
                   <p className="text-sm mt-2">
                     If you&apos;re looking for proprietary data, you may need to enter an access code on your profile page.

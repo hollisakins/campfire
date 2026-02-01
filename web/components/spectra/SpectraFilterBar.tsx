@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Search, ChevronDown } from 'lucide-react';
 import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
+import { FilterChipWithMode, type FilterMode } from '@/components/ui/FilterChipWithMode';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
 import { CoordinateSearchChip, CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
 import {
@@ -12,6 +13,9 @@ import {
   DQ_FLAGS,
 } from '@/lib/flags';
 import type { Program } from '@/lib/types';
+
+// Re-export FilterMode for use by other modules
+export type { FilterMode } from '@/components/ui/FilterChipWithMode';
 
 // Search scope type for the search bar
 export type SearchScope = 'object_id' | 'my_comments' | 'all_comments';
@@ -36,6 +40,11 @@ export interface AdvancedFilterOptions {
   inspected_only: boolean | null;
   search: string;
   search_scope: SearchScope;
+  // Filter modes (any/all/none)
+  gratings_mode: FilterMode;
+  spectral_features_mode: FilterMode;
+  object_flags_mode: FilterMode;
+  dq_flags_mode: FilterMode;
 }
 
 export const DEFAULT_FILTERS: AdvancedFilterOptions = {
@@ -55,6 +64,11 @@ export const DEFAULT_FILTERS: AdvancedFilterOptions = {
   inspected_only: null,
   search: '',
   search_scope: 'object_id',
+  // Default modes (any = match any selected option)
+  gratings_mode: 'any',
+  spectral_features_mode: 'any',
+  object_flags_mode: 'any',
+  dq_flags_mode: 'any',
 };
 
 // Search scope options with labels and placeholders
@@ -323,12 +337,15 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           onChange={(selected) => updateFilter('fields', selected as string[])}
         />
 
-        {/* Grating filter */}
-        <FilterChip
+        {/* Grating filter - with mode toggle (objects can have multiple gratings) */}
+        <FilterChipWithMode
           label="Grating"
           options={gratingOptions}
           selected={filters.gratings}
           onChange={(selected) => updateFilter('gratings', selected as string[])}
+          mode={filters.gratings_mode}
+          onModeChange={(mode) => updateFilter('gratings_mode', mode)}
+          showModeToggle={true}
         />
 
         {/* Observation filter */}
@@ -397,28 +414,37 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         {/* Divider */}
         <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
 
-        {/* Spectral features filter */}
-        <FilterChip
+        {/* Spectral features filter - with mode toggle (bitmask) */}
+        <FilterChipWithMode
           label="Features"
           options={spectralFeatureOptions}
           selected={filters.spectral_features}
           onChange={(selected) => updateFilter('spectral_features', selected as number[])}
+          mode={filters.spectral_features_mode}
+          onModeChange={(mode) => updateFilter('spectral_features_mode', mode)}
+          showModeToggle={true}
         />
 
-        {/* Object flags filter */}
-        <FilterChip
+        {/* Object flags filter - with mode toggle (bitmask) */}
+        <FilterChipWithMode
           label="Object Type"
           options={objectFlagOptions}
           selected={filters.object_flags}
           onChange={(selected) => updateFilter('object_flags', selected as number[])}
+          mode={filters.object_flags_mode}
+          onModeChange={(mode) => updateFilter('object_flags_mode', mode)}
+          showModeToggle={true}
         />
 
-        {/* DQ flags filter */}
-        <FilterChip
+        {/* DQ flags filter - with mode toggle (bitmask) */}
+        <FilterChipWithMode
           label="Data Quality"
           options={dqFlagOptions}
           selected={filters.dq_flags}
           onChange={(selected) => updateFilter('dq_flags', selected as number[])}
+          mode={filters.dq_flags_mode}
+          onModeChange={(mode) => updateFilter('dq_flags_mode', mode)}
+          showModeToggle={true}
         />
 
         {/* Clear all button */}

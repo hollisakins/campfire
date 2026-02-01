@@ -3,6 +3,9 @@
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 import type { SpectrumObject, Program, Spectrum } from '@/lib/types';
 
+// Filter mode type for any/all/none filtering
+export type FilterMode = 'any' | 'all' | 'none';
+
 export interface FilterOptions {
   // Basic filters
   programs: number[];
@@ -27,6 +30,11 @@ export interface FilterOptions {
   inspected_only?: boolean | null;
   search?: string;
   search_scope?: 'object_id' | 'my_comments' | 'all_comments';
+  // Filter modes (any/all/none)
+  gratings_mode?: FilterMode;
+  spectral_features_mode?: FilterMode;
+  object_flags_mode?: FilterMode;
+  dq_flags_mode?: FilterMode;
 }
 
 export interface SpectraResult {
@@ -138,6 +146,22 @@ export async function getSpectra(
       ? filters.dq_flags.reduce((acc, val) => acc | val, 0)
       : null;
 
+    // Route bitmask filters to appropriate params based on mode
+    const sfMode = filters?.spectral_features_mode || 'any';
+    const sfIncludeAny = sfMode === 'any' ? spectralFeaturesMask : null;
+    const sfIncludeAll = sfMode === 'all' ? spectralFeaturesMask : null;
+    const sfExclude = sfMode === 'none' ? spectralFeaturesMask : null;
+
+    const ofMode = filters?.object_flags_mode || 'any';
+    const ofIncludeAny = ofMode === 'any' ? objectFlagsMask : null;
+    const ofIncludeAll = ofMode === 'all' ? objectFlagsMask : null;
+    const ofExclude = ofMode === 'none' ? objectFlagsMask : null;
+
+    const dqMode = filters?.dq_flags_mode || 'any';
+    const dqIncludeAny = dqMode === 'any' ? dqFlagsMask : null;
+    const dqIncludeAll = dqMode === 'all' ? dqFlagsMask : null;
+    const dqExclude = dqMode === 'none' ? dqFlagsMask : null;
+
     // Convert coordinate search radius to degrees
     let coordRa: number | null = null;
     let coordDec: number | null = null;
@@ -173,15 +197,23 @@ export async function getSpectra(
       p_filter_programs: filters?.programs && filters.programs.length > 0 ? filters.programs : null,
       p_fields: filters?.fields && filters.fields.length > 0 ? filters.fields : null,
       p_gratings: filters?.gratings && filters.gratings.length > 0 ? filters.gratings : null,
+      p_gratings_mode: filters?.gratings_mode || 'any',
       p_observations: filters?.observations && filters.observations.length > 0 ? filters.observations : null,
       p_redshift_quality: filters?.redshift_quality && filters.redshift_quality.length > 0 ? filters.redshift_quality : null,
       p_redshift_min: filters?.redshift_min ?? null,
       p_redshift_max: filters?.redshift_max ?? null,
       p_max_snr_min: filters?.max_snr_min ?? null,
       p_max_snr_max: filters?.max_snr_max ?? null,
-      p_spectral_features: spectralFeaturesMask,
-      p_object_flags: objectFlagsMask,
-      p_dq_flags: dqFlagsMask,
+      // Route bitmask filters based on mode (any/all/none)
+      p_spectral_features_include_any: sfIncludeAny,
+      p_spectral_features_include_all: sfIncludeAll,
+      p_spectral_features_exclude: sfExclude,
+      p_object_flags_include_any: ofIncludeAny,
+      p_object_flags_include_all: ofIncludeAll,
+      p_object_flags_exclude: ofExclude,
+      p_dq_flags_include_any: dqIncludeAny,
+      p_dq_flags_include_all: dqIncludeAll,
+      p_dq_flags_exclude: dqExclude,
       p_search: objectIdSearch,
       p_inspected_only: filters?.inspected_only ?? null,
       p_coord_ra: coordRa,
@@ -594,6 +626,22 @@ export async function getAdjacentObjectIds(
       ? filters.dq_flags.reduce((acc, val) => acc | val, 0)
       : null;
 
+    // Route bitmask filters to appropriate params based on mode
+    const sfMode = filters?.spectral_features_mode || 'any';
+    const sfIncludeAny = sfMode === 'any' ? spectralFeaturesMask : null;
+    const sfIncludeAll = sfMode === 'all' ? spectralFeaturesMask : null;
+    const sfExclude = sfMode === 'none' ? spectralFeaturesMask : null;
+
+    const ofMode = filters?.object_flags_mode || 'any';
+    const ofIncludeAny = ofMode === 'any' ? objectFlagsMask : null;
+    const ofIncludeAll = ofMode === 'all' ? objectFlagsMask : null;
+    const ofExclude = ofMode === 'none' ? objectFlagsMask : null;
+
+    const dqMode = filters?.dq_flags_mode || 'any';
+    const dqIncludeAny = dqMode === 'any' ? dqFlagsMask : null;
+    const dqIncludeAll = dqMode === 'all' ? dqFlagsMask : null;
+    const dqExclude = dqMode === 'none' ? dqFlagsMask : null;
+
     // Convert coordinate search radius to degrees
     let coordRa: number | null = null;
     let coordDec: number | null = null;
@@ -627,13 +675,21 @@ export async function getAdjacentObjectIds(
       p_filter_programs: filters?.programs && filters.programs.length > 0 ? filters.programs : null,
       p_fields: filters?.fields && filters.fields.length > 0 ? filters.fields : null,
       p_gratings: filters?.gratings && filters.gratings.length > 0 ? filters.gratings : null,
+      p_gratings_mode: filters?.gratings_mode || 'any',
       p_observations: filters?.observations && filters.observations.length > 0 ? filters.observations : null,
       p_redshift_quality: filters?.redshift_quality && filters.redshift_quality.length > 0 ? filters.redshift_quality : null,
       p_redshift_min: filters?.redshift_min ?? null,
       p_redshift_max: filters?.redshift_max ?? null,
-      p_spectral_features: spectralFeaturesMask,
-      p_object_flags: objectFlagsMask,
-      p_dq_flags: dqFlagsMask,
+      // Route bitmask filters based on mode (any/all/none)
+      p_spectral_features_include_any: sfIncludeAny,
+      p_spectral_features_include_all: sfIncludeAll,
+      p_spectral_features_exclude: sfExclude,
+      p_object_flags_include_any: ofIncludeAny,
+      p_object_flags_include_all: ofIncludeAll,
+      p_object_flags_exclude: ofExclude,
+      p_dq_flags_include_any: dqIncludeAny,
+      p_dq_flags_include_all: dqIncludeAll,
+      p_dq_flags_exclude: dqExclude,
       p_search: objectIdSearch,
       p_inspected_only: filters?.inspected_only ?? null,
       p_coord_ra: coordRa,
