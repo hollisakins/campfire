@@ -14,7 +14,8 @@ import {
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { SpectrumObject, QUALITY_LABELS } from '@/lib/types';
 import { RGBThumbnail } from './RGBThumbnail';
-import { SpectrumThumbnail } from './SpectrumThumbnail';
+import { SpectrumThumbnailInline } from './SpectrumThumbnailInline';
+import { SpectraTableRow } from './SpectraTableRow';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
@@ -351,7 +352,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         minSize: 130,
         header: () => <span>Thumbnail</span>,
         cell: ({ row }) => (
-          <SpectrumThumbnail objectId={row.original.object_id} width={120} height={40} />
+          <SpectrumThumbnailInline spectra={row.original.spectra} width={120} height={40} />
         ),
         enableSorting: false,
       },
@@ -466,22 +467,9 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
                 </td>
               </tr>
             ) : (
-              // Data rows
+              // Data rows - using memoized row component to prevent unnecessary re-renders
               table.getRowModel().rows.map((row) => (
-                <tr
-                  key={row.id}
-                  className="hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <td
-                      key={cell.id}
-                      className="px-4 py-3 whitespace-nowrap"
-                      style={{ width: `${cell.column.getSize()}px` }}
-                    >
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
-                  ))}
-                </tr>
+                <SpectraTableRow key={row.id} row={row} />
               ))
             )}
           </tbody>

@@ -175,6 +175,9 @@ export interface Spectrum {
   reduction_version: string;
   signal_to_noise: number | null;
   created_at: string;
+  // Pre-generated SVG thumbnails (included when p_include_thumbnails=true in RPC)
+  thumbnail_svg_fnu?: string | null;
+  thumbnail_svg_flambda?: string | null;
 }
 
 export interface Comment {

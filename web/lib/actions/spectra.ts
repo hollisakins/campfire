@@ -194,6 +194,8 @@ export async function getSpectra(
       p_sort_direction: sortDirection,
       p_page: page,
       p_page_size: pageSize,
+      // Include thumbnails for web table views (eliminates ~100 API calls per page)
+      p_include_thumbnails: true,
     });
 
     if (error) {
