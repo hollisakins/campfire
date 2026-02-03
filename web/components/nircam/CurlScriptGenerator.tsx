@@ -5,8 +5,8 @@ import { ChevronDown, ChevronUp, Download, Copy, Check } from 'lucide-react';
 import type { NircamImage } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 
-// CDN configuration
-const CDN_BASE_URL = 'https://hollisakins-candide.b-cdn.net/data/nircam';
+// CANDIDE server configuration
+const CDN_BASE_URL = 'https://exchg.calet.org/hakins/data/data/nircam';
 const CDN_USERNAME = 'ember';
 const CDN_PASSWORD = 'ember!jwst';
 

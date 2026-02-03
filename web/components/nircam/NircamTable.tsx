@@ -17,8 +17,8 @@ import type { NircamFilterOptions } from './NircamFilterBar';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
 
-// CDN base URL for NIRCam data
-const CDN_BASE_URL = 'https://hollisakins-candide.b-cdn.net/data/nircam';
+// CANDIDE server base URL for NIRCam data
+const CDN_BASE_URL = 'https://exchg.calet.org/hakins/data/data/nircam';
 
 interface NircamTableProps {
   images: NircamImage[];
