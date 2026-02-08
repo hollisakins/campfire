@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Image from 'next/image';
 
 interface RGBImageProps {
@@ -15,6 +15,12 @@ export const RGBImage: React.FC<RGBImageProps> = ({
   size = 350
 }) => {
   const [imageError, setImageError] = useState(false);
+
+  // Reset error state when URL or object changes
+  useEffect(() => {
+    console.log('[RGBImage] Props updated - objectId:', objectId, 'URL:', rgbImageUrl?.substring(0, 80) + '...');
+    setImageError(false);
+  }, [rgbImageUrl, objectId]);
 
   // Show placeholder if no URL provided or if image failed to load
   if (!rgbImageUrl || imageError) {
@@ -40,7 +46,13 @@ export const RGBImage: React.FC<RGBImageProps> = ({
         alt={`RGB image for ${objectId}`}
         fill
         className="object-cover"
-        onError={() => setImageError(true)}
+        onError={() => {
+          console.log('[RGBImage] Image load error for:', objectId);
+          setImageError(true);
+        }}
+        onLoad={() => {
+          console.log('[RGBImage] Image loaded successfully for:', objectId);
+        }}
         unoptimized // For R2 signed URLs
       />
     </div>

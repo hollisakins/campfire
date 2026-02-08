@@ -870,7 +870,6 @@ def run_stage2a_single_rate(
             # Skip extraction if all shutters are stuck closed
             if len(source_metafile.shutter_table) == 0:
                 log(f'All shutters marked as stuck closed for {prod_name}, skipping extraction')
-                assert 1==2 
                 continue  # Skip to next source_id in the loop
 
             source_metafile.write(obs.workspace_dir, overwrite=True)

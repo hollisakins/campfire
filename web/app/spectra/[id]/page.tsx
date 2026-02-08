@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { Metadata } from 'next';
+import { LogIn } from 'lucide-react';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { MetricCards } from '@/components/spectra/MetricCards';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
@@ -16,9 +17,10 @@ import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { RGBImage } from '@/components/spectra/RGBImage';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
+import { InspectionModeOverlay } from '@/components/spectra/inspection/InspectionModeOverlay';
+import { EnterInspectionModeButton } from '@/components/spectra/inspection/EnterInspectionModeButton';
 import { getSpectrumById, getObjectMetadata } from '@/lib/actions/spectra';
 import { generateRGBImageUrl } from '@/lib/r2';
-import { LogIn } from 'lucide-react';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
 
 interface SpectrumDetailPageProps {
@@ -134,7 +136,22 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
   // Parse filters and sorting from URL for navigation
   const filters = parseFiltersFromURL(urlParams);
   const { sortColumn, sortDirection } = parseSortingFromURL(urlParams);
+  const isInspectionMode = searchParamsObj.mode === 'inspect';
   const filterStr = urlParams.toString();
+
+  // Inspection mode: render fullscreen overlay
+  if (isInspectionMode) {
+    return (
+      <InspectionModeOverlay
+        spectrum={spectrum}
+        rgbImageUrl={rgbImageUrl}
+        filterStr={filterStr}
+        filters={filters}
+        sortColumn={sortColumn}
+        sortDirection={sortDirection}
+      />
+    );
+  }
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -325,6 +342,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
 
           {/* Inspect Tab */}
           <TabsContent value="inspect">
+            <EnterInspectionModeButton filterStr={filterStr} />
             <InspectionPanel
               objectDbId={spectrum.id}
               objectId={spectrum.object_id}

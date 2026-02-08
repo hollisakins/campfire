@@ -12,10 +12,9 @@ import {
   SPECTRAL_FEATURES,
   OBJECT_FLAGS,
   DQ_FLAGS,
-  decodeBitmask,
-  encodeBitmask,
   getQualityDef,
 } from '@/lib/flags';
+import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
 import {
   MessageSquare,
   Send,
@@ -28,16 +27,7 @@ import {
 interface InspectionPanelProps {
   objectDbId: number;
   objectId: string;
-  initialData: {
-    redshift_auto: number | null;
-    redshift_inspected: number | null;
-    redshift_quality: number;
-    spectral_features: number;
-    object_flags: number;
-    dq_flags: number;
-    last_inspected_at: string | null;
-    last_inspected_by: string | null;
-  };
+  initialData: InspectionInitialData;
 }
 
 export const InspectionPanel: React.FC<InspectionPanelProps> = ({
@@ -48,26 +38,8 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
   const supabase = createClient();
   const canEdit = user && userProfile?.can_comment;
 
-  // Inspection form state
-  const [redshiftInspected, setRedshiftInspected] = useState<string>(
-    initialData.redshift_inspected?.toString() ?? ''
-  );
-  const [redshiftQuality, setRedshiftQuality] = useState(initialData.redshift_quality);
-  const [spectralFeatures, setSpectralFeatures] = useState<(string | number)[]>(
-    decodeBitmask(initialData.spectral_features, SPECTRAL_FEATURES)
-  );
-  const [objectFlags, setObjectFlags] = useState<(string | number)[]>(
-    decodeBitmask(initialData.object_flags, OBJECT_FLAGS)
-  );
-  const [dqFlags, setDqFlags] = useState<(string | number)[]>(
-    decodeBitmask(initialData.dq_flags, DQ_FLAGS)
-  );
-
-  // Track if form has unsaved changes
-  const [hasChanges, setHasChanges] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saveSuccess, setSaveSuccess] = useState(false);
+  // Use shared inspection state hook
+  const inspection = useInspectionState(objectDbId, initialData);
 
   // Last inspector info
   const [lastInspectorName, setLastInspectorName] = useState<string | null>(null);
@@ -93,21 +65,6 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
     }
     fetchInspectorName();
   }, [initialData.last_inspected_by, supabase]);
-
-  // Track changes
-  useEffect(() => {
-    const currentRedshiftInspected = redshiftInspected === '' ? null : parseFloat(redshiftInspected);
-    const originalRedshiftInspected = initialData.redshift_inspected;
-
-    const changed =
-      currentRedshiftInspected !== originalRedshiftInspected ||
-      redshiftQuality !== initialData.redshift_quality ||
-      encodeBitmask(spectralFeatures, SPECTRAL_FEATURES) !== initialData.spectral_features ||
-      encodeBitmask(objectFlags, OBJECT_FLAGS) !== initialData.object_flags ||
-      encodeBitmask(dqFlags, DQ_FLAGS) !== initialData.dq_flags;
-
-    setHasChanges(changed);
-  }, [redshiftInspected, redshiftQuality, spectralFeatures, objectFlags, dqFlags, initialData]);
 
   // Fetch comments
   const fetchComments = useCallback(async () => {
@@ -156,44 +113,6 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
   useEffect(() => {
     fetchComments();
   }, [fetchComments]);
-
-  // Save inspection changes
-  const handleSave = async () => {
-    setSaving(true);
-    setSaveError(null);
-    setSaveSuccess(false);
-
-    try {
-      const response = await fetch(`/api/objects/${objectDbId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          redshift_inspected: redshiftInspected === '' ? null : redshiftInspected,
-          redshift_quality: redshiftQuality,
-          spectral_features: encodeBitmask(spectralFeatures, SPECTRAL_FEATURES),
-          object_flags: encodeBitmask(objectFlags, OBJECT_FLAGS),
-          dq_flags: encodeBitmask(dqFlags, DQ_FLAGS),
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        const errorMsg = data.details
-          ? `${data.error}: ${data.details}${data.code ? ` (${data.code})` : ''}`
-          : data.error || 'Failed to save changes';
-        throw new Error(errorMsg);
-      }
-
-      setSaveSuccess(true);
-      setHasChanges(false);
-      setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Failed to save changes');
-    } finally {
-      setSaving(false);
-    }
-  };
 
   // Submit comment
   const handleCommentSubmit = async (e: React.FormEvent) => {
@@ -256,11 +175,7 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
     });
   };
 
-  const currentRedshift = redshiftInspected
-    ? parseFloat(redshiftInspected)
-    : initialData.redshift_auto;
-
-  const qualityDef = getQualityDef(redshiftQuality);
+  const qualityDef = getQualityDef(inspection.redshiftQuality);
 
   return (
     <>
@@ -279,14 +194,14 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
         </div>
 
         {/* Save status messages */}
-        {saveError && (
+        {inspection.saveError && (
           <div className="mb-4 p-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg flex items-start gap-2">
             <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-red-800 dark:text-red-400">{saveError}</p>
+            <p className="text-sm text-red-800 dark:text-red-400">{inspection.saveError}</p>
           </div>
         )}
 
-        {saveSuccess && (
+        {inspection.saveSuccess && (
           <div className="mb-4 p-3 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded-lg flex items-start gap-2">
             <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
             <p className="text-sm text-green-800 dark:text-green-400">Changes saved successfully</p>
@@ -299,10 +214,10 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <span className="text-text-secondary dark:text-slate-400">Redshift:</span>
-              {redshiftQuality === 1 ? (
+              {inspection.redshiftQuality === 1 ? (
                 <>
                   <span className="font-mono text-text-secondary dark:text-slate-400 line-through">
-                    {currentRedshift?.toFixed(4) ?? '—'}
+                    {inspection.currentRedshift?.toFixed(4) ?? '\u2014'}
                   </span>
                   <span className="text-xs text-red-500 dark:text-red-400">
                     (excluded)
@@ -311,10 +226,10 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
               ) : (
                 <>
                   <span className="font-mono font-semibold text-text-primary dark:text-slate-100">
-                    {currentRedshift?.toFixed(4) ?? '—'}
+                    {inspection.currentRedshift?.toFixed(4) ?? '\u2014'}
                   </span>
                   <span className="text-xs text-text-secondary dark:text-slate-400">
-                    ({redshiftInspected ? 'overridden' : 'auto-fit'})
+                    ({inspection.redshiftInspected ? 'overridden' : 'auto-fit'})
                   </span>
                 </>
               )}
@@ -327,8 +242,8 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
               <input
                 type="number"
                 step="0.0001"
-                value={redshiftInspected}
-                onChange={e => setRedshiftInspected(e.target.value)}
+                value={inspection.redshiftInspected}
+                onChange={e => inspection.setRedshiftInspected(e.target.value)}
                 placeholder="Leave blank to use auto"
                 disabled={!canEdit}
                 className="w-64 px-2 py-1 text-sm font-mono border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
@@ -342,8 +257,8 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
                 Quality<span className="text-red-500 dark:text-red-400">*</span>:
               </label>
               <select
-                value={redshiftQuality}
-                onChange={e => setRedshiftQuality(parseInt(e.target.value))}
+                value={inspection.redshiftQuality}
+                onChange={e => inspection.setRedshiftQuality(parseInt(e.target.value))}
                 disabled={!canEdit}
                 className="px-2 py-1 text-sm border border-border dark:border-slate-600 rounded text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
                 style={{ backgroundColor: qualityDef.color }}
@@ -362,22 +277,22 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
             <FilterChip
               label="Features"
               options={spectralFeatureOptions}
-              selected={spectralFeatures}
-              onChange={setSpectralFeatures}
+              selected={inspection.spectralFeatures}
+              onChange={inspection.setSpectralFeatures}
               disabled={!canEdit}
             />
             <FilterChip
               label="Object Type"
               options={objectFlagOptions}
-              selected={objectFlags}
-              onChange={setObjectFlags}
+              selected={inspection.objectFlags}
+              onChange={inspection.setObjectFlags}
               disabled={!canEdit}
             />
             <FilterChip
               label="Data Quality"
               options={dqFlagOptions}
-              selected={dqFlags}
-              onChange={setDqFlags}
+              selected={inspection.dqFlags}
+              onChange={inspection.setDqFlags}
               disabled={!canEdit}
             />
           </div>
@@ -386,12 +301,12 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
         {/* Save Button (Right Aligned, Small) */}
         {canEdit && (
           <div className="flex justify-end items-center gap-3">
-            {hasChanges && (
+            {inspection.hasChanges && (
               <p className="text-xs text-amber-600 dark:text-amber-400">
                 You have unsaved changes
               </p>
             )}
-            {redshiftQuality === 0 && (
+            {inspection.redshiftQuality === 0 && (
               <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
                 <AlertCircle className="w-3 h-3" />
                 Please set redshift quality before saving
@@ -400,10 +315,10 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
             <Button
               variant="primary"
               size="sm"
-              onClick={handleSave}
-              disabled={!hasChanges || saving || redshiftQuality === 0}
+              onClick={() => inspection.save()}
+              disabled={!inspection.hasChanges || inspection.saving || inspection.redshiftQuality === 0}
             >
-              {saving ? (
+              {inspection.saving ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin mr-2" />
                   Saving...

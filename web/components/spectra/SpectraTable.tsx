@@ -12,7 +12,8 @@ import {
   ColumnDef,
   VisibilityState,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { ArrowUpDown, ArrowUp, ArrowDown, ScanEye } from 'lucide-react';
+import { useAuth } from '@/lib/contexts/AuthContext';
 import { SpectrumObject, QUALITY_LABELS } from '@/lib/types';
 import { RGBThumbnail } from './RGBThumbnail';
 import { SpectrumThumbnailInline } from './SpectrumThumbnailInline';
@@ -161,6 +162,9 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   error = null,
   filters,
 }) => {
+  const { user, userProfile } = useAuth();
+  const canInspect = !!(user && userProfile?.can_comment);
+
   // Column visibility state with localStorage persistence
   const [columnVisibility, setColumnVisibility] = useColumnVisibility(
     SPECTRA_COLUMNS,
@@ -499,6 +503,28 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           {loading ? 'Loading...' : `${total.toLocaleString()} objects`}
         </div>
         <div className="flex items-center gap-1">
+          {canInspect && spectra.length > 0 && (
+            <Link
+              href={`/spectra/${encodeURIComponent(spectra[0].object_id)}?${currentFilterParams?.toString() || ''}&mode=inspect`}
+              onClick={() => {
+                const rows = table.getRowModel().rows;
+                const visibleIds = rows.map(r => r.original.object_id);
+                const pageIndex = table.getState().pagination.pageIndex;
+                const ps = table.getState().pagination.pageSize;
+                setNavCache({
+                  ids: visibleIds,
+                  filters: currentFilterParams?.toString() || '',
+                  sort: `${sortColumn}_${sortDirection}`,
+                  pageStart: pageIndex * ps,
+                  total,
+                });
+              }}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-primary hover:bg-primary-hover text-white transition-colors"
+            >
+              <ScanEye className="w-3.5 h-3.5" />
+              Inspect
+            </Link>
+          )}
           {filters && (
             <DownloadDropdown
               totalCount={total}

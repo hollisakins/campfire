@@ -244,6 +244,12 @@
     files = 'jw07076016001*'
     gratings = ['PRISM', 'G395M']
 
+[ember_uds_p3]
+    field = 'uds'
+    data_subdir = '7076'
+    files = 'jw07076018*'
+    gratings = ['PRISM', 'G395M']
+
 [ember_uds_p4]
     field = 'uds'
     data_subdir='7076'

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { Loader2, AlertCircle } from 'lucide-react';
 import type { SpectrumData } from '@/app/api/spectrum/route';
+import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
@@ -77,22 +78,36 @@ const getPlotlyColorscale = (name: Colorscale2D): PlotlyColorscale => {
   return CUSTOM_COLORSCALES[name] || 'Viridis';
 };
 
+interface CachedSpectrumData {
+  spectrum: SpectrumData;
+  fitData: RedshiftFitData | null;
+}
+
 interface SpectrumPlotProps {
   fitsPath: string;
   grating: string;
   initialRedshift?: number | null;
+  inspectionMode?: boolean;
+  getCachedData?: (fitsPath: string) => CachedSpectrumData | undefined;
 }
 
-export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, initialRedshift }) => {
+export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
+  fitsPath,
+  grating,
+  initialRedshift,
+  inspectionMode = false,
+  getCachedData
+}) => {
   const { spectrumPreferences, accentColorHex } = usePreferences();
   const { resolvedTheme } = useTheme();
 
   const [data, setData] = useState<SpectrumData | null>(null);
+  const [fitData, setFitData] = useState<RedshiftFitData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fluxUnit, setFluxUnit] = useState<FluxUnit>(spectrumPreferences.fluxUnit);
   const [colorscale, setColorscale] = useState<Colorscale2D>(spectrumPreferences.colorscale2D);
-  const [showEmissionLines, setShowEmissionLines] = useState(false);
+  const [showEmissionLines, setShowEmissionLines] = useState(inspectionMode);
   const [redshift, setRedshift] = useState(initialRedshift ?? 0);
   const [redshiftInput, setRedshiftInput] = useState((initialRedshift ?? 0).toFixed(4));
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
@@ -105,6 +120,14 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
     setColorMin(spectrumPreferences.snrMin);
     setColorMax(spectrumPreferences.snrMax);
   }, [spectrumPreferences]);
+
+  // Update redshift when prop changes (inspection mode navigation)
+  useEffect(() => {
+    if (initialRedshift !== null && initialRedshift !== undefined) {
+      setRedshift(initialRedshift);
+      setRedshiftInput(initialRedshift.toFixed(4));
+    }
+  }, [initialRedshift]);
 
   // Get current plot colors based on theme
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -122,19 +145,57 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
 
   useEffect(() => {
     async function fetchData() {
+      console.log(`[SpectrumPlot] Loading ${grating}, inspection=${inspectionMode}, hasCache=${!!getCachedData}`);
       setLoading(true);
       setError(null);
 
       try {
-        const response = await fetch(`/api/spectrum?path=${encodeURIComponent(fitsPath)}`);
-
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to load spectrum');
+        // In inspection mode, check cache first
+        if (inspectionMode && getCachedData) {
+          const cached = getCachedData(fitsPath);
+          if (cached) {
+            console.log(`[SpectrumPlot] ✓ Using cached data for ${grating}`);
+            setData(cached.spectrum);
+            setFitData(cached.fitData);
+            setLoading(false);
+            return;
+          }
+          console.log(`[SpectrumPlot] Cache miss for ${grating}, fetching...`);
         }
 
-        const spectrumData: SpectrumData = await response.json();
-        setData(spectrumData);
+        // Fallback to normal fetch (existing code)
+        if (inspectionMode) {
+          const [spectrumResponse, fitResponse] = await Promise.all([
+            fetch(`/api/spectrum?path=${encodeURIComponent(fitsPath)}`),
+            fetch(`/api/redshift-fit?path=${encodeURIComponent(fitsPath)}`),
+          ]);
+
+          if (!spectrumResponse.ok) {
+            const errorData = await spectrumResponse.json();
+            throw new Error(errorData.error || 'Failed to load spectrum');
+          }
+
+          const spectrumData: SpectrumData = await spectrumResponse.json();
+          setData(spectrumData);
+
+          if (fitResponse.ok) {
+            const fit: RedshiftFitData = await fitResponse.json();
+            setFitData(fit);
+          } else if (fitResponse.status !== 404) {
+            console.warn('Failed to fetch redshift fit data:', fitResponse.status);
+          }
+        } else {
+          // Normal mode: just fetch spectrum
+          const response = await fetch(`/api/spectrum?path=${encodeURIComponent(fitsPath)}`);
+
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to load spectrum');
+          }
+
+          const spectrumData: SpectrumData = await response.json();
+          setData(spectrumData);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load spectrum');
       } finally {
@@ -143,7 +204,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
     }
 
     fetchData();
-  }, [fitsPath]);
+  }, [fitsPath, inspectionMode, getCachedData, grating]);
 
   // Memoize processed spectrum data - must be before early returns
   const processedData = useMemo(() => {
@@ -163,18 +224,32 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
       err !== null ? convertToFlambda(err, wave[i]) : null
     );
 
-    return { wave, fnu: fnuValues, fnuErr, flambda, flambdaErr };
-  }, [data]);
+    // Process model data if available (inspection mode)
+    let modelWave: number[] | null = null;
+    let modelFnu: number[] | null = null;
+    let modelFlambda: number[] | null = null;
+
+    if (fitData) {
+      modelWave = fitData.model_wave;
+      modelFnu = fitData.model_fnu;
+      modelFlambda = fitData.model_fnu.map((f, i) =>
+        convertToFlambda(f, fitData.model_wave[i])
+      );
+    }
+
+    return { wave, fnu: fnuValues, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda };
+  }, [data, fitData]);
 
   // Memoize all plot data - must be before early returns
   const plotData = useMemo(() => {
     if (!data || !processedData) return null;
 
-    const { wave, fnu, fnuErr, flambda, flambdaErr } = processedData;
+    const { wave, fnu, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda } = processedData;
 
     // Select flux values based on current unit
     const flux = fluxUnit === 'fnu' ? fnu : flambda;
     const fluxErr = fluxUnit === 'fnu' ? fnuErr : flambdaErr;
+    const modelFlux = fluxUnit === 'fnu' ? modelFnu : modelFlambda;
     const fluxLabel = fluxUnit === 'fnu' ? 'fν (μJy)' : 'fλ (erg/s/cm²/Å)';
     const hoverLabel = fluxUnit === 'fnu' ? 'fν' : 'fλ';
 
@@ -309,6 +384,24 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
       });
     }
 
+    // Add best-fit model trace if available (inspection mode)
+    if (inspectionMode && modelWave && modelFlux) {
+      traces.push({
+        x: modelWave,
+        y: modelFlux,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: 'Model',
+        line: {
+          color: '#f97316',
+          width: 2,
+        },
+        hovertemplate: `λ: %{x:.3f} μm<br>${hoverLabel}: %{y:.3e}<extra></extra>`,
+        xaxis: 'x',
+        yaxis: 'y',
+      });
+    }
+
     // Add emission line markers if enabled
     if (showEmissionLines) {
       const visibleLines = EMISSION_LINES
@@ -337,6 +430,16 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
           yaxis: 'y',
         });
       });
+    }
+
+    // Calculate y-axis range for inspection mode (model-based autoscaling)
+    let yAxisRange: [number, number] | undefined;
+    if (inspectionMode && modelFlux && modelFlux.length > 0) {
+      const modelFluxMin = Math.min(...modelFlux);
+      const modelFluxMax = Math.max(...modelFlux);
+      const yMin = modelFluxMin * 0.9;
+      const yMax = modelFluxMax * 1.1;
+      yAxisRange = [yMin, yMax];
     }
 
     // Layout configuration with profile panel
@@ -374,6 +477,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
         exponentformat: 'e' as const,
         domain: [0, 0.7],
         anchor: 'x' as const,
+        ...(yAxisRange && { range: yAxisRange }), // Apply model-based range in inspection mode
       },
       // Y-axis for 2D heatmap (top-left)
       yaxis2: {
@@ -411,7 +515,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({ fitsPath, grating, i
     };
 
     return { traces, layout };
-  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating]);
+  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating, inspectionMode]);
 
   if (loading) {
     return (

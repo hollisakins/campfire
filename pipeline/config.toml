@@ -10,7 +10,7 @@
     data_dir = "/Users/hba423/simmons/campfire/pipeline/data" # Raw data (uncals) from MAST 
     products_dir = "/Users/hba423/simmons/campfire/pipeline/products" # Reduced data products (split by observation)
     pictureframe_dir = "/Users/hba423/simmons/campfire/pipeline/templates/pictureframe"
-    continuum_templates_file = "/Users/hba423/simmons/campfire/pipeline/templates/continuum_templates.pickle"
+    continuum_templates_file = "/Users/hba423/simmons/campfire/pipeline/templates/continuum_templates_hires.pickle"
 
 [paths.r_curve_files]
     prism = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_prism_disp.fits"
@@ -39,6 +39,9 @@
     cleanup_crfs = true
 
 [fitting]
-    ncores = 12
+    ncores = 1
     overwrite = true
     save_models = false
+    f_LSF_prism = 1.3
+    f_LSF_g395m = 1.5
+    

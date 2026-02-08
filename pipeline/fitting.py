@@ -13,7 +13,18 @@ python fitting.py --config config.toml
 
 """
 
+
+# IMPORTANT: Set thread limits BEFORE importing NumPy/SciPy
+# This prevents oversubscription on multi-core systems
 import os
+# if 'OMP_NUM_THREADS' not in os.environ:
+#     os.environ['OMP_NUM_THREADS'] = '16'
+# if 'MKL_NUM_THREADS' not in os.environ:
+#     os.environ['MKL_NUM_THREADS'] = '16'
+# if 'OPENBLAS_NUM_THREADS' not in os.environ:
+#     os.environ['OPENBLAS_NUM_THREADS'] = '16'
+# if 'VECLIB_MAXIMUM_THREADS' not in os.environ:
+#     os.environ['VECLIB_MAXIMUM_THREADS'] = '16'
 
 # import tqdm
 import glob
@@ -22,7 +33,7 @@ import logging
 import toml
 from pathlib import Path
 import pickle
-import time
+import time, tqdm
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -40,6 +51,101 @@ mp.set_start_method('fork')
 
 from spectres import spectres
 # from spectres.spectral_resampling_numba import spectres_numba as spectres
+
+
+def make_template_grid():
+    """
+    Generate template grids for continuum and emission line fitting.
+    
+    Creates two pickle files:
+    - continuum_templates.pickle: Stellar population models from bagpipes
+    - line_templates.pickle: Emission line templates for key transitions
+    
+    This function creates templates on a redshift grid from z=0 to z=20 with 0.001 spacing.
+    """
+    dz1 = 0.005
+    dz2 = 0.01
+    zgrid1 = np.arange(0, 13+dz1, dz1)
+    zgrid2 = np.arange(13+dz2,20.+dz1, dz2)
+    zgrid = np.append(zgrid1, zgrid2)
+    spec_wavs = np.linspace(5000, 56000, 3000)
+
+    import bagpipes as bp
+    templates = {
+        'age0.5_av0.8_steep': {'age': 0.5, 'tau': 2.0, 'zmet': 0.01, 'av': 0.8, 'delta': -1.5},
+        'age1.0_av0.01': {'age': 0.95, 'tau': 0.1, 'zmet': 0.2, 'av': 0.1},
+        'age0_av0.01':   {'age': 0,   'tau': 0.5, 'zmet': 0.2, 'av': 0.0},
+        'age0_av0.25':   {'age': 0,   'tau': 0.3, 'zmet': 0.5, 'av': 0.25},
+        'age0_av0.50':   {'age': 0,   'tau': 0.1, 'zmet': 1.0, 'av': 0.50},
+        'age0_av1.00':   {'age': 0,   'tau': 0.1, 'zmet': 1.0, 'av': 1.00},
+        'age0.2_av0.01': {'age': 0.2, 'tau': 0.5, 'zmet': 0.2, 'av': 0.0},
+        'age0.2_av0.25': {'age': 0.2, 'tau': 0.3, 'zmet': 0.5, 'av': 0.25},
+        'age0.2_av0.50': {'age': 0.2, 'tau': 0.5, 'zmet': 1.0, 'av': 0.50},
+        'age0.2_av1.00': {'age': 0.2, 'tau': 0.1, 'zmet': 1.0, 'av': 1.00},
+        'age0.5_av0.01': {'age': 0.5, 'tau': 0.5, 'zmet': 0.2, 'av': 0.0},
+        'age0.5_av0.50': {'age': 0.5, 'tau': 0.3, 'zmet': 0.5, 'av': 0.50},
+        'age0.5_av1.00': {'age': 0.5, 'tau': 0.1, 'zmet': 1.0, 'av': 1.00},
+        'age0.8_av0.01': {'age': 0.8, 'tau': 0.1, 'zmet': 0.2, 'av': 0.0},
+        'age0.8_av0.25': {'age': 0.8, 'tau': 0.3, 'zmet': 0.5, 'av': 0.25},
+        'age0.8_av0.50': {'age': 0.8, 'tau': 0.1, 'zmet': 1.0, 'av': 0.50},
+    }
+
+    boost_av = 1+3*np.exp(-0.5*(zgrid-2.8)**2/(2)**2)
+    from astropy.cosmology import Planck18 as cosmo
+    age = cosmo.age(zgrid).to('Gyr').value
+
+    template_grid = np.zeros((len(templates),len(zgrid),len(spec_wavs)))
+    
+    for j,template in enumerate(templates):
+        print(template)
+        for i in tqdm.tqdm(range(len(zgrid))):
+            z = zgrid[i]
+
+            model_components = {}
+            model_components['redshift'] = z
+
+            model_components['delayed'] = {}
+            model_components['delayed']['massformed'] = 9
+            Z = templates[template]['zmet']
+            model_components['delayed']['metallicity'] = np.interp(z, [0, 10], [Z, Z/2], left=Z, right=Z/2)
+            frac = templates[template]['age']
+            if frac==0:
+                model_components['delayed']['age'] = 0.01
+            else:
+                model_components['delayed']['age'] = age[i] * frac
+            model_components['delayed']['tau'] = templates[template]['tau']
+
+            if 'delta' in templates[template]:
+                model_components['dust_atten'] = {}
+                model_components['dust_atten']['type'] = 'Salim'
+                model_components['dust_atten']['delta'] = templates[template]['delta']
+                model_components['dust_atten']['B'] = 0
+                model_components['dust_atten']['Av'] = templates[template]['av'] 
+            else:
+                model_components['dust_atten'] = {}
+                model_components['dust_atten']['type'] = 'Calzetti'
+                model_components['dust_atten']['Av'] = templates[template]['av'] * boost_av[i]
+
+            if i==0:
+                mgal = bp.model_galaxy(model_components, spec_wavs=spec_wavs)
+            else:
+                mgal.update(model_components)
+            
+            flam = mgal.spectrum[:,1]
+            fnu = flam * spec_wavs**2
+            fnu = fnu / np.nanmedian(fnu)
+            
+            template_grid[j,i,:] = fnu
+
+    output = {
+        'templates': list(templates),
+        'redshifts': zgrid,
+        'wavelengths': spec_wavs/1e4,
+        'grid': template_grid
+    }
+    with open('templates/continuum_templates_hires.pickle', 'wb') as outfile:
+        pickle.dump(output, outfile)
+
 
 
 def air_to_vac(wav_air):
@@ -99,7 +205,7 @@ def resample_to_nonuniform_grid(old_wav, old_grid, R_curve_file, oversample=4):
     return temp_wav, temp_grid
 
 
-def convolve_with_lsf(temp_wav, temp_grid, oversample=4):
+def convolve_with_lsf(temp_wav, temp_grid, oversample=4, f_LSF=1.3):
     """
     Step 2: Convolve templates with Line Spread Function.
     
@@ -116,7 +222,7 @@ def convolve_with_lsf(temp_wav, temp_grid, oversample=4):
     --------
     array : LSF-convolved template grid
     """
-    sigma_pix = oversample/2.35/1.3  # sigma width of kernel in pixels
+    sigma_pix = oversample/2.35/f_LSF  # sigma width of kernel in pixels
     k_size = 4*int(sigma_pix+1)
     x_kernel_pix = np.arange(-k_size, k_size+1)
 
@@ -347,6 +453,9 @@ def main():
     ncores=options.get('ncores',1)
     save_models=options.get('save_models',False)
     overwrite=options.get('overwrite',False)
+    f_LSF=options.get('f_LSF',1.3)
+    f_LSF_prism = options.get('f_LSF_prism',f_LSF)
+    f_LSF_g395m = options.get('f_LSF_g395m',f_LSF)
     
     # Set up logging
     log_config = config.get('logging', {})
@@ -520,12 +629,13 @@ def main():
                             broadline_templates['grid']
                             ))
     
+        oversample = 1
         logger.info('Resampling template grid to non-uniform wavelength grid')
-        convolved_wav, temp_grid = resample_to_nonuniform_grid(template_wav, templates, file_paths['r_curve_file'], oversample=4)
+        convolved_wav, temp_grid = resample_to_nonuniform_grid(template_wav, templates, file_paths['r_curve_file'], oversample=oversample)
         convolved_wav=convolved_wav.astype('float32')
         
         logger.info('Convolving template grid with LSF')
-        convolved_grid = convolve_with_lsf(convolved_wav, temp_grid, oversample=4)
+        convolved_grid = convolve_with_lsf(convolved_wav, temp_grid, oversample=oversample, f_LSF=f_LSF)
         convolved_grid=convolved_grid.astype('float32')
         
         all_spec_files= np.array(sorted(glob.glob(file_paths['input_path']+f'/*{grating.lower()}*_spec.fits')))
@@ -567,4 +677,6 @@ def main():
 
     return 0
 
-if __name__ == "__main__": exit(main())
+if __name__ == "__main__": 
+    # make_template_grid()
+    exit(main())

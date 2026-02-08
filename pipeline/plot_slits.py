@@ -435,9 +435,9 @@ def main():
     for i in tqdm.tqdm(range(len(object_ids))):
         object_id = object_ids[i]
         srcid = srcids[i]
-        # print(object_id)
-        # if object_id not in ['capers_egs_p5_16994']:
-            # continue
+        # if object_id not in ['capers_uds_p6_111893']:
+        #     continue
+        print(object_id)
         
         spec_files = glob.glob(f'products/{obs}/{obs}_*_{srcid}_spec.fits')
         
