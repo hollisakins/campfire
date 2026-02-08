@@ -215,48 +215,42 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
   // Handle browser back/forward navigation
   useEffect(() => {
-    const handlePopState = () => {
-      // Don't handle popstate while saving
-      if (inspectionState.saving) {
-        console.log('[InspectionMode] Blocked popstate during save');
-        return;
-      }
-
+    const handlePopState = async () => {
       // Extract objectId from current URL
       const pathMatch = window.location.pathname.match(/\/spectra\/([^/?]+)/);
       if (!pathMatch) return;
 
       const urlObjectId = decodeURIComponent(pathMatch[1]);
 
-      // If URL changed to different object, fetch it
+      // If URL changed to different object, auto-save then load
       if (urlObjectId !== currentSpectrum.object_id) {
         console.log('[InspectionMode] Popstate detected, navigating to:', urlObjectId);
+
+        // Auto-save current changes before loading new object
+        redshiftSectionRef.current?.flushPendingChanges();
+        await inspectionState.saveIfDirty();
+
         const cached = getCached(urlObjectId);
         if (cached) {
-          // Use cache
           console.log('[InspectionMode] Using cached data for popstate');
           setCurrentSpectrum(cached.spectrum);
-          // Only update RGB URL if we have a valid one
           if (cached.rgbImageUrl !== null) {
             setCurrentRgbUrl(cached.rgbImageUrl);
           }
           setNav({ ...cached.nav, loading: false });
           inspectionState.resetState(cached.spectrum);
         } else {
-          // Fetch from server
           console.log('[InspectionMode] Fetching fresh data for popstate');
-          fetchObject(urlObjectId).then(data => {
-            if (data) {
-              setCurrentSpectrum(data.spectrum);
-              // Only update RGB URL if we have a valid one
-              if (data.rgbImageUrl !== null) {
-                setCurrentRgbUrl(data.rgbImageUrl);
-              }
-              setNav({ ...data.nav, loading: false });
-              inspectionState.resetState(data.spectrum);
-              setCached(urlObjectId, data);
+          const data = await fetchObject(urlObjectId);
+          if (data) {
+            setCurrentSpectrum(data.spectrum);
+            if (data.rgbImageUrl !== null) {
+              setCurrentRgbUrl(data.rgbImageUrl);
             }
-          });
+            setNav({ ...data.nav, loading: false });
+            inspectionState.resetState(data.spectrum);
+            setCached(urlObjectId, data);
+          }
         }
       }
     };
@@ -277,58 +271,37 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const handleNavigate = useCallback(async (objectId: string | null) => {
     if (!objectId) return;
 
-    // 1. Check cache first
+    // 1. Auto-save FIRST, before anything else (uses refs, always current)
+    redshiftSectionRef.current?.flushPendingChanges();
+    const saveResult = await inspectionState.saveIfDirty();
+    if (saveResult.reason === 'quality-zero') {
+      setAutoSaveHint('Set quality to auto-save');
+      setTimeout(() => setAutoSaveHint(null), 2000);
+    }
+
+    // 2. Check cache
     const cached = getCached(objectId);
     if (cached) {
       console.log('[InspectionMode] Using cached object for navigation');
-      console.log('[InspectionMode] Cached RGB URL:', cached.rgbImageUrl?.substring(0, 80) + '...');
-      console.log('[InspectionMode] Setting currentSpectrum.object_id to:', cached.spectrum.object_id);
       setCurrentSpectrum(cached.spectrum);
-      // Only update RGB URL if we have a valid one (don't overwrite with null)
       if (cached.rgbImageUrl !== null) {
-        console.log('[InspectionMode] Setting currentRgbUrl to:', cached.rgbImageUrl?.substring(0, 80) + '...');
         setCurrentRgbUrl(cached.rgbImageUrl);
-      } else {
-        console.warn('[InspectionMode] Cached RGB URL is null, keeping current');
       }
       setNav({ ...cached.nav, loading: false });
       inspectionState.resetState(cached.spectrum);
-      // Use replaceState to avoid Next.js router remount
       window.history.replaceState(null, '', buildUrl(objectId));
       prefetchAdjacent(cached.nav.prev, cached.nav.next, fetchObject, prefetchGratings);
       return;
     }
 
-    // 2. Prepare auto-save callback
-    const onBeforeNavigate = async () => {
-      // Flush any pending debounced redshift changes first
-      redshiftSectionRef.current?.flushPendingChanges();
-
-      if (inspectionState.hasChanges && inspectionState.redshiftQuality > 0) {
-        return await inspectionState.save();
-      }
-      if (inspectionState.hasChanges && inspectionState.redshiftQuality === 0) {
-        setAutoSaveHint('Set quality to auto-save');
-        setTimeout(() => setAutoSaveHint(null), 2000);
-        return false;
-      }
-      return true;
-    };
-
-    // 3. Fetch new data
-    const data = await navigateTo(objectId, onBeforeNavigate);
-    if (!data) return; // Navigation blocked or failed
+    // 3. Fetch new data (save already done above, so no onBeforeNavigate needed)
+    const data = await navigateTo(objectId, async () => true);
+    if (!data) return;
 
     // 4. Update state
-    console.log('[InspectionMode] Fetched RGB URL:', data.rgbImageUrl);
-    console.log('[InspectionMode] Setting currentSpectrum.object_id to:', data.spectrum.object_id);
     setCurrentSpectrum(data.spectrum);
-    // Only update RGB URL if we have a valid one
     if (data.rgbImageUrl !== null) {
-      console.log('[InspectionMode] Setting currentRgbUrl to:', data.rgbImageUrl?.substring(0, 80) + '...');
       setCurrentRgbUrl(data.rgbImageUrl);
-    } else {
-      console.warn('[InspectionMode] Fetched RGB URL is null, keeping current');
     }
     setNav({ ...data.nav, loading: false });
     inspectionState.resetState(data.spectrum);
@@ -352,7 +325,11 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     handleNavigate(nav.next);
   }, [handleNavigate, nav.next]);
 
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback(async () => {
+    // Auto-save before exiting
+    redshiftSectionRef.current?.flushPendingChanges();
+    await inspectionState.saveIfDirty();
+
     // Clear caches when explicitly exiting inspection mode
     clearGratingCache();
     clearCache();
@@ -361,7 +338,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     params.delete('mode');
     const qs = params.toString();
     router.push(`/spectra/${encodeURIComponent(currentSpectrum.object_id)}${qs ? `?${qs}` : ''}`);
-  }, [router, currentSpectrum.object_id, filterStr, clearGratingCache, clearCache]);
+  }, [router, currentSpectrum.object_id, filterStr, clearGratingCache, clearCache, inspectionState]);
 
   const handleCycleGrating = useCallback(() => {
     if (sortedSpectra.length <= 1) return;
