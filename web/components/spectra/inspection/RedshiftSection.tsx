@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useImperativeHandle, forwardRef } from 'react';
 import type { InspectionState } from '@/lib/hooks/useInspectionState';
 import { useDebounce } from '@/lib/hooks/useDebounce';
 
@@ -11,12 +11,16 @@ interface RedshiftSectionProps {
   redshiftInputRef?: React.RefObject<HTMLInputElement | null>;
 }
 
-export const RedshiftSection: React.FC<RedshiftSectionProps> = ({
+export interface RedshiftSectionHandle {
+  flushPendingChanges: () => void;
+}
+
+export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSectionProps>(({
   state,
   canEdit,
   redshiftAuto,
   redshiftInputRef,
-}) => {
+}, ref) => {
   const [localRedshift, setLocalRedshift] = useState(state.redshiftInspected);
   const debouncedRedshift = useDebounce(localRedshift, 300);
 
@@ -27,6 +31,16 @@ export const RedshiftSection: React.FC<RedshiftSectionProps> = ({
   useEffect(() => {
     setLocalRedshift(state.redshiftInspected);
   }, [state.redshiftInspected]);
+
+  // Expose method to immediately flush pending debounced changes
+  useImperativeHandle(ref, () => ({
+    flushPendingChanges: () => {
+      if (localRedshift !== state.redshiftInspected) {
+        console.log('[RedshiftSection] Flushing pending redshift:', localRedshift);
+        state.setRedshiftInspected(localRedshift);
+      }
+    },
+  }), [localRedshift, state]);
 
   // Calculate current redshift
   const currentRedshift = localRedshift ? parseFloat(localRedshift) : redshiftAuto;
@@ -89,4 +103,6 @@ export const RedshiftSection: React.FC<RedshiftSectionProps> = ({
       </p>
     </div>
   );
-};
+});
+
+RedshiftSection.displayName = 'RedshiftSection';

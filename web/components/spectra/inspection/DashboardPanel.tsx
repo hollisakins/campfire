@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { RGBImage } from '../RGBImage';
-import { RedshiftSection } from './RedshiftSection';
+import { RedshiftSection, type RedshiftSectionHandle } from './RedshiftSection';
 import { QualitySection } from './QualitySection';
 import { FlagsSection } from './FlagsSection';
 import { CommentsPreview } from './CommentsPreview';
@@ -17,6 +17,7 @@ interface DashboardPanelProps {
   canEdit: boolean;
   commentCount: number;
   redshiftInputRef?: React.RefObject<HTMLInputElement | null>;
+  redshiftSectionRef?: React.RefObject<RedshiftSectionHandle | null>;
   onSave: () => void;
   onSaveAndNext: () => void;
 }
@@ -28,6 +29,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
   canEdit,
   commentCount,
   redshiftInputRef,
+  redshiftSectionRef,
   onSave,
   onSaveAndNext,
 }) => {
@@ -42,6 +44,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
       {/* Scrollable sections below */}
       <div className="flex-1 overflow-y-auto">
         <RedshiftSection
+          ref={redshiftSectionRef}
           state={inspectionState}
           canEdit={canEdit}
           redshiftAuto={spectrum.redshift_auto}

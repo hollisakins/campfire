@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { InspectionHeader } from './InspectionHeader';
 import { DashboardPanel } from './DashboardPanel';
 import { KeyboardShortcutSheet } from './KeyboardShortcutSheet';
+import type { RedshiftSectionHandle } from './RedshiftSection';
 import { SpectrumPlot } from '../SpectrumPlot';
 import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
 import { useAuth } from '@/lib/contexts/AuthContext';
@@ -47,6 +48,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const supabase = createClient();
 
   const redshiftInputRef = useRef<HTMLInputElement>(null);
+  const redshiftSectionRef = useRef<RedshiftSectionHandle>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [autoSaveHint, setAutoSaveHint] = useState<string | null>(null);
   const [commentCount, setCommentCount] = useState(0);
@@ -302,6 +304,9 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
     // 2. Prepare auto-save callback
     const onBeforeNavigate = async () => {
+      // Flush any pending debounced redshift changes first
+      redshiftSectionRef.current?.flushPendingChanges();
+
       if (inspectionState.hasChanges && inspectionState.redshiftQuality > 0) {
         return await inspectionState.save();
       }
@@ -521,6 +526,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
           canEdit={canEdit}
           commentCount={commentCount}
           redshiftInputRef={redshiftInputRef}
+          redshiftSectionRef={redshiftSectionRef}
           onSave={handleSave}
           onSaveAndNext={handleSaveAndNext}
         />
