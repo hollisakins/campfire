@@ -520,6 +520,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
                 });
               }}
               className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-primary hover:bg-primary-hover text-white transition-colors"
+              title="Streamlined fullscreen view for rapid quality inspection. Auto-filters to uninspected objects and supports keyboard shortcuts for efficient review."
             >
               <ScanEye className="w-3.5 h-3.5" />
               Inspect
