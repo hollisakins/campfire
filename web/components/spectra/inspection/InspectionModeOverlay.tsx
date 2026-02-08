@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { Loader2, HelpCircle, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { InspectionHeader } from './InspectionHeader';
 import { DashboardPanel } from './DashboardPanel';
@@ -162,17 +163,34 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         }
         inspectionState.resetState(data.spectrum);
         window.history.replaceState(null, '', buildUrl(queue.firstId!));
+        setRedirectComplete(true);
+      } else {
+        // Fetch was aborted or failed — retry once
+        console.warn('[InspectionMode] Redirect fetch failed, retrying...');
+        const retry = await fetchObject(queue.firstId!);
+        if (retry) {
+          setCachedObject(queue.firstId!, retry);
+          setCurrentSpectrum(retry.spectrum);
+          if (retry.rgbImageUrl !== null) {
+            setCurrentRgbUrl(retry.rgbImageUrl);
+          }
+          inspectionState.resetState(retry.spectrum);
+          window.history.replaceState(null, '', buildUrl(queue.firstId!));
+        }
+        setRedirectComplete(true);
       }
-      setRedirectComplete(true);
     })();
   }, [queue.loading, queue.redirected, queue.firstId, fetchObject, inspectionState, setCachedObject]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Queue is ready when: loaded AND redirect resolved (either not needed or complete)
   const queueReady = !queue.loading && redirectComplete;
 
-  // Prefetch adjacent objects' data when queue position changes
+  // Prefetch adjacent objects' data when queue position changes.
+  // IMPORTANT: Must gate on queueReady (not just queue.loading) because fetchObject
+  // uses a shared AbortController — prefetching before redirect completes would abort
+  // the redirect's in-flight fetch.
   useEffect(() => {
-    if (queue.loading || queue.isEmpty) return;
+    if (!queueReady || queue.isEmpty) return;
 
     const prefetch = async (objectId: string | null) => {
       if (!objectId) return;
@@ -192,7 +210,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       await prefetch(queue.next);
       await prefetch(queue.prev);
     })();
-  }, [queue.next, queue.prev, queue.loading, queue.isEmpty, fetchObject, prefetchGratings, getCachedObject, setCachedObject]);
+  }, [queue.next, queue.prev, queueReady, queue.isEmpty, fetchObject, prefetchGratings, getCachedObject, setCachedObject]);
 
   // Handle browser back/forward navigation
   useEffect(() => {
@@ -383,21 +401,45 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       style={{ isolation: 'isolate' }}
       data-inspection-mode
     >
-      <InspectionHeader
-        objectId={currentSpectrum.object_id}
-        field={currentSpectrum.field}
-        programName={currentSpectrum.program_name || null}
-        index={queue.index}
-        total={queue.total}
-        loading={!queueReady || isNavigating}
-        hasPrev={!!queue.prev}
-        hasNext={!!queue.next}
-        commentCount={commentCount}
-        onPrev={handlePrev}
-        onNext={handleNext}
-        onToggleHelp={() => setShowHelp((prev) => !prev)}
-        onClose={handleClose}
-      />
+      {/* Minimal header while queue loads — no object-specific details */}
+      {!queueReady ? (
+        <div className="h-12 border-b border-border dark:border-slate-700 px-4 flex items-center justify-between bg-background dark:bg-slate-900 flex-shrink-0">
+          <div />
+          <Loader2 className="w-4 h-4 animate-spin text-text-secondary dark:text-slate-400" />
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setShowHelp((prev) => !prev)}
+              className="p-1.5 rounded hover:bg-card dark:hover:bg-slate-700 transition-colors text-text-secondary dark:text-slate-400"
+              title="Keyboard shortcuts (?)"
+            >
+              <HelpCircle className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleClose}
+              className="p-1.5 rounded hover:bg-card dark:hover:bg-slate-700 transition-colors text-text-secondary dark:text-slate-400"
+              title="Exit inspection mode (Esc)"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <InspectionHeader
+          objectId={currentSpectrum.object_id}
+          field={currentSpectrum.field}
+          programName={currentSpectrum.program_name || null}
+          index={queue.index}
+          total={queue.total}
+          loading={isNavigating}
+          hasPrev={!!queue.prev}
+          hasNext={!!queue.next}
+          commentCount={commentCount}
+          onPrev={handlePrev}
+          onNext={handleNext}
+          onToggleHelp={() => setShowHelp((prev) => !prev)}
+          onClose={handleClose}
+        />
+      )}
 
       {/* Navigation error banner */}
       {navigationError && (
