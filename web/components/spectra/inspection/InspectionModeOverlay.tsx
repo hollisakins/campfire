@@ -169,29 +169,18 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
   // Eager prefetch: Start immediately on mount (parallel with nav state load)
   useEffect(() => {
-    console.log('[InspectionMode] eagerPrefetch useEffect triggered');
     let cancelled = false;
 
     async function eagerPrefetch() {
-      console.log('[InspectionMode] eagerPrefetch function called');
       try {
-        // Fetch adjacent IDs immediately
-        console.log('[InspectionMode] About to call getAdjacentObjectIds with:', {
-          objectId: currentSpectrum.object_id,
-          filters,
-          sortColumn,
-          sortDirection
-        });
         const adjacentIds = await getAdjacentObjectIds(
           currentSpectrum.object_id,
           filters,
           sortColumn,
           sortDirection
         );
-        console.log('[InspectionMode] getAdjacentObjectIds returned:', adjacentIds);
 
         if (!cancelled) {
-          // Update nav state
           setNav({
             prev: adjacentIds.prev,
             next: adjacentIds.next,
@@ -202,7 +191,6 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
           // Start prefetching adjacent objects IMMEDIATELY (including FITS data)
           if (adjacentIds.next || adjacentIds.prev) {
-            console.log('[InspectionMode] Eager prefetch starting');
             prefetchAdjacent(adjacentIds.prev, adjacentIds.next, fetchObject, prefetchGratings);
           }
         }

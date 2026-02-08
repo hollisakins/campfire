@@ -668,20 +668,6 @@ export async function getAdjacentObjectIds(
     const commentSearchScope = isCommentSearch ? (searchScope === 'my_comments' ? 'just_me' : 'everyone') : null;
     const commentUserId = isCommentSearch ? user.id : null;
 
-    console.log('[getAdjacentObjectIds] Calling RPC with filters:', {
-      currentObjectId,
-      programs: filters?.programs,
-      fields: filters?.fields,
-      gratings: filters?.gratings,
-      redshift_min: filters?.redshift_min,
-      redshift_max: filters?.redshift_max,
-      max_snr_min: filters?.max_snr_min,
-      max_snr_max: filters?.max_snr_max,
-      redshift_quality: filters?.redshift_quality,
-      sortColumn,
-      sortDirection,
-    });
-
     // Call the lightweight RPC function
     const { data, error } = await supabase.rpc('get_adjacent_objects', {
       p_current_object_id: currentObjectId,
@@ -718,8 +704,6 @@ export async function getAdjacentObjectIds(
       p_sort_direction: sortDirection,
     });
 
-    console.log('[getAdjacentObjectIds] RPC response:', { error, data });
-
     if (error) {
       console.error('Error fetching adjacent objects:', error);
       return { prev: null, next: null, currentIndex: 0, total: 0 };
@@ -727,23 +711,16 @@ export async function getAdjacentObjectIds(
 
     // RPC returns a single row
     const result = data?.[0];
-    console.log('[getAdjacentObjectIds] Parsed result:', result);
-
     if (!result) {
-      console.log('[getAdjacentObjectIds] No result data returned from RPC');
       return { prev: null, next: null, currentIndex: 0, total: 0 };
     }
 
-    const adjacentData = {
+    return {
       prev: result.prev_object_id || null,
       next: result.next_object_id || null,
       currentIndex: Number(result.current_index) || 0,
       total: Number(result.total_count) || 0,
     };
-
-    console.log('[getAdjacentObjectIds] Returning:', adjacentData);
-
-    return adjacentData;
   } catch (err) {
     console.error('Error in getAdjacentObjectIds:', err);
     return { prev: null, next: null, currentIndex: 0, total: 0 };
