@@ -52,6 +52,8 @@ export const EMISSION_LINES = [
   { name: '[SII]₂', wave: 0.6731, color: '#ef4444' },    // red-500
   { name: '[SIII]₁', wave: 0.90686, color: '#e11d48' },  // rose-600
   { name: '[SIII]₂', wave: 0.95311, color: '#be123c' },  // rose-700
+  { name: 'HeI', wave: 1.0833315, color: '#a21caf' },    // fuchsia-700
+  { name: 'Paγ', wave: 1.0941090, color: '#c026d3' },    // fuchsia-600
   { name: 'Paβ', wave: 1.2822, color: '#dc2626' },       // red-600
   { name: 'Paα', wave: 1.8751, color: '#b91c1c' },       // red-700 (longest)
 ];
