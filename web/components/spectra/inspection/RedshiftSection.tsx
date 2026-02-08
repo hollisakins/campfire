@@ -24,13 +24,19 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
   const [localRedshift, setLocalRedshift] = useState(state.redshiftInspected);
   const debouncedRedshift = useDebounce(localRedshift, 300);
 
+  // Sync debounced value to inspection state.
+  // Use stable setter ref to avoid re-firing on every render
+  // (state object is a new reference each render).
+  const { setRedshiftInspected } = state;
   useEffect(() => {
-    state.setRedshiftInspected(debouncedRedshift);
-  }, [debouncedRedshift, state]);
+    setRedshiftInspected(debouncedRedshift);
+  }, [debouncedRedshift, setRedshiftInspected]);
 
+  // Sync inspection state back to local state on external changes (e.g. navigation).
+  // resetKey ensures this fires even when the value is batched back to the same string.
   useEffect(() => {
     setLocalRedshift(state.redshiftInspected);
-  }, [state.redshiftInspected]);
+  }, [state.redshiftInspected, state.resetKey]);
 
   // Expose method to immediately flush pending debounced changes
   useImperativeHandle(ref, () => ({

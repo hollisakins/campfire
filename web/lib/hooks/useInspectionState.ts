@@ -46,6 +46,8 @@ export interface InspectionState {
   saveIfDirty: () => Promise<SaveIfDirtyResult>;
   toggleFlag: (category: 'spectralFeatures' | 'objectFlags' | 'dqFlags', value: number) => void;
   resetState: (newData: InspectionInitialData) => void;
+  /** Counter that increments on every resetState call, used to force effect re-runs */
+  resetKey: number;
 }
 
 export function useInspectionState(
@@ -72,6 +74,8 @@ export function useInspectionState(
   const [saveSuccess, setSaveSuccess] = useState(false);
   // Bumped after each save to force useMemo recomputation of hasChanges
   const [saveCount, setSaveCount] = useState(0);
+  // Bumped on every resetState to force dependent effects to re-run
+  const [resetKey, setResetKey] = useState(0);
 
   // === Refs (always-current values for synchronous access) ===
   const valuesRef = useRef({
@@ -272,6 +276,7 @@ export function useInspectionState(
     _setDqFlags(decodeBitmask(newData.dq_flags, DQ_FLAGS));
     setSaveSuccess(false);
     setSaveError(null);
+    setResetKey(k => k + 1);
   }, []);
 
   return {
@@ -295,5 +300,6 @@ export function useInspectionState(
     saveIfDirty,
     toggleFlag,
     resetState,
+    resetKey,
   };
 }
