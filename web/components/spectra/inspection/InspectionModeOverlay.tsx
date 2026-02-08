@@ -9,12 +9,12 @@ import type { RedshiftSectionHandle } from './RedshiftSection';
 import { SpectrumPlot } from '../SpectrumPlot';
 import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import { getAdjacentObjectIds, type FilterOptions } from '@/lib/actions/spectra';
+import type { FilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import type { SpectrumObject } from '@/lib/types';
 import { useSpectrumDataCache } from '@/lib/hooks/useSpectrumDataCache';
 import { useObjectNavigation } from '@/lib/hooks/useObjectNavigation';
-import { useMultiObjectCache } from '@/lib/hooks/useMultiObjectCache';
+import { useInspectionQueue } from '@/lib/hooks/useInspectionQueue';
 import { createClient } from '@/lib/supabase/client';
 
 interface InspectionModeOverlayProps {
@@ -24,14 +24,6 @@ interface InspectionModeOverlayProps {
   filters: Partial<FilterOptions>;
   sortColumn: SortColumn;
   sortDirection: SortDirection;
-}
-
-interface NavState {
-  prev: string | null;
-  next: string | null;
-  index: number;
-  total: number;
-  loading: boolean;
 }
 
 export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
@@ -82,23 +74,20 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   // Spectrum data cache (for gratings)
   const { prefetchGratings, getCached: getCachedGrating, clearCache: clearGratingCache } = useSpectrumDataCache();
 
-  // Object cache (for navigation)
-  const { getCached, setCached, prefetchAdjacent, clearCache } = useMultiObjectCache();
-
-  // Navigation hook
-  const { navigateTo, fetchObject, isNavigating, navigationError, setNavigationError } = useObjectNavigation({
+  // Snapshot-based inspection queue (fetched once, stable navigation)
+  const queue = useInspectionQueue({
+    initialObjectId: spectrum.object_id,
     filters,
     sortColumn,
     sortDirection,
   });
 
-  // Navigation state
-  const [nav, setNav] = useState<NavState>({
-    prev: null,
-    next: null,
-    index: 0,
-    total: 0,
-    loading: true,
+  // Navigation hook (skipNavQuery: queue handles prev/next)
+  const { navigateTo, fetchObject, isNavigating, navigationError, setNavigationError } = useObjectNavigation({
+    filters,
+    sortColumn,
+    sortDirection,
+    skipNavQuery: true,
   });
 
   // Prefetch all gratings on mount for instant switching
@@ -137,75 +126,6 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     fetchCommentCount();
   }, [currentSpectrum.id, user, supabase]);
 
-  // Check URL on mount - if it doesn't match current state, load from cache
-  // This handles remounts with stale props (URL changed but props are old)
-  useEffect(() => {
-    const urlMatch = window.location.pathname.match(/\/spectra\/([^/?]+)/);
-    if (urlMatch) {
-      const urlObjectId = decodeURIComponent(urlMatch[1]);
-      if (urlObjectId !== currentSpectrum.object_id) {
-        console.log('[InspectionMode] URL mismatch on mount, checking cache:', urlObjectId);
-        const cached = getCached(urlObjectId);
-        if (cached) {
-          console.log('[InspectionMode] Loading from cache to fix URL mismatch');
-          console.log('[InspectionMode] Cached RGB URL:', cached.rgbImageUrl);
-          setCurrentSpectrum(cached.spectrum);
-          // Only update RGB URL if we have a valid one (don't overwrite with null)
-          if (cached.rgbImageUrl !== null) {
-            setCurrentRgbUrl(cached.rgbImageUrl);
-          }
-          setNav({ ...cached.nav, loading: false });
-          inspectionState.resetState(cached.spectrum);
-        }
-      }
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  // Empty deps - only run once on mount to fix URL/state mismatch
-
-  // NOTE: We DON'T clear cache on unmount because:
-  // 1. Cache is module-level and should persist across remounts
-  // 2. router.replace() causes remount, we want cache to survive
-  // 3. Cache will be cleared on handleClose (explicit exit) instead
-
-  // Eager prefetch: Start immediately on mount (parallel with nav state load)
-  useEffect(() => {
-    let cancelled = false;
-
-    async function eagerPrefetch() {
-      try {
-        const adjacentIds = await getAdjacentObjectIds(
-          currentSpectrum.object_id,
-          filters,
-          sortColumn,
-          sortDirection
-        );
-
-        if (!cancelled) {
-          setNav({
-            prev: adjacentIds.prev,
-            next: adjacentIds.next,
-            index: adjacentIds.currentIndex,
-            total: adjacentIds.total,
-            loading: false,
-          });
-
-          // Start prefetching adjacent objects IMMEDIATELY (including FITS data)
-          if (adjacentIds.next || adjacentIds.prev) {
-            prefetchAdjacent(adjacentIds.prev, adjacentIds.next, fetchObject, prefetchGratings);
-          }
-        }
-      } catch (error) {
-        console.error('[InspectionMode] Eager prefetch failed:', error);
-        if (!cancelled) {
-          setNav((prev) => ({ ...prev, loading: false }));
-        }
-      }
-    }
-
-    eagerPrefetch();
-    return () => { cancelled = true; };
-  }, [currentSpectrum.object_id, filters, sortColumn, sortDirection, prefetchAdjacent, fetchObject, prefetchGratings]);
-
   // Build navigation URL
   const buildUrl = useCallback((objectId: string) => {
     const params = new URLSearchParams(filterStr);
@@ -213,51 +133,72 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     return `/spectra/${encodeURIComponent(objectId)}?${params.toString()}`;
   }, [filterStr]);
 
+  // Handle queue redirect: if initial object not in queue, navigate to first queue item
+  const redirectHandledRef = useRef(false);
+  useEffect(() => {
+    if (redirectHandledRef.current) return;
+    if (queue.loading || !queue.redirected || !queue.firstId) return;
+    redirectHandledRef.current = true;
+
+    console.log('[InspectionMode] Object not in queue, redirecting to first item:', queue.firstId);
+    // Fetch the first queue item
+    (async () => {
+      const data = await fetchObject(queue.firstId!);
+      if (data) {
+        setCurrentSpectrum(data.spectrum);
+        if (data.rgbImageUrl !== null) {
+          setCurrentRgbUrl(data.rgbImageUrl);
+        }
+        inspectionState.resetState(data.spectrum);
+        window.history.replaceState(null, '', buildUrl(queue.firstId!));
+      }
+    })();
+  }, [queue.loading, queue.redirected, queue.firstId, fetchObject, inspectionState]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Prefetch next object's data when queue position changes
+  useEffect(() => {
+    if (queue.loading || queue.isEmpty) return;
+    if (queue.next) {
+      // Prefetch next object (spectrum + FITS)
+      fetchObject(queue.next).then(data => {
+        if (data) {
+          prefetchGratings(data.spectrum.spectra);
+        }
+      }).catch(() => {});
+    }
+  }, [queue.next, queue.loading, queue.isEmpty, fetchObject, prefetchGratings]);
+
   // Handle browser back/forward navigation
   useEffect(() => {
     const handlePopState = async () => {
-      // Extract objectId from current URL
       const pathMatch = window.location.pathname.match(/\/spectra\/([^/?]+)/);
       if (!pathMatch) return;
 
       const urlObjectId = decodeURIComponent(pathMatch[1]);
 
-      // If URL changed to different object, auto-save then load
       if (urlObjectId !== currentSpectrum.object_id) {
         console.log('[InspectionMode] Popstate detected, navigating to:', urlObjectId);
 
-        // Auto-save current changes before loading new object
         redshiftSectionRef.current?.flushPendingChanges();
         await inspectionState.saveIfDirty();
 
-        const cached = getCached(urlObjectId);
-        if (cached) {
-          console.log('[InspectionMode] Using cached data for popstate');
-          setCurrentSpectrum(cached.spectrum);
-          if (cached.rgbImageUrl !== null) {
-            setCurrentRgbUrl(cached.rgbImageUrl);
+        // Update queue position
+        queue.goTo(urlObjectId);
+
+        const data = await fetchObject(urlObjectId);
+        if (data) {
+          setCurrentSpectrum(data.spectrum);
+          if (data.rgbImageUrl !== null) {
+            setCurrentRgbUrl(data.rgbImageUrl);
           }
-          setNav({ ...cached.nav, loading: false });
-          inspectionState.resetState(cached.spectrum);
-        } else {
-          console.log('[InspectionMode] Fetching fresh data for popstate');
-          const data = await fetchObject(urlObjectId);
-          if (data) {
-            setCurrentSpectrum(data.spectrum);
-            if (data.rgbImageUrl !== null) {
-              setCurrentRgbUrl(data.rgbImageUrl);
-            }
-            setNav({ ...data.nav, loading: false });
-            inspectionState.resetState(data.spectrum);
-            setCached(urlObjectId, data);
-          }
+          inspectionState.resetState(data.spectrum);
         }
       }
     };
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [currentSpectrum.object_id, getCached, fetchObject, setCached, inspectionState]);
+  }, [currentSpectrum.object_id, fetchObject, inspectionState, queue]);
 
   // Body scroll prevention
   useEffect(() => {
@@ -267,11 +208,11 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     };
   }, []);
 
-  // Navigate with client-side data swapping
+  // Navigate with client-side data swapping (queue-based)
   const handleNavigate = useCallback(async (objectId: string | null) => {
     if (!objectId) return;
 
-    // 1. Auto-save FIRST, before anything else (uses refs, always current)
+    // 1. Auto-save FIRST
     redshiftSectionRef.current?.flushPendingChanges();
     const saveResult = await inspectionState.saveIfDirty();
     if (saveResult.reason === 'quality-zero') {
@@ -279,22 +220,10 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       setTimeout(() => setAutoSaveHint(null), 2000);
     }
 
-    // 2. Check cache
-    const cached = getCached(objectId);
-    if (cached) {
-      console.log('[InspectionMode] Using cached object for navigation');
-      setCurrentSpectrum(cached.spectrum);
-      if (cached.rgbImageUrl !== null) {
-        setCurrentRgbUrl(cached.rgbImageUrl);
-      }
-      setNav({ ...cached.nav, loading: false });
-      inspectionState.resetState(cached.spectrum);
-      window.history.replaceState(null, '', buildUrl(objectId));
-      prefetchAdjacent(cached.nav.prev, cached.nav.next, fetchObject, prefetchGratings);
-      return;
-    }
+    // 2. Update queue position
+    queue.goTo(objectId);
 
-    // 3. Fetch new data (save already done above, so no onBeforeNavigate needed)
+    // 3. Fetch object data (no nav query needed — queue provides prev/next)
     const data = await navigateTo(objectId, async () => true);
     if (!data) return;
 
@@ -303,42 +232,36 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     if (data.rgbImageUrl !== null) {
       setCurrentRgbUrl(data.rgbImageUrl);
     }
-    setNav({ ...data.nav, loading: false });
     inspectionState.resetState(data.spectrum);
 
     // 5. Update URL (use replaceState to avoid Next.js router remount)
     window.history.replaceState(null, '', buildUrl(objectId));
+  }, [navigateTo, inspectionState, buildUrl, queue]);
 
-    // 6. Cache and prefetch (including FITS data)
-    setCached(objectId, data);
-    prefetchAdjacent(data.nav.prev, data.nav.next, fetchObject, prefetchGratings);
-  }, [getCached, navigateTo, setCached, prefetchAdjacent, fetchObject, inspectionState, buildUrl, prefetchGratings]);
-
-  const handlePrev = useCallback(() => handleNavigate(nav.prev), [handleNavigate, nav.prev]);
-  const handleNext = useCallback(() => handleNavigate(nav.next), [handleNavigate, nav.next]);
+  const handlePrev = useCallback(() => handleNavigate(queue.prev), [handleNavigate, queue.prev]);
+  const handleNext = useCallback(() => handleNavigate(queue.next), [handleNavigate, queue.next]);
 
   const handleSave = useCallback(() => {
     inspectionState.save();
   }, [inspectionState]);
 
   const handleSaveAndNext = useCallback(() => {
-    handleNavigate(nav.next);
-  }, [handleNavigate, nav.next]);
+    handleNavigate(queue.next);
+  }, [handleNavigate, queue.next]);
 
   const handleClose = useCallback(async () => {
     // Auto-save before exiting
     redshiftSectionRef.current?.flushPendingChanges();
     await inspectionState.saveIfDirty();
 
-    // Clear caches when explicitly exiting inspection mode
+    // Clear grating cache when explicitly exiting inspection mode
     clearGratingCache();
-    clearCache();
 
     const params = new URLSearchParams(filterStr);
     params.delete('mode');
     const qs = params.toString();
     router.push(`/spectra/${encodeURIComponent(currentSpectrum.object_id)}${qs ? `?${qs}` : ''}`);
-  }, [router, currentSpectrum.object_id, filterStr, clearGratingCache, clearCache, inspectionState]);
+  }, [router, currentSpectrum.object_id, filterStr, clearGratingCache, inspectionState]);
 
   const handleCycleGrating = useCallback(() => {
     if (sortedSpectra.length <= 1) return;
@@ -426,11 +349,11 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         objectId={currentSpectrum.object_id}
         field={currentSpectrum.field}
         programName={currentSpectrum.program_name || null}
-        index={nav.index}
-        total={nav.total}
-        loading={nav.loading || isNavigating}
-        hasPrev={!!nav.prev}
-        hasNext={!!nav.next}
+        index={queue.index}
+        total={queue.total}
+        loading={queue.loading || isNavigating}
+        hasPrev={!!queue.prev}
+        hasNext={!!queue.next}
         commentCount={commentCount}
         onPrev={handlePrev}
         onNext={handleNext}
@@ -451,8 +374,25 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         </div>
       )}
 
+      {/* Empty queue message */}
+      {queue.isEmpty && (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <p className="text-lg text-text-secondary dark:text-slate-400 mb-4">
+              No uninspected objects match your filters.
+            </p>
+            <button
+              onClick={handleClose}
+              className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+            >
+              Exit Inspection Mode
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main content - spectrum on left, dashboard on right */}
-      <div className="flex-1 flex min-h-0">
+      {!queue.isEmpty && <div className="flex-1 flex min-h-0">
         {/* Left: Spectrum (expanded) */}
         <div className="flex-1 flex flex-col min-w-0 px-4 py-2">
           {/* Grating tabs */}
@@ -504,7 +444,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
           onSave={handleSave}
           onSaveAndNext={handleSaveAndNext}
         />
-      </div>
+      </div>}
 
       {/* Auto-save hint */}
       {autoSaveHint && (

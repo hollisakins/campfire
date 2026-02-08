@@ -10,10 +10,12 @@ interface UseObjectNavigationOptions {
   filters: Partial<FilterOptions>;
   sortColumn: SortColumn;
   sortDirection: SortDirection;
+  /** When true, fetchObject only fetches spectrum data (skips getAdjacentObjectIds) */
+  skipNavQuery?: boolean;
 }
 
 export function useObjectNavigation(options: UseObjectNavigationOptions) {
-  const { filters, sortColumn, sortDirection } = options;
+  const { filters, sortColumn, sortDirection, skipNavQuery } = options;
   const router = useRouter();
 
   const [isNavigating, setIsNavigating] = useState(false);
@@ -39,11 +41,13 @@ export function useObjectNavigation(options: UseObjectNavigationOptions) {
     abortControllerRef.current = controller;
 
     try {
-      // Fetch spectrum and navigation data in parallel
-      const [spectrumResult, adjacentIds] = await Promise.all([
-        getSpectrumById(objectId),
-        getAdjacentObjectIds(objectId, filters, sortColumn, sortDirection),
-      ]);
+      // Fetch spectrum data (and optionally navigation data in parallel)
+      const spectrumPromise = getSpectrumById(objectId);
+      const navPromise = skipNavQuery
+        ? Promise.resolve({ prev: null, next: null, currentIndex: 0, total: 0 })
+        : getAdjacentObjectIds(objectId, filters, sortColumn, sortDirection);
+
+      const [spectrumResult, adjacentIds] = await Promise.all([spectrumPromise, navPromise]);
 
       // Use API route URL directly as image src (browser follows redirect automatically)
       const rgbUrl = `/api/rgb-thumbnail?object_id=${encodeURIComponent(objectId)}`;
@@ -93,7 +97,7 @@ export function useObjectNavigation(options: UseObjectNavigationOptions) {
       setNavigationError(error instanceof Error ? error.message : 'Failed to load object');
       return null;
     }
-  }, [filters, sortColumn, sortDirection, router]);
+  }, [filters, sortColumn, sortDirection, skipNavQuery, router]);
 
   /**
    * Navigate to object with auto-save integration
