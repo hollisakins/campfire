@@ -26,13 +26,11 @@ export const EnterInspectionModeButton: React.FC<EnterInspectionModeButtonProps>
       <Link
         href={href}
         className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-primary hover:bg-primary-hover text-white transition-colors"
+        title="Streamlined fullscreen view for rapid quality inspection. Auto-filters to uninspected objects and supports keyboard shortcuts for efficient review."
       >
         <Maximize2 className="w-4 h-4" />
         Enter Inspection Mode
       </Link>
-      <span className="ml-3 text-xs text-text-secondary dark:text-slate-400">
-        Fullscreen keyboard-driven inspection
-      </span>
     </div>
   );
 };
