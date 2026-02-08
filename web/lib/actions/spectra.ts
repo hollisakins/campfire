@@ -680,6 +680,8 @@ export async function getAdjacentObjectIds(
       p_redshift_quality: filters?.redshift_quality && filters.redshift_quality.length > 0 ? filters.redshift_quality : null,
       p_redshift_min: filters?.redshift_min ?? null,
       p_redshift_max: filters?.redshift_max ?? null,
+      p_max_snr_min: filters?.max_snr_min ?? null,
+      p_max_snr_max: filters?.max_snr_max ?? null,
       // Route bitmask filters based on mode (any/all/none)
       p_spectral_features_include_any: sfIncludeAny,
       p_spectral_features_include_all: sfIncludeAll,
