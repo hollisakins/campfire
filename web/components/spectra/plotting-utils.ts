@@ -166,28 +166,36 @@ export function computeYRange(
     const hasErrors = fluxErr.slice(start, end).some(e => e !== null && e > 0);
 
     if (hasErrors) {
-      // Collect pixels with valid errors and compute SNR
-      const snrPixels: { flux: number; snr: number }[] = [];
+      // Collect valid errors to compute median
+      const validErrors: number[] = [];
       for (let i = start; i < end; i++) {
         const err = fluxErr[i];
-        if (err !== null && err > 0) {
-          snrPixels.push({ flux: flux[i], snr: Math.abs(flux[i] / err) });
+        if (err !== null && err > 0) validErrors.push(err);
+      }
+
+      if (validErrors.length < 5) return undefined;
+
+      validErrors.sort((a, b) => a - b);
+      const medianErr = validErrors[Math.floor(validErrors.length / 2)];
+
+      // Keep pixels with reasonable errors (reject bad detector regions),
+      // but don't filter by SNR — low-flux regions are legitimate
+      const reliableFlux: number[] = [];
+      for (let i = start; i < end; i++) {
+        const err = fluxErr[i];
+        if (err !== null && err > 0 && err < 3 * medianErr && isFinite(flux[i])) {
+          reliableFlux.push(flux[i]);
         }
       }
 
-      if (snrPixels.length < 5) return undefined;
+      if (reliableFlux.length < 5) return undefined;
 
-      // Sort by SNR descending, take top 80%
-      snrPixels.sort((a, b) => b.snr - a.snr);
-      const cutoff = Math.max(5, Math.floor(snrPixels.length * 0.8));
-      const kept = snrPixels.slice(0, cutoff);
-
-      rangeMin = kept[0].flux;
-      rangeMax = kept[0].flux;
-      for (let i = 1; i < kept.length; i++) {
-        if (kept[i].flux < rangeMin) rangeMin = kept[i].flux;
-        if (kept[i].flux > rangeMax) rangeMax = kept[i].flux;
-      }
+      // Use percentiles to set range (robust to remaining outliers)
+      reliableFlux.sort((a, b) => a - b);
+      const p2 = reliableFlux[Math.floor(reliableFlux.length * 0.02)];
+      const p98 = reliableFlux[Math.floor(reliableFlux.length * 0.98)];
+      rangeMin = p2;
+      rangeMax = p98;
     } else {
       // Fallback: 5th–95th percentile of trimmed flux
       const trimmedFlux = flux.slice(start, end).filter(v => isFinite(v));
