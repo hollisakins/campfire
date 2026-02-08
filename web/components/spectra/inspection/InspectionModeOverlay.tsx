@@ -135,13 +135,14 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
   // Handle queue redirect: if initial object not in queue, navigate to first queue item
   const redirectHandledRef = useRef(false);
+  const [redirectPending, setRedirectPending] = useState(false);
   useEffect(() => {
     if (redirectHandledRef.current) return;
     if (queue.loading || !queue.redirected || !queue.firstId) return;
     redirectHandledRef.current = true;
+    setRedirectPending(true);
 
     console.log('[InspectionMode] Object not in queue, redirecting to first item:', queue.firstId);
-    // Fetch the first queue item
     (async () => {
       const data = await fetchObject(queue.firstId!);
       if (data) {
@@ -152,8 +153,12 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         inspectionState.resetState(data.spectrum);
         window.history.replaceState(null, '', buildUrl(queue.firstId!));
       }
+      setRedirectPending(false);
     })();
   }, [queue.loading, queue.redirected, queue.firstId, fetchObject, inspectionState]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Queue is ready when: loaded AND (no redirect needed OR redirect complete)
+  const queueReady = !queue.loading && !redirectPending;
 
   // Prefetch next object's data when queue position changes
   useEffect(() => {
@@ -351,7 +356,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         programName={currentSpectrum.program_name || null}
         index={queue.index}
         total={queue.total}
-        loading={queue.loading || isNavigating}
+        loading={!queueReady || isNavigating}
         hasPrev={!!queue.prev}
         hasNext={!!queue.next}
         commentCount={commentCount}
@@ -374,8 +379,17 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         </div>
       )}
 
+      {/* Loading state while queue loads or redirect is in progress */}
+      {!queueReady && (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center text-text-secondary dark:text-slate-400">
+            Loading inspection queue...
+          </div>
+        </div>
+      )}
+
       {/* Empty queue message */}
-      {queue.isEmpty && (
+      {queueReady && queue.isEmpty && (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <p className="text-lg text-text-secondary dark:text-slate-400 mb-4">
@@ -392,7 +406,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       )}
 
       {/* Main content - spectrum on left, dashboard on right */}
-      {!queue.isEmpty && <div className="flex-1 flex min-h-0">
+      {queueReady && !queue.isEmpty && <div className="flex-1 flex min-h-0">
         {/* Left: Spectrum (expanded) */}
         <div className="flex-1 flex flex-col min-w-0 px-4 py-2">
           {/* Grating tabs */}
