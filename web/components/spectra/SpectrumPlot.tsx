@@ -402,6 +402,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       });
     }
 
+    // Smart y-axis auto-scaling (works in both normal and inspection mode)
+    const yAxisRange = computeYRange(flux, fluxErr, {
+      modelFlux,
+      modelWave: processedData.modelWave,
+      dataWave: wave,
+    });
+
     // Add emission line markers if enabled
     if (showEmissionLines) {
       const visibleLines = EMISSION_LINES
@@ -431,13 +438,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         });
       });
     }
-
-    // Smart y-axis auto-scaling (works in both normal and inspection mode)
-    const yAxisRange = computeYRange(flux, fluxErr, {
-      modelFlux,
-      modelWave: processedData.modelWave,
-      dataWave: wave,
-    });
 
     // Layout configuration with profile panel
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
