@@ -13,6 +13,7 @@ import type { FilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import type { SpectrumObject } from '@/lib/types';
 import { useSpectrumDataCache } from '@/lib/hooks/useSpectrumDataCache';
+import { useMultiObjectCache } from '@/lib/hooks/useMultiObjectCache';
 import { useObjectNavigation } from '@/lib/hooks/useObjectNavigation';
 import { useInspectionQueue } from '@/lib/hooks/useInspectionQueue';
 import { createClient } from '@/lib/supabase/client';
@@ -73,6 +74,9 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
   // Spectrum data cache (for gratings)
   const { prefetchGratings, getCached: getCachedGrating, clearCache: clearGratingCache } = useSpectrumDataCache();
+
+  // Object data cache (for prev/next prefetch)
+  const { getCached: getCachedObject, setCached: setCachedObject, clearCache: clearObjectCache } = useMultiObjectCache();
 
   // Snapshot-based inspection queue (fetched once, stable navigation)
   const queue = useInspectionQueue({
@@ -135,17 +139,23 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
   // Handle queue redirect: if initial object not in queue, navigate to first queue item
   const redirectHandledRef = useRef(false);
-  const [redirectPending, setRedirectPending] = useState(false);
+  const [redirectComplete, setRedirectComplete] = useState(false);
   useEffect(() => {
     if (redirectHandledRef.current) return;
-    if (queue.loading || !queue.redirected || !queue.firstId) return;
+    if (queue.loading) return;
     redirectHandledRef.current = true;
-    setRedirectPending(true);
+
+    if (!queue.redirected || !queue.firstId) {
+      // No redirect needed — mark complete immediately
+      setRedirectComplete(true);
+      return;
+    }
 
     console.log('[InspectionMode] Object not in queue, redirecting to first item:', queue.firstId);
     (async () => {
       const data = await fetchObject(queue.firstId!);
       if (data) {
+        setCachedObject(queue.firstId!, data);
         setCurrentSpectrum(data.spectrum);
         if (data.rgbImageUrl !== null) {
           setCurrentRgbUrl(data.rgbImageUrl);
@@ -153,25 +163,36 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         inspectionState.resetState(data.spectrum);
         window.history.replaceState(null, '', buildUrl(queue.firstId!));
       }
-      setRedirectPending(false);
+      setRedirectComplete(true);
     })();
-  }, [queue.loading, queue.redirected, queue.firstId, fetchObject, inspectionState]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [queue.loading, queue.redirected, queue.firstId, fetchObject, inspectionState, setCachedObject]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Queue is ready when: loaded AND (no redirect needed OR redirect complete)
-  const queueReady = !queue.loading && !redirectPending;
+  // Queue is ready when: loaded AND redirect resolved (either not needed or complete)
+  const queueReady = !queue.loading && redirectComplete;
 
-  // Prefetch next object's data when queue position changes
+  // Prefetch adjacent objects' data when queue position changes
   useEffect(() => {
     if (queue.loading || queue.isEmpty) return;
-    if (queue.next) {
-      // Prefetch next object (spectrum + FITS)
-      fetchObject(queue.next).then(data => {
+
+    const prefetch = async (objectId: string | null) => {
+      if (!objectId) return;
+      if (getCachedObject(objectId)) return; // Already cached
+      try {
+        const data = await fetchObject(objectId);
         if (data) {
+          setCachedObject(objectId, data);
           prefetchGratings(data.spectrum.spectra);
         }
-      }).catch(() => {});
-    }
-  }, [queue.next, queue.loading, queue.isEmpty, fetchObject, prefetchGratings]);
+      } catch { /* ignore prefetch errors */ }
+    };
+
+    // Sequential: fetchObject aborts the previous in-flight request,
+    // so we must await next (priority) before starting prev
+    (async () => {
+      await prefetch(queue.next);
+      await prefetch(queue.prev);
+    })();
+  }, [queue.next, queue.prev, queue.loading, queue.isEmpty, fetchObject, prefetchGratings, getCachedObject, setCachedObject]);
 
   // Handle browser back/forward navigation
   useEffect(() => {
@@ -190,8 +211,11 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         // Update queue position
         queue.goTo(urlObjectId);
 
-        const data = await fetchObject(urlObjectId);
+        // Check cache first
+        const cached = getCachedObject(urlObjectId);
+        const data = cached || await fetchObject(urlObjectId);
         if (data) {
+          if (!cached) setCachedObject(urlObjectId, data);
           setCurrentSpectrum(data.spectrum);
           if (data.rgbImageUrl !== null) {
             setCurrentRgbUrl(data.rgbImageUrl);
@@ -203,7 +227,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [currentSpectrum.object_id, fetchObject, inspectionState, queue]);
+  }, [currentSpectrum.object_id, fetchObject, inspectionState, queue, getCachedObject, setCachedObject]);
 
   // Body scroll prevention
   useEffect(() => {
@@ -228,9 +252,17 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     // 2. Update queue position
     queue.goTo(objectId);
 
-    // 3. Fetch object data (no nav query needed — queue provides prev/next)
-    const data = await navigateTo(objectId, async () => true);
-    if (!data) return;
+    // 3. Check object cache first
+    const cached = getCachedObject(objectId);
+    let data;
+    if (cached) {
+      data = cached;
+    } else {
+      // Cache miss — fetch from server
+      data = await navigateTo(objectId, async () => true);
+      if (!data) return;
+      setCachedObject(objectId, data);
+    }
 
     // 4. Update state
     setCurrentSpectrum(data.spectrum);
@@ -241,7 +273,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
     // 5. Update URL (use replaceState to avoid Next.js router remount)
     window.history.replaceState(null, '', buildUrl(objectId));
-  }, [navigateTo, inspectionState, buildUrl, queue]);
+  }, [navigateTo, inspectionState, buildUrl, queue, getCachedObject, setCachedObject]);
 
   const handlePrev = useCallback(() => handleNavigate(queue.prev), [handleNavigate, queue.prev]);
   const handleNext = useCallback(() => handleNavigate(queue.next), [handleNavigate, queue.next]);
@@ -259,14 +291,15 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     redshiftSectionRef.current?.flushPendingChanges();
     await inspectionState.saveIfDirty();
 
-    // Clear grating cache when explicitly exiting inspection mode
+    // Clear caches when explicitly exiting inspection mode
     clearGratingCache();
+    clearObjectCache();
 
     const params = new URLSearchParams(filterStr);
     params.delete('mode');
     const qs = params.toString();
     router.push(`/spectra/${encodeURIComponent(currentSpectrum.object_id)}${qs ? `?${qs}` : ''}`);
-  }, [router, currentSpectrum.object_id, filterStr, clearGratingCache, inspectionState]);
+  }, [router, currentSpectrum.object_id, filterStr, clearGratingCache, clearObjectCache, inspectionState]);
 
   const handleCycleGrating = useCallback(() => {
     if (sortedSpectra.length <= 1) return;

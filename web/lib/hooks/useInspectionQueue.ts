@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { getInspectionQueueIds, type FilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 
@@ -46,14 +46,8 @@ export function useInspectionQueue(options: UseInspectionQueueOptions): Inspecti
   const [error, setError] = useState<string | null>(null);
   const [redirected, setRedirected] = useState(false);
 
-  // Track whether we've already fetched to avoid double-fetch in StrictMode
-  const fetchedRef = useRef(false);
-
   // Fetch queue on mount (once)
   useEffect(() => {
-    if (fetchedRef.current) return;
-    fetchedRef.current = true;
-
     let cancelled = false;
 
     async function fetchQueue() {
