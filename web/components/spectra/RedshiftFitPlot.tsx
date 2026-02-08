@@ -18,6 +18,7 @@ import {
   getHoverLabel,
   createEmissionLineTraces,
   getPlotColors,
+  computeYRange,
 } from './plotting-utils';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 
@@ -211,14 +212,22 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
       },
     ];
 
+    // Smart y-axis auto-scaling
+    const yAxisRange = computeYRange(flux, fluxErr, {
+      modelFlux,
+      modelWave,
+      dataWave: wave,
+    });
+
     // Add emission lines to top subplot
     if (showEmissionLines) {
+      const emissionLineYRange = yAxisRange ?? [fluxMin, fluxMax];
       const emissionTraces = createEmissionLineTraces(
         redshift,
         waveMin,
         waveMax,
-        fluxMin,
-        fluxMax,
+        emissionLineYRange[0],
+        emissionLineYRange[1],
         'x',
         'y'
       );
@@ -291,6 +300,7 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
         zerolinecolor: colors.grid,
         exponentformat: 'e' as const,
         domain: [0.4, 1],
+        ...(yAxisRange && { range: yAxisRange }),
       },
       // Bottom subplot (chi² curve)
       xaxis2: {

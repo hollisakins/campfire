@@ -8,7 +8,7 @@ import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
-import { getPlotColors, EMISSION_LINES } from './plotting-utils';
+import { getPlotColors, EMISSION_LINES, computeYRange } from './plotting-utils';
 
 // Dynamic import of Plotly to avoid SSR issues
 const Plot = dynamic(() => import('react-plotly.js'), {
@@ -414,7 +414,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       visibleLines.forEach((line) => {
         traces.push({
           x: [line.observedWave, line.observedWave],
-          y: [Math.min(...flux) * 0.9, Math.max(...flux) * 1.1],
+          y: yAxisRange ?? [Math.min(...flux), Math.max(...flux)],
           type: 'scatter' as const,
           mode: 'lines' as const,
           name: line.name,
@@ -432,15 +432,12 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       });
     }
 
-    // Calculate y-axis range for inspection mode (model-based autoscaling)
-    let yAxisRange: [number, number] | undefined;
-    if (inspectionMode && modelFlux && modelFlux.length > 0) {
-      const modelFluxMin = Math.min(...modelFlux);
-      const modelFluxMax = Math.max(...modelFlux);
-      const yMin = modelFluxMin * 0.9;
-      const yMax = modelFluxMax * 1.1;
-      yAxisRange = [yMin, yMax];
-    }
+    // Smart y-axis auto-scaling (works in both normal and inspection mode)
+    const yAxisRange = computeYRange(flux, fluxErr, {
+      modelFlux,
+      modelWave: processedData.modelWave,
+      dataWave: wave,
+    });
 
     // Layout configuration with profile panel
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

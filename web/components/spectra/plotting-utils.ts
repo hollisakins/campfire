@@ -110,6 +110,107 @@ export function getVisibleEmissionLines(
 }
 
 /**
+ * Compute a smart y-axis range for spectrum plots.
+ *
+ * Uses model (if available) or high-SNR data points to determine
+ * a range that highlights real spectral features rather than noisy outliers.
+ *
+ * @returns A [yMin, yMax] tuple, or undefined to let Plotly auto-scale.
+ */
+export function computeYRange(
+  flux: number[],
+  fluxErr: (number | null)[],
+  options?: {
+    modelFlux?: number[] | null;
+    modelWave?: number[] | null;
+    dataWave?: number[];
+    edgeTrim?: number;
+  }
+): [number, number] | undefined {
+  const edgeTrim = options?.edgeTrim ?? 20;
+
+  // Edge trimming
+  const start = edgeTrim;
+  const end = flux.length - edgeTrim;
+  if (end - start < 10) return undefined;
+
+  let rangeMin: number;
+  let rangeMax: number;
+
+  const modelFlux = options?.modelFlux;
+  const modelWave = options?.modelWave;
+  const dataWave = options?.dataWave;
+
+  if (modelFlux && modelWave && modelFlux.length > 0 && dataWave) {
+    // Path A: Model available — use model points within trimmed data wavelength range
+    const trimmedWaveMin = dataWave[start];
+    const trimmedWaveMax = dataWave[end - 1];
+
+    const filteredModelFlux: number[] = [];
+    for (let i = 0; i < modelWave.length; i++) {
+      if (modelWave[i] >= trimmedWaveMin && modelWave[i] <= trimmedWaveMax) {
+        filteredModelFlux.push(modelFlux[i]);
+      }
+    }
+
+    if (filteredModelFlux.length === 0) return undefined;
+
+    rangeMin = filteredModelFlux[0];
+    rangeMax = filteredModelFlux[0];
+    for (let i = 1; i < filteredModelFlux.length; i++) {
+      if (filteredModelFlux[i] < rangeMin) rangeMin = filteredModelFlux[i];
+      if (filteredModelFlux[i] > rangeMax) rangeMax = filteredModelFlux[i];
+    }
+  } else {
+    // Path B: Data only — use high-SNR pixels or percentile fallback
+    const hasErrors = fluxErr.slice(start, end).some(e => e !== null && e > 0);
+
+    if (hasErrors) {
+      // Collect pixels with valid errors and compute SNR
+      const snrPixels: { flux: number; snr: number }[] = [];
+      for (let i = start; i < end; i++) {
+        const err = fluxErr[i];
+        if (err !== null && err > 0) {
+          snrPixels.push({ flux: flux[i], snr: Math.abs(flux[i] / err) });
+        }
+      }
+
+      if (snrPixels.length < 5) return undefined;
+
+      // Sort by SNR descending, take top 80%
+      snrPixels.sort((a, b) => b.snr - a.snr);
+      const cutoff = Math.max(5, Math.floor(snrPixels.length * 0.8));
+      const kept = snrPixels.slice(0, cutoff);
+
+      rangeMin = kept[0].flux;
+      rangeMax = kept[0].flux;
+      for (let i = 1; i < kept.length; i++) {
+        if (kept[i].flux < rangeMin) rangeMin = kept[i].flux;
+        if (kept[i].flux > rangeMax) rangeMax = kept[i].flux;
+      }
+    } else {
+      // Fallback: 5th–95th percentile of trimmed flux
+      const trimmedFlux = flux.slice(start, end).filter(v => isFinite(v));
+      if (trimmedFlux.length < 5) return undefined;
+
+      trimmedFlux.sort((a, b) => a - b);
+      const p5 = trimmedFlux[Math.floor(trimmedFlux.length * 0.05)];
+      const p95 = trimmedFlux[Math.floor(trimmedFlux.length * 0.95)];
+      rangeMin = p5;
+      rangeMax = p95;
+    }
+  }
+
+  // Safety: degenerate or invalid range
+  if (!isFinite(rangeMin) || !isFinite(rangeMax)) return undefined;
+  const totalRange = rangeMax - rangeMin;
+  if (totalRange <= 0) return undefined;
+
+  // Additive padding
+  return [rangeMin - 0.1 * totalRange, rangeMax + 0.1 * totalRange];
+}
+
+/**
  * Create Plotly traces for emission line markers
  */
 export function createEmissionLineTraces(
