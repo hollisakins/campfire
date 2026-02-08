@@ -77,7 +77,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const { prefetchGratings, getCached: getCachedGrating, clearCache: clearGratingCache } = useSpectrumDataCache();
 
   // Object data cache (for prev/next prefetch)
-  const { getCached: getCachedObject, setCached: setCachedObject, clearCache: clearObjectCache } = useMultiObjectCache();
+  const { getCached: getCachedObject, setCached: setCachedObject, deleteCached: deleteCachedObject, clearCache: clearObjectCache } = useMultiObjectCache();
 
   // Snapshot-based inspection queue (fetched once, stable navigation)
   const queue = useInspectionQueue({
@@ -224,7 +224,10 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         console.log('[InspectionMode] Popstate detected, navigating to:', urlObjectId);
 
         redshiftSectionRef.current?.flushPendingChanges();
-        await inspectionState.saveIfDirty();
+        const popSaveResult = await inspectionState.saveIfDirty();
+        if (popSaveResult.saved) {
+          deleteCachedObject(currentSpectrum.object_id);
+        }
 
         // Update queue position
         queue.goTo(urlObjectId);
@@ -245,7 +248,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [currentSpectrum.object_id, fetchObject, inspectionState, queue, getCachedObject, setCachedObject]);
+  }, [currentSpectrum.object_id, fetchObject, inspectionState, queue, getCachedObject, setCachedObject, deleteCachedObject]);
 
   // Body scroll prevention
   useEffect(() => {
@@ -262,6 +265,9 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     // 1. Auto-save FIRST
     redshiftSectionRef.current?.flushPendingChanges();
     const saveResult = await inspectionState.saveIfDirty();
+    if (saveResult.saved) {
+      deleteCachedObject(currentSpectrum.object_id);
+    }
     if (saveResult.reason === 'quality-zero') {
       setAutoSaveHint('Set quality to auto-save');
       setTimeout(() => setAutoSaveHint(null), 2000);
@@ -291,14 +297,17 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
     // 5. Update URL (use replaceState to avoid Next.js router remount)
     window.history.replaceState(null, '', buildUrl(objectId));
-  }, [navigateTo, inspectionState, buildUrl, queue, getCachedObject, setCachedObject]);
+  }, [navigateTo, inspectionState, buildUrl, queue, getCachedObject, setCachedObject, deleteCachedObject, currentSpectrum.object_id]);
 
   const handlePrev = useCallback(() => handleNavigate(queue.prev), [handleNavigate, queue.prev]);
   const handleNext = useCallback(() => handleNavigate(queue.next), [handleNavigate, queue.next]);
 
-  const handleSave = useCallback(() => {
-    inspectionState.save();
-  }, [inspectionState]);
+  const handleSave = useCallback(async () => {
+    const saved = await inspectionState.save();
+    if (saved) {
+      deleteCachedObject(currentSpectrum.object_id);
+    }
+  }, [inspectionState, deleteCachedObject, currentSpectrum.object_id]);
 
   const handleSaveAndNext = useCallback(() => {
     handleNavigate(queue.next);

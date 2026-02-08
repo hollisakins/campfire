@@ -134,6 +134,16 @@ export function useMultiObjectCache() {
   }, [getCached, setCached]);
 
   /**
+   * Delete a single entry from the cache (e.g. after saving inspection data)
+   */
+  const deleteCached = useCallback((objectId: string): void => {
+    if (objectCache.has(objectId)) {
+      objectCache.delete(objectId);
+      console.log(`[ObjectCache] INVALIDATED: ${objectId} (cache size: ${objectCache.size})`);
+    }
+  }, []);
+
+  /**
    * Clear the entire cache
    */
   const clearCache = useCallback((): void => {
@@ -144,6 +154,7 @@ export function useMultiObjectCache() {
   return {
     getCached,
     setCached,
+    deleteCached,
     prefetchAdjacent,
     clearCache,
   };
