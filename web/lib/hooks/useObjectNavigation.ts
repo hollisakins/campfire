@@ -1,0 +1,139 @@
+'use client';
+
+import { useState, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import { getSpectrumById, getAdjacentObjectIds, type FilterOptions } from '@/lib/actions/spectra';
+import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
+import type { NavigationData } from './useMultiObjectCache';
+
+interface UseObjectNavigationOptions {
+  filters: Partial<FilterOptions>;
+  sortColumn: SortColumn;
+  sortDirection: SortDirection;
+}
+
+export function useObjectNavigation(options: UseObjectNavigationOptions) {
+  const { filters, sortColumn, sortDirection } = options;
+  const router = useRouter();
+
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [navigationError, setNavigationError] = useState<string | null>(null);
+
+  // AbortController for canceling in-flight requests
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  /**
+   * Fetch object data (spectrum + RGB + navigation) in parallel
+   */
+  const fetchObject = useCallback(async (objectId: string): Promise<NavigationData | null> => {
+    console.log(`[Navigation] Fetching object: ${objectId}`);
+
+    // Cancel previous request
+    if (abortControllerRef.current) {
+      console.log('[Navigation] Aborting previous request');
+      abortControllerRef.current.abort();
+    }
+
+    // Create new controller
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    try {
+      // Fetch spectrum and navigation data in parallel
+      const [spectrumResult, adjacentIds] = await Promise.all([
+        getSpectrumById(objectId),
+        getAdjacentObjectIds(objectId, filters, sortColumn, sortDirection),
+      ]);
+
+      // Use API route URL directly as image src (browser follows redirect automatically)
+      const rgbUrl = `/api/rgb-thumbnail?object_id=${encodeURIComponent(objectId)}`;
+
+      // Check if aborted during fetch
+      if (controller.signal.aborted) {
+        console.log('[Navigation] Request was aborted');
+        return null;
+      }
+
+      // Handle authentication
+      if (!spectrumResult.isAuthenticated) {
+        console.error('[Navigation] User not authenticated');
+        router.push('/login?redirect=' + encodeURIComponent(window.location.pathname));
+        return null;
+      }
+
+      // Handle not found or error
+      if (!spectrumResult.spectrum) {
+        console.error(`[Navigation] Spectrum not found: ${objectId}`, spectrumResult.error);
+        setNavigationError(spectrumResult.error || 'Object not found');
+        return null;
+      }
+
+      // Clear error on success
+      setNavigationError(null);
+
+      return {
+        spectrum: spectrumResult.spectrum,
+        rgbImageUrl: rgbUrl,
+        nav: {
+          prev: adjacentIds.prev,
+          next: adjacentIds.next,
+          index: adjacentIds.currentIndex,
+          total: adjacentIds.total,
+        },
+      };
+    } catch (error) {
+      // Handle abort gracefully
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log('[Navigation] Request aborted');
+        return null;
+      }
+
+      // Handle other errors
+      console.error('[Navigation] Fetch failed:', error);
+      setNavigationError(error instanceof Error ? error.message : 'Failed to load object');
+      return null;
+    }
+  }, [filters, sortColumn, sortDirection, router]);
+
+  /**
+   * Navigate to object with auto-save integration
+   */
+  const navigateTo = useCallback(async (
+    objectId: string,
+    onBeforeNavigate: () => Promise<boolean>
+  ): Promise<NavigationData | null> => {
+    console.log(`[Navigation] Navigating to: ${objectId}`);
+    setIsNavigating(true);
+    setNavigationError(null);
+
+    try {
+      // Call pre-navigation hook (auto-save)
+      const canProceed = await onBeforeNavigate();
+
+      if (!canProceed) {
+        console.log('[Navigation] Navigation blocked by onBeforeNavigate');
+        setIsNavigating(false);
+        return null;
+      }
+
+      // Fetch new object data
+      const data = await fetchObject(objectId);
+      setIsNavigating(false);
+
+      return data;
+    } catch (error) {
+      console.error('[Navigation] Navigation failed:', error);
+      setNavigationError(error instanceof Error ? error.message : 'Navigation failed');
+      setIsNavigating(false);
+      return null;
+    }
+  }, [fetchObject]);
+
+  return {
+    isNavigating,
+    navigationError,
+    setNavigationError,
+    navigateTo,
+    fetchObject,
+  };
+}
