@@ -443,16 +443,16 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout: any = {
       uirevision: 'constant', // Preserve zoom/pan state across updates
+      font: { family: 'Roboto, sans-serif', color: plotColors.text },
       title: {
         text: `${grating} Spectrum`,
-        font: { size: 16, color: plotColors.text },
+        font: { size: 16 },
       },
       // X-axis: Shared wavelength axis for both 2D and 1D spectra (linked zoom/pan)
       xaxis: {
-        title: { text: 'Wavelength (μm)', font: { color: plotColors.text } },
+        title: { text: 'Wavelength (μm)' },
         gridcolor: plotColors.grid,
         zerolinecolor: plotColors.grid,
-        tickfont: { color: plotColors.text },
         domain: [0, 0.90],
       },
       // X-axis for profile panel (top-right, narrow)
@@ -467,10 +467,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       },
       // Y-axis for 1D spectrum (bottom)
       yaxis: {
-        title: { text: fluxLabel, font: { color: plotColors.text } },
+        title: { text: fluxLabel },
         gridcolor: plotColors.grid,
         zerolinecolor: plotColors.grid,
-        tickfont: { color: plotColors.text },
         exponentformat: 'e' as const,
         domain: [0, 0.7],
         anchor: 'x' as const,
@@ -478,9 +477,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       },
       // Y-axis for 2D heatmap (top-left)
       yaxis2: {
-        title: { text: 'y [pix]', font: { color: plotColors.text } },
+        title: { text: 'y [pix]' },
         gridcolor: plotColors.grid,
-        tickfont: { color: plotColors.text },
         domain: [0.78, 1],
         anchor: 'x' as const,
         range: [-10, 10],
@@ -493,7 +491,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         matches: 'y2' as const, // Link range to yaxis2
         showticklabels: false,
       },
-      margin: { l: 80, r: 80, t: 50, b: 50 },
+      margin: { l: 80, r: 20, t: 50, b: 50 },
       paper_bgcolor: plotColors.paper,
       plot_bgcolor: plotColors.bg,
       hovermode: 'x unified' as const,
@@ -506,7 +504,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         bgcolor: plotColors.paper,
         bordercolor: plotColors.grid,
         borderwidth: 1,
-        font: { size: 10, color: plotColors.text },
+        font: { size: 10 },
         tracegroupgap: 2,
       },
     };
