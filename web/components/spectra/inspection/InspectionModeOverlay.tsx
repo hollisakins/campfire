@@ -443,6 +443,9 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
           hasPrev={!!queue.prev}
           hasNext={!!queue.next}
           commentCount={commentCount}
+          gratings={sortedSpectra}
+          activeGratingIdx={activeGratingIdx}
+          onGratingChange={setActiveGratingIdx}
           onPrev={handlePrev}
           onNext={handleNext}
           onToggleHelp={() => setShowHelp((prev) => !prev)}
@@ -493,28 +496,6 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       {queueReady && !queue.isEmpty && <div className="flex-1 flex min-h-0">
         {/* Left: Spectrum (expanded) */}
         <div className="flex-1 flex flex-col min-w-0 px-4 py-2">
-          {/* Grating tabs */}
-          {sortedSpectra.length > 1 && (
-            <div className="flex gap-2 mb-2 flex-shrink-0">
-              {sortedSpectra.map((spec, idx) => (
-                <button
-                  key={spec.grating}
-                  onClick={() => setActiveGratingIdx(idx)}
-                  className={`px-4 py-2 text-sm font-medium rounded transition-colors
-                    ${idx === activeGratingIdx
-                      ? 'bg-primary text-white'
-                      : 'bg-card dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700 border border-border dark:border-slate-600'
-                    }`}
-                >
-                  <span className="mr-1">{spec.grating}</span>
-                  {idx === activeGratingIdx && (
-                    <kbd className="text-xs opacity-70">G</kbd>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-
           {/* Spectrum Plot */}
           {activeSpec && (
             <div className="flex-1 min-h-0 overflow-auto">

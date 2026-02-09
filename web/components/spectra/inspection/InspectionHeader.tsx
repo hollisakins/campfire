@@ -3,6 +3,10 @@
 import React from 'react';
 import { ChevronLeft, ChevronRight, HelpCircle, X, Loader2, MessageSquare } from 'lucide-react';
 
+interface GratingInfo {
+  grating: string;
+}
+
 interface InspectionHeaderProps {
   objectId: string;
   field: string;
@@ -13,6 +17,9 @@ interface InspectionHeaderProps {
   hasPrev: boolean;
   hasNext: boolean;
   commentCount: number;
+  gratings: GratingInfo[];
+  activeGratingIdx: number;
+  onGratingChange: (idx: number) => void;
   onPrev: () => void;
   onNext: () => void;
   onToggleHelp: () => void;
@@ -29,6 +36,9 @@ export const InspectionHeader: React.FC<InspectionHeaderProps> = ({
   hasPrev,
   hasNext,
   commentCount,
+  gratings,
+  activeGratingIdx,
+  onGratingChange,
   onPrev,
   onNext,
   onToggleHelp,
@@ -80,6 +90,28 @@ export const InspectionHeader: React.FC<InspectionHeaderProps> = ({
           ) : null}
         </span>
       </div>
+
+      {/* Grating toggle */}
+      {gratings.length > 1 && (
+        <div className="flex items-center gap-1">
+          {gratings.map((spec, idx) => (
+            <button
+              key={spec.grating}
+              onClick={() => onGratingChange(idx)}
+              className={`px-3 py-1 text-xs font-medium rounded transition-colors
+                ${idx === activeGratingIdx
+                  ? 'bg-primary text-white'
+                  : 'bg-card dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700 border border-border dark:border-slate-600'
+                }`}
+            >
+              <span className="mr-1">{spec.grating}</span>
+              {idx === activeGratingIdx && (
+                <kbd className="text-[10px] opacity-70">G</kbd>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Right: Help + Close */}
       <div className="flex items-center gap-1">
