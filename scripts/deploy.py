@@ -41,6 +41,7 @@ Behavior:
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -426,6 +427,15 @@ def determine_best_redshift(zfit_data_by_grating: dict[str, dict]) -> float | No
     return None
 
 
+def _compute_file_hash(path: Path) -> str:
+    """Compute SHA-256 hash of a file, returned as 'sha256:<hex>'."""
+    hasher = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            hasher.update(chunk)
+    return f"sha256:{hasher.hexdigest()}"
+
+
 def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
     """
     Read metadata from a FITS file.
@@ -495,8 +505,10 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
             # Calculated
             'signal_to_noise': max_sn,
 
-            # File reference
+            # File reference and integrity
             'fits_filename': fits_path.name,
+            'file_size': fits_path.stat().st_size,
+            'file_hash': _compute_file_hash(fits_path),
 
             # Pre-generated SVG thumbnails for the spectrum (both flux units)
             'thumbnail_svg_fnu': generate_spectrum_thumbnail_svg(
@@ -1027,6 +1039,8 @@ def batch_upsert_spectra(
             'signal_to_noise': m['signal_to_noise'],
             'thumbnail_svg_fnu': m.get('thumbnail_svg_fnu'),  # Pre-generated SVG thumbnail (f_nu)
             'thumbnail_svg_flambda': m.get('thumbnail_svg_flambda'),  # Pre-generated SVG thumbnail (f_lambda)
+            'file_hash': m.get('file_hash'),
+            'file_size': m.get('file_size'),
         }
         spectrum_records.append(data)
 

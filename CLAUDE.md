@@ -257,15 +257,25 @@ R2_PUBLIC_URL=https://data.campfire.com
    git push origin main
    ```
 
-5. **Database migrations** (manual step)
-   - Apply migrations via Supabase SQL Editor
-   - Located in: `web/supabase/migrations/`
-   - Test in staging environment first if possible
+5. **Database migrations** (via Supabase CLI)
+   ```bash
+   # Check migration status (local vs remote)
+   supabase migration list
+
+   # Push pending migrations to remote
+   supabase db push
+
+   # Reset local database (applies all migrations + seed)
+   cd supabase && supabase db reset
+   ```
+   - Migration files located in: `supabase/migrations/`
+   - Test locally with `supabase db reset` before pushing to remote
+   - Use `supabase migration repair --status applied <version>` to fix history mismatches
 
 ### Important Notes
 
 - **Pipeline code** (`pipeline/`) is local-only, not deployed
 - **Large files** (FITS, raw data) are gitignored and stored in R2
 - **Secrets** never committed (use Vercel env vars or gitignored config.toml)
-- **Database schema** tracked in `web/supabase/migrations/`
+- **Database schema** tracked in `supabase/migrations/`
 
