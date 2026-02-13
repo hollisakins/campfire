@@ -31,10 +31,19 @@ DEFAULT_BASE_URL = "https://campfire.hollisakins.com/api/v1"
 
 
 def get_base_url() -> str:
-    """Get the API base URL from environment or default."""
+    """Get the API base URL from environment, config, or default."""
     import os
 
-    return os.environ.get("CAMPFIRE_API_URL", DEFAULT_BASE_URL)
+    env_url = os.environ.get("CAMPFIRE_API_URL")
+    if env_url:
+        return env_url
+
+    from .config import Config
+    config = Config()
+    if config.exists() and config.base_url:
+        return config.base_url
+
+    return DEFAULT_BASE_URL
 
 
 def _require_auth(base_url: str) -> Tuple[TokenManager, str]:
@@ -130,6 +139,11 @@ def login(browser: Optional[bool], base_url: Optional[str]):
         _browser_login(base_url, creds)
     else:
         _api_key_login(base_url, creds)
+
+    # Save the base URL so subsequent commands use the same server
+    from .config import Config
+    config = Config()
+    config.base_url = base_url
 
     # First-time config setup
     _prompt_data_dir()
@@ -468,6 +482,7 @@ def observations(tracked: bool, json_out: bool, base_url: Optional[str]):
 @click.option("--base-url", default=None, help="API base URL")
 def add(obs_name: str, base_url: Optional[str]):
     """Track an observation for syncing."""
+    explicit_base_url = base_url is not None
     base_url = base_url or get_base_url()
     _, token = _require_auth(base_url)
 
@@ -501,6 +516,10 @@ def add(obs_name: str, base_url: Optional[str]):
     if obs_name in config.tracked_observations:
         click.echo(f"Already tracking: {obs_name}")
         return
+
+    # Persist the base URL if explicitly provided via --base-url
+    if explicit_base_url:
+        config.base_url = base_url
 
     config.add_observation(obs_name)
     config.ensure_data_dir()

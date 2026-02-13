@@ -14,7 +14,7 @@ else:
 import tomli_w
 
 CAMPFIRE_DIR = Path.home() / ".campfire"
-CONFIG_FILE = CAMPFIRE_DIR / "config"
+CONFIG_FILE = CAMPFIRE_DIR / "config.toml"
 DEFAULT_DATA_DIR = CAMPFIRE_DIR / "data"
 
 
@@ -43,6 +43,15 @@ class Config:
             if tmp.exists():
                 tmp.unlink()
             raise
+
+    @property
+    def base_url(self) -> Optional[str]:
+        return self._data.get("settings", {}).get("base_url")
+
+    @base_url.setter
+    def base_url(self, url: str) -> None:
+        self._data.setdefault("settings", {})["base_url"] = url
+        self._save()
 
     @property
     def data_dir(self) -> Path:
