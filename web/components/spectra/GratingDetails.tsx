@@ -47,13 +47,26 @@ export const GratingDetails: React.FC<GratingDetailsProps> = ({ spectrum }) => {
 
       {isOpen && (
         <div className="mt-4">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <div>
               <div className="text-xs text-text-secondary dark:text-slate-400 uppercase tracking-wide mb-1">
                 Configuration
               </div>
               <div className="text-sm font-mono text-text-primary dark:text-slate-100">
                 {spectrum.grating}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs text-text-secondary dark:text-slate-400 uppercase tracking-wide mb-1">
+                Exposure Time
+              </div>
+              <div className="text-sm font-mono text-text-primary dark:text-slate-100">
+                {spectrum.exposure_time != null
+                  ? spectrum.exposure_time >= 3600
+                    ? `${(spectrum.exposure_time / 3600).toFixed(1)} hr`
+                    : `${spectrum.exposure_time.toFixed(0)} s`
+                  : 'N/A'}
               </div>
             </div>
 

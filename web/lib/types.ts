@@ -174,6 +174,7 @@ export interface Spectrum {
   fits_path: string;
   reduction_version: string;
   signal_to_noise: number | null;
+  exposure_time: number | null;
   created_at: string;
   // Pre-generated SVG thumbnails (included when p_include_thumbnails=true in RPC)
   thumbnail_svg_fnu?: string | null;

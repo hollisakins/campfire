@@ -1039,6 +1039,7 @@ def batch_upsert_spectra(
             'signal_to_noise': m['signal_to_noise'],
             'thumbnail_svg_fnu': m.get('thumbnail_svg_fnu'),  # Pre-generated SVG thumbnail (f_nu)
             'thumbnail_svg_flambda': m.get('thumbnail_svg_flambda'),  # Pre-generated SVG thumbnail (f_lambda)
+            'exposure_time': m.get('exposure_time'),
             'file_hash': m.get('file_hash'),
             'file_size': m.get('file_size'),
         }
