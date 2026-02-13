@@ -617,7 +617,7 @@ def remove(obs_name: str, delete: bool, yes: bool, base_url: Optional[str]):
 
 @cli.command(name="sync")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
-@click.option("--workers", default=10, help="Parallel download workers")
+@click.option("--workers", default=4, help="Parallel download workers")
 @click.option("--observation", "obs_filter", multiple=True, help="Only sync specific observation(s)")
 @click.option("--dry-run", is_flag=True, help="Show plan without downloading")
 @click.option("--base-url", default=None, help="API base URL")

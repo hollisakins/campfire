@@ -5,12 +5,16 @@ local state, and downloads files in parallel with hash verification.
 """
 
 import hashlib
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import requests
 from tqdm import tqdm
+
+MAX_RETRIES = 4
+RETRY_BACKOFF = 2  # seconds, doubles each retry
 
 from .exceptions import DownloadError
 from .state import SyncState
@@ -86,45 +90,61 @@ def download_and_verify(spec: dict, obs_dir: Path, data_dir: Path) -> dict:
     """Download a single file, verify checksum, return result dict.
 
     Uses .tmp file pattern for atomic writes - partial downloads never
-    appear as complete files.
+    appear as complete files. Retries with exponential backoff on
+    transient network errors.
     """
     filename = Path(spec["fits_path"]).name
     local_path = obs_dir / filename
     tmp_path = local_path.with_suffix(".tmp")
 
-    response = requests.get(spec["download_url"], stream=True, timeout=300)
-    response.raise_for_status()
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.get(spec["download_url"], stream=True, timeout=300)
+            response.raise_for_status()
 
-    hasher = hashlib.sha256()
+            hasher = hashlib.sha256()
 
-    with open(tmp_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=65536):
-            f.write(chunk)
-            hasher.update(chunk)
+            with open(tmp_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=65536):
+                    f.write(chunk)
+                    hasher.update(chunk)
 
-    computed_hash = f"sha256:{hasher.hexdigest()}"
+            computed_hash = f"sha256:{hasher.hexdigest()}"
 
-    # Verify hash (skip if server hash is NULL - not yet backfilled)
-    if spec.get("file_hash") and computed_hash != spec["file_hash"]:
-        tmp_path.unlink()
-        raise DownloadError(
-            f"Hash mismatch for {spec['fits_path']}: "
-            f"expected {spec['file_hash']}, got {computed_hash}"
-        )
+            # Verify hash (skip if server hash is NULL - not yet backfilled)
+            if spec.get("file_hash") and computed_hash != spec["file_hash"]:
+                tmp_path.unlink()
+                raise DownloadError(
+                    f"Hash mismatch for {spec['fits_path']}: "
+                    f"expected {spec['file_hash']}, got {computed_hash}"
+                )
 
-    # Atomic rename
-    tmp_path.rename(local_path)
+            # Atomic rename
+            tmp_path.rename(local_path)
 
-    return {
-        "spectra_id": spec["spectra_id"],
-        "object_id": spec["object_id"],
-        "observation": spec.get("observation", obs_dir.name),
-        "grating": spec["grating"],
-        "fits_path": spec["fits_path"],
-        "local_path": str(local_path.relative_to(data_dir)),
-        "file_hash": computed_hash,
-        "file_size": local_path.stat().st_size,
-    }
+            return {
+                "spectra_id": spec["spectra_id"],
+                "object_id": spec["object_id"],
+                "observation": spec.get("observation", obs_dir.name),
+                "grating": spec["grating"],
+                "fits_path": spec["fits_path"],
+                "local_path": str(local_path.relative_to(data_dir)),
+                "file_hash": computed_hash,
+                "file_size": local_path.stat().st_size,
+            }
+
+        except DownloadError:
+            raise  # Don't retry hash mismatches
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_error = e
+            if tmp_path.exists():
+                tmp_path.unlink()
+            if attempt < MAX_RETRIES - 1:
+                wait = RETRY_BACKOFF * (2 ** attempt)
+                time.sleep(wait)
+
+    raise DownloadError(f"Failed after {MAX_RETRIES} attempts for {spec['fits_path']}: {last_error}")
 
 
 def sync_observation(
@@ -133,7 +153,7 @@ def sync_observation(
     obs_name: str,
     data_dir: Path,
     state: SyncState,
-    max_workers: int = 10,
+    max_workers: int = 4,
     dry_run: bool = False,
 ) -> dict:
     """Sync a single observation: fetch manifest, diff, download, update state.
