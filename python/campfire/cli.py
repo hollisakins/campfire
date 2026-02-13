@@ -629,6 +629,7 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
     from .state import SyncState
     from .sync import (
         create_authenticated_session,
+        create_download_session,
         refresh_session_token,
         sync_observation,
         format_size,
@@ -722,6 +723,7 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
 
     # Execute sync for each observation
     click.echo()
+    download_session = create_download_session(max_workers=workers)
     all_stats = []
     for plan in plans:
         obs = plan["observation"]
@@ -736,6 +738,7 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
                 session, base_url, obs,
                 config.data_dir, state,
                 max_workers=workers,
+                download_session=download_session,
             )
             all_stats.append(stats)
         except Exception as e:

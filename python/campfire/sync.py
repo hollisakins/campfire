@@ -5,19 +5,41 @@ local state, and downloads files in parallel with hash verification.
 """
 
 import hashlib
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
 from tqdm import tqdm
-
-MAX_RETRIES = 4
-RETRY_BACKOFF = 2  # seconds, doubles each retry
+from urllib3.util.retry import Retry
 
 from .exceptions import DownloadError
 from .state import SyncState
+
+
+def create_download_session(max_workers: int = 4) -> requests.Session:
+    """Create a requests.Session with connection pooling and retry for downloads.
+
+    Presigned R2 URLs are self-authenticating, so no auth headers are needed.
+    The pool is sized to match the number of workers so each thread gets a
+    persistent connection without contention.
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=4,
+        backoff_factor=2,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(
+        max_retries=retry,
+        pool_connections=max_workers,
+        pool_maxsize=max_workers,
+    )
+    session.mount("https://", adapter)
+    return session
 
 
 def create_authenticated_session(base_url: str) -> requests.Session:
@@ -86,65 +108,63 @@ def compute_download_plan(
     return new_files, updated_files, up_to_date
 
 
-def download_and_verify(spec: dict, obs_dir: Path, data_dir: Path) -> dict:
+def download_and_verify(
+    spec: dict,
+    obs_dir: Path,
+    data_dir: Path,
+    download_session: requests.Session,
+) -> dict:
     """Download a single file, verify checksum, return result dict.
 
     Uses .tmp file pattern for atomic writes - partial downloads never
-    appear as complete files. Retries with exponential backoff on
-    transient network errors.
+    appear as complete files. Retries are handled by the session's
+    urllib3 Retry adapter.
     """
     filename = Path(spec["fits_path"]).name
     local_path = obs_dir / filename
     tmp_path = local_path.with_suffix(".tmp")
 
-    last_error = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = requests.get(spec["download_url"], stream=True, timeout=300)
-            response.raise_for_status()
+    try:
+        response = download_session.get(spec["download_url"], stream=True, timeout=300)
+        response.raise_for_status()
 
-            hasher = hashlib.sha256()
+        hasher = hashlib.sha256()
 
-            with open(tmp_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=65536):
-                    f.write(chunk)
-                    hasher.update(chunk)
+        with open(tmp_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=65536):
+                f.write(chunk)
+                hasher.update(chunk)
 
-            computed_hash = f"sha256:{hasher.hexdigest()}"
+        computed_hash = f"sha256:{hasher.hexdigest()}"
 
-            # Verify hash (skip if server hash is NULL - not yet backfilled)
-            if spec.get("file_hash") and computed_hash != spec["file_hash"]:
-                tmp_path.unlink()
-                raise DownloadError(
-                    f"Hash mismatch for {spec['fits_path']}: "
-                    f"expected {spec['file_hash']}, got {computed_hash}"
-                )
+        # Verify hash (skip if server hash is NULL - not yet backfilled)
+        if spec.get("file_hash") and computed_hash != spec["file_hash"]:
+            tmp_path.unlink()
+            raise DownloadError(
+                f"Hash mismatch for {spec['fits_path']}: "
+                f"expected {spec['file_hash']}, got {computed_hash}"
+            )
 
-            # Atomic rename
-            tmp_path.rename(local_path)
+        # Atomic rename
+        tmp_path.rename(local_path)
 
-            return {
-                "spectra_id": spec["spectra_id"],
-                "object_id": spec["object_id"],
-                "observation": spec.get("observation", obs_dir.name),
-                "grating": spec["grating"],
-                "fits_path": spec["fits_path"],
-                "local_path": str(local_path.relative_to(data_dir)),
-                "file_hash": computed_hash,
-                "file_size": local_path.stat().st_size,
-            }
+        return {
+            "spectra_id": spec["spectra_id"],
+            "object_id": spec["object_id"],
+            "observation": spec.get("observation", obs_dir.name),
+            "grating": spec["grating"],
+            "fits_path": spec["fits_path"],
+            "local_path": str(local_path.relative_to(data_dir)),
+            "file_hash": computed_hash,
+            "file_size": local_path.stat().st_size,
+        }
 
-        except DownloadError:
-            raise  # Don't retry hash mismatches
-        except (requests.ConnectionError, requests.Timeout) as e:
-            last_error = e
-            if tmp_path.exists():
-                tmp_path.unlink()
-            if attempt < MAX_RETRIES - 1:
-                wait = RETRY_BACKOFF * (2 ** attempt)
-                time.sleep(wait)
-
-    raise DownloadError(f"Failed after {MAX_RETRIES} attempts for {spec['fits_path']}: {last_error}")
+    except DownloadError:
+        raise  # Don't retry hash mismatches
+    except requests.RequestException as e:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise DownloadError(f"Failed to download {spec['fits_path']}: {e}")
 
 
 def sync_observation(
@@ -155,6 +175,7 @@ def sync_observation(
     state: SyncState,
     max_workers: int = 4,
     dry_run: bool = False,
+    download_session: Optional[requests.Session] = None,
 ) -> dict:
     """Sync a single observation: fetch manifest, diff, download, update state.
 
@@ -185,12 +206,15 @@ def sync_observation(
     obs_dir = data_dir / obs_name
     obs_dir.mkdir(parents=True, exist_ok=True)
 
+    # Use provided download session or create one
+    dl_session = download_session or create_download_session(max_workers)
+
     log_id = state.log_sync_start(obs_name)
     bytes_downloaded = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_spec = {
-            executor.submit(download_and_verify, spec, obs_dir, data_dir): spec
+            executor.submit(download_and_verify, spec, obs_dir, data_dir, dl_session): spec
             for spec in to_download
         }
 
