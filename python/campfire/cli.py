@@ -478,15 +478,23 @@ def observations(tracked: bool, json_out: bool, base_url: Optional[str]):
 
 
 @cli.command()
-@click.argument("obs_name")
+@click.argument("obs_names", nargs=-1)
+@click.option("--all", "add_all", is_flag=True, help="Track all available observations")
 @click.option("--base-url", default=None, help="API base URL")
-def add(obs_name: str, base_url: Optional[str]):
-    """Track an observation for syncing."""
+def add(obs_names: tuple, add_all: bool, base_url: Optional[str]):
+    """Track observations for syncing.
+
+    Pass one or more observation names, or use --all to track everything.
+    """
+    if not obs_names and not add_all:
+        click.echo("Usage: campfire add <obs_name> [obs_name ...] or campfire add --all", err=True)
+        sys.exit(1)
+
     explicit_base_url = base_url is not None
     base_url = base_url or get_base_url()
     _, token = _require_auth(base_url)
 
-    # Validate observation exists
+    # Fetch available observations
     try:
         response = requests.get(
             f"{base_url}/observations",
@@ -499,35 +507,57 @@ def add(obs_name: str, base_url: Optional[str]):
         sys.exit(1)
 
     obs_list = response.json().get("observations", [])
-    obs_info = next((o for o in obs_list if o["observation"] == obs_name), None)
-
-    if not obs_info:
-        click.echo(f"✗ Observation '{obs_name}' not found or you don't have access", err=True)
-        # Suggest close matches
-        names = [o["observation"] for o in obs_list]
-        if names:
-            click.echo(f"  Available: {', '.join(names)}")
-        sys.exit(1)
+    obs_by_name = {o["observation"]: o for o in obs_list}
 
     from .config import Config
     from .sync import format_size
 
     config = Config()
-    if obs_name in config.tracked_observations:
-        click.echo(f"Already tracking: {obs_name}")
-        return
 
     # Persist the base URL if explicitly provided via --base-url
     if explicit_base_url:
         config.base_url = base_url
 
-    config.add_observation(obs_name)
-    config.ensure_data_dir()
+    if add_all:
+        to_add = [o for o in obs_list if o["observation"] not in config.tracked_observations]
+        if not to_add:
+            click.echo("Already tracking all available observations.")
+            return
+    else:
+        # Validate all requested names
+        to_add = []
+        for name in obs_names:
+            if name in config.tracked_observations:
+                click.echo(f"  Already tracking: {name}")
+                continue
+            if name not in obs_by_name:
+                click.echo(f"✗ Observation '{name}' not found or you don't have access", err=True)
+                available = list(obs_by_name.keys())
+                if available:
+                    click.echo(f"  Available: {', '.join(available)}")
+                sys.exit(1)
+            to_add.append(obs_by_name[name])
 
-    n_obj = obs_info.get("object_count", 0)
-    n_spec = obs_info.get("spectrum_count", 0)
-    size = format_size(obs_info.get("total_size_bytes", 0))
-    click.echo(f"\n✓ Now tracking: {obs_name} ({n_obj} objects, {n_spec} spectra, {size})")
+        if not to_add:
+            return
+
+    config.ensure_data_dir()
+    total_obj = 0
+    total_spec = 0
+    total_bytes = 0
+
+    for obs_info in to_add:
+        name = obs_info["observation"]
+        config.add_observation(name)
+        n_obj = obs_info.get("object_count", 0)
+        n_spec = obs_info.get("spectrum_count", 0)
+        size_bytes = obs_info.get("total_size_bytes", 0)
+        total_obj += n_obj
+        total_spec += n_spec
+        total_bytes += size_bytes
+        click.echo(f"  + {name} ({n_obj} objects, {n_spec} spectra, {format_size(size_bytes)})")
+
+    click.echo(f"\n✓ Now tracking {len(to_add)} observation(s) ({total_obj} objects, {total_spec} spectra, {format_size(total_bytes)})")
     click.echo(f"  Run 'campfire sync' to download.")
 
 
