@@ -185,6 +185,8 @@ export interface MockFilterOptions {
   redshift_max?: number | null;
   max_snr_min?: number | null;
   max_snr_max?: number | null;
+  max_exposure_time_min?: number | null;
+  max_exposure_time_max?: number | null;
   spectral_features?: number[];
   spectral_features_mode?: FilterMode;
   object_flags?: number[];
@@ -251,6 +253,14 @@ export function applyFiltersToMockData(
     }
     if (filters.max_snr_max !== undefined && filters.max_snr_max !== null) {
       if (!obj.max_snr || obj.max_snr > filters.max_snr_max) return false;
+    }
+
+    // Max exposure time range
+    if (filters.max_exposure_time_min !== undefined && filters.max_exposure_time_min !== null) {
+      if (!obj.max_exposure_time || obj.max_exposure_time < filters.max_exposure_time_min) return false;
+    }
+    if (filters.max_exposure_time_max !== undefined && filters.max_exposure_time_max !== null) {
+      if (!obj.max_exposure_time || obj.max_exposure_time > filters.max_exposure_time_max) return false;
     }
 
     // Spectral features bitmask with mode

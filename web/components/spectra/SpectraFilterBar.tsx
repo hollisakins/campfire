@@ -29,6 +29,8 @@ export interface AdvancedFilterOptions {
   redshift_max: number | null;
   max_snr_min: number | null;
   max_snr_max: number | null;
+  max_exposure_time_min: number | null;
+  max_exposure_time_max: number | null;
   spectral_features: number[];
   object_flags: number[];
   dq_flags: number[];
@@ -53,6 +55,8 @@ export const DEFAULT_FILTERS: AdvancedFilterOptions = {
   redshift_max: null,
   max_snr_min: null,
   max_snr_max: null,
+  max_exposure_time_min: null,
+  max_exposure_time_max: null,
   spectral_features: [],
   object_flags: [],
   dq_flags: [],
@@ -190,6 +194,8 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     (filters.gratings?.length ?? 0) +
     (filters.max_snr_min !== null ? 1 : 0) +
     (filters.max_snr_max !== null ? 1 : 0) +
+    (filters.max_exposure_time_min !== null ? 1 : 0) +
+    (filters.max_exposure_time_max !== null ? 1 : 0) +
     (filters.spectral_features?.length ?? 0) +
     (filters.object_flags?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
@@ -219,6 +225,8 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
       gratings_mode: 'any',
       max_snr_min: null,
       max_snr_max: null,
+      max_exposure_time_min: null,
+      max_exposure_time_max: null,
       spectral_features: [],
       spectral_features_mode: 'any',
       object_flags: [],

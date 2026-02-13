@@ -77,6 +77,8 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     redshift_max: parseNumber('z_max'),
     max_snr_min: parseNumber('snr_min'),
     max_snr_max: parseNumber('snr_max'),
+    max_exposure_time_min: parseNumber('exp_min'),
+    max_exposure_time_max: parseNumber('exp_max'),
     spectral_features: parseNumberArray('features'),
     object_flags: parseNumberArray('obj_flags'),
     dq_flags: parseNumberArray('dq_flags'),
@@ -159,6 +161,12 @@ export function filtersToURLParams(
   }
   if (filters.max_snr_max !== null) {
     params.set('snr_max', filters.max_snr_max.toString());
+  }
+  if (filters.max_exposure_time_min !== null) {
+    params.set('exp_min', filters.max_exposure_time_min.toString());
+  }
+  if (filters.max_exposure_time_max !== null) {
+    params.set('exp_max', filters.max_exposure_time_max.toString());
   }
   if (filters.spectral_features.length > 0) {
     params.set('features', filters.spectral_features.join(','));

@@ -44,6 +44,7 @@ const SPECTRA_COLUMNS: ColumnDefinition[] = [
   { id: 'spectrum_thumbnail', label: 'Spectrum', defaultVisible: true },
   { id: 'num_gratings', label: 'Gratings', defaultVisible: true },
   { id: 'max_snr', label: 'Max S/N', defaultVisible: true },
+  { id: 'max_exposure_time', label: 'Max Exp. Time', defaultVisible: false },
   { id: 'observation', label: 'Observation', defaultVisible: false },
 ];
 
@@ -57,6 +58,7 @@ const COLUMN_TO_SERVER_NAME: Record<string, SortColumn> = {
   'redshift': 'redshift',
   'redshift_quality': 'redshift_quality',
   'max_snr': 'max_snr',
+  'max_exposure_time': 'max_exposure_time',
 };
 
 interface SpectraTableProps {
@@ -419,6 +421,20 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         cell: ({ row }) => (
           <span className="text-sm font-mono text-text-primary dark:text-slate-100">
             {row.original.max_snr ? row.original.max_snr.toFixed(1) : 'N/A'}
+          </span>
+        ),
+        sortingFn: 'basic',
+      },
+      {
+        id: 'max_exposure_time',
+        minSize: 110,
+        accessorFn: (row) => row.max_exposure_time ?? 0,
+        header: ({ column }) => (
+          <SortableHeader column={column}>Exp. Time</SortableHeader>
+        ),
+        cell: ({ row }) => (
+          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+            {row.original.max_exposure_time ? `${row.original.max_exposure_time.toFixed(0)}s` : 'N/A'}
           </span>
         ),
         sortingFn: 'basic',

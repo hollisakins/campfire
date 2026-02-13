@@ -145,6 +145,10 @@ export async function GET(request: NextRequest) {
     const maxSnrMin = searchParams.get('max_snr_min');
     const maxSnrMax = searchParams.get('max_snr_max');
 
+    // Exposure time range
+    const maxExpTimeMin = searchParams.get('max_exposure_time_min');
+    const maxExpTimeMax = searchParams.get('max_exposure_time_max');
+
     // Bitmask filters (support both legacy single param and new multi-mode params)
     const spectralFeaturesQuery = parseFlagQuery(searchParams, 'spectral_features');
     const objectFlagsQuery = parseFlagQuery(searchParams, 'object_flags');
@@ -205,6 +209,8 @@ export async function GET(request: NextRequest) {
       p_redshift_max: redshiftMax ? parseFloat(redshiftMax) : null,
       p_max_snr_min: maxSnrMin ? parseFloat(maxSnrMin) : null,
       p_max_snr_max: maxSnrMax ? parseFloat(maxSnrMax) : null,
+      p_max_exposure_time_min: maxExpTimeMin ? parseFloat(maxExpTimeMin) : null,
+      p_max_exposure_time_max: maxExpTimeMax ? parseFloat(maxExpTimeMax) : null,
       p_spectral_features_include_any: spectralFeaturesQuery.include_any,
       p_spectral_features_include_all: spectralFeaturesQuery.include_all,
       p_spectral_features_exclude: spectralFeaturesQuery.exclude,

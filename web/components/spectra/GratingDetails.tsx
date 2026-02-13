@@ -63,9 +63,11 @@ export const GratingDetails: React.FC<GratingDetailsProps> = ({ spectrum }) => {
               </div>
               <div className="text-sm font-mono text-text-primary dark:text-slate-100">
                 {spectrum.exposure_time != null
-                  ? spectrum.exposure_time >= 3600
-                    ? `${(spectrum.exposure_time / 3600).toFixed(1)} hr`
-                    : `${spectrum.exposure_time.toFixed(0)} s`
+                  ? spectrum.exposure_time > 3600
+                    ? `${spectrum.exposure_time.toFixed(0)} s (${(spectrum.exposure_time / 3600).toFixed(2)} hr)`
+                    : spectrum.exposure_time > 1000
+                      ? `${spectrum.exposure_time.toFixed(0)} s (${(spectrum.exposure_time / 60).toFixed(2)} min)`
+                      : `${spectrum.exposure_time.toFixed(0)} s`
                   : 'N/A'}
               </div>
             </div>

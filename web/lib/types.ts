@@ -233,6 +233,7 @@ export interface SpectrumObject extends DbObject {
   program_name?: string;
   spectra: Spectrum[];
   max_snr?: number;
+  max_exposure_time?: number;
   num_gratings?: number;
   comments?: CommentWithUser[];
   hasSedPlot?: boolean;

@@ -24,6 +24,8 @@ export interface FilterOptions {
   redshift_max?: number | null;
   max_snr_min?: number | null;
   max_snr_max?: number | null;
+  max_exposure_time_min?: number | null;
+  max_exposure_time_max?: number | null;
   spectral_features?: number[];
   object_flags?: number[];
   dq_flags?: number[];
@@ -204,6 +206,8 @@ export async function getSpectra(
       p_redshift_max: filters?.redshift_max ?? null,
       p_max_snr_min: filters?.max_snr_min ?? null,
       p_max_snr_max: filters?.max_snr_max ?? null,
+      p_max_exposure_time_min: filters?.max_exposure_time_min ?? null,
+      p_max_exposure_time_max: filters?.max_exposure_time_max ?? null,
       // Route bitmask filters based on mode (any/all/none)
       p_spectral_features_include_any: sfIncludeAny,
       p_spectral_features_include_all: sfIncludeAll,
@@ -277,6 +281,7 @@ export async function getSpectra(
         distance: obj.distance ?? null,
         spectra: spectra,
         max_snr: obj.max_snr ?? undefined,
+        max_exposure_time: obj.max_exposure_time ?? undefined,
         num_gratings: spectra.length,
       } as SpectrumObject;
     });
@@ -672,6 +677,8 @@ export async function getInspectionQueueIds(
       p_redshift_max: filters?.redshift_max ?? null,
       p_max_snr_min: filters?.max_snr_min ?? null,
       p_max_snr_max: filters?.max_snr_max ?? null,
+      p_max_exposure_time_min: filters?.max_exposure_time_min ?? null,
+      p_max_exposure_time_max: filters?.max_exposure_time_max ?? null,
       p_spectral_features_include_any: sfIncludeAny,
       p_spectral_features_include_all: sfIncludeAll,
       p_spectral_features_exclude: sfExclude,
@@ -828,6 +835,8 @@ export async function getAdjacentObjectIds(
       p_redshift_max: filters?.redshift_max ?? null,
       p_max_snr_min: filters?.max_snr_min ?? null,
       p_max_snr_max: filters?.max_snr_max ?? null,
+      p_max_exposure_time_min: filters?.max_exposure_time_min ?? null,
+      p_max_exposure_time_max: filters?.max_exposure_time_max ?? null,
       // Route bitmask filters based on mode (any/all/none)
       p_spectral_features_include_any: sfIncludeAny,
       p_spectral_features_include_all: sfIncludeAll,

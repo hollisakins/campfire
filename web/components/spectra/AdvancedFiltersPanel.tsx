@@ -173,6 +173,8 @@ export function AdvancedFiltersPanel({
     (filters.gratings?.length ?? 0) +
     (filters.max_snr_min !== null ? 1 : 0) +
     (filters.max_snr_max !== null ? 1 : 0) +
+    (filters.max_exposure_time_min !== null ? 1 : 0) +
+    (filters.max_exposure_time_max !== null ? 1 : 0) +
     (filters.spectral_features?.length ?? 0) +
     (filters.object_flags?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
@@ -185,6 +187,8 @@ export function AdvancedFiltersPanel({
       gratings_mode: 'any',
       max_snr_min: null,
       max_snr_max: null,
+      max_exposure_time_min: null,
+      max_exposure_time_max: null,
       spectral_features: [],
       spectral_features_mode: 'any',
       object_flags: [],
@@ -357,6 +361,20 @@ export function AdvancedFiltersPanel({
               step={1}
               precision={0}
             />
+
+            <div className="mt-4">
+              <InlineRange
+                label="Max Exp. Time"
+                description="Maximum exposure time across all gratings (seconds)"
+                min={filters.max_exposure_time_min ?? null}
+                max={filters.max_exposure_time_max ?? null}
+                onChange={(min, max) => onFiltersChange({ ...filters, max_exposure_time_min: min, max_exposure_time_max: max })}
+                minBound={0}
+                maxBound={50000}
+                step={100}
+                precision={0}
+              />
+            </div>
           </div>
 
           {/* Object Flags Section */}

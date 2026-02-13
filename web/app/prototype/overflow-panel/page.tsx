@@ -45,6 +45,8 @@ const DEFAULT_FILTERS: FilterState = {
   redshift_max: null,
   max_snr_min: null,
   max_snr_max: null,
+  max_exposure_time_min: null,
+  max_exposure_time_max: null,
   spectral_features: [],
   spectral_features_mode: 'any',
   object_flags: [],
