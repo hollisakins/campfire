@@ -5,6 +5,7 @@ from astropy.io import fits
 from astropy.wcs import WCS, FITSFixedWarning
 from astropy.nddata import Cutout2D
 from astropy.nddata.utils import NoOverlapError
+from astropy.stats import sigma_clipped_stats
 import astropy.units as u
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -15,11 +16,95 @@ from scipy.optimize import curve_fit
 import warnings
 warnings.simplefilter('ignore')
 
+
+COSMOS_CATALOG = '/research/EMBER/target_selection/cosmos/data/cosmos_v1.2.1_positions.fits'
+COSMOS_IMAGE_DATA = {
+        'f115w': '/V/maurice/mosaics/cosmos/f115w/mosaic_nircam_f115w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
+        'f150w': '/V/maurice/mosaics/cosmos/f150w/mosaic_nircam_f150w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
+        'f200w': '/V/maurice/mosaics/cosmos/f200w/mosaic_nircam_f200w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
+        'f182m': '/V/maurice/mosaics/cosmos/f182m/mosaic_nircam_f182m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
+        'f210m': '/V/maurice/mosaics/cosmos/f210m/mosaic_nircam_f210m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
+        'f277w': '/V/maurice/mosaics/cosmos/f277w/mosaic_nircam_f277w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
+        'f356w': '/V/maurice/mosaics/cosmos/f356w/mosaic_nircam_f356w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
+        'f444w': '/V/maurice/mosaics/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
+    }
+
+UDS_CATALOG = '/V/maurice/primeruds_photom_v0.89.fits'
+UDS_IMAGE_DATA = {
+        'f115w': '/V/maurice/mosaics/uds/f115w/mosaic_nircam_f115w_uds_30mas_v0p5_primer_{ext}.fits',
+        'f150w': '/V/maurice/mosaics/uds/f150w/mosaic_nircam_f150w_uds_30mas_v0p5_primer_{ext}.fits',
+        'f277w': '/V/maurice/mosaics/uds/f277w/mosaic_nircam_f277w_uds_30mas_v0p5_primer_{ext}.fits',
+        'f182m': '/V/maurice/mosaics/uds/f182m/mosaic_nircam_f182m_uds_30mas_v0p5_primer_{ext}.fits',
+        'f200w': '/V/maurice/mosaics/uds/f200w/mosaic_nircam_f200w_uds_30mas_v0p5_primer_{ext}.fits',
+        'f210m': '/V/maurice/mosaics/uds/f210m/mosaic_nircam_f210m_uds_30mas_v0p5_primer_{ext}.fits',
+        'f356w': '/V/maurice/mosaics/uds/f356w/mosaic_nircam_f356w_uds_30mas_v0p5_primer_{ext}.fits',
+        'f444w': '/V/maurice/mosaics/uds/f444w/mosaic_nircam_f444w_uds_30mas_v0p5_primer_{ext}.fits',
+    }
+
+A2744_CATALOG = ''
+A2744_IMAGE_DATA = {
+        'f115w': '/V/maurice/mosaics/venus/a2744/f115w/a2744-f115w-clear_drc_{ext}.fits',
+        'f150w': '/V/maurice/mosaics/venus/a2744/f150w/a2744-f150w-clear_drc_{ext}.fits',
+        'f200w': '/V/maurice/mosaics/venus/a2744/f200w/a2744-f200w-clear_drc_{ext}.fits',
+        'f277w': '/V/maurice/mosaics/venus/a2744/f277w/a2744-f277w-clear_drc_{ext}.fits',
+        'f356w': '/V/maurice/mosaics/venus/a2744/f356w/a2744-f356w-clear_drc_{ext}.fits',
+        'f444w': '/V/maurice/mosaics/venus/a2744/f444w/a2744-f444w-clear_drc_{ext}.fits',
+    }
+
+EGS_CATALOG = '/V/maurice/ceers_photom_v0.9.fits'
+EGS_IMAGE_DATA = {
+        'f115w': '/V/maurice/mosaics/egs/ceers_nrc_f115w_{ext}.fits',
+        'f150w': '/V/maurice/mosaics/egs/ceers_nrc_f150w_{ext}.fits',
+        'f200w': '/V/maurice/mosaics/egs/ceers_nrc_f200w_{ext}.fits',
+        'f277w': '/V/maurice/mosaics/egs/ceers_nrc_f277w_{ext}.fits',
+        'f356w': '/V/maurice/mosaics/egs/ceers_nrc_f356w_{ext}.fits',
+        'f444w': '/V/maurice/mosaics/egs/ceers_nrc_f444w_{ext}.fits',
+    }
+
+
 # Fit a 2D polynomial to the offsets
 def poly2d(coords, a0, a1, a2, b0, b1, c0):
     """2nd order polynomial: a0 + a1*x + a2*y + b0*x^2 + b1*y^2 + c0*x*y"""
     ra, dec = coords
     return a0 + a1*ra + a2*dec + b0*ra**2 + b1*dec**2 + c0*ra*dec
+
+
+def gen_rgb_image(input_dict, noisesig=1, noiselum=0.1, satpercent=0.5, save=False):
+    filters = list(input_dict.keys())
+    filter_colors = {f:input_dict[f]['colors'] for f in filters}
+    image_data_dict = {f:input_dict[f]['data'] for f in filters}
+    rgb_lum_sum = np.zeros(3)
+    for i, filt in enumerate(filters):
+        rgb_lum_sum += np.array(filter_colors[filt])
+    unsatpercent = 1 - 0.01 * satpercent
+
+    rgb_total = 0
+    for filt in filters:
+        rgb = r, g, b = filter_colors[filt][:, np.newaxis, np.newaxis] * image_data_dict[filt]
+        rgb_total += rgb
+    r, g, b = rgb_average = rgb_total / rgb_lum_sum[:, np.newaxis, np.newaxis]
+
+    stds = [sigma_clipped_stats(i)[2] for i in [r,g,b]]
+    blackpoint = noisesig*np.max(stds)
+    whitepoint = np.nanpercentile([r,g,b], 100*unsatpercent)
+    r = (np.log10(r)-np.log10(blackpoint))/(np.log10(whitepoint)-np.log10(blackpoint))
+    r = r * (255*(1-noiselum)) + 255*noiselum
+    g = (np.log10(g)-np.log10(blackpoint))/(np.log10(whitepoint)-np.log10(blackpoint))
+    g = g * (255*(1-noiselum)) + 255*noiselum
+    b = (np.log10(b)-np.log10(blackpoint))/(np.log10(whitepoint)-np.log10(blackpoint))
+    b = b * (255*(1-noiselum)) + 255*noiselum
+    r = np.where(r>255,255,r)
+    g = np.where(g>255,255,g)
+    b = np.where(b>255,255,b)
+    r = np.where(np.isnan(r)|(r<0),0,r)
+    g = np.where(np.isnan(g)|(g<0),0,g)
+    b = np.where(np.isnan(b)|(b<0),0,b)
+
+    imrgb = np.array([r, g, b]).transpose((1,2,0)).astype(np.uint8)
+    if save:
+        mpl.image.imsave(save, imrgb)
+    return imrgb
+
 
 def get_tile(coords):
     """
@@ -65,6 +150,8 @@ def make_nircam_rgb_cutout(field, tile, coord, cutout_width=3*u.arcsec):
             image_data = UDS_IMAGE_DATA
         case 'egs':
             image_data = EGS_IMAGE_DATA
+        case 'a2744':
+            image_data = A2744_IMAGE_DATA
         case _:
             raise NotImplementedError
 
@@ -130,9 +217,9 @@ def make_nircam_rgb_cutout(field, tile, coord, cutout_width=3*u.arcsec):
     
     else:
         print(cutouts.keys())
-        raise RuntimeError("Couldn't find necessary cutouts to make RGB!")
+        print("Warning: Couldn't find necessary cutouts to make RGB!")
+        return None,None
 
-    from htools.utils.imaging import gen_rgb_image
     imrgb = gen_rgb_image(rgb_dict, noisesig=2.0, noiselum=0.12, satpercent=0.01)
     wcs = cutouts['f444w'].wcs
     ps = wcs.proj_plane_pixel_scales()[0].to(u.arcsec).value
@@ -141,36 +228,7 @@ def make_nircam_rgb_cutout(field, tile, coord, cutout_width=3*u.arcsec):
     return imrgb, extent
 
 
-COSMOS_IMAGE_DATA = {
-        'f115w': '/V/maurice/mosaics/cosmos/f115w/mosaic_nircam_f115w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-        'f150w': '/V/maurice/mosaics/cosmos/f150w/mosaic_nircam_f150w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-        'f200w': '/V/maurice/mosaics/cosmos/f200w/mosaic_nircam_f200w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-        'f182m': '/V/maurice/mosaics/cosmos/f182m/mosaic_nircam_f182m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-        'f210m': '/V/maurice/mosaics/cosmos/f210m/mosaic_nircam_f210m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-        'f277w': '/V/maurice/mosaics/cosmos/f277w/mosaic_nircam_f277w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-        'f356w': '/V/maurice/mosaics/cosmos/f356w/mosaic_nircam_f356w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-        'f444w': '/V/maurice/mosaics/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-    }
 
-UDS_IMAGE_DATA = {
-        'f115w': '/V/maurice/mosaics/uds/f115w/mosaic_nircam_f115w_uds_30mas_v0p5_primer_{ext}.fits',
-        'f150w': '/V/maurice/mosaics/uds/f150w/mosaic_nircam_f150w_uds_30mas_v0p5_primer_{ext}.fits',
-        'f277w': '/V/maurice/mosaics/uds/f277w/mosaic_nircam_f277w_uds_30mas_v0p5_primer_{ext}.fits',
-        'f182m': '/V/maurice/mosaics/uds/f182m/mosaic_nircam_f182m_uds_30mas_v0p5_primer_{ext}.fits',
-        'f200w': '/V/maurice/mosaics/uds/f200w/mosaic_nircam_f200w_uds_30mas_v0p5_primer_{ext}.fits',
-        'f210m': '/V/maurice/mosaics/uds/f210m/mosaic_nircam_f210m_uds_30mas_v0p5_primer_{ext}.fits',
-        'f356w': '/V/maurice/mosaics/uds/f356w/mosaic_nircam_f356w_uds_30mas_v0p5_primer_{ext}.fits',
-        'f444w': '/V/maurice/mosaics/uds/f444w/mosaic_nircam_f444w_uds_30mas_v0p5_primer_{ext}.fits',
-    }
-
-EGS_IMAGE_DATA = {
-        'f115w': '/V/maurice/mosaics/egs/ceers_nrc_f115w_{ext}.fits',
-        'f150w': '/V/maurice/mosaics/egs/ceers_nrc_f150w_{ext}.fits',
-        'f200w': '/V/maurice/mosaics/egs/ceers_nrc_f200w_{ext}.fits',
-        'f277w': '/V/maurice/mosaics/egs/ceers_nrc_f277w_{ext}.fits',
-        'f356w': '/V/maurice/mosaics/egs/ceers_nrc_f356w_{ext}.fits',
-        'f444w': '/V/maurice/mosaics/egs/ceers_nrc_f444w_{ext}.fits',
-    }
 
 def get_source_pos(spec_file):
     exp = Table.read(spec_file, hdu=7)
@@ -218,7 +276,7 @@ def plot_single_object(spec_files, field, output, cutout_width=3*u.arcsec, overr
     
     imrgb, extent = make_nircam_rgb_cutout(field, tile, source_c, cutout_width=cutout_width)
     if imrgb is None:
-        raise ValueError
+        return
 
     fig, ax = plt.subplots(figsize=(4,4))
 
@@ -383,20 +441,23 @@ def main():
         # Search for MSA catalog file
         msacat_file = f'products/{obs}/{obs}_msacat.csv'
         if not os.path.exists(msacat_file):
-            raise FileNotFoundError("No MSA catalog file found! Probably need to retrieve from APT")
+            raise FileNotFoundError(f"No MSA catalog file found! Probably need to retrieve from APT. Save to products/{obs}/{obs}_msacat.csv")
 
         msa_cat = Table.read(msacat_file)[1:]
         msa_coords = SkyCoord(msa_cat['RA'], msa_cat['DEC'], unit='deg')
 
         match field:
             case 'uds':
-                ref_cat = fits.open('/V/maurice/primeruds_photom_v0.89.fits')
+                ref_cat = fits.open(UDS_CATALOG)
                 ref_coords = SkyCoord(ref_cat[1].data['RA'], ref_cat[1].data['DEC'], unit='deg')
             case 'egs':
-                ref_cat = fits.open('/V/maurice/ceers_photom_v0.9.fits')
+                ref_cat = fits.open(EGS_CATALOG)
                 ref_coords = SkyCoord(ref_cat[1].data['RA'], ref_cat[1].data['DEC'], unit='deg')
             case 'cosmos':
-                ref_cat = fits.open('/research/COSMOS-3D/catalog_cosmos_v1.1_merged.fits')
+                ref_cat = fits.open(COSMOS_CATALOG)
+                ref_coords = SkyCoord(ref_cat[1].data['ra'], ref_cat[1].data['dec'], unit='deg')
+            case 'a2744':
+                ref_cat = fits.open(A2744_CATALOG)
                 ref_coords = SkyCoord(ref_cat[1].data['ra'], ref_cat[1].data['dec'], unit='deg')
             case _:
                 raise NotImplementedError
@@ -442,7 +503,6 @@ def main():
         spec_files = glob.glob(f'products/{obs}/{obs}_*_{srcid}_spec.fits')
         
         ra, dec = get_source_pos(spec_files[0])
-        print(object_id)
         
         if not skip_shifts:
             drai = dra_interp(ra,dec)/3600 
