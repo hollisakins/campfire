@@ -192,12 +192,23 @@ export function computeYRange(
 
       if (reliableFlux.length < 5) return undefined;
 
-      // Use percentiles to set range (robust to remaining outliers)
       reliableFlux.sort((a, b) => a - b);
-      const p2 = reliableFlux[Math.floor(reliableFlux.length * 0.02)];
-      const p98 = reliableFlux[Math.floor(reliableFlux.length * 0.98)];
-      rangeMin = p2;
-      rangeMax = p98;
+
+      // MAD-based bounds: tight around the median, robust to noise
+      const median = reliableFlux[Math.floor(reliableFlux.length / 2)];
+      const deviations = reliableFlux.map(v => Math.abs(v - median));
+      deviations.sort((a, b) => a - b);
+      const mad = deviations[Math.floor(deviations.length / 2)];
+      const madMin = median - 5 * mad;
+      const madMax = median + 5 * mad;
+
+      // Percentile bounds: safety net for bright features
+      const pLow = reliableFlux[Math.floor(reliableFlux.length * 0.005)];
+      const pHigh = reliableFlux[Math.floor(reliableFlux.length * 0.995)];
+
+      // Hybrid: take the wider bound at each end
+      rangeMin = Math.min(madMin, pLow);
+      rangeMax = Math.max(madMax, pHigh);
     } else {
       // Fallback: 5th–95th percentile of trimmed flux
       const trimmedFlux = flux.slice(start, end).filter(v => isFinite(v));
@@ -216,8 +227,8 @@ export function computeYRange(
   const totalRange = rangeMax - rangeMin;
   if (totalRange <= 0) return undefined;
 
-  // Additive padding
-  return [rangeMin - 0.1 * totalRange, rangeMax + 0.1 * totalRange];
+  // Additive padding (20% each side)
+  return [rangeMin - 0.2 * totalRange, rangeMax + 0.2 * totalRange];
 }
 
 /**
