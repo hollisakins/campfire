@@ -435,6 +435,8 @@ def main():
     parser.add_argument('--config', type=str, default='config.toml', help='Path to configuration file (default: config.toml)')
     parser.add_argument('--obs', type=str, required=True, help='Observation name from observations.toml')
     parser.add_argument('--source-ids', nargs='+', type=int, help='Individual source IDs to restrict processing to')
+    parser.add_argument('--overwrite', action='store_true',
+                        help='Overwrite existing products')
     args = parser.parse_args()
     config_path=args.config
     with open(config_path, 'r') as f: config = toml.load(f)
@@ -452,7 +454,7 @@ def main():
     options=config.get('fitting', {})
     ncores=options.get('ncores',1)
     save_models=options.get('save_models',False)
-    overwrite=options.get('overwrite',False)
+    overwrite=args.overwrite
     f_LSF=options.get('f_LSF',1.3)
     f_LSF_prism = options.get('f_LSF_prism',f_LSF)
     f_LSF_g395m = options.get('f_LSF_g395m',f_LSF)

@@ -51,3 +51,10 @@
     pi_name = "P. Arrabal Haro"
     description = "Spectroscopic follow-up of ultra high-z candidates in CEERS"
     is_public = true
+
+[[programs]]
+    program_id = 9214
+    program_name = "SPURS"
+    pi_name = "C. Mason & D. Stark"
+    description = "Ultra-deep G140M spectroscopy"
+    is_public = true

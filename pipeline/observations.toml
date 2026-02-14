@@ -367,3 +367,15 @@
     data_subdir = '7417'
     files = 'jw07417017001*'
     gratings = ['PRISM']
+
+[spurs_a2744]
+    field = 'a2744'
+    data_subdir = '9214'
+    files = 'jw0921400900*'
+    gratings = ['G140M','G235M','G395M']
+
+[spurs_a2744.stage1]
+    do_row_1f = false
+    [spurs_a2744.stage1.override_wavelength_range]
+        G140M = [0.97, 2.5]
+        G235M = [1.66, 4.0]

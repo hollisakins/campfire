@@ -14,7 +14,12 @@
 
 [paths.r_curve_files]
     prism = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_prism_disp.fits"
+    g395h = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g395h_disp.fits"
     g395m = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g395m_disp.fits"
+    g235h = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g235h_disp.fits"
+    g235m = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g235m_disp.fits"
+    g140h = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g140h_disp.fits"
+    g140m = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g140m_disp.fits"
 
 [logging]
     level = "INFO"  # DEBUG, INFO, WARNING, ERROR
@@ -29,19 +34,27 @@
     box_size = 8
     sigma_clip = true
     bkg_estimator = 'median'
+    do_col_1f = true       # subtract residual column-wise 1/f noise
+    do_row_1f = true       # subtract residual row-wise 1/f noise
     plot = true
+
+[stage1.override_wavelength_range]
+    # Per-grating wavelength range overrides for slit masking.
+    # Extend masks beyond default trace limits when needed.
+    # Example: G140M = [0.97, 2.5]
 
 [stage2]
     set_stellarity = 1.0
-    rectify = false # product rectified, background-subtracted products 
+    rectify = false # produce rectified, background-subtracted products 
 
 [stage3]
     cleanup_crfs = true
 
 [fitting]
-    ncores = 1
-    overwrite = true
+    ncores = 12
     save_models = false
     f_LSF_prism = 1.3
     f_LSF_g395m = 1.5
+    f_LSF_g235m = 1.5
+    f_LSF_g140m = 1.5
     

@@ -71,7 +71,7 @@ def load_config(config_path="config.toml"):
         config = toml.load(f)    
     return config
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Union, List
 from astropy.table import Table, Column
 from astropy.io.fits import table_to_hdu
@@ -203,6 +203,7 @@ class Observation:
     files: List[str]
     gratings: List[str]
     combine_dither: bool = True
+    stage_overrides: dict = field(default_factory=dict)
 
     directories_setup: bool = False
 
@@ -220,7 +221,7 @@ class Observation:
         
         obs = observations_config[name]
 
-        field = obs['field']
+        field_name = obs['field']
         data_subdir = obs['data_subdir']
         gratings = obs['gratings']
 
@@ -247,14 +248,21 @@ class Observation:
         else:
             combine_dither = True
 
+        # Capture per-observation stage config overrides
+        stage_overrides = {}
+        for key in ['stage1', 'stage2', 'stage3']:
+            if key in obs and isinstance(obs[key], dict):
+                stage_overrides[key] = obs[key]
+
         return cls(
-            name=name, 
-            field=field,
+            name=name,
+            field=field_name,
             program_id=program_id,
             data_subdir=data_subdir,
             files=files,
             gratings=gratings,
             combine_dither=combine_dither,
+            stage_overrides=stage_overrides,
         )
         
     def setup_workspace_directory(self, data_dir, product_dir, overwrite=False):
@@ -510,25 +518,72 @@ class Observation:
                         log('########################################################################')
                         # continue
 
-SHUTTERS_PER_ROW = 365
-def flag_pixels_for_shutter(input_model, shutter_row, shutter_col, shutter_quadrant):
-    from stdatamodels.jwst.transforms.models import Slit
-    from jwst.msaflagopen.msaflag_open import flag
-    from jwst.msaflagopen.msaflagopen_step import create_reference_filename_dictionary
 
-    result = input_model.copy()
-    wcs_reffile_names = create_reference_filename_dictionary(result)
-    print(wcs_reffile_names)
+def boundingbox_to_indices(data_shape, bounding_box):
+    """
+    Translate a bounding box to image indices.
 
-    shutter_id = shutter_row + (shutter_col - 1) * SHUTTERS_PER_ROW
-    slitlets = [Slit(0, shutter_id, 0, shutter_row, shutter_col, -0.5, 0.5, shutter_quadrant, 0, "x", slit_id=0)]
+    Takes a bounding_box (tuple of tuples: ((x1, x2), (y1, y2)) and
+    a datamodel and calculates the range of indices in the X and Y dimensions
+    of the overlap between the bounding box and the datamodel's data array.
 
-    result = flag(result, slitlets, wcs_reffile_names)
+    Parameters
+    ----------
+    data_shape : tuple
+        The data shape for the input science datamodel.
+    bounding_box : tuple of tuple
+        Bounding box returned from wcs object.
 
-    return result
+    Returns
+    -------
+    xmin, xmax, ymin, ymax : int
+        Range of indices of overlap between science data array and bounding box.
+    """
+    nrows, ncols = data_shape[-2:]
+    x1, x2 = bounding_box[0]
+    y1, y2 = bounding_box[1]
+    xmin = int(min(x1, x2))
+    xmin = max(xmin, 0)
+    xmax = int(max(x1, x2)) + 1
+    xmax = min(xmax, ncols)
+    ymin = int(min(y1, y2))
+    ymin = max(ymin, 0)
+    ymax = int(max(y1, y2)) + 1
+    ymax = min(ymax, nrows)
+    return xmin, xmax, ymin, ymax
 
 
-def mask_slits(input_model, mask):
+def wcs_to_dq(wcs_array, flag):
+    """
+    Create a DQ subarray corresponding to a failed open slitlet.
+
+    The created array has the value `flag` wherever the WCS coordinates
+    are valid (non-NaN) and 0 otherwise.
+
+    Parameters
+    ----------
+    wcs_array : tuple of ndarray
+        Image coordinates for the failed open region.
+    flag : int
+        DQ flag to set.
+
+    Returns
+    -------
+    dq : ndarray of int
+        Output DQ array.
+    """
+    dq = np.zeros((wcs_array[0].shape), dtype=np.uint32)
+    non_nan = ~np.isnan(wcs_array[0])
+    dq[non_nan] = flag
+    return dq
+
+
+def mask_slits(
+        input_model, 
+        input_dir,
+        mask,
+        override_wavelength_range: dict = {}
+    ):
     """
     Flag pixels within science regions.
 
@@ -536,7 +591,8 @@ def mask_slits(input_model, mask):
     and flag them in the mask, so that they do not get used.
 
     Adapted from jwst.clean_flicker_noise.clean_flicker_noise 
-    to extend the masks to cover the full traces
+    and jwst.msaflagopen.msaflag_open to extend the masks 
+    to cover the full traces
 
     Parameters
     ----------
@@ -552,51 +608,106 @@ def mask_slits(input_model, mask):
     mask : array-like of bool
         2D output mask with additional flags for slit pixels
     """
-    from gwcs.utils import _toindex
-    from jwst.assign_wcs import AssignWcsStep, nirspec
 
-    # Get the slits from the WCS object
-    slits = input_model.meta.wcs.get_transform("gwa", "slit_frame").slits
+    from jwst.clean_flicker_noise.clean_flicker_noise import _make_processed_rate_image
+    from jwst.msaflagopen.msaflagopen_step import create_reference_filename_dictionary, MSAFlagOpenStep
+    from jwst.msaflagopen.msaflag_open import create_slitlets
+    from jwst.assign_wcs.nirspec import generate_compound_bbox, slitlets_wcs
+    from gwcs.wcs import WCS
+    from jwst.assign_wcs import AssignWcsStep
 
-    # Loop over the slits, marking all the pixels within each bounding
-    # box as False (do not use) in the mask.
-    match input_model.meta.instrument.grating:
-        case 'PRISM':
-            dxlo, dxhi = 10, 25
-        case 'G395M': 
-            dxlo, dxhi = 10, 120
-        case _: 
-            raise NotImplementedError
+    filt = input_model.meta.instrument.filter
+    grating = input_model.meta.instrument.grating
+    filter_grating = filt + '_' + grating
 
-    for slit in slits:
-        slit_wcs = nirspec.nrs_wcs_set_input(input_model, slit.name)
-        xlo, xhi = _toindex(slit_wcs.bounding_box[0])
-        ylo, yhi = _toindex(slit_wcs.bounding_box[1])
-        xlo = np.max([0, xlo-dxlo])
-        xhi = np.min([2048, xhi+dxhi])
-        ylo += 3
-        yhi -= 3
-        mask[..., ylo:yhi, xlo:xhi] = False
+    override_grating_wavelength_range = False
+    if grating in override_wavelength_range:
+        override_grating_wavelength_range = override_wavelength_range[grating]
+
+    if override_grating_wavelength_range:
+        wavelengthrange_file = AssignWcsStep().get_reference_file(input_model, 'wavelengthrange')
+        shutil.copy2(wavelengthrange_file, '/tmp/')
+        wavelengthrange_file = '/tmp/' + os.path.basename(wavelengthrange_file)
+        import asdf
+        af = asdf.open(wavelengthrange_file, mode='rw')
+        idx = af['waverange_selector'].index('F100LP_G140M')
+        af.tree['wavelengthrange'][idx] = [
+            override_grating_wavelength_range[0]/1e6,
+            override_grating_wavelength_range[1]/1e6
+        ]
+        print(f"Setting to: {af.tree['wavelengthrange'][idx]}")
+        
+        af.update()  # Explicitly write changes
+        af.close()   # Close the file
+        # After the 'with' block
+        with asdf.open(wavelengthrange_file, 'r') as af:
+            idx = af['waverange_selector'].index('F100LP_G140M')
+            print(f"Modified range: {af.tree['wavelengthrange'][idx]}")
+
+        step = AssignWcsStep()
+        step.input_dir = input_dir
+        step.override_wavelengthrange = wavelengthrange_file
+        processed_model = step.run(input_model)
+    else:
+        step = AssignWcsStep()
+        step.input_dir = input_dir
+        processed_model = step.run(input_model)
+
+    # # processed_model = _make_processed_rate_image(model, single_mask=True, input_dir=os.path.dirname(rate_file), exp_type="NRS_MSASPEC", mask_science_regions=True, flat=None)
+
+    msaoper_reffile = MSAFlagOpenStep().get_reference_file(processed_model, "msaoper")
+    failed_slits = create_slitlets(msaoper_reffile)
+
+    source_slits = processed_model.meta.wcs.get_transform("gwa", "slit_frame").slits
+    # slits = slits + failed_slits
+
+    wcs_reffile_names = create_reference_filename_dictionary(processed_model)
+    
+    temp_mask = np.zeros(input_model.data.shape,dtype=int)
+
+    from jwst.datamodels import ImageModel
+    for slits in [source_slits, failed_slits]:
+        pipeline = slitlets_wcs(processed_model, wcs_reffile_names, slits)
+        wcs = WCS(pipeline)
+
+        meta_model = ImageModel()
+        meta_model.meta.wcs = wcs
+        meta_model.meta.wcsinfo = processed_model.meta.wcsinfo
+        meta_model.meta.exposure.type = 'NRS_MSASPEC'
+        meta_model.meta.wcs.bounding_box = generate_compound_bbox(meta_model, slits)
+
+        for slitlet in slits:
+            bbox = meta_model.meta.wcs.bounding_box[slitlet.name]
+            xmin, xmax, ymin, ymax = boundingbox_to_indices(processed_model.data.shape, bbox)
+            y_indices, x_indices = np.mgrid[ymin:ymax, xmin:xmax]
+            ra, dec, lam, _ = meta_model.meta.wcs(x_indices, y_indices, slitlet.name)
+            subarray = wcs_to_dq((ra,dec,lam), 1)
+            temp_mask[..., ymin:ymax, xmin:xmax] += subarray
+            
+    mask[temp_mask>0] = False
 
     return mask
 
-# import jwst
-# jwst.clean_flicker_noise.clean_flicker_noise.mask_slits = mask_slits
 
 def subtract_background_from_rate_file(
         rate_file: str,
+        override_wavelength_range: dict = {}, 
         box_size: int = 8,
         sigma_clip: bool = True,
         bkg_estimator: str = 'median',
+        pictureframe_dir: str = None,
+        do_col_1f: str = True,
+        do_row_1f: str = True,
         plot: bool = True,
         save_backup: bool = False,
-        pictureframe_dir: str = None,
     ):
+
     from stdatamodels import util as stutil
     from jwst.datamodels import ImageModel
     from jwst.clean_flicker_noise.clean_flicker_noise import _make_processed_rate_image
     from astropy.stats import median_absolute_deviation
 
+    input_dir = os.path.dirname(rate_file)
     with ImageModel(rate_file) as model:
         
         for entry in model.history:
@@ -605,17 +716,29 @@ def subtract_background_from_rate_file(
                 return
 
         log(f'Subtracting background and rescaling variance for {os.path.basename(rate_file)}')
-        processed_model = _make_processed_rate_image(model, single_mask=True, input_dir=os.path.dirname(rate_file), exp_type="NRS_MSASPEC", mask_science_regions=True, flat=None)
         
-        mask_file = rate_file.replace('_rate.fits','_mask.fits')
-        if not os.path.exists(mask_file): 
-            raise FileNotFoundError("No mask file found!")
-        log(f'Using existing mask {os.path.basename(mask_file)}')
-        mask = np.array(fits.getdata(mask_file,ext=1),dtype=bool)
+        # processed_model = _make_processed_rate_image(model, single_mask=True, input_dir=os.path.dirname(rate_file), exp_type="NRS_MSASPEC", mask_science_regions=True, flat=None)
+        # mask_file = rate_file.replace('_rate.fits','_mask.fits')
+        # if not os.path.exists(mask_file): 
+        #     raise FileNotFoundError("No mask file found!")
+        # log(f'Using existing mask {os.path.basename(mask_file)}')
+        # mask = np.array(fits.getdata(mask_file,ext=1),dtype=bool)
 
-        new_mask = ~mask_slits(processed_model, mask)
-        new_mask |= model.dq>0
+        # True indicates valid pixels
+        mask = np.full(model.data.shape, True)
 
+        # always mask fixed slit area
+        mask[2048//2-100:2048//2+100,:] = False
+        
+        mask = mask_slits(model, input_dir, mask, override_wavelength_range=override_wavelength_range)
+
+        mask[model.dq > 0] = False
+
+        from jwst.clean_flicker_noise.clean_flicker_noise import clip_to_background
+        n_sigma, fit_histogram = 2.0, False
+        clip_to_background(model.data, mask, sigma_upper=n_sigma, fit_histogram=fit_histogram, verbose=True)
+
+        fits.writeto(rate_file.replace('_rate.fits','_mask.fits'), mask.astype(int), overwrite=True)
 
         detector = 'nrs2' 
         if 'nrs1' in rate_file:
@@ -631,13 +754,13 @@ def subtract_background_from_rate_file(
             pictureframe_template = fits.getdata(pictureframe_file)
             
             # rescale the picture frame template so that its ~close to the data median
-            pictureframe_template *= np.nanmedian(model.data[~new_mask])
+            pictureframe_template *= np.nanmedian(model.data[mask])
 
             coeffs = np.linspace(0.5, 1.5, 100)
             var = np.zeros_like(coeffs)
             for i,c in enumerate(coeffs):
                 sub = model.data - c*pictureframe_template
-                sub[new_mask] = np.nan
+                sub[~mask] = np.nan
                 sigma_mad = median_absolute_deviation(sub, ignore_nan=True)
                 var[i] = sigma_mad**2
 
@@ -662,7 +785,7 @@ def subtract_background_from_rate_file(
             model.data-bkg2d,
             box_size=box_size,
             filter_size=(3,3),
-            mask=new_mask,
+            mask=~mask,
             sigma_clip=sclip,
             bkg_estimator=bkg_est,
         )
@@ -670,20 +793,32 @@ def subtract_background_from_rate_file(
         bkg2d += bkg.background
 
         rate_masked = model.data - bkg2d
-        rate_masked[new_mask] = np.nan
+        rate_masked[~mask] = np.nan
 
-        col = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
-        rate_masked = rate_masked - col
+        if do_col_1f and do_row_1f:
+            col = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
+            rate_masked = rate_masked - col
 
-        full_row_masked = np.sum(np.isfinite(rate_masked),axis=1)==0
-        rate_masked[full_row_masked,:] = np.nanmedian(rate_masked) 
-        row = np.nanmedian(rate_masked, axis=1)[:,np.newaxis]
+            full_row_masked = np.sum(np.isfinite(rate_masked),axis=1)==0
+            rate_masked[full_row_masked,:] = np.nanmedian(rate_masked) 
+            row = np.nanmedian(rate_masked, axis=1)[:,np.newaxis]
 
-        rate_new = model.data - bkg2d - col - row
+            rate_new = model.data - bkg2d - col - row
+        
+        elif do_col_1f:
+            col = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
+            rate_new = model.data - bkg2d - col
+        
+        elif do_row_1f:
+            full_row_masked = np.sum(np.isfinite(rate_masked),axis=1)==0
+            rate_masked[full_row_masked,:] = np.nanmedian(rate_masked) 
+            row = np.nanmedian(rate_masked, axis=1)[:,np.newaxis]
+            rate_new = model.data - bkg2d - row
+
 
         if plot:
             from astropy.visualization import ImageNormalize, ZScaleInterval
-            norm = ImageNormalize(model.data[~new_mask], interval=ZScaleInterval())
+            norm = ImageNormalize(model.data[mask], interval=ZScaleInterval())
             fig, ax = plt.subplots(2,3,figsize=(8,6),sharex=True,sharey=True)
             ax[0,0].imshow(model.data, norm=norm)
             ax[0,0].set_title('Raw rate file')
@@ -694,12 +829,40 @@ def subtract_background_from_rate_file(
                 ax[0,1].set_title('Modeled 2D background')
             ax[0,2].imshow(model.data-bkg2d, norm=norm)
             ax[0,2].set_title('Raw - 2D')
-            ax[1,0].imshow(np.zeros_like(model.data)+col, norm=norm)
-            ax[1,0].set_title('Column 1/f')
-            ax[1,1].imshow(np.zeros_like(model.data)+row, norm=norm)
-            ax[1,1].set_title('Row 1/f')
-            ax[1,2].imshow(model.data-bkg2d-col-row, norm=norm)
-            ax[1,2].set_title('Final (raw-2D-col-row)')
+
+            if do_col_1f and do_row_1f:
+                ax[1,0].imshow(np.zeros_like(model.data)+col, norm=norm)
+                ax[1,0].set_title('Column 1/f')
+                ax[1,1].imshow(np.zeros_like(model.data)+row, norm=norm)
+                ax[1,1].set_title('Row 1/f')
+                ax[1,2].imshow(rate_new, norm=norm)
+                ax[1,2].set_title('Final (raw-2D-col-row)')
+            
+            elif do_col_1f:
+                ax[1,0].imshow(np.zeros_like(model.data)+col, norm=norm)
+                ax[1,0].set_title('Column 1/f')
+                ax[1,1].imshow(np.zeros_like(model.data), norm=norm)
+                ax[1,1].set_title('Row 1/f (SKIPPED)')
+                ax[1,2].imshow(rate_new, norm=norm)
+                ax[1,2].set_title('Final (raw-2D-col)')
+            
+            elif do_row_1f:
+                ax[1,0].imshow(np.zeros_like(model.data), norm=norm)
+                ax[1,0].set_title('Column 1/f (SKIPPED)')
+                ax[1,1].imshow(np.zeros_like(model.data)+row, norm=norm)
+                ax[1,1].set_title('Row 1/f')
+                ax[1,2].imshow(rate_new, norm=norm)
+                ax[1,2].set_title('Final (raw-2D-row)')
+            
+            else:
+                ax[1,0].imshow(np.zeros_like(model.data), norm=norm)
+                ax[1,0].set_title('Column 1/f (SKIPPED)')
+                ax[1,1].imshow(np.zeros_like(model.data), norm=norm)
+                ax[1,1].set_title('Row 1/f (SKIPPED)')
+                ax[1,2].imshow(rate_new, norm=norm)
+                ax[1,2].set_title('Final (raw-2D)')
+            
+
             plot_file = rate_file.replace('_rate.fits','_bkg.pdf')
             log(f'Saving to {plot_file}')
             plt.savefig(plot_file)
@@ -709,7 +872,7 @@ def subtract_background_from_rate_file(
 
         nsci = model.data / np.sqrt(model.var_rnoise)
         from astropy.stats import sigma_clipped_stats
-        rms = sigma_clipped_stats(nsci[~new_mask])[2]
+        rms = sigma_clipped_stats(nsci[mask])[2]
         log(f'Scaling up VAR_RNOISE by {rms**2:.2f}')
         model.var_rnoise = model.var_rnoise * rms**2
 
@@ -751,7 +914,7 @@ def run_stage1_single_uncal(
                 'clean_flicker_noise' :{
                     'skip': not do_clean_flicker_noise,
                     'mask_science_regions':mask_science_regions,
-                    'save_mask': True,
+                    'save_mask': False,
                 },
                 'jump': {
                     'skip': False, # testing, should be False normally
@@ -1995,9 +2158,26 @@ class ReductionEngine:
         os.makedirs(self.pictureframe_dir, exist_ok=True)
         
         log("Initialized ReductionEngine")
-        
-    
-    
+
+    def get_stage_config(self, stage_name: str, obs: Observation) -> dict:
+        """
+        Build effective config for a pipeline stage.
+
+        Merges three layers (highest priority wins):
+            1. Observation-specific overrides  (observations.toml  [obs.stageN])
+            2. Global config                   (config.toml        [stageN])
+            3. Hardcoded defaults              (DEFAULT_STAGEN_CONFIG)
+        """
+        defaults = {
+            'stage1': DEFAULT_STAGE1_CONFIG,
+            'stage2': DEFAULT_STAGE2_CONFIG,
+            'stage3': DEFAULT_STAGE3_CONFIG,
+        }
+        config = dict(defaults.get(stage_name, {}))
+        config.update(self.config.get(stage_name, {}))
+        config.update(obs.stage_overrides.get(stage_name, {}))
+        return config
+
     def setup_environment(self):
         """Set environment variables from config file."""
         if 'environment' in self.config:
@@ -2012,14 +2192,15 @@ class ReductionEngine:
             overwrite: bool = False,
         ):
 
-        config = self.config.get('stage1', DEFAULT_STAGE1_CONFIG)
+        config = self.get_stage_config('stage1', obs)
+        log(f"Stage 1 config for {obs.name}: {config}")
 
         # Create workspace and copy over uncal files
         if not obs.directories_setup:
             obs.setup_workspace_directory(self.data_dir, self.products_dir, overwrite=overwrite)
 
         obs.copy_uncal_files(overwrite=overwrite)
-        
+
         uncal_files = obs.glob("_uncal.fits")
         if not overwrite:
             uncal_files = [f for f in uncal_files if not os.path.exists(f.replace('_uncal.fits','_rate.fits'))]
@@ -2033,25 +2214,31 @@ class ReductionEngine:
             cleanup_rateints = config['cleanup_rateints'],
         )
 
+        bkg_kwargs = dict(
+            override_wavelength_range = config.get('override_wavelength_range', {}),
+            box_size = config.get('box_size', 8),
+            sigma_clip = config.get('sigma_clip', True),
+            bkg_estimator = config.get('bkg_estimator', 'median'),
+            do_col_1f = config.get('do_col_1f', True),
+            do_row_1f = config.get('do_row_1f', True),
+            plot = config.get('plot', True),
+            save_backup = False,
+            pictureframe_dir = self.pictureframe_dir,
+        )
 
-        if n_processes == 1: 
-            
+        if n_processes == 1:
+
             log(f'Processing {len(uncal_files)} uncal files')
             for uncal_file in uncal_files:
                 run_stage1_single_uncal(uncal_file, obs.workspace_dir, **kwargs)
 
-                if config['subtract_background'] and config['do_clean_flicker_noise']:
+                if config['subtract_background']:
                     rate_file = uncal_file.replace('_uncal.fits','_rate.fits')
                     subtract_background_from_rate_file(
-                        os.path.join(obs.workspace_dir, rate_file), 
-                        box_size = config.get('box_size',8), 
-                        sigma_clip = config.get('sigma_clip',True),
-                        bkg_estimator = config.get('bkg_estimator','median'),
-                        plot = config.get('plot', True),
-                        save_backup = False,
-                        pictureframe_dir = self.pictureframe_dir,
+                        os.path.join(obs.workspace_dir, rate_file),
+                        **bkg_kwargs,
                     )
-            
+
         else:
             log(f'Multiprocessing {len(uncal_files)} uncal files across {n_processes} workers')
             sleep(1)
@@ -2069,12 +2256,7 @@ class ReductionEngine:
                 rate_files = [os.path.join(obs.workspace_dir, f.replace('_uncal.fits','_rate.fits')) for f in uncal_files]
                 process_func = partial(
                     subtract_background_from_rate_file,
-                    box_size = config.get('box_size',8), 
-                    sigma_clip = config.get('sigma_clip',True),
-                    bkg_estimator = config.get('bkg_estimator','median'),
-                    plot = config.get('plot', True),
-                    save_backup = False,
-                    pictureframe_dir = self.pictureframe_dir,
+                    **bkg_kwargs,
                 )
                 with Pool(processes=n_processes) as pool:
                     pool.map(process_func, rate_files)
@@ -2089,16 +2271,13 @@ class ReductionEngine:
         plot: bool = True,
     ):    
 
-        config = self.config.get('stage2', DEFAULT_STAGE2_CONFIG)
-        
+        config = self.get_stage_config('stage2', obs)
+        log(f"Stage 2a config for {obs.name}: {config}")
+
         kwargs = dict(
             set_stellarity = config.get('set_stellarity'),
-            source_ids = source_ids, 
+            source_ids = source_ids,
             overwrite = overwrite,
-            # do_clean_flicker_noise = config['do_clean_flicker_noise'],
-            # mask_science_regions = config['mask_science_regions'],
-            # cleanup_uncal = config['cleanup_uncal'],
-            # cleanup_rateints = config['cleanup_rateints'],
         )
         # Create workspace 
         # if not obs.directories_setup:
@@ -2172,8 +2351,8 @@ class ReductionEngine:
         n_processes=1,
     ):    
 
-        # config = self.config.get('stage2', DEFAULT_STAGE2_CONFIG)
-        config = self.config['stage2']
+        config = self.get_stage_config('stage2', obs)
+        log(f"Stage 2b config for {obs.name}: {config}")
         
         kwargs = dict(
             rectify = config.get('rectify'),
@@ -2283,7 +2462,8 @@ class ReductionEngine:
     ):    
 
         version = self.config.get('pipeline')['version']
-        config = self.config.get('stage3', DEFAULT_STAGE3_CONFIG)
+        config = self.get_stage_config('stage3', obs)
+        log(f"Stage 3 config for {obs.name}: {config}")
         
         bkg_subtraction_method = config.get('method', DEFAULT_STAGE3_CONFIG['method']) # nodded or local
         kwargs = dict(

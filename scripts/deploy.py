@@ -371,21 +371,41 @@ def read_zfit_data(zfit_path: Path) -> dict | None:
         return None
 
 
+# Grating wavelength priority for tiebreaking: lower value = higher priority
+GRATING_PRIORITY = {
+    'G395M': 0, 'G395H': 1,
+    'G235M': 2, 'G235H': 3,
+    'G140M': 4, 'G140H': 5,
+}
+
+
+def _grating_sort_key(name: str, data: dict) -> tuple:
+    """Sort key for ranking gratings: highest SNR > longest exposure > wavelength priority."""
+    snr = -(data.get('signal_to_noise') or 0)
+    exposure = -(data.get('exposure_time', 0))
+    wavelength = GRATING_PRIORITY.get(name, 99)
+    return (snr, exposure, wavelength)
+
+
 def determine_best_redshift(zfit_data_by_grating: dict[str, dict]) -> float | None:
     """
     Apply decision tree to choose the best redshift for an object from multiple spectra.
 
     Decision logic:
     1. If PRISM available and no gratings: use PRISM
-    2. If gratings available and no PRISM: use grating with lowest chi2
+    2. If gratings available and no PRISM: use best grating
     3. If both PRISM and gratings available:
        - Check if they agree (|z_prism - z_grating| < 0.1)
        - If agree: use grating (more precise)
        - If disagree: use PRISM (more robust)
 
+    Best grating ranking: highest max SNR > longest exposure > wavelength
+    priority (G395 > G235 > G140).
+
     Args:
-        zfit_data_by_grating: Dict mapping grating names to zfit data dicts
-                              Example: {'PRISM': {...}, 'G140M': {...}}
+        zfit_data_by_grating: Dict mapping grating names to zfit data dicts.
+            Each dict should contain 'redshift', and optionally
+            'exposure_time' and 'signal_to_noise' for ranking.
 
     Returns:
         Best redshift value, or None if no valid data
@@ -403,26 +423,21 @@ def determine_best_redshift(zfit_data_by_grating: dict[str, dict]) -> float | No
 
     # Case 2: Only gratings (no PRISM)
     if grating_data and not prism_data:
-        # Choose grating with lowest chi2
-        best_grating = min(grating_data.items(), key=lambda x: x[1]['chi2_min'])
-        return best_grating[1]['redshift']
+        best = min(grating_data, key=lambda g: _grating_sort_key(g, grating_data[g]))
+        return grating_data[best]['redshift']
 
     # Case 3: Both PRISM and gratings
     if prism_data and grating_data:
         z_prism = prism_data['redshift']
 
-        # Find best grating (lowest chi2)
-        best_grating_name, best_grating_data = min(grating_data.items(), key=lambda x: x[1]['chi2_min'])
-        z_grating = best_grating_data['redshift']
+        best = min(grating_data, key=lambda g: _grating_sort_key(g, grating_data[g]))
+        z_grating = grating_data[best]['redshift']
 
         # Check agreement
-        dz = abs(z_prism - z_grating)
-        if dz < 0.1:
-            # Agree: use grating (more precise)
-            return z_grating
+        if abs(z_prism - z_grating) < 0.1:
+            return z_grating  # Agree: use grating (more precise)
         else:
-            # Disagree: use PRISM (more robust)
-            return z_prism
+            return z_prism    # Disagree: use PRISM (more robust)
 
     return None
 
@@ -1830,7 +1845,11 @@ def deploy_observation(
             if spec_base in zfit_data_map:
                 if object_id not in object_zfit_by_grating:
                     object_zfit_by_grating[object_id] = {}
-                object_zfit_by_grating[object_id][grating] = zfit_data_map[spec_base]
+                object_zfit_by_grating[object_id][grating] = {
+                    **zfit_data_map[spec_base],
+                    'exposure_time': metadata.get('exposure_time', 0),
+                    'signal_to_noise': metadata.get('signal_to_noise'),
+                }
 
         # Apply decision tree to determine best redshift for each object
         object_redshifts = {}  # {object_id: best_redshift}
