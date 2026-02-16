@@ -35,9 +35,8 @@ export async function GET(request: NextRequest) {
   const redirectTo = `${appUrl}/reset-password`;
 
   // Build Supabase verification URL
-  // Email templates use {{ .TokenHash }}, so pass as token_hash (not token, which is for raw OTPs)
   const supabaseUrl = new URL('https://puyczxwyuzpnqvpachip.supabase.co/auth/v1/verify');
-  supabaseUrl.searchParams.set('token_hash', token);
+  supabaseUrl.searchParams.set('token', token);
   supabaseUrl.searchParams.set('type', type);
   supabaseUrl.searchParams.set('redirect_to', redirectTo);
 
