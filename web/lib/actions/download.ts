@@ -106,6 +106,7 @@ function spectraToCsv(spectra: SpectrumObject[], includeDistance: boolean): stri
     'max_snr',
     'max_exposure_time',
     'num_gratings',
+    'program_id',
     'program_name',
     'last_inspected_at',
     'last_inspected_by',
@@ -140,6 +141,7 @@ function spectraToCsv(spectra: SpectrumObject[], includeDistance: boolean): stri
       obj.max_snr != null ? obj.max_snr.toFixed(2) : '',
       obj.max_exposure_time != null ? obj.max_exposure_time.toFixed(0) : '',
       obj.num_gratings || obj.spectra.length,
+      obj.program_id,
       escapeCsvValue(obj.program_name || ''),
       escapeCsvValue(obj.last_inspected_at || ''),
       escapeCsvValue(obj.last_inspected_by || '')

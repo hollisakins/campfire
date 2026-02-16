@@ -36,6 +36,7 @@ const SPECTRA_COLUMNS: ColumnDefinition[] = [
   { id: 'rgb_thumbnail', label: 'RGB Image', defaultVisible: true },
   { id: 'object_id', label: 'Object ID', alwaysVisible: true },
   { id: 'field', label: 'Field', defaultVisible: true },
+  { id: 'program', label: 'Program', defaultVisible: false },
   { id: 'ra', label: 'RA', defaultVisible: true },
   { id: 'dec', label: 'Dec', defaultVisible: true },
   { id: 'distance', label: 'Distance', defaultVisible: true },  // Only shown when coord search active
@@ -323,6 +324,23 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <span className="text-sm text-text-primary dark:text-slate-100 uppercase">{row.original.field}</span>
         ),
         sortingFn: 'alphanumeric',
+      },
+      {
+        id: 'program',
+        minSize: 120,
+        accessorFn: (row) => row.program_name || String(row.program_id),
+        header: () => <span>Program</span>,
+        cell: ({ row }) => {
+          const name = row.original.program_name;
+          const id = row.original.program_id;
+          return (
+            <span className="text-sm text-text-primary dark:text-slate-100">
+              {name ? `${name} (${id})` : String(id)}
+            </span>
+          );
+        },
+        sortingFn: 'alphanumeric',
+        enableSorting: false,
       },
       {
         accessorKey: 'ra',
