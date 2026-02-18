@@ -278,7 +278,7 @@ export function MapViewer({
           url={tileUrl}
           tms={false}
           minZoom={activeLayer.min_zoom}
-          maxZoom={activeLayer.max_zoom}
+          maxZoom={activeLayer.max_zoom + 2}
           maxNativeZoom={activeLayer.max_zoom}
           minNativeZoom={activeLayer.min_zoom}
           noWrap={true}
