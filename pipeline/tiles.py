@@ -638,7 +638,7 @@ def _process_supertile(
             rgba[:h, :w, 3] = tile_alpha
 
             tile_path.parent.mkdir(parents=True, exist_ok=True)
-            img = Image.fromarray(rgba, 'RGBA')
+            img = Image.fromarray(np.flipud(rgba), 'RGBA')
             img.save(tile_path, 'PNG')
 
             n_tiles += 1
@@ -817,11 +817,9 @@ def build_lower_zoom_levels(
                     continue
 
                 # Combine 4 children from zoom+1
+                # Standard pyramid: parent (tx, leaflet_y) at zoom z maps to
+                # children (2*tx+dx, 2*leaflet_y+dy) at zoom z+1
                 child_zoom = zoom + 1
-                # At child zoom, there are twice as many tiles per axis
-                child_n_tiles_y = int(math.ceil(
-                    naxis2 / (2 ** (max_zoom - child_zoom)) / tile_size
-                ))
 
                 combined = np.zeros(
                     (tile_size * 2, tile_size * 2, 4), dtype=np.uint8
@@ -831,8 +829,7 @@ def build_lower_zoom_levels(
                 for dx in range(2):
                     for dy in range(2):
                         child_tx = 2 * tx + dx
-                        child_ty = 2 * ty + dy
-                        child_leaflet_y = child_n_tiles_y - 1 - child_ty
+                        child_leaflet_y = 2 * leaflet_y + dy
 
                         child_path = (
                             tile_dir / str(child_zoom) / str(child_tx)
@@ -844,10 +841,10 @@ def build_lower_zoom_levels(
                         child_img = Image.open(child_path)
                         child_arr = np.array(child_img)
 
-                        # Place in correct quadrant
-                        # dy=0 is bottom (higher y in image), dy=1 is top
+                        # Place in correct quadrant (Leaflet convention: y=0 at top)
+                        # dy=0 is top child, dy=1 is bottom child
                         qx = dx * tile_size
-                        qy = (1 - dy) * tile_size
+                        qy = dy * tile_size
                         h = min(tile_size, child_arr.shape[0])
                         w = min(tile_size, child_arr.shape[1])
                         # Ensure we don't exceed 4 channels

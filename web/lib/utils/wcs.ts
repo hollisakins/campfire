@@ -1,46 +1,91 @@
 /**
  * WCS coordinate conversion utilities for the map viewer.
  *
- * Since output tiles are always North-up (no rotation), the CD matrix is diagonal:
- *   CD1_1 = -pixel_scale (RA decreases with increasing pixel x)
- *   CD2_2 = +pixel_scale (Dec increases with increasing pixel y)
+ * Uses TAN (gnomonic) projection for accurate pixel ↔ sky conversion.
+ * The CD matrix is diagonal (North-up, no rotation):
+ *   CD1_1 = -pixel_scale_deg / cos(dec_ref)
+ *   CD2_2 = +pixel_scale_deg
  *   CD1_2 = CD2_1 = 0
  */
+
+const DEG2RAD = Math.PI / 180;
+const RAD2DEG = 180 / Math.PI;
 
 export interface WCSParams {
   crpix1: number;
   crpix2: number;
   crval1: number; // RA reference (degrees)
   crval2: number; // Dec reference (degrees)
-  cd1_1: number;  // -pixel_scale_deg / cos(dec)
+  cd1_1: number;  // -pixel_scale_deg / cos(dec_ref)
   cd2_2: number;  // +pixel_scale_deg
   naxis1: number;
   naxis2: number;
 }
 
 /**
- * Convert pixel coordinates to sky coordinates (RA/Dec in degrees).
+ * Convert pixel coordinates to sky coordinates (RA/Dec in degrees)
+ * using TAN (gnomonic) projection.
  */
 export function pixelToSky(
   wcs: WCSParams,
   pixX: number,
   pixY: number
 ): { ra: number; dec: number } {
-  const ra = wcs.crval1 + wcs.cd1_1 * (pixX - wcs.crpix1);
-  const dec = wcs.crval2 + wcs.cd2_2 * (pixY - wcs.crpix2);
-  return { ra, dec };
+  // Intermediate world coordinates (degrees)
+  const xi = wcs.cd1_1 * (pixX - wcs.crpix1);
+  const eta = wcs.cd2_2 * (pixY - wcs.crpix2);
+
+  // Convert to radians for TAN deprojection
+  const xiRad = xi * DEG2RAD;
+  const etaRad = eta * DEG2RAD;
+  const dec0Rad = wcs.crval2 * DEG2RAD;
+  const ra0Rad = wcs.crval1 * DEG2RAD;
+
+  const sinDec0 = Math.sin(dec0Rad);
+  const cosDec0 = Math.cos(dec0Rad);
+  const denom = cosDec0 - etaRad * sinDec0;
+
+  const ra = ra0Rad + Math.atan2(xiRad, denom);
+  const dec = Math.atan2(
+    (sinDec0 + etaRad * cosDec0) * Math.cos(ra - ra0Rad),
+    denom
+  );
+
+  return { ra: ra * RAD2DEG, dec: dec * RAD2DEG };
 }
 
 /**
- * Convert sky coordinates (RA/Dec) to pixel coordinates.
+ * Convert sky coordinates (RA/Dec) to pixel coordinates
+ * using TAN (gnomonic) projection.
  */
 export function skyToPixel(
   wcs: WCSParams,
   ra: number,
   dec: number
 ): { x: number; y: number } {
-  const x = wcs.crpix1 + (ra - wcs.crval1) / wcs.cd1_1;
-  const y = wcs.crpix2 + (dec - wcs.crval2) / wcs.cd2_2;
+  const raRad = ra * DEG2RAD;
+  const decRad = dec * DEG2RAD;
+  const ra0Rad = wcs.crval1 * DEG2RAD;
+  const dec0Rad = wcs.crval2 * DEG2RAD;
+
+  const sinDec = Math.sin(decRad);
+  const cosDec = Math.cos(decRad);
+  const sinDec0 = Math.sin(dec0Rad);
+  const cosDec0 = Math.cos(dec0Rad);
+  const deltaRa = raRad - ra0Rad;
+  const cosD = Math.cos(deltaRa);
+
+  // TAN projection: (xi, eta) in radians
+  const denom = sinDec * sinDec0 + cosDec * cosDec0 * cosD;
+  const xiRad = (cosDec * Math.sin(deltaRa)) / denom;
+  const etaRad = (sinDec * cosDec0 - cosDec * sinDec0 * cosD) / denom;
+
+  // Convert to degrees and then to pixels via inverse CD matrix
+  const xi = xiRad * RAD2DEG;
+  const eta = etaRad * RAD2DEG;
+  const x = wcs.crpix1 + xi / wcs.cd1_1;
+  const y = wcs.crpix2 + eta / wcs.cd2_2;
+
   return { x, y };
 }
 
