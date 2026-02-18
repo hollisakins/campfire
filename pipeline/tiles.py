@@ -1,0 +1,1128 @@
+"""
+NIRCam mosaic tile generation for CAMPFIRE map viewer.
+
+Reprojects input FITS mosaics to a North-up grid and generates
+256x256 PNG tile pyramids in z/x/y structure for Leaflet consumption.
+
+Key design: tiles are generated one at a time at max zoom by reprojecting
+only the overlapping input files onto each 256x256 tile. Lower zoom levels
+are built by combining 4 child tiles (FITSMap approach). This avoids ever
+allocating the full mosaic in memory.
+
+Usage:
+    Called from scripts/generate_tiles.py CLI entry point.
+
+Dependencies:
+    astropy, numpy, reproject, Pillow
+"""
+
+import logging
+import math
+import warnings
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+from astropy.io import fits
+from astropy.utils.exceptions import AstropyWarning
+from astropy.wcs import WCS
+from PIL import Image
+
+# Silence noisy warnings from JWST FITS headers and reproject
+warnings.filterwarnings('ignore', category=AstropyWarning)
+logging.getLogger('reproject').setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs):
+        return iterable
+
+
+# ============================================
+# Data Classes
+# ============================================
+
+@dataclass
+class TileConfig:
+    """Configuration for a single field/filter tile generation run."""
+    field: str
+    filter_name: str
+    input_files: list[Path]
+    output_dir: Path
+    output_pixel_scale_arcsec: float = 0.06
+    tile_size: int = 256
+    stretch_type: str = "asinh"
+    min_percentile: float = 1.0
+    max_percentile: float = 99.5
+
+
+@dataclass
+class OutputGrid:
+    """Defines the North-up output WCS grid for reprojection."""
+    crpix1: float
+    crpix2: float
+    crval1: float   # RA center (degrees)
+    crval2: float   # Dec center (degrees)
+    cd1_1: float    # -pixel_scale_deg (RA direction, negative)
+    cd2_2: float    # +pixel_scale_deg (Dec direction, positive)
+    naxis1: int     # width in pixels
+    naxis2: int     # height in pixels
+
+    def to_wcs(self) -> WCS:
+        """Convert to astropy WCS object."""
+        w = WCS(naxis=2)
+        w.wcs.crpix = [self.crpix1, self.crpix2]
+        w.wcs.crval = [self.crval1, self.crval2]
+        w.wcs.cd = [[self.cd1_1, 0.0], [0.0, self.cd2_2]]
+        w.wcs.ctype = ['RA---TAN', 'DEC--TAN']
+        w.pixel_shape = (self.naxis2, self.naxis1)
+        return w
+
+    def to_header(self) -> fits.Header:
+        """Convert to FITS header for reproject."""
+        header = self.to_wcs().to_header()
+        header['NAXIS'] = 2
+        header['NAXIS1'] = self.naxis1
+        header['NAXIS2'] = self.naxis2
+        return header
+
+    def to_json(self) -> dict:
+        """Serialize for Supabase storage."""
+        return {
+            'crpix1': self.crpix1,
+            'crpix2': self.crpix2,
+            'crval1': self.crval1,
+            'crval2': self.crval2,
+            'cd1_1': self.cd1_1,
+            'cd2_2': self.cd2_2,
+            'naxis1': self.naxis1,
+            'naxis2': self.naxis2,
+        }
+
+    def sub_header(self, x0: int, y0: int, nx: int, ny: int) -> fits.Header:
+        """
+        Create a FITS header for a sub-region of the output grid.
+
+        The sub-region starts at pixel (x0, y0) and has size (nx, ny).
+        CRPIX is adjusted so the WCS remains correct for the sub-region.
+        """
+        header = fits.Header()
+        header['NAXIS'] = 2
+        header['NAXIS1'] = nx
+        header['NAXIS2'] = ny
+        header['CRPIX1'] = self.crpix1 - x0
+        header['CRPIX2'] = self.crpix2 - y0
+        header['CRVAL1'] = self.crval1
+        header['CRVAL2'] = self.crval2
+        header['CD1_1'] = self.cd1_1
+        header['CD1_2'] = 0.0
+        header['CD2_1'] = 0.0
+        header['CD2_2'] = self.cd2_2
+        header['CTYPE1'] = 'RA---TAN'
+        header['CTYPE2'] = 'DEC--TAN'
+        return header
+
+
+@dataclass
+class TileStats:
+    """Statistics from a tile generation run."""
+    field: str
+    filter_name: str
+    num_input_files: int
+    output_grid_size: tuple[int, int]  # (naxis1, naxis2)
+    min_zoom: int
+    max_zoom: int
+    total_tiles: int
+    total_size_bytes: int
+    ra_min: float
+    ra_max: float
+    dec_min: float
+    dec_max: float
+    wcs_params: dict
+    tile_base_url: str = ""
+
+
+@dataclass
+class InputFileInfo:
+    """Cached info about an input FITS file for fast overlap checks."""
+    path: Path
+    # Bounding box in output grid pixel coordinates
+    x_min: int
+    x_max: int
+    y_min: int
+    y_max: int
+
+
+# ============================================
+# Grid Computation
+# ============================================
+
+def _get_fits_wcs(fits_path: Path) -> WCS:
+    """Read WCS from a FITS file, trying SCI extension first, then primary."""
+    with fits.open(fits_path, memmap=True) as hdul:
+        # Try SCI extension first (common for HST/JWST products)
+        for ext_name in ['SCI', 0]:
+            try:
+                wcs = WCS(hdul[ext_name].header, naxis=2)
+                if wcs.has_celestial:
+                    return wcs
+            except (KeyError, IndexError):
+                continue
+        raise ValueError(f"No valid celestial WCS found in {fits_path}")
+
+
+def _get_fits_data_shape(fits_path: Path) -> tuple[int, int]:
+    """Get the data shape from a FITS file without loading data."""
+    with fits.open(fits_path, memmap=True) as hdul:
+        for ext_name in ['SCI', 0]:
+            try:
+                shape = hdul[ext_name].shape
+                if len(shape) == 2:
+                    return shape
+            except (KeyError, IndexError):
+                continue
+        raise ValueError(f"No 2D data found in {fits_path}")
+
+
+def compute_output_grid(
+    input_files: list[Path],
+    pixel_scale_arcsec: float,
+    padding_arcsec: float = 10.0,
+) -> OutputGrid:
+    """
+    Compute the minimal North-up output grid that encompasses all input files.
+
+    Reads WCS from each input FITS header, computes corner coordinates,
+    finds the bounding box in RA/Dec, and constructs an output WCS.
+    """
+    all_ra = []
+    all_dec = []
+
+    for fits_path in input_files:
+        wcs = _get_fits_wcs(fits_path)
+        shape = _get_fits_data_shape(fits_path)
+        ny, nx = shape
+
+        corners_pix = np.array([
+            [0, 0],
+            [nx - 1, 0],
+            [nx - 1, ny - 1],
+            [0, ny - 1],
+        ], dtype=float)
+
+        corners_sky = wcs.pixel_to_world_values(corners_pix[:, 0], corners_pix[:, 1])
+        all_ra.extend(corners_sky[0])
+        all_dec.extend(corners_sky[1])
+
+    all_ra = np.array(all_ra)
+    all_dec = np.array(all_dec)
+
+    # Handle RA wrap-around
+    if np.ptp(all_ra) > 180:
+        all_ra = np.where(all_ra > 180, all_ra - 360, all_ra)
+
+    padding_deg = padding_arcsec / 3600.0
+    ra_min = np.min(all_ra) - padding_deg
+    ra_max = np.max(all_ra) + padding_deg
+    dec_min = np.min(all_dec) - padding_deg
+    dec_max = np.max(all_dec) + padding_deg
+
+    ra_center = (ra_min + ra_max) / 2.0
+    dec_center = (dec_min + dec_max) / 2.0
+
+    pixel_scale_deg = pixel_scale_arcsec / 3600.0
+    cos_dec = math.cos(math.radians(dec_center))
+    naxis1 = int(math.ceil((ra_max - ra_min) * cos_dec / pixel_scale_deg))
+    naxis2 = int(math.ceil((dec_max - dec_min) / pixel_scale_deg))
+
+    crpix1 = naxis1 / 2.0
+    crpix2 = naxis2 / 2.0
+
+    # CD matrix: North-up, RA increases to the left (negative CD1_1)
+    cd1_1 = -pixel_scale_deg / cos_dec
+    cd2_2 = pixel_scale_deg
+
+    logger.info(
+        f"Output grid: {naxis1} x {naxis2} pixels, "
+        f"center RA={ra_center:.4f} Dec={dec_center:.4f}, "
+        f"scale={pixel_scale_arcsec:.3f}\"/px"
+    )
+
+    return OutputGrid(
+        crpix1=crpix1,
+        crpix2=crpix2,
+        crval1=ra_center,
+        crval2=dec_center,
+        cd1_1=cd1_1,
+        cd2_2=cd2_2,
+        naxis1=naxis1,
+        naxis2=naxis2,
+    )
+
+
+# ============================================
+# Input File Overlap Detection
+# ============================================
+
+def precompute_input_bboxes(
+    input_files: list[Path],
+    output_grid: OutputGrid,
+) -> list[InputFileInfo]:
+    """
+    Precompute bounding boxes of each input file in output pixel coordinates.
+
+    For each input FITS, project its corners into output pixel space and store
+    the axis-aligned bounding box. This allows O(1) overlap checks per tile.
+    """
+    output_wcs = output_grid.to_wcs()
+    infos = []
+
+    for fits_path in input_files:
+        input_wcs = _get_fits_wcs(fits_path)
+        shape = _get_fits_data_shape(fits_path)
+        ny, nx = shape
+
+        # Input corners in pixel coords
+        corners_pix = np.array([
+            [0, 0],
+            [nx - 1, 0],
+            [nx - 1, ny - 1],
+            [0, ny - 1],
+        ], dtype=float)
+
+        # Input corners -> sky -> output pixel coords
+        sky_ra, sky_dec = input_wcs.pixel_to_world_values(
+            corners_pix[:, 0], corners_pix[:, 1]
+        )
+        out_x, out_y = output_wcs.world_to_pixel_values(sky_ra, sky_dec)
+
+        # Bounding box in output pixels (with generous padding for rotation)
+        padding = 50  # pixels of padding for interpolation edge effects
+        x_min = max(0, int(np.floor(np.min(out_x))) - padding)
+        x_max = min(output_grid.naxis1, int(np.ceil(np.max(out_x))) + padding)
+        y_min = max(0, int(np.floor(np.min(out_y))) - padding)
+        y_max = min(output_grid.naxis2, int(np.ceil(np.max(out_y))) + padding)
+
+        infos.append(InputFileInfo(
+            path=fits_path,
+            x_min=x_min,
+            x_max=x_max,
+            y_min=y_min,
+            y_max=y_max,
+        ))
+
+        logger.debug(
+            f"  {fits_path.name}: output bbox "
+            f"x=[{x_min}, {x_max}] y=[{y_min}, {y_max}]"
+        )
+
+    return infos
+
+
+def find_overlapping_inputs(
+    input_infos: list[InputFileInfo],
+    tile_x0: int,
+    tile_y0: int,
+    tile_size: int,
+) -> list[InputFileInfo]:
+    """Find input files whose bounding box overlaps this tile region."""
+    tile_x1 = tile_x0 + tile_size
+    tile_y1 = tile_y0 + tile_size
+
+    overlapping = []
+    for info in input_infos:
+        # Check AABB overlap
+        if (info.x_min < tile_x1 and info.x_max > tile_x0 and
+                info.y_min < tile_y1 and info.y_max > tile_y0):
+            overlapping.append(info)
+
+    return overlapping
+
+
+# ============================================
+# Stretch / Normalization
+# ============================================
+
+def compute_stretch_params(
+    input_files: list[Path],
+    stretch_type: str = "asinh",
+    min_percentile: float = 1.0,
+    max_percentile: float = 99.5,
+    n_rows_per_file: int = 50,
+) -> dict:
+    """
+    Precompute global stretch parameters by sampling pixels from all inputs.
+
+    Reads random contiguous rows (fast sequential reads on memory-mapped data)
+    from each input file, computes percentiles, and returns parameters for
+    consistent normalization across all tiles.
+
+    Returns dict with keys: vmin, vmax, stretch_type
+    """
+    logger.info("Computing global stretch parameters from input samples...")
+
+    all_samples = []
+    rng = np.random.default_rng(42)
+
+    for fits_path in input_files:
+        with fits.open(fits_path, memmap=True) as hdul:
+            for ext_name in ['SCI', 0]:
+                try:
+                    data = hdul[ext_name].data
+                    if data is not None and len(data.shape) == 2:
+                        ny, nx = data.shape
+                        # Sample random complete rows (contiguous reads)
+                        n_rows = min(n_rows_per_file, ny)
+                        row_indices = rng.choice(ny, size=n_rows, replace=False)
+                        row_indices.sort()  # sequential access pattern
+                        samples = data[row_indices, :].ravel().astype(np.float32)
+                        # Keep only finite values
+                        samples = samples[np.isfinite(samples)]
+                        all_samples.append(samples)
+                        logger.info(
+                            f"  Sampled {n_rows} rows ({len(samples):,} pixels) "
+                            f"from {fits_path.name}"
+                        )
+                        break
+                except (KeyError, IndexError):
+                    continue
+
+    if not all_samples:
+        raise ValueError("No valid pixel data found in input files")
+
+    combined = np.concatenate(all_samples)
+    vmin = float(np.percentile(combined, min_percentile))
+    vmax = float(np.percentile(combined, max_percentile))
+
+    logger.info(
+        f"Stretch params: {stretch_type}, "
+        f"vmin={vmin:.4e} ({min_percentile}th pct), "
+        f"vmax={vmax:.4e} ({max_percentile}th pct), "
+        f"from {len(combined):,} samples"
+    )
+
+    return {
+        'stretch_type': stretch_type,
+        'vmin': vmin,
+        'vmax': vmax,
+    }
+
+
+def apply_stretch(
+    data: np.ndarray,
+    stretch_params: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Apply pre-computed stretch to convert float data to 0-255 uint8.
+
+    Uses the global vmin/vmax from compute_stretch_params for consistent
+    normalization across all tiles.
+
+    Returns:
+        (uint8_data, alpha) where alpha is 255 for valid pixels, 0 for NaN.
+    """
+    from astropy.visualization import AsinhStretch, LinearStretch, LogStretch, SqrtStretch
+    from astropy.visualization import ManualInterval, ImageNormalize
+
+    stretch_type = stretch_params['stretch_type']
+    vmin = stretch_params['vmin']
+    vmax = stretch_params['vmax']
+
+    stretch_map = {
+        'asinh': AsinhStretch,
+        'linear': LinearStretch,
+        'log': LogStretch,
+        'sqrt': SqrtStretch,
+    }
+    stretch_cls = stretch_map.get(stretch_type, AsinhStretch)
+
+    interval = ManualInterval(vmin=vmin, vmax=vmax)
+    norm = ImageNormalize(interval=interval, stretch=stretch_cls())
+
+    valid = np.isfinite(data)
+    if not np.any(valid):
+        h, w = data.shape
+        return np.zeros((h, w), dtype=np.uint8), np.zeros((h, w), dtype=np.uint8)
+
+    normalized = norm(data)
+    result = np.zeros(data.shape, dtype=np.uint8)
+    result[valid] = (np.clip(normalized[valid], 0, 1) * 255).astype(np.uint8)
+
+    alpha = np.where(valid, np.uint8(255), np.uint8(0))
+
+    return result, alpha
+
+
+# ============================================
+# Tile Pyramid Generation (per-tile reprojection)
+# ============================================
+
+def compute_zoom_range(
+    naxis1: int,
+    naxis2: int,
+    tile_size: int = 256,
+) -> tuple[int, int]:
+    """
+    Compute min and max zoom levels for the tile pyramid.
+
+    At max_zoom, each tile covers tile_size pixels of the source image.
+    At min_zoom, the entire image fits in 1-2 tiles per dimension.
+    """
+    long_side = max(naxis1, naxis2)
+    max_zoom = max(0, int(math.ceil(math.log2(long_side / tile_size))))
+    min_zoom = 0
+    return min_zoom, max_zoom
+
+
+def _reproject_tile(
+    overlapping_hdus: list,
+    tile_header: fits.Header,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Reproject pre-opened input HDUs onto a single tile.
+
+    Returns (data, footprint) arrays.
+    """
+    from reproject import reproject_interp
+    from reproject.mosaicking import reproject_and_coadd
+
+    tile_shape = (tile_header['NAXIS2'], tile_header['NAXIS1'])
+
+    if not overlapping_hdus:
+        return (
+            np.full(tile_shape, np.nan, dtype=np.float32),
+            np.zeros(tile_shape, dtype=np.float32),
+        )
+
+    if len(overlapping_hdus) == 1:
+        data, footprint = reproject_interp(
+            overlapping_hdus[0],
+            tile_header,
+            shape_out=tile_shape,
+        )
+    else:
+        data, footprint = reproject_and_coadd(
+            overlapping_hdus,
+            tile_header,
+            shape_out=tile_shape,
+            reproject_function=reproject_interp,
+            combine_function='mean',
+        )
+
+    return data.astype(np.float32), footprint.astype(np.float32)
+
+
+def _process_supertile(
+    sx: int, sy: int,
+    supertile_size: int,
+    output_grid: OutputGrid,
+    input_infos: list[InputFileInfo],
+    path_to_hdu: dict[str, object],
+    stretch_params: dict,
+    tile_dir: Path,
+    tile_size: int,
+    max_zoom: int,
+    n_tiles_y: int,
+    overwrite: bool = False,
+) -> tuple[int, int]:
+    """
+    Reproject one supertile and slice it into 256x256 PNG tiles.
+
+    A supertile is a larger region (e.g., 2048x2048) that gets reprojected
+    in a single reproject call, then sliced into tile_size chunks. This
+    amortizes the per-call overhead of reproject across many tiles.
+
+    Returns (n_tiles_written, total_bytes).
+    """
+    # Supertile bounds in output pixel coords
+    x0 = sx * supertile_size
+    y0 = sy * supertile_size
+    nx = min(supertile_size, output_grid.naxis1 - x0)
+    ny = min(supertile_size, output_grid.naxis2 - y0)
+
+    # How many 256-tiles fit in this supertile
+    tiles_per_st = supertile_size // tile_size
+    base_tx = sx * tiles_per_st
+    base_ty = sy * tiles_per_st
+
+    # Sentinel file marks a completed supertile (for resume)
+    sentinel = tile_dir / str(max_zoom) / f".st_{sx}_{sy}.done"
+    if not overwrite and sentinel.exists():
+        # Count existing tiles for stats
+        n_existing = 0
+        existing_bytes = 0
+        for lty in range(tiles_per_st):
+            for ltx in range(tiles_per_st):
+                tx = base_tx + ltx
+                ty = base_ty + lty
+                leaflet_y = n_tiles_y - 1 - ty
+                tile_path = tile_dir / str(max_zoom) / str(tx) / f"{leaflet_y}.png"
+                if tile_path.exists():
+                    n_existing += 1
+                    existing_bytes += tile_path.stat().st_size
+        return (n_existing, existing_bytes)
+
+    # Find overlapping inputs for the full supertile region
+    overlapping = find_overlapping_inputs(input_infos, x0, y0, supertile_size)
+    if not overlapping:
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+        return (0, 0)
+
+    hdus = [path_to_hdu[str(info.path)] for info in overlapping
+            if str(info.path) in path_to_hdu]
+    if not hdus:
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+        return (0, 0)
+
+    # Single reproject call for the full supertile
+    st_header = output_grid.sub_header(x0, y0, nx, ny)
+    data, footprint = _reproject_tile(hdus, st_header)
+
+    if not np.any(footprint > 0):
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+        return (0, 0)
+
+    # Apply stretch to full supertile at once
+    stretched, alpha = apply_stretch(data[:ny, :nx], stretch_params)
+
+    # Slice into 256x256 tiles
+    n_tiles = 0
+    total_bytes = 0
+
+    for lty in range(tiles_per_st):
+        for ltx in range(tiles_per_st):
+            tx = base_tx + ltx
+            ty = base_ty + lty
+
+            # Pixel range within the supertile
+            px0 = ltx * tile_size
+            py0 = lty * tile_size
+            px1 = min(px0 + tile_size, nx)
+            py1 = min(py0 + tile_size, ny)
+
+            if px0 >= nx or py0 >= ny:
+                continue
+
+            tile_alpha = alpha[py0:py1, px0:px1]
+            if not np.any(tile_alpha > 0):
+                continue
+
+            leaflet_y = n_tiles_y - 1 - ty
+            tile_path = tile_dir / str(max_zoom) / str(tx) / f"{leaflet_y}.png"
+
+            # Skip existing in resume mode
+            if not overwrite and tile_path.exists():
+                n_tiles += 1
+                total_bytes += tile_path.stat().st_size
+                continue
+
+            tile_data = stretched[py0:py1, px0:px1]
+
+            # Build RGBA (pad to tile_size if at edge)
+            rgba = np.zeros((tile_size, tile_size, 4), dtype=np.uint8)
+            h, w = tile_data.shape
+            rgba[:h, :w, 0] = tile_data
+            rgba[:h, :w, 1] = tile_data
+            rgba[:h, :w, 2] = tile_data
+            rgba[:h, :w, 3] = tile_alpha
+
+            tile_path.parent.mkdir(parents=True, exist_ok=True)
+            img = Image.fromarray(rgba, 'RGBA')
+            img.save(tile_path, 'PNG')
+
+            n_tiles += 1
+            total_bytes += tile_path.stat().st_size
+
+    # Mark supertile as complete for resume
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+
+    return (n_tiles, total_bytes)
+
+
+# Default supertile size: 8x8 tiles = 2048x2048 pixels (~16MB float32)
+SUPERTILE_SIZE = 2048
+
+
+def generate_max_zoom_tiles(
+    output_grid: OutputGrid,
+    input_infos: list[InputFileInfo],
+    stretch_params: dict,
+    tile_dir: Path,
+    tile_size: int,
+    max_zoom: int,
+    n_workers: int = 1,
+    overwrite: bool = False,
+) -> tuple[int, int]:
+    """
+    Generate tiles at max zoom using supertile reprojection.
+
+    Instead of calling reproject once per 256x256 tile (~37k calls),
+    reprojects larger supertiles (2048x2048) and slices into PNG tiles.
+    This reduces reproject calls by ~64x, amortizing the per-call overhead.
+
+    Uses ThreadPoolExecutor for parallelism across supertiles.
+
+    Returns (total_tiles, total_bytes).
+    """
+    n_tiles_x = int(math.ceil(output_grid.naxis1 / tile_size))
+    n_tiles_y = int(math.ceil(output_grid.naxis2 / tile_size))
+    n_st_x = int(math.ceil(output_grid.naxis1 / SUPERTILE_SIZE))
+    n_st_y = int(math.ceil(output_grid.naxis2 / SUPERTILE_SIZE))
+    total_supertiles = n_st_x * n_st_y
+
+    logger.info(
+        f"Max zoom {max_zoom}: {n_tiles_x}x{n_tiles_y} tiles via "
+        f"{n_st_x}x{n_st_y} supertiles ({SUPERTILE_SIZE}px), "
+        f"{n_workers} thread(s)"
+        f"{'' if overwrite else ', skipping existing'}"
+    )
+
+    # Pre-open all FITS files once (memory-mapped, thread-safe for reads)
+    path_to_hdu: dict[str, object] = {}
+    open_hduls = []
+    for info in input_infos:
+        path_str = str(info.path)
+        hdul = fits.open(info.path, memmap=True)
+        open_hduls.append(hdul)
+        for ext_name in ['SCI', 0]:
+            try:
+                hdu = hdul[ext_name]
+                if hdu.data is not None and len(hdu.data.shape) == 2:
+                    path_to_hdu[path_str] = hdu
+                    break
+            except (KeyError, IndexError):
+                continue
+
+    # Build supertile positions grouped by row (for page cache locality)
+    # Supertiles in the same row access similar y-ranges of input files
+    st_rows: list[list[tuple[int, int]]] = [[] for _ in range(n_st_y)]
+    total_with_overlap = 0
+    for sy in range(n_st_y):
+        for sx in range(n_st_x):
+            x0 = sx * SUPERTILE_SIZE
+            y0 = sy * SUPERTILE_SIZE
+            if find_overlapping_inputs(input_infos, x0, y0, SUPERTILE_SIZE):
+                st_rows[sy].append((sx, sy))
+                total_with_overlap += 1
+
+    logger.info(
+        f"  {total_with_overlap}/{total_supertiles} supertiles have "
+        f"overlapping inputs"
+    )
+
+    total_tiles = 0
+    total_bytes = 0
+
+    def process(pos):
+        return _process_supertile(
+            pos[0], pos[1], SUPERTILE_SIZE,
+            output_grid, input_infos, path_to_hdu,
+            stretch_params, tile_dir, tile_size, max_zoom, n_tiles_y,
+            overwrite=overwrite,
+        )
+
+    # Process row by row to keep memory-mapped page cache footprint small.
+    # Threads within a row access similar y-ranges of the input FITS files.
+    pbar = tqdm(total=total_with_overlap, desc=f"Zoom {max_zoom}", unit="st", smoothing=0.05)
+
+    if n_workers <= 1:
+        for row in st_rows:
+            for pos in row:
+                n, nbytes = process(pos)
+                total_tiles += n
+                total_bytes += nbytes
+                pbar.update(1)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            for row in st_rows:
+                if not row:
+                    continue
+                # Submit one row at a time, wait for completion
+                futures = {executor.submit(process, pos): pos for pos in row}
+                for future in as_completed(futures):
+                    n, nbytes = future.result()
+                    total_tiles += n
+                    total_bytes += nbytes
+                    pbar.update(1)
+
+    pbar.close()
+
+    # Close files
+    for hdul in open_hduls:
+        hdul.close()
+
+    logger.info(
+        f"  Max zoom {max_zoom}: {total_tiles} non-empty tiles "
+        f"({total_bytes / (1024 * 1024):.1f} MB)"
+    )
+
+    return total_tiles, total_bytes
+
+
+def build_lower_zoom_levels(
+    tile_dir: Path,
+    min_zoom: int,
+    max_zoom: int,
+    tile_size: int,
+    naxis1: int,
+    naxis2: int,
+    overwrite: bool = False,
+) -> tuple[int, int]:
+    """
+    Build lower zoom levels by combining 4 child tiles into 1 parent.
+
+    At each zoom level z, tile (tx, ty) is built from zoom z+1 tiles:
+        (2*tx, 2*ty), (2*tx+1, 2*ty), (2*tx, 2*ty+1), (2*tx+1, 2*ty+1)
+
+    Each child is placed in its quadrant of a 2*tile_size image, then
+    downsampled to tile_size. This is exactly the FITSMap approach.
+
+    When overwrite is False, existing tiles are skipped (counted in totals).
+
+    Returns (total_tiles, total_bytes).
+    """
+    total_tiles = 0
+    total_bytes = 0
+
+    for zoom in range(max_zoom - 1, min_zoom - 1, -1):
+        # At this zoom, each pixel covers 2^(max_zoom - zoom) output pixels
+        scale = 2 ** (max_zoom - zoom)
+        n_tiles_x = int(math.ceil(naxis1 / scale / tile_size))
+        n_tiles_y = int(math.ceil(naxis2 / scale / tile_size))
+        zoom_tiles = 0
+        positions = [(tx, ty) for tx in range(n_tiles_x) for ty in range(n_tiles_y)]
+
+        for tx, ty in tqdm(positions, desc=f"Zoom {zoom}", unit="tile", smoothing=0.05):
+                leaflet_y = n_tiles_y - 1 - ty
+
+                # Skip if already exists
+                tile_path = tile_dir / str(zoom) / str(tx) / f"{leaflet_y}.png"
+                if not overwrite and tile_path.exists():
+                    total_tiles += 1
+                    total_bytes += tile_path.stat().st_size
+                    zoom_tiles += 1
+                    continue
+
+                # Combine 4 children from zoom+1
+                child_zoom = zoom + 1
+                # At child zoom, there are twice as many tiles per axis
+                child_n_tiles_y = int(math.ceil(
+                    naxis2 / (2 ** (max_zoom - child_zoom)) / tile_size
+                ))
+
+                combined = np.zeros(
+                    (tile_size * 2, tile_size * 2, 4), dtype=np.uint8
+                )
+                has_any = False
+
+                for dx in range(2):
+                    for dy in range(2):
+                        child_tx = 2 * tx + dx
+                        child_ty = 2 * ty + dy
+                        child_leaflet_y = child_n_tiles_y - 1 - child_ty
+
+                        child_path = (
+                            tile_dir / str(child_zoom) / str(child_tx)
+                            / f"{child_leaflet_y}.png"
+                        )
+                        if not child_path.exists():
+                            continue
+
+                        child_img = Image.open(child_path)
+                        child_arr = np.array(child_img)
+
+                        # Place in correct quadrant
+                        # dy=0 is bottom (higher y in image), dy=1 is top
+                        qx = dx * tile_size
+                        qy = (1 - dy) * tile_size
+                        h = min(tile_size, child_arr.shape[0])
+                        w = min(tile_size, child_arr.shape[1])
+                        # Ensure we don't exceed 4 channels
+                        channels = min(child_arr.shape[2], 4) if len(child_arr.shape) == 3 else 1
+                        combined[qy:qy + h, qx:qx + w, :channels] = child_arr[:h, :w, :channels]
+                        has_any = True
+
+                if not has_any:
+                    continue
+
+                # Downsample 2x using Pillow (high quality)
+                combined_img = Image.fromarray(combined, 'RGBA')
+                downsampled = combined_img.resize(
+                    (tile_size, tile_size), Image.LANCZOS
+                )
+
+                # Check if tile has any non-transparent content
+                ds_arr = np.array(downsampled)
+                if not np.any(ds_arr[:, :, 3] > 0):
+                    continue
+
+                tile_path = tile_dir / str(zoom) / str(tx) / f"{leaflet_y}.png"
+                tile_path.parent.mkdir(parents=True, exist_ok=True)
+                downsampled.save(tile_path, 'PNG')
+
+                total_tiles += 1
+                total_bytes += tile_path.stat().st_size
+                zoom_tiles += 1
+
+        logger.info(
+            f"  Zoom {zoom}: {n_tiles_x}x{n_tiles_y} grid, "
+            f"{zoom_tiles} non-empty tiles"
+        )
+
+    return total_tiles, total_bytes
+
+
+# ============================================
+# Full Pipeline
+# ============================================
+
+def generate_tiles_for_filter(
+    config: TileConfig,
+    n_workers: int = 1,
+    overwrite: bool = False,
+) -> TileStats:
+    """
+    Full tile generation pipeline for one field/filter combination.
+
+    1. Compute output grid from input WCS headers
+    2. Precompute input file bounding boxes in output pixel coords
+    3. Compute global stretch parameters by sampling input pixels
+    4. Generate max zoom tiles by per-tile reprojection
+    5. Build lower zoom levels from children
+    6. Return stats for registration
+
+    Args:
+        config: TileConfig with all parameters.
+        n_workers: Number of parallel workers for max-zoom tile generation.
+        overwrite: If False, skip tiles that already exist on disk.
+    """
+    logger.info(
+        f"=== Generating tiles: {config.field}/{config.filter_name} "
+        f"({len(config.input_files)} input files) ==="
+    )
+
+    # Step 1: Compute output grid
+    output_grid = compute_output_grid(
+        config.input_files,
+        config.output_pixel_scale_arcsec,
+    )
+
+    min_zoom, max_zoom = compute_zoom_range(
+        output_grid.naxis1, output_grid.naxis2, config.tile_size
+    )
+
+    # Step 2: Precompute input bounding boxes
+    logger.info("Precomputing input file bounding boxes...")
+    input_infos = precompute_input_bboxes(config.input_files, output_grid)
+
+    # Step 3: Compute global stretch parameters
+    stretch_params = compute_stretch_params(
+        config.input_files,
+        stretch_type=config.stretch_type,
+        min_percentile=config.min_percentile,
+        max_percentile=config.max_percentile,
+    )
+
+    tile_dir = config.output_dir / config.field / config.filter_name
+
+    # Step 4: Generate max zoom tiles (per-tile reprojection)
+    max_tiles, max_bytes = generate_max_zoom_tiles(
+        output_grid=output_grid,
+        input_infos=input_infos,
+        stretch_params=stretch_params,
+        tile_dir=tile_dir,
+        tile_size=config.tile_size,
+        max_zoom=max_zoom,
+        n_workers=n_workers,
+        overwrite=overwrite,
+    )
+
+    # Step 5: Build lower zoom levels from children
+    lower_tiles, lower_bytes = build_lower_zoom_levels(
+        tile_dir=tile_dir,
+        min_zoom=min_zoom,
+        max_zoom=max_zoom,
+        tile_size=config.tile_size,
+        naxis1=output_grid.naxis1,
+        naxis2=output_grid.naxis2,
+        overwrite=overwrite,
+    )
+
+    total_tiles = max_tiles + lower_tiles
+    total_bytes = max_bytes + lower_bytes
+
+    # Compute sky bounds
+    wcs = output_grid.to_wcs()
+    corners = np.array([
+        [0, 0],
+        [output_grid.naxis1 - 1, 0],
+        [output_grid.naxis1 - 1, output_grid.naxis2 - 1],
+        [0, output_grid.naxis2 - 1],
+    ], dtype=float)
+    corner_sky = wcs.pixel_to_world_values(corners[:, 0], corners[:, 1])
+
+    stats = TileStats(
+        field=config.field,
+        filter_name=config.filter_name,
+        num_input_files=len(config.input_files),
+        output_grid_size=(output_grid.naxis1, output_grid.naxis2),
+        min_zoom=min_zoom,
+        max_zoom=max_zoom,
+        total_tiles=total_tiles,
+        total_size_bytes=total_bytes,
+        ra_min=float(np.min(corner_sky[0])),
+        ra_max=float(np.max(corner_sky[0])),
+        dec_min=float(np.min(corner_sky[1])),
+        dec_max=float(np.max(corner_sky[1])),
+        wcs_params=output_grid.to_json(),
+    )
+
+    logger.info(
+        f"=== Done: {total_tiles} tiles, "
+        f"{total_bytes / (1024 * 1024):.1f} MB ==="
+    )
+
+    return stats
+
+
+def estimate_tiles_for_filter(config: TileConfig) -> dict:
+    """
+    Dry-run estimation: compute grid and tile counts without generating.
+    """
+    output_grid = compute_output_grid(
+        config.input_files,
+        config.output_pixel_scale_arcsec,
+    )
+
+    min_zoom, max_zoom = compute_zoom_range(
+        output_grid.naxis1, output_grid.naxis2, config.tile_size
+    )
+
+    total_tiles = 0
+    for zoom in range(min_zoom, max_zoom + 1):
+        scale = 2 ** (max_zoom - zoom)
+        nx_tiles = int(math.ceil(output_grid.naxis1 / scale / config.tile_size))
+        ny_tiles = int(math.ceil(output_grid.naxis2 / scale / config.tile_size))
+        # Assume ~60% coverage
+        total_tiles += int(nx_tiles * ny_tiles * 0.6)
+
+    avg_tile_bytes = 40 * 1024  # ~40KB
+    estimated_bytes = total_tiles * avg_tile_bytes
+
+    return {
+        'field': config.field,
+        'filter': config.filter_name,
+        'input_files': len(config.input_files),
+        'output_width': output_grid.naxis1,
+        'output_height': output_grid.naxis2,
+        'pixel_scale_arcsec': config.output_pixel_scale_arcsec,
+        'min_zoom': min_zoom,
+        'max_zoom': max_zoom,
+        'estimated_tiles': total_tiles,
+        'estimated_size_mb': estimated_bytes / (1024 * 1024),
+        'estimated_size_gb': estimated_bytes / (1024 * 1024 * 1024),
+    }
+
+
+# ============================================
+# Config Loading
+# ============================================
+
+def load_imaging_config(config_path: Path) -> dict:
+    """Load and validate imaging.toml configuration."""
+    if not config_path.exists():
+        raise FileNotFoundError(f"Imaging config not found: {config_path}")
+
+    with open(config_path, 'rb') as f:
+        config = tomllib.load(f)
+
+    if 'defaults' not in config:
+        raise ValueError("imaging.toml must contain a [defaults] section")
+
+    return config
+
+
+def get_tile_configs(
+    imaging_config: dict,
+    fields: list[str] | None = None,
+    filters: list[str] | None = None,
+) -> list[TileConfig]:
+    """
+    Parse imaging.toml into TileConfig objects.
+
+    Resolves glob patterns to actual file lists.
+    """
+    defaults = imaging_config.get('defaults', {})
+    default_pixel_scale = defaults.get('output_pixel_scale_arcsec', 0.06)
+    default_tile_size = defaults.get('tile_size', 256)
+    default_output_dir = Path(defaults.get('output_dir', 'pipeline/tiles'))
+    default_stretch = defaults.get('stretch', {})
+    default_stretch_type = default_stretch.get('type', 'asinh')
+    default_min_pct = default_stretch.get('min_percentile', 1.0)
+    default_max_pct = default_stretch.get('max_percentile', 99.5)
+
+    configs = []
+
+    for section_name, section in imaging_config.items():
+        if section_name == 'defaults' or not isinstance(section, dict):
+            continue
+
+        field_name = section.get('field', section_name)
+
+        if fields and field_name not in fields:
+            continue
+
+        data_dir = Path(section.get('data_dir', '.'))
+        field_filters = section.get('filters', {})
+
+        for filter_key, filter_config in field_filters.items():
+            if filters and filter_key not in filters:
+                continue
+
+            file_pattern = filter_config.get('files', '')
+            if isinstance(file_pattern, str):
+                input_files = sorted(data_dir.glob(file_pattern))
+            elif isinstance(file_pattern, list):
+                input_files = []
+                for pattern in file_pattern:
+                    input_files.extend(sorted(data_dir.glob(pattern)))
+            else:
+                logger.warning(
+                    f"Skipping {field_name}/{filter_key}: "
+                    f"invalid files specification"
+                )
+                continue
+
+            if not input_files:
+                logger.warning(
+                    f"No files found for {field_name}/{filter_key}: "
+                    f"pattern '{file_pattern}' in {data_dir}"
+                )
+                continue
+
+            configs.append(TileConfig(
+                field=field_name,
+                filter_name=filter_key,
+                input_files=input_files,
+                output_dir=default_output_dir,
+                output_pixel_scale_arcsec=default_pixel_scale,
+                tile_size=default_tile_size,
+                stretch_type=default_stretch_type,
+                min_percentile=default_min_pct,
+                max_percentile=default_max_pct,
+            ))
+
+    return configs

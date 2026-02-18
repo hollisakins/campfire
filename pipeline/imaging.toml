@@ -1,0 +1,46 @@
+# NIRCam imaging tile generation configuration
+# Defines fields, filters, and input FITS mosaic locations
+
+[defaults]
+    output_pixel_scale_arcsec = 0.06   # 60mas output (2x COSMOS native 30mas)
+    tile_size = 256
+    output_dir = "pipeline/tiles"      # local output before upload to R2
+
+    [defaults.stretch]
+        type = "asinh"
+        min_percentile = 1.0
+        max_percentile = 99.5
+
+# ============================================
+# COSMOS Field
+# ============================================
+# 20 rotated tiles (~25k x 20k each, ~20deg rotation)
+# Pipeline handles reprojection to North-up automatically
+
+[cosmos]
+    field = "cosmos"
+    data_dir = "/V/maurice/mosaics/cosmos/"    # Update to actual path
+
+    [cosmos.filters.f115w]
+        files = "f115w/mosaic_nircam_f115w_cosmos_30mas_*_sci.fits"
+
+    [cosmos.filters.f150w]
+        files = "f150w/mosaic_nircam_f150w_cosmos_30mas_*_sci.fits"
+
+    [cosmos.filters.f200w]
+        files = "f200w/mosaic_nircam_f200w_cosmos_30mas_*_sci.fits"
+    
+    [cosmos.filters.f277w]
+        files = "f277w/mosaic_nircam_f277w_cosmos_30mas_*_sci.fits"
+    
+    [cosmos.filters.f356w]
+        files = "f356w/mosaic_nircam_f356w_cosmos_30mas_*_sci.fits"
+
+    [cosmos.filters.f444w]
+        files = "f444w/mosaic_nircam_f444w_cosmos_30mas_*_sci.fits"
+
+    # # Optional RGB composite (generated from individual filter tiles)
+    # [cosmos.rgb]
+    #     red = "f444w"
+    #     green = "f277w"
+    #     blue = "f115w"

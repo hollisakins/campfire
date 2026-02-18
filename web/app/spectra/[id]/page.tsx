@@ -14,6 +14,7 @@ import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
 import { DownloadButtons } from '@/components/spectra/DownloadButtons';
 import { CopyLinkButton } from '@/components/spectra/CopyLinkButton';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
+import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
 import { RGBImage } from '@/components/spectra/RGBImage';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
@@ -225,7 +226,10 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
                   </>
                 )}
               </div>
-              <CoordinateDisplay ra={spectrum.ra} dec={spectrum.dec} />
+              <div className="flex items-center gap-4">
+                <CoordinateDisplay ra={spectrum.ra} dec={spectrum.dec} />
+                <ShowOnMapLink ra={spectrum.ra} dec={spectrum.dec} field={spectrum.field} objectId={spectrum.object_id} />
+              </div>
             </div>
 
             {/* Metric Cards */}

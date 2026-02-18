@@ -31,6 +31,7 @@ export const Navigation: React.FC = () => {
     { href: '/', label: 'Home' },
     { href: '/nircam', label: 'NIRCam' },
     { href: '/spectra', label: 'NIRSpec' },
+    { href: '/map', label: 'Map' },
     { href: '/docs', label: 'Docs' },
   ];
 

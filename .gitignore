@@ -42,6 +42,9 @@ pipeline/templates/*.pickle
 pipeline/templates/*.fits
 pipeline/templates/pictureframe/
 
+# Generated map tiles (uploaded to R2)
+pipeline/tiles/
+
 # CRDS cache
 crds/
 
