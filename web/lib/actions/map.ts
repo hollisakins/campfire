@@ -24,6 +24,7 @@ export interface MapLayer {
   image_height: number;
   total_tiles: number | null;
   total_size_bytes: number | null;
+  tile_version: number;
   is_default: boolean;
   created_at: string;
 }

@@ -268,7 +268,7 @@ export function MapViewer({
     return null;
   }
 
-  const tileUrl = `${activeLayer.tile_base_url}/{z}/{x}/{y}.png`;
+  const tileUrl = `${activeLayer.tile_base_url}/{z}/{x}/{y}.png?v=${activeLayer.tile_version}`;
 
   return (
     <div className="relative h-full w-full">

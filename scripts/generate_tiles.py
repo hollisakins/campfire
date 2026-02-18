@@ -115,11 +115,12 @@ def upload_files_parallel(
             extra_args = {}
             if task.content_type:
                 extra_args['ContentType'] = task.content_type
+            extra_args['CacheControl'] = 'public, max-age=31536000, immutable'
             r2_client.upload_file(
                 str(task.local_path),
                 bucket,
                 task.r2_key,
-                ExtraArgs=extra_args or None,
+                ExtraArgs=extra_args,
             )
             return True, None
         except Exception as e:
@@ -207,6 +208,16 @@ def upload_tiles(
             for err in errors[:5]:
                 print(f"    {err}")
         print(f"  Uploaded {success}/{len(tasks)} tiles to {bucket}/{field}/{fname}/")
+
+        # Bump tile_version in Supabase to bust edge cache
+        try:
+            supabase = get_supabase_client(config)
+            supabase.rpc('increment_tile_version', {
+                'p_field': field, 'p_filter': fname,
+            }).execute()
+            print(f"  Bumped tile_version for {field}/{fname}")
+        except Exception as e:
+            print(f"  Warning: Failed to bump tile_version: {e}")
 
 
 # ============================================
