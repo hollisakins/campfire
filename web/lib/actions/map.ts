@@ -87,30 +87,32 @@ export async function getMapLayers(
 }
 
 /**
- * Fetch objects within a viewport bounding box for map markers.
+ * Fetch all objects for a field, paginating to get past Supabase row limits.
  */
-export async function getMapMarkers(
-  raMin: number,
-  raMax: number,
-  decMin: number,
-  decMax: number,
-  field?: string,
-  limit: number = 5000
+export async function getFieldMarkers(
+  field: string
 ): Promise<MapMarkersResult> {
   const supabase = await createClient();
+  const PAGE_SIZE = 1000;
+  const allMarkers: MapMarker[] = [];
+  let offset = 0;
 
-  const { data, error } = await supabase.rpc('get_objects_in_viewport', {
-    p_ra_min: raMin,
-    p_ra_max: raMax,
-    p_dec_min: decMin,
-    p_dec_max: decMax,
-    p_field: field ?? null,
-    p_limit: limit,
-  });
+  while (true) {
+    const { data, error } = await supabase
+      .from('objects')
+      .select('object_id, ra, dec, redshift, redshift_quality, field, program_id')
+      .eq('field', field)
+      .range(offset, offset + PAGE_SIZE - 1);
 
-  if (error) {
-    return { markers: [], error: error.message };
+    if (error) {
+      return { markers: allMarkers, error: error.message };
+    }
+
+    if (!data || data.length === 0) break;
+    allMarkers.push(...data);
+    if (data.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
   }
 
-  return { markers: data || [] };
+  return { markers: allMarkers };
 }

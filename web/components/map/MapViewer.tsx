@@ -68,29 +68,26 @@ function updateMapUrl(params: Record<string, string | undefined>) {
 
 interface MapEventsProps {
   wcs: WCSParams | null;
-  onViewportChange: (bounds: L.LatLngBounds) => void;
   onMouseMove: (coords: { ra: number; dec: number } | null) => void;
 }
 
-function MapEvents({ wcs, onViewportChange, onMouseMove }: MapEventsProps) {
+function MapEvents({ wcs, onMouseMove }: MapEventsProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useMapEvents({
     moveend: (e) => {
+      // Sync map position to URL (debounced)
+      if (!wcs) return;
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
-        onViewportChange(e.target.getBounds());
-        // Sync map position to URL
-        if (wcs) {
-          const center = e.target.getCenter();
-          const sky = leafletToSky(wcs, center.lat, center.lng);
-          const zoom = e.target.getZoom();
-          updateMapUrl({
-            ra: sky.ra.toFixed(4),
-            dec: sky.dec.toFixed(4),
-            z: String(zoom),
-          });
-        }
+        const center = e.target.getCenter();
+        const sky = leafletToSky(wcs, center.lat, center.lng);
+        const zoom = e.target.getZoom();
+        updateMapUrl({
+          ra: sky.ra.toFixed(4),
+          dec: sky.dec.toFixed(4),
+          z: String(zoom),
+        });
       }, 300);
     },
     mousemove: (e) => {
@@ -181,8 +178,29 @@ export function MapViewer({
     }
 
     setActiveLayer(defaultLayer);
-    setMarkers([]);
   }, [selectedField, fieldGroups, initialFilter, initialField]);
+
+  // Load all markers for the selected field
+  useEffect(() => {
+    if (!selectedField) return;
+    let cancelled = false;
+
+    async function loadMarkers() {
+      setIsLoadingMarkers(true);
+      try {
+        const { getFieldMarkers } = await import('@/lib/actions/map');
+        const result = await getFieldMarkers(selectedField);
+        if (!cancelled) setMarkers(result.markers);
+      } catch (err) {
+        console.error('Failed to load map markers:', err);
+      } finally {
+        if (!cancelled) setIsLoadingMarkers(false);
+      }
+    }
+
+    loadMarkers();
+    return () => { cancelled = true; };
+  }, [selectedField]);
 
   // Compute initial map center and zoom
   const mapConfig = useMemo(() => {
@@ -225,34 +243,6 @@ export function MapViewer({
     updateMapUrl({ field: layer.field, filter: layer.filter });
   }, []);
 
-  // Load markers when viewport changes
-  const handleViewportChange = useCallback(
-    async (bounds: L.LatLngBounds) => {
-      if (!activeLayer || !showMarkers) return;
-
-      const wcs = activeLayer.wcs_params;
-      const sw = leafletToSky(wcs, bounds.getSouth(), bounds.getWest());
-      const ne = leafletToSky(wcs, bounds.getNorth(), bounds.getEast());
-
-      // RA might be inverted (CD1_1 is negative)
-      const raMin = Math.min(sw.ra, ne.ra);
-      const raMax = Math.max(sw.ra, ne.ra);
-      const decMin = Math.min(sw.dec, ne.dec);
-      const decMax = Math.max(sw.dec, ne.dec);
-
-      setIsLoadingMarkers(true);
-      try {
-        const { getMapMarkers } = await import('@/lib/actions/map');
-        const result = await getMapMarkers(raMin, raMax, decMin, decMax, selectedField);
-        setMarkers(result.markers);
-      } catch (err) {
-        console.error('Failed to load map markers:', err);
-      } finally {
-        setIsLoadingMarkers(false);
-      }
-    },
-    [activeLayer, showMarkers, selectedField]
-  );
 
   if (!activeLayer || !mapConfig) {
     if (layers.length === 0) {
@@ -298,7 +288,6 @@ export function MapViewer({
 
         <MapEvents
           wcs={activeLayer.wcs_params}
-          onViewportChange={handleViewportChange}
           onMouseMove={setCursorCoords}
         />
 
