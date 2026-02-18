@@ -19,6 +19,7 @@ const MapViewer = dynamic(
 interface MapViewerWrapperProps {
   layers: MapLayer[];
   initialField?: string;
+  initialFilter?: string;
   initialCenter?: { ra: number; dec: number };
   initialZoom?: number;
   highlightObjectId?: string;

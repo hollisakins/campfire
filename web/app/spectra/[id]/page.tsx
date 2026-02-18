@@ -15,6 +15,7 @@ import { DownloadButtons } from '@/components/spectra/DownloadButtons';
 import { CopyLinkButton } from '@/components/spectra/CopyLinkButton';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
+import { ReturnToMapButton } from '@/components/map/ReturnToMapButton';
 import { RGBImage } from '@/components/spectra/RGBImage';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
@@ -174,6 +175,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               ← Back to Filtered List
             </Link>
           )}
+          <ReturnToMapButton />
         </div>
 
         {/* Navigation */}

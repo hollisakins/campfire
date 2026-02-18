@@ -12,7 +12,7 @@ interface ShowOnMapLinkProps {
 }
 
 export function ShowOnMapLink({ ra, dec, field, objectId }: ShowOnMapLinkProps) {
-  const mapUrl = `/map?field=${encodeURIComponent(field)}&ra=${ra}&dec=${dec}&zoom=8&highlight=${encodeURIComponent(objectId)}`;
+  const mapUrl = `/map?field=${encodeURIComponent(field)}&ra=${ra}&dec=${dec}&z=8&highlight=${encodeURIComponent(objectId)}`;
 
   return (
     <Link

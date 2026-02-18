@@ -36,11 +36,30 @@ const QUALITY_COLORS: Record<number, string> = {
 // Custom CRS for pixel-based tile coordinates
 // ============================================
 
-function createFitsMapCRS(maxZoom: number): L.CRS {
+function createFitsMapCRS(maxZoom: number, naxis2: number, tileSize: number = 256): L.CRS {
   const scale = Math.pow(2, maxZoom);
+  const nTilesY = Math.ceil(naxis2 / tileSize);
+  const d = (nTilesY * tileSize - 1) / scale;
   return L.Util.extend({}, L.CRS.Simple, {
-    transformation: new L.Transformation(1 / scale, 0, -1 / scale, 256),
+    transformation: new L.Transformation(1 / scale, 0, -1 / scale, d),
   }) as L.CRS;
+}
+
+// ============================================
+// Sub-components that use map hooks
+// ============================================
+
+// ============================================
+// URL sync helper
+// ============================================
+
+function updateMapUrl(params: Record<string, string | undefined>) {
+  const url = new URL(window.location.href);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
+  }
+  window.history.replaceState(null, '', url.toString());
 }
 
 // ============================================
@@ -61,6 +80,17 @@ function MapEvents({ wcs, onViewportChange, onMouseMove }: MapEventsProps) {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
         onViewportChange(e.target.getBounds());
+        // Sync map position to URL
+        if (wcs) {
+          const center = e.target.getCenter();
+          const sky = leafletToSky(wcs, center.lat, center.lng);
+          const zoom = e.target.getZoom();
+          updateMapUrl({
+            ra: sky.ra.toFixed(4),
+            dec: sky.dec.toFixed(4),
+            z: String(zoom),
+          });
+        }
       }, 300);
     },
     mousemove: (e) => {
@@ -96,6 +126,7 @@ function SetView({ center, zoom }: SetViewProps) {
 interface MapViewerProps {
   layers: MapLayer[];
   initialField?: string;
+  initialFilter?: string;
   initialCenter?: { ra: number; dec: number };
   initialZoom?: number;
   highlightObjectId?: string;
@@ -104,6 +135,7 @@ interface MapViewerProps {
 export function MapViewer({
   layers,
   initialField,
+  initialFilter,
   initialCenter,
   initialZoom,
   highlightObjectId,
@@ -130,20 +162,34 @@ export function MapViewer({
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
   const [isLoadingMarkers, setIsLoadingMarkers] = useState(false);
 
+  // Track whether we've applied the initialFilter (only for first render)
+  const initialFilterApplied = useRef(false);
+
   // Set initial active layer when field changes
   useEffect(() => {
     const fieldLayers = fieldGroups[selectedField] || [];
-    const defaultLayer = fieldLayers.find(l => l.is_default) || fieldLayers[0] || null;
+    let defaultLayer: MapLayer | null;
+
+    // Use initialFilter only on first render for the initial field
+    if (!initialFilterApplied.current && initialFilter && selectedField === initialField) {
+      defaultLayer = fieldLayers.find(l => l.filter === initialFilter)
+        || fieldLayers.find(l => l.is_default)
+        || fieldLayers[0] || null;
+      initialFilterApplied.current = true;
+    } else {
+      defaultLayer = fieldLayers.find(l => l.is_default) || fieldLayers[0] || null;
+    }
+
     setActiveLayer(defaultLayer);
     setMarkers([]);
-  }, [selectedField, fieldGroups]);
+  }, [selectedField, fieldGroups, initialFilter, initialField]);
 
   // Compute initial map center and zoom
   const mapConfig = useMemo(() => {
     if (!activeLayer) return null;
 
     const wcs = activeLayer.wcs_params;
-    const crs = createFitsMapCRS(activeLayer.max_zoom);
+    const crs = createFitsMapCRS(activeLayer.max_zoom, wcs.naxis2);
 
     let center: L.LatLngExpression;
     let zoom: number;
@@ -166,6 +212,18 @@ export function MapViewer({
 
     return { center, zoom, bounds, crs };
   }, [activeLayer, initialCenter, initialField, initialZoom, selectedField]);
+
+  // Sync field/filter to URL when layer changes
+  const handleFieldChange = useCallback((field: string) => {
+    setSelectedField(field);
+    // Layer will be set by the useEffect; URL field/filter updated there
+    updateMapUrl({ field });
+  }, []);
+
+  const handleLayerChange = useCallback((layer: MapLayer) => {
+    setActiveLayer(layer);
+    updateMapUrl({ field: layer.field, filter: layer.filter });
+  }, []);
 
   // Load markers when viewport changes
   const handleViewportChange = useCallback(
@@ -270,6 +328,7 @@ export function MapViewer({
                     <Link
                       href={`/spectra/${encodeURIComponent(marker.object_id)}`}
                       className="text-blue-600 hover:text-blue-800 underline"
+                      onClick={() => sessionStorage.setItem('campfire-map-return-url', window.location.href)}
                     >
                       {marker.object_id}
                     </Link>
@@ -299,10 +358,10 @@ export function MapViewer({
       <LayerControl
         fields={fields}
         selectedField={selectedField}
-        onFieldChange={setSelectedField}
+        onFieldChange={handleFieldChange}
         layers={fieldGroups[selectedField] || []}
         activeLayer={activeLayer}
-        onLayerChange={setActiveLayer}
+        onLayerChange={handleLayerChange}
         showMarkers={showMarkers}
         onToggleMarkers={setShowMarkers}
         markerCount={markers.length}

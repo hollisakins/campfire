@@ -12,9 +12,12 @@ export default async function MapPage({ searchParams }: MapPageProps) {
 
   // Parse query params
   const field = typeof params.field === 'string' ? params.field : undefined;
+  const filter = typeof params.filter === 'string' ? params.filter : undefined;
   const ra = typeof params.ra === 'string' ? parseFloat(params.ra) : undefined;
   const dec = typeof params.dec === 'string' ? parseFloat(params.dec) : undefined;
-  const zoom = typeof params.zoom === 'string' ? parseInt(params.zoom, 10) : undefined;
+  // Support both `z` (new short form) and `zoom` (backward compat)
+  const zoomRaw = typeof params.z === 'string' ? params.z : typeof params.zoom === 'string' ? params.zoom : undefined;
+  const zoom = zoomRaw !== undefined ? parseInt(zoomRaw, 10) : undefined;
   const highlight = typeof params.highlight === 'string' ? params.highlight : undefined;
 
   const initialCenter = ra !== undefined && dec !== undefined ? { ra, dec } : undefined;
@@ -52,6 +55,7 @@ export default async function MapPage({ searchParams }: MapPageProps) {
       <MapViewerWrapper
         layers={layers}
         initialField={field}
+        initialFilter={filter}
         initialCenter={initialCenter}
         initialZoom={zoom}
         highlightObjectId={highlight}
