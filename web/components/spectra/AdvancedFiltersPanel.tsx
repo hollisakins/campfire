@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { X, Info, Check } from 'lucide-react';
+import { X, Info, Check, ChevronDown } from 'lucide-react';
 import { InlineMultiFilter } from '@/components/ui/InlineMultiFilter';
 import { InlineRange } from '@/components/ui/InlineRange';
 import { parseCoordinates, convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
@@ -28,10 +28,12 @@ interface AdvancedFiltersPanelProps {
   onClose: () => void;
   filters: AdvancedFilterOptions;
   onFiltersChange: (filters: AdvancedFilterOptions) => void;
-  /** When true, show basic filters (programs, quality, redshift) above advanced sections */
+  /** When true, show basic filters (programs, observation, quality, redshift) above advanced sections and hide position search */
   showBasicFilters?: boolean;
   /** Available programs for the program filter (required when showBasicFilters is true) */
   availablePrograms?: Program[];
+  /** Available observations for the observation filter (required when showBasicFilters is true) */
+  availableObservations?: string[];
 }
 
 export function AdvancedFiltersPanel({
@@ -41,6 +43,7 @@ export function AdvancedFiltersPanel({
   onFiltersChange,
   showBasicFilters = false,
   availablePrograms = [],
+  availableObservations = [],
 }: AdvancedFiltersPanelProps) {
   // Local state for coordinate search form
   const [coordInput, setCoordInput] = useState('');
@@ -178,6 +181,7 @@ export function AdvancedFiltersPanel({
   // Count panel-only active filters
   const basicFilterCount = showBasicFilters
     ? (filters.programs?.length ?? 0) +
+      (filters.observations?.length ?? 0) +
       (filters.redshift_quality?.length ?? 0) +
       (filters.redshift_min !== null ? 1 : 0) +
       (filters.redshift_max !== null ? 1 : 0)
@@ -195,10 +199,19 @@ export function AdvancedFiltersPanel({
     (filters.object_flags?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
-  // Program and quality options for basic filters
+  // Collapsible section state for basic filters
+  const [programsExpanded, setProgramsExpanded] = useState(true);
+  const [observationsExpanded, setObservationsExpanded] = useState(true);
+
+  // Program, observation, and quality options for basic filters
   const programOptions: FilterOption[] = availablePrograms.map((p) => ({
     value: p.program_id,
     label: p.program_name ? `${p.program_name} (${p.program_id})` : `Program ${p.program_id}`,
+  }));
+
+  const observationOptions: FilterOption[] = availableObservations.map((o) => ({
+    value: o,
+    label: o,
   }));
 
   const qualityOptions: FilterOption[] = REDSHIFT_QUALITY.map((q) => ({
@@ -212,6 +225,7 @@ export function AdvancedFiltersPanel({
     const basicClear = showBasicFilters
       ? {
           programs: [] as number[],
+          observations: [] as string[],
           redshift_quality: [] as number[],
           redshift_min: null,
           redshift_max: null,
@@ -288,16 +302,60 @@ export function AdvancedFiltersPanel({
           {/* Basic Filters (shown on map page) */}
           {showBasicFilters && (
             <>
-              {/* Programs */}
-              <div className="p-4 border-b border-border dark:border-slate-700">
-                <InlineMultiFilter
-                  label="Programs"
-                  options={programOptions}
-                  selected={filters.programs ?? []}
-                  onChange={(s) => onFiltersChange({ ...filters, programs: s as number[] })}
-                  mode="any"
-                  onModeChange={() => {}}
-                />
+              {/* Programs — collapsible */}
+              <div className="border-b border-border dark:border-slate-700">
+                <button
+                  onClick={() => setProgramsExpanded(!programsExpanded)}
+                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 hover:bg-card-hover dark:hover:bg-slate-800/50 transition-colors"
+                >
+                  <span>
+                    Programs
+                    {(filters.programs?.length ?? 0) > 0 && (
+                      <span className="ml-1.5 text-[10px] font-bold text-primary">({filters.programs.length})</span>
+                    )}
+                  </span>
+                  <ChevronDown className={`w-4 h-4 transition-transform ${programsExpanded ? 'rotate-180' : ''}`} />
+                </button>
+                {programsExpanded && (
+                  <div className="px-4 pb-4">
+                    <InlineMultiFilter
+                      label=""
+                      options={programOptions}
+                      selected={filters.programs ?? []}
+                      onChange={(s) => onFiltersChange({ ...filters, programs: s as number[] })}
+                      mode="any"
+                      onModeChange={() => {}}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Observations — collapsible */}
+              <div className="border-b border-border dark:border-slate-700">
+                <button
+                  onClick={() => setObservationsExpanded(!observationsExpanded)}
+                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 hover:bg-card-hover dark:hover:bg-slate-800/50 transition-colors"
+                >
+                  <span>
+                    Observations
+                    {(filters.observations?.length ?? 0) > 0 && (
+                      <span className="ml-1.5 text-[10px] font-bold text-primary">({filters.observations.length})</span>
+                    )}
+                  </span>
+                  <ChevronDown className={`w-4 h-4 transition-transform ${observationsExpanded ? 'rotate-180' : ''}`} />
+                </button>
+                {observationsExpanded && (
+                  <div className="px-4 pb-4">
+                    <InlineMultiFilter
+                      label=""
+                      options={observationOptions}
+                      selected={filters.observations ?? []}
+                      onChange={(s) => onFiltersChange({ ...filters, observations: s as string[] })}
+                      mode="any"
+                      onModeChange={() => {}}
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Redshift Quality */}
@@ -329,87 +387,89 @@ export function AdvancedFiltersPanel({
             </>
           )}
 
-          {/* Position Search Section - Inline Form */}
-          <div className="p-4 border-b border-border dark:border-slate-700">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500">
-                Position Search
-              </h3>
-              {isCoordSearchActive && (
-                <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Active</span>
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-3">
-              {/* Coordinate input */}
-              <div>
-                <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">
-                  Coordinates (RA Dec)
-                </label>
-                <input
-                  type="text"
-                  value={coordInput}
-                  onChange={(e) => setCoordInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="150.5 -2.3  or  10h02m30s -02d18m00s"
-                  className={`w-full px-3 py-2 text-sm border rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
-                    ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border dark:border-slate-600'}
-                  `}
-                />
-                {validationError && (
-                  <p className="text-xs text-red-500 dark:text-red-400 mt-1">{validationError}</p>
+          {/* Position Search Section - Inline Form (hidden on map view) */}
+          {!showBasicFilters && (
+            <div className="p-4 border-b border-border dark:border-slate-700">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500">
+                  Position Search
+                </h3>
+                {isCoordSearchActive && (
+                  <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Active</span>
+                  </div>
                 )}
               </div>
 
-              {/* Radius input with units */}
-              <div>
-                <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">
-                  Search radius (max 1 degree)
-                </label>
-                <div className="flex gap-2">
+              <div className="space-y-3">
+                {/* Coordinate input */}
+                <div>
+                  <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">
+                    Coordinates (RA Dec)
+                  </label>
                   <input
-                    type="number"
-                    value={radiusInput}
-                    onChange={(e) => setRadiusInput(e.target.value)}
+                    type="text"
+                    value={coordInput}
+                    onChange={(e) => setCoordInput(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="1"
-                    min="0"
-                    step="0.1"
-                    className="w-24 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                    placeholder="150.5 -2.3  or  10h02m30s -02d18m00s"
+                    className={`w-full px-3 py-2 text-sm border rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
+                      ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border dark:border-slate-600'}
+                    `}
                   />
-                  <select
-                    value={unitInput}
-                    onChange={(e) => setUnitInput(e.target.value as 'degrees' | 'arcmin' | 'arcsec')}
-                    className="flex-1 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  {validationError && (
+                    <p className="text-xs text-red-500 dark:text-red-400 mt-1">{validationError}</p>
+                  )}
+                </div>
+
+                {/* Radius input with units */}
+                <div>
+                  <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">
+                    Search radius (max 1 degree)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      value={radiusInput}
+                      onChange={(e) => setRadiusInput(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder="1"
+                      min="0"
+                      step="0.1"
+                      className="w-24 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                    />
+                    <select
+                      value={unitInput}
+                      onChange={(e) => setUnitInput(e.target.value as 'degrees' | 'arcmin' | 'arcsec')}
+                      className="flex-1 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                    >
+                      <option value="arcsec">arcseconds</option>
+                      <option value="arcmin">arcminutes</option>
+                      <option value="degrees">degrees</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={handleClearCoordSearch}
+                    className="flex-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 border border-border dark:border-slate-600 rounded-md hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
                   >
-                    <option value="arcsec">arcseconds</option>
-                    <option value="arcmin">arcminutes</option>
-                    <option value="degrees">degrees</option>
-                  </select>
+                    Clear
+                  </button>
+                  <button
+                    onClick={handleApplyCoordSearch}
+                    disabled={validationError !== null && coordInput.trim() !== ''}
+                    className="flex-1 px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Apply
+                  </button>
                 </div>
               </div>
-
-              {/* Action buttons */}
-              <div className="flex gap-2 pt-1">
-                <button
-                  onClick={handleClearCoordSearch}
-                  className="flex-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 border border-border dark:border-slate-600 rounded-md hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
-                >
-                  Clear
-                </button>
-                <button
-                  onClick={handleApplyCoordSearch}
-                  disabled={validationError !== null && coordInput.trim() !== ''}
-                  className="flex-1 px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Apply
-                </button>
-              </div>
             </div>
-          </div>
+          )}
 
           {/* Gratings Section */}
           <div className="p-4 border-b border-border dark:border-slate-700">

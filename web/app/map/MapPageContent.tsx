@@ -64,9 +64,10 @@ export function MapPageContent({
     );
   }, [filters]);
 
-  // Fetch filter options (programs, fields)
+  // Fetch filter options (programs, fields, observations)
   const { data: filterOptionsResult } = useFilterOptionsQuery(true);
   const availablePrograms = filterOptionsResult?.programs ?? [];
+  const availableObservations = filterOptionsResult?.observations ?? [];
 
   // Fetch filtered object IDs when filters are active
   const { data: filteredResult } = useFilteredObjectIds(debouncedFilters, hasActiveFilters);
@@ -136,6 +137,7 @@ export function MapPageContent({
         onFiltersChange={handleFilterChange}
         showBasicFilters={true}
         availablePrograms={availablePrograms}
+        availableObservations={availableObservations}
       />
     </div>
   );
