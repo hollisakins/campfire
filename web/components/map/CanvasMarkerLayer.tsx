@@ -100,7 +100,7 @@ export function CanvasMarkerLayer({
   useEffect(() => {
     const canvas = document.createElement('canvas');
     canvas.classList.add('leaflet-zoom-animated');
-    canvas.style.pointerEvents = 'auto';
+    canvas.style.pointerEvents = 'none';
 
     const pane = map.getPane('overlayPane');
     if (!pane) return;
@@ -272,11 +272,9 @@ export function CanvasMarkerLayer({
       }
     }
 
-    // ---- Hit testing ----
+    // ---- Hit testing (uses Leaflet map events, not canvas DOM events) ----
 
-    function hitTest(e: MouseEvent): CachedPoint | null {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const layerPoint = map.mouseEventToLayerPoint(e as any);
+    function hitTest(layerPoint: L.Point): CachedPoint | null {
       const cached = cachedPointsRef.current;
 
       let closest: CachedPoint | null = null;
@@ -297,29 +295,26 @@ export function CanvasMarkerLayer({
       return closest;
     }
 
-    function onClick(e: MouseEvent) {
-      const hit = hitTest(e);
+    function onClick(e: L.LeafletMouseEvent) {
+      const hit = hitTest(e.layerPoint);
       if (hit) {
-        // Stop propagation so map click doesn't fire (which would close popups)
-        e.stopPropagation();
         onMarkerClickRef.current(hit.marker, hit.latLng);
       }
     }
 
-    function onMouseMove(e: MouseEvent) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if ((map as any).dragging?.moving?.() || (map as any)._animatingZoom) return;
+    function onMouseMove(e: L.LeafletMouseEvent) {
       if (hoverThrottled) return;
 
-      const hit = hitTest(e);
-      canvas.style.cursor = hit ? 'pointer' : '';
+      const hit = hitTest(e.layerPoint);
+      const container = map.getContainer();
+      container.style.cursor = hit ? 'pointer' : '';
 
       hoverThrottled = true;
       setTimeout(() => { hoverThrottled = false; }, 32);
     }
 
     function onMouseOut() {
-      canvas.style.cursor = '';
+      map.getContainer().style.cursor = '';
     }
 
     // ---- Bind events ----
@@ -329,13 +324,9 @@ export function CanvasMarkerLayer({
     map.on('zoomanim', onAnimZoom as L.LeafletEventHandlerFn);
     map.on('zoom', onZoom);
     map.on('viewreset', redraw);
-
-    canvas.addEventListener('click', onClick);
-    canvas.addEventListener('mousemove', onMouseMove);
-    canvas.addEventListener('mouseout', onMouseOut);
-
-    // Prevent canvas clicks from propagating to the map container
-    L.DomEvent.disableClickPropagation(canvas);
+    map.on('click', onClick);
+    map.on('mousemove', onMouseMove as L.LeafletEventHandlerFn);
+    map.on('mouseout', onMouseOut);
 
     // Initial draw
     redraw();
@@ -348,10 +339,11 @@ export function CanvasMarkerLayer({
       map.off('zoomanim', onAnimZoom as L.LeafletEventHandlerFn);
       map.off('zoom', onZoom);
       map.off('viewreset', redraw);
+      map.off('click', onClick);
+      map.off('mousemove', onMouseMove as L.LeafletEventHandlerFn);
+      map.off('mouseout', onMouseOut);
 
-      canvas.removeEventListener('click', onClick);
-      canvas.removeEventListener('mousemove', onMouseMove);
-      canvas.removeEventListener('mouseout', onMouseOut);
+      map.getContainer().style.cursor = '';
 
       if (canvas.parentNode) {
         canvas.parentNode.removeChild(canvas);
