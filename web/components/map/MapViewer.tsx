@@ -228,10 +228,12 @@ export function MapViewer({
       zoom = activeLayer.min_zoom + 1;
     }
 
-    // Bounds for the full image
+    // Bounds for panning — pad generously so the image can be placed anywhere
+    const padY = wcs.naxis2 * 0.5;
+    const padX = wcs.naxis1 * 0.5;
     const bounds = L.latLngBounds(
-      L.latLng(0, 0),
-      L.latLng(wcs.naxis2, wcs.naxis1)
+      L.latLng(-padY, -padX),
+      L.latLng(wcs.naxis2 + padY, wcs.naxis1 + padX)
     );
 
     return { center, zoom, bounds, crs };
@@ -275,7 +277,7 @@ export function MapViewer({
         zoom={mapConfig.zoom}
         crs={mapConfig.crs}
         maxBounds={mapConfig.bounds}
-        maxBoundsViscosity={0.8}
+        maxBoundsViscosity={0.0}
         minZoom={activeLayer.min_zoom}
         maxZoom={activeLayer.max_zoom + 2}
         preferCanvas={true}
