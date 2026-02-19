@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import type { MapLayer } from '@/lib/actions/map';
+import type { MapLayer, MapMarker } from '@/lib/actions/map';
 
 // Dynamic import to avoid SSR issues with Leaflet (requires window/document)
 const MapViewer = dynamic(
@@ -23,6 +23,10 @@ interface MapViewerWrapperProps {
   initialCenter?: { ra: number; dec: number };
   initialZoom?: number;
   highlightObjectId?: string;
+  markerFilter?: (marker: MapMarker) => boolean;
+  filteredMarkerCount?: number;
+  onOpenFilters?: () => void;
+  hasActiveFilters?: boolean;
 }
 
 export function MapViewerWrapper(props: MapViewerWrapperProps) {

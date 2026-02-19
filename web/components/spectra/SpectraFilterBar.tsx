@@ -1,11 +1,13 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Search, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { X, Search, ChevronDown, SlidersHorizontal, Map } from 'lucide-react';
 import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
 import { AdvancedFiltersPanel } from './AdvancedFiltersPanel';
 import { REDSHIFT_QUALITY } from '@/lib/flags';
+import { filtersToURLParams } from '@/lib/utils/url-params';
 import type { Program } from '@/lib/types';
 import type { CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
 
@@ -98,6 +100,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   availableObservations,
   className = '',
 }) => {
+  const router = useRouter();
   // Local state for search input to keep it responsive during typing
   const [localSearch, setLocalSearch] = useState(filters.search);
   // Local state for scope dropdown
@@ -372,6 +375,24 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           ) : (
             <ChevronDown className="w-3.5 h-3.5" />
           )}
+        </button>
+
+        {/* Show on Map button */}
+        <button
+          onClick={() => {
+            const filterParams = filtersToURLParams(filters);
+            // If exactly one field is selected, also set it as the map field param
+            if (filters.fields.length === 1) {
+              filterParams.set('field', filters.fields[0]);
+            }
+            const qs = filterParams.toString();
+            router.push(`/map${qs ? `?${qs}` : ''}`);
+          }}
+          className="inline-flex items-center gap-1.5 px-3 h-8 rounded-full text-sm font-medium border border-border dark:border-slate-700 bg-card dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200 transition-all duration-200"
+          title="Show filtered objects on map"
+        >
+          <Map className="w-4 h-4" />
+          <span>Map</span>
         </button>
 
         {/* Clear all button */}

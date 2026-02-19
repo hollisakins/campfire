@@ -207,9 +207,13 @@ export function filtersToURLParams(
   if (pageSize !== DEFAULT_PAGE_SIZE) {
     params.set('pageSize', pageSize.toString());
   }
-  // Always include sorting params for consistent navigation
-  params.set('sort', sortColumn);
-  params.set('dir', sortDirection);
+  // Only include sorting params when non-default
+  if (sortColumn !== 'object_id') {
+    params.set('sort', sortColumn);
+  }
+  if (sortDirection !== 'asc') {
+    params.set('dir', sortDirection);
+  }
 
   return params;
 }

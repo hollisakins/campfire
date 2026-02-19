@@ -9,8 +9,10 @@ import {
   SPECTRAL_FEATURES,
   OBJECT_FLAGS,
   DQ_FLAGS,
+  REDSHIFT_QUALITY,
 } from '@/lib/flags';
 import type { AdvancedFilterOptions } from './SpectraFilterBar';
+import type { Program } from '@/lib/types';
 
 const GRATINGS = ['PRISM', 'G140M', 'G235M', 'G395M'];
 
@@ -26,6 +28,10 @@ interface AdvancedFiltersPanelProps {
   onClose: () => void;
   filters: AdvancedFilterOptions;
   onFiltersChange: (filters: AdvancedFilterOptions) => void;
+  /** When true, show basic filters (programs, quality, redshift) above advanced sections */
+  showBasicFilters?: boolean;
+  /** Available programs for the program filter (required when showBasicFilters is true) */
+  availablePrograms?: Program[];
 }
 
 export function AdvancedFiltersPanel({
@@ -33,6 +39,8 @@ export function AdvancedFiltersPanel({
   onClose,
   filters,
   onFiltersChange,
+  showBasicFilters = false,
+  availablePrograms = [],
 }: AdvancedFiltersPanelProps) {
   // Local state for coordinate search form
   const [coordInput, setCoordInput] = useState('');
@@ -168,7 +176,15 @@ export function AdvancedFiltersPanel({
   }));
 
   // Count panel-only active filters
+  const basicFilterCount = showBasicFilters
+    ? (filters.programs?.length ?? 0) +
+      (filters.redshift_quality?.length ?? 0) +
+      (filters.redshift_min !== null ? 1 : 0) +
+      (filters.redshift_max !== null ? 1 : 0)
+    : 0;
+
   const panelFilterCount =
+    basicFilterCount +
     (filters.coordinate_search !== null ? 1 : 0) +
     (filters.gratings?.length ?? 0) +
     (filters.max_snr_min !== null ? 1 : 0) +
@@ -179,9 +195,32 @@ export function AdvancedFiltersPanel({
     (filters.object_flags?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
+  // Program and quality options for basic filters
+  const programOptions: FilterOption[] = availablePrograms.map((p) => ({
+    value: p.program_id,
+    label: p.program_name ? `${p.program_name} (${p.program_id})` : `Program ${p.program_id}`,
+  }));
+
+  const qualityOptions: FilterOption[] = REDSHIFT_QUALITY.map((q) => ({
+    value: q.value,
+    label: q.label,
+    icon: q.icon,
+    color: q.color,
+  }));
+
   const clearPanelFilters = () => {
+    const basicClear = showBasicFilters
+      ? {
+          programs: [] as number[],
+          redshift_quality: [] as number[],
+          redshift_min: null,
+          redshift_max: null,
+        }
+      : {};
+
     onFiltersChange({
       ...filters,
+      ...basicClear,
       coordinate_search: null,
       gratings: [],
       gratings_mode: 'any',
@@ -230,10 +269,10 @@ export function AdvancedFiltersPanel({
         <div className="flex items-center justify-between p-4 border-b border-border dark:border-slate-700 bg-card dark:bg-slate-800">
           <div>
             <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
-              Advanced Filters
+              {showBasicFilters ? 'Filters' : 'Advanced Filters'}
             </h2>
             <p className="text-xs text-text-secondary dark:text-slate-400 mt-0.5">
-              Multi-value filters and spectra properties
+              {showBasicFilters ? 'Filter objects shown on the map' : 'Multi-value filters and spectra properties'}
             </p>
           </div>
           <button
@@ -246,6 +285,50 @@ export function AdvancedFiltersPanel({
 
         {/* Panel Content */}
         <div className="flex-1 overflow-y-auto">
+          {/* Basic Filters (shown on map page) */}
+          {showBasicFilters && (
+            <>
+              {/* Programs */}
+              <div className="p-4 border-b border-border dark:border-slate-700">
+                <InlineMultiFilter
+                  label="Programs"
+                  options={programOptions}
+                  selected={filters.programs ?? []}
+                  onChange={(s) => onFiltersChange({ ...filters, programs: s as number[] })}
+                  mode="any"
+                  onModeChange={() => {}}
+                />
+              </div>
+
+              {/* Redshift Quality */}
+              <div className="p-4 border-b border-border dark:border-slate-700">
+                <InlineMultiFilter
+                  label="Redshift Quality"
+                  options={qualityOptions}
+                  selected={filters.redshift_quality ?? []}
+                  onChange={(s) => onFiltersChange({ ...filters, redshift_quality: s as number[] })}
+                  mode="any"
+                  onModeChange={() => {}}
+                />
+              </div>
+
+              {/* Redshift Range */}
+              <div className="p-4 border-b border-border dark:border-slate-700">
+                <InlineRange
+                  label="Redshift"
+                  description="Filter by redshift range"
+                  min={filters.redshift_min ?? null}
+                  max={filters.redshift_max ?? null}
+                  onChange={(min, max) => onFiltersChange({ ...filters, redshift_min: min, redshift_max: max })}
+                  minBound={0}
+                  maxBound={15}
+                  step={0.1}
+                  precision={2}
+                />
+              </div>
+            </>
+          )}
+
           {/* Position Search Section - Inline Form */}
           <div className="p-4 border-b border-border dark:border-slate-700">
             <div className="flex items-center justify-between mb-3">

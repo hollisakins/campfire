@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Layers, MapPin, ChevronDown } from 'lucide-react';
+import { Layers, MapPin, ChevronDown, SlidersHorizontal } from 'lucide-react';
 import type { MapLayer } from '@/lib/actions/map';
 
 interface LayerControlProps {
@@ -15,6 +15,9 @@ interface LayerControlProps {
   onToggleMarkers: (show: boolean) => void;
   markerCount: number;
   isLoadingMarkers: boolean;
+  filteredMarkerCount?: number;
+  onOpenFilters?: () => void;
+  hasActiveFilters?: boolean;
 }
 
 export function LayerControl({
@@ -28,6 +31,9 @@ export function LayerControl({
   onToggleMarkers,
   markerCount,
   isLoadingMarkers,
+  filteredMarkerCount,
+  onOpenFilters,
+  hasActiveFilters,
 }: LayerControlProps) {
   return (
     <div className="absolute top-4 right-4 z-[1000] bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-gray-200 dark:border-slate-700 p-3 min-w-[200px]">
@@ -91,12 +97,38 @@ export function LayerControl({
             Objects
             {isLoadingMarkers ? (
               <span className="text-xs text-gray-400 ml-1">loading...</span>
+            ) : filteredMarkerCount !== undefined && markerCount > 0 ? (
+              <span className="text-xs text-gray-400 ml-1">({filteredMarkerCount} of {markerCount})</span>
             ) : markerCount > 0 ? (
               <span className="text-xs text-gray-400 ml-1">({markerCount})</span>
             ) : null}
           </span>
         </label>
       </div>
+
+      {/* Filter button */}
+      {onOpenFilters && (
+        <div className="pt-2 border-t border-gray-200 dark:border-slate-700 mt-2">
+          <button
+            onClick={onOpenFilters}
+            className={`
+              w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-sm transition-colors
+              ${hasActiveFilters
+                ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 font-medium'
+                : 'hover:bg-gray-100 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300'
+              }
+            `}
+          >
+            <div className="relative">
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              {hasActiveFilters && (
+                <div className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-blue-500" />
+              )}
+            </div>
+            <span>Filters</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }

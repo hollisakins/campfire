@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { LogIn } from 'lucide-react';
 import { getMapLayers } from '@/lib/actions/map';
-import { MapViewerWrapper } from '@/components/map/MapViewerWrapper';
+import { MapPageContent } from './MapPageContent';
 
 interface MapPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
@@ -10,12 +10,11 @@ interface MapPageProps {
 export default async function MapPage({ searchParams }: MapPageProps) {
   const params = await searchParams;
 
-  // Parse query params
+  // Parse map-specific query params
   const field = typeof params.field === 'string' ? params.field : undefined;
   const filter = typeof params.filter === 'string' ? params.filter : undefined;
   const ra = typeof params.ra === 'string' ? parseFloat(params.ra) : undefined;
   const dec = typeof params.dec === 'string' ? parseFloat(params.dec) : undefined;
-  // Support both `z` (new short form) and `zoom` (backward compat)
   const zoomRaw = typeof params.z === 'string' ? params.z : typeof params.zoom === 'string' ? params.zoom : undefined;
   const zoom = zoomRaw !== undefined ? parseInt(zoomRaw, 10) : undefined;
   const highlight = typeof params.highlight === 'string' ? params.highlight : undefined;
@@ -51,15 +50,13 @@ export default async function MapPage({ searchParams }: MapPageProps) {
   }
 
   return (
-    <div className="h-[calc(100vh-72px)]">
-      <MapViewerWrapper
-        layers={layers}
-        initialField={field}
-        initialFilter={filter}
-        initialCenter={initialCenter}
-        initialZoom={zoom}
-        highlightObjectId={highlight}
-      />
-    </div>
+    <MapPageContent
+      layers={layers}
+      initialField={field}
+      initialFilter={filter}
+      initialCenter={initialCenter}
+      initialZoom={zoom}
+      highlightObjectId={highlight}
+    />
   );
 }

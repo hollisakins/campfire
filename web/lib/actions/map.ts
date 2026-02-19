@@ -2,6 +2,8 @@
 
 import { createClient } from '@/lib/supabase/server';
 import type { WCSParams } from '@/lib/utils/wcs';
+import type { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 
 // ============================================
 // Types
@@ -115,4 +117,131 @@ export async function getFieldMarkers(
   }
 
   return { markers: allMarkers };
+}
+
+/**
+ * Fetch object IDs matching the given filters (for map marker filtering).
+ * Reuses the same RPC function as the spectra table but only extracts IDs.
+ */
+export async function getFilteredObjectIds(
+  filters: AdvancedFilterOptions
+): Promise<{ objectIds: string[]; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { objectIds: [], error: 'Not authenticated' };
+  }
+
+  try {
+    // Determine accessible programs (same as getSpectra)
+    const { data: accessData } = await supabase
+      .from('user_program_access')
+      .select('program_id')
+      .eq('user_id', user.id);
+
+    const explicitAccessIds = (accessData || []).map(a => a.program_id);
+
+    const { data: publicPrograms } = await supabase
+      .from('programs')
+      .select('program_id')
+      .eq('is_public', true);
+
+    const publicProgramIds = (publicPrograms || []).map(p => p.program_id);
+    const accessibleProgramIds = [...new Set([...publicProgramIds, ...explicitAccessIds])];
+
+    if (accessibleProgramIds.length === 0) {
+      return { objectIds: [] };
+    }
+
+    // Prepare bitmask filters
+    const spectralFeaturesMask = filters.spectral_features?.length
+      ? filters.spectral_features.reduce((acc, val) => acc | val, 0)
+      : null;
+    const objectFlagsMask = filters.object_flags?.length
+      ? filters.object_flags.reduce((acc, val) => acc | val, 0)
+      : null;
+    const dqFlagsMask = filters.dq_flags?.length
+      ? filters.dq_flags.reduce((acc, val) => acc | val, 0)
+      : null;
+
+    const sfMode = filters.spectral_features_mode || 'any';
+    const ofMode = filters.object_flags_mode || 'any';
+    const dqMode = filters.dq_flags_mode || 'any';
+
+    // Coordinate search
+    let coordRa: number | null = null;
+    let coordDec: number | null = null;
+    let radiusDegrees: number | null = null;
+    if (filters.coordinate_search) {
+      coordRa = filters.coordinate_search.ra;
+      coordDec = filters.coordinate_search.dec;
+      radiusDegrees = convertRadiusToDegrees(
+        filters.coordinate_search.radius,
+        filters.coordinate_search.radius_unit
+      );
+    }
+
+    // Search
+    const searchText = filters.search?.trim() || null;
+    const searchScope = filters.search_scope || 'object_id';
+    const isCommentSearch = searchScope === 'my_comments' || searchScope === 'all_comments';
+    const objectIdSearch = searchScope === 'object_id' ? searchText : null;
+    const commentSearch = isCommentSearch ? searchText : null;
+    const commentSearchScope = isCommentSearch ? (searchScope === 'my_comments' ? 'just_me' : 'everyone') : null;
+    const commentUserId = isCommentSearch ? user.id : null;
+
+    // Use a very large page size to get all matching IDs in one call
+    const { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
+      p_program_ids: accessibleProgramIds,
+      p_filter_programs: filters.programs?.length ? filters.programs : null,
+      p_fields: filters.fields?.length ? filters.fields : null,
+      p_gratings: filters.gratings?.length ? filters.gratings : null,
+      p_gratings_mode: filters.gratings_mode || 'any',
+      p_observations: filters.observations?.length ? filters.observations : null,
+      p_redshift_quality: filters.redshift_quality?.length ? filters.redshift_quality : null,
+      p_redshift_min: filters.redshift_min ?? null,
+      p_redshift_max: filters.redshift_max ?? null,
+      p_max_snr_min: filters.max_snr_min ?? null,
+      p_max_snr_max: filters.max_snr_max ?? null,
+      p_max_exposure_time_min: filters.max_exposure_time_min ?? null,
+      p_max_exposure_time_max: filters.max_exposure_time_max ?? null,
+      p_spectral_features_include_any: sfMode === 'any' ? spectralFeaturesMask : null,
+      p_spectral_features_include_all: sfMode === 'all' ? spectralFeaturesMask : null,
+      p_spectral_features_exclude: sfMode === 'none' ? spectralFeaturesMask : null,
+      p_object_flags_include_any: ofMode === 'any' ? objectFlagsMask : null,
+      p_object_flags_include_all: ofMode === 'all' ? objectFlagsMask : null,
+      p_object_flags_exclude: ofMode === 'none' ? objectFlagsMask : null,
+      p_dq_flags_include_any: dqMode === 'any' ? dqFlagsMask : null,
+      p_dq_flags_include_all: dqMode === 'all' ? dqFlagsMask : null,
+      p_dq_flags_exclude: dqMode === 'none' ? dqFlagsMask : null,
+      p_search: objectIdSearch,
+      p_inspected_only: filters.inspected_only ?? null,
+      p_coord_ra: coordRa,
+      p_coord_dec: coordDec,
+      p_radius_degrees: radiusDegrees,
+      p_comment_search: commentSearch,
+      p_comment_search_scope: commentSearchScope,
+      p_comment_user_id: commentUserId,
+      p_sort_column: 'object_id',
+      p_sort_direction: 'asc',
+      p_page: 1,
+      p_page_size: 100000, // Get all matching IDs
+      p_include_thumbnails: false,
+    });
+
+    if (error) {
+      console.error('Error fetching filtered object IDs:', error);
+      return { objectIds: [], error: error.message };
+    }
+
+    const result = data?.[0] || { objects: [], total_count: 0 };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const objectIds = (result.objects || []).map((obj: any) => obj.object_id as string);
+
+    return { objectIds };
+  } catch (err) {
+    console.error('Unexpected error fetching filtered object IDs:', err);
+    return { objectIds: [], error: 'An unexpected error occurred' };
+  }
 }

@@ -122,6 +122,10 @@ interface MapViewerProps {
   initialCenter?: { ra: number; dec: number };
   initialZoom?: number;
   highlightObjectId?: string;
+  markerFilter?: (marker: MapMarker) => boolean;
+  filteredMarkerCount?: number;
+  onOpenFilters?: () => void;
+  hasActiveFilters?: boolean;
 }
 
 export function MapViewer({
@@ -131,6 +135,10 @@ export function MapViewer({
   initialCenter,
   initialZoom,
   highlightObjectId,
+  markerFilter,
+  filteredMarkerCount,
+  onOpenFilters,
+  hasActiveFilters,
 }: MapViewerProps) {
   // Group layers by field
   const fieldGroups = useMemo(() => {
@@ -310,6 +318,7 @@ export function MapViewer({
           wcs={activeLayer.wcs_params}
           visible={showMarkers}
           highlightObjectId={highlightObjectId}
+          markerFilter={markerFilter}
           onMarkerClick={(marker, latLng) => setPopupState({ marker, latLng })}
         />
 
@@ -363,6 +372,9 @@ export function MapViewer({
         onToggleMarkers={setShowMarkers}
         markerCount={markers.length}
         isLoadingMarkers={isLoadingMarkers}
+        filteredMarkerCount={filteredMarkerCount}
+        onOpenFilters={onOpenFilters}
+        hasActiveFilters={hasActiveFilters}
       />
     </div>
   );
