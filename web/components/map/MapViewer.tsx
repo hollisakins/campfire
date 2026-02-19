@@ -46,10 +46,6 @@ function createFitsMapCRS(maxZoom: number, naxis2: number, tileSize: number = 25
 }
 
 // ============================================
-// Sub-components that use map hooks
-// ============================================
-
-// ============================================
 // URL sync helper
 // ============================================
 
@@ -69,10 +65,9 @@ function updateMapUrl(params: Record<string, string | undefined>) {
 interface MapEventsProps {
   wcs: WCSParams | null;
   onMouseMove: (coords: { ra: number; dec: number } | null) => void;
-  onViewChange: (view: { ra: number; dec: number; zoom: number }) => void;
 }
 
-function MapEvents({ wcs, onMouseMove, onViewChange }: MapEventsProps) {
+function MapEvents({ wcs, onMouseMove }: MapEventsProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useMapEvents({
@@ -81,8 +76,6 @@ function MapEvents({ wcs, onMouseMove, onViewChange }: MapEventsProps) {
       const center = e.target.getCenter();
       const sky = leafletToSky(wcs, center.lat, center.lng);
       const zoom = e.target.getZoom();
-      // Update ref immediately (for preserving view across filter switches)
-      onViewChange({ ...sky, zoom });
       // Debounce URL updates
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
@@ -106,16 +99,19 @@ function MapEvents({ wcs, onMouseMove, onViewChange }: MapEventsProps) {
   return null;
 }
 
-interface SetViewProps {
-  center: L.LatLngExpression;
-  zoom: number;
-}
+// ============================================
+// MapUpdater: imperatively sync map bounds/zoom
+// when active layer changes (MapContainer props
+// are immutable after creation)
+// ============================================
 
-function SetView({ center, zoom }: SetViewProps) {
+function MapUpdater({ activeLayer, bounds }: { activeLayer: MapLayer; bounds: L.LatLngBounds }) {
   const map = useMap();
   useEffect(() => {
-    map.setView(center, zoom);
-  }, [map, center, zoom]);
+    map.setMaxBounds(bounds);
+    map.setMinZoom(activeLayer.min_zoom);
+    map.setMaxZoom(activeLayer.max_zoom + 2);
+  }, [map, activeLayer.min_zoom, activeLayer.max_zoom, bounds]);
   return null;
 }
 
@@ -162,20 +158,11 @@ export function MapViewer({
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
   const [isLoadingMarkers, setIsLoadingMarkers] = useState(false);
 
-  // Track current viewport (RA/Dec/zoom) for preserving view across filter switches
-  const currentViewRef = useRef<{ ra: number; dec: number; zoom: number } | null>(null);
-  const handleViewChange = useCallback((view: { ra: number; dec: number; zoom: number }) => {
-    currentViewRef.current = view;
-  }, []);
-
   // Track whether we've applied the initialFilter (only for first render)
   const initialFilterApplied = useRef(false);
 
   // Set initial active layer when field changes
   useEffect(() => {
-    // Clear saved viewport when switching fields (different image area)
-    currentViewRef.current = null;
-
     const fieldLayers = fieldGroups[selectedField] || [];
     let defaultLayer: MapLayer | null;
 
@@ -228,13 +215,7 @@ export function MapViewer({
     let center: L.LatLngExpression;
     let zoom: number;
 
-    const currentView = currentViewRef.current;
-    if (currentView) {
-      // Restore current viewport (e.g. after filter switch within same field)
-      const leafletPos = skyToLeaflet(wcs, currentView.ra, currentView.dec);
-      center = [leafletPos.lat, leafletPos.lng];
-      zoom = currentView.zoom;
-    } else if (initialCenter && (!initialField || initialField === selectedField)) {
+    if (initialCenter && (!initialField || initialField === selectedField)) {
       // Initial load with URL params
       const leafletPos = skyToLeaflet(wcs, initialCenter.ra, initialCenter.dec);
       center = [leafletPos.lat, leafletPos.lng];
@@ -286,7 +267,7 @@ export function MapViewer({
   return (
     <div className="relative h-full w-full">
       <MapContainer
-        key={`${selectedField}-${activeLayer.filter}`}
+        key={`${selectedField}-${activeLayer.max_zoom}-${activeLayer.wcs_params.naxis2}`}
         center={mapConfig.center}
         zoom={mapConfig.zoom}
         crs={mapConfig.crs}
@@ -294,10 +275,12 @@ export function MapViewer({
         maxBoundsViscosity={0.8}
         minZoom={activeLayer.min_zoom}
         maxZoom={activeLayer.max_zoom + 2}
+        preferCanvas={true}
         style={{ height: '100%', width: '100%', background: '#0f172a' }}
         attributionControl={false}
       >
         <TileLayer
+          key={activeLayer.filter}
           url={tileUrl}
           tms={false}
           minZoom={activeLayer.min_zoom}
@@ -309,10 +292,11 @@ export function MapViewer({
           errorTileUrl=""
         />
 
+        <MapUpdater activeLayer={activeLayer} bounds={mapConfig.bounds} />
+
         <MapEvents
           wcs={activeLayer.wcs_params}
           onMouseMove={setCursorCoords}
-          onViewChange={handleViewChange}
         />
 
         {/* Object markers */}
