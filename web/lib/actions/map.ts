@@ -39,6 +39,7 @@ export interface MapMarker {
   redshift_quality: number;
   field: string;
   program_id: number;
+  observation: string | null;
 }
 
 export interface MapLayersResult {
@@ -102,7 +103,7 @@ export async function getFieldMarkers(
   while (true) {
     const { data, error } = await supabase
       .from('objects')
-      .select('object_id, ra, dec, redshift, redshift_quality, field, program_id')
+      .select('object_id, ra, dec, redshift, redshift_quality, field, program_id, observation')
       .eq('field', field)
       .range(offset, offset + PAGE_SIZE - 1);
 

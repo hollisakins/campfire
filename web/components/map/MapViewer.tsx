@@ -125,6 +125,7 @@ interface MapViewerProps {
   markerFilter?: (marker: MapMarker) => boolean;
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
+  onFieldChange?: (field: string, observations: string[]) => void;
 }
 
 export function MapViewer({
@@ -137,6 +138,7 @@ export function MapViewer({
   markerFilter,
   onOpenFilters,
   hasActiveFilters,
+  onFieldChange: onFieldChangeProp,
 }: MapViewerProps) {
   // Group layers by field
   const fieldGroups = useMemo(() => {
@@ -162,6 +164,15 @@ export function MapViewer({
   const [popupState, setPopupState] = useState<{
     marker: MapMarker; latLng: L.LatLng;
   } | null>(null);
+
+  // Notify parent when markers load (includes field + derived observations)
+  useEffect(() => {
+    if (!selectedField || markers.length === 0) return;
+    const observations = [...new Set(
+      markers.map(m => m.observation).filter((o): o is string => o !== null)
+    )].sort();
+    onFieldChangeProp?.(selectedField, observations);
+  }, [selectedField, markers, onFieldChangeProp]);
 
   // Compute filtered marker count from field-specific markers + filter
   const filteredMarkerCount = useMemo(() => {

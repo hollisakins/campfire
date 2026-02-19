@@ -38,6 +38,7 @@ export function MapPageContent({
   // Filter state
   const [filters, setFilters] = useState<AdvancedFilterOptions>(initialFilters);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [fieldObservations, setFieldObservations] = useState<string[]>([]);
 
   // Debounce filters for queries
   const { debouncedValue: debouncedFilters } = useDebouncedValue(filters, 300);
@@ -64,10 +65,9 @@ export function MapPageContent({
     );
   }, [filters]);
 
-  // Fetch filter options (programs, fields, observations)
+  // Fetch filter options (programs, fields)
   const { data: filterOptionsResult } = useFilterOptionsQuery(true);
   const availablePrograms = filterOptionsResult?.programs ?? [];
-  const availableObservations = filterOptionsResult?.observations ?? [];
 
   // Fetch filtered object IDs when filters are active
   const { data: filteredResult } = useFilteredObjectIds(debouncedFilters, hasActiveFilters);
@@ -86,6 +86,11 @@ export function MapPageContent({
   // Handle filter changes
   const handleFilterChange = useCallback((newFilters: AdvancedFilterOptions) => {
     setFilters(newFilters);
+  }, []);
+
+  // Track selected field and its observations (derived from loaded markers)
+  const handleFieldChange = useCallback((_field: string, observations: string[]) => {
+    setFieldObservations(observations);
   }, []);
 
   // Sync filter state to URL (preserving map-specific params)
@@ -129,6 +134,7 @@ export function MapPageContent({
         markerFilter={markerFilter}
         onOpenFilters={() => setPanelOpen(true)}
         hasActiveFilters={hasActiveFilters}
+        onFieldChange={handleFieldChange}
       />
       <AdvancedFiltersPanel
         isOpen={panelOpen}
@@ -137,7 +143,7 @@ export function MapPageContent({
         onFiltersChange={handleFilterChange}
         showBasicFilters={true}
         availablePrograms={availablePrograms}
-        availableObservations={availableObservations}
+        availableObservations={fieldObservations}
       />
     </div>
   );

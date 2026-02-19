@@ -26,6 +26,7 @@ interface MapViewerWrapperProps {
   markerFilter?: (marker: MapMarker) => boolean;
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
+  onFieldChange?: (field: string, observations: string[]) => void;
 }
 
 export function MapViewerWrapper(props: MapViewerWrapperProps) {

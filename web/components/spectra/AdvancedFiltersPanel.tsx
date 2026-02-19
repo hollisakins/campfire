@@ -199,9 +199,9 @@ export function AdvancedFiltersPanel({
     (filters.object_flags?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
-  // Collapsible section state for basic filters
-  const [programsExpanded, setProgramsExpanded] = useState(true);
-  const [observationsExpanded, setObservationsExpanded] = useState(true);
+  // Collapsible section state for basic filters (collapsed by default, auto-expand if filter active)
+  const [programsExpanded, setProgramsExpanded] = useState(false);
+  const [observationsExpanded, setObservationsExpanded] = useState(false);
 
   // Program, observation, and quality options for basic filters
   const programOptions: FilterOption[] = availablePrograms.map((p) => ({
