@@ -44,3 +44,115 @@
     #     red = "f444w"
     #     green = "f277w"
     #     blue = "f115w"
+
+# ============================================
+# EGS Field
+# ============================================
+
+[egs]
+    field = "egs"
+    data_dir = "/V/maurice/mosaics/egs/"
+    mask_wht = true
+
+    [egs.filters.f115w]
+        files = "fullceers_ddta_f115w_v1_30mas_sci.fits"
+
+    [egs.filters.f150w]
+        files = "fullceers_ddta_f150w_v1_30mas_sci.fits"
+
+    [egs.filters.f200w]
+        files = "fullceers_ddta_f200w_v1_30mas_sci.fits"
+    
+    [egs.filters.f277w]
+        files = "fullceers_ddta_f277w_v1_30mas_sci.fits"
+    
+    [egs.filters.f356w]
+        files = "fullceers_ddta_f356w_v1_30mas_sci.fits"
+
+    [egs.filters.f444w]
+        files = "fullceers_ddta_f444w_v1_30mas_sci.fits"
+
+[uds]
+    field = "uds"
+    data_dir = "/V/maurice/mosaics/uds/"
+    mask_wht = false
+
+    [uds.filters.f115w]
+        files = "f115w/mosaic_nircam_f115w_uds_30mas_v0p5_primer_sci.fits"
+
+    [uds.filters.f150w]
+        files = "f150w/mosaic_nircam_f150w_uds_30mas_v0p5_primer_sci.fits"
+
+    [uds.filters.f200w]
+        files = "f200w/mosaic_nircam_f200w_uds_30mas_v0p5_primer_sci.fits"
+    
+    [uds.filters.f277w]
+        files = "f277w/mosaic_nircam_f277w_uds_30mas_v0p5_primer_sci.fits"
+    
+    [uds.filters.f356w]
+        files = "f356w/mosaic_nircam_f356w_uds_30mas_v0p5_primer_sci.fits"
+
+    [uds.filters.f444w]
+        files = "f444w/mosaic_nircam_f444w_uds_30mas_v0p5_primer_sci.fits"
+
+[a2744]
+    field = "a2744"
+    data_dir = "/V/maurice/mosaics/venus/a2744/"
+    mask_wht = false
+    
+    [a2744.filters.f070w]
+        files = "a2744-f070w-clear_drc_sci.fits"
+    
+    [a2744.filters.f090w]
+        files = "a2744-f090w-clear_drc_sci.fits"
+    
+    [a2744.filters.f115w]
+        files = "a2744-f115w-clear_drc_sci.fits"
+    
+    [a2744.filters.f140m]
+        files = "a2744-f140m-clear_drc_sci.fits"
+    
+    [a2744.filters.f150w]
+        files = "a2744-f150w-clear_drc_sci.fits"
+    
+    [a2744.filters.f182m]
+        files = "a2744-f182m-clear_drc_sci.fits"
+    
+    [a2744.filters.f200w]
+        files = "a2744-f200w-clear_drc_sci.fits"
+    
+    [a2744.filters.f210m]
+        files = "a2744-f210m-clear_drc_sci.fits"
+    
+    [a2744.filters.f250m]
+        files = "a2744-f250m-clear_drc_sci.fits"
+    
+    [a2744.filters.f277w]
+        files = "a2744-f277w-clear_drc_sci.fits"
+    
+    [a2744.filters.f300m]
+        files = "a2744-f300m-clear_drc_sci.fits"
+    
+    [a2744.filters.f335m]
+        files = "a2744-f335m-clear_drc_sci.fits"
+    
+    [a2744.filters.f356w]
+        files = "a2744-f356w-clear_drc_sci.fits"
+    
+    [a2744.filters.f360m]
+        files = "a2744-f360m-clear_drc_sci.fits"
+    
+    [a2744.filters.f410m]
+        files = "a2744-f410m-clear_drc_sci.fits"
+    
+    [a2744.filters.f430m]
+        files = "a2744-f430m-clear_drc_sci.fits"
+    
+    [a2744.filters.f444w]
+        files = "a2744-f444w-clear_drc_sci.fits"
+    
+    [a2744.filters.f460m]
+        files = "a2744-f460m-clear_drc_sci.fits"
+    
+    [a2744.filters.f480m]
+        files = "a2744-f480m-clear_drc_sci.fits"

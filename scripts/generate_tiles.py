@@ -28,7 +28,7 @@ import argparse
 import json
 import logging
 import sys
-from collections import namedtuple
+from collections import defaultdict, namedtuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -381,6 +381,8 @@ Examples:
     get_tile_configs = tiles_module.get_tile_configs
     generate_tiles_for_filter = tiles_module.generate_tiles_for_filter
     estimate_tiles_for_filter = tiles_module.estimate_tiles_for_filter
+    compute_field_grid = tiles_module.compute_field_grid
+    save_field_grid = tiles_module.save_field_grid
 
     imaging_config = load_imaging_config(imaging_config_path)
 
@@ -405,12 +407,32 @@ Examples:
 
     print(f"Found {len(tile_configs)} field/filter combination(s) to process")
 
-    # Generate tiles
+    # Generate tiles (two-pass: compute unified field grid, then generate per-filter)
     if args.generate:
+        # Group requested configs by field
+        configs_by_field = defaultdict(list)
+        for config in tile_configs:
+            configs_by_field[config.field].append(config)
+
+        # Compute unified field grids (always from ALL filters, not just requested)
+        field_grids = {}
+        for field in configs_by_field:
+            all_field_configs = get_tile_configs(imaging_config, fields=[field])
+            all_filter_files = {c.filter_name: c.input_files for c in all_field_configs}
+            pixel_scale = configs_by_field[field][0].output_pixel_scale_arcsec
+            field_grid = compute_field_grid(all_filter_files, pixel_scale)
+            save_field_grid(output_dir, field, field_grid)
+            field_grids[field] = field_grid
+            print(f"Unified grid for {field}: "
+                  f"{field_grid.naxis1} x {field_grid.naxis2} px "
+                  f"(from {len(all_filter_files)} filter(s))")
+
         if args.dry_run:
             print("\n--- DRY RUN ---\n")
             for config in tile_configs:
-                est = estimate_tiles_for_filter(config)
+                est = estimate_tiles_for_filter(
+                    config, output_grid=field_grids[config.field],
+                )
                 print(f"  {est['field']}/{est['filter']}:")
                 print(f"    Input files:     {est['input_files']}")
                 print(f"    Output size:     {est['output_width']} x {est['output_height']} px")
@@ -425,6 +447,7 @@ Examples:
         for config in tile_configs:
             stats = generate_tiles_for_filter(
                 config, n_workers=args.workers, overwrite=args.overwrite,
+                output_grid=field_grids[config.field],
             )
 
             # Save stats for upload/register steps
@@ -451,6 +474,12 @@ Examples:
                   f"({stats.total_size_bytes / (1024 * 1024):.1f} MB) "
                   f"for {stats.field}/{stats.filter_name}")
             print(f"  Stats saved to {stats_path}")
+
+        # Free memory-mapped FITS data and numpy arrays before upload/register
+        # steps to avoid segfaults in boto3's SSL threading
+        import gc
+        del field_grids
+        gc.collect()
 
     # Upload to R2
     if args.upload:

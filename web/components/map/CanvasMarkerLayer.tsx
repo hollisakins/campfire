@@ -14,10 +14,13 @@ import { skyToPixel } from '@/lib/utils/wcs';
 const QUALITY_COLORS: Record<number, string> = {
   0: '#9ca3af', // Not inspected - gray
   1: '#ef4444', // Impossible - red
-  2: '#f59e0b', // Tentative - amber
-  3: '#f97316', // Probable - orange
+  2: '#f97316', // Tentative - orange
+  3: '#f59e0b', // Probable - amber
   4: '#22c55e', // Secure - green
 };
+
+// Draw order: bottom → top (higher quality drawn on top)
+const QUALITY_DRAW_ORDER = [0, 1, 2, 3, 4];
 
 // ============================================
 // Types
@@ -167,8 +170,8 @@ export function CanvasMarkerLayer({
       const cached: CachedPoint[] = [];
       let highlightItem: { point: L.Point; prepared: PreparedMarker } | null = null;
 
-      // Group by color for batch drawing
-      const groups = new Map<string, L.Point[]>();
+      // Group by quality for ordered batch drawing
+      const groups = new Map<number, L.Point[]>();
 
       for (const item of items) {
         const pt = map.latLngToLayerPoint(item.latLng);
@@ -192,16 +195,20 @@ export function CanvasMarkerLayer({
           continue; // Draw highlighted marker last, on top
         }
 
-        let group = groups.get(item.color);
+        const q = item.marker.redshift_quality;
+        let group = groups.get(q);
         if (!group) {
           group = [];
-          groups.set(item.color, group);
+          groups.set(q, group);
         }
         group.push(pt);
       }
 
-      // Batch draw per color group
-      for (const [color, points] of groups) {
+      // Batch draw in quality order (not inspected on bottom, secure on top)
+      for (const q of QUALITY_DRAW_ORDER) {
+        const points = groups.get(q);
+        if (!points) continue;
+        const color = QUALITY_COLORS[q] || QUALITY_COLORS[0];
         // Fill pass
         ctx!.beginPath();
         for (const pt of points) {

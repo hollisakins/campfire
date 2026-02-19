@@ -16,6 +16,7 @@ Dependencies:
     astropy, numpy, reproject, Pillow
 """
 
+import json
 import logging
 import math
 import warnings
@@ -62,6 +63,7 @@ class TileConfig:
     stretch_type: str = "asinh"
     min_percentile: float = 1.0
     max_percentile: float = 99.5
+    mask_wht: bool = False
 
 
 @dataclass
@@ -162,6 +164,31 @@ class InputFileInfo:
 
 
 # ============================================
+# Weight Map Helpers
+# ============================================
+
+def _find_wht_path(sci_path: Path) -> Path | None:
+    """Find corresponding WHT file for a SCI FITS file (_sci.fits → _wht.fits)."""
+    name = sci_path.name
+    if '_sci.fits' not in name:
+        return None
+    wht_path = sci_path.parent / name.replace('_sci.fits', '_wht.fits')
+    return wht_path if wht_path.exists() else None
+
+
+def _get_ext(hdul, ext_names: list, expected_shape: tuple):
+    """Find first matching 2D extension with the expected shape."""
+    for ext in ext_names:
+        try:
+            hdu = hdul[ext]
+            if hdu.data is not None and hdu.data.shape == expected_shape:
+                return hdu
+        except (KeyError, IndexError):
+            continue
+    return None
+
+
+# ============================================
 # Grid Computation
 # ============================================
 
@@ -247,7 +274,7 @@ def compute_output_grid(
     crpix2 = naxis2 / 2.0
 
     # CD matrix: North-up, RA increases to the left (negative CD1_1)
-    cd1_1 = -pixel_scale_deg / cos_dec
+    cd1_1 = -pixel_scale_deg
     cd2_2 = pixel_scale_deg
 
     logger.info(
@@ -266,6 +293,48 @@ def compute_output_grid(
         naxis1=naxis1,
         naxis2=naxis2,
     )
+
+
+def compute_field_grid(
+    all_filter_files: dict[str, list[Path]],
+    pixel_scale_arcsec: float,
+    padding_arcsec: float = 10.0,
+) -> OutputGrid:
+    """
+    Compute a unified output grid for a field by taking the union
+    of all filter coverages. All filters will share this grid so
+    tiles align when switching filters in the map viewer.
+    """
+    all_files = []
+    for files in all_filter_files.values():
+        all_files.extend(files)
+
+    logger.info(
+        f"Computing unified field grid from {len(all_files)} files "
+        f"across {len(all_filter_files)} filter(s)"
+    )
+    return compute_output_grid(all_files, pixel_scale_arcsec, padding_arcsec)
+
+
+def save_field_grid(output_dir: Path, field: str, grid: OutputGrid) -> Path:
+    """Save field grid to JSON for reuse when regenerating individual filters."""
+    path = output_dir / field / 'field_grid.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump(grid.to_json(), f, indent=2)
+    logger.info(f"Saved field grid to {path}")
+    return path
+
+
+def load_field_grid(output_dir: Path, field: str) -> OutputGrid | None:
+    """Load a previously saved field grid."""
+    path = output_dir / field / 'field_grid.json'
+    if not path.exists():
+        return None
+    with open(path) as f:
+        data = json.load(f)
+    logger.info(f"Loaded field grid from {path}")
+    return OutputGrid(**data)
 
 
 # ============================================
@@ -357,6 +426,7 @@ def compute_stretch_params(
     min_percentile: float = 1.0,
     max_percentile: float = 99.5,
     n_rows_per_file: int = 50,
+    mask_wht: bool = False,
 ) -> dict:
     """
     Precompute global stretch parameters by sampling pixels from all inputs.
@@ -373,6 +443,7 @@ def compute_stretch_params(
     rng = np.random.default_rng(42)
 
     for fits_path in input_files:
+        wht_path = _find_wht_path(fits_path) if mask_wht else None
         with fits.open(fits_path, memmap=True) as hdul:
             for ext_name in ['SCI', 0]:
                 try:
@@ -384,6 +455,13 @@ def compute_stretch_params(
                         row_indices = rng.choice(ny, size=n_rows, replace=False)
                         row_indices.sort()  # sequential access pattern
                         samples = data[row_indices, :].ravel().astype(np.float32)
+                        # Mask zero-weight pixels using WHT map
+                        if wht_path is not None:
+                            with fits.open(wht_path, memmap=True) as wht_hdul:
+                                wht_ext = _get_ext(wht_hdul, ['WHT', 0], data.shape)
+                                if wht_ext is not None:
+                                    wht_samples = wht_ext.data[row_indices, :].ravel()
+                                    samples[wht_samples == 0] = np.nan
                         # Keep only finite values
                         samples = samples[np.isfinite(samples)]
                         all_samples.append(samples)
@@ -593,6 +671,12 @@ def _process_supertile(
         sentinel.touch()
         return (0, 0)
 
+    # Mask poorly-covered pixels so they become transparent after stretch.
+    # reproject_interp can return small non-zero footprint values at
+    # interpolation boundaries where the kernel barely overlaps valid input.
+    # These pixels have unreliable data (often ~0) that stretches to grey.
+    data[footprint < 0.5] = np.nan
+
     # Apply stretch to full supertile at once
     stretched, alpha = apply_stretch(data[:ny, :nx], stretch_params)
 
@@ -616,6 +700,11 @@ def _process_supertile(
 
             tile_alpha = alpha[py0:py1, px0:px1]
             if not np.any(tile_alpha > 0):
+                # Remove stale tile from previous run if overwriting
+                if overwrite:
+                    leaflet_y = n_tiles_y - 1 - ty
+                    stale = tile_dir / str(max_zoom) / str(tx) / f"{leaflet_y}.png"
+                    stale.unlink(missing_ok=True)
                 continue
 
             leaflet_y = n_tiles_y - 1 - ty
@@ -664,6 +753,7 @@ def generate_max_zoom_tiles(
     max_zoom: int,
     n_workers: int = 1,
     overwrite: bool = False,
+    mask_wht: bool = False,
 ) -> tuple[int, int]:
     """
     Generate tiles at max zoom using supertile reprojection.
@@ -690,6 +780,9 @@ def generate_max_zoom_tiles(
     )
 
     # Pre-open all FITS files once (memory-mapped, thread-safe for reads)
+    # When mask_wht is enabled and a corresponding WHT file exists, load SCI
+    # data into memory and mask zero-weight pixels as NaN (some pipelines
+    # encode missing data as 0).
     path_to_hdu: dict[str, object] = {}
     open_hduls = []
     for info in input_infos:
@@ -700,7 +793,22 @@ def generate_max_zoom_tiles(
             try:
                 hdu = hdul[ext_name]
                 if hdu.data is not None and len(hdu.data.shape) == 2:
-                    path_to_hdu[path_str] = hdu
+                    wht_path = _find_wht_path(info.path) if mask_wht else None
+                    if wht_path is not None:
+                        data = hdu.data.astype(np.float32)
+                        with fits.open(wht_path, memmap=True) as wht_hdul:
+                            wht_ext = _get_ext(wht_hdul, ['WHT', 0], data.shape)
+                            if wht_ext is not None:
+                                mask = wht_ext.data == 0
+                                n_masked = np.count_nonzero(mask)
+                                data[mask] = np.nan
+                                logger.info(
+                                    f"  WHT mask: {n_masked:,} zero-weight pixels "
+                                    f"masked in {info.path.name}"
+                                )
+                        path_to_hdu[path_str] = (data, WCS(hdu.header, naxis=2))
+                    else:
+                        path_to_hdu[path_str] = hdu
                     break
             except (KeyError, IndexError):
                 continue
@@ -853,6 +961,9 @@ def build_lower_zoom_levels(
                         has_any = True
 
                 if not has_any:
+                    # Remove stale tile from previous run if overwriting
+                    if overwrite:
+                        tile_path.unlink(missing_ok=True)
                     continue
 
                 # Downsample 2x using Pillow (high quality)
@@ -864,6 +975,8 @@ def build_lower_zoom_levels(
                 # Check if tile has any non-transparent content
                 ds_arr = np.array(downsampled)
                 if not np.any(ds_arr[:, :, 3] > 0):
+                    if overwrite:
+                        tile_path.unlink(missing_ok=True)
                     continue
 
                 tile_path = tile_dir / str(zoom) / str(tx) / f"{leaflet_y}.png"
@@ -890,11 +1003,12 @@ def generate_tiles_for_filter(
     config: TileConfig,
     n_workers: int = 1,
     overwrite: bool = False,
+    output_grid: OutputGrid | None = None,
 ) -> TileStats:
     """
     Full tile generation pipeline for one field/filter combination.
 
-    1. Compute output grid from input WCS headers
+    1. Compute output grid from input WCS headers (or use provided grid)
     2. Precompute input file bounding boxes in output pixel coords
     3. Compute global stretch parameters by sampling input pixels
     4. Generate max zoom tiles by per-tile reprojection
@@ -905,17 +1019,22 @@ def generate_tiles_for_filter(
         config: TileConfig with all parameters.
         n_workers: Number of parallel workers for max-zoom tile generation.
         overwrite: If False, skip tiles that already exist on disk.
+        output_grid: Optional pre-computed grid (e.g. unified field grid).
+            If None, computes per-filter grid from config.input_files.
     """
     logger.info(
         f"=== Generating tiles: {config.field}/{config.filter_name} "
         f"({len(config.input_files)} input files) ==="
     )
 
-    # Step 1: Compute output grid
-    output_grid = compute_output_grid(
-        config.input_files,
-        config.output_pixel_scale_arcsec,
-    )
+    # Step 1: Use provided grid or compute per-filter grid
+    if output_grid is None:
+        output_grid = compute_output_grid(
+            config.input_files,
+            config.output_pixel_scale_arcsec,
+        )
+    else:
+        logger.info("Using provided unified field grid")
 
     min_zoom, max_zoom = compute_zoom_range(
         output_grid.naxis1, output_grid.naxis2, config.tile_size
@@ -931,6 +1050,7 @@ def generate_tiles_for_filter(
         stretch_type=config.stretch_type,
         min_percentile=config.min_percentile,
         max_percentile=config.max_percentile,
+        mask_wht=config.mask_wht,
     )
 
     tile_dir = config.output_dir / config.field / config.filter_name
@@ -945,6 +1065,7 @@ def generate_tiles_for_filter(
         max_zoom=max_zoom,
         n_workers=n_workers,
         overwrite=overwrite,
+        mask_wht=config.mask_wht,
     )
 
     # Step 5: Build lower zoom levels from children
@@ -995,14 +1116,18 @@ def generate_tiles_for_filter(
     return stats
 
 
-def estimate_tiles_for_filter(config: TileConfig) -> dict:
+def estimate_tiles_for_filter(
+    config: TileConfig,
+    output_grid: OutputGrid | None = None,
+) -> dict:
     """
     Dry-run estimation: compute grid and tile counts without generating.
     """
-    output_grid = compute_output_grid(
-        config.input_files,
-        config.output_pixel_scale_arcsec,
-    )
+    if output_grid is None:
+        output_grid = compute_output_grid(
+            config.input_files,
+            config.output_pixel_scale_arcsec,
+        )
 
     min_zoom, max_zoom = compute_zoom_range(
         output_grid.naxis1, output_grid.naxis2, config.tile_size
@@ -1083,6 +1208,7 @@ def get_tile_configs(
             continue
 
         data_dir = Path(section.get('data_dir', '.'))
+        mask_wht = section.get('mask_wht', False)
         field_filters = section.get('filters', {})
 
         for filter_key, filter_config in field_filters.items():
@@ -1120,6 +1246,7 @@ def get_tile_configs(
                 stretch_type=default_stretch_type,
                 min_percentile=default_min_pct,
                 max_percentile=default_max_pct,
+                mask_wht=mask_wht,
             ))
 
     return configs
