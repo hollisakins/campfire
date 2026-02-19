@@ -123,7 +123,6 @@ interface MapViewerProps {
   initialZoom?: number;
   highlightObjectId?: string;
   markerFilter?: (marker: MapMarker) => boolean;
-  filteredMarkerCount?: number;
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
 }
@@ -136,7 +135,6 @@ export function MapViewer({
   initialZoom,
   highlightObjectId,
   markerFilter,
-  filteredMarkerCount,
   onOpenFilters,
   hasActiveFilters,
 }: MapViewerProps) {
@@ -164,6 +162,12 @@ export function MapViewer({
   const [popupState, setPopupState] = useState<{
     marker: MapMarker; latLng: L.LatLng;
   } | null>(null);
+
+  // Compute filtered marker count from field-specific markers + filter
+  const filteredMarkerCount = useMemo(() => {
+    if (!markerFilter) return undefined;
+    return markers.filter(markerFilter).length;
+  }, [markers, markerFilter]);
 
   // Track whether we've applied the initialFilter (only for first render)
   const initialFilterApplied = useRef(false);

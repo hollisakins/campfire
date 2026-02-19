@@ -24,7 +24,6 @@ interface MapViewerWrapperProps {
   initialZoom?: number;
   highlightObjectId?: string;
   markerFilter?: (marker: MapMarker) => boolean;
-  filteredMarkerCount?: number;
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
 }

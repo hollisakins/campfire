@@ -82,8 +82,6 @@ export function MapPageContent({
     return (marker: MapMarker) => filteredIdSet.has(marker.object_id);
   }, [filteredIdSet]);
 
-  const filteredMarkerCount = filteredIdSet?.size;
-
   // Handle filter changes
   const handleFilterChange = useCallback((newFilters: AdvancedFilterOptions) => {
     setFilters(newFilters);
@@ -128,7 +126,6 @@ export function MapPageContent({
         initialZoom={initialZoom}
         highlightObjectId={highlightObjectId}
         markerFilter={markerFilter}
-        filteredMarkerCount={filteredMarkerCount}
         onOpenFilters={() => setPanelOpen(true)}
         hasActiveFilters={hasActiveFilters}
       />
