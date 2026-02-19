@@ -69,20 +69,23 @@ function updateMapUrl(params: Record<string, string | undefined>) {
 interface MapEventsProps {
   wcs: WCSParams | null;
   onMouseMove: (coords: { ra: number; dec: number } | null) => void;
+  onViewChange: (view: { ra: number; dec: number; zoom: number }) => void;
 }
 
-function MapEvents({ wcs, onMouseMove }: MapEventsProps) {
+function MapEvents({ wcs, onMouseMove, onViewChange }: MapEventsProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useMapEvents({
     moveend: (e) => {
-      // Sync map position to URL (debounced)
       if (!wcs) return;
+      const center = e.target.getCenter();
+      const sky = leafletToSky(wcs, center.lat, center.lng);
+      const zoom = e.target.getZoom();
+      // Update ref immediately (for preserving view across filter switches)
+      onViewChange({ ...sky, zoom });
+      // Debounce URL updates
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
-        const center = e.target.getCenter();
-        const sky = leafletToSky(wcs, center.lat, center.lng);
-        const zoom = e.target.getZoom();
         updateMapUrl({
           ra: sky.ra.toFixed(4),
           dec: sky.dec.toFixed(4),
@@ -159,11 +162,20 @@ export function MapViewer({
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
   const [isLoadingMarkers, setIsLoadingMarkers] = useState(false);
 
+  // Track current viewport (RA/Dec/zoom) for preserving view across filter switches
+  const currentViewRef = useRef<{ ra: number; dec: number; zoom: number } | null>(null);
+  const handleViewChange = useCallback((view: { ra: number; dec: number; zoom: number }) => {
+    currentViewRef.current = view;
+  }, []);
+
   // Track whether we've applied the initialFilter (only for first render)
   const initialFilterApplied = useRef(false);
 
   // Set initial active layer when field changes
   useEffect(() => {
+    // Clear saved viewport when switching fields (different image area)
+    currentViewRef.current = null;
+
     const fieldLayers = fieldGroups[selectedField] || [];
     let defaultLayer: MapLayer | null;
 
@@ -178,6 +190,10 @@ export function MapViewer({
     }
 
     setActiveLayer(defaultLayer);
+    // Ensure field/filter are always in the URL (so stored map URLs are complete)
+    if (defaultLayer) {
+      updateMapUrl({ field: defaultLayer.field, filter: defaultLayer.filter });
+    }
   }, [selectedField, fieldGroups, initialFilter, initialField]);
 
   // Load all markers for the selected field
@@ -212,12 +228,19 @@ export function MapViewer({
     let center: L.LatLngExpression;
     let zoom: number;
 
-    if (initialCenter && initialField === selectedField) {
+    const currentView = currentViewRef.current;
+    if (currentView) {
+      // Restore current viewport (e.g. after filter switch within same field)
+      const leafletPos = skyToLeaflet(wcs, currentView.ra, currentView.dec);
+      center = [leafletPos.lat, leafletPos.lng];
+      zoom = currentView.zoom;
+    } else if (initialCenter && (!initialField || initialField === selectedField)) {
+      // Initial load with URL params
       const leafletPos = skyToLeaflet(wcs, initialCenter.ra, initialCenter.dec);
       center = [leafletPos.lat, leafletPos.lng];
-      zoom = initialZoom || Math.max(activeLayer.min_zoom, activeLayer.max_zoom - 3);
+      zoom = initialZoom ?? Math.max(activeLayer.min_zoom, activeLayer.max_zoom - 3);
     } else {
-      // Center on image center
+      // Default: center on image
       center = [wcs.naxis2 / 2, wcs.naxis1 / 2];
       zoom = activeLayer.min_zoom + 1;
     }
@@ -289,6 +312,7 @@ export function MapViewer({
         <MapEvents
           wcs={activeLayer.wcs_params}
           onMouseMove={setCursorCoords}
+          onViewChange={handleViewChange}
         />
 
         {/* Object markers */}
