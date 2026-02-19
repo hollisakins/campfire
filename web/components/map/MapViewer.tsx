@@ -5,7 +5,6 @@ import L from 'leaflet';
 import {
   MapContainer,
   TileLayer,
-  CircleMarker,
   Popup,
   useMap,
   useMapEvents,
@@ -13,24 +12,21 @@ import {
 import Link from 'next/link';
 import type { MapLayer, MapMarker } from '@/lib/actions/map';
 import type { WCSParams } from '@/lib/utils/wcs';
-import { leafletToSky, skyToLeaflet, formatRA, formatDec } from '@/lib/utils/wcs';
+import { leafletToSky, skyToLeaflet } from '@/lib/utils/wcs';
 import { QUALITY_LABELS } from '@/lib/types';
 import { LayerControl } from './LayerControl';
 import { CoordinateOverlay } from './CoordinateOverlay';
+import { CanvasMarkerLayer } from './CanvasMarkerLayer';
 
 import 'leaflet/dist/leaflet.css';
 
-// ============================================
-// Quality color mapping
-// ============================================
-
-const QUALITY_COLORS: Record<number, string> = {
-  0: '#9ca3af', // Not inspected - gray
-  1: '#ef4444', // Impossible - red
-  2: '#f59e0b', // Tentative - amber
-  3: '#f97316', // Probable - orange
-  4: '#22c55e', // Secure - green
-};
+// Nearest-neighbor rendering for FITS tile images (crisp pixels when zoomed past native level)
+// Matches FITSMap's TileNearestNeighbor.css approach
+const pixelatedTileStyle = `
+.leaflet-container .leaflet-tile-pane img {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}`;
 
 // ============================================
 // Custom CRS for pixel-based tile coordinates
@@ -157,6 +153,9 @@ export function MapViewer({
   const [showMarkers, setShowMarkers] = useState(true);
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
   const [isLoadingMarkers, setIsLoadingMarkers] = useState(false);
+  const [popupState, setPopupState] = useState<{
+    marker: MapMarker; latLng: L.LatLng;
+  } | null>(null);
 
   // Track whether we've applied the initialFilter (only for first render)
   const initialFilterApplied = useRef(false);
@@ -182,6 +181,9 @@ export function MapViewer({
       updateMapUrl({ field: defaultLayer.field, filter: defaultLayer.filter });
     }
   }, [selectedField, fieldGroups, initialFilter, initialField]);
+
+  // Close popup when field changes
+  useEffect(() => { setPopupState(null); }, [selectedField]);
 
   // Load all markers for the selected field
   useEffect(() => {
@@ -266,6 +268,7 @@ export function MapViewer({
 
   return (
     <div className="relative h-full w-full">
+      <style dangerouslySetInnerHTML={{ __html: pixelatedTileStyle }} />
       <MapContainer
         key={`${selectedField}-${activeLayer.max_zoom}-${activeLayer.wcs_params.naxis2}`}
         center={mapConfig.center}
@@ -299,53 +302,48 @@ export function MapViewer({
           onMouseMove={setCursorCoords}
         />
 
-        {/* Object markers */}
-        {showMarkers && markers.map((marker) => {
-          const pos = skyToLeaflet(activeLayer.wcs_params, marker.ra, marker.dec);
-          const color = QUALITY_COLORS[marker.redshift_quality] || QUALITY_COLORS[0];
-          const isHighlighted = marker.object_id === highlightObjectId;
-          const qualityLabel = QUALITY_LABELS.find(q => q.value === marker.redshift_quality);
+        {/* Canvas-rendered object markers */}
+        <CanvasMarkerLayer
+          markers={markers}
+          wcs={activeLayer.wcs_params}
+          visible={showMarkers}
+          highlightObjectId={highlightObjectId}
+          onMarkerClick={(marker, latLng) => setPopupState({ marker, latLng })}
+        />
 
+        {/* Popup for clicked marker (standalone, rendered by React) */}
+        {popupState && (() => {
+          const qualityLabel = QUALITY_LABELS.find(q => q.value === popupState.marker.redshift_quality);
           return (
-            <CircleMarker
-              key={marker.object_id}
-              center={[pos.lat, pos.lng]}
-              radius={isHighlighted ? 10 : 6}
-              pathOptions={{
-                color: isHighlighted ? '#ffffff' : color,
-                weight: isHighlighted ? 3 : 2,
-                opacity: 0.9,
-                fillColor: color,
-                fillOpacity: isHighlighted ? 0.5 : 0.1,
-              }}
+            <Popup
+              position={popupState.latLng}
+              eventHandlers={{ remove: () => setPopupState(null) }}
             >
-              <Popup>
-                <div className="text-sm min-w-[180px]">
-                  <div className="font-mono font-bold mb-1">
-                    <Link
-                      href={`/spectra/${encodeURIComponent(marker.object_id)}`}
-                      className="text-blue-600 hover:text-blue-800 underline"
-                      onClick={() => sessionStorage.setItem('campfire-map-return-url', window.location.href)}
-                    >
-                      {marker.object_id}
-                    </Link>
+              <div className="text-sm min-w-[180px]">
+                <div className="font-mono font-bold mb-1">
+                  <Link
+                    href={`/spectra/${encodeURIComponent(popupState.marker.object_id)}`}
+                    className="text-blue-600 hover:text-blue-800 underline"
+                    onClick={() => sessionStorage.setItem('campfire-map-return-url', window.location.href)}
+                  >
+                    {popupState.marker.object_id}
+                  </Link>
+                </div>
+                <div className="space-y-0.5 text-xs">
+                  {popupState.marker.redshift !== null && (
+                    <div>z = {popupState.marker.redshift.toFixed(4)}</div>
+                  )}
+                  <div>
+                    Quality: {qualityLabel?.icon} {qualityLabel?.label || 'Unknown'}
                   </div>
-                  <div className="space-y-0.5 text-xs">
-                    {marker.redshift !== null && (
-                      <div>z = {marker.redshift.toFixed(4)}</div>
-                    )}
-                    <div>
-                      Quality: {qualityLabel?.icon} {qualityLabel?.label || 'Unknown'}
-                    </div>
-                    <div className="text-gray-500">
-                      RA: {marker.ra.toFixed(5)}, Dec: {marker.dec.toFixed(5)}
-                    </div>
+                  <div className="text-gray-500">
+                    RA: {popupState.marker.ra.toFixed(5)}, Dec: {popupState.marker.dec.toFixed(5)}
                   </div>
                 </div>
-              </Popup>
-            </CircleMarker>
+              </div>
+            </Popup>
           );
-        })}
+        })()}
       </MapContainer>
 
       {/* Coordinate overlay */}
