@@ -207,7 +207,7 @@ export function CanvasSlitLayer({
           const pa = paByPoint.get(`${pt.x},${pt.y}`) || 0;
           ctx!.save();
           ctx!.translate(pt.x, pt.y);
-          ctx!.rotate(pa);
+          ctx!.rotate(-pa);
           ctx!.fillRect(-halfW, -halfH, widthPx, heightPx);
           ctx!.restore();
         }
@@ -219,7 +219,7 @@ export function CanvasSlitLayer({
           const pa = paByPoint.get(`${pt.x},${pt.y}`) || 0;
           ctx!.save();
           ctx!.translate(pt.x, pt.y);
-          ctx!.rotate(pa);
+          ctx!.rotate(-pa);
           ctx!.strokeRect(-halfW, -halfH, widthPx, heightPx);
           ctx!.restore();
         }

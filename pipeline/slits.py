@@ -74,8 +74,8 @@ def compute_slit_centers(spec_files, corrected_pos=None):
     results = []
 
     for t in exp:
-        # Position angle: V3PA + 138.5 converts from V3 PA to MSA orientation on sky.
-        # No field-specific correction needed since map tiles are north-up.
+        # Position angle on the sky for the MSA slitlet.
+        # V3PA + V3IdlYAngle (138.5° for NRS_FULL_MSA) gives the aperture PA.
         pa = (t['v3pa'] - 360 + 138.5) * u.deg
 
         # Source position within the shutter (in shutter units)
