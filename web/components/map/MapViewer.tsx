@@ -16,6 +16,7 @@ import { leafletToSky, skyToLeaflet } from '@/lib/utils/wcs';
 import { QUALITY_LABELS } from '@/lib/types';
 import { LayerControl } from './LayerControl';
 import { CoordinateOverlay } from './CoordinateOverlay';
+import { MapContextMenu } from './MapContextMenu';
 import { CanvasMarkerLayer } from './CanvasMarkerLayer';
 
 import 'leaflet/dist/leaflet.css';
@@ -61,9 +62,11 @@ function updateMapUrl(params: Record<string, string | undefined>) {
 interface MapEventsProps {
   wcs: WCSParams | null;
   onMouseMove: (coords: { ra: number; dec: number } | null) => void;
+  onContextMenu: (data: { coords: { ra: number; dec: number }; position: { x: number; y: number } }) => void;
+  onMoveStart: () => void;
 }
 
-function MapEvents({ wcs, onMouseMove }: MapEventsProps) {
+function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart }: MapEventsProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useMapEvents({
@@ -89,6 +92,18 @@ function MapEvents({ wcs, onMouseMove }: MapEventsProps) {
     },
     mouseout: () => {
       onMouseMove(null);
+    },
+    contextmenu: (e) => {
+      if (!wcs) return;
+      e.originalEvent.preventDefault();
+      const skyCoords = leafletToSky(wcs, e.latlng.lat, e.latlng.lng);
+      onContextMenu({
+        coords: skyCoords,
+        position: { x: e.originalEvent.clientX, y: e.originalEvent.clientY },
+      });
+    },
+    movestart: () => {
+      onMoveStart();
     },
   });
 
@@ -172,6 +187,11 @@ export function MapViewer({
   const [popupState, setPopupState] = useState<{
     marker: MapMarker; latLng: L.LatLng;
   } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    coords: { ra: number; dec: number };
+    position: { x: number; y: number };
+  } | null>(null);
+  const mapWrapperRef = useRef<HTMLDivElement>(null);
 
   // Notify parent when markers load (includes field + derived observations)
   useEffect(() => {
@@ -293,6 +313,17 @@ export function MapViewer({
     updateMapUrl({ field: layer.field, filter: layer.filter });
   }, []);
 
+  const handleContextMenu = useCallback((data: { coords: { ra: number; dec: number }; position: { x: number; y: number } }) => {
+    const wrapper = mapWrapperRef.current;
+    if (!wrapper) return;
+    const rect = wrapper.getBoundingClientRect();
+    setContextMenu({
+      coords: data.coords,
+      position: { x: data.position.x - rect.left, y: data.position.y - rect.top },
+    });
+  }, []);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
   if (!activeLayer || !mapConfig) {
     if (layers.length === 0) {
@@ -311,7 +342,7 @@ export function MapViewer({
   const tileUrl = `${activeLayer.tile_base_url}/{z}/{x}/{y}.png?v=${activeLayer.tile_version}`;
 
   return (
-    <div className="relative h-full w-full">
+    <div ref={mapWrapperRef} className="relative h-full w-full">
       <style dangerouslySetInnerHTML={{ __html: pixelatedTileStyle }} />
       <MapContainer
         key={`${selectedField}-${activeLayer.max_zoom}-${activeLayer.wcs_params.naxis2}`}
@@ -344,6 +375,8 @@ export function MapViewer({
         <MapEvents
           wcs={activeLayer.wcs_params}
           onMouseMove={setCursorCoords}
+          onContextMenu={handleContextMenu}
+          onMoveStart={closeContextMenu}
         />
 
         {/* Canvas-rendered object markers */}
@@ -393,6 +426,15 @@ export function MapViewer({
 
       {/* Coordinate overlay */}
       <CoordinateOverlay coords={cursorCoords} />
+
+      {/* Right-click context menu */}
+      {contextMenu && (
+        <MapContextMenu
+          coords={contextMenu.coords}
+          position={contextMenu.position}
+          onClose={closeContextMenu}
+        />
+      )}
 
       {/* Layer control */}
       <LayerControl
