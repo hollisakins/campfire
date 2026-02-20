@@ -64,6 +64,19 @@ def compute_slit_centers(spec_files, corrected_pos=None):
     for spec_file in spec_files[1:]:
         exp = vstack([exp, get_exposure_table(spec_file)])
 
+    # Deduplicate: keep one row per unique v3pa value.
+    # Collapses repeated nods and gratings at the same dither position.
+    unique_mask = []
+    seen = set()
+    for t in exp:
+        key = round(t['v3pa'], 2)
+        if key not in seen:
+            seen.add(key)
+            unique_mask.append(True)
+        else:
+            unique_mask.append(False)
+    exp = exp[unique_mask]
+
     if corrected_pos is not None:
         source_ra, source_dec = corrected_pos
     else:
@@ -89,20 +102,20 @@ def compute_slit_centers(spec_files, corrected_pos=None):
             dy = t['source_ypos'] * 0.53 * u.arcsec
 
         # Compute shutter center from source position + offset
-        shutter_c = source_c.directional_offset_by(-pa, dy).directional_offset_by(90 * u.deg - pa, dx)
+        shutter_c = source_c.directional_offset_by(pa, dy).directional_offset_by(pa - 90 * u.deg, dx)
 
         # Adjust for shutter state (which of the 3 shutters the source is in)
         match t['shutter_state']:
             case '1x1':
                 pass
             case '11x':
-                shutter_c = shutter_c.directional_offset_by(-pa, 0.53 * u.arcsec)
+                shutter_c = shutter_c.directional_offset_by(pa, 0.53 * u.arcsec)
             case 'x11':
-                shutter_c = shutter_c.directional_offset_by(-pa, -0.53 * u.arcsec)
+                shutter_c = shutter_c.directional_offset_by(pa, -0.53 * u.arcsec)
 
-        # Generate all 3 shutters in the slitlet
-        for shutter_idx in [-1, 0, 1]:
-            c = shutter_c.directional_offset_by(-pa, shutter_idx * 0.53 * u.arcsec)
+        # Generate all 5 shutters (full nod extent of 3-SHUTTER-SLITLET)
+        for shutter_idx in [-2, -1, 0, 1, 2]:
+            c = shutter_c.directional_offset_by(pa, shutter_idx * 0.53 * u.arcsec)
             results.append({
                 'center_ra': float(c.ra.deg),
                 'center_dec': float(c.dec.deg),
