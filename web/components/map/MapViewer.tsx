@@ -10,7 +10,7 @@ import {
   useMapEvents,
 } from 'react-leaflet';
 import Link from 'next/link';
-import type { MapLayer, MapMarker } from '@/lib/actions/map';
+import type { MapLayer, MapMarker, SlitRegion } from '@/lib/actions/map';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { leafletToSky, skyToLeaflet } from '@/lib/utils/wcs';
 import { QUALITY_LABELS } from '@/lib/types';
@@ -18,6 +18,7 @@ import { LayerControl } from './LayerControl';
 import { CoordinateOverlay } from './CoordinateOverlay';
 import { MapContextMenu } from './MapContextMenu';
 import { CanvasMarkerLayer } from './CanvasMarkerLayer';
+import { CanvasSlitLayer } from './CanvasSlitLayer';
 
 import 'leaflet/dist/leaflet.css';
 
@@ -182,6 +183,8 @@ export function MapViewer({
   const [activeLayer, setActiveLayer] = useState<MapLayer | null>(null);
   const [markers, setMarkers] = useState<MapMarker[]>([]);
   const [showMarkers, setShowMarkers] = useState(true);
+  const [slits, setSlits] = useState<SlitRegion[]>([]);
+  const [showSlits, setShowSlits] = useState(false);
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
   const [isLoadingMarkers, setIsLoadingMarkers] = useState(false);
   const [popupState, setPopupState] = useState<{
@@ -247,7 +250,7 @@ export function MapViewer({
   // Close popup when field changes
   useEffect(() => { setPopupState(null); }, [selectedField]);
 
-  // Load all markers for the selected field
+  // Load all markers and slits for the selected field
   useEffect(() => {
     if (!selectedField) return;
     let cancelled = false;
@@ -265,7 +268,18 @@ export function MapViewer({
       }
     }
 
+    async function loadSlits() {
+      try {
+        const { getFieldSlits } = await import('@/lib/actions/map');
+        const result = await getFieldSlits(selectedField);
+        if (!cancelled) setSlits(result.slits);
+      } catch (err) {
+        console.error('Failed to load slit regions:', err);
+      }
+    }
+
     loadMarkers();
+    loadSlits();
     return () => { cancelled = true; };
   }, [selectedField]);
 
@@ -379,6 +393,13 @@ export function MapViewer({
           onMoveStart={closeContextMenu}
         />
 
+        {/* Canvas-rendered slit overlay (below markers) */}
+        <CanvasSlitLayer
+          slits={slits}
+          wcs={activeLayer.wcs_params}
+          visible={showSlits}
+        />
+
         {/* Canvas-rendered object markers */}
         <CanvasMarkerLayer
           markers={markers}
@@ -449,6 +470,9 @@ export function MapViewer({
         markerCount={markers.length}
         isLoadingMarkers={isLoadingMarkers}
         filteredMarkerCount={filteredMarkerCount}
+        showSlits={showSlits}
+        onToggleSlits={setShowSlits}
+        slitCount={slits.length}
         onOpenFilters={onOpenFilters}
         hasActiveFilters={hasActiveFilters}
       />

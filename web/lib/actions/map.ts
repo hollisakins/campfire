@@ -53,6 +53,20 @@ export interface MapMarkersResult {
   error?: string;
 }
 
+export interface SlitRegion {
+  center_ra: number;
+  center_dec: number;
+  position_angle: number;
+  object_id: string;
+  observation: string;
+  shutter_idx: number;
+}
+
+export interface SlitRegionsResult {
+  slits: SlitRegion[];
+  error?: string;
+}
+
 // ============================================
 // Server Actions
 // ============================================
@@ -118,6 +132,37 @@ export async function getFieldMarkers(
   }
 
   return { markers: allMarkers };
+}
+
+/**
+ * Fetch all slit regions for a field, paginating to get past Supabase row limits.
+ */
+export async function getFieldSlits(
+  field: string
+): Promise<SlitRegionsResult> {
+  const supabase = await createClient();
+  const PAGE_SIZE = 1000;
+  const allSlits: SlitRegion[] = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('slit_regions')
+      .select('center_ra, center_dec, position_angle, object_id, observation, shutter_idx')
+      .eq('field', field)
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    if (error) {
+      return { slits: allSlits, error: error.message };
+    }
+
+    if (!data || data.length === 0) break;
+    allSlits.push(...data);
+    if (data.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+
+  return { slits: allSlits };
 }
 
 /**

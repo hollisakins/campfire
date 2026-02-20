@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Layers, MapPin, ChevronDown, ChevronUp, SlidersHorizontal } from 'lucide-react';
+import { Layers, MapPin, Grid3X3, ChevronDown, ChevronUp, SlidersHorizontal } from 'lucide-react';
 import type { MapLayer } from '@/lib/actions/map';
 
 interface LayerControlProps {
@@ -16,6 +16,9 @@ interface LayerControlProps {
   markerCount: number;
   isLoadingMarkers: boolean;
   filteredMarkerCount?: number;
+  showSlits: boolean;
+  onToggleSlits: (show: boolean) => void;
+  slitCount: number;
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
 }
@@ -32,6 +35,9 @@ export function LayerControl({
   markerCount,
   isLoadingMarkers,
   filteredMarkerCount,
+  showSlits,
+  onToggleSlits,
+  slitCount,
   onOpenFilters,
   hasActiveFilters,
 }: LayerControlProps) {
@@ -126,6 +132,25 @@ export function LayerControl({
               </span>
             </label>
           </div>
+
+          {/* Shutter toggle */}
+          {slitCount > 0 && (
+            <div className="mt-1.5">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showSlits}
+                  onChange={(e) => onToggleSlits(e.target.checked)}
+                  className="rounded border-gray-300 dark:border-slate-600"
+                />
+                <Grid3X3 className="w-3.5 h-3.5 text-gray-500 dark:text-slate-400" />
+                <span className="text-sm text-gray-700 dark:text-slate-300">
+                  Shutters
+                  <span className="text-xs text-gray-400 ml-1">({slitCount})</span>
+                </span>
+              </label>
+            </div>
+          )}
 
           {/* Filter button */}
           {onOpenFilters && (

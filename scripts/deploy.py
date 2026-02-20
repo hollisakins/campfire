@@ -2097,6 +2097,89 @@ def deploy_observation(
             shutil.rmtree(temp_dir)
 
 
+def deploy_slits(
+    obs_name: str,
+    dry_run: bool,
+    project_root: Path,
+) -> None:
+    """
+    Deploy slit geometry data for an observation to Supabase.
+
+    Reads {obs_name}_slits.json from the products directory, deletes existing
+    rows for that observation in slit_regions, and bulk inserts new rows.
+
+    Args:
+        obs_name: Observation name (e.g., 'ember_uds_p4')
+        dry_run: If True, show what would happen without making changes
+        project_root: Root directory of the project
+    """
+    scripts_dir = project_root / 'scripts'
+    pipeline_dir = project_root / 'pipeline'
+    products_dir = pipeline_dir / 'products'
+
+    # Load configuration
+    print("Loading configuration...")
+    config = load_config(scripts_dir)
+    observations = load_observations(pipeline_dir)
+
+    # Validate observation exists
+    if obs_name not in observations:
+        print(f"Error: Observation '{obs_name}' not found in observations.toml")
+        print(f"Available observations: {list(observations.keys())}")
+        sys.exit(1)
+
+    obs_config = observations[obs_name]
+    print(f"Deploying slit geometry for observation: {obs_name}")
+    print(f"  Field: {obs_config.get('field', 'unknown')}")
+    print()
+
+    # Read slits JSON
+    slits_path = products_dir / obs_name / f'{obs_name}_slits.json'
+    if not slits_path.exists():
+        print(f"Error: Slit geometry file not found: {slits_path}")
+        print(f"Generate it first with: python scripts/generate_slits.py --obs {obs_name}")
+        sys.exit(1)
+
+    with open(slits_path) as f:
+        slits = json.load(f)
+
+    print(f"Found {len(slits)} slit records")
+    print()
+
+    if dry_run:
+        print("=== DRY RUN MODE ===")
+        print(f"Would delete existing slit_regions rows for observation '{obs_name}'")
+        print(f"Would insert {len(slits)} new rows into slit_regions")
+        return
+
+    # Check dependencies
+    if not HAS_SUPABASE:
+        print("Error: supabase-py required. Install with: pip install supabase")
+        sys.exit(1)
+
+    # Initialize Supabase client
+    print("Connecting to Supabase...")
+    supabase = get_supabase_client(config)
+
+    # Delete existing rows for this observation
+    print(f"Deleting existing slit_regions for observation '{obs_name}'...")
+    supabase.table('slit_regions').delete().eq('observation', obs_name).execute()
+
+    # Bulk insert in batches (Supabase has row limits per request)
+    BATCH_SIZE = 500
+    total_inserted = 0
+
+    print(f"Inserting {len(slits)} slit records...")
+    for i in range(0, len(slits), BATCH_SIZE):
+        batch = slits[i:i + BATCH_SIZE]
+        supabase.table('slit_regions').insert(batch).execute()
+        total_inserted += len(batch)
+        print(f"  Inserted {total_inserted}/{len(slits)} rows")
+
+    print()
+    print(f"✓ Successfully deployed {len(slits)} slit records for {obs_name}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Deploy CAMPFIRE spectra, RGB images, and SED plots to Supabase and R2',
@@ -2202,6 +2285,11 @@ Examples:
         help='Only regenerate spectrum thumbnail SVGs in Supabase (no R2 uploads)'
     )
     parser.add_argument(
+        '--slits-only',
+        action='store_true',
+        help='Only deploy slit geometry data to Supabase (from pre-generated JSON)'
+    )
+    parser.add_argument(
         '--auto-approve',
         action='store_true',
         help='Skip confirmation prompts (useful for scripting deployments)'
@@ -2271,8 +2359,8 @@ Examples:
             source_ids=args.source_ids
         )
     elif args.thumbnail_only:
-        if args.supabase_only or args.force_overwrite or args.no_rgb or args.rgb_only or args.zfit_only or args.sed_only or args.no_sed or args.json_only:
-            print("Error: --thumbnail-only cannot be combined with --supabase-only, --force-overwrite, --no-rgb, --rgb-only, --zfit-only, --sed-only, --no-sed, or --json-only")
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.rgb_only or args.zfit_only or args.sed_only or args.no_sed or args.json_only or args.slits_only:
+            print("Error: --thumbnail-only cannot be combined with other --*-only flags")
             sys.exit(1)
 
         deploy_thumbnails(
@@ -2280,6 +2368,16 @@ Examples:
             dry_run=args.dry_run,
             project_root=project_root,
             source_ids=args.source_ids
+        )
+    elif args.slits_only:
+        if args.supabase_only or args.force_overwrite or args.no_rgb or args.rgb_only or args.zfit_only or args.sed_only or args.no_sed or args.json_only or args.thumbnail_only:
+            print("Error: --slits-only cannot be combined with other --*-only flags")
+            sys.exit(1)
+
+        deploy_slits(
+            obs_name=args.obs,
+            dry_run=args.dry_run,
+            project_root=project_root,
         )
     else:
         # Normal deployment (with or without RGB/SED)
