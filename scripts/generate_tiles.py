@@ -315,6 +315,12 @@ Examples:
   # Generate tiles for all filters in a field
   python scripts/generate_tiles.py --generate --field cosmos
 
+  # Generate RGB composite tiles
+  python scripts/generate_tiles.py --generate --field cosmos --filter rgb
+
+  # RGB preview only (quick check of stretch params)
+  python scripts/generate_tiles.py --generate --field cosmos --filter rgb --preview
+
   # Upload + register after generating
   python scripts/generate_tiles.py --upload --register --field cosmos
 
@@ -339,6 +345,14 @@ Examples:
     parser.add_argument('--zoom', type=str, default=None,
                         help='Zoom range for upload (e.g., "0-7", "5", "3-8")')
 
+    # RGB options
+    parser.add_argument('--preview', action='store_true',
+                        help='Generate RGB preview only (use with --filter rgb)')
+    parser.add_argument('--preview-ra', type=float, default=None,
+                        help='RA for preview center (degrees)')
+    parser.add_argument('--preview-dec', type=float, default=None,
+                        help='Dec for preview center (degrees)')
+
     # Options
     parser.add_argument('--dry-run', action='store_true',
                         help='Show estimates without generating')
@@ -356,7 +370,12 @@ Examples:
     args = parser.parse_args()
 
     if not any([args.generate, args.upload, args.register]):
-        parser.error("At least one action required: --generate, --upload, --register")
+        parser.error(
+            "At least one action required: --generate, --upload, --register"
+        )
+
+    if args.preview and args.filter != 'rgb':
+        parser.error("--preview requires --filter rgb")
 
     # Setup logging
     logging.basicConfig(
@@ -383,6 +402,10 @@ Examples:
     estimate_tiles_for_filter = tiles_module.estimate_tiles_for_filter
     compute_field_grid = tiles_module.compute_field_grid
     save_field_grid = tiles_module.save_field_grid
+    get_rgb_configs = tiles_module.get_rgb_configs
+    generate_tiles_for_rgb = tiles_module.generate_tiles_for_rgb
+    estimate_tiles_for_rgb = tiles_module.estimate_tiles_for_rgb
+    generate_rgb_preview = tiles_module.generate_rgb_preview
 
     imaging_config = load_imaging_config(imaging_config_path)
 
@@ -397,88 +420,201 @@ Examples:
     # Get tile configs for requested field/filter
     fields = [args.field] if args.field else None
     filters = [args.filter] if args.filter else None
-    tile_configs = get_tile_configs(imaging_config, fields=fields, filters=filters)
+    is_rgb = args.filter == 'rgb'
 
-    if not tile_configs:
-        print("Error: No matching field/filter configurations found.")
-        if args.field:
-            print(f"  Field '{args.field}' not found in {imaging_config_path}")
-        sys.exit(1)
-
-    print(f"Found {len(tile_configs)} field/filter combination(s) to process")
-
-    # Generate tiles (two-pass: compute unified field grid, then generate per-filter)
+    # Generate tiles
     if args.generate:
-        # Group requested configs by field
-        configs_by_field = defaultdict(list)
-        for config in tile_configs:
-            configs_by_field[config.field].append(config)
+        if is_rgb:
+            # --- RGB composite path ---
+            rgb_configs = get_rgb_configs(imaging_config, fields=fields)
 
-        # Compute unified field grids (always from ALL filters, not just requested)
-        field_grids = {}
-        for field in configs_by_field:
-            all_field_configs = get_tile_configs(imaging_config, fields=[field])
-            all_filter_files = {c.filter_name: c.input_files for c in all_field_configs}
-            pixel_scale = configs_by_field[field][0].output_pixel_scale_arcsec
-            field_grid = compute_field_grid(all_filter_files, pixel_scale)
-            save_field_grid(output_dir, field, field_grid)
-            field_grids[field] = field_grid
-            print(f"Unified grid for {field}: "
-                  f"{field_grid.naxis1} x {field_grid.naxis2} px "
-                  f"(from {len(all_filter_files)} filter(s))")
+            if not rgb_configs:
+                print("Error: No [field.rgb] configurations found.")
+                if args.field:
+                    print(f"  Check [{args.field}.rgb] section "
+                          f"in {imaging_config_path}")
+                sys.exit(1)
 
-        if args.dry_run:
-            print("\n--- DRY RUN ---\n")
-            for config in tile_configs:
-                est = estimate_tiles_for_filter(
-                    config, output_grid=field_grids[config.field],
+            print(f"Found {len(rgb_configs)} RGB configuration(s)")
+
+            for rgb_config in rgb_configs:
+                # Compute unified field grid from ALL filters
+                all_field_configs = get_tile_configs(
+                    imaging_config, fields=[rgb_config.field]
                 )
-                print(f"  {est['field']}/{est['filter']}:")
-                print(f"    Input files:     {est['input_files']}")
-                print(f"    Output size:     {est['output_width']} x {est['output_height']} px")
-                print(f"    Pixel scale:     {est['pixel_scale_arcsec']:.3f}\"/px")
-                print(f"    Zoom range:      {est['min_zoom']} - {est['max_zoom']}")
-                print(f"    Estimated tiles: ~{est['estimated_tiles']:,}")
-                print(f"    Estimated size:  ~{est['estimated_size_mb']:.0f} MB "
-                      f"({est['estimated_size_gb']:.2f} GB)")
-                print()
-            return
+                all_filter_files = {
+                    c.filter_name: c.input_files for c in all_field_configs
+                }
+                field_grid = compute_field_grid(
+                    all_filter_files, rgb_config.output_pixel_scale_arcsec
+                )
+                save_field_grid(output_dir, rgb_config.field, field_grid)
+                print(f"Unified grid for {rgb_config.field}: "
+                      f"{field_grid.naxis1} x {field_grid.naxis2} px")
 
-        for config in tile_configs:
-            stats = generate_tiles_for_filter(
-                config, n_workers=args.workers, overwrite=args.overwrite,
-                output_grid=field_grids[config.field],
+                if args.preview:
+                    preview_path = generate_rgb_preview(
+                        rgb_config, field_grid,
+                        center_ra=args.preview_ra,
+                        center_dec=args.preview_dec,
+                    )
+                    print(f"Preview saved to {preview_path}")
+                    continue
+
+                if args.dry_run:
+                    est = estimate_tiles_for_rgb(
+                        rgb_config, output_grid=field_grid,
+                    )
+                    print(f"\n--- RGB DRY RUN: {est['field']} ---\n")
+                    print(f"  Filters:           {est['num_filters']}")
+                    print(f"  Input files:       {est['input_files']}")
+                    print(f"  Output size:       "
+                          f"{est['output_width']} x {est['output_height']} px")
+                    print(f"  Pixel scale:       "
+                          f"{est['pixel_scale_arcsec']:.3f}\"/px")
+                    print(f"  Zoom range:        "
+                          f"{est['min_zoom']} - {est['max_zoom']}")
+                    print(f"  Estimated tiles:   ~{est['estimated_tiles']:,}")
+                    print(f"  Estimated size:    "
+                          f"~{est['estimated_size_mb']:.0f} MB "
+                          f"({est['estimated_size_gb']:.2f} GB)")
+                    print()
+                    continue
+
+                stats = generate_tiles_for_rgb(
+                    rgb_config, n_workers=args.workers,
+                    overwrite=args.overwrite, output_grid=field_grid,
+                )
+
+                # Save stats for upload/register steps
+                stats_path = (
+                    output_dir / rgb_config.field / 'rgb' / 'stats.json'
+                )
+                stats_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(stats_path, 'w') as f:
+                    json.dump({
+                        'field': stats.field,
+                        'filter_name': stats.filter_name,
+                        'num_input_files': stats.num_input_files,
+                        'output_grid_size': list(stats.output_grid_size),
+                        'min_zoom': stats.min_zoom,
+                        'max_zoom': stats.max_zoom,
+                        'total_tiles': stats.total_tiles,
+                        'total_size_bytes': stats.total_size_bytes,
+                        'ra_min': stats.ra_min,
+                        'ra_max': stats.ra_max,
+                        'dec_min': stats.dec_min,
+                        'dec_max': stats.dec_max,
+                        'wcs_params': stats.wcs_params,
+                    }, f, indent=2)
+
+                print(f"\nGenerated {stats.total_tiles} RGB tiles "
+                      f"({stats.total_size_bytes / (1024 * 1024):.1f} MB) "
+                      f"for {stats.field}")
+                print(f"  Stats saved to {stats_path}")
+
+        else:
+            # --- Single-filter path ---
+            tile_configs = get_tile_configs(
+                imaging_config, fields=fields, filters=filters
             )
 
-            # Save stats for upload/register steps
-            stats_path = output_dir / config.field / config.filter_name / 'stats.json'
-            stats_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(stats_path, 'w') as f:
-                json.dump({
-                    'field': stats.field,
-                    'filter_name': stats.filter_name,
-                    'num_input_files': stats.num_input_files,
-                    'output_grid_size': list(stats.output_grid_size),
-                    'min_zoom': stats.min_zoom,
-                    'max_zoom': stats.max_zoom,
-                    'total_tiles': stats.total_tiles,
-                    'total_size_bytes': stats.total_size_bytes,
-                    'ra_min': stats.ra_min,
-                    'ra_max': stats.ra_max,
-                    'dec_min': stats.dec_min,
-                    'dec_max': stats.dec_max,
-                    'wcs_params': stats.wcs_params,
-                }, f, indent=2)
+            if not tile_configs:
+                print("Error: No matching field/filter configurations found.")
+                if args.field:
+                    print(f"  Field '{args.field}' not found "
+                          f"in {imaging_config_path}")
+                sys.exit(1)
 
-            print(f"\nGenerated {stats.total_tiles} tiles "
-                  f"({stats.total_size_bytes / (1024 * 1024):.1f} MB) "
-                  f"for {stats.field}/{stats.filter_name}")
-            print(f"  Stats saved to {stats_path}")
+            print(f"Found {len(tile_configs)} field/filter combination(s) "
+                  f"to process")
 
-        # Free memory-mapped FITS data and numpy arrays before upload/register
-        # steps to avoid segfaults in boto3's SSL threading
+            # Group requested configs by field
+            configs_by_field = defaultdict(list)
+            for config in tile_configs:
+                configs_by_field[config.field].append(config)
+
+            # Compute unified field grids (from ALL filters, not just requested)
+            field_grids = {}
+            for field in configs_by_field:
+                all_field_configs = get_tile_configs(
+                    imaging_config, fields=[field]
+                )
+                all_filter_files = {
+                    c.filter_name: c.input_files for c in all_field_configs
+                }
+                pixel_scale = (
+                    configs_by_field[field][0].output_pixel_scale_arcsec
+                )
+                field_grid = compute_field_grid(all_filter_files, pixel_scale)
+                save_field_grid(output_dir, field, field_grid)
+                field_grids[field] = field_grid
+                print(f"Unified grid for {field}: "
+                      f"{field_grid.naxis1} x {field_grid.naxis2} px "
+                      f"(from {len(all_filter_files)} filter(s))")
+
+            if args.dry_run:
+                print("\n--- DRY RUN ---\n")
+                for config in tile_configs:
+                    est = estimate_tiles_for_filter(
+                        config, output_grid=field_grids[config.field],
+                    )
+                    print(f"  {est['field']}/{est['filter']}:")
+                    print(f"    Input files:     {est['input_files']}")
+                    print(f"    Output size:     "
+                          f"{est['output_width']} x {est['output_height']} px")
+                    print(f"    Pixel scale:     "
+                          f"{est['pixel_scale_arcsec']:.3f}\"/px")
+                    print(f"    Zoom range:      "
+                          f"{est['min_zoom']} - {est['max_zoom']}")
+                    print(f"    Estimated tiles: "
+                          f"~{est['estimated_tiles']:,}")
+                    print(f"    Estimated size:  "
+                          f"~{est['estimated_size_mb']:.0f} MB "
+                          f"({est['estimated_size_gb']:.2f} GB)")
+                    print()
+                return
+
+            for config in tile_configs:
+                stats = generate_tiles_for_filter(
+                    config, n_workers=args.workers,
+                    overwrite=args.overwrite,
+                    output_grid=field_grids[config.field],
+                )
+
+                # Save stats for upload/register steps
+                stats_path = (
+                    output_dir / config.field
+                    / config.filter_name / 'stats.json'
+                )
+                stats_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(stats_path, 'w') as f:
+                    json.dump({
+                        'field': stats.field,
+                        'filter_name': stats.filter_name,
+                        'num_input_files': stats.num_input_files,
+                        'output_grid_size': list(stats.output_grid_size),
+                        'min_zoom': stats.min_zoom,
+                        'max_zoom': stats.max_zoom,
+                        'total_tiles': stats.total_tiles,
+                        'total_size_bytes': stats.total_size_bytes,
+                        'ra_min': stats.ra_min,
+                        'ra_max': stats.ra_max,
+                        'dec_min': stats.dec_min,
+                        'dec_max': stats.dec_max,
+                        'wcs_params': stats.wcs_params,
+                    }, f, indent=2)
+
+                print(f"\nGenerated {stats.total_tiles} tiles "
+                      f"({stats.total_size_bytes / (1024 * 1024):.1f} MB) "
+                      f"for {stats.field}/{stats.filter_name}")
+                print(f"  Stats saved to {stats_path}")
+
+            # Free memory-mapped FITS data and numpy arrays before
+            # upload/register to avoid segfaults in boto3's SSL threading
+            del field_grids
+
         import gc
-        del field_grids
         gc.collect()
 
     # Upload to R2

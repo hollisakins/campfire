@@ -163,6 +163,29 @@ class InputFileInfo:
     y_max: int
 
 
+@dataclass
+class RGBConfig:
+    """Configuration for an RGB composite tile generation run."""
+    field: str
+    output_dir: Path
+    output_pixel_scale_arcsec: float
+    tile_size: int
+    mask_wht: bool
+    filter_channels: dict[str, dict]  # {filter: {'files': [Path], 'color': [r,g,b]}}
+    noisesig: float = 2.0
+    noiselum: float = 0.12
+    satpercent: float = 0.01
+
+
+@dataclass
+class RGBStretchParams:
+    """Precomputed global RGB stretch parameters."""
+    blackpoint: float
+    whitepoint: float
+    noiselum: float
+    rgb_lum_sum: np.ndarray  # shape (3,), sum of all filter color weights
+
+
 # ============================================
 # Weight Map Helpers
 # ============================================
@@ -1250,3 +1273,855 @@ def get_tile_configs(
             ))
 
     return configs
+
+
+# ============================================
+# RGB Composite Pipeline
+# ============================================
+
+def get_rgb_configs(
+    imaging_config: dict,
+    fields: list[str] | None = None,
+) -> list[RGBConfig]:
+    """
+    Parse [field.rgb] sections from imaging.toml into RGBConfig objects.
+
+    For each filter in rgb.channels, looks up file globs from [field.filters].
+    Skips filters not found (with warning).
+    """
+    defaults = imaging_config.get('defaults', {})
+    default_pixel_scale = defaults.get('output_pixel_scale_arcsec', 0.06)
+    default_tile_size = defaults.get('tile_size', 256)
+    default_output_dir = Path(defaults.get('output_dir', 'pipeline/tiles'))
+
+    configs = []
+
+    for section_name, section in imaging_config.items():
+        if section_name == 'defaults' or not isinstance(section, dict):
+            continue
+
+        field_name = section.get('field', section_name)
+        if fields and field_name not in fields:
+            continue
+
+        rgb_section = section.get('rgb')
+        if not rgb_section:
+            continue
+
+        data_dir = Path(section.get('data_dir', '.'))
+        mask_wht = section.get('mask_wht', False)
+        field_filters = section.get('filters', {})
+
+        channels = rgb_section.get('channels', {})
+        if not channels:
+            logger.warning(
+                f"No channels defined in [{section_name}.rgb], skipping"
+            )
+            continue
+
+        filter_channels = {}
+        for filter_name, color_weights in channels.items():
+            if filter_name not in field_filters:
+                logger.warning(
+                    f"Filter '{filter_name}' in [{section_name}.rgb.channels] "
+                    f"not found in [{section_name}.filters], skipping"
+                )
+                continue
+
+            # Resolve file globs
+            file_pattern = field_filters[filter_name].get('files', '')
+            if isinstance(file_pattern, str):
+                input_files = sorted(data_dir.glob(file_pattern))
+            elif isinstance(file_pattern, list):
+                input_files = []
+                for pattern in file_pattern:
+                    input_files.extend(sorted(data_dir.glob(pattern)))
+            else:
+                continue
+
+            if not input_files:
+                logger.warning(
+                    f"No files found for {field_name}/{filter_name} "
+                    f"(used in RGB), skipping"
+                )
+                continue
+
+            filter_channels[filter_name] = {
+                'files': input_files,
+                'color': np.array(color_weights, dtype=np.float32),
+            }
+
+        if not filter_channels:
+            logger.warning(
+                f"No valid filters for [{section_name}.rgb], skipping"
+            )
+            continue
+
+        configs.append(RGBConfig(
+            field=field_name,
+            output_dir=default_output_dir,
+            output_pixel_scale_arcsec=default_pixel_scale,
+            tile_size=default_tile_size,
+            mask_wht=mask_wht,
+            filter_channels=filter_channels,
+            noisesig=rgb_section.get('noisesig', 2.0),
+            noiselum=rgb_section.get('noiselum', 0.12),
+            satpercent=rgb_section.get('satpercent', 0.01),
+        ))
+
+    return configs
+
+
+def compute_rgb_stretch_params(
+    rgb_config: RGBConfig,
+    n_rows_per_file: int = 200,
+) -> RGBStretchParams:
+    """
+    Precompute global RGB stretch parameters by sampling pixels.
+
+    Mirrors gen_rgb_image's stretch computation but via sampling:
+    1. Compute rgb_lum_sum = sum(color_weight for each filter)
+    2. Sample random rows from each filter's input files
+    3. Compute per-channel contributions and normalize
+    4. blackpoint = noisesig * max(sigma_clipped_std per R,G,B)
+    5. whitepoint = nanpercentile(all_channels, 100 * (1 - 0.01 * satpercent))
+    """
+    from astropy.stats import sigma_clipped_stats
+
+    logger.info("Computing global RGB stretch parameters from input samples...")
+
+    # Compute rgb_lum_sum: sum of color weights across all filters
+    rgb_lum_sum = np.zeros(3, dtype=np.float64)
+    for filt_info in rgb_config.filter_channels.values():
+        rgb_lum_sum += filt_info['color']
+
+    # Sample from each filter and compute per-channel contributions
+    ch_samples = [[], [], []]  # R, G, B
+    rng = np.random.default_rng(42)
+
+    for filt_name, filt_info in rgb_config.filter_channels.items():
+        color = filt_info['color']
+        filt_samples = []
+
+        for fits_path in filt_info['files']:
+            wht_path = _find_wht_path(fits_path) if rgb_config.mask_wht else None
+            with fits.open(fits_path, memmap=True) as hdul:
+                for ext_name in ['SCI', 0]:
+                    try:
+                        data = hdul[ext_name].data
+                        if data is not None and len(data.shape) == 2:
+                            ny, nx = data.shape
+                            n_rows = min(n_rows_per_file, ny)
+                            row_indices = rng.choice(ny, size=n_rows, replace=False)
+                            row_indices.sort()
+                            samples = data[row_indices, :].ravel().astype(np.float32)
+                            if wht_path is not None:
+                                with fits.open(wht_path, memmap=True) as wht_hdul:
+                                    wht_ext = _get_ext(
+                                        wht_hdul, ['WHT', 0], data.shape
+                                    )
+                                    if wht_ext is not None:
+                                        wht_samples = wht_ext.data[
+                                            row_indices, :
+                                        ].ravel()
+                                        samples[wht_samples == 0] = np.nan
+                            samples = samples[np.isfinite(samples)]
+                            filt_samples.append(samples)
+                            logger.info(
+                                f"  Sampled {n_rows} rows "
+                                f"({len(samples):,} pixels) "
+                                f"from {fits_path.name} [{filt_name}]"
+                            )
+                            break
+                    except (KeyError, IndexError):
+                        continue
+
+        if not filt_samples:
+            logger.warning(f"  No samples for {filt_name}")
+            continue
+
+        combined = np.concatenate(filt_samples)
+        # Compute per-channel contributions (color * samples / lum_sum)
+        for ch in range(3):
+            if color[ch] > 0 and rgb_lum_sum[ch] > 0:
+                ch_contrib = color[ch] * combined / rgb_lum_sum[ch]
+                ch_samples[ch].append(ch_contrib)
+
+    # Concatenate all samples per channel
+    ch_arrays = []
+    for ch in range(3):
+        if ch_samples[ch]:
+            ch_arrays.append(np.concatenate(ch_samples[ch]))
+        else:
+            ch_arrays.append(np.array([]))
+
+    if all(len(a) == 0 for a in ch_arrays):
+        raise ValueError("No valid pixel data found for RGB stretch computation")
+
+    # Blackpoint: noisesig * max(sigma_clipped_std per channel)
+    stds = []
+    for ch, ch_name in enumerate(['R', 'G', 'B']):
+        if len(ch_arrays[ch]) > 0:
+            _, _, std = sigma_clipped_stats(ch_arrays[ch])
+            stds.append(std)
+            logger.info(f"  {ch_name} sigma-clipped std: {std:.4e}")
+
+    blackpoint = float(rgb_config.noisesig * max(stds))
+
+    # Whitepoint: nanpercentile across all channels
+    all_channels = np.concatenate([a for a in ch_arrays if len(a) > 0])
+    unsatpercent = 1 - 0.01 * rgb_config.satpercent
+    whitepoint = float(np.nanpercentile(all_channels, 100 * unsatpercent))
+
+    logger.info(
+        f"RGB stretch params: blackpoint={blackpoint:.4e}, "
+        f"whitepoint={whitepoint:.4e}, noiselum={rgb_config.noiselum}"
+    )
+
+    return RGBStretchParams(
+        blackpoint=blackpoint,
+        whitepoint=whitepoint,
+        noiselum=rgb_config.noiselum,
+        rgb_lum_sum=rgb_lum_sum,
+    )
+
+
+def apply_rgb_stretch(
+    per_filter_data: dict[str, np.ndarray],
+    rgb_config: RGBConfig,
+    stretch_params: RGBStretchParams,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Apply RGB stretch to per-filter data arrays.
+
+    Ports gen_rgb_image lines 81-103 exactly, with per-pixel
+    handling of partial filter coverage.
+
+    Args:
+        per_filter_data: dict mapping filter name -> (H, W) float32 array
+        rgb_config: RGB configuration with filter color weights
+        stretch_params: Precomputed blackpoint/whitepoint
+
+    Returns:
+        (rgb_uint8[H,W,3], alpha[H,W]) where alpha is 255 for valid, 0 for NaN
+    """
+    # Get dimensions from first filter
+    first_data = next(iter(per_filter_data.values()))
+    H, W = first_data.shape
+
+    # Sum weighted contributions per channel, tracking per-pixel validity
+    rgb_total = np.zeros((3, H, W), dtype=np.float64)
+    lum_sum_2d = np.zeros((3, H, W), dtype=np.float64)
+    any_valid = np.zeros((H, W), dtype=bool)
+
+    for filt_name, data in per_filter_data.items():
+        color = rgb_config.filter_channels[filt_name]['color']
+        valid = np.isfinite(data)
+        any_valid |= valid
+
+        for ch in range(3):
+            if color[ch] > 0:
+                rgb_total[ch] += np.where(valid, color[ch] * data, 0)
+                lum_sum_2d[ch] += np.where(valid, color[ch], 0)
+
+    # Per-pixel normalization (handles partial coverage)
+    lum_sum_2d = np.where(lum_sum_2d > 0, lum_sum_2d, np.nan)
+    rgb_avg = rgb_total / lum_sum_2d
+
+    # Log stretch (mirrors gen_rgb_image)
+    bp = stretch_params.blackpoint
+    wp = stretch_params.whitepoint
+    noiselum = stretch_params.noiselum
+
+    log_bp = np.log10(bp)
+    log_wp = np.log10(wp)
+    log_range = log_wp - log_bp
+
+    result = np.zeros((H, W, 3), dtype=np.uint8)
+
+    for ch in range(3):
+        ch_data = rgb_avg[ch]
+        with np.errstate(invalid='ignore', divide='ignore'):
+            stretched = (np.log10(ch_data) - log_bp) / log_range
+        stretched = stretched * (255 * (1 - noiselum)) + 255 * noiselum
+        stretched = np.where(stretched > 255, 255, stretched)
+        stretched = np.where(np.isnan(stretched) | (stretched < 0), 0, stretched)
+        result[:, :, ch] = stretched.astype(np.uint8)
+
+    alpha = np.where(any_valid, np.uint8(255), np.uint8(0))
+
+    return result, alpha
+
+
+def _open_filter_hdus(
+    overlapping: list[InputFileInfo],
+    mask_wht: bool,
+) -> tuple[list, list]:
+    """
+    Open FITS files for overlapping inputs, returning (hdus, open_hduls).
+
+    Each hdu is either an HDU object (memmap) or a (data, WCS) tuple
+    when WHT masking is applied. Caller must close open_hduls when done.
+    """
+    hdus = []
+    open_hduls = []
+    for info in overlapping:
+        hdul = fits.open(info.path, memmap=True)
+        open_hduls.append(hdul)
+        for ext_name in ['SCI', 0]:
+            try:
+                hdu = hdul[ext_name]
+                if hdu.data is not None and len(hdu.data.shape) == 2:
+                    if mask_wht:
+                        wht_path = _find_wht_path(info.path)
+                        if wht_path is not None:
+                            data_arr = hdu.data.astype(np.float32)
+                            with fits.open(
+                                wht_path, memmap=True
+                            ) as wht_hdul:
+                                wht_ext = _get_ext(
+                                    wht_hdul, ['WHT', 0], data_arr.shape
+                                )
+                                if wht_ext is not None:
+                                    data_arr[wht_ext.data == 0] = np.nan
+                            hdus.append(
+                                (data_arr, WCS(hdu.header, naxis=2))
+                            )
+                        else:
+                            hdus.append(hdu)
+                    else:
+                        hdus.append(hdu)
+                    break
+            except (KeyError, IndexError):
+                continue
+    return hdus, open_hduls
+
+
+def _process_rgb_supertile(
+    sx: int, sy: int,
+    supertile_size: int,
+    output_grid: OutputGrid,
+    per_filter_input_infos: dict[str, list[InputFileInfo]],
+    rgb_config: RGBConfig,
+    stretch_params: RGBStretchParams,
+    tile_dir: Path,
+    tile_size: int,
+    max_zoom: int,
+    n_tiles_y: int,
+    overwrite: bool = False,
+) -> tuple[int, int]:
+    """
+    Reproject all filters onto one supertile region and produce RGB PNG tiles.
+
+    Opens FITS files on-demand per filter and closes them after reprojecting,
+    keeping the open file count low (important for fields with many tiles).
+
+    Returns (n_tiles_written, total_bytes).
+    """
+    x0 = sx * supertile_size
+    y0 = sy * supertile_size
+    nx = min(supertile_size, output_grid.naxis1 - x0)
+    ny = min(supertile_size, output_grid.naxis2 - y0)
+
+    tiles_per_st = supertile_size // tile_size
+    base_tx = sx * tiles_per_st
+    base_ty = sy * tiles_per_st
+
+    # Sentinel file for resume
+    sentinel = tile_dir / str(max_zoom) / f".st_{sx}_{sy}.done"
+    if not overwrite and sentinel.exists():
+        n_existing = 0
+        existing_bytes = 0
+        for lty in range(tiles_per_st):
+            for ltx in range(tiles_per_st):
+                tx = base_tx + ltx
+                ty = base_ty + lty
+                leaflet_y = n_tiles_y - 1 - ty
+                tile_path = (
+                    tile_dir / str(max_zoom) / str(tx) / f"{leaflet_y}.png"
+                )
+                if tile_path.exists():
+                    n_existing += 1
+                    existing_bytes += tile_path.stat().st_size
+        return (n_existing, existing_bytes)
+
+    # Check if ANY filter has overlap with this supertile
+    has_overlap = False
+    for filt, infos in per_filter_input_infos.items():
+        if find_overlapping_inputs(infos, x0, y0, supertile_size):
+            has_overlap = True
+            break
+
+    if not has_overlap:
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+        return (0, 0)
+
+    # Reproject each filter onto the supertile, opening/closing files
+    # per filter to avoid exhausting file descriptors
+    st_header = output_grid.sub_header(x0, y0, nx, ny)
+    per_filter_data = {}
+
+    for filt, infos in per_filter_input_infos.items():
+        overlapping = find_overlapping_inputs(infos, x0, y0, supertile_size)
+        if not overlapping:
+            continue
+
+        hdus, open_hduls = _open_filter_hdus(overlapping, rgb_config.mask_wht)
+        try:
+            if not hdus:
+                continue
+            data, footprint = _reproject_tile(hdus, st_header)
+            data[footprint < 0.5] = np.nan
+            per_filter_data[filt] = data[:ny, :nx]
+        finally:
+            for hdul in open_hduls:
+                hdul.close()
+
+    if not per_filter_data:
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+        return (0, 0)
+
+    # Apply RGB stretch to full supertile at once
+    rgb_data, alpha = apply_rgb_stretch(
+        per_filter_data, rgb_config, stretch_params
+    )
+
+    # Slice into 256x256 tiles
+    n_tiles = 0
+    total_bytes = 0
+
+    for lty in range(tiles_per_st):
+        for ltx in range(tiles_per_st):
+            tx = base_tx + ltx
+            ty = base_ty + lty
+
+            px0 = ltx * tile_size
+            py0 = lty * tile_size
+            px1 = min(px0 + tile_size, nx)
+            py1 = min(py0 + tile_size, ny)
+
+            if px0 >= nx or py0 >= ny:
+                continue
+
+            tile_alpha = alpha[py0:py1, px0:px1]
+            if not np.any(tile_alpha > 0):
+                if overwrite:
+                    leaflet_y = n_tiles_y - 1 - ty
+                    stale = (
+                        tile_dir / str(max_zoom) / str(tx) / f"{leaflet_y}.png"
+                    )
+                    stale.unlink(missing_ok=True)
+                continue
+
+            leaflet_y = n_tiles_y - 1 - ty
+            tile_path = (
+                tile_dir / str(max_zoom) / str(tx) / f"{leaflet_y}.png"
+            )
+
+            if not overwrite and tile_path.exists():
+                n_tiles += 1
+                total_bytes += tile_path.stat().st_size
+                continue
+
+            tile_rgb = rgb_data[py0:py1, px0:px1]  # (h, w, 3)
+
+            # Build RGBA (pad to tile_size if at edge)
+            rgba = np.zeros((tile_size, tile_size, 4), dtype=np.uint8)
+            h, w = tile_rgb.shape[:2]
+            rgba[:h, :w, 0:3] = tile_rgb
+            rgba[:h, :w, 3] = tile_alpha
+
+            tile_path.parent.mkdir(parents=True, exist_ok=True)
+            img = Image.fromarray(np.flipud(rgba), 'RGBA')
+            img.save(tile_path, 'PNG')
+
+            n_tiles += 1
+            total_bytes += tile_path.stat().st_size
+
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+
+    return (n_tiles, total_bytes)
+
+
+def generate_rgb_max_zoom_tiles(
+    output_grid: OutputGrid,
+    per_filter_input_infos: dict[str, list[InputFileInfo]],
+    rgb_config: RGBConfig,
+    stretch_params: RGBStretchParams,
+    tile_dir: Path,
+    tile_size: int,
+    max_zoom: int,
+    n_workers: int = 1,
+    overwrite: bool = False,
+) -> tuple[int, int]:
+    """
+    Generate RGB tiles at max zoom using supertile reprojection.
+
+    FITS files are opened on-demand per supertile per filter (not
+    pre-opened) to avoid exhausting file descriptors on fields with
+    many input tiles (e.g. COSMOS: 20 tiles x 6 filters = 120 files).
+
+    Returns (total_tiles, total_bytes).
+    """
+    n_tiles_x = int(math.ceil(output_grid.naxis1 / tile_size))
+    n_tiles_y = int(math.ceil(output_grid.naxis2 / tile_size))
+    n_st_x = int(math.ceil(output_grid.naxis1 / SUPERTILE_SIZE))
+    n_st_y = int(math.ceil(output_grid.naxis2 / SUPERTILE_SIZE))
+    total_supertiles = n_st_x * n_st_y
+
+    n_filters = len(rgb_config.filter_channels)
+    logger.info(
+        f"RGB max zoom {max_zoom}: {n_tiles_x}x{n_tiles_y} tiles via "
+        f"{n_st_x}x{n_st_y} supertiles ({SUPERTILE_SIZE}px), "
+        f"{n_filters} filters, {n_workers} thread(s)"
+        f"{'' if overwrite else ', skipping existing'}"
+    )
+
+    # Build supertile positions: overlap if ANY filter overlaps
+    st_rows: list[list[tuple[int, int]]] = [[] for _ in range(n_st_y)]
+    total_with_overlap = 0
+    for sy in range(n_st_y):
+        for sx in range(n_st_x):
+            x0 = sx * SUPERTILE_SIZE
+            y0 = sy * SUPERTILE_SIZE
+            has_overlap = False
+            for filt, infos in per_filter_input_infos.items():
+                if find_overlapping_inputs(infos, x0, y0, SUPERTILE_SIZE):
+                    has_overlap = True
+                    break
+            if has_overlap:
+                st_rows[sy].append((sx, sy))
+                total_with_overlap += 1
+
+    logger.info(
+        f"  {total_with_overlap}/{total_supertiles} supertiles have "
+        f"overlapping inputs"
+    )
+
+    total_tiles = 0
+    total_bytes = 0
+
+    def process(pos):
+        return _process_rgb_supertile(
+            pos[0], pos[1], SUPERTILE_SIZE,
+            output_grid, per_filter_input_infos,
+            rgb_config, stretch_params,
+            tile_dir, tile_size, max_zoom, n_tiles_y,
+            overwrite=overwrite,
+        )
+
+    pbar = tqdm(
+        total=total_with_overlap,
+        desc=f"RGB Zoom {max_zoom}", unit="st", smoothing=0.05,
+    )
+
+    if n_workers <= 1:
+        for row in st_rows:
+            for pos in row:
+                n, nbytes = process(pos)
+                total_tiles += n
+                total_bytes += nbytes
+                pbar.update(1)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            for row in st_rows:
+                if not row:
+                    continue
+                futures = {
+                    executor.submit(process, pos): pos for pos in row
+                }
+                for future in as_completed(futures):
+                    n, nbytes = future.result()
+                    total_tiles += n
+                    total_bytes += nbytes
+                    pbar.update(1)
+
+    pbar.close()
+
+    logger.info(
+        f"  RGB max zoom {max_zoom}: {total_tiles} non-empty tiles "
+        f"({total_bytes / (1024 * 1024):.1f} MB)"
+    )
+
+    return total_tiles, total_bytes
+
+
+def generate_tiles_for_rgb(
+    rgb_config: RGBConfig,
+    n_workers: int = 1,
+    overwrite: bool = False,
+    output_grid: OutputGrid | None = None,
+) -> TileStats:
+    """
+    Full RGB tile generation pipeline.
+
+    1. Use provided grid or compute from all filter files
+    2. Precompute per-filter input bounding boxes
+    3. Compute global RGB stretch parameters
+    4. Generate max zoom RGB tiles
+    5. Build lower zoom levels (unchanged, handles RGBA)
+    6. Return TileStats with filter_name='rgb'
+    """
+    n_filters = len(rgb_config.filter_channels)
+    n_files = sum(len(f['files']) for f in rgb_config.filter_channels.values())
+    logger.info(
+        f"=== Generating RGB tiles: {rgb_config.field} "
+        f"({n_filters} filters, {n_files} input files) ==="
+    )
+
+    # Step 1: Use provided grid or compute from all filter files
+    if output_grid is None:
+        all_files = {
+            filt: info['files']
+            for filt, info in rgb_config.filter_channels.items()
+        }
+        output_grid = compute_field_grid(
+            all_files, rgb_config.output_pixel_scale_arcsec
+        )
+    else:
+        logger.info("Using provided unified field grid")
+
+    min_zoom, max_zoom = compute_zoom_range(
+        output_grid.naxis1, output_grid.naxis2, rgb_config.tile_size
+    )
+
+    # Step 2: Precompute per-filter input bounding boxes
+    logger.info("Precomputing per-filter input file bounding boxes...")
+    per_filter_input_infos = {}
+    for filt, info in rgb_config.filter_channels.items():
+        per_filter_input_infos[filt] = precompute_input_bboxes(
+            info['files'], output_grid
+        )
+
+    # Step 3: Compute global RGB stretch parameters
+    stretch_params = compute_rgb_stretch_params(rgb_config)
+
+    tile_dir = rgb_config.output_dir / rgb_config.field / 'rgb'
+
+    # Step 4: Generate max zoom tiles
+    max_tiles, max_bytes = generate_rgb_max_zoom_tiles(
+        output_grid=output_grid,
+        per_filter_input_infos=per_filter_input_infos,
+        rgb_config=rgb_config,
+        stretch_params=stretch_params,
+        tile_dir=tile_dir,
+        tile_size=rgb_config.tile_size,
+        max_zoom=max_zoom,
+        n_workers=n_workers,
+        overwrite=overwrite,
+    )
+
+    # Step 5: Build lower zoom levels (already handles RGBA)
+    lower_tiles, lower_bytes = build_lower_zoom_levels(
+        tile_dir=tile_dir,
+        min_zoom=min_zoom,
+        max_zoom=max_zoom,
+        tile_size=rgb_config.tile_size,
+        naxis1=output_grid.naxis1,
+        naxis2=output_grid.naxis2,
+        overwrite=overwrite,
+    )
+
+    total_tiles = max_tiles + lower_tiles
+    total_bytes = max_bytes + lower_bytes
+
+    # Compute sky bounds
+    wcs = output_grid.to_wcs()
+    corners = np.array([
+        [0, 0],
+        [output_grid.naxis1 - 1, 0],
+        [output_grid.naxis1 - 1, output_grid.naxis2 - 1],
+        [0, output_grid.naxis2 - 1],
+    ], dtype=float)
+    corner_sky = wcs.pixel_to_world_values(corners[:, 0], corners[:, 1])
+
+    stats = TileStats(
+        field=rgb_config.field,
+        filter_name='rgb',
+        num_input_files=n_files,
+        output_grid_size=(output_grid.naxis1, output_grid.naxis2),
+        min_zoom=min_zoom,
+        max_zoom=max_zoom,
+        total_tiles=total_tiles,
+        total_size_bytes=total_bytes,
+        ra_min=float(np.min(corner_sky[0])),
+        ra_max=float(np.max(corner_sky[0])),
+        dec_min=float(np.min(corner_sky[1])),
+        dec_max=float(np.max(corner_sky[1])),
+        wcs_params=output_grid.to_json(),
+    )
+
+    logger.info(
+        f"=== Done: {total_tiles} RGB tiles, "
+        f"{total_bytes / (1024 * 1024):.1f} MB ==="
+    )
+
+    return stats
+
+
+def estimate_tiles_for_rgb(
+    rgb_config: RGBConfig,
+    output_grid: OutputGrid | None = None,
+) -> dict:
+    """Dry-run estimation for RGB tiles (same math as single-filter)."""
+    if output_grid is None:
+        all_files = {
+            filt: info['files']
+            for filt, info in rgb_config.filter_channels.items()
+        }
+        output_grid = compute_field_grid(
+            all_files, rgb_config.output_pixel_scale_arcsec
+        )
+
+    min_zoom, max_zoom = compute_zoom_range(
+        output_grid.naxis1, output_grid.naxis2, rgb_config.tile_size
+    )
+
+    total_tiles = 0
+    for zoom in range(min_zoom, max_zoom + 1):
+        scale = 2 ** (max_zoom - zoom)
+        nx_tiles = int(math.ceil(
+            output_grid.naxis1 / scale / rgb_config.tile_size
+        ))
+        ny_tiles = int(math.ceil(
+            output_grid.naxis2 / scale / rgb_config.tile_size
+        ))
+        total_tiles += int(nx_tiles * ny_tiles * 0.6)
+
+    # RGB tiles are larger than grayscale (~80KB vs ~40KB)
+    avg_tile_bytes = 80 * 1024
+    estimated_bytes = total_tiles * avg_tile_bytes
+
+    n_files = sum(len(f['files']) for f in rgb_config.filter_channels.values())
+
+    return {
+        'field': rgb_config.field,
+        'filter': 'rgb',
+        'input_files': n_files,
+        'num_filters': len(rgb_config.filter_channels),
+        'output_width': output_grid.naxis1,
+        'output_height': output_grid.naxis2,
+        'pixel_scale_arcsec': rgb_config.output_pixel_scale_arcsec,
+        'min_zoom': min_zoom,
+        'max_zoom': max_zoom,
+        'estimated_tiles': total_tiles,
+        'estimated_size_mb': estimated_bytes / (1024 * 1024),
+        'estimated_size_gb': estimated_bytes / (1024 * 1024 * 1024),
+    }
+
+
+def generate_rgb_preview(
+    rgb_config: RGBConfig,
+    output_grid: OutputGrid,
+    output_path: Path | None = None,
+    center_ra: float | None = None,
+    center_dec: float | None = None,
+    preview_size: int = 2048,
+) -> Path:
+    """
+    Generate an RGB preview image from a single supertile-sized region.
+
+    If no center coordinates given, picks the supertile with the most
+    filter coverage (best representative region).
+    """
+    logger.info("Generating RGB preview...")
+
+    # Precompute per-filter bboxes
+    per_filter_input_infos = {}
+    for filt, info in rgb_config.filter_channels.items():
+        per_filter_input_infos[filt] = precompute_input_bboxes(
+            info['files'], output_grid
+        )
+
+    if center_ra is not None and center_dec is not None:
+        # Convert sky coords to pixel coords
+        wcs = output_grid.to_wcs()
+        cx, cy = wcs.world_to_pixel_values(center_ra, center_dec)
+        x0 = max(0, int(cx) - preview_size // 2)
+        y0 = max(0, int(cy) - preview_size // 2)
+    else:
+        # Find supertile with most filter overlap
+        n_st_x = int(math.ceil(output_grid.naxis1 / SUPERTILE_SIZE))
+        n_st_y = int(math.ceil(output_grid.naxis2 / SUPERTILE_SIZE))
+
+        best_sx, best_sy = 0, 0
+        best_count = 0
+
+        for sy in range(n_st_y):
+            for sx in range(n_st_x):
+                st_x0 = sx * SUPERTILE_SIZE
+                st_y0 = sy * SUPERTILE_SIZE
+                count = 0
+                for filt, infos in per_filter_input_infos.items():
+                    if find_overlapping_inputs(
+                        infos, st_x0, st_y0, SUPERTILE_SIZE
+                    ):
+                        count += 1
+                if count > best_count:
+                    best_count = count
+                    best_sx, best_sy = sx, sy
+
+        x0 = best_sx * SUPERTILE_SIZE
+        y0 = best_sy * SUPERTILE_SIZE
+        logger.info(
+            f"  Best supertile ({best_sx}, {best_sy}): "
+            f"{best_count}/{len(per_filter_input_infos)} filters"
+        )
+
+    nx = min(preview_size, output_grid.naxis1 - x0)
+    ny = min(preview_size, output_grid.naxis2 - y0)
+
+    # Compute global stretch params
+    stretch_params = compute_rgb_stretch_params(rgb_config)
+
+    # Reproject each filter onto the preview region
+    st_header = output_grid.sub_header(x0, y0, nx, ny)
+    per_filter_data = {}
+
+    for filt, infos in per_filter_input_infos.items():
+        overlapping = find_overlapping_inputs(infos, x0, y0, preview_size)
+        if not overlapping:
+            continue
+
+        hdus, open_hduls = _open_filter_hdus(overlapping, rgb_config.mask_wht)
+        try:
+            if hdus:
+                data, footprint = _reproject_tile(hdus, st_header)
+                data[footprint < 0.5] = np.nan
+                per_filter_data[filt] = data[:ny, :nx]
+        finally:
+            for hdul in open_hduls:
+                hdul.close()
+
+    if not per_filter_data:
+        raise ValueError("No filter data found in preview region")
+
+    # Apply RGB stretch
+    rgb_data, alpha = apply_rgb_stretch(
+        per_filter_data, rgb_config, stretch_params
+    )
+
+    # Build RGBA and save
+    rgba = np.zeros((ny, nx, 4), dtype=np.uint8)
+    rgba[:, :, 0:3] = rgb_data
+    rgba[:, :, 3] = alpha
+
+    if output_path is None:
+        output_path = rgb_config.output_dir / rgb_config.field / 'rgb_preview.png'
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    img = Image.fromarray(np.flipud(rgba), 'RGBA')
+    img.save(output_path, 'PNG')
+
+    logger.info(f"  Preview saved to {output_path} ({nx}x{ny} px)")
+    logger.info(
+        f"  Stretch params: blackpoint={stretch_params.blackpoint:.4e}, "
+        f"whitepoint={stretch_params.whitepoint:.4e}, "
+        f"noiselum={stretch_params.noiselum}"
+    )
+
+    return output_path

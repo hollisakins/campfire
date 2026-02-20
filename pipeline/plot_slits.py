@@ -189,7 +189,7 @@ def make_nircam_rgb_cutout(field, tile, coord, cutout_width=3*u.arcsec):
         rgb_dict['f150w'] = {'colors':np.array([0.0, 0.2, 0.8]), 'data':convolve(cutouts['f150w'].data, make_2dgaussian_kernel(1.5, size=9))}
         rgb_dict['f200w'] = {'colors':np.array([0.0, 0.9, 0.1]), 'data':convolve(cutouts['f200w'].data, make_2dgaussian_kernel(1.0, size=9))}
         rgb_dict['f277w'] = {'colors':np.array([0.1, 0.9, 0.0]), 'data':cutouts['f277w'].data}
-        rgb_dict['f356w'] = {'colors':np.array([8.0, 0.2, 0.0]), 'data':cutouts['f356w'].data}
+        rgb_dict['f356w'] = {'colors':np.array([0.8, 0.2, 0.0]), 'data':cutouts['f356w'].data}
         rgb_dict['f444w'] = {'colors':np.array([1.0, 0.0, 0.0]), 'data':cutouts['f444w'].data}
 
     elif np.all(np.isin(['f115w','f150w','f182m','f210m','f277w','f356w','f444w'], list(cutouts.keys()))):
@@ -198,7 +198,7 @@ def make_nircam_rgb_cutout(field, tile, coord, cutout_width=3*u.arcsec):
         rgb_dict['f150w'] = {'colors':np.array([0.0, 0.2, 0.8]), 'data':cutouts['f150w'].data}
         rgb_dict['f200w'] = {'colors':np.array([0.0, 0.9, 0.1]), 'data':np.nanmean([cutouts['f182m'].data, cutouts['f210m'].data],axis=0)}
         rgb_dict['f277w'] = {'colors':np.array([0.1, 0.9, 0.0]), 'data':cutouts['f277w'].data}
-        rgb_dict['f356w'] = {'colors':np.array([8.0, 0.2, 0.0]), 'data':cutouts['f356w'].data}
+        rgb_dict['f356w'] = {'colors':np.array([0.8, 0.2, 0.0]), 'data':cutouts['f356w'].data}
         rgb_dict['f444w'] = {'colors':np.array([1.0, 0.0, 0.0]), 'data':cutouts['f444w'].data}
     
     elif np.all(np.isin(['f115w','f150w','f277w','f444w'], list(cutouts.keys()))):

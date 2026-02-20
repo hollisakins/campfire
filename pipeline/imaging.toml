@@ -39,11 +39,18 @@
     [cosmos.filters.f444w]
         files = "f444w/mosaic_nircam_f444w_cosmos_30mas_*_sci.fits"
 
-    # # Optional RGB composite (generated from individual filter tiles)
-    # [cosmos.rgb]
-    #     red = "f444w"
-    #     green = "f277w"
-    #     blue = "f115w"
+    [cosmos.rgb]
+        noisesig = 2.0
+        noiselum = 0.12
+        satpercent = 0.01
+
+        [cosmos.rgb.channels]
+            f115w = [0.0, 0.0, 1.0]
+            f150w = [0.0, 0.2, 0.8]
+            f200w = [0.0, 0.9, 0.1]
+            f277w = [0.1, 0.9, 0.0]
+            f356w = [0.8, 0.2, 0.0]
+            f444w = [1.0, 0.0, 0.0]
 
 # ============================================
 # EGS Field
@@ -72,6 +79,19 @@
     [egs.filters.f444w]
         files = "fullceers_ddta_f444w_v1_30mas_sci.fits"
 
+    [egs.rgb]
+        noisesig = 2.0
+        noiselum = 0.12
+        satpercent = 0.01
+
+        [egs.rgb.channels]
+            f115w = [0.0, 0.0, 1.0]
+            f150w = [0.0, 0.2, 0.8]
+            f200w = [0.0, 0.9, 0.1]
+            f277w = [0.1, 0.9, 0.0]
+            f356w = [0.8, 0.2, 0.0]
+            f444w = [1.0, 0.0, 0.0]
+
 [uds]
     field = "uds"
     data_dir = "/V/maurice/mosaics/uds/"
@@ -94,6 +114,19 @@
 
     [uds.filters.f444w]
         files = "f444w/mosaic_nircam_f444w_uds_30mas_v0p5_primer_sci.fits"
+
+    [uds.rgb]
+        noisesig = 2.0
+        noiselum = 0.12
+        satpercent = 0.01
+
+        [uds.rgb.channels]
+            f115w = [0.0, 0.0, 1.0]
+            f150w = [0.0, 0.2, 0.8]
+            f200w = [0.0, 0.9, 0.1]
+            f277w = [0.1, 0.9, 0.0]
+            f356w = [0.8, 0.2, 0.0]
+            f444w = [1.0, 0.0, 0.0]
 
 [a2744]
     field = "a2744"

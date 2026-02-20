@@ -91,6 +91,8 @@ export function LayerControl({
                   key={layer.id}
                   onClick={() => onLayerChange(layer)}
                   className={`px-1.5 py-1 rounded text-xs text-center transition-colors ${
+                    layer.filter === 'rgb' ? 'col-span-3' : ''
+                  } ${
                     activeLayer?.id === layer.id
                       ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 font-medium'
                       : 'hover:bg-gray-100 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300'

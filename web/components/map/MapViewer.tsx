@@ -140,12 +140,20 @@ export function MapViewer({
   hasActiveFilters,
   onFieldChange: onFieldChangeProp,
 }: MapViewerProps) {
-  // Group layers by field
+  // Group layers by field, with RGB sorted first
   const fieldGroups = useMemo(() => {
     const groups: Record<string, MapLayer[]> = {};
     for (const layer of layers) {
       if (!groups[layer.field]) groups[layer.field] = [];
       groups[layer.field].push(layer);
+    }
+    // Sort each field's layers: RGB first, then alphabetical
+    for (const field of Object.keys(groups)) {
+      groups[field].sort((a, b) => {
+        if (a.filter === 'rgb') return -1;
+        if (b.filter === 'rgb') return 1;
+        return a.filter.localeCompare(b.filter);
+      });
     }
     return groups;
   }, [layers]);
@@ -182,20 +190,31 @@ export function MapViewer({
 
   // Track whether we've applied the initialFilter (only for first render)
   const initialFilterApplied = useRef(false);
+  // Track the last field we set a default layer for, so we don't reset
+  // the active layer on fieldGroups recomputation (e.g. from router.replace)
+  const prevFieldRef = useRef<string | null>(null);
 
   // Set initial active layer when field changes
   useEffect(() => {
     const fieldLayers = fieldGroups[selectedField] || [];
+    if (fieldLayers.length === 0) return;
+
+    // Only run default selection when the field actually changes
+    if (prevFieldRef.current === selectedField) return;
+    prevFieldRef.current = selectedField;
+
     let defaultLayer: MapLayer | null;
 
     // Use initialFilter only on first render for the initial field
     if (!initialFilterApplied.current && initialFilter && selectedField === initialField) {
       defaultLayer = fieldLayers.find(l => l.filter === initialFilter)
+        || fieldLayers.find(l => l.filter === 'rgb')
         || fieldLayers.find(l => l.is_default)
         || fieldLayers[0] || null;
       initialFilterApplied.current = true;
     } else {
-      defaultLayer = fieldLayers.find(l => l.is_default) || fieldLayers[0] || null;
+      defaultLayer = fieldLayers.find(l => l.filter === 'rgb')
+        || fieldLayers.find(l => l.is_default) || fieldLayers[0] || null;
     }
 
     setActiveLayer(defaultLayer);
