@@ -36,7 +36,7 @@ const pixelatedTileStyle = `
 function createFitsMapCRS(maxZoom: number, naxis2: number, tileSize: number = 256): L.CRS {
   const scale = Math.pow(2, maxZoom);
   const nTilesY = Math.ceil(naxis2 / tileSize);
-  const d = (nTilesY * tileSize - 1) / scale;
+  const d = (nTilesY * tileSize) / scale;
   return L.Util.extend({}, L.CRS.Simple, {
     transformation: new L.Transformation(1 / scale, 0, -1 / scale, d),
   }) as L.CRS;
