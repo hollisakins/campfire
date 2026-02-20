@@ -82,7 +82,7 @@ export function MapContextMenu({ coords, position, onClose }: MapContextMenuProp
     const params = new URLSearchParams({
       coord_ra: coords.ra.toFixed(6),
       coord_dec: coords.dec.toFixed(6),
-      coord_radius: '5',
+      coord_radius: '30',
       coord_unit: 'arcsec',
     });
     router.push(`/spectra?${params.toString()}`);
