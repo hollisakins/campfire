@@ -121,7 +121,7 @@ function MapUpdater({ activeLayer, bounds }: { activeLayer: MapLayer; bounds: L.
   useEffect(() => {
     map.setMaxBounds(bounds);
     map.setMinZoom(activeLayer.min_zoom);
-    map.setMaxZoom(activeLayer.max_zoom + 2);
+    map.setMaxZoom(activeLayer.max_zoom + 3);
   }, [map, activeLayer.min_zoom, activeLayer.max_zoom, bounds]);
   return null;
 }
@@ -352,7 +352,7 @@ export function MapViewer({
         maxBounds={mapConfig.bounds}
         maxBoundsViscosity={0.0}
         minZoom={activeLayer.min_zoom}
-        maxZoom={activeLayer.max_zoom + 2}
+        maxZoom={activeLayer.max_zoom + 3}
         preferCanvas={true}
         style={{ height: '100%', width: '100%', background: '#0f172a' }}
         attributionControl={false}
@@ -362,7 +362,7 @@ export function MapViewer({
           url={tileUrl}
           tms={false}
           minZoom={activeLayer.min_zoom}
-          maxZoom={activeLayer.max_zoom + 2}
+          maxZoom={activeLayer.max_zoom + 3}
           maxNativeZoom={activeLayer.max_zoom}
           minNativeZoom={activeLayer.min_zoom}
           noWrap={true}

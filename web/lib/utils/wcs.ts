@@ -25,6 +25,9 @@ export interface WCSParams {
 /**
  * Convert pixel coordinates to sky coordinates (RA/Dec in degrees)
  * using TAN (gnomonic) projection.
+ *
+ * Pixel coordinates are 0-based (matching Leaflet / array indexing).
+ * CRPIX from the FITS header is 1-based, so we subtract 1.
  */
 export function pixelToSky(
   wcs: WCSParams,
@@ -32,8 +35,9 @@ export function pixelToSky(
   pixY: number
 ): { ra: number; dec: number } {
   // Intermediate world coordinates (degrees)
-  const xi = wcs.cd1_1 * (pixX - wcs.crpix1);
-  const eta = wcs.cd2_2 * (pixY - wcs.crpix2);
+  // CRPIX is FITS 1-based; convert to 0-based for Leaflet pixel coords
+  const xi = wcs.cd1_1 * (pixX - (wcs.crpix1 - 1));
+  const eta = wcs.cd2_2 * (pixY - (wcs.crpix2 - 1));
 
   // Convert to radians for TAN deprojection
   const xiRad = xi * DEG2RAD;
@@ -80,11 +84,12 @@ export function skyToPixel(
   const xiRad = (cosDec * Math.sin(deltaRa)) / denom;
   const etaRad = (sinDec * cosDec0 - cosDec * sinDec0 * cosD) / denom;
 
-  // Convert to degrees and then to pixels via inverse CD matrix
+  // Convert to degrees and then to 0-based pixels via inverse CD matrix
+  // CRPIX is FITS 1-based; subtract 1 for 0-based Leaflet pixel coords
   const xi = xiRad * RAD2DEG;
   const eta = etaRad * RAD2DEG;
-  const x = wcs.crpix1 + xi / wcs.cd1_1;
-  const y = wcs.crpix2 + eta / wcs.cd2_2;
+  const x = (wcs.crpix1 - 1) + xi / wcs.cd1_1;
+  const y = (wcs.crpix2 - 1) + eta / wcs.cd2_2;
 
   return { x, y };
 }
