@@ -112,9 +112,6 @@ export function CanvasSlitLayer({
     let boundsMin: L.Point;
     let boundsMax: L.Point;
 
-    // Native pixel scale in arcsec/pixel
-    const nativePixelScale = Math.abs(wcs.cd2_2) * 3600;
-
     // ---- Drawing ----
 
     function redraw() {
@@ -159,11 +156,16 @@ export function CanvasSlitLayer({
       // Translate so layer-point coords can be used directly
       ctx!.translate(-boundsMin.x, -boundsMin.y);
 
-      // Compute pixel dimensions of a shutter at current zoom
-      const maxZoom = map.getMaxZoom();
-      const zoomScale = map.getZoomScale(drawZoom, maxZoom);
-      const widthPx = (SHUTTER_WIDTH_ARCSEC / nativePixelScale) * zoomScale;
-      const heightPx = (SHUTTER_HEIGHT_ARCSEC / nativePixelScale) * zoomScale;
+      // Compute pixels-per-arcsec at the current zoom by measuring
+      // the layer-point distance between two sky positions 1" apart
+      const refPx = skyToPixel(wcs, wcs.crval1, wcs.crval2);
+      const offPx = skyToPixel(wcs, wcs.crval1, wcs.crval2 + 1 / 3600);
+      const refPt = map.latLngToLayerPoint(L.latLng(refPx.y, refPx.x));
+      const offPt = map.latLngToLayerPoint(L.latLng(offPx.y, offPx.x));
+      const pxPerArcsec = Math.hypot(offPt.x - refPt.x, offPt.y - refPt.y);
+
+      const widthPx = SHUTTER_WIDTH_ARCSEC * pxPerArcsec;
+      const heightPx = SHUTTER_HEIGHT_ARCSEC * pxPerArcsec;
 
       // Skip drawing if shutters are too small to see
       if (widthPx < 1.5) return;
@@ -205,7 +207,7 @@ export function CanvasSlitLayer({
           const pa = paByPoint.get(`${pt.x},${pt.y}`) || 0;
           ctx!.save();
           ctx!.translate(pt.x, pt.y);
-          ctx!.rotate(-pa);
+          ctx!.rotate(pa);
           ctx!.fillRect(-halfW, -halfH, widthPx, heightPx);
           ctx!.restore();
         }
@@ -217,7 +219,7 @@ export function CanvasSlitLayer({
           const pa = paByPoint.get(`${pt.x},${pt.y}`) || 0;
           ctx!.save();
           ctx!.translate(pt.x, pt.y);
-          ctx!.rotate(-pa);
+          ctx!.rotate(pa);
           ctx!.strokeRect(-halfW, -halfH, widthPx, heightPx);
           ctx!.restore();
         }
