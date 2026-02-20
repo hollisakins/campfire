@@ -35,10 +35,10 @@ export function pixelToSky(
   pixY: number
 ): { ra: number; dec: number } {
   // Intermediate world coordinates (degrees)
-  // CRPIX is FITS 1-based (center at integer); Leaflet is 0-based with
-  // pixel centers at half-integers. Combined correction: crpix - 0.5
-  const xi = wcs.cd1_1 * (pixX - (wcs.crpix1 - 0.5));
-  const eta = wcs.cd2_2 * (pixY - (wcs.crpix2 - 0.5));
+  // CRPIX is FITS 1-based; Leaflet pixel centers are at row - 0.5.
+  // Combined: crpix - 1 (1-based→0-based) - 0.5 (pixel center) = crpix - 1.5
+  const xi = wcs.cd1_1 * (pixX - (wcs.crpix1 - 1.5));
+  const eta = wcs.cd2_2 * (pixY - (wcs.crpix2 - 1.5));
 
   // Convert to radians for TAN deprojection
   const xiRad = xi * DEG2RAD;
@@ -86,12 +86,12 @@ export function skyToPixel(
   const etaRad = (sinDec * cosDec0 - cosDec * sinDec0 * cosD) / denom;
 
   // Convert to degrees and then to Leaflet pixel coords via inverse CD matrix
-  // CRPIX is FITS 1-based (center at integer); Leaflet is 0-based with
-  // pixel centers at half-integers. Combined correction: crpix - 0.5
+  // CRPIX is FITS 1-based; Leaflet pixel centers are at row - 0.5.
+  // Combined: crpix - 1 (1-based→0-based) - 0.5 (pixel center) = crpix - 1.5
   const xi = xiRad * RAD2DEG;
   const eta = etaRad * RAD2DEG;
-  const x = (wcs.crpix1 - 0.5) + xi / wcs.cd1_1;
-  const y = (wcs.crpix2 - 0.5) + eta / wcs.cd2_2;
+  const x = (wcs.crpix1 - 1.5) + xi / wcs.cd1_1;
+  const y = (wcs.crpix2 - 1.5) + eta / wcs.cd2_2;
 
   return { x, y };
 }
