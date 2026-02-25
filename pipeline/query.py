@@ -1,315 +1,296 @@
-import numpy as np
-from astroquery.mast import Observations
-from astroquery.exceptions import InvalidQueryError
-from glob import glob
-import os
-import shutil
-from astropy.io import fits
+#!/usr/bin/env python
+"""
+Download JWST NIRSpec raw data from MAST using the JWST Search API.
 
-LOOP_OBS = True
+Retrieves level 1b uncalibrated (*_uncal.fits) and MSA metadata (*_msa.fits)
+files for a given program ID, filtering server-side to avoid downloading
+product lists for all calibration levels.
 
-def get_products(
-    proposal_id,
-    observation_id=None,
-    instrument_name='NIRSpec/MSA',
-    coordinates = None,
-    radius = None,
-):
-    
-    args = {'obs_collection':'JWST'}
+Usage:
+    python query.py --program 6585
+    python query.py --program 6585 --dry-run
+    python query.py --program 2561 --exp-type NRS_MSASPEC
+"""
 
-    if not isinstance(proposal_id, list):
-        args['proposal_id'] = [proposal_id]
-    else:
-        args['proposal_id'] = proposal_id
+import argparse
+import sys
+import time
+from pathlib import Path
 
-    if instrument_name is not None:
-        args['instrument_name'] = instrument_name
+import requests
 
-    if coordinates is not None:
-        args['coordinates'] = coordinates
-    if radius is not None:
-        args['radius'] = radius
-
-    print(f"Querying observations for proposal_id = {args['proposal_id']}")
-
-    obs = Observations.query_criteria(**args)
-
-    print("Getting products")  
-    # try:   
-    #     if LOOP_OBS:
-    #         from astropy.table import vstack
-    #         product_list = [Observations.get_product_list(o) for o in obs]
-    #         products = vstack(product_list)
-    #     else:
-    products = Observations.get_product_list(obs)
-    # except InvalidQueryError:
-    #     print("No products found")
-    #     return None
-    
-    return products
-
-def filter_products(
-    products, 
-    filters,
-    obs=None,
-    overwrite=False,
-    data_dir='/n23data2/hakins/jwst/data/cosmos/',
-    proposal_ids_to_skip = [],
-):
-    print("Filtering products")    
-    calib_level=1,
-    product_type='SCIENCE' 
-    extension='uncal.fits'
-
-    # get list of extensions for downloading only raw or cals or something
-    exts = np.array([x.split('_')[-1] for x in products['productFilename']])
-
-    if filters == '*':
-        filters = np.unique(products['filters'])
-
-    products_filters = []
-    for f in products['filters']:
-        if f == 'F150W2;F162M':
-            products_filters.append('F162M')
-        else:
-            products_filters.append(f)
-    products_filters = np.array(products_filters)
-
-    if overwrite:
-        w = np.where(
-            np.logical_and.reduce((
-                products['productType'] == product_type,
-                products['calib_level'] == calib_level,
-                exts == extension,
-                np.isin(products_filters, np.array([f.upper() for f in filters])),
-                ~np.isin(products['proposal_id'], proposal_ids_to_skip),
-                products['dataRights'] == 'PUBLIC',
-            ))
-        )
-    else:
-        w = np.where(
-            np.logical_and.reduce((
-                products['productType'] == product_type,
-                products['calib_level'] == calib_level,
-                exts == extension,
-                np.isin(products_filters, np.array([f.upper() for f in filters])),
-                np.array([not os.path.exists(os.path.join(data_dir, filt.lower(), filename)) for filt, filename in zip(products_filters, products['productFilename'])], dtype=bool),
-                ~np.isin(products['proposal_id'], proposal_ids_to_skip),
-                products['dataRights'] == 'PUBLIC',
-            ))
-        )
-
-    print("Before filtering...")
-    print('Total products:', len(products))
-    print("Unique proposal IDs:", np.unique(list(products['proposal_id'])))
-    print("Unique filters:", np.unique(list(products['filters'])))
-    print("")
-    
-    products = products[w]
-    if obs is not None:
-        obs_ids = np.array([int(i.split('_')[0][7:-3]) for i in products['obs_id']])
-        products = products[np.isin(obs_ids, obs)]
-
-    print("After filtering...")
-    print('Total products:', len(products))
-    print("Unique proposal IDs:", np.unique(list(products['proposal_id'])))
-    print("Unique filters:", np.unique(list(products['filters'])))
-
-    print("")
-    print('Available data products:')
-    products.pprint(max_lines=300)
-
-    q = input('Do you wish to continue? [y/n] ')
-    if not q in ['y','Y']:
-        quit()
-
-    return products
+BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
 
 
+def search_filesets(program_id, exp_type="NRS_MSASPEC"):
+    """Query MAST for NIRSpec level 1b filesets in a program.
 
-def download_data(
-    proposal_id,
-    filters=None, 
-    instrument_name='NIRCAM*',
-    obs=None,
-    data_dir='/n23data2/hakins/jwst/data/cosmos/',
-    download_dir = '/n23data2/hakins/jwst/temp/',
-    coordinates = '150.118903 2.204694', 
-    radius = '35 arcmin',
-    overwrite = False,
-):
+    Returns a list of dicts with fileSetName and observation metadata.
+    """
+    print(f"Searching for NIRSpec {exp_type} level 1b filesets in program {program_id}...")
 
-    products = get_products(
-        proposal_id, 
-        filters=filters, 
-        instrument_name=instrument_name,
-        coordinates=coordinates,
-        radius=radius,
+    resp = requests.post(
+        f"{BASE_URL}/search",
+        json={
+            "conditions": [
+                {"program": str(program_id)},
+                {"instrume": "NIRSPEC"},
+                {"exp_type": exp_type},
+                {"productLevel": "1b"},
+            ],
+            "select_cols": [
+                "fileSetName", "productLevel", "opticalElements",
+                "filter", "date_obs", "duration", "observtn", "exposure",
+            ],
+            "limit": 5000,
+        },
     )
+    resp.raise_for_status()
+    data = resp.json()
 
-    products = filter_products(products, filters, obs=obs, overwrite=overwrite, data_dir=data_dir)
+    results = data["results"]
+    total = data["totalResults"]
 
-    # actually download the data - to download_dir
-    manifest = Observations.download_products(products, download_dir=download_dir)
+    if total > len(results):
+        print(f"  Warning: {total} filesets found but only {len(results)} returned (limit 5000)")
 
-    # move the downloaded data to the data folder
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-    
-    files  = glob(os.path.join(download_dir,'mastDownload','JWST','jw*','*.fits'))[:]
-    for file in files: 
-        with fits.open(file) as hdul:
-            # hdul.verify('fix')
-            filt_name    = hdul[0].header['FILTER'].lower()
-            final_dir = os.path.join(data_dir, filt_name)
-            if not os.path.exists(final_dir):
-                os.mkdir(final_dir)
-            
-        shutil.move(file, os.path.join(final_dir, file.split('/')[-1]))
-    
-    dirs = glob(os.path.join(download_dir,'mastDownload','JWST','jw*'))[:]
-    for d in dirs:
-        os.rmdir(d)
-    os.rmdir(os.path.join(download_dir, 'mastDownload', 'JWST'))
-    os.rmdir(os.path.join(download_dir, 'mastDownload'))
-
-def download_all_data_for_program(
-    proposal_id,
-    filters=None, 
-    instrument_name='NIRCAM*',
-    obs=None,
-    data_dir='/n23data2/hakins/jwst/data/cosmos/',
-    download_dir = '/n23data2/hakins/jwst/temp/',
-    overwrite = False,
-):
-
-    products = get_products(
-        proposal_id, 
-        filters=filters, 
-        instrument_name=instrument_name,
-        coordinates=None,
-        radius=None,
-    )
-
-    products = filter_products(products, filters, obs=obs, overwrite=overwrite, data_dir=data_dir)
-
-    # actually download the data - to download_dir
-    manifest = Observations.download_products(products, download_dir=download_dir)
-
-    # move the downloaded data to the data folder
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-    
-    files  = glob(os.path.join(download_dir,'mastDownload','JWST','jw*','*.fits'))[:]
-    for file in files: 
-        with fits.open(file) as hdul:
-            # hdul.verify('fix')
-            filt_name    = hdul[0].header['FILTER'].lower()
-            final_dir = os.path.join(data_dir, filt_name)
-            if not os.path.exists(final_dir):
-                os.mkdir(final_dir)
-            
-        shutil.move(file, os.path.join(final_dir, file.split('/')[-1]))
-    
-    dirs = glob(os.path.join(download_dir,'mastDownload','JWST','jw*'))[:]
-    for d in dirs:
-        os.rmdir(d)
-    os.rmdir(os.path.join(download_dir, 'mastDownload', 'JWST'))
-    os.rmdir(os.path.join(download_dir, 'mastDownload'))
-
-def download_data_cosmos(
-    proposal_id,
-    filters, 
-    instrument_name='NIRCAM*',
-    data_dir='/n23data2/hakins/jwst/data/cosmos/',
-    download_dir = '/n23data2/hakins/jwst/temp/',
-    proposal_ids_to_skip = [],
-    overwrite = False,
-):
-
-    from astropy.table import Table, vstack, unique
+    print(f"Found {total} filesets")
+    return results
 
 
-    positions = [
-        ['150.1165123 2.2094715','20.5 arcmin'],
-        ['150.4082754 2.3731163','7 arcmin'],
-        ['150.0005011 2.5225641','7 arcmin'],
-        ['150.2336640 1.8910217','7 arcmin'],
-        ['149.8302241 2.0442104','7 arcmin'],
-        ['150.3224947 2.4854362','2 arcmin'],
-        ['150.1403104 2.5545695','2 arcmin'],
-        ['150.0953522 1.8564664','2 arcmin'],
-        ['149.9120839 1.9209629','2 arcmin'],
-        ['150.2544670 2.5200039','1.3 arcmin'],
-        ['150.2198750 2.5338306','1.3 arcmin'],
-        ['150.0273492 1.8714393','1.3 arcmin'],
-        ['149.9754808 1.8921707','1.3 arcmin'],
-        ['149.8820271 2.4566296','1.3 arcmin'],
-        ['149.7760179 2.1686125','1.3 arcmin'],
-        ['150.4584999 2.2469502','1.3 arcmin'],
-        ['150.3535440 1.9555194','1.3 arcmin'],
-        ['149.7080556 1.9888899','1.3 arcmin'],
-        ['150.2889749 1.7689125','1.3 arcmin'],
-        ['150.5288733 2.4277914','1.3 arcmin'],
-        ['149.9465747 2.6409537','1.3 arcmin'],
+def list_products_batched(filesets, batch_size=25):
+    """Retrieve product lists for filesets in batches.
+
+    Returns a flat list of all product dicts across all filesets.
+    """
+    fileset_names = [f["fileSetName"] for f in filesets]
+    all_products = []
+    n_batches = (len(fileset_names) + batch_size - 1) // batch_size
+
+    for i in range(0, len(fileset_names), batch_size):
+        batch = fileset_names[i : i + batch_size]
+        batch_num = i // batch_size + 1
+        print(f"  Retrieving product lists... (batch {batch_num}/{n_batches})")
+
+        resp = requests.get(
+            f"{BASE_URL}/list_products",
+            params={"dataset_ids": ",".join(batch)},
+        )
+        resp.raise_for_status()
+        all_products.extend(resp.json()["products"])
+
+    return all_products
+
+
+def filter_products(products):
+    """Filter products to uncal FITS and unique MSA files.
+
+    Returns (uncal_files, msa_files) where each is a list of
+    dicts with 'filename', 'uri', and 'size' keys.
+    """
+    uncal_files = [
+        p for p in products
+        if p["filename"].endswith("_uncal.fits")
     ]
 
-    products = None
-    for i,pos in enumerate(positions):
-        print(f'Querying position {i}')
-        products_i = get_products(proposal_id, instrument_name=instrument_name, filters=filters, coordinates = pos[0], radius = pos[1])
-        if products_i == None:
-            print(f'No products found for position {i}')
-            continue
-        
-        print(f'Found {len(products_i)} products for position {i}')
+    # MSA files are duplicated across filesets in the same nod group;
+    # deduplicate by filename, keeping the first occurrence
+    seen_msa = set()
+    msa_files = []
+    for p in products:
+        if p["filename"].endswith("_msa.fits") and p["filename"] not in seen_msa:
+            seen_msa.add(p["filename"])
+            msa_files.append(p)
 
-        if products == None:
-            products = products_i
+    return uncal_files, msa_files
+
+
+def format_size(size_bytes):
+    """Format byte count as human-readable string."""
+    if size_bytes >= 1024 ** 3:
+        return f"{size_bytes / 1024 ** 3:.2f} GB"
+    if size_bytes >= 1024 ** 2:
+        return f"{size_bytes / 1024 ** 2:.1f} MB"
+    if size_bytes >= 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes} B"
+
+
+def progress_bar(fraction, width=30):
+    """Render a progress bar string like [████████░░░░░░░░░░]."""
+    filled = int(width * fraction)
+    return f"[{'█' * filled}{'░' * (width - filled)}]"
+
+
+def format_speed(bytes_per_sec):
+    """Format download speed as human-readable string."""
+    if bytes_per_sec >= 1024 ** 2:
+        return f"{bytes_per_sec / 1024 ** 2:.1f} MB/s"
+    if bytes_per_sec >= 1024:
+        return f"{bytes_per_sec / 1024:.0f} KB/s"
+    return f"{bytes_per_sec:.0f} B/s"
+
+
+def download_file(uri, output_path, size, index, total):
+    """Download a single file with progress bar and speed.
+
+    Returns 'downloaded' or 'error'.
+    """
+    label = f"  [{index}/{total}]"
+    name = output_path.name
+    size_str = format_size(size)
+
+    try:
+        resp = requests.get(
+            f"{BASE_URL}/retrieve_product",
+            params={"product_name": uri},
+            stream=True,
+        )
+        resp.raise_for_status()
+
+        tmp_path = output_path.with_suffix(".tmp")
+        downloaded = 0
+        t_start = time.monotonic()
+
+        with open(tmp_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
+                downloaded += len(chunk)
+                elapsed = time.monotonic() - t_start
+                speed = downloaded / elapsed if elapsed > 0 else 0
+                frac = downloaded / size if size > 0 else 0
+                bar = progress_bar(frac)
+                line = f"\r{label} {name}  {bar} {format_size(downloaded)}/{size_str}  {format_speed(speed)}"
+                print(line, end="", flush=True)
+
+        tmp_path.rename(output_path)
+        elapsed = time.monotonic() - t_start
+        speed = size / elapsed if elapsed > 0 else 0
+        print(f"\r{label} {name}  {size_str}  done in {elapsed:.0f}s ({format_speed(speed)})" + " " * 20)
+        return "downloaded"
+
+    except (requests.RequestException, OSError) as e:
+        print(f"\r{label} {name}  ERROR: {e}" + " " * 40)
+        tmp_path = output_path.with_suffix(".tmp")
+        if tmp_path.exists():
+            tmp_path.unlink()
+        return "error"
+
+
+def download_nirspec_uncal(program_id, download_dir="data", exp_type="NRS_MSASPEC", dry_run=False):
+    """Download NIRSpec level 1b uncal and MSA files for a JWST program."""
+
+    # Step 1: Search for filesets
+    filesets = search_filesets(program_id, exp_type)
+    if not filesets:
+        print("No filesets found. Exiting.")
+        return
+
+    # Step 2: List products
+    print()
+    products = list_products_batched(filesets)
+    print(f"  {len(products)} total products across {len(filesets)} filesets")
+
+    # Step 3: Filter
+    uncal_files, msa_files = filter_products(products)
+    all_files = uncal_files + msa_files
+    total_size = sum(f["size"] for f in all_files)
+
+    print()
+    print(f"Selected {len(uncal_files)} uncal files and {len(msa_files)} unique MSA files ({format_size(total_size)} total)")
+
+    if not all_files:
+        print("No matching files found. Exiting.")
+        return
+
+    # Check which files already exist
+    output_dir = Path(download_dir) / str(program_id)
+    to_download = []
+    to_skip = []
+    for f in all_files:
+        path = output_dir / f["filename"]
+        if path.exists() and path.stat().st_size == f["size"]:
+            to_skip.append(f)
         else:
-            products = vstack([products, products_i])
+            to_download.append(f)
 
-    products = unique(products, keys='productFilename')
+    if to_skip:
+        skip_size = sum(f["size"] for f in to_skip)
+        print(f"  {len(to_skip)} files already exist ({format_size(skip_size)}), will be skipped")
 
-    products = filter_products(products, filters, 
-        overwrite=overwrite, data_dir=data_dir, 
-        proposal_ids_to_skip=proposal_ids_to_skip)
-    
-    # actually download the data - to download_dir
-    manifest = Observations.download_products(products, download_dir=download_dir)
+    if dry_run:
+        print()
+        if to_download:
+            dl_size = sum(f["size"] for f in to_download)
+            print(f"Files to download ({len(to_download)}, {format_size(dl_size)}):")
+            for f in to_download:
+                print(f"  {f['filename']:55s}  {format_size(f['size']):>10s}")
+        else:
+            print("Nothing to download — all files already exist.")
+        if to_skip:
+            print(f"\nAlready downloaded ({len(to_skip)}):")
+            for f in to_skip:
+                print(f"  {f['filename']:55s}  {format_size(f['size']):>10s}  (exists)")
+        return
 
-    # move the downloaded data to the data folder
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-    
-    files  = glob(os.path.join(download_dir,'mastDownload','JWST','jw*','*.fits'))[:]
-    for file in files: 
-        with fits.open(file) as hdul:
-            # hdul.verify('fix')
-            filt_name    = hdul[0].header['FILTER'].lower()
-            final_dir = os.path.join(data_dir, filt_name)
-            if not os.path.exists(final_dir):
-                os.mkdir(final_dir)
-            
-        shutil.move(file, os.path.join(final_dir, file.split('/')[-1]))
-    
-    dirs = glob(os.path.join(download_dir,'mastDownload','JWST','jw*'))[:]
-    for d in dirs:
-        os.rmdir(d)
-    os.rmdir(os.path.join(download_dir, 'mastDownload', 'JWST'))
-    os.rmdir(os.path.join(download_dir, 'mastDownload'))
+    # Step 4: Download
+    if not to_download:
+        print("\nNothing to download — all files already exist.")
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dl_size = sum(f["size"] for f in to_download)
+
+    print()
+    print(f"Downloading {len(to_download)} files ({format_size(dl_size)}) to {output_dir}/")
+
+    errors = 0
+    for i, f in enumerate(to_download, 1):
+        output_path = output_dir / f["filename"]
+        result = download_file(f["uri"], output_path, f["size"], i, len(to_download))
+        if result == "error":
+            errors += 1
+
+    print()
+    downloaded = len(to_download) - errors
+    print(f"Complete: {downloaded} downloaded, {len(to_skip)} skipped, {errors} errors")
+    print(f"Location: {output_dir}/")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Download JWST NIRSpec raw (uncal + MSA) data from MAST",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python query.py --program 6585
+  python query.py --program 6585 --dry-run
+  python query.py --program 2561 --download-dir /data/jwst
+  python query.py --program 1210 --exp-type NRS_FIXEDSLIT
+        """,
+    )
+
+    parser.add_argument("--program", type=int, required=True, help="JWST program ID")
+    parser.add_argument("--download-dir", default="data", help="Base directory for downloads (default: data)")
+    parser.add_argument("--dry-run", action="store_true", help="List files without downloading")
+    parser.add_argument("--exp-type", default="NRS_MSASPEC", help="NIRSpec exposure type (default: NRS_MSASPEC)")
+
+    args = parser.parse_args()
+
+    try:
+        download_nirspec_uncal(
+            program_id=args.program,
+            download_dir=args.download_dir,
+            exp_type=args.exp_type,
+            dry_run=args.dry_run,
+        )
+    except requests.HTTPError as e:
+        print(f"\nAPI error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n\nInterrupted. Re-run to resume (existing files will be skipped).")
+        sys.exit(130)
 
 
 if __name__ == "__main__":
-    proposal_id = 1213
-    products = get_products(
-        proposal_id,
-        observation_id=None,
-        instrument_name='NIRSpec/MSA',
-        coordinates = None,
-        radius = None,
-    )
-    print(products.colnames)
-
-    products.pprint()
+    main()

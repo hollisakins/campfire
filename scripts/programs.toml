@@ -46,6 +46,13 @@
     is_public = true
 
 [[programs]]
+    program_id = 1345
+    program_name = "CEERS"
+    pi_name = "S. Finkelstein"
+    description = "Cosmic Evolution Early Release Science Survey"
+    is_public = true
+
+[[programs]]
     program_id = 2750
     program_name = "CEERS-DDT"
     pi_name = "P. Arrabal Haro"
@@ -57,4 +64,11 @@
     program_name = "SPURS"
     pi_name = "C. Mason & D. Stark"
     description = "Ultra-deep G140M spectroscopy"
+    is_public = true
+
+[[programs]]
+    program_id = 2561
+    program_name = "UNCOVER"
+    pi_name = "R. Bezanson & I. Labbe"
+    description = ""
     is_public = true

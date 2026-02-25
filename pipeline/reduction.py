@@ -6,6 +6,7 @@ python reduction.py --obs capers_uds_p2
 """
 
 import os, sys, glob, warnings, toml, logging, argparse, shutil, functools
+from collections import defaultdict
 from copy import copy, deepcopy
 import numpy as np
 import matplotlib.pyplot as plt
@@ -44,6 +45,7 @@ DEFAULT_STAGE1_CONFIG = {
     'cleanup_uncal': True, 
     'cleanup_rateints': True, 
     'subtract_background': True,
+    'subtract_2d': False,
     'box_size': 8,
     'sigma_clip': True,
     'bkg_estimator': 'median',
@@ -52,17 +54,24 @@ DEFAULT_STAGE1_CONFIG = {
 
 DEFAULT_STAGE2_CONFIG = {
     'overwrite': False,
-    'set_stellarity': 1.0, 
+    'set_stellarity': 1.0,
     'rectify': True,
+    'plot_bkgsub': False,
 }
 
 DEFAULT_STAGE3_CONFIG = {
     'overwrite': False,
     'method': 'nodded',
+    'combine_method': '2d',  # '2d' = stack all dithers in 2D then extract; '1d' = extract per-group then combine in 1D
     'cleanup_asn': True,
     'cleanup_crfs': True,
     'plot_profiles': True,
     'plot_optext': True,
+    # 1D combination params (used when combine_method='1d')
+    'sigma_clip': True,
+    'sigma_clip_low': 3.0,
+    'sigma_clip_high': 3.0,
+    'sigma_clip_maxiters': 5,
 }
 
 def load_config(config_path="config.toml"):
@@ -202,7 +211,6 @@ class Observation:
     data_subdir: str
     files: List[str]
     gratings: List[str]
-    combine_dither: bool = True
     stage_overrides: dict = field(default_factory=dict)
 
     directories_setup: bool = False
@@ -243,11 +251,6 @@ class Observation:
             assert files[0].startswith('jw')
             program_id = int(files[0][2:7])
 
-        if 'combine_dither' in obs:
-            combine_dither = bool(obs['combine_dither'])
-        else:
-            combine_dither = True
-
         # Capture per-observation stage config overrides
         stage_overrides = {}
         for key in ['stage1', 'stage2', 'stage3']:
@@ -261,7 +264,6 @@ class Observation:
             data_subdir=data_subdir,
             files=files,
             gratings=gratings,
-            combine_dither=combine_dither,
             stage_overrides=stage_overrides,
         )
         
@@ -457,14 +459,18 @@ class Observation:
 
     def glob(self, ext, check_exp_type=False, directory=None):
         """
-        Search for files in a the Observation's workspace directory, matching the Observaion file specification and a given extension. 
-        If directory kwarg is provided, search that directory instead of Observation.workspace_dir
+        Search for files in a the Observation's workspace directory, matching the Observaion file specification and a given extension.
+        If directory kwarg is provided, search that directory instead of Observation.workspace_dir.
+        Patterns prefixed with '~' are exclusion patterns: matching files are removed from results.
         """
         if directory is None:
             directory = self.workspace_dir
 
+        include_patterns = [p for p in self.files if not p.startswith('~')]
+        exclude_patterns = [p[1:] for p in self.files if p.startswith('~')]
+
         result = []
-        for file_pattern in self.files:
+        for file_pattern in include_patterns:
             pattern_path = os.path.join(directory, file_pattern + ext)
             resulti = glob.glob(pattern_path)
 
@@ -472,6 +478,12 @@ class Observation:
                 result += [r for r in resulti if fits.getheader(r)['EXP_TYPE']=='NRS_MSASPEC']
             else:
                 result += resulti
+
+        # Remove files matching exclusion patterns
+        for exc_pattern in exclude_patterns:
+            exc_path = os.path.join(directory, exc_pattern + ext)
+            excluded = set(glob.glob(exc_path))
+            result = [r for r in result if r not in excluded]
 
         return sorted(result)
     
@@ -687,15 +699,74 @@ def mask_slits(
     mask[temp_mask>0] = False
 
     return mask
+        
+        # if pictureframe_dir:
+        #     log(f'Subtracting "picture frame" template files')
+        #     if detector == 'nrs1':
+        #         pictureframe_file = os.path.join(pictureframe_dir,'jwst_nirspec_pictureframe_0002.fits')
+        #     else:
+        #         pictureframe_file = os.path.join(pictureframe_dir,'jwst_nirspec_pictureframe_0001.fits')
+
+        #     pictureframe_template = fits.getdata(pictureframe_file)
+            
+        #     # rescale the picture frame template so that its ~close to the data median
+        #     pictureframe_template *= np.nanmedian(model.data[mask])
+
+        #     coeffs = np.linspace(0.5, 1.5, 100)
+        #     var = np.zeros_like(coeffs)
+        #     for i,c in enumerate(coeffs):
+        #         sub = model.data - c*pictureframe_template
+        #         sub[~mask] = np.nan
+        #         sigma_mad = median_absolute_deviation(sub, ignore_nan=True)
+        #         var[i] = sigma_mad**2
+
+        #     pictureframe_model = pictureframe_template * coeffs[np.argmin(var)]
+        #     bkg_total += pictureframe_model
+
+        # # Subtract pedestal in 4 horizontal quarters
+        # if subtract_pedestal_quarters:
+        #     log(f'Subtracting pedestal in 4 horizontal detector quarters')
+            
+        #     pedestal_model = np.zeros_like(model.data)
+            
+        #     # Define the 4 horizontal quarters (512 rows each)
+        #     n_quarters = 4
+        #     quarter_height = 2048 // n_quarters  # 512 rows
+            
+        #     for i in range(n_quarters):
+        #         # Define the row range for this quarter
+        #         row_start = i * quarter_height
+        #         row_end = (i + 1) * quarter_height
+                
+        #         # Extract this quarter's data and mask
+        #         quarter_data = (model.data - bkg_total)[row_start:row_end, :]
+        #         quarter_mask = mask[row_start:row_end, :]
+                
+        #         # Calculate pedestal (median of valid pixels in this quarter)
+        #         if sigma_clip:
+        #             from astropy.stats import sigma_clipped_stats
+        #             pedestal = sigma_clipped_stats(quarter_data[quarter_mask], sigma=3.0, maxiters=5)[1]
+        #         else:
+        #             pedestal = np.nanmedian(quarter_data[quarter_mask])
+                
+        #         log(f'  Quarter {i+1} (rows {row_start}:{row_end}): pedestal = {pedestal:.4f}')
+                
+        #         # Store pedestal in model
+        #         pedestal_model[row_start:row_end, :] = pedestal
+            
+        #     # Add pedestal to total background
+        #     bkg_total += pedestal_model
 
 
 def subtract_background_from_rate_file(
         rate_file: str,
         override_wavelength_range: dict = {}, 
+        n_iter: int = 5,
+        pictureframe_dir: str = None,
+        subtract_2d: bool = False,
         box_size: int = 8,
         sigma_clip: bool = True,
         bkg_estimator: str = 'median',
-        pictureframe_dir: str = None,
         do_col_1f: str = True,
         do_row_1f: str = True,
         plot: bool = True,
@@ -709,6 +780,9 @@ def subtract_background_from_rate_file(
 
     input_dir = os.path.dirname(rate_file)
     with ImageModel(rate_file) as model:
+
+        if 'PRISM' in model.meta.instrument.grating:
+            do_row_1f = True
         
         for entry in model.history:
             if 'Subtracted pedestal, rescaled variance' in entry['description']:
@@ -717,156 +791,362 @@ def subtract_background_from_rate_file(
 
         log(f'Subtracting background and rescaling variance for {os.path.basename(rate_file)}')
         
-        # processed_model = _make_processed_rate_image(model, single_mask=True, input_dir=os.path.dirname(rate_file), exp_type="NRS_MSASPEC", mask_science_regions=True, flat=None)
-        # mask_file = rate_file.replace('_rate.fits','_mask.fits')
-        # if not os.path.exists(mask_file): 
-        #     raise FileNotFoundError("No mask file found!")
-        # log(f'Using existing mask {os.path.basename(mask_file)}')
-        # mask = np.array(fits.getdata(mask_file,ext=1),dtype=bool)
-
         # True indicates valid pixels
-        mask = np.full(model.data.shape, True)
+        slitmask = np.full(model.data.shape, True)
 
         # always mask fixed slit area
-        mask[2048//2-100:2048//2+100,:] = False
+        slitmask[2048//2-100:2048//2+100,:] = False
         
-        mask = mask_slits(model, input_dir, mask, override_wavelength_range=override_wavelength_range)
+        slitmask = mask_slits(model, input_dir, slitmask, override_wavelength_range=override_wavelength_range)
 
-        mask[model.dq > 0] = False
-
-        from jwst.clean_flicker_noise.clean_flicker_noise import clip_to_background
-        n_sigma, fit_histogram = 2.0, False
-        clip_to_background(model.data, mask, sigma_upper=n_sigma, fit_histogram=fit_histogram, verbose=True)
-
-        fits.writeto(rate_file.replace('_rate.fits','_mask.fits'), mask.astype(int), overwrite=True)
+        slitmask[model.dq > 0] = False
 
         detector = 'nrs2' 
         if 'nrs1' in rate_file:
             detector = 'nrs1'
         
+        # Initialize background model
+        bkg_total = np.zeros_like(model.data)
+        
+        # Track components for plotting
+        pictureframe_model = None
+        pedestal_model = None
+        bkg2d_model = None
+        col_model = None
+        row_model = None
+
         if pictureframe_dir:
-            log(f'Subtracting "picture frame" template files')
+            pictureframe_model_total = np.zeros_like(model.data)
+            # pedestal_model_total = np.zeros_like(model.data)
+        if subtract_2d:
+            bkg2d_model_total = np.zeros_like(model.data)
+        if do_col_1f:
+            col_model_total = np.zeros_like(model.data)
+        if do_row_1f:
+            row_model_total = np.zeros_like(model.data)
+
+
+        if pictureframe_dir:
             if detector == 'nrs1':
-                pictureframe_file = os.path.join(pictureframe_dir,'jwst_nirspec_pictureframe_0002.fits')
+                pictureframe_file = os.path.join(pictureframe_dir, 'jwst_nirspec_pictureframe_0002.fits')
             else:
-                pictureframe_file = os.path.join(pictureframe_dir,'jwst_nirspec_pictureframe_0001.fits')
+                pictureframe_file = os.path.join(pictureframe_dir, 'jwst_nirspec_pictureframe_0001.fits')
 
             pictureframe_template = fits.getdata(pictureframe_file)
-            
-            # rescale the picture frame template so that its ~close to the data median
-            pictureframe_template *= np.nanmedian(model.data[mask])
-
-            coeffs = np.linspace(0.5, 1.5, 100)
-            var = np.zeros_like(coeffs)
-            for i,c in enumerate(coeffs):
-                sub = model.data - c*pictureframe_template
-                sub[~mask] = np.nan
-                sigma_mad = median_absolute_deviation(sub, ignore_nan=True)
-                var[i] = sigma_mad**2
-
-            bkg2d = pictureframe_template * coeffs[np.argmin(var)]
-        else:
-            bkg2d = np.zeros_like(model.data)
 
 
-        from photutils.background import Background2D, MedianBackground
-        from astropy.stats import SigmaClip
-        match bkg_estimator:
-            case 'median': 
-                bkg_est = MedianBackground()
-            case _:
-                bkg_est = None
-        if sigma_clip: 
-            sclip = SigmaClip(sigma=3.0, maxiters=5)
-        else:
-            sclip = None
+        for j in range(n_iter):
+            log(f'Iteration {j+1}/{n_iter}')
 
-        bkg = Background2D(
-            model.data-bkg2d,
-            box_size=box_size,
-            filter_size=(3,3),
-            mask=~mask,
-            sigma_clip=sclip,
-            bkg_estimator=bkg_est,
-        )
+            mask = slitmask.copy()
+            from jwst.clean_flicker_noise.clean_flicker_noise import clip_to_background
+            n_sigma, fit_histogram = 2.0, False
+            clip_to_background(model.data-bkg_total, mask, sigma_upper=n_sigma, fit_histogram=fit_histogram, verbose=True)
 
-        bkg2d += bkg.background
+            if pictureframe_dir:
+                log(f'Subtracting "picture frame" template (per-quarter fitting)')
+                n_quarters = 4
+                quarter_height = 2048 // n_quarters
 
-        rate_masked = model.data - bkg2d
-        rate_masked[~mask] = np.nan
+                pictureframe_model = np.zeros_like(model.data)
 
-        if do_col_1f and do_row_1f:
-            col = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
-            rate_masked = rate_masked - col
+                for i in range(n_quarters):
+                    row_start = i * quarter_height
+                    row_end = (i + 1) * quarter_height
 
-            full_row_masked = np.sum(np.isfinite(rate_masked),axis=1)==0
-            rate_masked[full_row_masked,:] = np.nanmedian(rate_masked) 
-            row = np.nanmedian(rate_masked, axis=1)[:,np.newaxis]
+                    q_data = model.data[row_start:row_end, :] - bkg_total[row_start:row_end, :]
+                    q_mask = mask[row_start:row_end, :]
+                    q_template = pictureframe_template[row_start:row_end, :]
 
-            rate_new = model.data - bkg2d - col - row
-        
-        elif do_col_1f:
-            col = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
-            rate_new = model.data - bkg2d - col
-        
-        elif do_row_1f:
-            full_row_masked = np.sum(np.isfinite(rate_masked),axis=1)==0
-            rate_masked[full_row_masked,:] = np.nanmedian(rate_masked) 
-            row = np.nanmedian(rate_masked, axis=1)[:,np.newaxis]
-            rate_new = model.data - bkg2d - row
+                    # 2-parameter fit: data = coeff * template + pedestal
+                    q_valid = q_data[q_mask]
+                    q_templ_valid = q_template[q_mask]
+                    A = np.column_stack([q_templ_valid, np.ones_like(q_templ_valid)])
+                    (best_coeff, pedestal), _, _, _ = np.linalg.lstsq(A, q_valid, rcond=None)
 
+                    # Iterative sigma clipping on the residuals
+                    if sigma_clip:
+                        for iteration in range(5):
+                            residual = q_valid - (best_coeff * q_templ_valid + pedestal)
+                            sigma_mad = median_absolute_deviation(residual)
+                            clip_mask = np.abs(residual - np.median(residual)) < 3.0 * sigma_mad
+                            if clip_mask.sum() == len(q_valid):
+                                break  # converged, nothing more to clip
+                            q_valid = q_valid[clip_mask]
+                            q_templ_valid = q_templ_valid[clip_mask]
+                            A = np.column_stack([q_templ_valid, np.ones_like(q_templ_valid)])
+                            (best_coeff, pedestal), _, _, _ = np.linalg.lstsq(A, q_valid, rcond=None)
+
+                    log(f'  Quarter {i+1} (rows {row_start}:{row_end}): '
+                        f'PF coeff = {best_coeff:.4f}, pedestal = {pedestal:.4f}')
+
+                    pictureframe_model[row_start:row_end, :] = best_coeff * q_template + pedestal
+
+                pictureframe_model_total += pictureframe_model
+                bkg_total += pictureframe_model 
+
+            # if pictureframe_dir:
+            #     log(f'Subtracting "picture frame" template (global coeff + per-quarter pedestal)')
+            #     n_quarters = 4
+            #     quarter_height = 2048 // n_quarters
+
+            #     pictureframe_model = np.zeros_like(model.data)
+
+            #     residual = (model.data - bkg_total)
+
+            #     # Step 1: Fit a single global coefficient for the template
+            #     global_valid = residual[mask]
+            #     global_templ_valid = pictureframe_template[mask]
+
+            #     A = global_templ_valid[:, np.newaxis]  # single-parameter fit (no constant)
+            #     (best_coeff,), _, _, _ = np.linalg.lstsq(A, global_valid, rcond=None)
+
+            #     if sigma_clip:
+            #         for iteration in range(5):
+            #             resid = global_valid - best_coeff * global_templ_valid
+            #             sigma_mad = median_absolute_deviation(resid)
+            #             clip_mask = np.abs(resid - np.median(resid)) < 3.0 * sigma_mad
+            #             if clip_mask.sum() == len(global_valid):
+            #                 break
+            #             global_valid = global_valid[clip_mask]
+            #             global_templ_valid = global_templ_valid[clip_mask]
+            #             A = global_templ_valid[:, np.newaxis]
+            #             (best_coeff,), _, _, _ = np.linalg.lstsq(A, global_valid, rcond=None)
+
+            #     log(f'  Global PF coeff = {best_coeff:.4f}')
+            #     pictureframe_model = best_coeff * pictureframe_template
+
+            #     # Step 2: Fit per-quarter pedestals on the PF-subtracted residual
+            #     pedestal_model = np.zeros_like(model.data)
+            #     pf_residual = residual - pictureframe_model
+
+            #     for i in range(n_quarters):
+            #         row_start = i * quarter_height
+            #         row_end = (i + 1) * quarter_height
+
+            #         q_resid = pf_residual[row_start:row_end, :]
+            #         q_mask = mask[row_start:row_end, :]
+
+            #         if sigma_clip:
+            #             from astropy.stats import sigma_clipped_stats
+            #             pedestal = sigma_clipped_stats(q_resid[q_mask], sigma=3.0, maxiters=5)[1]
+            #         else:
+            #             pedestal = np.nanmedian(q_resid[q_mask])
+
+            #         log(f'  Quarter {i+1} (rows {row_start}:{row_end}): pedestal = {pedestal:.4f}')
+            #         pedestal_model[row_start:row_end, :] = pedestal
+
+            #     pictureframe_model_total += pictureframe_model
+            #     pedestal_model_total += pedestal_model
+            #     bkg_total += pictureframe_model + pedestal_model
+
+            if subtract_2d:
+                from photutils.background import Background2D, MedianBackground
+                from astropy.stats import SigmaClip
+                match bkg_estimator:
+                    case 'median': 
+                        bkg_est = MedianBackground()
+                    case _:
+                        bkg_est = None
+                if sigma_clip: 
+                    sclip = SigmaClip(sigma=3.0, maxiters=5)
+                else:
+                    sclip = None
+
+                bkg = Background2D(
+                    model.data - bkg_total,
+                    box_size=box_size,
+                    filter_size=(3,3),
+                    mask=~mask,
+                    sigma_clip=sclip,
+                    bkg_estimator=bkg_est,
+                )
+
+                bkg2d_model = bkg.background
+                bkg_total += bkg2d_model
+                bkg2d_model_total += bkg2d_model
+
+
+            if do_col_1f:
+                rate_masked = (model.data - bkg_total).copy()
+                rate_masked[~mask] = np.nan
+
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    col_model = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
+                col_model[~np.isfinite(col_model)] = 0.0
+
+                bkg_total += col_model
+                col_model_total += col_model
+
+            if do_row_1f:
+                rate_masked = (model.data - bkg_total).copy()
+                rate_masked[~mask] = np.nan
+
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    full_row_masked = np.sum(np.isfinite(rate_masked),axis=1)==0
+                    rate_masked[full_row_masked,:] = np.nanmedian(rate_masked) 
+                    row_model = np.nanmedian(rate_masked, axis=1)[:,np.newaxis]
+                row_model[~np.isfinite(row_model)] = 0.0
+
+                bkg_total += row_model
+                row_model_total += row_model
+
+
+        # Point the names the plotting code expects at the totals
+        if pictureframe_dir:
+            pictureframe_model = pictureframe_model_total
+            # pedestal_model = pedestal_model_total
+        if subtract_2d:
+            bkg2d_model = bkg2d_model_total
+        if do_col_1f:
+            col_model = col_model_total
+        if do_row_1f:
+            row_model = row_model_total
 
         if plot:
             from astropy.visualization import ImageNormalize, ZScaleInterval
             norm = ImageNormalize(model.data[mask], interval=ZScaleInterval())
-            fig, ax = plt.subplots(2,3,figsize=(8,6),sharex=True,sharey=True)
-            ax[0,0].imshow(model.data, norm=norm)
-            ax[0,0].set_title('Raw rate file')
-            ax[0,1].imshow(bkg2d, norm=norm)
-            if pictureframe_dir:
-                ax[0,1].set_title('Picture frame (+2D bkg model)')
-            else:
-                ax[0,1].set_title('Modeled 2D background')
-            ax[0,2].imshow(model.data-bkg2d, norm=norm)
-            ax[0,2].set_title('Raw - 2D')
-
-            if do_col_1f and do_row_1f:
-                ax[1,0].imshow(np.zeros_like(model.data)+col, norm=norm)
-                ax[1,0].set_title('Column 1/f')
-                ax[1,1].imshow(np.zeros_like(model.data)+row, norm=norm)
-                ax[1,1].set_title('Row 1/f')
-                ax[1,2].imshow(rate_new, norm=norm)
-                ax[1,2].set_title('Final (raw-2D-col-row)')
             
-            elif do_col_1f:
-                ax[1,0].imshow(np.zeros_like(model.data)+col, norm=norm)
-                ax[1,0].set_title('Column 1/f')
-                ax[1,1].imshow(np.zeros_like(model.data), norm=norm)
-                ax[1,1].set_title('Row 1/f (SKIPPED)')
-                ax[1,2].imshow(rate_new, norm=norm)
-                ax[1,2].set_title('Final (raw-2D-col)')
+            # Build list of columns to plot
+            columns = []
             
-            elif do_row_1f:
-                ax[1,0].imshow(np.zeros_like(model.data), norm=norm)
-                ax[1,0].set_title('Column 1/f (SKIPPED)')
-                ax[1,1].imshow(np.zeros_like(model.data)+row, norm=norm)
-                ax[1,1].set_title('Row 1/f')
-                ax[1,2].imshow(rate_new, norm=norm)
-                ax[1,2].set_title('Final (raw-2D-row)')
+            # Column 0: Always show raw and mask
+            columns.append({
+                'top_title': 'Raw rate file',
+                'top_data': model.data,
+                'top_norm': norm,
+                'bottom_title': 'Slit mask (white=valid)',
+                'bottom_data': mask,
+                'bottom_norm': None,
+                'bottom_cmap': 'gray',
+                'bottom_vmin': 0,
+                'bottom_vmax': 1,
+            })
             
-            else:
-                ax[1,0].imshow(np.zeros_like(model.data), norm=norm)
-                ax[1,0].set_title('Column 1/f (SKIPPED)')
-                ax[1,1].imshow(np.zeros_like(model.data), norm=norm)
-                ax[1,1].set_title('Row 1/f (SKIPPED)')
-                ax[1,2].imshow(rate_new, norm=norm)
-                ax[1,2].set_title('Final (raw-2D)')
+            # Track cumulative background subtraction
+            bkg_cumulative = np.zeros_like(model.data)
             
-
+            # Picture frame column
+            if pictureframe_model is not None:
+                bkg_cumulative += pictureframe_model
+                columns.append({
+                    'top_title': 'Picture frame',
+                    'top_data': pictureframe_model,
+                    'top_norm': norm,
+                    'bottom_title': 'Raw - picture frame',
+                    'bottom_data': model.data - bkg_cumulative,
+                    'bottom_norm': norm,
+                })
+            
+            # Pedestal quarters column
+            if pedestal_model is not None:
+                bkg_cumulative += pedestal_model
+                columns.append({
+                    'top_title': 'Pedestal quarters',
+                    'top_data': pedestal_model,
+                    'top_norm': norm,
+                    'bottom_title': 'Raw - picture frame - pedestal',
+                    'bottom_data': model.data - bkg_cumulative,
+                    'bottom_norm': norm,
+                })
+            
+            # 2D background column
+            if bkg2d_model is not None:
+                bkg_cumulative += bkg2d_model
+                bottom_title = 'Raw'
+                if pictureframe_model is not None:
+                    bottom_title += ' - picture frame'
+                if pedestal_model is not None:
+                    bottom_title += ' - pedestal'
+                bottom_title += ' - 2D'
+                
+                columns.append({
+                    'top_title': '2D background',
+                    'top_data': bkg2d_model,
+                    'top_norm': norm,
+                    'bottom_title': bottom_title,
+                    'bottom_data': model.data - bkg_cumulative,
+                    'bottom_norm': norm,
+                })
+            
+            # Column 1/f
+            if col_model is not None:
+                bkg_cumulative += col_model
+                bottom_title = 'Raw'
+                if pictureframe_model is not None:
+                    bottom_title += ' - picture frame'
+                if pedestal_model is not None:
+                    bottom_title += ' - pedestal'
+                if bkg2d_model is not None:
+                    bottom_title += ' - 2D'
+                bottom_title += ' - col'
+                
+                columns.append({
+                    'top_title': 'Column 1/f',
+                    'top_data': np.zeros_like(model.data) + col_model,
+                    'top_norm': norm,
+                    'bottom_title': bottom_title,
+                    'bottom_data': model.data - bkg_cumulative,
+                    'bottom_norm': norm,
+                })
+            
+            # Row 1/f
+            if row_model is not None:
+                bkg_cumulative += row_model
+                bottom_title = 'Raw'
+                if pictureframe_model is not None:
+                    bottom_title += ' - picture frame'
+                if pedestal_model is not None:
+                    bottom_title += ' - pedestal'
+                if bkg2d_model is not None:
+                    bottom_title += ' - 2D'
+                if col_model is not None:
+                    bottom_title += ' - col'
+                bottom_title += ' - row'
+                
+                columns.append({
+                    'top_title': 'Row 1/f',
+                    'top_data': np.zeros_like(model.data) + row_model,
+                    'top_norm': norm,
+                    'bottom_title': bottom_title,
+                    'bottom_data': model.data - bkg_cumulative,
+                    'bottom_norm': norm,
+                })
+            
+            # Create the plot
+            n_cols = len(columns)
+            fig, ax = plt.subplots(2, n_cols, figsize=(4*n_cols, 8), sharex=True, sharey=True)
+            
+            # Handle case where only 1 column (ax won't be 2D array)
+            if n_cols == 1:
+                ax = ax.reshape(2, 1)
+            
+            for i, col in enumerate(columns):
+                # Top panel
+                ax[0, i].imshow(col['top_data'], norm=col['top_norm'])
+                ax[0, i].set_title(col['top_title'])
+                
+                # Bottom panel
+                if col.get('bottom_cmap') is not None:
+                    ax[1, i].imshow(col['bottom_data'], 
+                                   cmap=col['bottom_cmap'],
+                                   vmin=col.get('bottom_vmin'),
+                                   vmax=col.get('bottom_vmax'))
+                else:
+                    ax[1, i].imshow(col['bottom_data'], norm=col.get('bottom_norm', norm))
+                ax[1, i].set_title(col['bottom_title'])
+            
+            plt.tight_layout()
             plot_file = rate_file.replace('_rate.fits','_bkg.pdf')
             log(f'Saving to {plot_file}')
             plt.savefig(plot_file)
             plt.close()
+
+        fits.writeto(rate_file.replace('_rate.fits','_mask.fits'), mask.astype(int), overwrite=True)
+        fits.writeto(rate_file.replace('_rate.fits','_bkg.fits'), bkg_total, overwrite=True)
+        rate_new = model.data - bkg_total
 
         model.data = rate_new
 
@@ -875,7 +1155,6 @@ def subtract_background_from_rate_file(
         rms = sigma_clipped_stats(nsci[mask])[2]
         log(f'Scaling up VAR_RNOISE by {rms**2:.2f}')
         model.var_rnoise = model.var_rnoise * rms**2
-
 
         log(f"Saving to {os.path.basename(rate_file)}")
         time = datetime.now()
@@ -889,7 +1168,6 @@ def subtract_background_from_rate_file(
         model.save(rate_file)
 
 
-            
 def run_stage1_single_uncal(
         uncal_file, 
         workspace_dir, 
@@ -1137,138 +1415,83 @@ def run_stage2a_single_rate(
     return source_ids_processed
 
 
-def fix_units(source_id, workspace_dir):
+def fix_units(file):
     """
-    Fixes unit issues arising from the JWST pipeline using different pathloss corrections when the source isn't present in the slitlet
+    Fixes unit issues arising from the JWST pipeline encoding units improperly when the source isn't present in the slitlet
     """
-    # TODO MAYBE JUST USE UNIFORM PATHLOSS FOR EVERYTHING??
 
-    all_cal_files = sorted(glob.glob(os.path.join(workspace_dir, f"jw*_{source_id}_cal.fits")))
-    roots = sorted(list(set(['_'.join(os.path.basename(f).split('_')[0:2]) for f in all_cal_files])))
-    # TODO replace this logic with a more careful parsing of files, a la stage2b (break off into separate function/method?)
+    with fits.open(file['path'], mode='update') as hdul:
+        
+        if 'PTHLOSS' in hdul['SCI'].header: 
+            pthloss = hdul['SCI'].header['PTHLOSS']
+        else:
+            pthloss = 'POINT'
+        
+        if pthloss == 'UNIFORM' and hdul['SCI'].header['PHOTMJSR'] != 1.:
+            log(f"Correcting units for {file['name']}")
 
-    for root in roots:
-        log(f'Checking output units for {root}')
-        nrs1_cal_files = sorted(glob.glob(os.path.join(workspace_dir, f'{root}_*_nrs1_{source_id}_cal.fits')))
-        nrs2_cal_files = sorted(glob.glob(os.path.join(workspace_dir, f'{root}_*_nrs2_{source_id}_cal.fits')))
-        nrs1_nods = [f.split('_')[-4] for f in nrs1_cal_files]
-        nrs2_nods = [f.split('_')[-4] for f in nrs2_cal_files]
-        nods = list(set(nrs1_nods + nrs2_nods))
-
-        if len(nods) in [2,3]:
-
-            needs_correction = False
-            if len(nrs1_cal_files)>0 and len(nrs2_cal_files)>0:
-                nods_to_correct = {'nrs1':[], 'nrs2':[]}
-            elif len(nrs1_cal_files)>0:
-                nods_to_correct = {'nrs1':[]}
-            elif len(nrs2_cal_files)>0:
-                nods_to_correct = {'nrs2':[]}
-
-            for nod in nods:
-                nrs1_file = os.path.join(workspace_dir, f'{root}_{nod}_nrs1_{source_id}_cal.fits')
-                nrs2_file = os.path.join(workspace_dir, f'{root}_{nod}_nrs2_{source_id}_cal.fits')
-                if os.path.exists(nrs1_file):
-                    with fits.open(nrs1_file, mode='update') as nrs1:
-                        
-                        if 'PTHLOSS' in nrs1['SCI'].header: 
-                            pthloss = nrs1['SCI'].header['PTHLOSS']
-                        else:
-                            pthloss = 'POINT'
-                        
-                        if pthloss == 'UNIFORM' and nrs1['SCI'].header['PHOTMJSR'] != 1.:
-                            nods_to_correct['nrs1'].append(nod)
-                            needs_correction = True
-                        else:
-                            nrs1['PRIMARY'].header['SRCFLUX'] = ('T', 'Source flux present in exposure? T/F')
-                            nrs1['PRIMARY'].header['BUNIT'] = 'MJy'
-                            nrs1['SCI'].header['BUNIT'] = 'MJy'
-                            nrs1.flush()
-
-                if os.path.exists(nrs2_file):
-                    with fits.open(nrs2_file, mode='update') as nrs2:
-                        
-                        if 'PTHLOSS' in nrs2['SCI'].header: 
-                            pthloss = nrs2['SCI'].header['PTHLOSS']
-                        else:
-                            pthloss = 'POINT'
-                        
-                        if pthloss == 'UNIFORM' and nrs2['SCI'].header['PHOTMJSR'] != 1.:
-                            nods_to_correct['nrs2'].append(nod)
-                            needs_correction = True
-                        else:
-                            nrs2['PRIMARY'].header['SRCFLUX'] = ('T', 'Source flux present in exposure? T/F')
-                            nrs2['PRIMARY'].header['BUNIT'] = 'MJy'
-                            nrs2['SCI'].header['BUNIT'] = 'MJy'
-                            nrs2.flush()
-
-            #print(nods_to_correct)
-
-            if needs_correction:
-                log(f'Correcting units for {root}: {nods_to_correct}')
-
-                for detector in nods_to_correct:
-
-                    for n in nods_to_correct[detector]:
-                        with fits.open(os.path.join(workspace_dir, f'{root}_{n}_{detector}_{source_id}_cal.fits'), mode='update') as hdul:
-                            #pathloss_un = hdul['PATHLOSS_UN'].data
-                            photmjsr = hdul['SCI'].header['PHOTMJSR']
-                            scale_factor = 1 / photmjsr # undo pathloss_un and apply pathloss_ps (from the other nods!)
-                            hdul['SCI'].data *= scale_factor # SCI
-                            hdul['ERR'].data *= scale_factor # ERR
-                            hdul['VAR_POISSON'].data *= scale_factor**2 # VAR
-                            hdul['VAR_RNOISE'].data *= scale_factor**2 # VAR
-                            hdul['VAR_FLAT'].data *= scale_factor**2 # VAR
-
-                            hdul['SCI'].header['PHOTMJSR'] = 1.0
-                            # hdul['SCI'].header['PTHLOSS'] = 'POINT'
-
-                            hdul['PRIMARY'].header['SRCFLUX'] = ('F', 'Source flux present in exposure? T/F')
-                            hdul['PRIMARY'].header['BUNIT'] = 'MJy'
-                            hdul['SCI'].header['BUNIT'] = 'MJy'
-                            hdul.flush()
-
-            else:
-                pass
-                # for detector in nods_to_correct:
-                #     log(f'Using average PATHLOSS_PS from nods {nods}')
-
-                #     avg_pathloss_ps = None
-                #     for n in nods:
-                #         with fits.open(os.path.join(workspace_dir, f'{root}_{n}_{detector}_{source_id}_cal.fits')) as hdul:
-                #             if avg_pathloss_ps is None:
-                #                 avg_pathloss_ps = hdul['PATHLOSS_PS'].data
-                #             else:
-                #                 avg_pathloss_ps += hdul['PATHLOSS_PS'].data
-
-                #     avg_pathloss_ps /= len(nods)
-
-                #     for n in nods:
-                #         with fits.open(os.path.join(workspace_dir, f'{root}_{n}_{detector}_{source_id}_cal.fits'), mode='update') as hdul:
-                #             pathloss_ps = hdul['PATHLOSS_PS'].data
-                #             scale_factor = pathloss_ps / avg_pathloss_ps # undo pathloss_ps and apply average pathloss_ps (from the valid nods!)
-                #             hdul['SCI'].data *= scale_factor # SCI
-                #             hdul['ERR'].data *= scale_factor # ERR
-                #             hdul['VAR_POISSON'].data *= scale_factor**2 # VAR
-                #             hdul['VAR_RNOISE'].data *= scale_factor**2 # VAR
-                #             hdul['VAR_FLAT'].data *= scale_factor**2 # VAR
-                #             hdul.flush()
+            photmjsr = hdul['SCI'].header['PHOTMJSR']
+            scale_factor = 1 / photmjsr 
+            hdul['SCI'].data *= scale_factor # SCI
+            hdul['ERR'].data *= scale_factor # ERR
+            hdul['VAR_POISSON'].data *= scale_factor**2 # VAR
+            hdul['VAR_RNOISE'].data *= scale_factor**2 # VAR
+            hdul['VAR_FLAT'].data *= scale_factor**2 # VAR
+            hdul['SCI'].header['PHOTMJSR'] = 1.0
+            hdul['PRIMARY'].header['SRCFLUX'] = ('F', 'Source flux present in exposure? T/F')
+            hdul['PRIMARY'].header['BUNIT'] = 'MJy'
+            hdul['SCI'].header['BUNIT'] = 'MJy'
 
         else:
-            raise NotImplementedError
+            hdul['PRIMARY'].header['SRCFLUX'] = ('T', 'Source flux present in exposure? T/F')
+            hdul['PRIMARY'].header['BUNIT'] = 'MJy'
+            hdul['SCI'].header['BUNIT'] = 'MJy'
+        
+        hdul.flush()
 
 
+def files_to_glob(filenames):
+    """
+    Compress a list of filenames into a minimal glob-style string by collapsing
+    varying tokens into {opt1,opt2,...} syntax.
+    
+    Example:
+        ['jw_00002_nrs1_cal.fits', 'jw_00003_nrs2_cal.fits']
+        -> 'jw_0000{2,3}_nrs{1,2}_cal.fits'
+    """
+    split = [f.split('_') for f in filenames]
+    
+    # Sanity check: all filenames should have the same number of tokens
+    n_tokens = len(split[0])
+    if not all(len(s) == n_tokens for s in split):
+        raise ValueError("Filenames have inconsistent structure (different number of '_'-separated tokens)")
 
-def resample_single_exposure(
-        cal_file: str,
-        workspace_dir: str, 
-    ):
-    # this function shouldn't be doing any file discovery! 
+    result_tokens = []
+    for i in range(n_tokens):
+        # Unique values at this token position, preserving order
+        seen = {}
+        values = [seen.setdefault(s[i], s[i]) for s in split if s[i] not in seen]
 
+        if len(values) == 1:
+            result_tokens.append(values[0])
+        else:
+            prefix = os.path.commonprefix(values)
+            suffixes = [v[len(prefix):] for v in values]
+            result_tokens.append(f"{prefix}{{{','.join(suffixes)}}}")
+
+    return '_'.join(result_tokens)
+
+
+def resample_single_exposure(file: Table):
+
+    cal_file = file['path']
+    workspace_dir = os.path.dirname(cal_file)
+    
     # Handle directory changes
     prev_cwd = os.getcwd()
     
     os.chdir(workspace_dir)
+    
 
     try:
         # from jwst.assign_wcs import AssignWcsStep
@@ -1301,75 +1524,110 @@ def resample_single_exposure(
 
 
 
-def plot_stage2a_results(source_id, workspace_dir):
-    all_s2d_files = sorted(glob.glob(os.path.join(workspace_dir, f"jw*_{source_id}_s2d.fits")))
-    roots = sorted(list(set(['_'.join(os.path.basename(f).split('_')[0:2]) for f in all_s2d_files])))
-    # TODO replace this logic with a more careful parsing of files, a la stage2b (break off into separate function/method?)
+def plot_stage2a_results(files, plot_suffix='nods'):
+    """
+    Plot s2d cutouts for visual inspection of a single source.
+    Groups by root, combining multiple exp_groups (subpixel dither groups)
+    into one plot with labeled rows.
+    """
 
-    for root in roots:
+    assert len(np.unique(files['source_id']))==1, "Can't plot multiple sources at the same time!"
+    source_id = files['source_id'][0]
+    workspace_dir = os.path.dirname(files['path'][0])
+
+    for root in np.unique(files['root']):
+        root_files = files[files['root'] == root]
+        detectors = sorted(np.unique(root_files['detector']))
+        has_both = 'nrs1' in detectors and 'nrs2' in detectors
+        exp_groups = sorted(np.unique(root_files['exp_group']))
+        multi_eg = len(exp_groups) > 1
+
+        # Build ordered list of (label, nrs1_s2d, nrs2_s2d) rows,
+        # sorted by exp_group then nod
+        plot_rows = []
+        for eg_idx, eg in enumerate(exp_groups):
+            eg_files = root_files[root_files['exp_group'] == eg]
+            for nod in sorted(np.unique(eg_files['nod'])):
+                nod_files = eg_files[eg_files['nod'] == nod]
+                nrs1_s2d = nrs2_s2d = None
+                for f in nod_files:
+                    s2d = f['path'].replace('_cal', '_s2d')
+                    if os.path.exists(s2d):
+                        if f['detector'] == 'nrs1':
+                            nrs1_s2d = s2d
+                        else:
+                            nrs2_s2d = s2d
+                label = f"d{eg_idx+1}:{nod}" if multi_eg else nod
+                plot_rows.append((label, nrs1_s2d, nrs2_s2d))
+
+        Nnods = len(plot_rows)
+        if Nnods == 0:
+            continue
+
+        # Shared ZScale normalization across all nods,
+        # masking DQ>0 pixels and >10-sigma outliers
+        data_all = []
+        for _, n1, n2 in plot_rows:
+            for s2d_file in [n1, n2]:
+                if s2d_file:
+                    d = fits.getdata(s2d_file, ext=1)
+                    try:
+                        dq = fits.getdata(s2d_file, extname='DQ')
+                        good = np.isfinite(d) & (dq == 0)
+                    except KeyError:
+                        good = np.isfinite(d)
+                    data_all.append(d[good])
+        if not data_all:
+            continue
+        data_concat = np.concatenate(data_all)
+        med = np.median(data_concat)
+        mad = np.median(np.abs(data_concat - med))
+        sigma = mad * 1.4826  # MAD -> Gaussian sigma
+        data_concat = data_concat[np.abs(data_concat - med) < 10 * sigma]
+        norm = ImageNormalize(data_concat, interval=ZScaleInterval())
+
+        title = files_to_glob(list(root_files['name']))
         log(f'Plotting {root}_{source_id}')
-        nrs1_s2d_files = sorted(glob.glob(os.path.join(workspace_dir, f'{root}_*_nrs1_{source_id}_s2d.fits')))
-        nrs2_s2d_files = sorted(glob.glob(os.path.join(workspace_dir, f'{root}_*_nrs2_{source_id}_s2d.fits')))
-        nrs1_nods = [f.split('_')[-4] for f in nrs1_s2d_files]
-        nrs2_nods = [f.split('_')[-4] for f in nrs2_s2d_files]
-        nods = sorted(list(set(nrs1_nods + nrs2_nods)))
 
-        if len(nrs1_s2d_files)>0:
-            nrs1_s2d_files = list(np.array(nrs1_s2d_files)[np.argsort(nods)])
-        if len(nrs2_s2d_files)>0:
-            nrs2_s2d_files = list(np.array(nrs2_s2d_files)[np.argsort(nods)])
-
-        if len(nrs1_s2d_files)==0 and len(nrs2_s2d_files)==0: # has no data
-            raise RuntimeError("No files to plot!")
-        
-        elif len(nrs1_s2d_files)>0 and len(nrs2_s2d_files)>0: # has multiple 
-            Nnods = len(nods)
-
-            nrs1_shape = np.shape(fits.getdata(nrs1_s2d_files[0], ext=1))
-            nrs2_shape = np.shape(fits.getdata(nrs2_s2d_files[0], ext=1))
+        if has_both:
+            # Determine width ratios from first available shapes
+            nrs1_shape = nrs2_shape = None
+            for _, n1, n2 in plot_rows:
+                if n1 and nrs1_shape is None:
+                    nrs1_shape = np.shape(fits.getdata(n1, ext=1))
+                if n2 and nrs2_shape is None:
+                    nrs2_shape = np.shape(fits.getdata(n2, ext=1))
+                if nrs1_shape and nrs2_shape:
+                    break
 
             nrs1_ratio = nrs1_shape[1]/(nrs1_shape[1]+nrs2_shape[1]) * 6
             nrs2_ratio = 6 - nrs1_ratio
 
-            fig, ax = plt.subplots(Nnods, 4, 
-                figsize=(7*1.5,Nnods*1.5),
-                width_ratios=[nrs1_ratio,0.5,nrs2_ratio,0.5], 
-                constrained_layout=True) # figsize, width_ratios
-            
-            fig.suptitle(f'{root}_*_nrs?_{source_id}_s2d.fits', fontname='monospace')
+            fig, ax = plt.subplots(Nnods, 4,
+                figsize=(7*1.5, Nnods*1.5),
+                width_ratios=[nrs1_ratio, 0.5, nrs2_ratio, 0.5],
+                constrained_layout=True)
+            if Nnods == 1:
+                ax = ax.reshape(1, -1)
 
-            data = np.array([])
-            for i in range(Nnods):
-                nrs1_file = os.path.join(workspace_dir, f'{root}_{nods[i]}_nrs1_{source_id}_s2d.fits')
-                nrs2_file = os.path.join(workspace_dir, f'{root}_{nods[i]}_nrs2_{source_id}_s2d.fits')
-                if os.path.exists(nrs1_file):
-                    nrs1 = fits.getdata(nrs1_file, ext=1)
-                    data = np.append(data, nrs1[np.isfinite(nrs1)].flatten())
-                if os.path.exists(nrs2_file):
-                    nrs2 = fits.getdata(nrs2_file, ext=1)
-                    data = np.append(data, nrs2[np.isfinite(nrs2)].flatten())
-            norm = ImageNormalize(data, interval=ZScaleInterval())
+            fig.suptitle(title, fontname='monospace', fontsize=8)
 
-            for i in range(Nnods):
-                nrs1_file = os.path.join(workspace_dir, f'{root}_{nods[i]}_nrs1_{source_id}_s2d.fits')
-                nrs2_file = os.path.join(workspace_dir, f'{root}_{nods[i]}_nrs2_{source_id}_s2d.fits')
-                nrs1 = fits.getdata(nrs1_file, ext=1)
-                nrs2 = fits.getdata(nrs2_file, ext=1)
-
-                if os.path.exists(nrs1_file):
-                    nrs1 = fits.getdata(nrs1_file)
-                    ax[i,0].imshow(nrs1, norm=norm, origin='lower', aspect='auto', interpolation='nearest')   
+            for i, (label, nrs1_s2d, nrs2_s2d) in enumerate(plot_rows):
+                if nrs1_s2d:
+                    nrs1 = fits.getdata(nrs1_s2d, ext=1)
+                    ax[i,0].imshow(nrs1, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
-                        prof = np.nanmean(nrs1, axis=1)
-                    ax[i,1].step(prof, np.arange(np.shape(nrs1)[0])-0.5, where='pre', linewidth=1, color='k')
+                        prof = np.nanmedian(nrs1, axis=1)
+                    ax[i,1].step(prof, np.arange(nrs1.shape[0])-0.5, where='pre', linewidth=1, color='k')
 
-                if os.path.exists(nrs2_file):
-                    ax[i,2].imshow(nrs2, norm=norm, origin='lower', aspect='auto', interpolation='nearest')   
+                if nrs2_s2d:
+                    nrs2 = fits.getdata(nrs2_s2d, ext=1)
+                    ax[i,2].imshow(nrs2, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
-                        prof = np.nanmean(nrs2, axis=1)
-                    ax[i,3].step(prof, np.arange(np.shape(nrs2)[0])-0.5, where='pre', linewidth=1, color='k')
+                        prof = np.nanmedian(nrs2, axis=1)
+                    ax[i,3].step(prof, np.arange(nrs2.shape[0])-0.5, where='pre', linewidth=1, color='k')
 
                 ax[i,1].tick_params(labelleft=False)
                 ax[i,2].tick_params(labelleft=False)
@@ -1378,88 +1636,61 @@ def plot_stage2a_results(source_id, workspace_dir):
                 ax[i,2].set_ylim(*ax[i,0].get_ylim())
                 ax[i,3].set_ylim(*ax[i,0].get_ylim())
                 if i==0:
-                    ax[i,0].set_title(f'nrs1', fontname='monospace')
-                    ax[i,2].set_title(f'nrs2', fontname='monospace')
-                ax[i,3].set_ylabel(nods[i], fontname='monospace')
+                    ax[i,0].set_title('nrs1', fontname='monospace')
+                    ax[i,2].set_title('nrs2', fontname='monospace')
+                ax[i,3].set_ylabel(label, fontname='monospace')
                 ax[i,3].yaxis.set_label_position("right")
 
-            xmins, xmaxs = [], []
             for i in range(Nnods-1):
-                ax[i,0].tick_params(labelbottom=False)
-                ax[i,1].tick_params(labelbottom=False)
-                ax[i,2].tick_params(labelbottom=False)
-                ax[i,3].tick_params(labelbottom=False)
-            
-            xmins, xmaxs = [], []
-            for i in range(Nnods):
-                xmini, xmaxi = ax[i,1].get_xlim()
-                xmins.append(xmini)
-                xmaxs.append(xmaxi)
-            for i in range(Nnods):
-                ax[i,1].set_xlim(min(xmins), max(xmaxs))
-            
-            xmins, xmaxs = [], []
-            for i in range(Nnods):
-                xmini, xmaxi = ax[i,3].get_xlim()
-                xmins.append(xmini)
-                xmaxs.append(xmaxi)
-            for i in range(Nnods):
-                ax[i,3].set_xlim(min(xmins), max(xmaxs))
+                for j in range(4):
+                    ax[i,j].tick_params(labelbottom=False)
 
-            plt.savefig(os.path.join(workspace_dir, f'{root}_{source_id}_nods.pdf'))
+            for col in [1, 3]:
+                xmins = [ax[i,col].get_xlim()[0] for i in range(Nnods)]
+                xmaxs = [ax[i,col].get_xlim()[1] for i in range(Nnods)]
+                for i in range(Nnods):
+                    ax[i,col].set_xlim(min(xmins), max(xmaxs))
+
+            plt.savefig(os.path.join(workspace_dir, f'{root}_{source_id}_{plot_suffix}.pdf'), dpi=300)
             plt.close()
 
-        else: 
-            files = nrs1_s2d_files or nrs2_s2d_files
-            Nnods = len(files)
+        else:
+            det = detectors[0]
 
-            fig, ax = plt.subplots(Nnods, 2, 
-                figsize=(7*1.5,Nnods*1.5),
-                width_ratios=[6,1], 
-                constrained_layout=True) # figsize, width_ratios
-            
-            if 'nrs1' in files[0]:
-                fig.suptitle(f'{root}_*_nrs1_{source_id}_s2d.fits', fontname='monospace')
-            else:
-                fig.suptitle(f'{root}_*_nrs2_{source_id}_s2d.fits', fontname='monospace')
+            fig, ax = plt.subplots(Nnods, 2,
+                figsize=(7*1.5, Nnods*1.5),
+                width_ratios=[6, 1],
+                constrained_layout=True)
+            if Nnods == 1:
+                ax = ax.reshape(1, -1)
 
-            data = np.array([])
-            for i in range(Nnods):
-                datai = fits.getdata(files[i], ext=1)
-                data = np.append(data, datai[np.isfinite(datai)].flatten())
-            norm = ImageNormalize(data, interval=ZScaleInterval())
+            fig.suptitle(title, fontname='monospace', fontsize=8)
 
-            for i in range(Nnods):
-                data = fits.getdata(files[i], ext=1)
-
-                ax[i,0].imshow(data, norm=norm, origin='lower', aspect='auto', interpolation='nearest')   
-
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    prof = np.nanmean(data, axis=1)
-                ax[i,1].step(prof, np.arange(np.shape(data)[0])-0.5, where='pre', linewidth=1, color='k')
+            for i, (label, nrs1_s2d, nrs2_s2d) in enumerate(plot_rows):
+                s2d_file = nrs1_s2d if det == 'nrs1' else nrs2_s2d
+                if s2d_file:
+                    data = fits.getdata(s2d_file, ext=1)
+                    ax[i,0].imshow(data, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        prof = np.nanmedian(data, axis=1)
+                    ax[i,1].step(prof, np.arange(data.shape[0])-0.5, where='pre', linewidth=1, color='k')
 
                 ax[i,1].tick_params(labelleft=False)
-
                 ax[i,1].set_ylim(*ax[i,0].get_ylim())
-                
-                ax[i,1].set_ylabel(files[i].split('_')[-4], fontname='monospace')
+                ax[i,1].set_ylabel(label, fontname='monospace')
                 ax[i,1].yaxis.set_label_position("right")
 
             for i in range(Nnods-1):
                 ax[i,0].tick_params(labelbottom=False)
                 ax[i,1].tick_params(labelbottom=False)
-            
-            xmins, xmaxs = [], []
-            for i in range(Nnods):
-                xmini, xmaxi = ax[i,1].get_xlim()
-                xmins.append(xmini)
-                xmaxs.append(xmaxi)
-            
+
+            xmins = [ax[i,1].get_xlim()[0] for i in range(Nnods)]
+            xmaxs = [ax[i,1].get_xlim()[1] for i in range(Nnods)]
             for i in range(Nnods):
                 ax[i,1].set_xlim(min(xmins), max(xmaxs))
 
-            plt.savefig(os.path.join(workspace_dir, f'{root}_{source_id}_nods.pdf'), dpi=300)
+            plt.savefig(os.path.join(workspace_dir, f'{root}_{source_id}_{plot_suffix}.pdf'), dpi=300)
             plt.close()
 
 
@@ -1672,9 +1903,10 @@ def run_stage2b_single_slitlet(
 
 
 def run_stage3_single_source(
-        cal_files: List, 
-        workspace_dir: str, 
-        product_name: str, 
+        cal_files: List,
+        workspace_dir: str,
+        product_name: str,
+        source_id: int,
         cleanup_asn: bool = True,
         cleanup_crfs: bool = True,
     ):
@@ -1706,7 +1938,6 @@ def run_stage3_single_source(
             # steps={'extract_1d':{'override_extract1d':('jwst_nirspec_extract1d_4px.json')}}
         )
 
-        source_id = int(product_name.split('_')[-1])
         if os.path.exists(f'{product_name}_s{source_id:09d}_s2d.fits'):
             os.rename(f'{product_name}_s{source_id:09d}_s2d.fits', f'{product_name}_s2d.fits')
         if os.path.exists(f'{product_name}_s{source_id:09d}_x1d.fits'):
@@ -1852,6 +2083,90 @@ def extract_with_profile(profile, data, error, mask=None, ivw=False):
             fnu_err = np.sqrt(np.nansum(profile*variance, axis=0))
 
     return fnu, fnu_err
+
+
+def combine_1d_spectra(wavelengths, fluxes, errors, exposure_times, common_wave,
+                       sigma_clip_enabled=True, sigma_clip_low=3.0,
+                       sigma_clip_high=3.0, sigma_clip_maxiters=5):
+    """
+    Combine multiple 1D spectra onto a common wavelength grid via exposure-time weighting + sigma clipping.
+
+    Parameters
+    ----------
+    wavelengths : list of ndarray  — per-spectrum wavelength arrays
+    fluxes : list of ndarray       — per-spectrum flux arrays (fnu in uJy)
+    errors : list of ndarray       — per-spectrum error arrays
+    exposure_times : list of float — per-spectrum effective exposure times (seconds)
+    common_wave : ndarray          — target wavelength grid
+
+    Returns
+    -------
+    combined_flux : ndarray
+    combined_error : ndarray
+    n_combined : ndarray (int) — number of spectra contributing per pixel
+    """
+    from spectres import spectres
+    from astropy.stats import sigma_clip
+
+    n_spec = len(fluxes)
+    n_wave = len(common_wave)
+    exposure_times = np.asarray(exposure_times, dtype=float)
+
+    # Resample each spectrum onto the common wavelength grid
+    resampled_flux = np.full((n_spec, n_wave), np.nan)
+    resampled_err = np.full((n_spec, n_wave), np.nan)
+
+    for i in range(n_spec):
+        try:
+            resampled_flux[i], resampled_err[i] = spectres(
+                common_wave, wavelengths[i], fluxes[i],
+                spec_errs=errors[i], fill=np.nan,
+            )
+        except Exception as e:
+            log(f"Warning: spectres failed for spectrum {i}: {e}")
+            continue
+
+    # Exposure-time-weighted combination per wavelength pixel
+    combined_flux = np.full(n_wave, np.nan)
+    combined_error = np.full(n_wave, np.nan)
+    n_combined = np.zeros(n_wave, dtype=int)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+
+        for j in range(n_wave):
+            f_col = resampled_flux[:, j]
+            e_col = resampled_err[:, j]
+
+            # Mask invalid pixels
+            valid = np.isfinite(f_col) & np.isfinite(e_col) & (e_col > 0)
+            if not np.any(valid):
+                continue
+
+            f_valid = f_col[valid]
+            e_valid = e_col[valid]
+            w_valid = exposure_times[valid]
+
+            # Sigma clipping (only if >= 3 spectra)
+            if sigma_clip_enabled and len(f_valid) >= 3:
+                clipped = sigma_clip(f_valid, sigma_lower=sigma_clip_low,
+                                     sigma_upper=sigma_clip_high,
+                                     maxiters=sigma_clip_maxiters,
+                                     masked=True)
+                mask = ~clipped.mask
+                f_valid = f_valid[mask]
+                e_valid = e_valid[mask]
+                w_valid = w_valid[mask]
+
+            if len(f_valid) == 0:
+                continue
+
+            w = w_valid / np.sum(w_valid)
+            combined_flux[j] = np.sum(w * f_valid)
+            combined_error[j] = np.sqrt(np.sum((w * e_valid)**2))
+            n_combined[j] = len(f_valid)
+
+    return combined_flux, combined_error, n_combined
 
 
 def opt_ext_single_source(
@@ -2112,6 +2427,290 @@ def opt_ext_single_source(
     x1d.close()
 
 
+def combine_per_eg_spectra(
+    per_eg_spec_files,
+    all_cal_files,
+    workspace_dir, product_name, source_id, filter_grating,
+    sigma_clip=True, sigma_clip_low=3.0, sigma_clip_high=3.0,
+    sigma_clip_maxiters=5, plot_profiles=True, plot_optext=True, version='v0.1',
+):
+    """
+    1D combination: combine per-exp_group 1D spectra (exposure-time weighted) + produce stacked 2D.
+
+    Parameters
+    ----------
+    per_eg_spec_files : list of str
+        Basenames of per-exp_group _spec.fits files
+    all_cal_files : list of str
+        All cal_bkgsub filenames for producing the stacked 2D
+    workspace_dir : str
+        Working directory
+    product_name : str
+        Output product name (without extension)
+    source_id : int
+        Source ID
+    filter_grating : str
+        Filter/grating combination string
+    """
+    log(f"Stage3 (1D combine): combining {len(per_eg_spec_files)} per-exp_group spectra for {product_name}")
+
+    # --- Step 1: Read individual 1D spectra from each per-exp_group _spec.fits ---
+    extraction_cols = {
+        'opt': ('fnu', 'fnu_err'),
+        '3px': ('fnu_3px', 'fnu_3px_err'),
+        '4px': ('fnu_4px', 'fnu_4px_err'),
+        '5px': ('fnu_5px', 'fnu_5px_err'),
+    }
+
+    per_eg_data = {key: {'wavelengths': [], 'fluxes': [], 'errors': []} for key in extraction_cols}
+    exposure_times = []
+
+    for spec_file in per_eg_spec_files:
+        spec_path = os.path.join(workspace_dir, spec_file)
+        with fits.open(spec_path) as hdul:
+            exposure_times.append(float(hdul['PRIMARY'].header.get('EFFEXPTM', 1.0)))
+            spec1d = hdul['SPEC1D'].data
+            wave = spec1d['wave']
+            for key, (flux_col, err_col) in extraction_cols.items():
+                per_eg_data[key]['wavelengths'].append(wave.copy())
+                per_eg_data[key]['fluxes'].append(spec1d[flux_col].copy())
+                per_eg_data[key]['errors'].append(spec1d[err_col].copy())
+
+    # --- Step 2: Stacked 2D via Spec3Pipeline on ALL cal_bkgsub files ---
+    run_stage3_single_source(all_cal_files, workspace_dir, product_name, source_id)
+
+    # --- Step 3: Get common wavelength grid from stacked x1d ---
+    x1d_file = os.path.join(workspace_dir, f'{product_name}_x1d.fits')
+    s2d_file = os.path.join(workspace_dir, f'{product_name}_s2d.fits')
+    x1d = fits.open(x1d_file)
+    s2d = fits.open(s2d_file)
+    common_wave = x1d['EXTRACT1D'].data['WAVELENGTH'].copy()
+
+    # --- Step 4: Combine ALL extraction columns via exposure-time weighting ---
+    combined = {}
+    for key in extraction_cols:
+        c_flux, c_err, c_n = combine_1d_spectra(
+            per_eg_data[key]['wavelengths'],
+            per_eg_data[key]['fluxes'],
+            per_eg_data[key]['errors'],
+            exposure_times,
+            common_wave,
+            sigma_clip_enabled=sigma_clip,
+            sigma_clip_low=sigma_clip_low,
+            sigma_clip_high=sigma_clip_high,
+            sigma_clip_maxiters=sigma_clip_maxiters,
+        )
+        combined[key] = (c_flux, c_err, c_n)
+
+    # --- Step 5: Extraction profiles from stacked 2D (for visualization) ---
+    s2d_sci = s2d['SCI'].data * 1e12  # MJy to uJy
+    s2d_err = s2d['ERR'].data * 1e12
+    s2d_mask = s2d['WHT'].data == 0
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        collapsed = np.nanmedian(s2d_sci, axis=1)
+    x1d_start = x1d['EXTRACT1D'].header['EXTRYSTR'] - 1
+    x1d_stop = x1d['EXTRACT1D'].header['EXTRYSTP']
+    cen = (x1d_start + x1d_stop) / 2
+    profile_opt = optext_profile(collapsed, x1d_start, x1d_stop)
+    if all(np.isnan(profile_opt)):
+        profile_opt = boxcar_profile(cen - 1.5, cen + 1.5, len(collapsed))
+    profile_3px = boxcar_profile(cen - 1.5, cen + 1.5, len(collapsed))
+    profile_4px = boxcar_profile(cen - 2.0, cen + 2.0, len(collapsed))
+    profile_5px = boxcar_profile(cen - 2.5, cen + 2.5, len(collapsed))
+
+    if plot_profiles:
+        fig, axes = plt.subplots(1, 4, figsize=(10, 2))
+        for ax, prof, label in zip(axes, [profile_opt, profile_3px, profile_4px, profile_5px],
+                                   ['Optimal', '3px boxcar', '4px boxcar', '5px boxcar']):
+            ax.stairs(collapsed / np.nanmax(collapsed), np.arange(len(collapsed) + 1), color='k', zorder=1000)
+            ax.set_ylim(*ax.get_ylim())
+            ax.stairs(prof / np.nanmax(prof), np.arange(len(collapsed) + 1), color='tab:red')
+            ax.stairs(prof / np.nanmax(prof), np.arange(len(collapsed) + 1), color='tab:red', fill=True, alpha=0.2)
+            ax.axhline(0, color='0.3', linewidth=0.5, linestyle='--')
+            ax.axvline(x1d_start, linewidth=0.5, color='b', linestyle=':')
+            ax.axvline(x1d_stop, linewidth=0.5, color='b', linestyle=':')
+            ax.axvline(cen, linewidth=0.5, color='b', linestyle=':')
+            ax.set_title(label)
+        out_filename = os.path.join(workspace_dir, f'{product_name}_spec.fits')
+        plt.savefig(out_filename.replace('_spec.fits', '_prof.pdf'))
+        plt.close()
+
+    # --- Step 6: Package final _spec.fits ---
+    # PRIMARY header
+    ph = fits.Header()
+    ph['EXTEND'] = 'T'
+    ph['FILENAME'] = (f'{product_name}_spec.fits', 'Name of the file')
+    for keyword in ['ORIGIN', 'TIMESYS', 'TIMEUNIT', 'TELESCOP', 'PROGRAM', 'PI_NAME', 'CATEGORY', 'DATE-OBS',
+                    'TIME-OBS', 'VISIT_ID', 'OBSERVTN', 'TARGPROP', 'TARGNAME', 'FILTER', 'GRATING', 'MSAMETFL',
+                    'MSAMETID', 'MSACONID', 'EXP_TYPE', 'READPATT', 'EFFEXPTM', 'CAL_VER', 'CAL_VCS', 'CRDS_VER',
+                    'CRDS_CTX', 'R_AREA', 'R_CAMERA', 'R_COLLIM', 'R_DARK', 'R_DISPER', 'R_DISTOR', 'R_EXTR1D',
+                    'R_FILOFF', 'R_FLAT', 'R_DFLAT', 'R_FFLAT', 'R_SFLAT', 'R_FORE', 'R_FPA', 'R_GAIN', 'R_IFUFOR',
+                    'R_IFUPOS', 'R_IFUSLI', 'R_LINEAR', 'R_MASK', 'R_MSA', 'R_OTE', 'R_PTHLOS', 'R_PHOTOM', 'R_READNO',
+                    'R_REFPIX', 'R_REGION', 'R_SATURA', 'R_SPCWCS', 'R_SUPERB', 'R_WAVCOR', 'R_WAVRAN', 'S_WCS',
+                    'S_BKDSUB', 'S_BPXSLF', 'S_BARSHA', 'S_CHGMIG', 'S_CLNFNS', 'S_DARK', 'S_DQINIT', 'S_EXTR1D',
+                    'S_EXTR2D', 'S_FLAT', 'S_GANSCL', 'S_GRPSCL', 'S_IMPRNT', 'S_IPC', 'S_JUMP', 'S_LINEAR',
+                    'S_MSBSUB', 'S_MSAFLG', 'S_NSCLEN', 'S_OUTLIR', 'S_PTHLOS', 'S_PHOTOM', 'S_PXREPL', 'S_RAMP',
+                    'S_REFPIX', 'S_RESAMP', 'S_SATURA', 'S_SRCTYP', 'S_SUPERB', 'S_WAVCOR', 'NDRIZ', 'RESWHT',
+                    'PIXFRAC', 'PXSCLRT']:
+        try:
+            ph[keyword] = (x1d['PRIMARY'].header[keyword], x1d['PRIMARY'].header.comments[keyword])
+        except KeyError:
+            continue
+    ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
+    ph['CMPFRVER'] = (version, 'Version of CAMPFIRE reduction')
+    ph['CMPFRSTG'] = ('stage3-1d', 'CAMPFIRE stage that produced this file')
+    ph['NCOMBINE'] = (len(per_eg_spec_files), 'Number of per-exp_group spectra combined')
+    primary = fits.PrimaryHDU(header=ph)
+
+    # SPEC1D: 1D-combined columns
+    def fnu_to_flam(fnu, wave):
+        return fnu / wave**2 * 2.99792458e-19
+
+    spec1d = Table()
+    spec1d.add_column(Column(name='wave', data=common_wave, description='Wavelength', unit='um'))
+
+    fnu_opt, fnu_opt_err, n_opt = combined['opt']
+    spec1d.add_column(Column(name='fnu', data=fnu_opt, description='1D-combined optimally extracted flux', unit='uJy'))
+    spec1d.add_column(Column(name='fnu_err', data=fnu_opt_err, description='1D-combined optimally extracted flux error', unit='uJy'))
+    spec1d.add_column(Column(name='flam', data=fnu_to_flam(fnu_opt, common_wave), description='1D-combined optimal flux, flam', unit='erg / (s cm2 Angstrom)'))
+    spec1d.add_column(Column(name='flam_err', data=fnu_to_flam(fnu_opt_err, common_wave), description='1D-combined optimal flux error, flam', unit='erg / (s cm2 Angstrom)'))
+
+    for size in ['3px', '4px', '5px']:
+        fnu_box, fnu_box_err, _ = combined[size]
+        spec1d.add_column(Column(name=f'fnu_{size}', data=fnu_box, description=f'1D-combined {size} boxcar flux', unit='uJy'))
+        spec1d.add_column(Column(name=f'fnu_{size}_err', data=fnu_box_err, description=f'1D-combined {size} boxcar flux error', unit='uJy'))
+        spec1d.add_column(Column(name=f'flam_{size}', data=fnu_to_flam(fnu_box, common_wave), description=f'1D-combined {size} boxcar flux, flam', unit='erg / (s cm2 Angstrom)'))
+        spec1d.add_column(Column(name=f'flam_{size}_err', data=fnu_to_flam(fnu_box_err, common_wave), description=f'1D-combined {size} boxcar flux error, flam', unit='erg / (s cm2 Angstrom)'))
+
+    spec1d.add_column(Column(name='n_combined', data=n_opt, description='Number of spectra combined per pixel'))
+
+    spec1d_hdu = table_to_hdu(spec1d)
+    spec1d_hdu.name = 'SPEC1D'
+
+    # PROF1D
+    prof1d = Table()
+    prof1d['ypos'] = np.arange(len(collapsed)) + 0.5
+    prof1d['opt'] = profile_opt
+    prof1d['3px'] = profile_3px
+    prof1d['4px'] = profile_4px
+    prof1d['5px'] = profile_5px
+    prof1d_hdu = table_to_hdu(prof1d)
+    prof1d_hdu.name = 'PROF1D'
+
+    # 2D extensions from stacked s2d
+    s2dh = fits.Header()
+    for keyword in ['EXTNAME', 'SRCTYPE', 'XPOSURE', 'PHOTMJSR', 'PHOTUJA2', 'PIXAR_SR', 'PIXAR_A2', 'DISPAXIS',
+                    'SPORDER', 'SOURCEID', 'STLARITY', 'SRCRA', 'SRCDEC', 'WAVECOR', 'PTHLOSS']:
+        if keyword in s2d['SCI'].header:
+            s2dh[keyword] = (s2d['SCI'].header[keyword], s2d['SCI'].header.comments[keyword])
+
+    sci_hdu = fits.ImageHDU(data=s2d['SCI'].data, header=s2dh, name='SCI')
+    err_hdu = fits.ImageHDU(data=s2d['ERR'].data, header=s2dh, name='ERR')
+    wav_hdu = fits.ImageHDU(data=s2d['WAVELENGTH'].data, header=s2dh, name='WAVELENGTH')
+    wht_hdu = fits.ImageHDU(data=s2d['WHT'].data, header=s2dh, name='WHT')
+    exp_hdu = s2d['EXPOSURES']
+
+    out_filename = os.path.join(workspace_dir, f'{product_name}_spec.fits')
+    spec = fits.HDUList(hdus=[primary, spec1d_hdu, sci_hdu, err_hdu, wav_hdu, wht_hdu, prof1d_hdu, exp_hdu])
+    spec.writeto(out_filename, overwrite=True)
+    log(f"Stage3 (1D combine): wrote {out_filename}")
+
+    # Diagnostic plot
+    if plot_optext:
+        import matplotlib as mpl
+        from astropy.stats import sigma_clipped_stats
+        from astropy.utils.exceptions import AstropyWarning
+
+        wave = common_wave
+        fnu = fnu_opt
+        fnu_err = fnu_opt_err
+        flam = fnu_to_flam(fnu_opt, common_wave)
+        flam_err = fnu_to_flam(fnu_opt_err, common_wave)
+
+        fig = plt.figure(figsize=(8, 6), constrained_layout=True, dpi=300)
+        gs = mpl.gridspec.GridSpec(nrows=3, ncols=2, width_ratios=[9, 1],
+                                  height_ratios=[1, 2.5, 2.5], figure=fig)
+        ax_2d = plt.subplot(gs[0, 0])
+        ax_1d_fnu = plt.subplot(gs[1, 0])
+        ax_1d_flam = plt.subplot(gs[2, 0])
+        ax_prof = plt.subplot(gs[0, 1])
+
+        sci_data = s2d['SCI'].data
+        err_data = s2d['ERR'].data
+        nsci = sci_data / err_data
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=AstropyWarning)
+            std = sigma_clipped_stats(nsci, sigma=3)[2]
+        snr_2d = nsci / std
+
+        vmin, vmax = -3, 8
+        cmap = plt.colormaps['viridis']
+        cmap.set_bad('0.8')
+
+        im = ax_2d.pcolormesh(wave, prof1d['ypos'] - cen, snr_2d,
+                             vmin=vmin, vmax=vmax, cmap=cmap, rasterized=True)
+        ax_2d.set_ylabel('$y$ [pix]')
+        ax_2d.set_ylim(-10, 10)
+        ax_2d.minorticks_on()
+        ax_2d.tick_params(direction='in', which='both', axis='y')
+
+        valid = np.isfinite(fnu) & np.isfinite(fnu_err)
+
+        ax_1d_fnu.step(wave, fnu, where='mid', color='k', linewidth=1)
+        ax_1d_fnu.fill_between(wave, fnu - fnu_err, fnu + fnu_err,
+            alpha=0.15, facecolor='k', edgecolor='none', step='mid')
+        ax_1d_fnu.set_ylabel(r'$f_{\nu}$ [μJy]')
+
+        ax_1d_flam.step(wave, flam, where='mid', color='k', linewidth=1)
+        ax_1d_flam.fill_between(wave, flam - flam_err, flam + flam_err,
+            alpha=0.15, facecolor='k', edgecolor='none', step='mid')
+        ax_1d_flam.set_ylabel(r'$f_{\lambda}$ [erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$]')
+        ax_1d_flam.set_xlabel('Observed Wavelength [μm]')
+
+        ax_1d_fnu.grid(True, alpha=0.2, linewidth=1, zorder=-1000)
+        ax_1d_flam.grid(True, alpha=0.2, linewidth=1, zorder=-1000)
+        ax_1d_fnu.minorticks_on()
+        ax_1d_flam.minorticks_on()
+        ax_1d_fnu.tick_params(direction='in', which='both')
+        ax_1d_flam.tick_params(direction='in', which='both')
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            p = np.nanmedian(sci_data, axis=1)
+            p /= np.nanmax(p[profile_opt != 0])
+        ax_prof.step(p, prof1d['ypos'] - cen, where='post', color='k')
+        ax_prof.fill_betweenx(prof1d['ypos'] - cen, np.zeros_like(prof1d['ypos']),
+                             profile_opt / np.nanmax(profile_opt),
+                             facecolor='r', alpha=0.3, edgecolor='none', step='pre')
+        ax_prof.axvline(0, color='k', linewidth=1, zorder=-1000, alpha=0.2)
+        ax_prof.minorticks_on()
+        ax_prof.set_xlim(-0.3, 1.2)
+        ax_prof.set_ylim(-10, 10)
+        ax_prof.tick_params(labelbottom=False, bottom=False, labelleft=False,
+                           direction='in', which='both')
+
+        xmin = wave.min()
+        xmax = wave.max()
+        ax_2d.set_xlim(xmin, xmax)
+        ax_1d_fnu.set_xlim(xmin, xmax)
+        ax_1d_flam.set_xlim(xmin, xmax)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            ymax = np.nanpercentile(fnu + fnu_err, 97) * 1.2
+            ax_1d_fnu.set_ylim(-0.1 * ymax, ymax)
+            ymax = np.nanpercentile(flam + flam_err, 97) * 1.2
+            ax_1d_flam.set_ylim(-0.1 * ymax, ymax)
+
+        fig.suptitle(product_name + '_spec (1D combine)', fontname='monospace')
+
+        plt.savefig(out_filename.replace('_spec.fits', '_spec.pdf'))
+        plt.close()
+
+    x1d.close()
+    s2d.close()
 
 
 
@@ -2216,6 +2815,8 @@ class ReductionEngine:
 
         bkg_kwargs = dict(
             override_wavelength_range = config.get('override_wavelength_range', {}),
+            pictureframe_dir = self.pictureframe_dir,
+            subtract_2d = config.get('subtract_2d', False),
             box_size = config.get('box_size', 8),
             sigma_clip = config.get('sigma_clip', True),
             bkg_estimator = config.get('bkg_estimator', 'median'),
@@ -2223,8 +2824,8 @@ class ReductionEngine:
             do_row_1f = config.get('do_row_1f', True),
             plot = config.get('plot', True),
             save_backup = False,
-            pictureframe_dir = self.pictureframe_dir,
         )
+
 
         if n_processes == 1:
 
@@ -2244,15 +2845,15 @@ class ReductionEngine:
             sleep(1)
             from multiprocessing import Pool
             from functools import partial
-            process_func = partial(
-                run_stage1_single_uncal,
-                workspace_dir=obs.workspace_dir,
-                **kwargs
-            )
-            with Pool(processes=n_processes) as pool:
-                pool.map(process_func, uncal_files)
+            # process_func = partial(
+            #     run_stage1_single_uncal,
+            #     workspace_dir=obs.workspace_dir,
+            #     **kwargs
+            # )
+            # with Pool(processes=n_processes) as pool:
+            #     pool.map(process_func, uncal_files)
 
-            if config['subtract_background'] and config['do_clean_flicker_noise']:
+            if config['subtract_background']:
                 rate_files = [os.path.join(obs.workspace_dir, f.replace('_uncal.fits','_rate.fits')) for f in uncal_files]
                 process_func = partial(
                     subtract_background_from_rate_file,
@@ -2261,6 +2862,139 @@ class ReductionEngine:
                 with Pool(processes=n_processes) as pool:
                     pool.map(process_func, rate_files)
 
+
+    def discover_files(
+        self,
+        obs: Observation, 
+        ext: str = 'cal', # e.g., cal, cal_bkgsub
+        source_ids = 'all',
+    ):    
+
+        # Create workspace 
+        obs.setup_workspace_directory(self.data_dir, self.products_dir, overwrite=False)
+        
+        # Discover *_cal.fits files in the workspace directory
+        paths = obs.glob(ext=f'_{ext}.fits')
+
+        if source_ids != 'all':
+            new_paths = []
+            for source_id in source_ids:
+                new_paths += [p for p in paths if f'_{source_id}_' in p]
+            paths = new_paths
+
+        filt, grat = [], []
+        PATTTYPE, PRIDTPTS, PATT_NUM, NUMDTHPT, NOD_TYPE, SUBPXPTS = [], [], [], [], [], []
+        SHUTTRID = []
+        for f in paths:
+            hdr = fits.getheader(f, ext=0)
+            filt.append(hdr['FILTER'])
+            grat.append(hdr['GRATING'])
+            PATTTYPE.append(hdr['PATTTYPE']) # = '2-POINT-WITH-NIRCAM-SIZE2' / Primary dither pattern type
+            PRIDTPTS.append(hdr['PRIDTPTS']) # =                    3 / Number of points in primary dither pattern
+            PATT_NUM.append(hdr['PATT_NUM']) # =                    1 / Position number within dither pattern
+            NUMDTHPT.append(hdr['NUMDTHPT']) # =                    6 / Total number of points in dither pattern
+            NOD_TYPE.append(hdr['NOD_TYPE']) # = '3-SHUTTER-SLITLET'  / Nod pattern type
+            SUBPXPTS.append(hdr['SUBPXPTS']) # =                    2 / Number of points in subpixel dither pattern
+            hdr1 = fits.getheader(f, ext=1)
+            SHUTTRID.append(hdr1['SHUTTRID'])
+
+        files = Table()
+        files['path'] = paths
+        files['name'] = [os.path.basename(f['path']) for f in files]
+        # Strip the known extension before parsing source_id,
+        # so e.g. both _cal.fits and _cal_bkgsub.fits parse correctly
+        files['source_id'] = [int(os.path.basename(p).replace(f'_{ext}.fits', '').split('_')[-1]) for p in paths]
+        files['detector'] = ['nrs'+f['name'].split('nrs')[-1][0] for f in files]
+        files['obs'] = [f['name'].split('_')[0] for f in files]
+        files['filter']=filt
+        files['grating']=grat
+        files['dither_pattern_type']=PATTTYPE
+        files['primary_dither_points']=PRIDTPTS
+        files['subpixel_dither_points']=SUBPXPTS
+        files['total_dither_points']=NUMDTHPT
+        files['dither_position']=PATT_NUM
+        files['nod_type']=NOD_TYPE
+        files['filter_grating'] = [f['grating'].lower()+'_'+f['filter'].lower() for f in files]
+        files['config'] = [f['name'].split('_')[1] for f in files]
+        files['nod'] = [f['name'].split('_')[2] for f in files]
+        files['root'] = ['_'.join(f['name'].split('_')[:2]) for f in files]
+        files['shutter_id'] = SHUTTRID
+
+        return files
+
+    def group_files(
+            self, 
+            files: Table,
+    ):
+        '''
+        Group files into individual nod patterns for background subtraction.
+        Adds a 'bkg_group' column to `files` with a unique integer index per background subtraction group (per-detector),
+        and an 'exp_group' column grouping files that belong to the same exposure across both detectors.
+        '''
+
+        # Initialize group columns with -1 (unassigned sentinel)
+        files['bkg_group'] = -1
+        files['exp_group'] = -1
+        files['subpx_dither'] = -1
+        bkg_group_id = 0
+        exp_group_id = 0
+
+        for source_id in np.unique(files['source_id']):
+            mask1 = files['source_id'] == source_id
+            
+            for observation in np.unique(files['obs'][mask1]):
+                mask2 = mask1 & (files['obs'] == observation)
+
+                for config in np.unique(files['config'][mask2]):
+                    mask3 = mask2 & (files['config'] == config)
+                    files3 = files[mask3]
+
+                    root = files3['root'][0]
+
+                    subpx_dither = np.ones(len(files3))
+
+                    if len(files3) == 0:
+                        raise Exception(f"No files found for group {root}. Something went wrong!")
+
+                    if files3['dither_pattern_type'][0] == 'NONE':
+                        pass
+
+                    elif (files3['dither_pattern_type'][0] == '2-POINT-WITH-NIRCAM-SIZE2') and (files3['nod_type'][0] == '3-SHUTTER-SLITLET') and (files3['subpixel_dither_points'][0] == 2):
+                        subpx_dither = np.where(np.isin(files3['dither_position'], [1,3,5]), 1, 2)
+                    
+                    else:
+                        raise NotImplementedError(f"File grouping for dither pattern {files3['dither_pattern_type'][0]} not implemented")
+
+                    for subpx in np.unique(subpx_dither):
+                        mask3_indices = np.where(mask3)[0]
+                        subpx_indices = mask3_indices[subpx_dither == subpx]
+
+                        # Assign subpx_dither and exp_group to all files in this subpx group (both detectors)
+                        files['subpx_dither'][subpx_indices] = int(subpx)
+                        files['exp_group'][subpx_indices] = exp_group_id
+
+                        # Assign bkg_group per detector
+                        for detector in np.unique(files['detector'][mask3]):
+                            det_mask = files['detector'][subpx_indices] == detector
+                            files['bkg_group'][subpx_indices[det_mask]] = bkg_group_id
+                            bkg_group_id += 1
+
+                        exp_group_id += 1
+
+        # Sanity check: make sure every row got assigned
+        if np.any(files['bkg_group'] == -1):
+            unassigned = np.sum(files['bkg_group'] == -1)
+            raise RuntimeError(f"{unassigned} files were not assigned to a bkg_group!")
+
+        if np.any(files['exp_group'] == -1):
+            unassigned = np.sum(files['exp_group'] == -1)
+            raise RuntimeError(f"{unassigned} files were not assigned to an exp_group!")
+
+        if np.any(files['subpx_dither'] == -1):
+            unassigned = np.sum(files['subpx_dither'] == -1)
+            raise RuntimeError(f"{unassigned} files were not assigned a subpx_dither!")
+
+        return files
 
     def run_stage2a(
         self,
@@ -2283,12 +3017,12 @@ class ReductionEngine:
         # if not obs.directories_setup:
         obs.setup_workspace_directory(self.data_dir, self.products_dir, overwrite=False)
         
+        # Run stage2a processing (assign_wcs, flat_fielding, pathloss, etc. )
         if n_processes == 1:
             source_ids_processed = []
             for rate_file in obs.rate_files:
+                continue
                 source_ids_processed += run_stage2a_single_rate(rate_file, obs, **kwargs)
-
-
         else:
             from multiprocessing import Pool
             from functools import partial
@@ -2310,147 +3044,127 @@ class ReductionEngine:
                 source_ids_processed += result
 
 
-        source_ids_processed = list(set(source_ids_processed))
+        # source_ids_processed = list(set(source_ids_processed))
+        source_ids_processed = list(set(source_ids))
 
-        all_cal_files = obs.glob("_cal.fits")
+        files = self.discover_files(obs, ext='cal', source_ids=source_ids_processed)
+        files = self.group_files(files)
+        
         if n_processes==1:
             for source_id in source_ids_processed:
-                fix_units(source_id, obs.workspace_dir)
+                fi = files[files['source_id'] == source_id]
 
-                cal_files = [f for f in all_cal_files if f'_{source_id}_' in f]
-                for cal_file in cal_files:
-                    resample_single_exposure(os.path.basename(cal_file), obs.workspace_dir)
+                for f in fi:
+                    fix_units(f)
+                    if plot:
+                        resample_single_exposure(f)
 
                 if plot: 
-                    plot_stage2a_results(source_id, obs.workspace_dir)
+                    plot_stage2a_results(fi)
         else:
-            from multiprocessing import Pool
-            from functools import partial
-
-            # first, fix units for everything
+            # Step 1: Fix units on all cal files in parallel
             with Pool(processes=n_processes) as pool:
-                pool.map(partial(fix_units, workspace_dir=obs.workspace_dir), source_ids_processed)
+                pool.map(fix_units, list(files))
 
-            # then, collect all cal files and make s2ds
-            cal_files = [os.path.basename(f) for f in all_cal_files if int(f.split('_')[-2]) in source_ids_processed]
-            with Pool(processes=n_processes) as pool:
-                pool.map(partial(resample_single_exposure, workspace_dir=obs.workspace_dir), cal_files)
+            if plot:
+                # Step 2: Resample all cal files to s2d in parallel
+                with Pool(processes=n_processes) as pool:
+                    pool.map(resample_single_exposure, list(files))
 
-            # finally, make plots!
-            with Pool(processes=n_processes) as pool:
-                pool.map(partial(plot_stage2a_results, workspace_dir=obs.workspace_dir), source_ids_processed)
+                # Step 3: Plot per source in parallel
+                plot_inputs = [files[files['source_id'] == sid] for sid in source_ids_processed]
+                with Pool(processes=n_processes) as pool:
+                    pool.map(plot_stage2a_results, plot_inputs)
                 
                     
 
 
     def run_stage2b(
         self,
-        obs: Observation, 
+        obs: Observation,
         source_ids = 'all',
         overwrite: bool = False,
         n_processes=1,
-    ):    
+    ):
 
         config = self.get_stage_config('stage2', obs)
         log(f"Stage 2b config for {obs.name}: {config}")
-        
-        kwargs = dict(
-            rectify = config.get('rectify'),
-        )
 
-        # Create workspace 
-        obs.setup_workspace_directory(self.data_dir, self.products_dir, overwrite=False)
-        
+        rectify = config.get('rectify', DEFAULT_STAGE2_CONFIG['rectify'])
+        plot_bkgsub = config.get('plot_bkgsub', DEFAULT_STAGE2_CONFIG['plot_bkgsub'])
 
-        # Discover *_cal.fits files in the workspace directory
-        files = Table()
-        files['path'] = obs.glob(ext='_cal.fits')
-        files['name'] = [os.path.basename(f['path']) for f in files]
-        files['source_id'] = [int(f['name'].split('_')[-2]) for f in files]
-        files['detector'] = ['nrs'+f['name'].split('nrs')[-1][0] for f in files]
-        files['obs'] = [f['name'].split('_')[0] for f in files]
-        files['filter']=[fits.getheader(f['path'])['FILTER'] for f in files]
-        files['grating']=[fits.getheader(f['path'])['GRATING'] for f in files]
-        files['filter_grating'] = [f['grating'].lower()+'_'+f['filter'].lower() for f in files]
-        files['config'] = [f['name'].split('_')[1] for f in files]
-        files['nod'] = [f['name'].split('_')[2] for f in files]
+        # Discover and group cal files
+        files = self.discover_files(obs, ext='cal', source_ids=source_ids)
+        if len(files) == 0:
+            log(f"No cal files found for {obs.name}")
+            return
+        files = self.group_files(files)
 
-        # PATTTYPE = 'NONE' for most, PATTTYPE = '...' for UNCOVER
-        # NOD_TYPE = '3-SHUTTER-SLITLET'
-
-        # files.pprint()
-
-        source_ids_to_process = np.unique(files['source_id'])
-        if source_ids != 'all': 
-            source_ids_to_process = source_ids_to_process[np.isin(source_ids_to_process, source_ids)]
-
-        # Preparation stage - build task list
+        # Build task list by iterating over bkg_groups
         tasks = []
-        for source_id in source_ids_to_process:
-            files1 = files[files['source_id']==source_id]
-            
-            for detector in np.unique(files1['detector']):
-                files2 = files1[files1['detector']==detector]
+        for bg in np.unique(files['bkg_group']):
+            bg_files = files[files['bkg_group'] == bg]
+            source_id = bg_files['source_id'][0]
+            root = bg_files['root'][0]
+            detector = bg_files['detector'][0]
 
-                for observation in np.unique(files2['obs']):
-                    files3 = files2[files2['obs']==observation]
+            # Skip check: do products already exist?
+            all_bkgsub_exist = all(
+                os.path.exists(f['path'].replace('_cal.fits', '_cal_bkgsub.fits'))
+                for f in bg_files
+            )
+            if rectify:
+                all_s2d_exist = all(
+                    os.path.exists(f['path'].replace('_cal.fits', '_s2d_bkgsub.fits'))
+                    for f in bg_files
+                )
+                skip = all_bkgsub_exist and all_s2d_exist and not overwrite
+            else:
+                skip = all_bkgsub_exist and not overwrite
 
-                    for config in np.unique(files3['config']):
-                        files4 = files3[files3['config'] == config]
+            if skip:
+                log(f'ID{source_id}: bkgsub products exist for {root}_*_{detector}_{source_id}, skipping (overwrite=False)')
+                continue
 
-                        files4.pprint()
-                    
-                        if len(files4)==0: 
-                            raise Exception("This shouldn't happen!")
-                        elif len(files4)==2:
-                            # open each file and ensure its 2 shutter slitlet
-                            pass
-                        elif len(files4)==3:
-                            # open each file and ensure its 3 shutter slitlet
-                            pass
-                        elif len(files4)==5:
-                            # open each file and ensure its 5 shutter slitlet
-                            pass
-                        else:
-                            # some weird dither pattern! 
-                            # e.g., for UNCOVER, there would be 6 files 
-                            # we need to deduce from the header that this is a 3-shutter slitlet and 
-                            # split those 6 files into two groups 1-3, 4-6
-                            pass
+            # Look up bkg_overrides by root + source_id
+            bkg_overrides = obs.bkg_overrides.get(root)
+            if bkg_overrides is not None:
+                bkg_overrides = bkg_overrides.get(str(source_id))
 
-                        # TODO come back to this logic! 
-                        target_files = files4 # for now
-
-                        # Check if we should skip
-                        if kwargs['rectify']:
-                            if all([os.path.exists(f['path'].replace('_cal.fits','_cal_bkgsub.fits')) for f in target_files]) and all([os.path.exists(f['path'].replace('_cal.fits','_s2d_bkgsub.fits')) for f in target_files]) and not overwrite:
-                                log(f'ID{source_id}: Background-subtracted stage2 products already exist for {observation}_{config}_*_{detector}_{source_id}, skipping (overwrite=False)')
-                                continue 
-                        else:
-                            if all([os.path.exists(f['path'].replace('_cal.fits','_cal_bkgsub.fits')) for f in target_files]) and not overwrite:
-                                log(f'ID{source_id}: Background-subtracted stage2 products already exist for {observation}_{config}_*_{detector}_{source_id}, skipping (overwrite=False)')
-                                continue 
-
-                        root = '_'.join(target_files['name'][0].split('_')[:2])
-                        bkg_overrides = obs.bkg_overrides.get(root)
-                        if bkg_overrides is not None:
-                            bkg_overrides = bkg_overrides.get(str(source_id))
-
-                        log(f'ID{source_id}: Running stage2b (bkg-subtraction) for {observation}_{config}_*_{detector}_{source_id}')
-                        
-                        # Store arguments for run_stage2b_single_slitlet
-                        tasks.append((target_files['name'], obs.workspace_dir, bkg_overrides))
+            log(f'ID{source_id}: Running stage2b for bkg_group {bg} ({root}_{detector})')
+            tasks.append((list(bg_files['name']), obs.workspace_dir, bkg_overrides))
 
         # Execution stage
+        kwargs = dict(rectify=rectify)
         if n_processes > 1:
             from multiprocessing import Pool
-            # Create partial function with kwargs fixed
             worker = partial(run_stage2b_single_slitlet, **kwargs)
             with Pool(n_processes) as pool:
                 pool.starmap(worker, tasks)
         else:
             for target_names, workspace, bkg_overrides in tasks:
                 run_stage2b_single_slitlet(target_names, workspace, bkg_overrides, **kwargs)
+
+        # Optional: plot background-subtracted 2D cutouts
+        if plot_bkgsub and rectify:
+            bkgsub_files = self.discover_files(obs, ext='cal_bkgsub', source_ids=source_ids)
+            if len(bkgsub_files) > 0:
+                bkgsub_files = self.group_files(bkgsub_files)
+                source_ids_done = np.unique(bkgsub_files['source_id'])
+                if n_processes > 1:
+                    from multiprocessing import Pool
+                    plot_inputs = [
+                        (bkgsub_files[bkgsub_files['source_id'] == sid], 'bkgsub')
+                        for sid in source_ids_done
+                    ]
+                    with Pool(n_processes) as pool:
+                        pool.starmap(plot_stage2a_results, plot_inputs)
+                else:
+                    for sid in source_ids_done:
+                        plot_stage2a_results(
+                            bkgsub_files[bkgsub_files['source_id'] == sid],
+                            plot_suffix='bkgsub',
+                        )
 
                 
     def run_stage3(
@@ -2473,39 +3187,27 @@ class ReductionEngine:
         )
         plot_profiles = config.get('plot_profiles', DEFAULT_STAGE3_CONFIG['plot_profiles'])
         plot_optext = config.get('plot_optext', DEFAULT_STAGE3_CONFIG['plot_optext'])
+        combine_method = config.get('combine_method', '2d')
 
-        # Create workspace 
-        obs.setup_workspace_directory(self.data_dir, self.products_dir, overwrite=False)
-        
-
-        # Discover *_cal.fits files in the workspace directory
-        files = Table()
+        # Discover and group files
         if bkg_subtraction_method == 'nodded':
-            files['path'] = obs.glob(ext='_cal_bkgsub.fits')
-            # files['path'] = sorted(glob.glob(os.path.join(obs.workspace_dir, "jw*_cal_bkgsub.fits")))
+            files = self.discover_files(obs, ext='cal_bkgsub', source_ids=source_ids)
         else:
             raise NotImplementedError
-        
-        
-        files['name'] = [os.path.basename(f['path']) for f in files]
-        files['source_id'] = [int(f['name'].split('_')[-3]) for f in files]
-        files['detector'] = ['nrs'+f['name'].split('nrs')[-1][0] for f in files]
-        files['obs'] = [f['name'].split('_')[0] for f in files]
-        files['filter']=[fits.getheader(f['path'])['FILTER'] for f in files]
-        files['grating']=[fits.getheader(f['path'])['GRATING'] for f in files]
-        files['filter_grating'] = [f['grating'].lower()+'_'+f['filter'].lower() for f in files]
-        files['config'] = [f['name'].split('_')[1] for f in files]
-        files['nod'] = [f['name'].split('_')[2] for f in files]
-        files['srcflux'] = [fits.getheader(f['path'])['SRCFLUX']=='T' if 'SRCFLUX' in fits.getheader(f['path']) else True  for f in files ] # temporary patch!
 
-        # files.pprint()
+        if len(files) == 0:
+            log(f"No cal_bkgsub files found for {obs.name}")
+            return
 
-        source_ids_to_process = np.unique(files['source_id'])
-        if source_ids != 'all': 
-            source_ids_to_process = source_ids_to_process[np.isin(source_ids_to_process, source_ids)]
+        files = self.group_files(files)
+
+        # Filter out files where source flux is not present (temporary patch)
+        files['srcflux'] = [fits.getheader(f['path'])['SRCFLUX']=='T' if 'SRCFLUX' in fits.getheader(f['path']) else True for f in files]
 
         tasks = []
-        for source_id in source_ids_to_process:
+        phase2_tasks = []  # 1D combination tasks (combine_method='1d' only)
+
+        for source_id in np.unique(files['source_id']):
             files1 = files[files['source_id']==source_id]
 
             for filter_grating in np.unique(files1['filter_grating']):
@@ -2514,42 +3216,107 @@ class ReductionEngine:
 
                 target_files.pprint()
 
-                if obs.combine_dither:
-                    # if we're combining all dithers (or, if there is only one dither) proceed from here
+                if combine_method == '2d':
+                    # Combine all dithers in 2D space: stack then extract
                     product_name = f"{obs.name}_{filter_grating}_{source_id}"
-                    if len(target_files)==0: 
+                    if len(target_files)==0:
                         continue
-                        #raise Exception("This shouldn't happen!")
-                    
-                    # TODO handle overwrite?
+
+                    # Handle overwrite
                     if os.path.exists(obs.workspace_dir + product_name + "_spec.fits") and not overwrite:
                         continue
 
-                    tasks.append((list(target_files['name']), obs.workspace_dir, product_name))
-                    
-                else:
-                    # otherwise, we need more logic to understand the dither pattern
-                    raise NotImplementedError
+                    tasks.append((list(target_files['name']), obs.workspace_dir, product_name, source_id))
 
-        # Execution stage
+                elif combine_method == '1d':
+                    # Combine dithers in 1D space: extract per-group, then combine
+                    # Phase 1: Per-exp_group products
+                    exp_groups = np.unique(target_files['exp_group'])
+                    for eg in exp_groups:
+                        eg_files = target_files[target_files['exp_group'] == eg]
+                        if len(eg_files) == 0:
+                            continue
+                        product_name = f"{obs.name}_{filter_grating}_{source_id}_g{eg}"
+                        if os.path.exists(os.path.join(obs.workspace_dir, product_name + "_spec.fits")) and not overwrite:
+                            continue
+                        tasks.append((list(eg_files['name']), obs.workspace_dir, product_name, source_id))
+
+                    # Phase 2: 1D combination of per-exp_group spectra
+                    final_product_name = f"{obs.name}_{filter_grating}_{source_id}"
+                    if os.path.exists(os.path.join(obs.workspace_dir, final_product_name + "_spec.fits")) and not overwrite:
+                        continue
+
+                    per_eg_spec_files = [
+                        f"{obs.name}_{filter_grating}_{source_id}_g{eg}_spec.fits"
+                        for eg in exp_groups
+                    ]
+                    all_cal_files = list(target_files['name'])
+                    phase2_tasks.append((
+                        per_eg_spec_files, all_cal_files,
+                        obs.workspace_dir, final_product_name, source_id, filter_grating,
+                    ))
+
+                else:
+                    raise ValueError(f"Unknown combine_method '{combine_method}'. Must be '2d' or '1d'.")
+
+        # Phase 1 execution
         if n_processes > 1:
             from multiprocessing import Pool
             # Create partial function with kwargs fixed
             worker = partial(run_stage3_single_source, **kwargs)
             with Pool(n_processes) as pool:
                 pool.starmap(worker, tasks)
-    
+
             tasks2 = [(task[2], task[1]) for task in tasks]
             worker = partial(opt_ext_single_source, plot_profiles=plot_profiles, plot_optext=plot_optext, version=version)
             with Pool(n_processes) as pool:
                 pool.starmap(worker, tasks2)
         else:
-            for target_file_names, workspace_dir, product_name in tasks:
-                run_stage3_single_source(target_file_names, workspace_dir, product_name, **kwargs)
+            for target_file_names, workspace_dir, product_name, source_id in tasks:
+                run_stage3_single_source(target_file_names, workspace_dir, product_name, source_id, **kwargs)
                 opt_ext_single_source(product_name, workspace_dir, plot_profiles=plot_profiles, plot_optext=plot_optext, version=version)
 
+        # Phase 2 execution: 1D combination (combine_method='1d' only)
+        if phase2_tasks:
+            sigma_clip = config.get('sigma_clip', DEFAULT_STAGE3_CONFIG['sigma_clip'])
+            sigma_clip_low = config.get('sigma_clip_low', DEFAULT_STAGE3_CONFIG['sigma_clip_low'])
+            sigma_clip_high = config.get('sigma_clip_high', DEFAULT_STAGE3_CONFIG['sigma_clip_high'])
+            sigma_clip_maxiters = config.get('sigma_clip_maxiters', DEFAULT_STAGE3_CONFIG['sigma_clip_maxiters'])
 
-    
+            combine_kwargs = dict(
+                sigma_clip=sigma_clip,
+                sigma_clip_low=sigma_clip_low,
+                sigma_clip_high=sigma_clip_high,
+                sigma_clip_maxiters=sigma_clip_maxiters,
+                plot_profiles=plot_profiles,
+                plot_optext=plot_optext,
+                version=version,
+            )
+
+            log(f"Phase 2: 1D-combining {len(phase2_tasks)} source/grating groups")
+            if n_processes > 1:
+                from multiprocessing import Pool
+                worker = partial(combine_per_eg_spectra, **combine_kwargs)
+                with Pool(n_processes) as pool:
+                    pool.starmap(worker, phase2_tasks)
+            else:
+                for task_args in phase2_tasks:
+                    combine_per_eg_spectra(*task_args, **combine_kwargs)
+
+            # Cleanup per-exp_group intermediates
+            for per_eg_spec_files, _, workspace_dir, final_product_name, _, _ in phase2_tasks:
+                final_path = os.path.join(workspace_dir, final_product_name + "_spec.fits")
+                if not os.path.exists(final_path):
+                    continue  # combination failed, keep intermediates
+                for eg_spec in per_eg_spec_files:
+                    eg_base = eg_spec.replace('_spec.fits', '')
+                    for suffix in ['_spec.fits', '_s2d.fits', '_x1d.fits', '_prof.pdf', '_spec.pdf']:
+                        path = os.path.join(workspace_dir, eg_base + suffix)
+                        if os.path.exists(path):
+                            os.remove(path)
+                log(f"Cleaned up per-exp_group intermediates for {final_product_name}")
+
+
 
 def main():
     """Main function to run NIRSpec data reduction."""

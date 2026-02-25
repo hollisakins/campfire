@@ -52,23 +52,30 @@ mp.set_start_method('fork')
 from spectres import spectres
 # from spectres.spectral_resampling_numba import spectres_numba as spectres
 
+from numba import njit, prange
+import numba
 
-def make_template_grid():
+
+def make_template_grid(z_min=0, z_max=20, dv=500, output_file='templates/continuum_templates.pickle'):
     """
-    Generate template grids for continuum and emission line fitting.
-    
-    Creates two pickle files:
-    - continuum_templates.pickle: Stellar population models from bagpipes
-    - line_templates.pickle: Emission line templates for key transitions
-    
-    This function creates templates on a redshift grid from z=0 to z=20 with 0.001 spacing.
+    Generate continuum template grid on a velocity-spaced redshift grid.
+
+    Parameters
+    ----------
+    z_min : float
+        Minimum redshift (default: 0)
+    z_max : float
+        Maximum redshift (default: 20)
+    dv : float
+        Velocity spacing in km/s (default: 500)
+    output_file : str
+        Output pickle file path
     """
-    dz1 = 0.005
-    dz2 = 0.01
-    zgrid1 = np.arange(0, 13+dz1, dz1)
-    zgrid2 = np.arange(13+dz2,20.+dz1, dz2)
-    zgrid = np.append(zgrid1, zgrid2)
+    c_kms = 299792.458
+    n_steps = int(np.log((1 + z_max) / (1 + z_min)) / (dv / c_kms))
+    zgrid = (1 + z_min) * np.exp(np.arange(n_steps) * dv / c_kms) - 1
     spec_wavs = np.linspace(5000, 56000, 3000)
+    print(f"Generating template grid: z=[{z_min}, {z_max}], dv={dv} km/s, {len(zgrid)} redshift points")
 
     import bagpipes as bp
     templates = {
@@ -143,8 +150,10 @@ def make_template_grid():
         'wavelengths': spec_wavs/1e4,
         'grid': template_grid
     }
-    with open('templates/continuum_templates_hires.pickle', 'wb') as outfile:
+    os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+    with open(output_file, 'wb') as outfile:
         pickle.dump(output, outfile)
+    print(f"Saved template grid to {output_file} ({template_grid.shape})")
 
 
 
@@ -314,6 +323,161 @@ def calculate_redshift_confidence(z_array, chi2_array, zbest):
             'confidence': 0.0
         }
 
+@njit(cache=True)
+def _nnls_gram(AtA, Atb, max_iter=135, tol=1e-10):
+    """Lawson-Hanson NNLS on pre-computed Gram system.
+
+    Solves: min ||Ax - b||^2  s.t. x >= 0
+    where AtA = A^T A and Atb = A^T b are pre-computed.
+
+    Returns (x, chi2_partial) where chi2_partial = x^T AtA x - 2 x^T Atb.
+    Add btb = b^T b to get full chi-squared.
+    """
+    n = AtA.shape[0]
+    x = np.zeros(n)
+    passive = np.zeros(n, dtype=np.bool_)
+
+    for iteration in range(max_iter):
+        # Gradient: w = Atb - AtA @ x
+        w = Atb - AtA @ x
+
+        # Find most violating active constraint
+        max_w_val = -1.0
+        max_w_idx = -1
+        for i in range(n):
+            if not passive[i] and w[i] > max_w_val:
+                max_w_val = w[i]
+                max_w_idx = i
+
+        if max_w_val <= tol or max_w_idx == -1:
+            break
+
+        passive[max_w_idx] = True
+
+        # Inner loop: solve unconstrained on passive set, fix negatives
+        for inner in range(max_iter):
+            # Count passive variables
+            n_passive = 0
+            for i in range(n):
+                if passive[i]:
+                    n_passive += 1
+            if n_passive == 0:
+                break
+
+            # Build index array for passive set
+            p_idx = np.empty(n_passive, dtype=np.int64)
+            k = 0
+            for i in range(n):
+                if passive[i]:
+                    p_idx[k] = i
+                    k += 1
+
+            # Extract sub-system (no 2D fancy indexing in numba)
+            AtA_sub = np.empty((n_passive, n_passive))
+            Atb_sub = np.empty(n_passive)
+            for ii in range(n_passive):
+                Atb_sub[ii] = Atb[p_idx[ii]]
+                for jj in range(n_passive):
+                    AtA_sub[ii, jj] = AtA[p_idx[ii], p_idx[jj]]
+
+            # Ridge regularization to prevent singular matrix errors
+            # from near-collinear templates
+            ridge = 0.0
+            for ii in range(n_passive):
+                ridge += AtA_sub[ii, ii]
+            ridge = ridge / n_passive * 1e-10
+            if ridge < 1e-20:
+                ridge = 1e-20
+            for ii in range(n_passive):
+                AtA_sub[ii, ii] += ridge
+
+            s = np.linalg.solve(AtA_sub, Atb_sub)
+
+            # Check if all passive coefficients are positive
+            all_positive = True
+            for ii in range(n_passive):
+                if s[ii] <= 0.0:
+                    all_positive = False
+                    break
+
+            if all_positive:
+                for ii in range(n_passive):
+                    x[p_idx[ii]] = s[ii]
+                break
+
+            # Interpolation: find alpha to keep x >= 0
+            alpha = 1.0e30
+            for ii in range(n_passive):
+                if s[ii] <= 0.0:
+                    a = x[p_idx[ii]] / (x[p_idx[ii]] - s[ii])
+                    if a < alpha:
+                        alpha = a
+
+            for ii in range(n_passive):
+                x[p_idx[ii]] += alpha * (s[ii] - x[p_idx[ii]])
+
+            # Move zero-valued variables back to active set
+            for i in range(n):
+                if passive[i] and abs(x[i]) < tol:
+                    passive[i] = False
+                    x[i] = 0.0
+
+    chi2_partial = np.dot(x, AtA @ x) - 2.0 * np.dot(x, Atb)
+    return x, chi2_partial
+
+
+@njit(parallel=True, cache=True)
+def _compute_gram(tw, bw):
+    """Compute Gram matrices AtA and Atb for all redshifts in parallel.
+
+    Exploits AtA symmetry to halve computation. Parallelized across redshifts.
+
+    Parameters
+    ----------
+    tw : ndarray, shape (n_templ, n_z, N_masked), float64
+        Error-weighted, masked templates
+    bw : ndarray, shape (N_masked,), float64
+        Error-weighted, masked flux
+
+    Returns
+    -------
+    AtA : ndarray, shape (n_z, n_templ, n_templ)
+    Atb : ndarray, shape (n_z, n_templ)
+    """
+    n_templ, n_z, n_masked = tw.shape
+    AtA = np.empty((n_z, n_templ, n_templ))
+    Atb = np.empty((n_z, n_templ))
+    for iz in prange(n_z):
+        for i in range(n_templ):
+            # Atb[iz, i] = sum_k tw[i, iz, k] * bw[k]
+            s = 0.0
+            for k in range(n_masked):
+                s += tw[i, iz, k] * bw[k]
+            Atb[iz, i] = s
+            # AtA upper triangle + mirror (symmetric: AtA[i,j] == AtA[j,i])
+            for j in range(i, n_templ):
+                s = 0.0
+                for k in range(n_masked):
+                    s += tw[i, iz, k] * tw[j, iz, k]
+                AtA[iz, i, j] = s
+                AtA[iz, j, i] = s
+    return AtA, Atb
+
+
+@njit(parallel=True, cache=True)
+def _fit_all_redshifts_numba(AtA_all, Atb_all):
+    """Parallel NNLS fitting across all redshifts using Numba threads."""
+    n_z = AtA_all.shape[0]
+    n_templ = AtA_all.shape[1]
+    chi2 = np.empty(n_z)
+    coeffs = np.empty((n_z, n_templ))
+    for iz in prange(n_z):
+        x, c = _nnls_gram(AtA_all[iz], Atb_all[iz])
+        chi2[iz] = c
+        coeffs[iz] = x
+    return chi2, coeffs
+
+
 def _iter(A, mask, flux, err):
     """Single iteration of chi-squared minimization using NNLS."""
     okt = A[:, mask].sum(axis=1) != 0
@@ -423,6 +587,105 @@ def fit_single_spectrum(spec_file,file_paths,convolved_wav,convolved_grid,zgrid,
         # except:  pass  # If we can't save error info, that's OK
         return False, str(e)
 
+
+def fit_single_spectrum_optimized(spec_file,file_paths,convolved_wav,convolved_grid,zgrid,logger,save_models=False):
+    """Perform redshift fitting using Gram-matrix + Numba NNLS optimization.
+
+    Drop-in replacement for fit_single_spectrum with identical inputs/outputs.
+    Uses pre-computed Gram matrices (A^T A, A^T b) and a Numba-JIT Lawson-Hanson
+    NNLS solver parallelized across redshifts via prange.
+    """
+    start_time = time.time()
+    spec_path = Path(spec_file)
+    base_name = spec_path.stem.replace('_spec', '')
+    zfit_file = file_paths['output_path'] + f"{base_name}_zfit.fits"
+    logger.debug(f"Fitting redshift for {base_name}")
+
+    try:
+        # Load spectrum (identical to fit_single_spectrum)
+        tab=table.Table.read(spec_file,hdu=1)
+        wav = tab['wave'].value.astype('float32')
+        flux = tab['fnu'].value.astype('float32')
+        err = tab['fnu_err'].value.astype('float32')
+        mask = np.isfinite(flux) & np.isfinite(err) & (err > 0)
+        maskidx=np.where(mask)[0]
+        if len(maskidx)>10:
+            for idx in maskidx[:5]: mask[idx]=False
+            for idx in maskidx[-5:]: mask[idx]=False
+        err[err<0.1*np.abs(flux)]=0.1*np.abs(flux[err<0.1*np.abs(flux)])
+        med_err=generic_filter(err,np.nanmedian,size=15)
+        err[err<med_err]=med_err[err<med_err]
+
+        t0 = time.time()
+        templates = resample_to_observed_grid(convolved_wav, convolved_grid, wav)
+        t1 = time.time()
+
+        # --- Gram matrix computation for all redshifts ---
+        # Weight by inverse error, promote to float64 for numerical stability
+        inv_err_masked = (1.0 / err[mask]).astype(np.float64)  # (N_masked,)
+        bw = (flux[mask] * inv_err_masked).astype(np.float64)  # (N_masked,)
+        btb = np.dot(bw, bw)  # constant across redshifts
+
+        # Apply mask and error-weighting once: (n_templ, n_z, N_masked)
+        tw = templates[:, :, mask].astype(np.float64) * inv_err_masked
+        # Numba parallel Gram computation (exploits symmetry, parallelized over z)
+        AtA, Atb = _compute_gram(tw, bw)
+        t2 = time.time()
+
+        # --- NNLS on Gram matrices ---
+        chi2_partial, coeffs = _fit_all_redshifts_numba(AtA, Atb)
+        chi2 = (chi2_partial + btb).astype('float32')
+        t3 = time.time()
+        logger.debug(f"Timing for {base_name}: spectres={t1-t0:.2f}s, gram={t2-t1:.2f}s, nnls={t3-t2:.2f}s")
+
+        # Find best-fit redshift
+        izbest = np.argmin(chi2)
+        zbest = zgrid[izbest]
+
+        # Calculate confidence and quality
+        confidence_results = calculate_redshift_confidence(zgrid, chi2, zbest)
+
+        # Reconstruct model only at best-fit redshift
+        model = templates[:, izbest, :].T @ coeffs[izbest]
+
+        logger.debug(f"Redshift fitting completed for {base_name} "
+                       f"(z={confidence_results['redshift']:.3f}, "
+                       f"conf={confidence_results['confidence']:.1f}%, "
+                       f"qual={confidence_results['redshift_quality']})")
+        logger.debug(f"nans in chi2: {len(chi2[np.isnan(chi2)])}")
+
+        # Save results (identical format to fit_single_spectrum)
+        header = fits.Header({
+            'EXTEND': True,
+            'ZBEST': confidence_results['redshift'],
+            'ZQUAL': confidence_results['redshift_quality'],
+            'ZCONF': confidence_results['confidence'],
+            'CHI2MIN': confidence_results['chi2_min']
+        })
+        t0 = fits.PrimaryHDU(header=header)
+        t1 = fits.BinTableHDU.from_columns(fits.ColDefs([fits.Column(name='wav', array=wav, format='D'),fits.Column(name='fnu', array=model, format='D')]), header=fits.Header({'EXTNAME':'MODEL'}))
+        t2 = fits.BinTableHDU.from_columns(fits.ColDefs([fits.Column(name='z', array=zgrid, format='D'),fits.Column(name='chi2', array=chi2, format='D')]), header=fits.Header({'EXTNAME':'CHI2'}))
+        if save_models:
+            models = np.einsum('izk,zi->zk', templates, coeffs).astype('float32')
+            t3=fits.ImageHDU(models,header=fits.Header({'EXTNAME':'MODELS'}))
+            out_hdul = fits.HDUList([t0, t1, t2, t3])
+        else: out_hdul = fits.HDUList([t0, t1, t2])
+        out_hdul.writeto(zfit_file, overwrite=True)
+
+        processing_time = time.time() - start_time
+        logger.info(f"Redshift fitting completed for {base_name} "
+                       f"(z={confidence_results['redshift']:.3f}, "
+                       f"conf={confidence_results['confidence']:.1f}%, "
+                       f"qual={confidence_results['redshift_quality']}, "
+                       f"t={processing_time:.1f}s)")
+
+        return True, f"Success: z={confidence_results['redshift']:.4f}, conf={confidence_results['confidence']:.1f}%"
+
+    except Exception as e:
+        logger.error(f"Failed to fit redshift for {base_name}: {e}")
+        return False, str(e)
+
+
 def planck(lam,T): #lam in um, T in K, return blackbody in f_nu
     nu=299792458e6/lam
     bb = 2*6.626e-34*nu**3/(3e5)**2/(np.exp(6.626e-34*nu/1.381e-23/T)-1)
@@ -433,23 +696,50 @@ def main():
     """Main function to run NIRSpec redshift fitting."""
     parser = argparse.ArgumentParser(description='NIRSpec Redshift Fitting Script')
     parser.add_argument('--config', type=str, default='config.toml', help='Path to configuration file (default: config.toml)')
-    parser.add_argument('--obs', type=str, required=True, help='Observation name from observations.toml')
+    parser.add_argument('--obs', type=str, help='Observation name from observations.toml')
     parser.add_argument('--source-ids', nargs='+', type=int, help='Individual source IDs to restrict processing to')
     parser.add_argument('--overwrite', action='store_true',
                         help='Overwrite existing products')
+    parser.add_argument('--make-templates', action='store_true',
+                        help='Generate continuum template grids from [template_grids] config and exit')
     args = parser.parse_args()
     config_path=args.config
     with open(config_path, 'r') as f: config = toml.load(f)
+
+    # Template generation mode: generate all grids from config and exit
+    if args.make_templates:
+        template_grids_config = config.get('template_grids', {})
+        if not template_grids_config:
+            print("No [template_grids] section found in config")
+            return 1
+        for name, grid_config in template_grids_config.items():
+            output_file = os.path.abspath(grid_config['file'])
+            print(f"\n=== Generating '{name}' template grid ===")
+            make_template_grid(
+                z_min=grid_config.get('z_min', 0),
+                z_max=grid_config.get('z_max', 20),
+                dv=grid_config['dv'],
+                output_file=output_file
+            )
+        return 0
+
+    if not args.obs:
+        parser.error("--obs is required for fitting (omit only with --make-templates)")
     paths = config.get('paths', {})
     obs = toml.load('observations.toml')[args.obs]
     gratings = obs['gratings']
     
-    # Template file paths (convert to absolute paths)
+    # File paths
     file_paths={}
-    file_paths['continuum_templates_file'] = os.path.abspath(paths.get('continuum_templates_file'))
-    # file_paths['line_templates_file'] = os.path.abspath(paths.get('line_templates_file'))
     file_paths['input_path']=paths.get('products_dir') + f'/{args.obs}/'
     file_paths['output_path']=file_paths['input_path']
+
+    # Build grating -> template grid file mapping from config
+    template_grids_config = config.get('template_grids', {})
+    grating_to_template = {}
+    for name, grid_config in template_grids_config.items():
+        for g in grid_config['gratings']:
+            grating_to_template[g] = os.path.abspath(grid_config['file'])
 
     options=config.get('fitting', {})
     ncores=options.get('ncores',1)
@@ -458,37 +748,44 @@ def main():
     f_LSF=options.get('f_LSF',1.3)
     f_LSF_prism = options.get('f_LSF_prism',f_LSF)
     f_LSF_g395m = options.get('f_LSF_g395m',f_LSF)
-    
+    use_optimized=options.get('optimized',True)
+
     # Set up logging
     log_config = config.get('logging', {})
     log_level = log_config.get('level', 'INFO').upper()
     log_format = log_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
+
     logging.basicConfig(level=getattr(logging, log_level), format=log_format)
     logger = logging.getLogger('nirspec_fitting')
+
+    if use_optimized:
+        fit_func = fit_single_spectrum_optimized
+        logger.info("Using optimized Gram-matrix + Numba NNLS fitting")
+    else:
+        fit_func = fit_single_spectrum
+        logger.info("Using standard scipy NNLS fitting")
     
     for grating in gratings:
         logger.info(f"Fitting {grating} spectra...")
         file_paths['r_curve_file'] = os.path.abspath(paths['r_curve_files'][grating.lower()])
-    
-        logger.debug(f"Template file paths:")
+
+        # Resolve per-grating template file
+        template_file = grating_to_template.get(grating.lower())
+        if not template_file:
+            logger.error(f"No template grid configured for grating '{grating}' in [template_grids]")
+            continue
+
         logger.debug(f"  R-curve: {file_paths['r_curve_file']}")
-        logger.debug(f"  Continuum templates: {file_paths['continuum_templates_file']}")
-        # logger.debug(f"  Line templates: {file_paths['line_templates_file']}")
-        logger.debug(f"Input path: {file_paths['input_path']}")
-        logger.debug(f"Output path: {file_paths['output_path']}")
-        
-        # Check if template files exist
-        for name, path in [("R-curve", file_paths['r_curve_file']), 
-                        ("continuum templates", file_paths['continuum_templates_file'])]:
-                        #("line templates", file_paths['line_templates_file'])]:
+        logger.debug(f"  Continuum templates: {template_file}")
+
+        for name, path in [("R-curve", file_paths['r_curve_file']),
+                        ("continuum templates", template_file)]:
             if not os.path.exists(path): logger.warning(f"{name} file not found: {path}")
 
         try:
-            with open(file_paths['continuum_templates_file'], 'rb') as f: continuum_templates = pickle.load(f)
-            # with open(file_paths['line_templates_file'], 'rb') as f: line_templates = pickle.load(f)
+            with open(template_file, 'rb') as f: continuum_templates = pickle.load(f)
                 
-            logger.info("Loaded templates successfully")
+            logger.info(f"Loaded {grating} continuum templates: {len(continuum_templates['redshifts'])} redshifts")
         except (FileNotFoundError, IOError) as e:
             logger.error(f"Failed to load template files: {e}")
             return False, f"Template loading failed: {e}"
@@ -641,22 +938,11 @@ def main():
         convolved_grid=convolved_grid.astype('float32')
         
         all_spec_files= np.array(sorted(glob.glob(file_paths['input_path']+f'/*{grating.lower()}*_spec.fits')))
-        spec_files=[]
-
-        
-        if not overwrite: #check which files need to be processed if not overwriting
-            spec_files=[]
-            for spec_file in all_spec_files:
-                spec_path = Path(spec_file)
-                base_name = spec_path.stem.replace('_spec', '')
-                zfit_file = file_paths['output_path'] + f"{base_name}_zfit.fits"
-                if os.path.exists(zfit_file): logger.info(f"Zfit file already exists for {base_name}, skipping")
-                else: spec_files.append(spec_file)
-        else: spec_files=all_spec_files
+        spec_files=all_spec_files
 
         if args.source_ids is not None:
             actual_spec_files = []
-            for spec_file in spec_files:
+            for spec_file in all_spec_files:
                 # check source ID 
                 source_id = int(spec_file.split('_')[-2])
                 if source_id in args.source_ids: 
@@ -665,14 +951,35 @@ def main():
                     continue
             spec_files = actual_spec_files
                     
+        if not overwrite: #check which files need to be processed if not overwriting
+            actual_spec_files = []
+            for spec_file in spec_files:
+                spec_path = Path(spec_file)
+                base_name = spec_path.stem.replace('_spec', '')
+                zfit_file = file_paths['output_path'] + f"{base_name}_zfit.fits"
+                if os.path.exists(zfit_file): logger.info(f"Zfit file already exists for {base_name}, skipping")
+                else: actual_spec_files.append(spec_file)
+            spec_files=actual_spec_files
 
 
         logger.info(f"Starting redshift fitting for {len(spec_files)} objects using {ncores} cores")
+        if use_optimized:
+            if ncores > 1:
+                # Pool handles parallelism across spectra; avoid Numba thread overhead
+                numba.set_num_threads(1)
+            else:
+                # Single process: let Numba use all cores for prange
+                numba.set_num_threads(os.cpu_count() or 1)
+        if use_optimized:
+            logger.debug("Warming up Numba JIT compilation...")
+            n_templ = templates.shape[0]
+            _compute_gram(np.ones((n_templ, 1, 1)), np.ones(1))
+            _fit_all_redshifts_numba(np.eye(n_templ, dtype=np.float64)[np.newaxis], np.ones((1, n_templ)))
         start_time=time.time()
-        if ncores>1: 
-            with Pool(ncores) as pool: _=pool.starmap(fit_single_spectrum,[[spec_file,file_paths,convolved_wav,convolved_grid,zgrid,logger,save_models] for spec_file in spec_files])
-        else: 
-            for spec_file in spec_files: fit_single_spectrum(spec_file,file_paths,convolved_wav,convolved_grid,zgrid,logger,save_models)
+        if ncores>1:
+            with Pool(ncores) as pool: _=pool.starmap(fit_func,[[spec_file,file_paths,convolved_wav,convolved_grid,zgrid,logger,save_models] for spec_file in spec_files])
+        else:
+            for spec_file in spec_files: fit_func(spec_file,file_paths,convolved_wav,convolved_grid,zgrid,logger,save_models)
         end_time=time.time()
         logger.info(f"Fit {len(spec_files)} redshifts in {end_time-start_time:.1f}s")
 

@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Y-Axis Auto-Scaling Prototype</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; color: #fff; }
+  .subtitle { color: #888; font-size: 0.85rem; margin-bottom: 20px; }
+  .controls { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; align-items: flex-end; }
+  .control-group { display: flex; flex-direction: column; gap: 4px; }
+  .control-group label { font-size: 0.75rem; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }
+  .control-group select, .control-group input { background: #1a1a1a; border: 1px solid #333; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem; }
+  .control-group input[type="range"] { width: 140px; accent-color: #6366f1; }
+  .range-val { font-size: 0.75rem; color: #888; text-align: right; min-width: 30px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .grid .plot-card:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .plot-card { background: #111; border: 1px solid #222; border-radius: 8px; overflow: hidden; }
+  .plot-card .card-header { padding: 10px 14px 0; display: flex; justify-content: space-between; align-items: baseline; }
+  .plot-card h3 { font-size: 0.85rem; font-weight: 600; }
+  .plot-card .tag { font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
+  .tag.current { background: #1e3a5f; color: #60a5fa; }
+  .tag.alt { background: #2d1f3d; color: #a78bfa; }
+  .plot-container { height: 280px; }
+  .stats-row { padding: 6px 14px 10px; display: flex; gap: 16px; font-size: 0.75rem; color: #888; }
+  .stats-row span { display: flex; gap: 4px; }
+  .stats-row .val { color: #ccc; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .summary { background: #111; border: 1px solid #222; border-radius: 8px; padding: 16px; }
+  .summary h2 { font-size: 1rem; margin-bottom: 12px; }
+  .summary table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  .summary th { text-align: left; padding: 6px 10px; border-bottom: 1px solid #333; color: #aaa; font-weight: 500; }
+  .summary td { padding: 6px 10px; border-bottom: 1px solid #1a1a1a; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .summary tr:hover td { background: #1a1a1a; }
+  .winner { color: #4ade80; font-weight: 600; }
+  .loser { color: #888; }
+  .algo-desc { margin: 20px 0; background: #111; border: 1px solid #222; border-radius: 8px; padding: 16px; }
+  .algo-desc h2 { font-size: 1rem; margin-bottom: 10px; }
+  .algo-desc .algo { margin-bottom: 12px; }
+  .algo-desc .algo h4 { font-size: 0.85rem; color: #a78bfa; margin-bottom: 4px; }
+  .algo-desc .algo p { font-size: 0.8rem; color: #999; line-height: 1.5; }
+  .algo-desc .algo.current h4 { color: #60a5fa; }
+</style>
+</head>
+<body>
+
+<h1>Y-Axis Auto-Scaling: Algorithm Comparison</h1>
+<p class="subtitle">Compare scaling strategies across synthetic spectra with varying noise profiles</p>
+
+<div class="controls">
+  <div class="control-group">
+    <label>Scenario</label>
+    <select id="scenario">
+      <option value="bright">Bright source (SNR ~20)</option>
+      <option value="moderate">Moderate source (SNR ~5)</option>
+      <option value="faint" selected>Faint source (SNR ~1-2)</option>
+      <option value="buried">Buried in noise (SNR &lt;1)</option>
+      <option value="emission">Strong emission line + noise</option>
+      <option value="spike">Artifact spike</option>
+      <option value="mixed">Mixed quality (good + bad regions)</option>
+      <option value="flatNoise">Flat continuum in noise</option>
+    </select>
+  </div>
+  <div class="control-group">
+    <label>Noise level</label>
+    <input type="range" id="noiseScale" min="0.5" max="5" step="0.1" value="1.0">
+    <span class="range-val" id="noiseVal">1.0x</span>
+  </div>
+  <div class="control-group">
+    <label>Pixels</label>
+    <input type="range" id="nPixels" min="100" max="1000" step="50" value="500">
+    <span class="range-val" id="pixelVal">500</span>
+  </div>
+  <div class="control-group">
+    <label>Edge trim</label>
+    <input type="range" id="edgeTrim" min="0" max="50" step="5" value="20">
+    <span class="range-val" id="trimVal">20</span>
+  </div>
+  <div class="control-group">
+    <label>&nbsp;</label>
+    <button id="regenerate" style="background:#6366f1;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:0.85rem;">Regenerate noise</button>
+  </div>
+</div>
+
+<div class="grid" id="plotGrid"></div>
+
+<div class="summary">
+  <h2>Comparison Summary</h2>
+  <table id="summaryTable">
+    <thead>
+      <tr>
+        <th>Algorithm</th>
+        <th>Y-Min</th>
+        <th>Y-Max</th>
+        <th>Range</th>
+        <th>Signal Coverage</th>
+        <th>Tightness</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<div class="algo-desc">
+  <h2>Algorithm Descriptions</h2>
+  <div class="algo current">
+    <h4>A. Current (err-filtered p2/p98)</h4>
+    <p>Filter to pixels where error &lt; 3&times; median error, then take 2nd/98th percentiles. Rejects bad detector regions but keeps low-flux science pixels. Padding: 10%.</p>
+  </div>
+  <div class="algo">
+    <h4>B. Sigma-clipped mean &plusmn; 3&sigma;</h4>
+    <p>Iterative 3-sigma clipping (3 iterations) on trimmed flux, then set range to clipped_mean &plusmn; 3 &times; clipped_std. Good at rejecting outliers but the symmetric range may waste space if the signal is asymmetric (e.g., emission lines).</p>
+  </div>
+  <div class="algo">
+    <h4>C. MAD-based (median &plusmn; k&times;MAD)</h4>
+    <p>Compute median and median absolute deviation (MAD). Range = median &plusmn; 5&times;MAD. Extremely robust to outliers. Works well when signal is roughly symmetric around continuum. k=5 chosen to show emission features.</p>
+  </div>
+  <div class="algo">
+    <h4>D. SNR-weighted percentile</h4>
+    <p>Like current approach, but weights each pixel by its inverse-variance (1/err&sup2;) when computing percentiles. High-SNR pixels dominate the range, making it track the signal rather than noise floor.</p>
+  </div>
+  <div class="algo">
+    <h4>E. MAD + percentile hybrid</h4>
+    <p>Error-filter reliable pixels (like current), then compute both MAD-based bounds (median &plusmn; 5&times;MAD) and percentile bounds (p0.5/p99.5). Take the wider bound at each end: yMin = min(MAD_low, p0.5), yMax = max(MAD_high, p99.5). Tight for noisy spectra (MAD dominates), but never clips bright features (percentile catches them). 20% additive padding.</p>
+  </div>
+</div>
+
+<script>
+// ===== Synthetic spectrum generation =====
+
+function gaussianRandom() {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+}
+
+function generateSpectrum(scenario, nPixels, noiseScale) {
+  const wave = [];
+  const flux = [];
+  const fluxErr = [];
+  const trueSignal = [];
+
+  const waveMin = 1.0, waveMax = 5.0;
+
+  for (let i = 0; i < nPixels; i++) {
+    const w = waveMin + (waveMax - waveMin) * i / (nPixels - 1);
+    wave.push(w);
+
+    let signal = 0;
+    let baseNoise = 1.0 * noiseScale;
+
+    switch (scenario) {
+      case 'bright': {
+        // Bright galaxy: clear continuum + absorption
+        signal = 8.0 * Math.exp(-0.3 * (w - 2.5)) - 2.0 * Math.exp(-((w - 2.8) ** 2) / 0.01);
+        baseNoise = 0.4 * noiseScale;
+        break;
+      }
+      case 'moderate': {
+        // Moderate SNR: visible continuum, noisy
+        signal = 2.0 * Math.exp(-0.2 * (w - 2.5)) + 0.5 * Math.exp(-((w - 3.2) ** 2) / 0.005);
+        baseNoise = 0.5 * noiseScale;
+        break;
+      }
+      case 'faint': {
+        // Faint source: signal barely above noise
+        signal = 0.5 * Math.exp(-0.1 * (w - 3.0));
+        baseNoise = 0.8 * noiseScale;
+        break;
+      }
+      case 'buried': {
+        // Source buried in noise
+        signal = 0.1 * Math.exp(-0.05 * (w - 3.0));
+        baseNoise = 1.2 * noiseScale;
+        break;
+      }
+      case 'emission': {
+        // Strong emission line on faint continuum
+        signal = 0.3 + 12.0 * Math.exp(-((w - 3.5) ** 2) / 0.003);
+        baseNoise = 0.6 * noiseScale;
+        break;
+      }
+      case 'spike': {
+        // Normal spectrum with an artifact spike
+        signal = 3.0 * Math.exp(-0.2 * (w - 2.5));
+        baseNoise = 0.3 * noiseScale;
+        // Add spike
+        if (Math.abs(w - 2.2) < 0.02) signal += 50;
+        break;
+      }
+      case 'mixed': {
+        // Good data on one side, noisy on the other
+        signal = 2.0 * Math.exp(-0.15 * (w - 2.5));
+        baseNoise = w > 3.0 ? 3.0 * noiseScale : 0.3 * noiseScale;
+        break;
+      }
+      case 'flatNoise': {
+        // Flat continuum, uniform noise
+        signal = 1.0;
+        baseNoise = 1.5 * noiseScale;
+        break;
+      }
+    }
+
+    trueSignal.push(signal);
+
+    // Add some wavelength-dependent noise enhancement at edges
+    let edgeFactor = 1.0;
+    const edgeFrac = 0.08;
+    if (i < nPixels * edgeFrac) edgeFactor = 1.5 + 2 * (1 - i / (nPixels * edgeFrac));
+    if (i > nPixels * (1 - edgeFrac)) edgeFactor = 1.5 + 2 * ((i - nPixels * (1 - edgeFrac)) / (nPixels * edgeFrac));
+
+    const pixelErr = baseNoise * edgeFactor;
+    fluxErr.push(pixelErr);
+    flux.push(signal + pixelErr * gaussianRandom());
+  }
+
+  // For 'mixed' scenario, add a bad detector region
+  if (scenario === 'mixed') {
+    const badStart = Math.floor(nPixels * 0.6);
+    const badEnd = Math.floor(nPixels * 0.65);
+    for (let i = badStart; i < badEnd; i++) {
+      fluxErr[i] = 100 * noiseScale; // huge error
+      flux[i] = 50 * gaussianRandom(); // wild values
+    }
+  }
+
+  return { wave, flux, fluxErr, trueSignal };
+}
+
+// ===== Auto-scaling algorithms =====
+
+function percentile(arr, p) {
+  return arr[Math.floor(arr.length * p)];
+}
+
+// Algorithm A: Current implementation (err-filtered p2/p98)
+function algoCurrent(flux, fluxErr, edgeTrim) {
+  const start = edgeTrim;
+  const end = flux.length - edgeTrim;
+  if (end - start < 10) return null;
+
+  const validErrors = [];
+  for (let i = start; i < end; i++) {
+    const err = fluxErr[i];
+    if (err !== null && err > 0) validErrors.push(err);
+  }
+  if (validErrors.length < 5) return null;
+
+  validErrors.sort((a, b) => a - b);
+  const medianErr = validErrors[Math.floor(validErrors.length / 2)];
+
+  const reliableFlux = [];
+  for (let i = start; i < end; i++) {
+    const err = fluxErr[i];
+    if (err !== null && err > 0 && err < 3 * medianErr && isFinite(flux[i])) {
+      reliableFlux.push(flux[i]);
+    }
+  }
+  if (reliableFlux.length < 5) return null;
+
+  reliableFlux.sort((a, b) => a - b);
+  const p2 = percentile(reliableFlux, 0.02);
+  const p98 = percentile(reliableFlux, 0.98);
+
+  if (!isFinite(p2) || !isFinite(p98) || p98 - p2 <= 0) return null;
+  const range = p98 - p2;
+  return [p2 - 0.1 * range, p98 + 0.1 * range];
+}
+
+// Algorithm B: Sigma-clipped mean +/- 3*sigma
+function algoSigmaClip(flux, fluxErr, edgeTrim) {
+  const start = edgeTrim;
+  const end = flux.length - edgeTrim;
+  if (end - start < 10) return null;
+
+  let data = [];
+  for (let i = start; i < end; i++) {
+    if (isFinite(flux[i])) data.push(flux[i]);
+  }
+  if (data.length < 5) return null;
+
+  // 3 iterations of 3-sigma clipping
+  for (let iter = 0; iter < 3; iter++) {
+    const mean = data.reduce((s, v) => s + v, 0) / data.length;
+    const std = Math.sqrt(data.reduce((s, v) => s + (v - mean) ** 2, 0) / data.length);
+    if (std === 0) break;
+    data = data.filter(v => Math.abs(v - mean) < 3 * std);
+    if (data.length < 5) return null;
+  }
+
+  const mean = data.reduce((s, v) => s + v, 0) / data.length;
+  const std = Math.sqrt(data.reduce((s, v) => s + (v - mean) ** 2, 0) / data.length);
+
+  if (std === 0) return null;
+  return [mean - 3 * std, mean + 3 * std];
+}
+
+// Algorithm C: MAD-based (median +/- k*MAD)
+function algoMAD(flux, fluxErr, edgeTrim) {
+  const start = edgeTrim;
+  const end = flux.length - edgeTrim;
+  if (end - start < 10) return null;
+
+  const data = [];
+  for (let i = start; i < end; i++) {
+    if (isFinite(flux[i])) data.push(flux[i]);
+  }
+  if (data.length < 5) return null;
+
+  data.sort((a, b) => a - b);
+  const median = data[Math.floor(data.length / 2)];
+
+  const deviations = data.map(v => Math.abs(v - median));
+  deviations.sort((a, b) => a - b);
+  const mad = deviations[Math.floor(deviations.length / 2)];
+
+  if (mad === 0) return null;
+
+  const k = 5; // show emission features
+  return [median - k * mad, median + k * mad];
+}
+
+// Algorithm D: SNR-weighted percentile
+function algoWeightedPercentile(flux, fluxErr, edgeTrim) {
+  const start = edgeTrim;
+  const end = flux.length - edgeTrim;
+  if (end - start < 10) return null;
+
+  // Collect (flux, weight) pairs for reliable pixels
+  const validErrors = [];
+  for (let i = start; i < end; i++) {
+    const err = fluxErr[i];
+    if (err !== null && err > 0) validErrors.push(err);
+  }
+  if (validErrors.length < 5) return null;
+
+  validErrors.sort((a, b) => a - b);
+  const medianErr = validErrors[Math.floor(validErrors.length / 2)];
+
+  const pairs = [];
+  for (let i = start; i < end; i++) {
+    const err = fluxErr[i];
+    if (err !== null && err > 0 && err < 3 * medianErr && isFinite(flux[i])) {
+      const w = 1 / (err * err);
+      pairs.push({ flux: flux[i], weight: w });
+    }
+  }
+  if (pairs.length < 5) return null;
+
+  pairs.sort((a, b) => a.flux - b.flux);
+
+  const totalWeight = pairs.reduce((s, p) => s + p.weight, 0);
+
+  // Find weighted percentiles
+  function weightedPercentile(p) {
+    const target = totalWeight * p;
+    let cumulative = 0;
+    for (const pair of pairs) {
+      cumulative += pair.weight;
+      if (cumulative >= target) return pair.flux;
+    }
+    return pairs[pairs.length - 1].flux;
+  }
+
+  const p2 = weightedPercentile(0.02);
+  const p98 = weightedPercentile(0.98);
+
+  if (!isFinite(p2) || !isFinite(p98) || p98 - p2 <= 0) return null;
+  const range = p98 - p2;
+  return [p2 - 0.1 * range, p98 + 0.1 * range];
+}
+
+// Algorithm E: MAD + percentile hybrid
+function algoMADPercentile(flux, fluxErr, edgeTrim) {
+  const start = edgeTrim;
+  const end = flux.length - edgeTrim;
+  if (end - start < 10) return null;
+
+  // Error-filter like current approach to reject bad detector regions
+  const validErrors = [];
+  for (let i = start; i < end; i++) {
+    const err = fluxErr[i];
+    if (err !== null && err > 0) validErrors.push(err);
+  }
+  if (validErrors.length < 5) return null;
+
+  validErrors.sort((a, b) => a - b);
+  const medianErr = validErrors[Math.floor(validErrors.length / 2)];
+
+  const reliableFlux = [];
+  for (let i = start; i < end; i++) {
+    const err = fluxErr[i];
+    if (err !== null && err > 0 && err < 3 * medianErr && isFinite(flux[i])) {
+      reliableFlux.push(flux[i]);
+    }
+  }
+  if (reliableFlux.length < 5) return null;
+
+  reliableFlux.sort((a, b) => a - b);
+
+  // MAD-based bounds
+  const median = reliableFlux[Math.floor(reliableFlux.length / 2)];
+  const deviations = reliableFlux.map(v => Math.abs(v - median));
+  deviations.sort((a, b) => a - b);
+  const mad = deviations[Math.floor(deviations.length / 2)];
+
+  const k = 5;
+  const madMin = median - k * mad;
+  const madMax = median + k * mad;
+
+  // Percentile bounds
+  const pLow = percentile(reliableFlux, 0.005);
+  const pHigh = percentile(reliableFlux, 0.995);
+
+  // Hybrid: take the wider bound at each end
+  const rangeMin = Math.min(madMin, pLow);
+  const rangeMax = Math.max(madMax, pHigh);
+
+  if (!isFinite(rangeMin) || !isFinite(rangeMax) || rangeMax - rangeMin <= 0) return null;
+  const range = rangeMax - rangeMin;
+  return [rangeMin - 0.2 * range, rangeMax + 0.2 * range];
+}
+
+// ===== Scoring =====
+
+function scoreAlgorithm(yRange, trueSignal, edgeTrim) {
+  if (!yRange) return { coverage: 0, tightness: 0 };
+
+  const [yMin, yMax] = yRange;
+  const trimmedSignal = trueSignal.slice(edgeTrim, trueSignal.length - edgeTrim);
+
+  // Signal coverage: fraction of true signal that falls within the y-range
+  const inRange = trimmedSignal.filter(s => s >= yMin && s <= yMax).length;
+  const coverage = inRange / trimmedSignal.length;
+
+  // Tightness: ratio of signal range to displayed range (higher = tighter fit)
+  const sigMin = Math.min(...trimmedSignal);
+  const sigMax = Math.max(...trimmedSignal);
+  const sigRange = sigMax - sigMin || 1e-10;
+  const displayRange = yMax - yMin || 1e-10;
+  const tightness = Math.min(sigRange / displayRange, 1.0);
+
+  return { coverage, tightness };
+}
+
+// ===== Rendering =====
+
+const algorithms = [
+  { id: 'current', name: 'A. Current (err-filtered p2/p98)', fn: algoCurrent, tag: 'current', color: '#60a5fa' },
+  { id: 'sigmaclip', name: 'B. Sigma-clipped mean\u00b13\u03c3', fn: algoSigmaClip, tag: 'alt', color: '#a78bfa' },
+  { id: 'mad', name: 'C. MAD-based (median\u00b15\u00d7MAD)', fn: algoMAD, tag: 'alt', color: '#c084fc' },
+  { id: 'weighted', name: 'D. SNR-weighted percentile', fn: algoWeightedPercentile, tag: 'alt', color: '#e879f9' },
+  { id: 'madpct', name: 'E. MAD + percentile hybrid', fn: algoMADPercentile, tag: 'alt', color: '#f472b6' },
+];
+
+const plotLayout = {
+  paper_bgcolor: '#111',
+  plot_bgcolor: '#111',
+  margin: { l: 55, r: 15, t: 10, b: 35 },
+  xaxis: { gridcolor: '#222', zerolinecolor: '#333', tickfont: { color: '#888', size: 10 }, title: { text: 'Wavelength (\u03bcm)', font: { color: '#888', size: 11 } } },
+  yaxis: { gridcolor: '#222', zerolinecolor: '#333', tickfont: { color: '#888', size: 10 }, title: { text: 'Flux', font: { color: '#888', size: 11 } }, exponentformat: 'e' },
+  showlegend: false,
+};
+
+function render() {
+  const scenario = document.getElementById('scenario').value;
+  const noiseScale = parseFloat(document.getElementById('noiseScale').value);
+  const nPixels = parseInt(document.getElementById('nPixels').value);
+  const edgeTrim = parseInt(document.getElementById('edgeTrim').value);
+
+  document.getElementById('noiseVal').textContent = noiseScale.toFixed(1) + 'x';
+  document.getElementById('pixelVal').textContent = nPixels;
+  document.getElementById('trimVal').textContent = edgeTrim;
+
+  const { wave, flux, fluxErr, trueSignal } = generateSpectrum(scenario, nPixels, noiseScale);
+
+  const grid = document.getElementById('plotGrid');
+  grid.innerHTML = '';
+
+  const tbody = document.querySelector('#summaryTable tbody');
+  tbody.innerHTML = '';
+
+  const results = [];
+
+  algorithms.forEach((algo, idx) => {
+    const yRange = algo.fn(flux, fluxErr, edgeTrim);
+    const score = scoreAlgorithm(yRange, trueSignal, edgeTrim);
+    results.push({ algo, yRange, score });
+
+    // Create plot card
+    const card = document.createElement('div');
+    card.className = 'plot-card';
+    card.innerHTML = `
+      <div class="card-header">
+        <h3>${algo.name}</h3>
+        <span class="tag ${algo.tag}">${algo.tag === 'current' ? 'CURRENT' : 'ALT'}</span>
+      </div>
+      <div class="plot-container" id="plot-${algo.id}"></div>
+      <div class="stats-row">
+        <span>Range: <span class="val">${yRange ? `[${yRange[0].toExponential(2)}, ${yRange[1].toExponential(2)}]` : 'undefined (Plotly auto)'}</span></span>
+        <span>Coverage: <span class="val">${(score.coverage * 100).toFixed(0)}%</span></span>
+      </div>
+    `;
+    grid.appendChild(card);
+
+    // Plot data
+    const traces = [
+      // Error band (shaded)
+      {
+        x: wave,
+        y: flux.map((f, i) => f + fluxErr[i]),
+        type: 'scatter',
+        mode: 'lines',
+        line: { width: 0 },
+        showlegend: false,
+      },
+      {
+        x: wave,
+        y: flux.map((f, i) => f - fluxErr[i]),
+        type: 'scatter',
+        mode: 'lines',
+        line: { width: 0 },
+        fill: 'tonexty',
+        fillcolor: 'rgba(100,100,100,0.15)',
+        showlegend: false,
+      },
+      // True signal
+      {
+        x: wave,
+        y: trueSignal,
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: '#4ade80', width: 1.5, dash: 'dot' },
+        name: 'True signal',
+      },
+      // Observed flux
+      {
+        x: wave,
+        y: flux,
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: algo.color, width: 1 },
+        name: 'Observed',
+      },
+    ];
+
+    // Trim boundary markers
+    if (edgeTrim > 0) {
+      const trimLeft = wave[edgeTrim];
+      const trimRight = wave[wave.length - 1 - edgeTrim];
+      traces.push({
+        x: [trimLeft, trimLeft],
+        y: yRange || [Math.min(...flux), Math.max(...flux)],
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: '#f59e0b', width: 1, dash: 'dash' },
+        showlegend: false,
+      });
+      traces.push({
+        x: [trimRight, trimRight],
+        y: yRange || [Math.min(...flux), Math.max(...flux)],
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: '#f59e0b', width: 1, dash: 'dash' },
+        showlegend: false,
+      });
+    }
+
+    const layout = {
+      ...plotLayout,
+      yaxis: {
+        ...plotLayout.yaxis,
+        ...(yRange && { range: yRange }),
+      },
+    };
+
+    Plotly.newPlot(`plot-${algo.id}`, traces, layout, { displayModeBar: false, responsive: true });
+  });
+
+  // Summary table
+  // Find best coverage and tightness
+  const coverages = results.map(r => r.score.coverage);
+  const tightnesses = results.map(r => r.score.tightness);
+  const bestCoverage = Math.max(...coverages);
+  const bestTightness = Math.max(...tightnesses);
+
+  results.forEach(r => {
+    const row = document.createElement('tr');
+    const covClass = r.score.coverage === bestCoverage ? 'winner' : (r.score.coverage < bestCoverage * 0.8 ? 'loser' : '');
+    const tightClass = r.score.tightness === bestTightness ? 'winner' : (r.score.tightness < bestTightness * 0.5 ? 'loser' : '');
+    row.innerHTML = `
+      <td>${r.algo.name}</td>
+      <td>${r.yRange ? r.yRange[0].toExponential(2) : 'auto'}</td>
+      <td>${r.yRange ? r.yRange[1].toExponential(2) : 'auto'}</td>
+      <td>${r.yRange ? (r.yRange[1] - r.yRange[0]).toExponential(2) : 'auto'}</td>
+      <td class="${covClass}">${(r.score.coverage * 100).toFixed(1)}%</td>
+      <td class="${tightClass}">${(r.score.tightness * 100).toFixed(1)}%</td>
+    `;
+    tbody.appendChild(row);
+  });
+}
+
+// Event listeners
+document.getElementById('scenario').addEventListener('change', render);
+document.getElementById('noiseScale').addEventListener('input', render);
+document.getElementById('nPixels').addEventListener('input', render);
+document.getElementById('edgeTrim').addEventListener('input', render);
+document.getElementById('regenerate').addEventListener('click', render);
+
+// Initial render
+render();
+</script>
+</body>
+</html>
