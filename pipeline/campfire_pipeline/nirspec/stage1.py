@@ -15,7 +15,7 @@ from campfire_pipeline.common.io import log
 from campfire_pipeline.common.wcs import boundingbox_to_indices, wcs_to_dq
 
 
-def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None, products_dir=None, pictureframe_dir=None):
+def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None, products_dir=None):
     """Orchestrate stage 1: Detector1Pipeline + background subtraction.
 
     Parameters
@@ -30,8 +30,6 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         Overwrite existing products.
     data_dir, products_dir : str
         Used for workspace setup if not already done.
-    pictureframe_dir : str
-        Directory containing picture-frame templates.
     """
     from campfire_pipeline.common.parallel import dispatch
 
@@ -68,7 +66,6 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     if stage_config['subtract_background']:
         bkg_kwargs = dict(
             override_wavelength_range=stage_config.get('override_wavelength_range', {}),
-            pictureframe_dir=pictureframe_dir,
             subtract_2d=stage_config.get('subtract_2d', False),
             box_size=stage_config.get('box_size', 8),
             sigma_clip=stage_config.get('sigma_clip', True),
@@ -258,11 +255,37 @@ def mask_slits(
         #     bkg_total += pedestal_model
 
 
+def _get_pictureframe_file(rate_file):
+    """Look up the NIRSpec pictureframe reference file via CRDS.
+
+    The file is automatically downloaded to $CRDS_PATH on first use.
+    Returns None if CRDS cannot resolve the reference.
+    """
+    import crds
+    from jwst.datamodels import ImageModel
+
+    with ImageModel(rate_file) as model:
+        params = {
+            "INSTRUME": "NIRSPEC",
+            "DETECTOR": model.meta.instrument.detector,
+            "EXP_TYPE": model.meta.exposure.type,
+            "DATE-OBS": model.meta.observation.date,
+            "TIME-OBS": model.meta.observation.time,
+        }
+    try:
+        result = crds.getreferences(params, reftypes=['pictureframe'], observatory='jwst')
+        pf = result.get('pictureframe', '')
+        if pf and pf != 'N/A' and os.path.isfile(pf):
+            return pf
+    except Exception as e:
+        log(f"CRDS pictureframe lookup failed: {e}")
+    return None
+
+
 def subtract_background_from_rate_file(
         rate_file: str,
         override_wavelength_range: dict = {},
         n_iter: int = 5,
-        pictureframe_dir: str = None,
         subtract_2d: bool = False,
         box_size: int = 8,
         sigma_clip: bool = True,
@@ -315,24 +338,19 @@ def subtract_background_from_rate_file(
         col_model = None
         row_model = None
 
-        if pictureframe_dir:
+        # Look up pictureframe reference via CRDS
+        pictureframe_file = _get_pictureframe_file(rate_file)
+        use_pictureframe = pictureframe_file is not None
+
+        if use_pictureframe:
             pictureframe_model_total = np.zeros_like(model.data)
-            # pedestal_model_total = np.zeros_like(model.data)
+            pictureframe_template = fits.getdata(pictureframe_file)
         if subtract_2d:
             bkg2d_model_total = np.zeros_like(model.data)
         if do_col_1f:
             col_model_total = np.zeros_like(model.data)
         if do_row_1f:
             row_model_total = np.zeros_like(model.data)
-
-
-        if pictureframe_dir:
-            if detector == 'nrs1':
-                pictureframe_file = os.path.join(pictureframe_dir, 'jwst_nirspec_pictureframe_0002.fits')
-            else:
-                pictureframe_file = os.path.join(pictureframe_dir, 'jwst_nirspec_pictureframe_0001.fits')
-
-            pictureframe_template = fits.getdata(pictureframe_file)
 
 
         for j in range(n_iter):
@@ -343,7 +361,7 @@ def subtract_background_from_rate_file(
             n_sigma, fit_histogram = 2.0, False
             clip_to_background(model.data-bkg_total, mask, sigma_upper=n_sigma, fit_histogram=fit_histogram, verbose=True)
 
-            if pictureframe_dir:
+            if use_pictureframe:
                 log(f'Subtracting "picture frame" template (per-quarter fitting)')
                 n_quarters = 4
                 quarter_height = 2048 // n_quarters
@@ -495,7 +513,7 @@ def subtract_background_from_rate_file(
 
 
         # Point the names the plotting code expects at the totals
-        if pictureframe_dir:
+        if use_pictureframe:
             pictureframe_model = pictureframe_model_total
             # pedestal_model = pedestal_model_total
         if subtract_2d:

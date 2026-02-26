@@ -29,7 +29,6 @@ class ReductionEngine:
         paths = resolve_paths(self.config)
         self.data_dir = paths['data_dir']
         self.products_dir = paths['products_dir']
-        self.pictureframe_dir = paths['pictureframe_dir']
 
         log("Initialized ReductionEngine")
 
@@ -49,7 +48,6 @@ class ReductionEngine:
             overwrite=overwrite,
             data_dir=self.data_dir,
             products_dir=self.products_dir,
-            pictureframe_dir=self.pictureframe_dir,
         )
 
     def run_stage2a(self, obs, source_ids='all', overwrite=False, n_processes=1, plot=True):

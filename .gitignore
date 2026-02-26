@@ -38,8 +38,8 @@ data/extractions/
 # Pipeline data (LARGE - raw JWST data and products)
 pipeline/data/
 pipeline/products/
+pipeline/observations.toml
 pipeline/templates/*.pickle
-pipeline/templates/*.fits
 pipeline/templates/pictureframe/
 
 # Generated map tiles (uploaded to R2)

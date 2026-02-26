@@ -401,15 +401,17 @@ def fit_observation(obs_name, config, source_ids=None, overwrite=False,
     import toml
     from multiprocessing import Pool
     from campfire_pipeline.common.spectral import air_to_vac
+    from campfire_pipeline.config import resolve_observations_file, resolve_paths, get_r_curve_path, resolve_template_grid_paths
 
-    paths = config.get('paths', {})
+    paths = resolve_paths(config)
 
     if workspace_dir is None or gratings is None:
-        obs = toml.load('observations.toml')[obs_name]
+        obs_file = resolve_observations_file()
+        obs = toml.load(obs_file)[obs_name]
         if gratings is None:
             gratings = obs['gratings']
         if workspace_dir is None:
-            workspace_dir = paths.get('products_dir') + f'/{obs_name}/'
+            workspace_dir = paths['products_dir'] + f'/{obs_name}/'
 
     # File paths
     file_paths = {}
@@ -417,7 +419,7 @@ def fit_observation(obs_name, config, source_ids=None, overwrite=False,
     file_paths['output_path'] = file_paths['input_path']
 
     # Build grating -> template grid file mapping from config
-    template_grids_config = config.get('template_grids', {})
+    template_grids_config = resolve_template_grid_paths(config)
     grating_to_template = {}
     for name, grid_config in template_grids_config.items():
         for g in grid_config['gratings']:
@@ -448,7 +450,7 @@ def fit_observation(obs_name, config, source_ids=None, overwrite=False,
 
     for grating in gratings:
         logger.info(f"Fitting {grating} spectra...")
-        file_paths['r_curve_file'] = os.path.abspath(paths['r_curve_files'][grating.lower()])
+        file_paths['r_curve_file'] = get_r_curve_path(grating)
 
         # Resolve per-grating template file
         template_file = grating_to_template.get(grating.lower())

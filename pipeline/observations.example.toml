@@ -1,0 +1,33 @@
+# observations.toml — Observation definitions for CAMPFIRE pipeline
+#
+# Place this file at $CAMPFIRE_ROOT/config/observations.toml
+# (or pass --observations-file to the CLI)
+#
+# Each section defines an observation with:
+#   field       = sky field name (e.g. 'cosmos', 'uds')
+#   data_subdir = subdirectory under $CAMPFIRE_ROOT/raw/ containing uncal files
+#   files       = glob pattern(s) matching JWST file prefixes
+#                 prefix with '~' to exclude matches
+#   gratings    = list of gratings used in this observation
+#   program_id  = (optional) JWST program ID; auto-detected from filename if omitted
+#
+# Per-observation stage overrides can be nested:
+#   [obs_name.stage1]
+#       subtract_2d = true
+
+[example_cosmos_p1]
+    field = 'cosmos'
+    data_subdir = '1234'
+    files = 'jw01234001001*'
+    gratings = ['PRISM']
+
+[example_uds_medium]
+    field = 'uds'
+    data_subdir = '5678'
+    files = ['jw05678001001*', 'jw05678002001*']
+    gratings = ['G235M', 'G395M']
+    program_id = 5678
+
+    [example_uds_medium.stage1]
+        subtract_2d = true
+        box_size = 16

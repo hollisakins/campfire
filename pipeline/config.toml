@@ -3,22 +3,14 @@
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
-    CRDS_PATH = "/Users/hba423/simmons/crds/"
+    # CRDS_PATH defaults to $CAMPFIRE_ROOT/cache/crds if not set
     CRDS_CONTEXT = "jwst_1464.pmap"
 
 [paths]
-    data_dir = "/Users/hba423/simmons/campfire/pipeline/data" # Raw data (uncals) from MAST 
-    products_dir = "/Users/hba423/simmons/campfire/pipeline/products" # Reduced data products (split by observation)
-    pictureframe_dir = "/Users/hba423/simmons/campfire/pipeline/templates/pictureframe"
-
-[paths.r_curve_files]
-    prism = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_prism_disp.fits"
-    g395h = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g395h_disp.fits"
-    g395m = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g395m_disp.fits"
-    g235h = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g235h_disp.fits"
-    g235m = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g235m_disp.fits"
-    g140h = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g140h_disp.fits"
-    g140m = "/Users/hba423/simmons/campfire/pipeline/templates/jwst_nirspec_g140m_disp.fits"
+    # All paths resolve via $CAMPFIRE_ROOT by default.
+    # Uncomment to override:
+    # data_dir = "/custom/path/to/raw"
+    # products_dir = "/custom/path/to/products"
 
 [logging]
     level = "INFO"  # DEBUG, INFO, WARNING, ERROR
@@ -62,22 +54,23 @@
     f_LSF_g140m = 1.5
 
 [template_grids]
+    # Template grid pickle files live at $CAMPFIRE_ROOT/cache/templates/
+    # Paths here are relative to that directory (or absolute to override)
     [template_grids.prism]
-        file = "/Users/hba423/simmons/campfire/pipeline/templates/continuum_templates_prism.pickle"
+        file = "continuum_templates_prism.pickle"
         dv = 500
         z_min = 0
         z_max = 20
         gratings = ["prism"]
     [template_grids.medium]
-        file = "/Users/hba423/simmons/campfire/pipeline/templates/continuum_templates_medium.pickle"
+        file = "continuum_templates_medium.pickle"
         dv = 100
         z_min = 0
         z_max = 15
         gratings = ["g140m", "g235m", "g395m"]
     [template_grids.high]
-        file = "/Users/hba423/simmons/campfire/pipeline/templates/continuum_templates_high.pickle"
+        file = "continuum_templates_high.pickle"
         dv = 30
         z_min = 0
         z_max = 15
         gratings = ["g140h", "g235h", "g395h"]
-    

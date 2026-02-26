@@ -35,8 +35,10 @@ def load_config(config_path="config.toml"):
     return config
 
 
-def load_observations(obs_path="observations.toml"):
+def load_observations(obs_path=None):
     """Load and parse observations configuration file."""
+    from campfire_pipeline.config import resolve_observations_file
+    obs_path = resolve_observations_file(obs_path)
     with open(obs_path, 'r') as f:
         observations = toml.load(f)
     return observations
@@ -594,8 +596,8 @@ def main():
                        help='Observation name from observations.toml')
     parser.add_argument('--config', type=str, default='config.toml',
                        help='Path to configuration file (default: config.toml)')
-    parser.add_argument('--observations', type=str, default='observations.toml',
-                       help='Path to observations file (default: observations.toml)')
+    parser.add_argument('--observations', type=str, default=None,
+                       help='Path to observations file (default: auto-resolved via $CAMPFIRE_ROOT)')
     parser.add_argument('--plots', nargs='+', choices=['2d', 'thumbnail', 'zfit'], 
                        default=['2d', 'thumbnail', 'zfit'],
                        help='Plot types to generate (default: all)')

@@ -20,6 +20,9 @@ dependencies = [
 [project.scripts]
 campfire-nirspec = "campfire_pipeline.nirspec.cli:main"
 
+[tool.setuptools.package-data]
+campfire_pipeline = ["data/*.fits"]
+
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.backends._legacy:_Backend"

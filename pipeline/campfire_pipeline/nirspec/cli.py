@@ -13,7 +13,7 @@ Usage:
 
 import click
 
-from campfire_pipeline.config import load_config, setup_environment, resolve_paths, get_stage_config
+from campfire_pipeline.config import load_config, setup_environment, resolve_paths, get_stage_config, resolve_template_grid_paths
 from campfire_pipeline.nirspec.observation import Observation
 from campfire_pipeline.common.io import log
 
@@ -46,7 +46,7 @@ def _setup(config_path, obs_name):
     """Load config, set up environment, resolve paths, load observation.
 
     Returns (config, obs, paths) where paths is a dict with
-    data_dir, products_dir, pictureframe_dir.
+    data_dir, products_dir.
     """
     config = load_config(config_path)
     setup_environment(config)
@@ -88,8 +88,7 @@ def stage1(config, obs, processes, overwrite):
 
     cfg, obs_obj, paths = _setup(config, obs)
     stage_config = get_stage_config('stage1', cfg, obs_obj)
-    run_stage1(obs_obj, stage_config, n_processes=processes, overwrite=overwrite,
-               pictureframe_dir=paths['pictureframe_dir'])
+    run_stage1(obs_obj, stage_config, n_processes=processes, overwrite=overwrite)
 
 
 @main.command()
@@ -193,8 +192,7 @@ def run(config, obs, source_ids, processes, overwrite,
 
     if do_stage1:
         sc = get_stage_config('stage1', cfg, obs_obj)
-        _run_stage1(obs_obj, sc, n_processes=processes, overwrite=overwrite,
-                    pictureframe_dir=paths['pictureframe_dir'])
+        _run_stage1(obs_obj, sc, n_processes=processes, overwrite=overwrite)
 
     if do_stage2:
         sc = get_stage_config('stage2', cfg, obs_obj)
@@ -242,13 +240,12 @@ def run(config, obs, source_ids, processes, overwrite,
 def make_templates(config):
     """Generate continuum template grids from config."""
     import os
-    import toml
     from campfire_pipeline.nirspec.templates import make_template_grid
 
-    with open(config, 'r') as f:
-        cfg = toml.load(f)
+    cfg = load_config(config)
+    setup_environment(cfg)
 
-    template_grids_config = cfg.get('template_grids', {})
+    template_grids_config = resolve_template_grid_paths(cfg)
     if not template_grids_config:
         click.echo("No [template_grids] section found in config")
         raise SystemExit(1)

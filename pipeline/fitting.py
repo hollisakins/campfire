@@ -15,7 +15,6 @@ python fitting.py --config config.toml
 
 import os
 import argparse
-import toml
 import warnings; warnings.filterwarnings('ignore')
 import multiprocessing as mp
 mp.set_start_method('fork')
@@ -61,11 +60,13 @@ def main():
                         help='Generate continuum template grids from [template_grids] config and exit')
     args = parser.parse_args()
     config_path = args.config
-    with open(config_path, 'r') as f: config = toml.load(f)
+    from campfire_pipeline.config import load_config, setup_environment, resolve_template_grid_paths
+    config = load_config(config_path)
+    setup_environment(config)
 
     # Template generation mode: generate all grids from config and exit
     if args.make_templates:
-        template_grids_config = config.get('template_grids', {})
+        template_grids_config = resolve_template_grid_paths(config)
         if not template_grids_config:
             print("No [template_grids] section found in config")
             return 1

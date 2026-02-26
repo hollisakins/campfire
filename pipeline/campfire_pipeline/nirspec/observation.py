@@ -29,10 +29,10 @@ class Observation:
     directories_setup: bool = False
 
     @classmethod
-    def load(cls, name, observations_file='observations.toml'):
+    def load(cls, name, observations_file=None):
+        from campfire_pipeline.config import resolve_observations_file
 
-        if not isinstance(observations_file, str):
-            raise ValueError
+        observations_file = resolve_observations_file(observations_file)
         with open(observations_file, 'r') as f:
             observations_config = toml.load(f)
 
