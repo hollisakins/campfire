@@ -1,0 +1,25 @@
+[project]
+name = "campfire-pipeline"
+version = "0.3.0"
+description = "JWST data reduction pipeline"
+requires-python = ">=3.12"
+dependencies = [
+    "jwst>=1.15",
+    "astropy>=6.0",
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "matplotlib>=3.8",
+    "toml>=0.10",
+    "click>=8.0",
+    "tqdm>=4.65",
+    "spectres>=2.2",
+    "numba>=0.59",
+    "bagpipes",
+]
+
+[project.scripts]
+campfire-nirspec = "campfire_pipeline.nirspec.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"

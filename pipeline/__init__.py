@@ -1,18 +1,14 @@
 """
-NIRSpec Data Reduction Pipeline
+NIRSpec Data Reduction Pipeline — backwards compatibility shim.
 
-This package contains the core data reduction pipeline for processing JWST NIRSpec
-observations through preprocessing, spectrum extraction, and redshift fitting phases.
-
-Main modules:
-- reduction: Preprocessing and spectrum extraction pipeline
-- fitting: Redshift fitting using template SED matching
-- plots: Visualization and quality assurance plotting
+The canonical package is now ``campfire_pipeline``.
+This file re-exports ReductionEngine so that existing code like
+``from pipeline import ReductionEngine`` continues to work.
 """
 
-from .reduction import ReductionEngine
+from campfire_pipeline.nirspec.engine import ReductionEngine
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "ReductionEngine",
