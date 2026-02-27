@@ -127,7 +127,8 @@ export async function generateCSV(
     const commentSearchScope = isCommentSearch ? (searchScope === 'my_comments' ? 'just_me' : 'everyone') : null;
     const commentUserId = isCommentSearch ? user.id : null;
 
-    // Call the lightweight CSV export RPC (flat rows, no JSONB)
+    // Call the lightweight CSV export RPC (flat rows, no JSONB).
+    // Override PostgREST's default max_rows (5000) since CSV export needs all results.
     const { data, error } = await supabase.rpc('get_csv_export', {
       p_program_ids: accessibleProgramIds,
       p_filter_programs: filters.programs && filters.programs.length > 0 ? filters.programs : null,
@@ -161,7 +162,7 @@ export async function generateCSV(
       p_radius_degrees: radiusDegrees,
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,
-    });
+    }).limit(100000);
 
     if (error) {
       console.error('Error fetching CSV data:', error);
@@ -220,8 +221,8 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
     const values: (string | number)[] = [
       escapeCsvValue(row.object_id),
       escapeCsvValue(row.field),
-      row.ra.toFixed(6),
-      row.dec.toFixed(6),
+      row.ra.toFixed(8),
+      row.dec.toFixed(8),
     ];
 
     if (includeDistance) {
