@@ -17,13 +17,68 @@ from astropy import table
 from numba import njit, prange
 import numba
 
-from campfire_pipeline.nirspec.redshift import calculate_redshift_confidence
 from campfire_pipeline.common.spectral import (
     resample_to_nonuniform_grid,
     convolve_with_lsf,
     resample_to_observed_grid,
 )
 from campfire_pipeline.nirspec.templates import assemble_full_template_grid
+
+
+def calculate_redshift_confidence(z_array, chi2_array, zbest):
+    """
+    Calculate redshift confidence based on chi-squared distribution.
+
+    Quality flag is set to 0 by default and will be updated during visual inspection.
+
+    Parameters:
+    -----------
+    z_array : array
+        Redshift grid
+    chi2_array : array
+        Chi-squared values corresponding to redshift grid
+    zbest : float
+        Best-fit redshift
+
+    Returns:
+    --------
+    dict : Confidence metrics
+        {
+            'redshift': float - Best redshift rounded to 4 decimal places
+            'redshift_quality': int - Quality flag (0 = unreviewed, to be set during inspection)
+            'chi2_min': float - Minimum chi-squared value
+            'confidence': float - Confidence percentage
+        }
+    """
+    try:
+        # Calculate confidence using numerically stable method
+        # Offset chi2 by minimum to prevent underflow in exp(-large_number)
+        chi2_min_val = np.min(chi2_array)
+        chi2_offset = chi2_array - chi2_min_val  # Minimum becomes 0
+        pz = np.exp(-chi2_offset)  # Convert to probability (max prob = 1.0)
+
+        # Calculate confidence within ±0.03 of best redshift
+        confidence_mask = np.abs(z_array - zbest) <= 0.03
+        confidence = np.sum(pz[confidence_mask]) / np.sum(pz) * 100
+
+        # Quality flag is 0 by default - will be set during visual inspection
+        z_quality = 0   # Default: unreviewed, to be set during visual inspection
+
+        return {
+            'redshift': round(zbest, 4),        # Round to 4 decimal places
+            'redshift_quality': z_quality,      # Default 0, updated during inspection
+            'chi2_min': float(chi2_min_val),
+            'confidence': float(confidence)
+        }
+
+    except Exception as e:
+        # If confidence calculation fails, return safe defaults
+        return {
+            'redshift': round(zbest, 4),
+            'redshift_quality': 0,  # Default 0 even for failed calculations
+            'chi2_min': float(np.min(chi2_array)) if len(chi2_array) > 0 else 0.0,
+            'confidence': 0.0
+        }
 
 
 @njit(cache=True)
@@ -376,8 +431,27 @@ def fit_single_spectrum_optimized(spec_file, file_paths, convolved_wav, convolve
         return False, str(e)
 
 
-def fit_observation(obs_name, config, source_ids=None, overwrite=False,
-                    workspace_dir=None, gratings=None):
+def _discover_gratings(workspace_dir):
+    """Discover gratings from existing *_spec.fits files in the workspace.
+
+    Filenames follow the pattern ``{obs}_{grating}_{filter}_{source_id}_spec.fits``.
+    The grating is identified by matching path components against the known set.
+    """
+    from campfire_pipeline.nirspec.constants import GRATING_LIMITS
+
+    known = set(GRATING_LIMITS.keys())
+    spec_files = sorted(glob.glob(os.path.join(workspace_dir, '*_spec.fits')))
+    found = set()
+    for f in spec_files:
+        parts = os.path.basename(f).replace('_spec.fits', '').split('_')
+        for part in parts:
+            if part.lower() in known:
+                found.add(part.lower())
+    return sorted(found)
+
+
+def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
+                    workspace_dir=None, gratings=None, n_processes=1):
     """
     Run redshift fitting for all spectra in an observation.
 
@@ -396,22 +470,25 @@ def fit_observation(obs_name, config, source_ids=None, overwrite=False,
     workspace_dir : str, optional
         Explicit workspace directory.  If None, resolved from config + observations.toml.
     gratings : list of str, optional
-        Gratings to fit.  If None, loaded from observations.toml.
+        Gratings to fit.  If None, auto-discovered from *_spec.fits files.
+    n_processes : int
+        Number of parallel workers (default: 1).
     """
-    import toml
     from multiprocessing import Pool
     from campfire_pipeline.common.spectral import air_to_vac
-    from campfire_pipeline.config import resolve_observations_file, resolve_paths, get_r_curve_path, resolve_template_grid_paths
+    from campfire_pipeline.config import resolve_paths, get_r_curve_path, resolve_template_grid_paths
 
     paths = resolve_paths(config)
 
-    if workspace_dir is None or gratings is None:
-        obs_file = resolve_observations_file()
-        obs = toml.load(obs_file)[obs_name]
-        if gratings is None:
-            gratings = obs['gratings']
-        if workspace_dir is None:
-            workspace_dir = paths['products_dir'] + f'/{obs_name}/'
+    if workspace_dir is None:
+        workspace_dir = paths['products_dir'] + f'/{obs_name}/'
+
+    if gratings is None:
+        gratings = _discover_gratings(workspace_dir)
+        if not gratings:
+            logging.getLogger('nirspec_fitting').warning(
+                f"No *_spec.fits files found in {workspace_dir} — nothing to fit")
+            return 0
 
     # File paths
     file_paths = {}
@@ -425,8 +502,8 @@ def fit_observation(obs_name, config, source_ids=None, overwrite=False,
         for g in grid_config['gratings']:
             grating_to_template[g] = os.path.abspath(grid_config['file'])
 
-    options = config.get('fitting', {})
-    ncores = options.get('ncores', 1)
+    options = config.get('nirspec', {}).get('redshift_fitting', {})
+    ncores = n_processes
     save_models = options.get('save_models', False)
     f_LSF = options.get('f_LSF', 1.3)
     f_LSF_prism = options.get('f_LSF_prism', f_LSF)

@@ -15,14 +15,23 @@ dependencies = [
     "spectres>=2.2",
     "numba>=0.59",
     "bagpipes",
+    "jhat",
+    "snowblind",
+    "shapely",
+    "photutils",
 ]
 
 [project.scripts]
+cfpipe = "campfire_pipeline.cli:main"
 campfire-nirspec = "campfire_pipeline.nirspec.cli:main"
+campfire-nircam = "campfire_pipeline.nircam.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["campfire_pipeline*"]
 
 [tool.setuptools.package-data]
-campfire_pipeline = ["data/*.fits"]
+campfire_pipeline = ["data/*.fits", "data/*.toml"]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"

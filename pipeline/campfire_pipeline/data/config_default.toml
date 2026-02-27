@@ -1,0 +1,209 @@
+# CAMPFIRE Pipeline — Default Configuration
+# Export with: cfpipe config > my_config.toml
+
+[pipeline]
+    version = "v0.3"
+
+[environment]
+    CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
+    CRDS_CONTEXT = "jwst_1481.pmap"   # uncomment to pin
+
+[paths]
+    # Resolved from $CAMPFIRE_ROOT by default. Uncomment to override:
+    # data_dir = "/custom/path"
+    # products_dir = "/custom/path"
+
+[logging]
+    level = "INFO"
+    format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# === NIRSpec ===
+
+[nirspec.stage1]
+    do_clean_flicker_noise = false # handled by iterative bkg subtraction
+    mask_science_regions = false
+    cleanup_uncal = true
+    cleanup_rateints = true
+    subtract_2d = true
+    box_size = 8
+    sigma_clip = true
+    bkg_estimator = "median"
+    do_col_1f = true
+    do_row_1f = true # only used for PRISM
+    plot = true
+    
+    [nirspec.stage1.override_wavelength_range] # mask beyond the nominal wavelength range, to cover higher-order spectra
+        G140M = [0.70, 2.5]
+        G235M = [1.66, 4.0]
+        G395M = [2.87, 5.5]
+        G140H = [0.70, 2.5]
+        G235H = [1.66, 4.0]
+        G395H = [2.87, 5.5]
+
+[nirspec.stage2]
+    set_stellarity = 1.0
+    rectify = true
+    plot_bkgsub = false
+
+[nirspec.stage3]
+    method = "nodded"
+    combine_method = "2d"
+    cleanup_asn = true
+    cleanup_crfs = true
+    plot_profiles = true
+    plot_optext = true
+    sigma_clip = true
+    sigma_clip_low = 3.0
+    sigma_clip_high = 3.0
+    sigma_clip_maxiters = 5
+
+[nirspec.redshift_fitting]
+    save_models = false
+    optimized = false
+    f_LSF = 1.3
+    f_LSF_prism = 1.3
+    f_LSF_g395m = 1.5
+    f_LSF_g235m = 1.5
+    f_LSF_g140m = 1.5
+
+[nirspec.template_grids.prism]
+    file = "continuum_templates_prism.pickle"
+    dv = 500
+    z_min = 0
+    z_max = 20
+    gratings = ["prism"]
+
+[nirspec.template_grids.medium]
+    file = "continuum_templates_medium.pickle"
+    dv = 100
+    z_min = 0
+    z_max = 15
+    gratings = ["g140m", "g235m", "g395m"]
+
+[nirspec.template_grids.high]
+    file = "continuum_templates_high.pickle"
+    dv = 30
+    z_min = 0
+    z_max = 15
+    gratings = ["g140h", "g235h", "g395h"]
+
+# === NIRCam ===
+
+[nircam.stage1.detector1]
+    clean_flicker_noise = false
+
+[nircam.stage1.remove_snowball]
+    max_fraction = 0.3
+    new_jump_flag = 1024
+    min_radius = 4
+    growth_factor = 1.5
+
+[nircam.stage1.remove_wisp]
+    apply_flat = true
+    use_custom_flat = false
+    plot = true
+
+[nircam.stage1.remove_striping]
+    apply_flat = true
+    use_custom_flat = false
+    mask_sources = true
+    save_mask = true
+    maskparam = "none"
+    subtract_background = true
+    maxiters = 3
+    plot = true
+
+[nircam.stage1.persistence]
+
+[nircam.stage2.image2]
+    use_custom_flat = false
+
+[nircam.stage2.remove_edge]
+
+[nircam.stage2.bkgsub_var]
+    plot = true
+    ring_radius_in = 40
+    ring_width = 3
+    ring_clip_max_sigma = 5.0
+    ring_clip_box_size = 100
+    ring_clip_filter_size = 3
+    tier_kernel_size = [25, 15, 5, 2]
+    tier_npixels = [15, 15, 5, 2]
+    tier_nsigma = [3, 3, 3, 3]
+    tier_dilate_size = [0, 0, 0, 3]
+    bg_box_size = 10
+    bg_filter_size = 5
+    bg_exclude_percentile = 90
+    bg_sigma = 3
+    bg_interpolator = "zoom"
+    block_size = 7
+
+[nircam.stage2.apply_mask]
+    mask_flag = 1024
+
+[nircam.stage3.jhat]
+    verbose = true
+    debug = true
+    rough_cut_px_min = 2.5
+    rough_cut_px_max = 2.5
+    d_rotated_Nsigma = 3.0
+    iterate_with_xyshifts = true
+    d2d_max = 1.5
+    sip_err = 1.0
+    objmag_lim = [19, 28]
+    delta_mag_lim = [-3, 4]
+    histocut_order = "dxdy"
+    saveplots = true
+    savephottable = true
+
+[nircam.stage3.bad_pixel]
+    threshold = 0.2
+
+[nircam.stage3.skymatch]
+    skymethod = "match"
+    match_down = true
+    subtract = true
+    stepsize = "none"
+    skystat = "mode"
+    dqbits = "~DO_NOT_USE+NON_SCIENCE"
+    lower = "none"
+    upper = "none"
+    nclip = 10
+    binwidth = 0.1
+
+[nircam.stage3.outlier]
+    max_radius = 20
+    good_bits = "~DO_NOT_USE"
+    weight_type = "ivm"
+    pixfrac = 1.0
+    kernel = "square"
+    fillval = "INDEF"
+    maskpt = 0.1
+    scale = "1.2 0.7"
+    snr = "3.0 2.0"
+    backg = 0.0
+    resample_data = true
+
+[nircam.stage3.resample]
+    mode = "tile"
+    pixel_scale = "60mas"
+    version = "v0_1"
+    mosaic_name = "mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[version]_[tile]"
+    pixfrac = 1
+    kernel = "square"
+    background_subtract = true
+    ring_radius_in = 80
+    ring_width = 4
+    ring_clip_max_sigma = 5.0
+    ring_clip_box_size = 100
+    ring_clip_filter_size = 3
+    tier_kernel_size = [25, 15, 5, 2]
+    tier_npixels = [15, 10, 3, 1]
+    tier_nsigma = [1.5, 1.5, 1.5, 1.5]
+    tier_dilate_size = [33, 25, 21, 19]
+    bg_box_size = 10
+    bg_filter_size = 5
+    bg_exclude_percentile = 90
+    bg_sigma = 3
+    bg_interpolator = "zoom"
+    split_extensions = true

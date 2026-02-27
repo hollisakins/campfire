@@ -20,7 +20,77 @@ from campfire_pipeline.metadata.reader import (
     read_fits_metadata,
     read_zfit_data,
 )
-from campfire_pipeline.nirspec.redshift import determine_best_redshift
+
+
+# Grating wavelength priority for tiebreaking: lower value = higher priority
+GRATING_PRIORITY = {
+    'G395M': 0, 'G395H': 1,
+    'G235M': 2, 'G235H': 3,
+    'G140M': 4, 'G140H': 5,
+}
+
+
+def _grating_sort_key(name: str, data: dict) -> tuple:
+    """Sort key for ranking gratings: highest SNR > longest exposure > wavelength priority."""
+    snr = -(data.get('signal_to_noise') or 0)
+    exposure = -(data.get('exposure_time', 0))
+    wavelength = GRATING_PRIORITY.get(name, 99)
+    return (snr, exposure, wavelength)
+
+
+def determine_best_redshift(zfit_data_by_grating: dict[str, dict]) -> float | None:
+    """
+    Apply decision tree to choose the best redshift for an object from multiple spectra.
+
+    Decision logic:
+    1. If PRISM available and no gratings: use PRISM
+    2. If gratings available and no PRISM: use best grating
+    3. If both PRISM and gratings available:
+       - Check if they agree (|z_prism - z_grating| < 0.1)
+       - If agree: use grating (more precise)
+       - If disagree: use PRISM (more robust)
+
+    Best grating ranking: highest max SNR > longest exposure > wavelength
+    priority (G395 > G235 > G140).
+
+    Args:
+        zfit_data_by_grating: Dict mapping grating names to zfit data dicts.
+            Each dict should contain 'redshift', and optionally
+            'exposure_time' and 'signal_to_noise' for ranking.
+
+    Returns:
+        Best redshift value, or None if no valid data
+    """
+    if not zfit_data_by_grating:
+        return None
+
+    # Separate PRISM from gratings
+    prism_data = zfit_data_by_grating.get('PRISM')
+    grating_data = {g: d for g, d in zfit_data_by_grating.items() if g != 'PRISM'}
+
+    # Case 1: Only PRISM
+    if prism_data and not grating_data:
+        return prism_data['redshift']
+
+    # Case 2: Only gratings (no PRISM)
+    if grating_data and not prism_data:
+        best = min(grating_data, key=lambda g: _grating_sort_key(g, grating_data[g]))
+        return grating_data[best]['redshift']
+
+    # Case 3: Both PRISM and gratings
+    if prism_data and grating_data:
+        z_prism = prism_data['redshift']
+
+        best = min(grating_data, key=lambda g: _grating_sort_key(g, grating_data[g]))
+        z_grating = grating_data[best]['redshift']
+
+        # Check agreement
+        if abs(z_prism - z_grating) < 0.1:
+            return z_grating  # Agree: use grating (more precise)
+        else:
+            return z_prism    # Disagree: use PRISM (more robust)
+
+    return None
 
 
 def generate_observation_summary(obs_name: str, obs_dir: Path,

@@ -85,12 +85,11 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
     """
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec.plots import plot_stage2a_results
-    from campfire_pipeline.nirspec.constants import DEFAULT_STAGE2_CONFIG
 
     log(f"Stage 2b config for {obs.name}: {stage_config}")
 
-    rectify = stage_config.get('rectify', DEFAULT_STAGE2_CONFIG['rectify'])
-    plot_bkgsub = stage_config.get('plot_bkgsub', DEFAULT_STAGE2_CONFIG['plot_bkgsub'])
+    rectify = stage_config.get('rectify', True)
+    plot_bkgsub = stage_config.get('plot_bkgsub', False)
 
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=False)

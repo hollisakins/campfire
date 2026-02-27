@@ -21,7 +21,7 @@ class ReductionEngine:
     Prefer calling stage functions directly for new code.
     """
 
-    def __init__(self, config_path="config.toml"):
+    def __init__(self, config_path=None):
         self.config = load_config(config_path)
         self.config_path = config_path
         setup_environment(self.config)
@@ -87,15 +87,15 @@ class ReductionEngine:
             products_dir=self.products_dir,
         )
 
-    def run_fitting(self, obs, source_ids=None, n_processes=1, overwrite=False):
-        from campfire_pipeline.nirspec.fitting import fit_observation
-        return fit_observation(
+    def run_redshift_fitting(self, obs, source_ids=None, n_processes=1, overwrite=False):
+        from campfire_pipeline.nirspec.redshift_fitting import fit_redshifts
+        return fit_redshifts(
             obs_name=obs.name,
             config=self.config,
             source_ids=source_ids,
             overwrite=overwrite,
             workspace_dir=obs.workspace_dir,
-            gratings=obs.gratings,
+            n_processes=n_processes,
         )
 
     def run_summarize(self, obs):

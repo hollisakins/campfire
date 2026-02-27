@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository contains two main components:
 
-1. **Custom CAMPFIRE wrapper around the NIRSpec Data Reduction Pipeline** (`pipeline/`): Processes raw JWST NIRSpec data through preprocessing, spectrum extraction, and redshift fitting phases.
+1. **CAMPFIRE Data Reduction Pipeline** (`pipeline/`): Processes raw JWST data through preprocessing, extraction, and fitting. Includes both NIRSpec spectroscopy and NIRCam imaging modules.
 
 2. **Frontend for data access through the CAMPFIRE portal** (`web/`): COSMOS Archive of MultiPle-Field Internal Reductions & Extractions - deployment tools and web infrastructure for sharing reduced data with the research team.
 
@@ -14,29 +14,57 @@ This repository contains two main components:
 
 ```
 campfire/
-├── pipeline/            # Local data reduction (no cloud dependencies)
-│   ├── reduction.py              # Preprocessing and spectrum extraction
-│   ├── fitting.py                # Redshift fitting
-│   ├── plots.py                  # Visualization
-│   ├── data/                     # Filesystem interface between pipeline and CAMPFIRE
-│   │   └── {program_id}/         # Raw JWST data
-│   ├── products/                 # Filesystem interface between pipeline and CAMPFIRE
-│   │   └── {observation_name}/   # Raw JWST data
-│   ├── config.toml               # Pipeline configuration (no secrets)
+├── pipeline/                     # Local data reduction (no cloud dependencies)
+│   ├── pyproject.toml            # Package definition (campfire-pipeline)
+│   ├── campfire_pipeline/        # Installable Python package
+│   │   ├── __init__.py
+│   │   ├── cli.py                # cfpipe unified CLI (mounts nirspec + nircam)
+│   │   ├── config.py             # Config loading, env setup
+│   │   ├── common/               # Instrument-agnostic utilities
+│   │   │   ├── io.py             # log(), files_to_glob()
+│   │   │   ├── wcs.py            # Bounding box + DQ helpers
+│   │   │   ├── spectral.py       # Wavelength math, resampling, LSF
+│   │   │   └── query.py          # MAST API download
+│   │   ├── nirspec/              # NIRSpec pipeline
+│   │   │   ├── cli.py            # campfire-nirspec Click CLI
+│   │   │   ├── engine.py         # ReductionEngine orchestrator
+│   │   │   ├── observation.py    # Observation dataclass
+│   │   │   ├── metafile.py       # MetaFile dataclass (MSA metadata)
+│   │   │   ├── constants.py      # Grating limits, default configs
+│   │   │   ├── stage1.py         # Detector1Pipeline + background
+│   │   │   ├── stage2.py         # WCS + nodded bkg subtraction
+│   │   │   ├── stage3.py         # Spec3Pipeline + optimal extraction
+│   │   │   ├── extraction.py     # Profile functions + 1D combination
+│   │   │   ├── redshift_fitting.py # Chi-squared solvers + redshift fitting
+│   │   │   ├── templates.py      # Template grid generation
+│   │   │   ├── slits.py          # MSA slit geometry
+│   │   │   └── plots.py          # Stage-specific QA plotting
+│   │   ├── nircam/               # NIRCam pipeline
+│   │   │   ├── cli.py            # campfire-nircam Click CLI
+│   │   │   ├── engine.py         # ReductionEngine orchestrator
+│   │   │   ├── field.py          # Field dataclass (field + filters + tiles)
+│   │   │   ├── constants.py      # Filter lists, detector geometry, defaults
+│   │   │   ├── stage1.py         # Detector1Pipeline + snowball/wisp/striping
+│   │   │   ├── stage2.py         # Image2Pipeline + edge/sky/variance/masks
+│   │   │   ├── stage3.py         # JHAT + bad pixels + skymatch + resample
+│   │   │   └── bkgsub.py         # Tiered background subtraction
+│   │   └── metadata/             # Product metadata & summary
+│   │       ├── reader.py         # FITS metadata extraction
+│   │       └── summary.py        # Observation summary ECSV
+│   ├── reduction.py              # Backwards-compat shim (imports + main)
 │   └── observations.toml         # Observation definitions
 │
-├── web           # Web frontend and deployment architecture
-│   ├── app/               # Core Next.js app
-│   ├── components/        # Custom React components
-│   ├── lib/               # Supabase/R2 connections
+├── web/                          # Web frontend and deployment architecture
+│   ├── app/                      # Core Next.js app
+│   ├── components/               # Custom React components
+│   ├── lib/                      # Supabase/R2 connections
 │   └── middleware.ts
 │
-├── scripts/               # CLI entry points
-│   ├── reduce.py          # Run reduction pipeline
-│   ├── deploy.py          # Deploy to CAMPFIRE (to be implemented)
-│   └── config.toml        # Deployment credentials (gitignored)
+├── scripts/                      # Deployment and utility scripts
+│   ├── deploy.py                 # Deploy to CAMPFIRE
+│   └── config.toml               # Deployment credentials (gitignored)
 │
-└── templates/             # SED fitting templates (might move)
+└── templates/                    # SED fitting templates
 ```
 
 ## Development Commands
@@ -44,19 +72,44 @@ campfire/
 ### Running the Pipeline
 
 ```bash
-# Basic usage
-python scripts/reduce.py --obs ember_uds_p4 --extract
+# Install the pipeline package (editable mode)
+cd pipeline && pip install -e .
 
-# With preprocessing
-python scripts/reduce.py --obs capers_cosmos_p1 --preprocess --extract
+# Unified CLI (after pip install -e .)
+cfpipe nirspec stage1   --obs ember_uds_p4 --processes 4
+cfpipe nirspec stage2a  --obs ember_uds_p4 --source-ids 12345 67890
+cfpipe nirspec stage2b  --obs ember_uds_p4 --source-ids 12345 67890
+cfpipe nirspec stage3   --obs ember_uds_p4 --source-ids 12345 --processes 4
+cfpipe nirspec zfit    --obs ember_uds_p4 --overwrite
+cfpipe nirspec summary --obs ember_uds_p4
+cfpipe nirspec run     --obs ember_uds_p4 --all --processes 4
+cfpipe nirspec make-templates
 
-# Parallel processing
-python scripts/reduce.py --obs ember_uds_p4 --extract --processes 4
+cfpipe nircam stage1 --field cosmos --filters f444w f150w --processes 4
+cfpipe nircam stage2 --field cosmos --filters f444w --processes 4
+cfpipe nircam stage3 --field cosmos --filters f444w
+cfpipe nircam run    --field cosmos --all --processes 4
+
+# Instrument-agnostic commands
+cfpipe config                                         # print default config to stdout
+cfpipe config > my_config.toml                        # export for customization
+cfpipe info                                           # show paths, CRDS, versions
+cfpipe download --program 6585 --instrument nirspec   # download from MAST
+cfpipe download --program 1727 --instrument nircam --dry-run
+
+# Direct instrument entry points (also available)
+campfire-nirspec stage1 --obs ember_uds_p4 -p 4
+campfire-nircam  stage1 --field cosmos --filters f444w -p 4
+
+# Backwards-compatible usage (still works)
+cd pipeline
+python reduction.py --obs ember_uds_p4 --stage1 --stage2a --stage2b --stage3
 
 # The pipeline expects Python 3.12+ and uses libraries like:
-# - msaexp (for NIRSpec processing)
-# - jwst (JWST pipeline)
+# - jwst (JWST pipeline), msaexp
 # - astropy, numpy, scipy, matplotlib
+# - click, numba, spectres
+# - jhat, snowblind, photutils (NIRCam)
 ```
 
 ### Deploying to CAMPFIRE
@@ -72,20 +125,39 @@ python scripts/deploy.py --obs ember_uds_p4 --dry-run
 
 ## Configuration
 
-### Pipeline Configuration (`campfire-pipeline/config.toml`)
+### Pipeline Configuration
 
-Main configuration file for data reduction (safe to commit):
+Defaults are shipped as package data in `campfire_pipeline/data/config_default.toml`. No config file is required — defaults alone are sufficient to run. Export defaults with `cfpipe config > my_config.toml`.
+
+**Config resolution order** (later wins):
+1. Package defaults (`config_default.toml`)
+2. User config: explicit `--config` path, or auto-discovered at `$CAMPFIRE_ROOT/config/config.toml` / `./config.toml`
+3. Per-observation/field overrides (from `observations.toml` / `fields.toml`)
+
+**Sections** (instrument-namespaced):
 - `[pipeline]`: Version settings
 - `[environment]`: CRDS server settings for calibration data
 - `[paths]`: Directories for data and outputs
-- `[preprocessing]`: Preprocessing parameters
-- `[extractions]`: Extraction parameters
+- `[logging]`: Log level and format
+- `[nirspec.stage1]`, `[nirspec.stage2]`, `[nirspec.stage3]`: NIRSpec per-stage parameters
+- `[nirspec.redshift_fitting]`: Redshift fitting parameters
+- `[nirspec.template_grids.*]`: Template grid definitions
+- `[nircam.stage1.*]`, `[nircam.stage2.*]`, `[nircam.stage3.*]`: NIRCam per-stage/step parameters
 
-### Observations (`campfire-pipeline/observations.toml`)
+**Design rules:**
+- Config is purely parametric — controls *how* things run, never *whether*
+- `--overwrite` and `--processes` are CLI-only flags, never in config
+- No `run` toggles — stages run all sub-steps, auto-skip via output detection
 
-Defines observation configurations including data files, gratings, and source IDs.
+### Observations (`$CAMPFIRE_ROOT/config/observations.toml`)
 
-### CAMPFIRE Configuration (`campfire-web/config.toml`)
+Defines NIRSpec observation configurations including data files, gratings, and source IDs.
+
+### Fields (`$CAMPFIRE_ROOT/config/fields.toml`)
+
+Defines NIRCam field configurations including file globs, filters, and tile/WCS geometry.
+
+### CAMPFIRE Configuration (`scripts/config.toml`)
 
 Deployment credentials (gitignored, never commit):
 - `[cloudflare_r2]`: R2 storage credentials

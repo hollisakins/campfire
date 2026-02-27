@@ -23,7 +23,7 @@ class Observation:
     program_id: int
     data_subdir: str
     files: List[str]
-    gratings: List[str]
+    gratings: List[str] = field(default_factory=list)
     stage_overrides: dict = field(default_factory=dict)
 
     directories_setup: bool = False
@@ -43,7 +43,7 @@ class Observation:
 
         field_name = obs['field']
         data_subdir = obs['data_subdir']
-        gratings = obs['gratings']
+        gratings = obs.get('gratings', [])
 
         files = obs['files']
         if isinstance(files, str):

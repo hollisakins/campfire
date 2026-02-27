@@ -22,19 +22,19 @@ import requests
 BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
 
 
-def search_filesets(program_id, exp_type="NRS_MSASPEC"):
-    """Query MAST for NIRSpec level 1b filesets in a program.
+def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC"):
+    """Query MAST for level 1b filesets in a program.
 
     Returns a list of dicts with fileSetName and observation metadata.
     """
-    print(f"Searching for NIRSpec {exp_type} level 1b filesets in program {program_id}...")
+    print(f"Searching for {instrument} {exp_type} level 1b filesets in program {program_id}...")
 
     resp = requests.post(
         f"{BASE_URL}/search",
         json={
             "conditions": [
                 {"program": str(program_id)},
-                {"instrume": "NIRSPEC"},
+                {"instrume": instrument},
                 {"exp_type": exp_type},
                 {"productLevel": "1b"},
             ],
@@ -82,10 +82,12 @@ def list_products_batched(filesets, batch_size=25):
     return all_products
 
 
-def filter_products(products):
-    """Filter products to uncal FITS and unique MSA files.
+def filter_products(products, instrument="NIRSPEC"):
+    """Filter products to uncal FITS and instrument-specific auxiliary files.
 
-    Returns (uncal_files, msa_files) where each is a list of
+    For NIRSPEC, also returns deduplicated MSA metadata files.
+
+    Returns (uncal_files, aux_files) where each is a list of
     dicts with 'filename', 'uri', and 'size' keys.
     """
     uncal_files = [
@@ -93,16 +95,17 @@ def filter_products(products):
         if p["filename"].endswith("_uncal.fits")
     ]
 
-    # MSA files are duplicated across filesets in the same nod group;
-    # deduplicate by filename, keeping the first occurrence
-    seen_msa = set()
-    msa_files = []
-    for p in products:
-        if p["filename"].endswith("_msa.fits") and p["filename"] not in seen_msa:
-            seen_msa.add(p["filename"])
-            msa_files.append(p)
+    aux_files = []
+    if instrument == "NIRSPEC":
+        # MSA files are duplicated across filesets in the same nod group;
+        # deduplicate by filename, keeping the first occurrence
+        seen_msa = set()
+        for p in products:
+            if p["filename"].endswith("_msa.fits") and p["filename"] not in seen_msa:
+                seen_msa.add(p["filename"])
+                aux_files.append(p)
 
-    return uncal_files, msa_files
+    return uncal_files, aux_files
 
 
 def format_size(size_bytes):
@@ -177,11 +180,25 @@ def download_file(uri, output_path, size, index, total):
         return "error"
 
 
-def download_nirspec_uncal(program_id, download_dir="data", exp_type="NRS_MSASPEC", dry_run=False):
-    """Download NIRSpec level 1b uncal and MSA files for a JWST program."""
+def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
+                       download_dir="data", dry_run=False):
+    """Download JWST level 1b data for a program.
 
+    Parameters
+    ----------
+    program_id : int
+        JWST program ID.
+    instrument : str
+        Instrument name ('NIRSPEC' or 'NIRCAM').
+    exp_type : str
+        Exposure type (e.g. 'NRS_MSASPEC', 'NRC_IMAGE').
+    download_dir : str
+        Base download directory. Files go into download_dir/program_id/.
+    dry_run : bool
+        If True, list files without downloading.
+    """
     # Step 1: Search for filesets
-    filesets = search_filesets(program_id, exp_type)
+    filesets = search_filesets(program_id, instrument, exp_type)
     if not filesets:
         print("No filesets found. Exiting.")
         return
@@ -192,12 +209,13 @@ def download_nirspec_uncal(program_id, download_dir="data", exp_type="NRS_MSASPE
     print(f"  {len(products)} total products across {len(filesets)} filesets")
 
     # Step 3: Filter
-    uncal_files, msa_files = filter_products(products)
-    all_files = uncal_files + msa_files
+    uncal_files, aux_files = filter_products(products, instrument)
+    all_files = uncal_files + aux_files
     total_size = sum(f["size"] for f in all_files)
 
     print()
-    print(f"Selected {len(uncal_files)} uncal files and {len(msa_files)} unique MSA files ({format_size(total_size)} total)")
+    aux_label = f" and {len(aux_files)} unique MSA files" if aux_files else ""
+    print(f"Selected {len(uncal_files)} uncal files{aux_label} ({format_size(total_size)} total)")
 
     if not all_files:
         print("No matching files found. Exiting.")
@@ -255,6 +273,17 @@ def download_nirspec_uncal(program_id, download_dir="data", exp_type="NRS_MSASPE
     downloaded = len(to_download) - errors
     print(f"Complete: {downloaded} downloaded, {len(to_skip)} skipped, {errors} errors")
     print(f"Location: {output_dir}/")
+
+
+def download_nirspec_uncal(program_id, download_dir="data", exp_type="NRS_MSASPEC", dry_run=False):
+    """Backwards-compatible wrapper for download_jwst_data()."""
+    download_jwst_data(
+        program_id=program_id,
+        instrument="NIRSPEC",
+        exp_type=exp_type,
+        download_dir=download_dir,
+        dry_run=dry_run,
+    )
 
 
 def main():

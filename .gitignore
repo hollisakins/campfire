@@ -39,6 +39,7 @@ data/extractions/
 pipeline/data/
 pipeline/products/
 pipeline/observations.toml
+pipeline/fields.toml
 pipeline/templates/*.pickle
 pipeline/templates/pictureframe/
 

@@ -1,14 +1,17 @@
 """
-campfire-nirspec CLI — Click-based entry point for NIRSpec pipeline.
+NIRSpec CLI — Click-based entry point for NIRSpec pipeline.
 
-Usage:
-    campfire-nirspec stage1  --obs ember_uds_p4 [--processes 4] [--overwrite]
-    campfire-nirspec stage2  --obs ember_uds_p4 [--source-ids 12345 67890]
-    campfire-nirspec stage3  --obs ember_uds_p4 [--source-ids ...]
-    campfire-nirspec fit     --obs ember_uds_p4 [--source-ids ...] [--overwrite]
-    campfire-nirspec summary --obs ember_uds_p4
-    campfire-nirspec run     --obs ember_uds_p4 --all
-    campfire-nirspec make-templates [--config config.toml]
+Usage (via unified CLI):
+    cfpipe nirspec stage1   --obs ember_uds_p4 [--processes 4] [--overwrite]
+    cfpipe nirspec stage2a  --obs ember_uds_p4 [--source-ids 12345 67890]
+    cfpipe nirspec stage2b  --obs ember_uds_p4 [--source-ids 12345 67890]
+    cfpipe nirspec stage3   --obs ember_uds_p4 [--source-ids ...]
+    cfpipe nirspec zfit     --obs ember_uds_p4 [--source-ids ...] [--overwrite]
+    cfpipe nirspec summary  --obs ember_uds_p4
+    cfpipe nirspec run      --obs ember_uds_p4 --all
+    cfpipe nirspec make-templates [--config config.toml]
+
+Also available directly as: campfire-nirspec <command>
 """
 
 import click
@@ -24,7 +27,7 @@ from campfire_pipeline.common.io import log
 
 def common_options(f):
     """Decorator that adds --config and --obs options."""
-    f = click.option('--config', default='config.toml',
+    f = click.option('--config', default=None,
                      help='Path to configuration file.')(f)
     f = click.option('--obs', required=True,
                      help='Observation name from observations.toml.')(f)
@@ -94,15 +97,27 @@ def stage1(config, obs, processes, overwrite):
 @main.command()
 @common_options
 @processing_options
-def stage2(config, obs, source_ids, processes, overwrite):
-    """Run stage 2: WCS assignment (2a) + nodded background subtraction (2b)."""
-    from campfire_pipeline.nirspec.stage2 import run_stage2a, run_stage2b
+def stage2a(config, obs, source_ids, processes, overwrite):
+    """Run stage 2a: WCS assignment + rectification."""
+    from campfire_pipeline.nirspec.stage2 import run_stage2a as _run_stage2a
 
     cfg, obs_obj, paths = _setup(config, obs)
     stage_config = get_stage_config('stage2', cfg, obs_obj)
     sids = _resolve_source_ids(source_ids)
-    run_stage2a(obs_obj, stage_config, source_ids=sids, n_processes=processes, overwrite=overwrite)
-    run_stage2b(obs_obj, stage_config, source_ids=sids, n_processes=processes, overwrite=overwrite)
+    _run_stage2a(obs_obj, stage_config, source_ids=sids, n_processes=processes, overwrite=overwrite)
+
+
+@main.command()
+@common_options
+@processing_options
+def stage2b(config, obs, source_ids, processes, overwrite):
+    """Run stage 2b: nodded background subtraction."""
+    from campfire_pipeline.nirspec.stage2 import run_stage2b as _run_stage2b
+
+    cfg, obs_obj, paths = _setup(config, obs)
+    stage_config = get_stage_config('stage2', cfg, obs_obj)
+    sids = _resolve_source_ids(source_ids)
+    _run_stage2b(obs_obj, stage_config, source_ids=sids, n_processes=processes, overwrite=overwrite)
 
 
 @main.command()
@@ -121,43 +136,47 @@ def stage3(config, obs, source_ids, processes, overwrite):
 @main.command()
 @common_options
 @processing_options
-def fit(config, obs, source_ids, processes, overwrite):
+def zfit(config, obs, source_ids, processes, overwrite):
     """Run redshift fitting."""
-    from campfire_pipeline.nirspec.fitting import fit_observation
+    from campfire_pipeline.nirspec.redshift_fitting import fit_redshifts
 
     cfg, obs_obj, paths = _setup(config, obs)
     sids = _resolve_source_ids(source_ids)
     sids_list = sids if sids != 'all' else None
-    fit_observation(
+    fit_redshifts(
         obs_name=obs_obj.name,
         config=cfg,
         source_ids=sids_list,
         overwrite=overwrite,
         workspace_dir=obs_obj.workspace_dir,
-        gratings=obs_obj.gratings,
+        n_processes=processes,
     )
 
 
-@main.command()
-@common_options
-def summary(config, obs):
-    """Generate observation summary ECSV."""
+def _run_summary(cfg, obs_obj):
+    """Generate (or regenerate) the observation summary ECSV."""
     from pathlib import Path
     from campfire_pipeline.metadata.summary import (
         generate_observation_summary,
         write_summary_ecsv,
     )
 
-    cfg, obs_obj, paths = _setup(config, obs)
     version = cfg.get('pipeline', {}).get('version', 'unknown')
     obs_dir = Path(obs_obj.workspace_dir)
-
     summary_table = generate_observation_summary(obs_obj.name, obs_dir,
                                                   reduction_version=version)
     if len(summary_table) > 0:
         write_summary_ecsv(summary_table, obs_dir, obs_obj.name)
     else:
         log(f"No spectra found for {obs_obj.name}, skipping summary")
+
+
+@main.command()
+@common_options
+def summary(config, obs):
+    """Generate observation summary ECSV."""
+    cfg, obs_obj, paths = _setup(config, obs)
+    _run_summary(cfg, obs_obj)
 
 
 # ---------------------------------------------------------------------------
@@ -168,23 +187,24 @@ def summary(config, obs):
 @common_options
 @processing_options
 @click.option('--stage1', 'do_stage1', is_flag=True, help='Run stage 1.')
-@click.option('--stage2', 'do_stage2', is_flag=True, help='Run stage 2.')
+@click.option('--stage2a', 'do_stage2a', is_flag=True, help='Run stage 2a.')
+@click.option('--stage2b', 'do_stage2b', is_flag=True, help='Run stage 2b.')
 @click.option('--stage3', 'do_stage3', is_flag=True, help='Run stage 3.')
-@click.option('--fit', 'do_fit', is_flag=True, help='Run fitting.')
+@click.option('--zfit', 'do_zfit', is_flag=True, help='Run redshift fitting.')
 @click.option('--summary', 'do_summary', is_flag=True, help='Generate summary.')
 @click.option('--all', 'do_all', is_flag=True, help='Run all stages.')
 def run(config, obs, source_ids, processes, overwrite,
-        do_stage1, do_stage2, do_stage3, do_fit, do_summary, do_all):
+        do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary, do_all):
     """Run multiple pipeline stages in sequence."""
     from campfire_pipeline.nirspec.stage1 import run_stage1 as _run_stage1
     from campfire_pipeline.nirspec.stage2 import run_stage2a, run_stage2b
     from campfire_pipeline.nirspec.stage3 import run_stage3 as _run_stage3
-    from campfire_pipeline.nirspec.fitting import fit_observation
+    from campfire_pipeline.nirspec.redshift_fitting import fit_redshifts
 
     if do_all:
-        do_stage1 = do_stage2 = do_stage3 = do_fit = do_summary = True
+        do_stage1 = do_stage2a = do_stage2b = do_stage3 = do_zfit = do_summary = True
 
-    if not any([do_stage1, do_stage2, do_stage3, do_fit, do_summary]):
+    if not any([do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary]):
         raise click.UsageError("Specify at least one stage flag, or use --all.")
 
     cfg, obs_obj, paths = _setup(config, obs)
@@ -194,41 +214,34 @@ def run(config, obs, source_ids, processes, overwrite,
         sc = get_stage_config('stage1', cfg, obs_obj)
         _run_stage1(obs_obj, sc, n_processes=processes, overwrite=overwrite)
 
-    if do_stage2:
+    if do_stage2a:
         sc = get_stage_config('stage2', cfg, obs_obj)
         run_stage2a(obs_obj, sc, source_ids=sids, n_processes=processes, overwrite=overwrite)
+
+    if do_stage2b:
+        sc = get_stage_config('stage2', cfg, obs_obj)
         run_stage2b(obs_obj, sc, source_ids=sids, n_processes=processes, overwrite=overwrite)
 
     if do_stage3:
         sc = get_stage_config('stage3', cfg, obs_obj)
         _run_stage3(obs_obj, sc, cfg, source_ids=sids, n_processes=processes, overwrite=overwrite)
 
-    if do_fit:
+    if do_summary:
+        _run_summary(cfg, obs_obj)
+
+    if do_zfit:
         sids_list = sids if sids != 'all' else None
-        fit_observation(
+        fit_redshifts(
             obs_name=obs_obj.name,
             config=cfg,
             source_ids=sids_list,
             overwrite=overwrite,
             workspace_dir=obs_obj.workspace_dir,
-            gratings=obs_obj.gratings,
+            n_processes=processes,
         )
-
-    if do_summary:
-        from pathlib import Path
-        from campfire_pipeline.metadata.summary import (
-            generate_observation_summary,
-            write_summary_ecsv,
-        )
-
-        version = cfg.get('pipeline', {}).get('version', 'unknown')
-        obs_dir = Path(obs_obj.workspace_dir)
-        summary_table = generate_observation_summary(obs_obj.name, obs_dir,
-                                                      reduction_version=version)
-        if len(summary_table) > 0:
-            write_summary_ecsv(summary_table, obs_dir, obs_obj.name)
-        else:
-            log(f"No spectra found for {obs_obj.name}, skipping summary")
+        # Re-generate summary with redshift results
+        if do_summary:
+            _run_summary(cfg, obs_obj)
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +249,7 @@ def run(config, obs, source_ids, processes, overwrite,
 # ---------------------------------------------------------------------------
 
 @main.command('make-templates')
-@click.option('--config', default='config.toml', help='Path to configuration file.')
+@click.option('--config', default=None, help='Path to configuration file.')
 def make_templates(config):
     """Generate continuum template grids from config."""
     import os

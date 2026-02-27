@@ -41,18 +41,17 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
     """
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec.observation import Observation
-    from campfire_pipeline.nirspec.constants import DEFAULT_STAGE3_CONFIG
 
     version = config.get('pipeline', {}).get('version', 'unknown')
     log(f"Stage 3 config for {obs.name}: {stage_config}")
 
-    bkg_subtraction_method = stage_config.get('method', DEFAULT_STAGE3_CONFIG['method'])
+    bkg_subtraction_method = stage_config.get('method', 'nodded')
     s3_kwargs = dict(
-        cleanup_asn=stage_config.get('cleanup_asn', DEFAULT_STAGE3_CONFIG['cleanup_asn']),
-        cleanup_crfs=stage_config.get('cleanup_crfs', DEFAULT_STAGE3_CONFIG['cleanup_crfs']),
+        cleanup_asn=stage_config.get('cleanup_asn', True),
+        cleanup_crfs=stage_config.get('cleanup_crfs', True),
     )
-    plot_profiles = stage_config.get('plot_profiles', DEFAULT_STAGE3_CONFIG['plot_profiles'])
-    plot_optext = stage_config.get('plot_optext', DEFAULT_STAGE3_CONFIG['plot_optext'])
+    plot_profiles = stage_config.get('plot_profiles', True)
+    plot_optext = stage_config.get('plot_optext', True)
     combine_method = stage_config.get('combine_method', '2d')
 
     if not obs.directories_setup:
@@ -149,10 +148,10 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
 
     # Phase 2: 1D combination (combine_method='1d' only)
     if phase2_tasks:
-        sigma_clip = stage_config.get('sigma_clip', DEFAULT_STAGE3_CONFIG['sigma_clip'])
-        sigma_clip_low = stage_config.get('sigma_clip_low', DEFAULT_STAGE3_CONFIG['sigma_clip_low'])
-        sigma_clip_high = stage_config.get('sigma_clip_high', DEFAULT_STAGE3_CONFIG['sigma_clip_high'])
-        sigma_clip_maxiters = stage_config.get('sigma_clip_maxiters', DEFAULT_STAGE3_CONFIG['sigma_clip_maxiters'])
+        sigma_clip = stage_config.get('sigma_clip', True)
+        sigma_clip_low = stage_config.get('sigma_clip_low', 3.0)
+        sigma_clip_high = stage_config.get('sigma_clip_high', 3.0)
+        sigma_clip_maxiters = stage_config.get('sigma_clip_maxiters', 5)
 
         combine_kwargs = dict(
             sigma_clip=sigma_clip,

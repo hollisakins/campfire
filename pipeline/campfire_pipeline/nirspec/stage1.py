@@ -63,28 +63,27 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     )
 
     # Phase 2: Background subtraction on resulting rate files
-    if stage_config['subtract_background']:
-        bkg_kwargs = dict(
-            override_wavelength_range=stage_config.get('override_wavelength_range', {}),
-            subtract_2d=stage_config.get('subtract_2d', False),
-            box_size=stage_config.get('box_size', 8),
-            sigma_clip=stage_config.get('sigma_clip', True),
-            bkg_estimator=stage_config.get('bkg_estimator', 'median'),
-            do_col_1f=stage_config.get('do_col_1f', True),
-            do_row_1f=stage_config.get('do_row_1f', True),
-            plot=stage_config.get('plot', True),
-            save_backup=False,
-        )
-        rate_files = [
-            os.path.join(obs.workspace_dir, f.replace('_uncal.fits', '_rate.fits'))
-            for f in uncal_files
-        ]
-        dispatch(
-            subtract_background_from_rate_file,
-            rate_files,
-            n_processes=n_processes,
-            **bkg_kwargs,
-        )
+    bkg_kwargs = dict(
+        override_wavelength_range=stage_config.get('override_wavelength_range', {}),
+        subtract_2d=stage_config.get('subtract_2d', False),
+        box_size=stage_config.get('box_size', 8),
+        sigma_clip=stage_config.get('sigma_clip', True),
+        bkg_estimator=stage_config.get('bkg_estimator', 'median'),
+        do_col_1f=stage_config.get('do_col_1f', True),
+        do_row_1f=stage_config.get('do_row_1f', True),
+        plot=stage_config.get('plot', True),
+        save_backup=False,
+    )
+    rate_files = [
+        os.path.join(obs.workspace_dir, f.replace('_uncal.fits', '_rate.fits'))
+        for f in uncal_files
+    ]
+    dispatch(
+        subtract_background_from_rate_file,
+        rate_files,
+        n_processes=n_processes,
+        **bkg_kwargs,
+    )
 
 
 def mask_slits(
@@ -275,8 +274,14 @@ def _get_pictureframe_file(rate_file):
     try:
         result = crds.getreferences(params, reftypes=['pictureframe'], observatory='jwst')
         pf = result.get('pictureframe', '')
-        if pf and pf != 'N/A' and os.path.isfile(pf):
-            return pf
+        if not pf or pf.upper().startswith('N/A') or 'NOT FOUND' in pf.upper():
+            log(f"CRDS has no pictureframe reference for this observation (returned: {pf!r})")
+            return None
+        if not os.path.isfile(pf):
+            log(f"CRDS pictureframe file not found on disk: {pf} — check CRDS_PATH and network access")
+            return None
+        log(f"Using pictureframe reference: {pf}")
+        return pf
     except Exception as e:
         log(f"CRDS pictureframe lookup failed: {e}")
     return None
@@ -304,11 +309,11 @@ def subtract_background_from_rate_file(
     input_dir = os.path.dirname(rate_file)
     with ImageModel(rate_file) as model:
 
-        if 'PRISM' in model.meta.instrument.grating:
-            do_row_1f = True
+        if not 'PRISM' in model.meta.instrument.grating:
+            do_row_1f = False
 
         for entry in model.history:
-            if 'Subtracted pedestal, rescaled variance' in entry['description']:
+            if 'Subtracted background, rescaled variance' in entry['description']:
                 log(f'Variance rescaling already done for {os.path.basename(rate_file)}, skipping...')
                 return
 

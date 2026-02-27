@@ -1,0 +1,53 @@
+# fields.toml — NIRCam field definitions for CAMPFIRE pipeline
+#
+# Place this file at $CAMPFIRE_ROOT/config/fields.toml
+# (or pass --fields-file to the CLI)
+#
+# Each section defines a field with:
+#   filters     = list of NIRCam filters to reduce
+#   files       = glob pattern(s) matching JWST file prefixes
+#   data_subdir = subdirectory under $CAMPFIRE_ROOT/raw/ containing uncal files
+#                 (organized by filter: {data_subdir}/{filter}/*_uncal.fits)
+#   tangent_point = [RA, Dec] for mosaic WCS reference
+#
+# Tile WCS definitions nest under the field:
+#   [field.tile_name]
+#       rotation = degrees
+#       corners  = [[RA, Dec], ...]
+#       [field.tile_name.30mas]
+#           crpix = [x, y]
+#           naxis = [nx, ny]
+#       [field.tile_name.60mas]
+#           crpix = [x, y]
+#           naxis = [nx, ny]
+#
+# Per-field stage overrides can be nested:
+#   [field.stage1]
+#       [field.stage1.remove_striping_step]
+#           apply_flat = false
+
+[example_cosmos]
+    filters = ['f115w', 'f150w', 'f200w', 'f277w', 'f356w', 'f410m', 'f444w']
+    files = ['jw01727*', 'jw05893*']
+    data_subdir = 'nircam/cosmos'
+    tangent_point = [150.1163213, 2.200973097]
+
+    [example_cosmos.A1]
+        rotation = 20
+        corners = [[149.8703317, 2.0856512], [149.7198796, 2.1403395], [149.7908786, 2.3354095], [149.9413496, 2.2807163]]
+        [example_cosmos.A1.30mas]
+            crpix = [-22990, 23090]
+            naxis = [19200, 24910]
+        [example_cosmos.A1.60mas]
+            crpix = [-11495, 11545]
+            naxis = [9600, 12455]
+
+    [example_cosmos.A2]
+        rotation = 20
+        corners = [[150.0058959, 2.0363591], [149.8554506, 2.0910612], [149.9264667, 2.2861269], [150.0769300, 2.2314186]]
+        [example_cosmos.A2.30mas]
+            crpix = [-5690, 23090]
+            naxis = [19200, 24910]
+        [example_cosmos.A2.60mas]
+            crpix = [-2845, 11545]
+            naxis = [9600, 12455]
