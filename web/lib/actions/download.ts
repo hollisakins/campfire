@@ -1,7 +1,6 @@
 'use server';
 
 import { getSpectra } from './spectra';
-import type { SpectrumObject } from '@/lib/types';
 import type { SortColumn, SortDirection } from './spectra-types';
 import { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
 import { trackDownload } from './download-tracking';
@@ -22,9 +21,28 @@ interface DownloadPayload {
   zipFilename: string;
 }
 
+interface CsvRow {
+  object_id: string;
+  field: string;
+  ra: number;
+  dec: number;
+  redshift: number | null;
+  redshift_quality: number;
+  max_snr: number | null;
+  max_exposure_time: number | null;
+  num_gratings: number;
+  program_id: number;
+  program_name: string | null;
+  last_inspected_at: string | null;
+  last_inspected_by: string | null;
+  distance: number | null;
+}
+
 /**
- * Generate a CSV file from filtered spectra results
- * Returns CSV content as a string
+ * Generate a CSV file from filtered spectra results.
+ * Uses a lightweight RPC that returns flat rows — no JSONB object building
+ * or nested spectra subqueries, so it handles large result sets (7k+) without
+ * hitting statement timeouts.
  */
 export async function generateCSV(
   filters: AdvancedFilterOptions,
@@ -32,57 +50,138 @@ export async function generateCSV(
   sortDirection: SortDirection = 'asc'
 ): Promise<{ csv: string | null; error: string | null }> {
   try {
-    // Get user for tracking
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    // Fetch all results (no pagination limit for CSV export)
-    // We'll use a high limit - adjust if datasets grow beyond this
-    const result = await getSpectra(
-      {
-        programs: filters.programs,
-        fields: filters.fields,
-        gratings: filters.gratings,
-        observations: filters.observations,
-        redshift_quality: filters.redshift_quality,
-        coordinate_search: filters.coordinate_search,
-        redshift_min: filters.redshift_min,
-        redshift_max: filters.redshift_max,
-        max_snr_min: filters.max_snr_min,
-        max_snr_max: filters.max_snr_max,
-        max_exposure_time_min: filters.max_exposure_time_min,
-        max_exposure_time_max: filters.max_exposure_time_max,
-        spectral_features: filters.spectral_features,
-        object_flags: filters.object_flags,
-        dq_flags: filters.dq_flags,
-        inspected_only: filters.inspected_only,
-        search: filters.search,
-      },
-      1, // page
-      50000, // pageSize - limit for CSV export
-      sortColumn,
-      sortDirection
-    );
-
-    if (result.error) {
-      return { csv: null, error: result.error };
+    if (!user) {
+      return { csv: null, error: 'Not authenticated' };
     }
 
-    // Convert to CSV format
-    const csv = spectraToCsv(result.spectra, filters.coordinate_search !== null);
+    // Determine accessible programs (same logic as getSpectra)
+    const { data: accessData } = await supabase
+      .from('user_program_access')
+      .select('program_id')
+      .eq('user_id', user.id);
+
+    const explicitAccessIds = (accessData || []).map(a => a.program_id);
+
+    const { data: publicPrograms } = await supabase
+      .from('programs')
+      .select('program_id')
+      .eq('is_public', true);
+
+    const publicProgramIds = (publicPrograms || []).map(p => p.program_id);
+    const accessibleProgramIds = [...new Set([...publicProgramIds, ...explicitAccessIds])];
+
+    if (accessibleProgramIds.length === 0) {
+      return { csv: null, error: 'No accessible programs' };
+    }
+
+    // Prepare bitmask filters
+    const spectralFeaturesMask = filters.spectral_features && filters.spectral_features.length > 0
+      ? filters.spectral_features.reduce((acc, val) => acc | val, 0)
+      : null;
+    const objectFlagsMask = filters.object_flags && filters.object_flags.length > 0
+      ? filters.object_flags.reduce((acc, val) => acc | val, 0)
+      : null;
+    const dqFlagsMask = filters.dq_flags && filters.dq_flags.length > 0
+      ? filters.dq_flags.reduce((acc, val) => acc | val, 0)
+      : null;
+
+    const sfMode = filters.spectral_features_mode || 'any';
+    const sfIncludeAny = sfMode === 'any' ? spectralFeaturesMask : null;
+    const sfIncludeAll = sfMode === 'all' ? spectralFeaturesMask : null;
+    const sfExclude = sfMode === 'none' ? spectralFeaturesMask : null;
+
+    const ofMode = filters.object_flags_mode || 'any';
+    const ofIncludeAny = ofMode === 'any' ? objectFlagsMask : null;
+    const ofIncludeAll = ofMode === 'all' ? objectFlagsMask : null;
+    const ofExclude = ofMode === 'none' ? objectFlagsMask : null;
+
+    const dqMode = filters.dq_flags_mode || 'any';
+    const dqIncludeAny = dqMode === 'any' ? dqFlagsMask : null;
+    const dqIncludeAll = dqMode === 'all' ? dqFlagsMask : null;
+    const dqExclude = dqMode === 'none' ? dqFlagsMask : null;
+
+    // Coordinate search
+    let coordRa: number | null = null;
+    let coordDec: number | null = null;
+    let radiusDegrees: number | null = null;
+
+    if (filters.coordinate_search) {
+      coordRa = filters.coordinate_search.ra;
+      coordDec = filters.coordinate_search.dec;
+      const { radius, radius_unit } = filters.coordinate_search;
+      radiusDegrees =
+        radius_unit === 'degrees' ? radius :
+        radius_unit === 'arcmin' ? radius / 60 :
+        radius / 3600;
+    }
+
+    // Search routing
+    const searchText = filters.search?.trim() || null;
+    const searchScope = filters.search_scope || 'object_id';
+    const isCommentSearch = searchScope === 'my_comments' || searchScope === 'all_comments';
+    const objectIdSearch = searchScope === 'object_id' ? searchText : null;
+    const commentSearch = isCommentSearch ? searchText : null;
+    const commentSearchScope = isCommentSearch ? (searchScope === 'my_comments' ? 'just_me' : 'everyone') : null;
+    const commentUserId = isCommentSearch ? user.id : null;
+
+    // Call the lightweight CSV export RPC (flat rows, no JSONB)
+    const { data, error } = await supabase.rpc('get_csv_export', {
+      p_program_ids: accessibleProgramIds,
+      p_filter_programs: filters.programs && filters.programs.length > 0 ? filters.programs : null,
+      p_fields: filters.fields && filters.fields.length > 0 ? filters.fields : null,
+      p_gratings: filters.gratings && filters.gratings.length > 0 ? filters.gratings : null,
+      p_gratings_mode: filters.gratings_mode || 'any',
+      p_observations: filters.observations && filters.observations.length > 0 ? filters.observations : null,
+      p_redshift_quality: filters.redshift_quality && filters.redshift_quality.length > 0 ? filters.redshift_quality : null,
+      p_redshift_min: filters.redshift_min ?? null,
+      p_redshift_max: filters.redshift_max ?? null,
+      p_max_snr_min: filters.max_snr_min ?? null,
+      p_max_snr_max: filters.max_snr_max ?? null,
+      p_max_exposure_time_min: filters.max_exposure_time_min ?? null,
+      p_max_exposure_time_max: filters.max_exposure_time_max ?? null,
+      p_spectral_features_include_any: sfIncludeAny,
+      p_spectral_features_include_all: sfIncludeAll,
+      p_spectral_features_exclude: sfExclude,
+      p_object_flags_include_any: ofIncludeAny,
+      p_object_flags_include_all: ofIncludeAll,
+      p_object_flags_exclude: ofExclude,
+      p_dq_flags_include_any: dqIncludeAny,
+      p_dq_flags_include_all: dqIncludeAll,
+      p_dq_flags_exclude: dqExclude,
+      p_search: objectIdSearch,
+      p_inspected_only: filters.inspected_only ?? null,
+      p_comment_search: commentSearch,
+      p_comment_search_scope: commentSearchScope,
+      p_comment_user_id: commentUserId,
+      p_coord_ra: coordRa,
+      p_coord_dec: coordDec,
+      p_radius_degrees: radiusDegrees,
+      p_sort_column: sortColumn,
+      p_sort_direction: sortDirection,
+    });
+
+    if (error) {
+      console.error('Error fetching CSV data:', error);
+      return { csv: null, error: error.message };
+    }
+
+    const rows = (data || []) as CsvRow[];
+    const includeDistance = filters.coordinate_search !== null;
+    const csv = rowsToCsv(rows, includeDistance);
 
     // Track CSV download (fire-and-forget)
-    if (user) {
-      const objectIds = result.spectra.map(s => s.object_id);
-      trackDownload({
-        userId: user.id,
-        downloadType: 'csv',
-        objectIds,
-        objectCount: objectIds.length,
-        fileCount: 1,
-        filterSnapshot: filters as unknown as Record<string, unknown>,
-      });
-    }
+    const objectIds = rows.map(r => r.object_id);
+    trackDownload({
+      userId: user.id,
+      downloadType: 'csv',
+      objectIds,
+      objectCount: objectIds.length,
+      fileCount: 1,
+      filterSnapshot: filters as unknown as Record<string, unknown>,
+    });
 
     return { csv, error: null };
   } catch (error) {
@@ -92,10 +191,9 @@ export async function generateCSV(
 }
 
 /**
- * Convert spectra array to CSV string
+ * Convert flat CSV export rows to CSV string
  */
-function spectraToCsv(spectra: SpectrumObject[], includeDistance: boolean): string {
-  // Define CSV columns
+function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
   const columns = [
     'object_id',
     'field',
@@ -112,45 +210,40 @@ function spectraToCsv(spectra: SpectrumObject[], includeDistance: boolean): stri
     'last_inspected_by',
   ];
 
-  // Add distance column if coordinate search is active
   if (includeDistance) {
-    columns.splice(4, 0, 'distance_degrees'); // Insert after dec
+    columns.splice(4, 0, 'distance_degrees');
   }
 
-  // Build header row
-  const rows: string[] = [columns.join(',')];
+  const csvRows: string[] = [columns.join(',')];
 
-  // Build data rows
-  for (const obj of spectra) {
-    const row: (string | number)[] = [
-      escapeCsvValue(obj.object_id),
-      escapeCsvValue(obj.field),
-      obj.ra.toFixed(6),
-      obj.dec.toFixed(6),
+  for (const row of rows) {
+    const values: (string | number)[] = [
+      escapeCsvValue(row.object_id),
+      escapeCsvValue(row.field),
+      row.ra.toFixed(6),
+      row.dec.toFixed(6),
     ];
 
-    // Add distance if applicable
     if (includeDistance) {
-      row.push(obj.distance != null ? obj.distance.toFixed(8) : '');
+      values.push(row.distance != null ? row.distance.toFixed(8) : '');
     }
 
-    // Continue with other columns
-    row.push(
-      obj.redshift != null ? obj.redshift.toFixed(6) : '',
-      obj.redshift_quality,
-      obj.max_snr != null ? obj.max_snr.toFixed(2) : '',
-      obj.max_exposure_time != null ? obj.max_exposure_time.toFixed(0) : '',
-      obj.num_gratings || obj.spectra.length,
-      obj.program_id,
-      escapeCsvValue(obj.program_name || ''),
-      escapeCsvValue(obj.last_inspected_at || ''),
-      escapeCsvValue(obj.last_inspected_by || '')
+    values.push(
+      row.redshift != null ? row.redshift.toFixed(6) : '',
+      row.redshift_quality,
+      row.max_snr != null ? row.max_snr.toFixed(2) : '',
+      row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
+      row.num_gratings ?? 0,
+      row.program_id,
+      escapeCsvValue(row.program_name || ''),
+      escapeCsvValue(row.last_inspected_at || ''),
+      escapeCsvValue(row.last_inspected_by || '')
     );
 
-    rows.push(row.join(','));
+    csvRows.push(values.join(','));
   }
 
-  return rows.join('\n');
+  return csvRows.join('\n');
 }
 
 /**
