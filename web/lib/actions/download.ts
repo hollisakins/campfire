@@ -128,8 +128,9 @@ export async function generateCSV(
     const commentUserId = isCommentSearch ? user.id : null;
 
     // Call the lightweight CSV export RPC (flat rows, no JSONB).
-    // Override PostgREST's default max_rows (5000) since CSV export needs all results.
-    const { data, error } = await supabase.rpc('get_csv_export', {
+    // Paginate to work around PostgREST's server-side max_rows cap (5000).
+    const PAGE_SIZE = 5000;
+    const rpcParams = {
       p_program_ids: accessibleProgramIds,
       p_filter_programs: filters.programs && filters.programs.length > 0 ? filters.programs : null,
       p_fields: filters.fields && filters.fields.length > 0 ? filters.fields : null,
@@ -162,14 +163,26 @@ export async function generateCSV(
       p_radius_degrees: radiusDegrees,
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,
-    }).limit(100000);
+    };
 
-    if (error) {
-      console.error('Error fetching CSV data:', error);
-      return { csv: null, error: error.message };
+    const rows: CsvRow[] = [];
+    let offset = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .rpc('get_csv_export', rpcParams)
+        .range(offset, offset + PAGE_SIZE - 1);
+
+      if (error) {
+        console.error('Error fetching CSV data:', error);
+        return { csv: null, error: error.message };
+      }
+
+      const page = (data || []) as CsvRow[];
+      rows.push(...page);
+
+      if (page.length < PAGE_SIZE) break;
+      offset += PAGE_SIZE;
     }
-
-    const rows = (data || []) as CsvRow[];
     const includeDistance = filters.coordinate_search !== null;
     const csv = rowsToCsv(rows, includeDistance);
 
