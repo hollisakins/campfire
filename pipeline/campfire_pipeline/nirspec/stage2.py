@@ -54,7 +54,7 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     )
 
     # Flatten source IDs from all workers
-    source_ids_processed = list(set(source_ids))
+    source_ids_processed = list(set(sid for result in results for sid in result))
 
     # Discover cal files and fix units
     files = obs.discover_files(ext='cal', source_ids=source_ids_processed)
@@ -218,11 +218,15 @@ def run_stage2a_single_rate(
         for source_id in source_ids_to_process:
             prod_name = os.path.basename(rate_file).replace('_rate.fits', f'_{source_id}')
 
-            if os.path.exists(f'{prod_name}_cal.fits') and not overwrite:
+            nodata_marker = f'{prod_name}_nodata'
+            if (os.path.exists(f'{prod_name}_cal.fits') or os.path.exists(nodata_marker)) and not overwrite:
                 log(f'Skipping stage2a for {prod_name}, overwrite=False')
                 source_ids_processed.append(source_id)
                 continue
 
+            # Remove stale marker before re-processing
+            if os.path.exists(nodata_marker):
+                os.remove(nodata_marker)
 
             # copy the metafile to a source-specific metafile
             # modify that source-specific meta file to only have 1 source in it
@@ -308,6 +312,8 @@ def run_stage2a_single_rate(
 
             except NoDataOnDetectorError:
                 log(f'No data on detector for {prod_name}')
+                with open(nodata_marker, 'w') as f:
+                    f.write('NoDataOnDetectorError\n')
 
             for ext in ['cal','s2d']:
                 if os.path.exists(f'{prod_name}_{ext}.fits'):

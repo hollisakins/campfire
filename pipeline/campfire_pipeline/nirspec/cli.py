@@ -251,9 +251,14 @@ def run(config, obs, source_ids, processes, overwrite,
 @main.command('make-templates')
 @click.option('--config', default=None, help='Path to configuration file.')
 def make_templates(config):
-    """Generate continuum template grids from config."""
+    """Generate continuum template grids from config.
+
+    Generates sfhz-format (rest-frame, z-binned) templates when
+    format="sfhz" is set in config, or legacy format otherwise.
+    """
     import os
-    from campfire_pipeline.nirspec.templates import make_template_grid
+    import numpy as np
+    from campfire_pipeline.nirspec.templates import make_template_grid, make_sfhz_template_grid
 
     cfg = load_config(config)
     setup_environment(cfg)
@@ -265,13 +270,28 @@ def make_templates(config):
 
     for name, grid_config in template_grids_config.items():
         output_file = os.path.abspath(grid_config['file'])
-        click.echo(f"\n=== Generating '{name}' template grid ===")
-        make_template_grid(
-            z_min=grid_config.get('z_min', 0),
-            z_max=grid_config.get('z_max', 20),
-            dv=grid_config['dv'],
-            output_file=output_file,
-        )
+        fmt = grid_config.get('format', 'legacy')
+
+        click.echo(f"\n=== Generating '{name}' template grid (format={fmt}) ===")
+
+        if fmt == 'sfhz':
+            z_bin_edges = grid_config.get('z_bin_edges', None)
+            if z_bin_edges is not None:
+                z_bin_edges = np.array(z_bin_edges, dtype=float)
+            make_sfhz_template_grid(
+                z_min=grid_config.get('z_min', 0),
+                z_max=grid_config.get('z_max', 20),
+                dv=grid_config['dv'],
+                z_bin_edges=z_bin_edges,
+                output_file=output_file,
+            )
+        else:
+            make_template_grid(
+                z_min=grid_config.get('z_min', 0),
+                z_max=grid_config.get('z_max', 20),
+                dv=grid_config['dv'],
+                output_file=output_file,
+            )
 
 
 if __name__ == '__main__':

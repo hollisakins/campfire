@@ -351,3 +351,9 @@ R2_PUBLIC_URL=https://data.campfire.com
 - **Secrets** never committed (use Vercel env vars or gitignored config.toml)
 - **Database schema** tracked in `supabase/migrations/`
 
+## Python Environment
+
+Always use the `jwst` conda environment for Python commands. Activate it and run like this:
+`conda run -n jwst python ...`
+
+Never use `python3` directly.

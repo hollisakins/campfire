@@ -6,10 +6,126 @@ import os
 import warnings
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from astropy.io import fits
 from astropy.visualization import ImageNormalize, ZScaleInterval
 
 from campfire_pipeline.common.io import log, files_to_glob
+
+
+# ---------------------------------------------------------------------------
+# Redshift fitting QA plot
+# ---------------------------------------------------------------------------
+
+# Rest-frame emission line positions (microns) and labels for annotation
+_ZFIT_LINES = [
+    (0.121567, r'Ly$\alpha$'),
+    (0.154948, 'CIV'),
+    (0.190873, 'CIII]'),
+    (0.372742, '[OII]'),
+    (0.486133, r'H$\beta$'),
+    (0.500684, '[OIII]'),
+    (0.656282, r'H$\alpha$'),
+    (0.658346, '[NII]'),
+]
+
+
+def plot_zfit_results(zfit_file, spec_file=None):
+    """Generate a QA plot for redshift fitting results.
+
+    Two panels:
+      Top: 1D spectrum (f_nu) with best-fit model overlay and emission line markers
+      Bottom: chi-squared vs redshift with best-fit marked
+
+    Parameters
+    ----------
+    zfit_file : str
+        Path to the *_zfit.fits file
+    spec_file : str, optional
+        Path to the *_spec.fits file (for observed data). If None, inferred
+        from zfit_file by replacing '_zfit' with '_spec'.
+    """
+    if spec_file is None:
+        spec_file = zfit_file.replace('_zfit.fits', '_spec.fits')
+
+    # Load zfit results
+    hdul = fits.open(zfit_file)
+    zbest = hdul[0].header['ZBEST']
+    chi2_min = hdul[0].header.get('CHI2MIN', 0)
+    confidence = hdul[0].header.get('ZCONF', 0)
+    model_wav = hdul['MODEL'].data['wav']
+    model_fnu = hdul['MODEL'].data['fnu']
+    zgrid = hdul['CHI2'].data['z']
+    chi2 = hdul['CHI2'].data['chi2']
+    hdul.close()
+
+    # Load observed spectrum
+    from astropy import table
+    tab = table.Table.read(spec_file, hdu=1)
+    wav = np.asarray(tab['wave'].value, dtype='float64')
+    fnu = np.asarray(tab['fnu'].value, dtype='float64')
+    fnu_err = np.asarray(tab['fnu_err'].value, dtype='float64')
+    valid = np.isfinite(fnu) & np.isfinite(fnu_err) & (fnu_err > 0)
+
+    base_name = os.path.basename(zfit_file).replace('_zfit.fits', '')
+
+    fig = plt.figure(figsize=(8, 5), constrained_layout=True, dpi=200)
+    gs = gridspec.GridSpec(2, 1, height_ratios=[3, 1.5], figure=fig)
+    ax_spec = fig.add_subplot(gs[0])
+    ax_chi2 = fig.add_subplot(gs[1])
+
+    # --- Top panel: spectrum + model ---
+    ax_spec.step(wav[valid], fnu[valid], where='mid', color='0.4',
+                 linewidth=0.7, label='Data', zorder=2)
+    ax_spec.fill_between(wav[valid], (fnu - fnu_err)[valid], (fnu + fnu_err)[valid],
+                         alpha=0.15, color='0.4', edgecolor='none', step='mid', zorder=1)
+    ax_spec.step(model_wav, model_fnu, where='mid', color='C3',
+                 linewidth=1.0, label='Model', zorder=3)
+
+    # Emission line markers
+    ymax_spec = np.nanpercentile(fnu[valid], 97) * 1.3
+    for lam_rest, label in _ZFIT_LINES:
+        lam_obs = lam_rest * (1 + zbest)
+        if wav[valid].min() < lam_obs < wav[valid].max():
+            ax_spec.axvline(lam_obs, color='C0', alpha=0.3, linewidth=0.7, zorder=0)
+            ax_spec.text(lam_obs, ymax_spec * 0.95, label, fontsize=5,
+                         ha='center', va='top', color='C0', alpha=0.7, rotation=90)
+
+    ax_spec.set_xlim(wav[valid].min(), wav[valid].max())
+    ax_spec.set_ylim(-0.1 * ymax_spec, ymax_spec)
+    ax_spec.set_ylabel(r'$f_{\nu}$ [$\mu$Jy]')
+    ax_spec.legend(loc='upper right', fontsize=7, framealpha=0.8)
+    ax_spec.grid(True, alpha=0.15, linewidth=0.5, zorder=-1000)
+    ax_spec.minorticks_on()
+    ax_spec.tick_params(direction='in', which='both', labelbottom=False)
+
+    # --- Bottom panel: chi2 vs z ---
+    ax_chi2.plot(zgrid, chi2, color='k', linewidth=0.7)
+    ax_chi2.axvline(zbest, color='C3', linewidth=1.0, alpha=0.8, linestyle='--')
+
+    # Mark zbest
+    ax_chi2.annotate(f'z = {zbest:.4f}', xy=(zbest, chi2_min),
+                     xytext=(0.97, 0.92), textcoords='axes fraction',
+                     fontsize=7, ha='right', va='top', color='C3',
+                     arrowprops=dict(arrowstyle='->', color='C3', lw=0.8))
+
+    # Reasonable y-limits: clip extreme chi2 outliers
+    chi2_98 = np.nanpercentile(chi2, 98)
+    ax_chi2.set_ylim(chi2_min * 0.95, min(chi2_98, chi2_min * 3))
+    ax_chi2.set_xlim(zgrid.min(), zgrid.max())
+    ax_chi2.set_xlabel('Redshift')
+    ax_chi2.set_ylabel(r'$\chi^2$')
+    ax_chi2.grid(True, alpha=0.15, linewidth=0.5, zorder=-1000)
+    ax_chi2.minorticks_on()
+    ax_chi2.tick_params(direction='in', which='both')
+
+    fig.suptitle(f'{base_name}   z={zbest:.4f}  conf={confidence:.1f}%',
+                 fontname='monospace', fontsize=8)
+
+    plot_file = zfit_file.replace('_zfit.fits', '_zfit.pdf')
+    plt.savefig(plot_file)
+    plt.close()
+    return plot_file
 
 
 def plot_stage2a_results(files, plot_suffix='nods'):

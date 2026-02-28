@@ -25,6 +25,7 @@ class Observation:
     files: List[str]
     gratings: List[str] = field(default_factory=list)
     stage_overrides: dict = field(default_factory=dict)
+    config_groups: dict = field(default_factory=dict)
 
     directories_setup: bool = False
 
@@ -66,6 +67,15 @@ class Observation:
             if key in obs and isinstance(obs[key], dict):
                 stage_overrides[key] = obs[key]
 
+        # Parse config_groups: list-of-lists → flat dict mapping each config to group label
+        # e.g. [['04101','06101'], ['07101','09101']]
+        # becomes {'04101': '04101', '06101': '04101', '07101': '07101', '09101': '07101'}
+        config_groups = {}
+        for group in obs.get('config_groups', []):
+            label = group[0]
+            for cfg in group:
+                config_groups[cfg] = label
+
         return cls(
             name=name,
             field=field_name,
@@ -74,6 +84,7 @@ class Observation:
             files=files,
             gratings=gratings,
             stage_overrides=stage_overrides,
+            config_groups=config_groups,
         )
 
     def setup_workspace_directory(self, data_dir, product_dir, overwrite=False):
@@ -353,6 +364,9 @@ class Observation:
         files['root'] = ['_'.join(f['name'].split('_')[:2]) for f in files]
         files['shutter_id'] = SHUTTRID
 
+        # Map configs to group labels for cross-config nod pairing
+        files['config_group'] = [self.config_groups.get(f['config'], f['config']) for f in files]
+
         return files
 
     @staticmethod
@@ -386,8 +400,9 @@ class Observation:
             for observation in np.unique(files['obs'][mask1]):
                 mask2 = mask1 & (files['obs'] == observation)
 
-                for config in np.unique(files['config'][mask2]):
-                    mask3 = mask2 & (files['config'] == config)
+                group_col = 'config_group' if 'config_group' in files.colnames else 'config'
+                for config in np.unique(files[group_col][mask2]):
+                    mask3 = mask2 & (files[group_col] == config)
                     files3 = files[mask3]
 
                     root = files3['root'][0]
