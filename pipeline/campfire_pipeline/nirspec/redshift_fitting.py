@@ -9,7 +9,6 @@ import pickle
 import logging
 import numpy as np
 from pathlib import Path
-from scipy.optimize import nnls
 from scipy.ndimage import generic_filter
 from astropy.io import fits
 from astropy import table
@@ -18,21 +17,14 @@ from numba import njit, prange
 import numba
 
 from campfire_pipeline.common.spectral import (
-    resample_to_nonuniform_grid,
-    convolve_with_lsf,
-    resample_to_observed_grid,
     load_r_curve,
     r_curve_R_range,
     preconvolve_at_discrete_R,
     assemble_templates_for_spectrum,
-    assemble_templates_spectres,
     apply_igm_to_grid,
 )
 from campfire_pipeline.common.igm import load_igm_grid
-from campfire_pipeline.nirspec.templates import (
-    assemble_full_template_grid,
-    assemble_sfhz_template_grid,
-)
+from campfire_pipeline.nirspec.templates import assemble_sfhz_template_grid
 
 
 def calculate_redshift_confidence(z_array, chi2_array, zbest):
@@ -195,35 +187,6 @@ def _nnls_gram(AtA, Atb, max_iter=135, tol=1e-10):
 
 
 @njit(parallel=True, cache=True)
-def _compute_gram(tw, bw):
-    """Compute Gram matrices AtA and Atb from pre-built tw array.
-
-    Used by the legacy (non-sfhz) optimized path.
-
-    Parameters
-    ----------
-    tw : ndarray, shape (n_templ, n_z, N_masked), float64
-    bw : ndarray, shape (N_masked,), float64
-    """
-    n_templ, n_z, n_masked = tw.shape
-    AtA = np.empty((n_z, n_templ, n_templ))
-    Atb = np.empty((n_z, n_templ))
-    for iz in prange(n_z):
-        for i in range(n_templ):
-            s = 0.0
-            for k in range(n_masked):
-                s += tw[i, iz, k] * bw[k]
-            Atb[iz, i] = s
-            for j in range(i, n_templ):
-                s = 0.0
-                for k in range(n_masked):
-                    s += tw[i, iz, k] * tw[j, iz, k]
-                AtA[iz, i, j] = s
-                AtA[iz, j, i] = s
-    return AtA, Atb
-
-
-@njit(parallel=True, cache=True)
 def _compute_gram_fused(grid, mask_idx, inv_err, bw):
     """Compute Gram matrices directly from template grid, fusing masking and
     error-weighting to avoid materializing the full tw array.
@@ -288,19 +251,6 @@ def _fit_all_redshifts_numba(AtA_all, Atb_all):
     return chi2, coeffs
 
 
-def _iter(A, mask, flux, err):
-    """Single iteration of chi-squared minimization using NNLS."""
-    okt = A[:, mask].sum(axis=1) != 0
-    Ax = A[okt, :] / err
-    yx = flux / err
-    x = nnls(Ax[:, mask].T, yx[mask])
-    coeffs = np.zeros(A.shape[0])
-    coeffs[okt] = x[0]
-    model = A.T.dot(coeffs)
-    chi2_i = np.sum(np.power((flux[mask] - model[mask]) / err[mask], 2))
-    return chi2_i, model
-
-
 def _load_and_prepare_spectrum(spec_file):
     """Load a spectrum file and apply standard masking/error processing.
 
@@ -353,127 +303,6 @@ def _save_zfit(zfit_file, wav, model, zgrid, chi2, confidence_results,
     if plot:
         from campfire_pipeline.nirspec.plots import plot_zfit_results
         plot_zfit_results(zfit_file, spec_file=spec_file)
-
-
-# ---------------------------------------------------------------------------
-# sfhz-specific fit functions (z-chunked)
-# ---------------------------------------------------------------------------
-
-def fit_single_spectrum_sfhz(spec_file, file_paths, sfhz_meta, zgrid, logger, save_models=False, plot=False):
-    """Fit a single spectrum using sfhz templates (non-optimized, scipy NNLS).
-
-    Uses spectres for pixel-integration (validation path).
-    """
-    start_time = time.time()
-    spec_path = Path(spec_file)
-    base_name = spec_path.stem.replace('_spec', '')
-    zfit_file = file_paths['output_path'] + f"{base_name}_zfit.fits"
-    logger.debug(f"Fitting redshift for {base_name} (sfhz)")
-
-    try:
-        wav, flux, err, mask = _load_and_prepare_spectrum(spec_file)
-        n_z = len(zgrid)
-        chunk_size = sfhz_meta['chunk_size']
-
-        chi2 = np.zeros(n_z, dtype='float32')
-        models = np.zeros((n_z, len(wav)), dtype='float32') if save_models else None
-
-        for chunk_start in range(0, n_z, chunk_size):
-            chunk_end = min(chunk_start + chunk_size, n_z)
-            chunk_z = zgrid[chunk_start:chunk_end]
-
-            chunk_templates = assemble_templates_spectres(
-                sfhz_meta['cont_conv'], sfhz_meta['line_conv'],
-                sfhz_meta['r_knots'], sfhz_meta['r_wav'], sfhz_meta['r_val'],
-                wav, chunk_z, sfhz_meta['z_bin_edges'],
-                sfhz_meta['dloglam'], sfhz_meta['wave_rest'],
-                igm_data=sfhz_meta.get('igm_data'),
-            )
-
-            for iz_local in range(len(chunk_z)):
-                A = chunk_templates[:, iz_local, :]
-                chi2_val, model_val = _iter(A, mask, flux, err)
-                chi2[chunk_start + iz_local] = chi2_val
-                if save_models:
-                    models[chunk_start + iz_local] = model_val
-
-        izbest = np.argmin(chi2)
-        zbest = zgrid[izbest]
-        zbest_coarse = None
-
-        # --- Refinement pass ---
-        refine_dv = sfhz_meta.get('refine_dv')
-        if refine_dv is not None:
-            c_kms = 299792.458
-            refine_window = sfhz_meta.get('refine_window', 3000)
-            n_fine = int(refine_window / refine_dv)
-            z_fine = (1 + zbest) * np.exp(
-                np.arange(-n_fine, n_fine + 1) * refine_dv / c_kms) - 1
-            z_fine = z_fine[(z_fine >= 0) & (z_fine <= zgrid[-1])]
-
-            t_refine = time.time()
-            fine_templates = assemble_templates_spectres(
-                sfhz_meta['cont_conv'], sfhz_meta['line_conv'],
-                sfhz_meta['r_knots'], sfhz_meta['r_wav'], sfhz_meta['r_val'],
-                wav, z_fine, sfhz_meta['z_bin_edges'],
-                sfhz_meta['dloglam'], sfhz_meta['wave_rest'],
-                igm_data=sfhz_meta.get('igm_data'),
-            )
-
-            chi2_fine = np.zeros(len(z_fine), dtype='float32')
-            for iz in range(len(z_fine)):
-                chi2_fine[iz], _ = _iter(fine_templates[:, iz, :], mask, flux, err)
-
-            izbest_fine = np.argmin(chi2_fine)
-            zbest_coarse = zbest
-            zbest = z_fine[izbest_fine]
-
-            # Merge coarse + refined chi2 curves
-            z_lo, z_hi = z_fine[0], z_fine[-1]
-            outside = (zgrid < z_lo) | (zgrid > z_hi)
-            z_merged = np.concatenate([zgrid[outside], z_fine])
-            chi2_merged = np.concatenate([chi2[outside], chi2_fine])
-            sort_idx = np.argsort(z_merged)
-            z_merged = z_merged[sort_idx]
-            chi2_merged = chi2_merged[sort_idx]
-
-            logger.debug(f"  refinement: {len(z_fine)} z-points, "
-                        f"t={time.time()-t_refine:.2f}s, "
-                        f"z_coarse={zbest_coarse:.4f} -> z_refined={zbest:.4f}")
-        else:
-            z_merged = zgrid
-            chi2_merged = chi2
-
-        confidence_results = calculate_redshift_confidence(z_merged, chi2_merged, zbest)
-
-        # Reconstruct best model at refined zbest
-        best_z = np.array([zbest])
-        best_templates = assemble_templates_spectres(
-            sfhz_meta['cont_conv'], sfhz_meta['line_conv'],
-            sfhz_meta['r_knots'], sfhz_meta['r_wav'], sfhz_meta['r_val'],
-            wav, best_z, sfhz_meta['z_bin_edges'],
-            sfhz_meta['dloglam'], sfhz_meta['wave_rest'],
-            igm_data=sfhz_meta.get('igm_data'),
-        )
-        _, model = _iter(best_templates[:, 0, :], mask, flux, err)
-
-        _save_zfit(zfit_file, wav, model, z_merged, chi2_merged, confidence_results,
-                   save_models=False, models=None,
-                   plot=plot, spec_file=spec_file,
-                   zbest_coarse=zbest_coarse)
-
-        processing_time = time.time() - start_time
-        logger.info(f"Redshift fitting completed for {base_name} "
-                     f"(z={confidence_results['redshift']:.3f}, "
-                     f"conf={confidence_results['confidence']:.1f}%, "
-                     f"qual={confidence_results['redshift_quality']}, "
-                     f"t={processing_time:.1f}s)")
-
-        return True, f"Success: z={confidence_results['redshift']:.4f}, conf={confidence_results['confidence']:.1f}%"
-
-    except Exception as e:
-        logger.error(f"Failed to fit redshift for {base_name}: {e}")
-        return False, str(e)
 
 
 def fit_single_spectrum_sfhz_optimized(spec_file, file_paths, sfhz_meta, zgrid, logger, save_models=False, plot=False):
@@ -637,196 +466,6 @@ def fit_single_spectrum_sfhz_optimized(spec_file, file_paths, sfhz_meta, zgrid, 
         return False, str(e)
 
 
-def fit_single_spectrum(spec_file, file_paths, convolved_wav, convolved_grid, zgrid, logger, save_models=False, plot=False):
-    """Perform redshift fitting for a single spectrum file."""
-    start_time = time.time()
-    spec_path = Path(spec_file)
-    base_name = spec_path.stem.replace('_spec', '')
-    zfit_file = file_paths['output_path'] + f"{base_name}_zfit.fits"
-    logger.debug(f"Fitting redshift for {base_name}")
-
-    try:
-        # Load spectrum
-        tab = table.Table.read(spec_file, hdu=1)
-        wav = tab['wave'].value.astype('float32')
-        flux = tab['fnu'].value.astype('float32')
-        err = tab['fnu_err'].value.astype('float32')
-        mask = np.isfinite(flux) & np.isfinite(err) & (err > 0)
-        #mask the edge pixels to avoid edge effects
-        maskidx = np.where(mask)[0]
-        if len(maskidx) > 10:
-            for idx in maskidx[:5]: mask[idx] = False
-            for idx in maskidx[-5:]: mask[idx] = False
-        #add 10% error floor
-        err[err < 0.1*np.abs(flux)] = 0.1*np.abs(flux[err < 0.1*np.abs(flux)])
-        #require errors to be >= to a rolling median error (removes low error spikes, but keeps high spikes)
-        med_err = generic_filter(err, np.nanmedian, size=15)
-        err[err < med_err] = med_err[err < med_err]
-
-        logger.debug('Resampling template grid to observed wavelength grid')
-        templates = resample_to_observed_grid(convolved_wav, convolved_grid, wav)
-        logger.debug("Running redshift fitting with chi2 minimization")
-
-        # Chi-squared minimization over redshift grid
-        chi2 = np.zeros_like(zgrid, dtype='float32')
-        models = np.zeros((len(zgrid), len(wav)), dtype='float32')
-        for iz in range(len(zgrid)):
-            A = templates[:, iz, :]
-            chi2[iz], models[iz] = _iter(A, mask, flux, err)
-
-        # Find best-fit redshift
-        izbest = np.argmin(chi2)
-        zbest = zgrid[izbest]
-
-        # Calculate confidence and quality
-        confidence_results = calculate_redshift_confidence(zgrid, chi2, zbest)
-        model = models[izbest]
-
-        logger.debug(f"✓ Redshift fitting completed for {base_name} "
-                       f"(z={confidence_results['redshift']:.3f}, "
-                       f"conf={confidence_results['confidence']:.1f}%, "
-                       f"qual={confidence_results['redshift_quality']})")
-        logger.debug(f"nans in chi2: {len(chi2[np.isnan(chi2)])}")
-
-        # Save results with confidence information in header
-        header = fits.Header({
-            'EXTEND': True,
-            'ZBEST': confidence_results['redshift'],
-            'ZQUAL': confidence_results['redshift_quality'],
-            'ZCONF': confidence_results['confidence'],
-            'CHI2MIN': confidence_results['chi2_min']
-        })
-        t0 = fits.PrimaryHDU(header=header)
-        t1 = fits.BinTableHDU.from_columns(fits.ColDefs([fits.Column(name='wav', array=wav, format='D'), fits.Column(name='fnu', array=model, format='D')]), header=fits.Header({'EXTNAME': 'MODEL'}))
-        t2 = fits.BinTableHDU.from_columns(fits.ColDefs([fits.Column(name='z', array=zgrid, format='D'), fits.Column(name='chi2', array=chi2, format='D')]), header=fits.Header({'EXTNAME': 'CHI2'}))
-        if save_models:
-            t3 = fits.ImageHDU(models.astype('float32'), header=fits.Header({'EXTNAME': 'MODELS'}))
-            out_hdul = fits.HDUList([t0, t1, t2, t3])
-        else:
-            out_hdul = fits.HDUList([t0, t1, t2])
-        out_hdul.writeto(zfit_file, overwrite=True)
-
-        if plot:
-            from campfire_pipeline.nirspec.plots import plot_zfit_results
-            plot_zfit_results(zfit_file, spec_file=spec_file)
-
-        processing_time = time.time() - start_time
-        logger.info(f"✓ Redshift fitting completed for {base_name} "
-                       f"(z={confidence_results['redshift']:.3f}, "
-                       f"conf={confidence_results['confidence']:.1f}%, "
-                       f"qual={confidence_results['redshift_quality']}, "
-                       f"t={processing_time:.1f}s)")
-
-        return True, f"Success: z={confidence_results['redshift']:.4f}, conf={confidence_results['confidence']:.1f}%"
-
-    except Exception as e:
-        logger.error(f"✗ Failed to fit redshift for {base_name}: {e}")
-        return False, str(e)
-
-
-def fit_single_spectrum_optimized(spec_file, file_paths, convolved_wav, convolved_grid, zgrid, logger, save_models=False, plot=False):
-    """Perform redshift fitting using Gram-matrix + Numba NNLS optimization.
-
-    Drop-in replacement for fit_single_spectrum with identical inputs/outputs.
-    Uses pre-computed Gram matrices (A^T A, A^T b) and a Numba-JIT Lawson-Hanson
-    NNLS solver parallelized across redshifts via prange.
-    """
-    start_time = time.time()
-    spec_path = Path(spec_file)
-    base_name = spec_path.stem.replace('_spec', '')
-    zfit_file = file_paths['output_path'] + f"{base_name}_zfit.fits"
-    logger.debug(f"Fitting redshift for {base_name}")
-
-    try:
-        # Load spectrum (identical to fit_single_spectrum)
-        tab = table.Table.read(spec_file, hdu=1)
-        wav = tab['wave'].value.astype('float32')
-        flux = tab['fnu'].value.astype('float32')
-        err = tab['fnu_err'].value.astype('float32')
-        mask = np.isfinite(flux) & np.isfinite(err) & (err > 0)
-        maskidx = np.where(mask)[0]
-        if len(maskidx) > 10:
-            for idx in maskidx[:5]: mask[idx] = False
-            for idx in maskidx[-5:]: mask[idx] = False
-        err[err < 0.1*np.abs(flux)] = 0.1*np.abs(flux[err < 0.1*np.abs(flux)])
-        med_err = generic_filter(err, np.nanmedian, size=15)
-        err[err < med_err] = med_err[err < med_err]
-
-        t0 = time.time()
-        templates = resample_to_observed_grid(convolved_wav, convolved_grid, wav)
-        t1 = time.time()
-
-        # --- Gram matrix computation for all redshifts ---
-        # Weight by inverse error, promote to float64 for numerical stability
-        inv_err_masked = (1.0 / err[mask]).astype(np.float64)  # (N_masked,)
-        bw = (flux[mask] * inv_err_masked).astype(np.float64)  # (N_masked,)
-        btb = np.dot(bw, bw)  # constant across redshifts
-
-        # Apply mask and error-weighting once: (n_templ, n_z, N_masked)
-        tw = templates[:, :, mask].astype(np.float64) * inv_err_masked
-        # Numba parallel Gram computation (exploits symmetry, parallelized over z)
-        AtA, Atb = _compute_gram(tw, bw)
-        t2 = time.time()
-
-        # --- NNLS on Gram matrices ---
-        chi2_partial, coeffs = _fit_all_redshifts_numba(AtA, Atb)
-        chi2 = (chi2_partial + btb).astype('float32')
-        t3 = time.time()
-        logger.debug(f"Timing for {base_name}: spectres={t1-t0:.2f}s, gram={t2-t1:.2f}s, nnls={t3-t2:.2f}s")
-
-        # Find best-fit redshift
-        izbest = np.argmin(chi2)
-        zbest = zgrid[izbest]
-
-        # Calculate confidence and quality
-        confidence_results = calculate_redshift_confidence(zgrid, chi2, zbest)
-
-        # Reconstruct model only at best-fit redshift
-        model = templates[:, izbest, :].T @ coeffs[izbest]
-
-        logger.debug(f"Redshift fitting completed for {base_name} "
-                       f"(z={confidence_results['redshift']:.3f}, "
-                       f"conf={confidence_results['confidence']:.1f}%, "
-                       f"qual={confidence_results['redshift_quality']})")
-        logger.debug(f"nans in chi2: {len(chi2[np.isnan(chi2)])}")
-
-        # Save results (identical format to fit_single_spectrum)
-        header = fits.Header({
-            'EXTEND': True,
-            'ZBEST': confidence_results['redshift'],
-            'ZQUAL': confidence_results['redshift_quality'],
-            'ZCONF': confidence_results['confidence'],
-            'CHI2MIN': confidence_results['chi2_min']
-        })
-        t0 = fits.PrimaryHDU(header=header)
-        t1 = fits.BinTableHDU.from_columns(fits.ColDefs([fits.Column(name='wav', array=wav, format='D'), fits.Column(name='fnu', array=model, format='D')]), header=fits.Header({'EXTNAME': 'MODEL'}))
-        t2 = fits.BinTableHDU.from_columns(fits.ColDefs([fits.Column(name='z', array=zgrid, format='D'), fits.Column(name='chi2', array=chi2, format='D')]), header=fits.Header({'EXTNAME': 'CHI2'}))
-        if save_models:
-            models = np.einsum('izk,zi->zk', templates, coeffs).astype('float32')
-            t3 = fits.ImageHDU(models, header=fits.Header({'EXTNAME': 'MODELS'}))
-            out_hdul = fits.HDUList([t0, t1, t2, t3])
-        else:
-            out_hdul = fits.HDUList([t0, t1, t2])
-        out_hdul.writeto(zfit_file, overwrite=True)
-
-        if plot:
-            from campfire_pipeline.nirspec.plots import plot_zfit_results
-            plot_zfit_results(zfit_file, spec_file=spec_file)
-
-        processing_time = time.time() - start_time
-        logger.info(f"Redshift fitting completed for {base_name} "
-                       f"(z={confidence_results['redshift']:.3f}, "
-                       f"conf={confidence_results['confidence']:.1f}%, "
-                       f"qual={confidence_results['redshift_quality']}, "
-                       f"t={processing_time:.1f}s)")
-
-        return True, f"Success: z={confidence_results['redshift']:.4f}, conf={confidence_results['confidence']:.1f}%"
-
-    except Exception as e:
-        logger.error(f"Failed to fit redshift for {base_name}: {e}")
-        return False, str(e)
-
-
 def _discover_gratings(workspace_dir):
     """Discover gratings from existing *_spec.fits files in the workspace.
 
@@ -906,7 +545,6 @@ def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
     plot_zfit = options.get('plot', False)
     f_LSF = options.get('f_LSF', 1.3)
     chunk_size = options.get('chunk_size', 5000)
-    use_optimized = options.get('optimized', True)
 
     # Set up logging
     log_config = config.get('logging', {})
@@ -945,125 +583,87 @@ def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
             logger.error(f"Failed to load template files: {e}")
             return False, f"Template loading failed: {e}"
 
-        # Detect template format and branch
-        is_sfhz = continuum_templates.get('type') == 'sfhz'
+        if continuum_templates.get('type') != 'sfhz':
+            logger.error(f"Unsupported template format for grating '{grating}'. "
+                         "Only sfhz templates are supported. Regenerate with 'cfpipe nirspec make-templates'.")
+            continue
 
-        if is_sfhz:
-            # --- sfhz path: pre-convolved rest-frame templates ---
-            logger.info(f"Using sfhz template format for {grating}")
+        logger.info(f"Using sfhz template format for {grating}")
 
-            # Per-grating f_LSF
-            grating_f_LSF_key = f'f_LSF_{grating.lower()}'
-            grating_f_LSF = options.get(grating_f_LSF_key, f_LSF)
-            K = grid_config.get('K', 4)
+        # Per-grating f_LSF
+        grating_f_LSF_key = f'f_LSF_{grating.lower()}'
+        grating_f_LSF = options.get(grating_f_LSF_key, f_LSF)
+        K = grid_config.get('K', 4)
 
-            # Build velocity-spaced redshift grid
-            c_kms = 299792.458
-            dv = continuum_templates['dv']
-            z_min = continuum_templates['z_min']
-            z_max = continuum_templates['z_max']
-            n_steps = int(np.log((1 + z_max) / (1 + z_min)) / (dv / c_kms))
-            zgrid = (1 + z_min) * np.exp(np.arange(n_steps) * dv / c_kms) - 1
+        # Build velocity-spaced redshift grid
+        c_kms = 299792.458
+        dv = continuum_templates['dv']
+        z_min = continuum_templates['z_min']
+        z_max = continuum_templates['z_max']
+        n_steps = int(np.log((1 + z_max) / (1 + z_min)) / (dv / c_kms))
+        zgrid = (1 + z_min) * np.exp(np.arange(n_steps) * dv / c_kms) - 1
 
-            logger.info(f"Loaded sfhz templates: {continuum_templates['grid'].shape[0]} z-bins, "
-                        f"{continuum_templates['grid'].shape[1]} SEDs, "
-                        f"{len(zgrid)} z-points (dv={dv} km/s)")
+        logger.info(f"Loaded sfhz templates: {continuum_templates['grid'].shape[0]} z-bins, "
+                    f"{continuum_templates['grid'].shape[1]} SEDs, "
+                    f"{len(zgrid)} z-points (dv={dv} km/s)")
 
-            # Assemble rest-frame templates
-            cont_grid, line_grid, line_names = assemble_sfhz_template_grid(continuum_templates)
-            n_templ = cont_grid.shape[1] + line_grid.shape[0]
-            logger.info(f"Assembled {n_templ} templates "
-                        f"({cont_grid.shape[1]} continuum + {line_grid.shape[0]} lines/BB/broad)")
+        # Assemble rest-frame templates
+        cont_grid, line_grid, line_names = assemble_sfhz_template_grid(continuum_templates)
+        n_templ = cont_grid.shape[1] + line_grid.shape[0]
+        logger.info(f"Assembled {n_templ} templates "
+                    f"({cont_grid.shape[1]} continuum + {line_grid.shape[0]} lines/BB/broad)")
 
-            # Load R-curve and pre-convolve
-            r_wav, r_val = load_r_curve(file_paths['r_curve_file'])
-            R_min_raw, R_max_raw = r_curve_R_range(r_wav, r_val)
-            # f_LSF > 1 means better-than-nominal resolution (narrower LSF,
-            # higher effective R), so effective R = R_raw * f_LSF
-            R_min = R_min_raw * grating_f_LSF
-            R_max = R_max_raw * grating_f_LSF
-            dloglam = continuum_templates['dloglam']
+        # Load R-curve and pre-convolve
+        r_wav, r_val = load_r_curve(file_paths['r_curve_file'])
+        R_min_raw, R_max_raw = r_curve_R_range(r_wav, r_val)
+        # f_LSF > 1 means better-than-nominal resolution (narrower LSF,
+        # higher effective R), so effective R = R_raw * f_LSF
+        R_min = R_min_raw * grating_f_LSF
+        R_max = R_max_raw * grating_f_LSF
+        dloglam = continuum_templates['dloglam']
 
-            logger.info(f"Pre-convolving at {K} R-knots: R=[{R_min:.0f}, {R_max:.0f}] "
-                        f"(f_LSF={grating_f_LSF})")
-            cont_conv, r_knots = preconvolve_at_discrete_R(cont_grid, dloglam, R_min, R_max, K)
-            line_conv, _ = preconvolve_at_discrete_R(line_grid, dloglam, R_min, R_max, K)
-            logger.info(f"Pre-convolved: cont={cont_conv.shape}, line={line_conv.shape}")
+        logger.info(f"Pre-convolving at {K} R-knots: R=[{R_min:.0f}, {R_max:.0f}] "
+                    f"(f_LSF={grating_f_LSF})")
+        cont_conv, r_knots = preconvolve_at_discrete_R(cont_grid, dloglam, R_min, R_max, K)
+        line_conv, _ = preconvolve_at_discrete_R(line_grid, dloglam, R_min, R_max, K)
+        logger.info(f"Pre-convolved: cont={cont_conv.shape}, line={line_conv.shape}")
 
-            # Load IGM attenuation grid (Inoue+2014)
-            igm_data = load_igm_grid()
-            logger.info(f"Loaded IGM grid: {igm_data['transmission'].shape} "
-                        f"(wav: {igm_data['wav_um'][0]*1e4:.0f}-{igm_data['wav_um'][-1]*1e4:.0f} A, "
-                        f"z: {igm_data['redshifts'][0]:.1f}-{igm_data['redshifts'][-1]:.1f})")
+        # Load IGM attenuation grid (Inoue+2014)
+        igm_data = load_igm_grid()
+        logger.info(f"Loaded IGM grid: {igm_data['transmission'].shape} "
+                    f"(wav: {igm_data['wav_um'][0]*1e4:.0f}-{igm_data['wav_um'][-1]*1e4:.0f} A, "
+                    f"z: {igm_data['redshifts'][0]:.1f}-{igm_data['redshifts'][-1]:.1f})")
 
-            # Pack metadata for per-spectrum functions
-            # Scale R-curve by f_LSF so r_at_obs and r_knots are in the
-            # same effective-R coordinate system
-            r_val_effective = r_val * grating_f_LSF
-            # Refinement parameters (two-stage fitting)
-            refine_window = options.get('refine_window', 3000)
-            refine_dv_key = f'refine_dv_{grating.lower()}'
-            refine_dv = options.get(refine_dv_key, None)
-            if refine_dv is not None:
-                logger.info(f"Refinement: ±{refine_window} km/s at dv={refine_dv} km/s")
+        # Pack metadata for per-spectrum functions
+        # Scale R-curve by f_LSF so r_at_obs and r_knots are in the
+        # same effective-R coordinate system
+        r_val_effective = r_val * grating_f_LSF
+        # Refinement parameters (two-stage fitting)
+        refine_window = options.get('refine_window', 3000)
+        refine_dv_key = f'refine_dv_{grating.lower()}'
+        refine_dv = options.get(refine_dv_key, None)
+        if refine_dv is not None:
+            logger.info(f"Refinement: ±{refine_window} km/s at dv={refine_dv} km/s")
 
-            sfhz_meta = {
-                'cont_conv': cont_conv,
-                'line_conv': line_conv,
-                'r_knots': r_knots,
-                'r_wav': r_wav,
-                'r_val': r_val_effective,
-                'z_bin_edges': continuum_templates['z_bin_edges'],
-                'dloglam': dloglam,
-                'wave_rest': continuum_templates['wave_rest'],
-                'chunk_size': chunk_size,
-                'igm_data': igm_data,
-                'refine_dv': refine_dv,
-                'refine_window': refine_window,
-            }
+        sfhz_meta = {
+            'cont_conv': cont_conv,
+            'line_conv': line_conv,
+            'r_knots': r_knots,
+            'r_wav': r_wav,
+            'r_val': r_val_effective,
+            'z_bin_edges': continuum_templates['z_bin_edges'],
+            'dloglam': dloglam,
+            'wave_rest': continuum_templates['wave_rest'],
+            'chunk_size': chunk_size,
+            'igm_data': igm_data,
+            'refine_dv': refine_dv,
+            'refine_window': refine_window,
+        }
 
-            if use_optimized:
-                fit_func = fit_single_spectrum_sfhz_optimized
-                logger.info("Using sfhz optimized Gram-matrix + Numba NNLS fitting")
-            else:
-                fit_func = fit_single_spectrum_sfhz
-                logger.info("Using sfhz standard scipy NNLS fitting")
+        fit_func = fit_single_spectrum_sfhz_optimized
+        fit_args_factory = lambda sf: [sf, file_paths, sfhz_meta, zgrid, logger, save_models, plot_zfit]
 
-            fit_args_factory = lambda sf: [sf, file_paths, sfhz_meta, zgrid, logger, save_models, plot_zfit]
-
-        else:
-            # --- Legacy path: full materialized grid ---
-            logger.info(f"Loaded {grating} continuum templates: "
-                        f"{len(continuum_templates['redshifts'])} redshifts")
-
-            template_wav = continuum_templates['wavelengths']
-            zgrid = continuum_templates['redshifts']
-
-            logger.info('Building emission line, broadline, blackbody, and modified blackbody templates')
-            templates = assemble_full_template_grid(continuum_templates, zgrid, template_wav)
-            n_templ = templates.shape[0]
-
-            oversample = 1
-            logger.info('Resampling template grid to non-uniform wavelength grid')
-            convolved_wav, temp_grid = resample_to_nonuniform_grid(
-                template_wav, templates, file_paths['r_curve_file'], oversample=oversample)
-            convolved_wav = convolved_wav.astype('float32')
-
-            logger.info('Convolving template grid with LSF')
-            convolved_grid = convolve_with_lsf(
-                convolved_wav, temp_grid, oversample=oversample, f_LSF=f_LSF)
-            convolved_grid = convolved_grid.astype('float32')
-
-            if use_optimized:
-                fit_func = fit_single_spectrum_optimized
-                logger.info("Using optimized Gram-matrix + Numba NNLS fitting")
-            else:
-                fit_func = fit_single_spectrum
-                logger.info("Using standard scipy NNLS fitting")
-
-            fit_args_factory = lambda sf: [sf, file_paths, convolved_wav, convolved_grid, zgrid, logger, save_models, plot_zfit]
-
-        # --- Common: discover spec files, filter, and run ---
+        # --- Discover spec files, filter, and run ---
         all_spec_files = np.array(sorted(glob.glob(
             file_paths['input_path'] + f'/*{grating.lower()}*_spec.fits')))
         spec_files = all_spec_files
@@ -1089,15 +689,10 @@ def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
             spec_files = actual_spec_files
 
         logger.info(f"Starting redshift fitting for {len(spec_files)} objects using {ncores} cores")
-        if use_optimized:
-            if ncores > 1:
-                numba.set_num_threads(1)
-            else:
-                numba.set_num_threads(os.cpu_count() or 1)
-        if use_optimized and not is_sfhz:
-            logger.debug("Warming up Numba JIT compilation...")
-            _compute_gram(np.ones((n_templ, 1, 1)), np.ones(1))
-            _fit_all_redshifts_numba(np.eye(n_templ, dtype=np.float64)[np.newaxis], np.ones((1, n_templ)))
+        if ncores > 1:
+            numba.set_num_threads(1)
+        else:
+            numba.set_num_threads(os.cpu_count() or 1)
 
         start_time = time.time()
         if ncores > 1:

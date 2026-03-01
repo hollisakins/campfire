@@ -299,40 +299,6 @@ def build_modified_blackbody_templates(zgrid, template_wav):
     }
 
 
-def assemble_full_template_grid(continuum_templates, zgrid, template_wav):
-    """
-    Assemble the full template grid from all component template types.
-
-    Parameters
-    ----------
-    continuum_templates : dict
-        Loaded continuum template grid (from pickle)
-    zgrid : ndarray
-        Redshift grid
-    template_wav : ndarray
-        Template wavelength grid in microns
-
-    Returns
-    -------
-    templates : ndarray, shape (n_templates, n_z, n_wav)
-        Stacked template grid
-    """
-    line_templates = build_emission_line_templates(zgrid, template_wav)
-    broadline_templates = build_broadline_templates(zgrid, template_wav)
-    blackbody_templates = build_blackbody_templates(zgrid, template_wav)
-    mod_blackbody_templates = build_modified_blackbody_templates(zgrid, template_wav)
-
-    templates = np.vstack((
-        continuum_templates['grid'],
-        line_templates['grid'],
-        blackbody_templates['grid'],
-        mod_blackbody_templates['grid'],
-        broadline_templates['grid'],
-    ))
-
-    return templates
-
-
 # ---------------------------------------------------------------------------
 # sfhz-style rest-frame template architecture
 # ---------------------------------------------------------------------------

@@ -1,14 +1,12 @@
 """
 Instrument-agnostic spectral math: wavelength conversion, resampling, LSF convolution, blackbody.
 
-Includes both the legacy 3-step pipeline (resample → convolve → resample) and the
-sfhz pre-convolution engine for memory-efficient redshift fitting.
+Includes the sfhz pre-convolution engine for memory-efficient redshift fitting.
 """
 
 import numpy as np
 from astropy.io import fits
 from scipy.ndimage import gaussian_filter1d
-from spectres import spectres
 from numba import njit, prange
 import warnings
 
@@ -20,17 +18,6 @@ def air_to_vac(wav_air):
     vac_wavs = np.logspace(2, 4.5, 1000)
     air_wavs = vac_wavs / (1.0 + 2.735182E-4 + 131.4182 / vac_wavs**2 + 2.76249E8 / vac_wavs**4)
     return np.interp(wav_air, air_wavs, vac_wavs)
-
-
-def get_wavelength_sampling(wav_min, wav_max, R_curve_file, oversample=4):
-    """Generate non-uniform wavelength sampling based on spectral resolution curve."""
-    R_curve = fits.open(R_curve_file)[1].data
-    x = [wav_min]
-    while x[-1] <= wav_max:
-        R_val = np.interp(x[-1], R_curve['WAVELENGTH'], R_curve['R'])
-        dwav = x[-1] / R_val / oversample
-        x.append(x[-1] + dwav)
-    return np.array(x)
 
 
 def planck(lam, T):  # lam in um, T in K, return blackbody in f_nu
@@ -49,97 +36,6 @@ def MBB(lam, T, pivot, beta):  # modified black body with hard H_infinity cut
     temp[lam < 4 * .0912] = 0
     return temp
 
-
-def resample_to_nonuniform_grid(old_wav, old_grid, R_curve_file, oversample=4):
-    """
-    Step 1: Resample template grid to non-uniform wavelength sampling based on R-curve.
-
-    Parameters
-    ----------
-    old_wav : array
-        Template wavelength grid
-    old_grid : array
-        Template grid (n_templates, n_redshifts, n_wavelengths)
-    R_curve_file : str
-        Path to spectral resolution curve file
-    oversample : int
-        Oversampling factor for LSF convolution
-
-    Returns
-    -------
-    tuple : (temp_wav, temp_grid)
-        temp_wav: Non-uniform wavelength grid
-        temp_grid: Resampled template grid
-    """
-    old_wav = old_wav.astype(np.float64)
-    old_grid = old_grid.astype(np.float64)
-
-    temp_wav = get_wavelength_sampling(old_wav.min(), old_wav.max(), R_curve_file, oversample=oversample)
-    temp_grid = spectres(temp_wav, old_wav, old_grid, fill=0, verbose=False)
-
-    return temp_wav, temp_grid
-
-
-def convolve_with_lsf(temp_wav, temp_grid, oversample=4, f_LSF=1.3):
-    """
-    Step 2: Convolve templates with Line Spread Function.
-
-    Parameters
-    ----------
-    temp_wav : array
-        Non-uniform wavelength grid
-    temp_grid : array
-        Template grid on non-uniform wavelength grid
-    oversample : int
-        Oversampling factor for LSF convolution
-    f_LSF : float
-        LSF fudge factor
-
-    Returns
-    -------
-    array : LSF-convolved template grid
-    """
-    sigma_pix = oversample / 2.35 / f_LSF  # sigma width of kernel in pixels
-    k_size = 4 * int(sigma_pix + 1)
-    x_kernel_pix = np.arange(-k_size, k_size + 1)
-
-    kernel = np.exp(-(x_kernel_pix**2) / (2 * sigma_pix**2))
-    kernel /= np.trapezoid(kernel)  # Explicitly normalise kernel
-
-    # Disperse non-uniformly sampled spectrum
-    n_templ, n_z, _ = np.shape(temp_grid)
-    convolved_grid = np.zeros_like(temp_grid)
-    for i in range(n_templ):
-        for j in range(n_z):
-            convolved_grid[i, j, :] = np.convolve(temp_grid[i, j, :], kernel, mode='same')
-    return convolved_grid
-
-
-def resample_to_observed_grid(temp_wav, convolved_grid, observed_wav):
-    """
-    Step 3: Final resampling to object's observed wavelength grid.
-
-    Parameters
-    ----------
-    temp_wav : array
-        Non-uniform wavelength grid
-    convolved_grid : array
-        LSF-convolved template grid
-    observed_wav : array
-        Observed wavelength grid
-
-    Returns
-    -------
-    array : Template grid resampled to observed wavelength grid
-    """
-    observed_wav = observed_wav.astype(np.float64)
-    new_grid = spectres(observed_wav, temp_wav, convolved_grid, fill=0, verbose=False)
-    return new_grid
-
-
-# ---------------------------------------------------------------------------
-# sfhz pre-convolution engine
-# ---------------------------------------------------------------------------
 
 def load_r_curve(r_curve_file):
     """Load an R-curve FITS file and return (wavelength, R) arrays in microns.
@@ -284,13 +180,17 @@ def _assemble_templates_pixint(
     log_rest_start,  # scalar float64
     dloglam,         # scalar float64
     log_shifts,      # (n_z,) float64 — log(1+z)
-    bin_indices,     # (n_z,) int64
+    bin_lo,          # (n_z,) int64 — lower bin index for interpolation
+    bin_hi,          # (n_z,) int64 — upper bin index for interpolation
+    bin_alpha,       # (n_z,) float64 — bin interpolation weight
     n_rest,          # int
 ):
     """Assemble pixel-integrated templates for all trial redshifts.
 
     For each (z, observed pixel), integrates the pre-convolved, R-interpolated
     rest-frame template over the pixel boundaries using the trapezoidal rule.
+    Continuum templates are linearly interpolated between the two nearest
+    redshift bin centers for smooth variation across redshift.
 
     Returns
     -------
@@ -306,7 +206,10 @@ def _assemble_templates_pixint(
 
     for iz in prange(n_z):
         log_shift = log_shifts[iz]
-        b = bin_indices[iz]
+        b_lo = bin_lo[iz]
+        b_hi = bin_hi[iz]
+        b_a = bin_alpha[iz]
+        b_a_inv = 1.0 - b_a
 
         for ip in range(n_obs):
             # R-knot interpolation weights for this observed pixel
@@ -337,19 +240,26 @@ def _assemble_templates_pixint(
             # Number of sub-pixels
             n_sub = i_hi - i_lo
 
-            # Trapezoidal integration for each template
+            # Trapezoidal integration for each continuum template
+            # (interpolated between two nearest bin centers)
             for t in range(n_cont):
                 val = 0.0
-                # Interpolate between R-knots
-                v_prev = ((1.0 - alpha) * cont_conv[b, t, k_lo, i_lo]
-                          + alpha * cont_conv[b, t, k_hi, i_lo])
+                # R-interpolated value at i_lo, blended across bins
+                v_lo_r = ((1.0 - alpha) * cont_conv[b_lo, t, k_lo, i_lo]
+                          + alpha * cont_conv[b_lo, t, k_hi, i_lo])
+                v_hi_r = ((1.0 - alpha) * cont_conv[b_hi, t, k_lo, i_lo]
+                          + alpha * cont_conv[b_hi, t, k_hi, i_lo])
+                v_prev = b_a_inv * v_lo_r + b_a * v_hi_r
 
                 for isub in range(1, n_sub + 1):
                     idx = i_lo + isub
                     if idx >= n_rest:
                         break
-                    v_cur = ((1.0 - alpha) * cont_conv[b, t, k_lo, idx]
-                             + alpha * cont_conv[b, t, k_hi, idx])
+                    v_lo_r = ((1.0 - alpha) * cont_conv[b_lo, t, k_lo, idx]
+                              + alpha * cont_conv[b_lo, t, k_hi, idx])
+                    v_hi_r = ((1.0 - alpha) * cont_conv[b_hi, t, k_lo, idx]
+                              + alpha * cont_conv[b_hi, t, k_hi, idx])
+                    v_cur = b_a_inv * v_lo_r + b_a * v_hi_r
                     val += 0.5 * (v_prev + v_cur)
                     v_prev = v_cur
 
@@ -488,6 +398,39 @@ def apply_igm_to_grid(grid, obs_wav, zgrid,
                     grid[t, iz, ip] *= T
 
 
+def _compute_bin_interp_weights(zgrid, z_bin_edges):
+    """Compute bin interpolation indices and weights from bin centers.
+
+    Instead of assigning each redshift to a single bin, this finds the two
+    nearest bin centers and computes a linear interpolation weight so that
+    templates blend smoothly across redshift.
+
+    Parameters
+    ----------
+    zgrid : ndarray, shape (n_z,)
+    z_bin_edges : ndarray, shape (n_bins+1,)
+
+    Returns
+    -------
+    bin_lo, bin_hi : ndarray, shape (n_z,), int64
+    bin_alpha : ndarray, shape (n_z,), float64
+        Template = (1-alpha)*cont[bin_lo] + alpha*cont[bin_hi]
+    """
+    z_centers = 0.5 * (z_bin_edges[:-1] + z_bin_edges[1:])
+    n_bins = len(z_centers)
+
+    # searchsorted on centers gives the upper bracket index
+    idx = np.searchsorted(z_centers, zgrid, side='right') - 1
+    bin_lo = np.clip(idx, 0, n_bins - 2).astype(np.int64)
+    bin_hi = bin_lo + 1
+
+    dz = z_centers[bin_hi] - z_centers[bin_lo]
+    bin_alpha = np.where(dz > 0, (zgrid - z_centers[bin_lo]) / dz, 0.0)
+    bin_alpha = np.clip(bin_alpha, 0.0, 1.0)
+
+    return bin_lo, bin_hi, bin_alpha
+
+
 def assemble_templates_for_spectrum(cont_conv, line_conv, r_knots, r_wav, r_val,
                                      obs_wav, zgrid, z_bin_edges, dloglam, wave_rest):
     """Python wrapper around the numba pixel-integration kernel.
@@ -516,8 +459,7 @@ def assemble_templates_for_spectrum(cont_conv, line_conv, r_knots, r_wav, r_val,
     log_obs_hi = np.log(wav_hi)
     log_rest_start = np.log(wave_rest[0])
     log_shifts = np.log(1.0 + zgrid)
-    bin_indices = np.clip(np.digitize(zgrid, z_bin_edges) - 1,
-                          0, len(z_bin_edges) - 2).astype(np.int64)
+    bin_lo, bin_hi, bin_alpha = _compute_bin_interp_weights(zgrid, z_bin_edges)
     n_rest = len(wave_rest)
 
     return _assemble_templates_pixint(
@@ -525,95 +467,6 @@ def assemble_templates_for_spectrum(cont_conv, line_conv, r_knots, r_wav, r_val,
         line_conv.astype(np.float32),
         r_knots.astype(np.float64),
         r_at_obs, log_obs_lo, log_obs_hi,
-        log_rest_start, dloglam, log_shifts, bin_indices, n_rest,
+        log_rest_start, dloglam, log_shifts,
+        bin_lo, bin_hi, bin_alpha, n_rest,
     )
-
-
-def assemble_templates_spectres(cont_conv, line_conv, r_knots, r_wav, r_val,
-                                 obs_wav, zgrid, z_bin_edges, dloglam, wave_rest,
-                                 igm_data=None):
-    """Non-optimized template assembly using spectres for pixel-integration.
-
-    Used as the validation/fallback path. For each z-chunk, builds templates
-    on an oversampled non-uniform grid, then uses spectres for pixel-integration.
-
-    Parameters
-    ----------
-    (same as assemble_templates_for_spectrum)
-    igm_data : dict, optional
-        Output of load_igm_grid(). If provided, IGM attenuation is applied
-        in the rest frame before spectres resampling (more accurate than
-        post-processing).
-
-    Returns
-    -------
-    grid : ndarray, shape (n_templ, n_z, n_obs) float64
-    """
-    n_cont = cont_conv.shape[1]
-    n_line = line_conv.shape[0]
-    n_templ = n_cont + n_line
-    n_z = len(zgrid)
-    n_obs = len(obs_wav)
-
-    obs_wav_f64 = obs_wav.astype(np.float64)
-    n_rest = len(wave_rest)
-    log_rest_start = np.log(wave_rest[0])
-    bin_indices = np.clip(np.digitize(zgrid, z_bin_edges) - 1,
-                          0, len(z_bin_edges) - 2)
-
-    grid = np.zeros((n_templ, n_z, n_obs))
-
-    for iz in range(n_z):
-        z = zgrid[iz]
-        b = bin_indices[iz]
-
-        # Shift rest-frame grid to observed frame
-        obs_template_wav = wave_rest * (1 + z)
-
-        # R-interpolation at each template wavelength (using observed R)
-        r_at_templ = np.interp(obs_template_wav, r_wav, r_val)
-
-        # Build R-interpolated templates for this z
-        templates_iz = np.zeros((n_templ, n_rest))
-
-        for t in range(n_cont):
-            for ip in range(n_rest):
-                R_val = r_at_templ[ip]
-                k_lo = np.searchsorted(r_knots, R_val, side='right') - 1
-                k_lo = max(0, min(k_lo, len(r_knots) - 2))
-                k_hi = k_lo + 1
-                alpha = (R_val - r_knots[k_lo]) / (r_knots[k_hi] - r_knots[k_lo])
-                alpha = max(0.0, min(1.0, alpha))
-                templates_iz[t, ip] = ((1 - alpha) * cont_conv[b, t, k_lo, ip]
-                                       + alpha * cont_conv[b, t, k_hi, ip])
-
-        for t in range(n_line):
-            for ip in range(n_rest):
-                R_val = r_at_templ[ip]
-                k_lo = np.searchsorted(r_knots, R_val, side='right') - 1
-                k_lo = max(0, min(k_lo, len(r_knots) - 2))
-                k_hi = k_lo + 1
-                alpha = (R_val - r_knots[k_lo]) / (r_knots[k_hi] - r_knots[k_lo])
-                alpha = max(0.0, min(1.0, alpha))
-                templates_iz[n_cont + t, ip] = ((1 - alpha) * line_conv[t, k_lo, ip]
-                                                 + alpha * line_conv[t, k_hi, ip])
-
-        # Apply IGM attenuation in rest frame (before pixel-integration)
-        if igm_data is not None:
-            from campfire_pipeline.common.igm import igm_transmission
-            T_igm = igm_transmission(wave_rest, z, igm_data)
-            templates_iz *= T_igm[np.newaxis, :]
-
-        # Spectres pixel-integration from oversampled template to observed grid
-        # Only use wavelength range that overlaps
-        mask_templ = ((obs_template_wav >= obs_wav_f64[0] * 0.95) &
-                      (obs_template_wav <= obs_wav_f64[-1] * 1.05))
-        if np.sum(mask_templ) < 2:
-            continue
-
-        resampled = spectres(obs_wav_f64, obs_template_wav[mask_templ].astype(np.float64),
-                             templates_iz[:, mask_templ].astype(np.float64),
-                             fill=0, verbose=False)
-        grid[:, iz, :] = resampled
-
-    return grid
