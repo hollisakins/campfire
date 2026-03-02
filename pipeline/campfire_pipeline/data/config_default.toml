@@ -44,6 +44,7 @@
     set_stellarity = 1.0
     rectify = true
     plot_bkgsub = true
+    empirical_wavecorr = false
 
 [nirspec.stage3]
     method = "nodded"

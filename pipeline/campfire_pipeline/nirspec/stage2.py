@@ -15,6 +15,123 @@ from campfire_pipeline.nirspec.metafile import MetaFile
 from campfire_pipeline.nirspec.observation import Observation
 
 
+def build_empirical_wavecorr():
+    """Build a wavecorr reference file augmented with the JADES DR4 empirical correction.
+
+    Loads the digitized S(lambda, x) from Scholtz+2025 (package data),
+    resamples it onto the existing CRDS wavecorr grid, and saves the
+    combined file to $CAMPFIRE_ROOT/cache/. Returns the cached path
+    immediately if the file already exists.
+
+    Returns
+    -------
+    str
+        Absolute path to the augmented wavecorr ASDF file.
+    """
+    import copy
+    from pathlib import Path
+    import asdf
+    import crds
+    from scipy.interpolate import RegularGridInterpolator, griddata
+    from jwst.datamodels import WaveCorrModel
+
+    # --- cache check ---
+    campfire_root = os.environ.get('CAMPFIRE_ROOT')
+    if not campfire_root:
+        raise RuntimeError(
+            "CAMPFIRE_ROOT must be set to build empirical wavecorr file"
+        )
+    cache_dir = os.path.join(campfire_root, 'cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    out_path = os.path.join(cache_dir, 'jwst_nirspec_wavecorr_jades_dr4_empirical.asdf')
+    if os.path.exists(out_path):
+        log(f"Empirical wavecorr file already exists: {out_path}")
+        return out_path
+
+    log("Building empirical wavecorr reference file ...")
+
+    # --- load empirical correction ---
+    data_dir = Path(__file__).parent.parent / 'data'
+    with asdf.open(str(data_dir / 'jades_dr4_empirical_wavecorr.asdf')) as af:
+        emp_wav_um = np.array(af.tree['wavelength'])   # microns, shape (9,)
+        emp_xoff   = np.array(af.tree['x_offset'])     # fraction of pitch, shape (14,)
+        emp_S      = np.array(af.tree['S'])             # shape (14, 9), axes: (x_offset, wavelength)
+
+    # --- fill NaN via linear interpolation ---
+    # Build meshgrid of (x_offset, wavelength) coordinates
+    xg, wg = np.meshgrid(emp_xoff, emp_wav_um, indexing='ij')
+    valid = ~np.isnan(emp_S)
+    emp_S_filled = griddata(
+        (xg[valid], wg[valid]),
+        emp_S[valid],
+        (xg, wg),
+        method='linear',
+    )
+    # Fall back to nearest for any remaining NaN at convex-hull boundary
+    still_nan = np.isnan(emp_S_filled)
+    if still_nan.any():
+        emp_S_filled[still_nan] = griddata(
+            (xg[valid], wg[valid]),
+            emp_S[valid],
+            (xg[still_nan], wg[still_nan]),
+            method='nearest',
+        )
+
+    # Transpose to (wavelength, x_offset) to match reference file axis order,
+    # and convert wavelength from microns to meters
+    emp_wav_m = emp_wav_um * 1e-6
+    emp_S_wl_x = emp_S_filled.T  # shape (9, 14) → axes: (wavelength, x_offset)
+
+    # --- load CRDS wavecorr ---
+    params = {
+        "INSTRUME": "NIRSPEC",
+        "DETECTOR": "NRS1",
+        "EXP_TYPE": "NRS_MSASPEC",
+        "DATE-OBS": "2023-01-01",
+        "TIME-OBS": "00:00:00",
+    }
+    refs = crds.getreferences(params, reftypes=['wavecorr'], observatory='jwst')
+    crds_path = refs.get('wavecorr', '')
+    if not crds_path or not os.path.exists(crds_path):
+        raise FileNotFoundError(f"CRDS wavecorr reference not found: {crds_path}")
+
+    wavecorr = WaveCorrModel(crds_path)
+    tab = wavecorr.apertures[0].zero_point_offset
+    ref_wav_m = np.array(tab.points[0])     # shape (21,), meters
+    ref_xoff  = np.array(tab.points[1])     # shape (21,)
+    ref_table = np.array(tab.lookup_table)  # shape (21, 21)
+
+    # --- resample empirical correction onto reference grid ---
+    interp = RegularGridInterpolator(
+        (emp_wav_m, emp_xoff),
+        emp_S_wl_x,
+        bounds_error=False,
+        fill_value=None,  # linear extrapolation outside domain
+    )
+    ref_grid = np.meshgrid(ref_wav_m, ref_xoff, indexing='ij')
+    pts = np.column_stack([ref_grid[0].ravel(), ref_grid[1].ravel()])
+    emp_resampled = interp(pts).reshape(ref_table.shape)
+
+    # --- combine ---
+    new_table = ref_table + emp_resampled
+
+    # --- save ---
+    wavecorr_new = copy.deepcopy(wavecorr)
+    wavecorr_new.apertures[0].zero_point_offset.lookup_table = new_table
+    wavecorr_new.meta.description = (
+        "Wavecorr augmented with empirical S(lambda,x) from Scholtz+2025 "
+        "(JADES DR4 Paper II, arXiv:2510.01034) Figure 5"
+    )
+    wavecorr_new.meta.author = "Hollis Akins / CAMPFIRE pipeline"
+    wavecorr_new.meta.pedigree = "INFLIGHT"
+    wavecorr_new.save(out_path)
+    wavecorr_new.close()
+    wavecorr.close()
+
+    log(f"Saved empirical wavecorr to {out_path}")
+    return out_path
+
+
 def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
                 n_processes=1, plot=True, data_dir=None, products_dir=None):
     """Orchestrate stage 2a: WCS assignment + unit fixing + optional resampling/plotting.
@@ -35,10 +152,16 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
 
     log(f"Stage 2a config for {obs.name}: {stage_config}")
 
+    # Build empirical wavecorr override if enabled
+    wavecorr_override = None
+    if stage_config.get('empirical_wavecorr'):
+        wavecorr_override = build_empirical_wavecorr()
+
     kwargs = dict(
         set_stellarity=stage_config.get('set_stellarity'),
         source_ids=source_ids,
         overwrite=overwrite,
+        wavecorr_override=wavecorr_override,
     )
 
     if not obs.directories_setup:
@@ -167,6 +290,7 @@ def run_stage2a_single_rate(
         set_stellarity: bool = False,
         source_ids='all',
         overwrite: bool = False,
+        wavecorr_override=None,
         **kwargs
     ):
 
@@ -281,25 +405,10 @@ def run_stage2a_single_rate(
                 'resample_spec':{
                     'skip': True,
                 },
-                # for extended wavelength range testing
-                # 'pathloss':{
-                #     'skip':True,
-                # },
-                # 'flat_field':{
-                #     'skip': True,
-                #     #'override_fflat':'modified_jwst_nirspec_fflat_0163.fits'
-                # },
-                # 'photom':{
-                #     'skip': True,
-                # },
-                # 'wavecorr':{
-                #     'skip':True,
-                # },
-                # 'assign_wcs':{
-                #     'skip':False,
-                #     'override_wavelengthrange': '/Users/hba423/simmons/crds/references/jwst/nirspec/jwst_nirspec_wavelengthrange_0008_ext5p5.asdf',
-                # },
             }
+
+            if wavecorr_override:
+                steps['wavecorr'] = {'override_wavecorr': wavecorr_override}
 
             log(f"Running Spec2Pipeline for {prod_name}")
             try:
