@@ -33,29 +33,31 @@ export function getPlotColors(): PlotColors {
 
 // Common emission lines with rest wavelengths in microns
 // Colors assigned as rainbow from blue (short λ) to red (long λ)
+// Rest wavelengths in vacuum (microns), matching pipeline templates.py.
+// JWST measures in vacuum — optical/NIR lines converted from air via SDSS formula.
 export const EMISSION_LINES = [
-  { name: 'Lyα', wave: 0.12157, color: '#6366f1' },      // indigo (shortest)
-  { name: 'CIV', wave: 0.1549, color: '#4f46e5' },       // indigo-600
-  { name: 'CIII]', wave: 0.1909, color: '#4338ca' },     // indigo-700
-  { name: 'MgII', wave: 0.2798, color: '#2563eb' },      // blue-600
-  { name: '[OII]', wave: 0.3727, color: '#0ea5e9' },     // sky-500
-  { name: 'Hδ', wave: 0.4102, color: '#06b6d4' },        // cyan-500
-  { name: 'Hγ', wave: 0.4341, color: '#14b8a6' },        // teal-500
-  { name: '[OIII]', wave: 0.436321, color: '#0d9488' },  // teal-600 (auroral)
-  { name: 'Hβ', wave: 0.4861, color: '#10b981' },        // emerald-500
-  { name: '[OIII]₁', wave: 0.4959, color: '#22c55e' },   // green-500
-  { name: '[OIII]₂', wave: 0.5007, color: '#84cc16' },   // lime-500
-  { name: 'HeI', wave: 0.5875624, color: '#a3e635' },    // lime-400
-  { name: 'Hα', wave: 0.6563, color: '#eab308' },        // yellow-500
-  { name: '[NII]', wave: 0.6584, color: '#f59e0b' },     // amber-500
-  { name: '[SII]₁', wave: 0.6717, color: '#f97316' },    // orange-500
-  { name: '[SII]₂', wave: 0.6731, color: '#ef4444' },    // red-500
-  { name: '[SIII]₁', wave: 0.90686, color: '#e11d48' },  // rose-600
-  { name: '[SIII]₂', wave: 0.95311, color: '#be123c' },  // rose-700
-  { name: 'HeI', wave: 1.0833315, color: '#a21caf' },    // fuchsia-700
-  { name: 'Paγ', wave: 1.0941090, color: '#c026d3' },    // fuchsia-600
-  { name: 'Paβ', wave: 1.2822, color: '#dc2626' },       // red-600
-  { name: 'Paα', wave: 1.8751, color: '#b91c1c' },       // red-700 (longest)
+  { name: 'Lyα', wave: 0.1215670, color: '#6366f1' },     // indigo (shortest)
+  { name: 'CIV', wave: 0.1549480, color: '#4f46e5' },     // indigo-600
+  { name: 'CIII]', wave: 0.1908734, color: '#4338ca' },   // indigo-700
+  { name: 'MgII', wave: 0.2799942, color: '#2563eb' },    // blue-600
+  { name: '[OII]', wave: 0.3728484, color: '#0ea5e9' },   // sky-500
+  { name: 'Hδ', wave: 0.4102892, color: '#06b6d4' },      // cyan-500
+  { name: 'Hγ', wave: 0.4341692, color: '#14b8a6' },      // teal-500
+  { name: '[OIII]', wave: 0.4364437, color: '#0d9488' },  // teal-600 (auroral)
+  { name: 'Hβ', wave: 0.4862692, color: '#10b981' },      // emerald-500
+  { name: '[OIII]₁', wave: 0.4960296, color: '#22c55e' }, // green-500
+  { name: '[OIII]₂', wave: 0.5008241, color: '#84cc16' }, // lime-500
+  { name: 'HeI', wave: 0.5877255, color: '#a3e635' },     // lime-400
+  { name: 'Hα', wave: 0.6564635, color: '#eab308' },      // yellow-500
+  { name: '[NII]', wave: 0.6585282, color: '#f59e0b' },   // amber-500
+  { name: '[SII]₁', wave: 0.6718298, color: '#f97316' },  // orange-500
+  { name: '[SII]₂', wave: 0.6732671, color: '#ef4444' },  // red-500
+  { name: '[SIII]₁', wave: 0.9071095, color: '#e11d48' }, // rose-600
+  { name: '[SIII]₂', wave: 0.9533721, color: '#be123c' }, // rose-700
+  { name: 'HeI', wave: 1.0833315, color: '#a21caf' },     // fuchsia-700
+  { name: 'Paγ', wave: 1.0941090, color: '#c026d3' },     // fuchsia-600
+  { name: 'Paβ', wave: 1.2821600, color: '#dc2626' },     // red-600
+  { name: 'Paα', wave: 1.8756100, color: '#b91c1c' },     // red-700 (longest)
 ];
 
 /**
