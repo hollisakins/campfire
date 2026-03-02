@@ -454,7 +454,7 @@ def fit_single_spectrum_sfhz_optimized(spec_file, file_paths, sfhz_meta, zgrid, 
 
         processing_time = time.time() - start_time
         logger.info(f"Redshift fitting completed for {base_name} "
-                     f"(z={confidence_results['redshift']:.3f}, "
+                     f"(z={confidence_results['redshift']:.4f}, "
                      f"conf={confidence_results['confidence']:.1f}%, "
                      f"qual={confidence_results['redshift_quality']}, "
                      f"t={processing_time:.1f}s)")

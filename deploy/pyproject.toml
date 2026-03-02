@@ -1,0 +1,27 @@
+[project]
+name = "campfire-deploy"
+version = "0.1.0"
+description = "CAMPFIRE deployment CLI — deploys pipeline products to Supabase + Cloudflare R2"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.0",
+    "astropy>=6.0",
+    "numpy>=1.26",
+    "supabase>=2.0",
+    "boto3>=1.28",
+    "tqdm>=4.65",
+    "toml>=0.10",
+]
+
+[project.scripts]
+cfdeploy = "campfire_deploy.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["campfire_deploy*"]
+
+[tool.setuptools.package-data]
+campfire_deploy = ["../data/*.toml"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

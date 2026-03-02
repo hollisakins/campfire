@@ -104,9 +104,11 @@ class ReductionEngine:
             write_summary_ecsv,
         )
         version = self.config.get('pipeline', {}).get('version', 'unknown')
+        consensus_config = self.config.get('nirspec', {}).get('redshift_consensus', {})
         obs_dir = Path(obs.workspace_dir)
         summary = generate_observation_summary(obs.name, obs_dir,
-                                                reduction_version=version)
+                                                reduction_version=version,
+                                                consensus_config=consensus_config)
         if len(summary) > 0:
             write_summary_ecsv(summary, obs_dir, obs.name)
         else:

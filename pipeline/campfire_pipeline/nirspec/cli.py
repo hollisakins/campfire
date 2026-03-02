@@ -34,9 +34,43 @@ def common_options(f):
     return f
 
 
+class _VariadicOption(click.Option):
+    """Click option that consumes multiple space-separated values after a single flag."""
+
+    def add_to_parser(self, parser, ctx):
+        super().add_to_parser(parser, ctx)
+        name = self.opts[-1]
+        opt = parser._long_opt.get(name)
+        if opt is None:
+            return
+        original_process = opt.process
+
+        def _eat_remaining(value, state):
+            original_process(value, state)
+            while state.rargs and not state.rargs[0].startswith('-'):
+                original_process(state.rargs.pop(0), state)
+
+        opt.process = _eat_remaining
+
+
+def _parse_source_ids(ctx, param, value):
+    """Convert space-separated, comma-separated, or repeated flag values to int tuple."""
+    if not value:
+        return None
+    result = []
+    for item in value:
+        for part in item.replace(',', ' ').split():
+            try:
+                result.append(int(part))
+            except ValueError:
+                raise click.BadParameter(f"'{part}' is not a valid integer.")
+    return tuple(result) if result else None
+
+
 def processing_options(f):
     """Decorator that adds --source-ids, --processes, --overwrite."""
-    f = click.option('--source-ids', multiple=True, type=int, default=None,
+    f = click.option('--source-ids', multiple=True, type=str, default=None,
+                     cls=_VariadicOption, callback=_parse_source_ids,
                      help='Source IDs to process (default: all).')(f)
     f = click.option('--processes', '-p', default=1, type=int,
                      help='Number of parallel processes.')(f)
@@ -162,9 +196,12 @@ def _run_summary(cfg, obs_obj):
     )
 
     version = cfg.get('pipeline', {}).get('version', 'unknown')
+    consensus_config = cfg.get('nirspec', {}).get('redshift_consensus', {})
     obs_dir = Path(obs_obj.workspace_dir)
     summary_table = generate_observation_summary(obs_obj.name, obs_dir,
-                                                  reduction_version=version)
+                                                  reduction_version=version,
+                                                  field=obs_obj.field,
+                                                  consensus_config=consensus_config)
     if len(summary_table) > 0:
         write_summary_ecsv(summary_table, obs_dir, obs_obj.name)
     else:

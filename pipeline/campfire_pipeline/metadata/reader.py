@@ -143,6 +143,39 @@ def read_zfit_data(zfit_path: Path) -> dict | None:
         return None
 
 
+def read_zfit_chi2(zfit_path: Path) -> dict | None:
+    """
+    Read the full chi2(z) curve from a zfit FITS file.
+
+    Returns dict with:
+        - z: redshift grid (ndarray)
+        - chi2: chi-squared values (ndarray)
+        - chi2_min: minimum chi-squared value
+        - zbest: redshift at minimum chi2
+    Returns None if file doesn't exist or can't be read.
+    """
+    if not zfit_path or not zfit_path.exists():
+        return None
+
+    try:
+        with fits.open(zfit_path) as hdul:
+            chi2_data = hdul['CHI2'].data
+            z = np.array(chi2_data['z'], dtype=float)
+            chi2 = np.array(chi2_data['chi2'], dtype=float)
+
+            min_idx = np.argmin(chi2)
+
+            return {
+                'z': z,
+                'chi2': chi2,
+                'chi2_min': float(chi2[min_idx]),
+                'zbest': float(z[min_idx]),
+            }
+    except Exception as e:
+        log(f"Warning: Failed to read chi2 curve from {zfit_path.name}: {e}")
+        return None
+
+
 def _compute_file_hash(path: Path) -> str:
     """Compute SHA-256 hash of a file, returned as 'sha256:<hex>'."""
     hasher = hashlib.sha256()
