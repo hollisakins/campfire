@@ -199,11 +199,14 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
 
         parsed = parse_fits_filename(fits_path.name)
 
-        # Calculate max S/N
+        # Valid pixel mask (matches redshift_fitting._load_and_prepare_spectrum)
         fnu = spec1d['fnu']
         fnu_err = spec1d['fnu_err']
         valid = ~np.isnan(fnu) & ~np.isnan(fnu_err) & (fnu_err > 0)
-        if valid.sum() > 0:
+        n_valid = int(valid.sum())
+
+        # Calculate max S/N
+        if n_valid > 0:
             sn = fnu[valid] / fnu_err[valid]
             max_sn = float(np.nanmax(sn))
         else:
@@ -245,6 +248,7 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
 
             'redshift_auto': redshift_auto,
 
+            'n_pix': n_valid,
             'signal_to_noise': max_sn,
 
             'fits_filename': fits_path.name,

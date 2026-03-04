@@ -183,8 +183,10 @@ def _consensus_redshift(chi2_by_grating, delta_chi2_peak, dv_tolerance):
     if not all_candidates:
         return None
 
-    # Score each candidate across all gratings
-    scored = []  # (total_delta_chi2, -n_constraining, grating_priority, z_cand)
+    # Score each candidate across all gratings.
+    # Normalize delta-chi2 by n_pix so that gratings contribute per-pixel
+    # constraining power rather than raw pixel count.
+    scored = []  # (total_delta_chi2_per_pix, -n_constraining, grating_priority, z_cand)
 
     for z_cand, source_grating, _ in all_candidates:
         total_delta_chi2 = 0.0
@@ -195,6 +197,9 @@ def _consensus_redshift(chi2_by_grating, delta_chi2_peak, dv_tolerance):
                                          z_cand, dv_tolerance)
             if chi2_val is not None:
                 delta = chi2_val - data['chi2_min']
+                n_pix = data.get('n_pix', 0)
+                if n_pix > 0:
+                    delta /= n_pix
                 total_delta_chi2 += delta
                 n_constraining += 1
 
@@ -286,6 +291,7 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
             # Full chi2 curve for consensus
             chi2_curve = read_zfit_chi2(zfit_path)
             if chi2_curve:
+                chi2_curve['n_pix'] = meta.get('n_pix', 0)
                 chi2_by_source[meta['source_id']][meta['grating']] = chi2_curve
         else:
             meta['redshift_auto'] = None
@@ -325,7 +331,7 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
         'ra', 'dec',
         'redshift_auto', 'redshift_confidence', 'chi2_min',
         'redshift_best',
-        'exposure_time', 'signal_to_noise',
+        'n_pix', 'exposure_time', 'signal_to_noise',
         'program_id', 'pi_name', 'date_obs',
         'spec_file', 'zfit_file',
         'reduction_version', 'cal_ver',
