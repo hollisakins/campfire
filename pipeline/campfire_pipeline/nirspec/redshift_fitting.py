@@ -6,6 +6,7 @@ import os
 import time
 import glob
 import pickle
+import warnings
 import logging
 import numpy as np
 from pathlib import Path
@@ -266,7 +267,9 @@ def _load_and_prepare_spectrum(spec_file):
         for idx in maskidx[:5]: mask[idx] = False
         for idx in maskidx[-5:]: mask[idx] = False
     err[err < 0.1*np.abs(flux)] = 0.1*np.abs(flux[err < 0.1*np.abs(flux)])
-    med_err = generic_filter(err, np.nanmedian, size=15)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        med_err = generic_filter(err, np.nanmedian, size=15)
     err[err < med_err] = med_err[err < med_err]
     return wav, flux, err, mask
 

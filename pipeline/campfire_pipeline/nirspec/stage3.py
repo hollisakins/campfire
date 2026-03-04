@@ -523,9 +523,12 @@ def opt_ext_single_source(
 
         # Percentile-based y-limits
         ymax = np.nanpercentile(fnu+fnu_err, 97)*1.2
-        ax_1d_fnu.set_ylim(-0.1*ymax, ymax)
+        if np.isfinite(ymax):
+            ax_1d_fnu.set_ylim(-0.1*ymax, ymax)
+
         ymax = np.nanpercentile(flam+flam_err, 97)*1.2
-        ax_1d_flam.set_ylim(-0.1*ymax, ymax)
+        if np.isfinite(ymax):
+            ax_1d_flam.set_ylim(-0.1*ymax, ymax)
 
         fig.suptitle(product_name+'_spec', fontname='monospace')
 
@@ -808,9 +811,11 @@ def combine_per_eg_spectra(
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', category=RuntimeWarning)
             ymax = np.nanpercentile(fnu + fnu_err, 97) * 1.2
-            ax_1d_fnu.set_ylim(-0.1 * ymax, ymax)
+            if np.isfinite(ymax):
+                ax_1d_fnu.set_ylim(-0.1 * ymax, ymax)
             ymax = np.nanpercentile(flam + flam_err, 97) * 1.2
-            ax_1d_flam.set_ylim(-0.1 * ymax, ymax)
+            if np.isfinite(ymax):
+                ax_1d_flam.set_ylim(-0.1 * ymax, ymax)
 
         fig.suptitle(product_name + '_spec (1D combine)', fontname='monospace')
 
