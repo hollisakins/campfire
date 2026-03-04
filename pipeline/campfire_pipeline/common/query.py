@@ -22,22 +22,28 @@ import requests
 BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
 
 
-def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC"):
+def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
+                    obs_id=None):
     """Query MAST for level 1b filesets in a program.
 
     Returns a list of dicts with fileSetName and observation metadata.
     """
-    print(f"Searching for {instrument} {exp_type} level 1b filesets in program {program_id}...")
+    obs_label = f" obs {obs_id}" if obs_id else ""
+    print(f"Searching for {instrument} {exp_type} level 1b filesets in program {program_id}{obs_label}...")
+
+    conditions = [
+        {"program": str(program_id)},
+        {"instrume": instrument},
+        {"exp_type": exp_type},
+        {"productLevel": "1b"},
+    ]
+    if obs_id is not None:
+        conditions.append({"observtn": str(obs_id)})
 
     resp = requests.post(
         f"{BASE_URL}/search",
         json={
-            "conditions": [
-                {"program": str(program_id)},
-                {"instrume": instrument},
-                {"exp_type": exp_type},
-                {"productLevel": "1b"},
-            ],
+            "conditions": conditions,
             "select_cols": [
                 "fileSetName", "productLevel", "opticalElements",
                 "filter", "date_obs", "duration", "observtn", "exposure",
@@ -181,7 +187,7 @@ def download_file(uri, output_path, size, index, total):
 
 
 def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
-                       download_dir="data", dry_run=False):
+                       download_dir="data", dry_run=False, obs_id=None):
     """Download JWST level 1b data for a program.
 
     Parameters
@@ -196,9 +202,11 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         Base download directory. Files go into download_dir/program_id/.
     dry_run : bool
         If True, list files without downloading.
+    obs_id : int or None
+        JWST observation number to filter by (e.g. 1, 2, 3).
     """
     # Step 1: Search for filesets
-    filesets = search_filesets(program_id, instrument, exp_type)
+    filesets = search_filesets(program_id, instrument, exp_type, obs_id=obs_id)
     if not filesets:
         print("No filesets found. Exiting.")
         return

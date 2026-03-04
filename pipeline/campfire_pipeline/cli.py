@@ -123,13 +123,15 @@ INSTRUMENT_DEFAULTS = {
 @click.option('--instrument', type=click.Choice(['nirspec', 'nircam'],
               case_sensitive=False), default='nirspec',
               help='Instrument (default: nirspec).')
+@click.option('--obs-id', type=int, default=None,
+              help='JWST observation number (e.g. 1, 2, 3).')
 @click.option('--exp-type', default=None,
               help='Exposure type (default: auto from instrument).')
 @click.option('--download-dir', default=None,
               help='Download directory (default: $CAMPFIRE_ROOT/raw or ./data).')
 @click.option('--dry-run', is_flag=True,
               help='List files without downloading.')
-def download(program, instrument, exp_type, download_dir, dry_run):
+def download(program, instrument, obs_id, exp_type, download_dir, dry_run):
     """Download raw JWST data from MAST."""
     from campfire_pipeline.common.query import download_jwst_data
 
@@ -152,6 +154,7 @@ def download(program, instrument, exp_type, download_dir, dry_run):
             exp_type=exp_type,
             download_dir=download_dir,
             dry_run=dry_run,
+            obs_id=obs_id,
         )
     except KeyboardInterrupt:
         click.echo("\n\nInterrupted. Re-run to resume (existing files will be skipped).")
