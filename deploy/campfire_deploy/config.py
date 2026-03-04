@@ -143,6 +143,25 @@ def load_programs() -> dict[int, dict]:
     return programs
 
 
+def load_observations() -> dict:
+    """Load observations.toml from $CAMPFIRE_ROOT/config/."""
+    root = os.environ.get('CAMPFIRE_ROOT')
+    if root:
+        path = Path(root) / 'config' / 'observations.toml'
+        if path.exists():
+            return _load_toml(path)
+    return {}
+
+
+def resolve_field(obs_name: str) -> str:
+    """Get field name for an observation from observations.toml."""
+    obs = load_observations()
+    if obs_name in obs:
+        return obs[obs_name].get('field', '')
+    print(f"Warning: observation '{obs_name}' not found in observations.toml")
+    return ''
+
+
 def resolve_products_dir() -> Path:
     """
     Return the products directory.

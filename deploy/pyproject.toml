@@ -11,6 +11,9 @@ dependencies = [
     "boto3>=1.28",
     "tqdm>=4.65",
     "toml>=0.10",
+    "scipy>=1.12",
+    "matplotlib>=3.8",
+    "photutils>=1.10",
 ]
 
 [project.scripts]

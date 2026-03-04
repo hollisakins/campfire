@@ -103,26 +103,30 @@ def main(ctx, config_path, obs, dry_run, source_ids, supabase_only,
 @main.command()
 @shared_options
 @source_ids_option
-def rgb(config_path, obs, dry_run, source_ids):
-    """Deploy RGB images to R2."""
+@click.option('--overwrite', is_flag=True, help='Regenerate files even if they exist.')
+def rgb(config_path, obs, dry_run, source_ids, overwrite):
+    """Generate and deploy RGB images to R2."""
     config = load_config(config_path)
     deploy_rgb(
         obs, config,
         dry_run=dry_run,
         source_ids=list(source_ids) if source_ids else None,
+        overwrite=overwrite,
     )
 
 
 @main.command()
 @shared_options
 @source_ids_option
-def sed(config_path, obs, dry_run, source_ids):
-    """Deploy SED plots to R2 and update has_sed_plot."""
+@click.option('--overwrite', is_flag=True, help='Regenerate files even if they exist.')
+def sed(config_path, obs, dry_run, source_ids, overwrite):
+    """Generate and deploy SED plots to R2 and update has_sed_plot."""
     config = load_config(config_path)
     deploy_sed(
         obs, config,
         dry_run=dry_run,
         source_ids=list(source_ids) if source_ids else None,
+        overwrite=overwrite,
     )
 
 

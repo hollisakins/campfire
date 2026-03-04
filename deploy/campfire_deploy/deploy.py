@@ -14,7 +14,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from campfire_deploy.config import load_programs, resolve_obs_dir
+from campfire_deploy.config import load_programs, resolve_field, resolve_obs_dir
 from campfire_deploy.discover import (
     discover_rgb_images,
     discover_sed_plots,
@@ -85,6 +85,21 @@ def deploy_observation(
     print(f"  Spectra: {len(spectra)}")
     print(f"  Programs: {program_ids}")
     print(f"  Zfit files: {len(zfit_paths)}")
+
+    # Generate RGB/SED if requested (skips existing files)
+    if not dry_run:
+        if include_rgb:
+            from campfire_deploy.generate_rgb import generate_rgb_images
+            n = generate_rgb_images(obs_name, obs_dir, field,
+                                    source_ids=source_ids)
+            if n:
+                print(f"  Generated {n} RGB images")
+        if include_sed:
+            from campfire_deploy.generate_sed import generate_sed_plots
+            n = generate_sed_plots(obs_name, obs_dir, field,
+                                   source_ids=source_ids)
+            if n:
+                print(f"  Generated {n} SED plots")
 
     # Discover optional file types
     rgb_files = discover_rgb_images(obs_dir) if include_rgb else []
@@ -261,9 +276,21 @@ def deploy_rgb(
     *,
     dry_run: bool = False,
     source_ids: list[int] | None = None,
+    overwrite: bool = False,
 ) -> None:
-    """Deploy RGB images to R2."""
+    """Generate and deploy RGB images to R2."""
     obs_dir = resolve_obs_dir(obs_name)
+
+    # Generate RGB images (skips existing unless overwrite=True)
+    if not dry_run:
+        field = resolve_field(obs_name)
+        if field:
+            from campfire_deploy.generate_rgb import generate_rgb_images
+            n = generate_rgb_images(obs_name, obs_dir, field,
+                                    overwrite=overwrite, source_ids=source_ids)
+            if n:
+                print(f"Generated {n} RGB images")
+
     rgb_files = discover_rgb_images(obs_dir)
 
     if source_ids:
@@ -303,9 +330,21 @@ def deploy_sed(
     *,
     dry_run: bool = False,
     source_ids: list[int] | None = None,
+    overwrite: bool = False,
 ) -> None:
-    """Deploy SED plots to R2 and update has_sed_plot in Supabase."""
+    """Generate and deploy SED plots to R2 and update has_sed_plot in Supabase."""
     obs_dir = resolve_obs_dir(obs_name)
+
+    # Generate SED plots (skips existing unless overwrite=True)
+    if not dry_run:
+        field = resolve_field(obs_name)
+        if field:
+            from campfire_deploy.generate_sed import generate_sed_plots
+            n = generate_sed_plots(obs_name, obs_dir, field,
+                                   overwrite=overwrite, source_ids=source_ids)
+            if n:
+                print(f"Generated {n} SED plots")
+
     sed_files = discover_sed_plots(obs_dir)
 
     if source_ids:
