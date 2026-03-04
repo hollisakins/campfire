@@ -24,8 +24,8 @@
     mask_science_regions = false
     cleanup_uncal = true
     cleanup_rateints = true
-    subtract_2d = true
-    box_size = 8
+    subtract_2d = false
+    box_size = 64
     sigma_clip = true
     bkg_estimator = "median"
     do_col_1f = true

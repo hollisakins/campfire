@@ -132,6 +132,66 @@ def build_empirical_wavecorr():
     return out_path
 
 
+def _prefetch_crds_references(rate_files):
+    """Pre-cache CRDS reference files to avoid multiprocessing race conditions.
+
+    Multiple workers downloading the same CRDS file simultaneously can cause
+    one to read a partially-written file. Running CRDS lookups on one file per
+    unique (detector, grating, filter) combination beforehand ensures everything
+    is cached.
+
+    The three NIRSpec flat types have different dependencies:
+    - dflat/sflat: depend on detector, mode, grating, and filter
+    - fflat: detector agnostic, depends on grating and filter
+    """
+    import crds
+
+    # All reference types used by Spec2Pipeline for NIRSpec MSA observations
+    reftypes = [
+        'fflat', 'dflat', 'sflat',
+        'camera', 'collimator', 'disperser', 'distortion',
+        'fore', 'fpa', 'msa', 'ote',
+        'pathloss', 'photom',
+        'specwcs', 'wavecorr', 'wavelengthrange',
+    ]
+
+    seen_configs = set()
+    for rate_file in rate_files:
+        hdr = fits.getheader(rate_file)
+        det = hdr.get('DETECTOR', 'NRS1')
+        grating = hdr.get('GRATING', 'UNKNOWN')
+        filt = hdr.get('FILTER', 'UNKNOWN')
+        config_key = (det, grating, filt)
+
+        if config_key in seen_configs:
+            continue
+        seen_configs.add(config_key)
+
+        log(f"Pre-fetching CRDS references for {det}/{grating}/{filt} "
+            f"using {os.path.basename(rate_file)}")
+
+        params = {
+            "INSTRUME": "NIRSPEC",
+            "DETECTOR": det,
+            "EXP_TYPE": hdr.get('EXP_TYPE', 'NRS_MSASPEC'),
+            "FILTER": filt,
+            "GRATING": grating,
+            "DATE-OBS": hdr.get('DATE-OBS', '2023-01-01'),
+            "TIME-OBS": hdr.get('TIME-OBS', '00:00:00'),
+        }
+
+        try:
+            refs = crds.getreferences(params, reftypes=reftypes, observatory='jwst')
+            cached = [k for k, v in refs.items()
+                      if v and 'N/A' not in v.upper() and 'NOT FOUND' not in v.upper()]
+            log(f"  Cached {len(cached)}/{len(reftypes)} references: "
+                f"{', '.join(sorted(cached))}")
+        except Exception as e:
+            log(f"  CRDS prefetch warning for {config_key}: {e}")
+
+    log("CRDS reference pre-fetch complete")
+
+
 def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
                 n_processes=1, plot=True, data_dir=None, products_dir=None):
     """Orchestrate stage 2a: WCS assignment + unit fixing + optional resampling/plotting.
@@ -167,11 +227,16 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=False)
 
+    # Pre-fetch CRDS references to avoid multiprocessing race conditions
+    if n_processes > 1 and obs.rate_files:
+        _prefetch_crds_references(obs.rate_files)
+
     # Run Spec2Pipeline on each rate file
     results = dispatch(
         run_stage2a_single_rate,
         obs.rate_files,
         n_processes=n_processes,
+        retry=True,
         obs=obs,
         **kwargs,
     )

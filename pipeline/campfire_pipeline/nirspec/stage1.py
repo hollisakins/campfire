@@ -66,7 +66,7 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     bkg_kwargs = dict(
         override_wavelength_range=stage_config.get('override_wavelength_range', {}),
         subtract_2d=stage_config.get('subtract_2d', False),
-        box_size=stage_config.get('box_size', 8),
+        box_size=stage_config.get('box_size', 64),
         sigma_clip=stage_config.get('sigma_clip', True),
         bkg_estimator=stage_config.get('bkg_estimator', 'median'),
         do_col_1f=stage_config.get('do_col_1f', True),
@@ -78,6 +78,8 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         os.path.join(obs.workspace_dir, f.replace('_uncal.fits', '_rate.fits'))
         for f in uncal_files
     ]
+    if n_processes > 1 and rate_files:
+        _prefetch_crds_references(rate_files)
     dispatch(
         subtract_background_from_rate_file,
         rate_files,
@@ -133,24 +135,27 @@ def mask_slits(
         override_grating_wavelength_range = override_wavelength_range[grating]
 
     if override_grating_wavelength_range:
+        import tempfile
         wavelengthrange_file = AssignWcsStep().get_reference_file(input_model, 'wavelengthrange')
-        shutil.copy2(wavelengthrange_file, '/tmp/')
-        wavelengthrange_file = '/tmp/' + os.path.basename(wavelengthrange_file)
+        suffix = os.path.splitext(wavelengthrange_file)[1]
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix='wavelengthrange_')
+        os.close(tmp_fd)
+        shutil.copy2(wavelengthrange_file, tmp_path)
+        wavelengthrange_file = tmp_path
         import asdf
         af = asdf.open(wavelengthrange_file, mode='rw')
-        idx = af['waverange_selector'].index('F100LP_G140M')
+        idx = af['waverange_selector'].index(filter_grating)
         af.tree['wavelengthrange'][idx] = [
             override_grating_wavelength_range[0]/1e6,
             override_grating_wavelength_range[1]/1e6
         ]
-        print(f"Setting to: {af.tree['wavelengthrange'][idx]}")
+        log(f"Setting {filter_grating} wavelength range to: {af.tree['wavelengthrange'][idx]}")
 
-        af.update()  # Explicitly write changes
-        af.close()   # Close the file
-        # After the 'with' block
+        af.update()
+        af.close()
         with asdf.open(wavelengthrange_file, 'r') as af:
-            idx = af['waverange_selector'].index('F100LP_G140M')
-            print(f"Modified range: {af.tree['wavelengthrange'][idx]}")
+            idx = af['waverange_selector'].index(filter_grating)
+            log(f"Verified modified range for {filter_grating}: {af.tree['wavelengthrange'][idx]}")
 
         step = AssignWcsStep()
         step.input_dir = input_dir
@@ -193,6 +198,10 @@ def mask_slits(
             temp_mask[..., ymin:ymax, xmin:xmax] += subarray
 
     mask[temp_mask>0] = False
+
+    # Clean up per-process temp file if one was created
+    if override_grating_wavelength_range:
+        os.remove(wavelengthrange_file)
 
     return mask
 
@@ -254,6 +263,41 @@ def mask_slits(
         #     bkg_total += pedestal_model
 
 
+def _prefetch_crds_references(rate_files):
+    """Pre-cache CRDS reference files to avoid multiprocessing race conditions.
+
+    Multiple workers downloading the same CRDS file simultaneously can cause
+    one to read a partially-written file (e.g. empty JSON). Running CRDS
+    lookups on one file per detector beforehand ensures everything is cached.
+    """
+    from jwst.datamodels import ImageModel
+    from jwst.assign_wcs import AssignWcsStep
+    from jwst.msaflagopen.msaflagopen_step import MSAFlagOpenStep
+
+    seen_detectors = set()
+    for rate_file in rate_files:
+        det = 'nrs1' if 'nrs1' in os.path.basename(rate_file) else 'nrs2'
+        if det in seen_detectors:
+            continue
+        seen_detectors.add(det)
+
+        log(f"Pre-fetching CRDS references for {det} using {os.path.basename(rate_file)}")
+
+        with ImageModel(rate_file) as model:
+            # Run AssignWcsStep to trigger download of all WCS reference files
+            step = AssignWcsStep()
+            step.input_dir = os.path.dirname(rate_file)
+            processed = step.run(model)
+
+            # Trigger msaoper reference download
+            MSAFlagOpenStep().get_reference_file(processed, "msaoper")
+
+        # Trigger pictureframe reference download
+        _get_pictureframe_file(rate_file)
+
+    log("CRDS reference pre-fetch complete")
+
+
 def _get_pictureframe_file(rate_file):
     """Look up the NIRSpec pictureframe reference file via CRDS.
 
@@ -292,7 +336,7 @@ def subtract_background_from_rate_file(
         override_wavelength_range: dict = {},
         n_iter: int = 5,
         subtract_2d: bool = False,
-        box_size: int = 8,
+        box_size: int = 64,
         sigma_clip: bool = True,
         bkg_estimator: str = 'median',
         do_col_1f: str = True,
@@ -313,8 +357,8 @@ def subtract_background_from_rate_file(
             do_row_1f = False
 
         for entry in model.history:
-            if 'Subtracted background, rescaled variance' in entry['description']:
-                log(f'Variance rescaling already done for {os.path.basename(rate_file)}, skipping...')
+            if 'Subtracted' in entry['description'] and 'rescaled variance' in entry['description']:
+                log(f'Background subtraction already done for {os.path.basename(rate_file)}, skipping...')
                 return
 
         log(f'Subtracting background and rescaling variance for {os.path.basename(rate_file)}')
@@ -358,12 +402,13 @@ def subtract_background_from_rate_file(
             row_model_total = np.zeros_like(model.data)
 
 
+        from jwst.clean_flicker_noise.clean_flicker_noise import clip_to_background
+        n_sigma, fit_histogram = 2.0, False
+
         for j in range(n_iter):
             log(f'Iteration {j+1}/{n_iter}')
 
             mask = slitmask.copy()
-            from jwst.clean_flicker_noise.clean_flicker_noise import clip_to_background
-            n_sigma, fit_histogram = 2.0, False
             clip_to_background(model.data-bkg_total, mask, sigma_upper=n_sigma, fit_histogram=fit_histogram, verbose=True)
 
             if use_pictureframe:
@@ -407,6 +452,11 @@ def subtract_background_from_rate_file(
 
                 pictureframe_model_total += pictureframe_model
                 bkg_total += pictureframe_model
+
+                # Re-clip mask against updated residual so subsequent steps
+                # (2D background, 1/f) use a mask consistent with the post-PF data
+                mask = slitmask.copy()
+                clip_to_background(model.data-bkg_total, mask, sigma_upper=n_sigma, fit_histogram=fit_histogram, verbose=False)
 
             # if pictureframe_dir:
             #     log(f'Subtracting "picture frame" template (global coeff + per-quarter pedestal)')
@@ -664,7 +714,7 @@ def subtract_background_from_rate_file(
             plt.tight_layout()
             plot_file = rate_file.replace('_rate.fits','_bkg.pdf')
             log(f'Saving to {plot_file}')
-            plt.savefig(plot_file)
+            plt.savefig(plot_file, dpi=300)
             plt.close()
 
         fits.writeto(rate_file.replace('_rate.fits','_mask.fits'), mask.astype(int), overwrite=True)
