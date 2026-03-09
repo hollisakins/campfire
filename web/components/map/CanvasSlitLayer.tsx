@@ -37,6 +37,8 @@ interface PreparedSlit {
   paRad: number;  // pre-computed rotation in radians
   color: string;
   isStuck?: boolean;
+  shutterIdx: number;
+  groupKey: string;  // slitlet group: object_id|observation|PA
 }
 
 export interface CanvasSlitLayerProps {
@@ -58,6 +60,7 @@ const PADDING = 0.3;
 
 const SHUTTER_WIDTH_ARCSEC = 0.22;
 const SHUTTER_HEIGHT_ARCSEC = 0.46;
+const SHUTTER_PITCH_ARCSEC = 0.53;
 
 // ============================================
 // Component
@@ -72,18 +75,21 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
     return [...new Set(slits.map(s => s.observation))].sort();
   }, [slits]);
 
-  // Pre-compute LatLng positions and rotation angles
+  // Pre-compute LatLng positions, rotation angles, and slitlet grouping
   const prepared: PreparedSlit[] = useMemo(() => {
     return slits.map(s => {
       const { x, y } = skyToPixel(wcs, s.center_ra, s.center_dec);
       const isShutter = 'shutter_state' in s;
       const isStuck = isShutter && (s as Shutter).shutter_state === 'stuck_closed';
+      const ditherId = isShutter ? (s as Shutter).dither_id : 0;
       return {
         slit: s,
         latLng: L.latLng(y, x),
         paRad: s.position_angle * (Math.PI / 180),
         color: isStuck ? '#ef4444' : getObservationColor(s.observation, observations),
         isStuck,
+        shutterIdx: s.shutter_idx,
+        groupKey: `${s.object_id}|${s.observation}|${ditherId}`,
       };
     });
   }, [slits, wcs, observations]);
@@ -175,31 +181,77 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
       const items = preparedRef.current;
       const halfW = widthPx / 2;
       const halfH = heightPx / 2;
+      const pitchPx = SHUTTER_PITCH_ARCSEC * pxPerArcsec;
 
-      // Group by color for efficient batch drawing
-      const groups = new Map<string, L.Point[]>();
-      const paByPoint = new Map<string, number>();
-      const stuckPoints = new Set<string>();
-
+      // Group shutters by slitlet so we can compute aligned positions
+      // from a single reference point (avoids floating-point jitter at low zoom)
+      const slitletMap = new Map<string, PreparedSlit[]>();
       for (const item of items) {
-        const pt = map.latLngToLayerPoint(item.latLng);
-
-        // Viewport culling (generous margin for rotated rectangles)
-        const margin = Math.max(widthPx, heightPx) + 4;
-        if (pt.x < boundsMin.x - margin || pt.x > boundsMax.x + margin ||
-            pt.y < boundsMin.y - margin || pt.y > boundsMax.y + margin) continue;
-
-        const color = item.color;
-        let group = groups.get(color);
+        let group = slitletMap.get(item.groupKey);
         if (!group) {
           group = [];
-          groups.set(color, group);
+          slitletMap.set(item.groupKey, group);
         }
-        group.push(pt);
-        // Store PA keyed by point identity
-        const key = `${pt.x},${pt.y}`;
-        paByPoint.set(key, item.paRad);
-        if (item.isStuck) stuckPoints.add(key);
+        group.push(item);
+      }
+
+      // Compute aligned positions per slitlet and collect drawable items
+      interface DrawItem {
+        pt: L.Point;
+        paRad: number;
+        color: string;
+        isStuck: boolean;
+      }
+      const drawItems: DrawItem[] = [];
+      const margin = Math.max(widthPx, heightPx) + 4;
+
+      for (const slitlet of slitletMap.values()) {
+        // Use source shutter (idx=0) as reference, fall back to first
+        const ref = slitlet.find(s => s.shutterIdx === 0) || slitlet[0];
+        const refPt = map.latLngToLayerPoint(ref.latLng);
+
+        // Compute PA direction unit vector in layer-point space
+        // by projecting a sky point offset 1" along PA from the reference
+        const refRa = ref.slit.center_ra;
+        const refDec = ref.slit.center_dec;
+        const pa = ref.paRad;
+        const dRa = Math.sin(pa) / Math.cos(refDec * Math.PI / 180) / 3600;
+        const dDec = Math.cos(pa) / 3600;
+        const offPxSky = skyToPixel(wcs, refRa + dRa, refDec + dDec);
+        const offPt = map.latLngToLayerPoint(L.latLng(offPxSky.y, offPxSky.x));
+        const dirLen = Math.hypot(offPt.x - refPt.x, offPt.y - refPt.y);
+        const ux = dirLen > 0 ? (offPt.x - refPt.x) / dirLen : 0;
+        const uy = dirLen > 0 ? (offPt.y - refPt.y) / dirLen : 0;
+
+        for (const item of slitlet) {
+          const di = item.shutterIdx - ref.shutterIdx;
+          const pt = L.point(
+            refPt.x + di * pitchPx * ux,
+            refPt.y + di * pitchPx * uy,
+          );
+
+          // Viewport culling
+          if (pt.x < boundsMin.x - margin || pt.x > boundsMax.x + margin ||
+              pt.y < boundsMin.y - margin || pt.y > boundsMax.y + margin) continue;
+
+          drawItems.push({
+            pt,
+            paRad: item.paRad,
+            color: item.color,
+            isStuck: item.isStuck || false,
+          });
+        }
+      }
+
+      // Group by color for efficient batch drawing
+      const groups = new Map<string, DrawItem[]>();
+      for (const item of drawItems) {
+        let group = groups.get(item.color);
+        if (!group) {
+          group = [];
+          groups.set(item.color, group);
+        }
+        group.push(item);
       }
 
       // Draw each color group
@@ -208,27 +260,23 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
         // Fill pass
         ctx!.fillStyle = color;
         ctx!.globalAlpha = 0.08;
-        for (const pt of points) {
-          const pa = paByPoint.get(`${pt.x},${pt.y}`) || 0;
+        for (const item of points) {
           ctx!.save();
-          ctx!.translate(pt.x, pt.y);
-          ctx!.rotate(-pa);
+          ctx!.translate(item.pt.x, item.pt.y);
+          ctx!.rotate(-item.paRad);
           ctx!.fillRect(-halfW, -halfH, widthPx, heightPx);
           ctx!.restore();
         }
 
         // Stroke pass
-        for (const pt of points) {
-          const key = `${pt.x},${pt.y}`;
-          const pa = paByPoint.get(key) || 0;
-          const isStuck = stuckPoints.has(key);
+        for (const item of points) {
           ctx!.save();
-          ctx!.translate(pt.x, pt.y);
-          ctx!.rotate(-pa);
-          ctx!.strokeStyle = isStuck ? '#ef4444' : color;
-          ctx!.globalAlpha = isStuck ? 1.0 : 0.6;
-          ctx!.lineWidth = isStuck ? 1.5 : 1;
-          if (isStuck) ctx!.setLineDash([3, 2]);
+          ctx!.translate(item.pt.x, item.pt.y);
+          ctx!.rotate(-item.paRad);
+          ctx!.strokeStyle = item.isStuck ? '#ef4444' : color;
+          ctx!.globalAlpha = item.isStuck ? 1.0 : 0.6;
+          ctx!.lineWidth = item.isStuck ? 1.5 : 1;
+          if (item.isStuck) ctx!.setLineDash([3, 2]);
           else ctx!.setLineDash([]);
           ctx!.strokeRect(-halfW, -halfH, widthPx, heightPx);
           ctx!.restore();
