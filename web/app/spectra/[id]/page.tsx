@@ -278,7 +278,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
           </div>
 
           {/* Right Column: Tile Cutout with Shutters */}
-          <div className="flex-shrink-0" style={{ width: '250px' }}>
+          <div className="flex-shrink-0" style={{ width: '300px' }}>
             <TileCutoutWrapper
               objectId={spectrum.object_id}
               ra={spectrum.ra}
@@ -286,7 +286,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               field={spectrum.field}
               mapLayer={rgbLayer}
               shutters={nearbyShutters}
-              size={250}
+              size={300}
             />
           </div>
         </div>

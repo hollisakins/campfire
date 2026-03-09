@@ -37,7 +37,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
   onSaveAndNext,
 }) => {
   return (
-    <div className="flex-shrink-0 w-[280px] border-l border-border dark:border-slate-700
+    <div className="flex-shrink-0 w-[320px] border-l border-border dark:border-slate-700
                     flex flex-col overflow-hidden bg-background dark:bg-slate-900">
       {/* Tile Cutout with Shutters - fixed at top */}
       <div className="p-4 flex justify-center border-b border-border dark:border-slate-700 flex-shrink-0">
@@ -48,7 +48,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
           field={spectrum.field}
           mapLayer={mapLayer}
           shutters={shutters}
-          size={240}
+          size={280}
         />
       </div>
 

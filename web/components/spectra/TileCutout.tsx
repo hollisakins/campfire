@@ -67,12 +67,11 @@ export function TileCutout({
     const crs = createFitsMapCRS(mapLayer.max_zoom, wcs.naxis2);
     const pixel = skyToPixel(wcs, ra, dec);
     const center: L.LatLngExpression = [pixel.y, pixel.x];
-    // Zoom level that gives ~5" field of view
-    // At max native zoom, 1 pixel = cd2_2 degrees = cd2_2 * 3600 arcsec
-    // We want the viewport to span ~10" total
+    // Zoom level that gives ~5" field of view (comparable to original 3" cutouts
+    // but with some surrounding context for the shutter overlay)
     const pixPerArcsec = 1 / (Math.abs(wcs.cd2_2) * 3600);
     const viewportPx = size;
-    const desiredArcsec = 10;
+    const desiredArcsec = 3;
     const desiredPixels = desiredArcsec * pixPerArcsec;
     const scaleFactor = viewportPx / desiredPixels;
     const zoom = mapLayer.max_zoom + Math.log2(scaleFactor);
