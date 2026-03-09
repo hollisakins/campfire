@@ -2,8 +2,8 @@
 Compute MSA shutter slit geometry (centers and position angles) from NIRSpec spec files.
 
 Extracts the slit computation logic from plot_slits.py into a reusable module.
-Each 3-shutter slitlet produces 3 rectangles (shutter_idx -1, 0, 1) of fixed
-dimensions 0.22" x 0.46".
+Parses the shutter_state string from the exposure table to determine which
+shutters are open, producing one rectangle per open shutter.
 """
 
 from astropy.table import Table, vstack
@@ -46,6 +46,10 @@ def compute_slit_centers(spec_files, corrected_pos=None):
     """
     Compute slit rectangle centers and position angles for one object.
 
+    Parses the shutter_state string from each exposure row to determine
+    which shutters are open. No deduplication is performed — the caller
+    receives one entry per open shutter per exposure row.
+
     Parameters
     ----------
     spec_files : list of str
@@ -56,26 +60,16 @@ def compute_slit_centers(spec_files, corrected_pos=None):
     Returns
     -------
     list of dict
-        Each dict has keys: center_ra, center_dec, position_angle, shutter_idx.
-        position_angle is in degrees, sky frame (V3PA + 138.5, no field rotation).
+        Each dict has keys: center_ra, center_dec, position_angle, shutter_idx,
+        shutter_state, v3pa.
+        position_angle is in degrees, sky frame (V3PA + 138.5).
+        shutter_idx is relative to the source shutter (source = 0).
+        shutter_state is 'source' or 'open'.
     """
-    # Build combined exposure table
+    # Build combined exposure table (no deduplication)
     exp = get_exposure_table(spec_files[0])
     for spec_file in spec_files[1:]:
         exp = vstack([exp, get_exposure_table(spec_file)])
-
-    # Deduplicate: keep one row per unique v3pa value.
-    # Collapses repeated nods and gratings at the same dither position.
-    unique_mask = []
-    seen = set()
-    for t in exp:
-        key = round(t['v3pa'], 2)
-        if key not in seen:
-            seen.add(key)
-            unique_mask.append(True)
-        else:
-            unique_mask.append(False)
-    exp = exp[unique_mask]
 
     if corrected_pos is not None:
         source_ra, source_dec = corrected_pos
@@ -101,26 +95,34 @@ def compute_slit_centers(spec_files, corrected_pos=None):
         else:
             dy = t['source_ypos'] * 0.53 * u.arcsec
 
-        # Compute shutter center from source position + offset
+        # Compute center of the shutter containing the source
         shutter_c = source_c.directional_offset_by(pa, dy).directional_offset_by(pa - 90 * u.deg, dx)
 
-        # Adjust for shutter state (which of the 3 shutters the source is in)
-        match t['shutter_state']:
-            case '1x1':
-                pass
-            case '11x':
-                shutter_c = shutter_c.directional_offset_by(pa, 0.53 * u.arcsec)
-            case 'x11':
-                shutter_c = shutter_c.directional_offset_by(pa, -0.53 * u.arcsec)
+        # Parse shutter_state string to determine open shutters.
+        # Each character is a shutter: 'x' = source, '1' = open background.
+        # String is ordered from +PA end to -PA end.
+        shutter_state_str = str(t['shutter_state'])
+        src_pos = shutter_state_str.index('x')
 
-        # Generate all 5 shutters (full nod extent of 3-SHUTTER-SLITLET)
-        for shutter_idx in [-2, -1, 0, 1, 2]:
-            c = shutter_c.directional_offset_by(pa, shutter_idx * 0.53 * u.arcsec)
+        for i, char in enumerate(shutter_state_str):
+            if char not in ('x', '1'):
+                continue
+
+            shutter_idx = src_pos - i
+            offset = shutter_idx * 0.53 * u.arcsec
+
+            if shutter_idx == 0:
+                c = shutter_c
+            else:
+                c = shutter_c.directional_offset_by(pa, offset)
+
             results.append({
                 'center_ra': float(c.ra.deg),
                 'center_dec': float(c.dec.deg),
                 'position_angle': float(pa.to('deg').value) % 360,
                 'shutter_idx': shutter_idx,
+                'shutter_state': 'source' if char == 'x' else 'open',
+                'v3pa': float(t['v3pa']),
             })
 
     return results

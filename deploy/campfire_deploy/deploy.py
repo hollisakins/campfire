@@ -18,9 +18,11 @@ from campfire_deploy.config import load_programs, resolve_field, resolve_obs_dir
 from campfire_deploy.discover import (
     discover_rgb_images,
     discover_sed_plots,
+    discover_shutters_ecsv,
     discover_slits_json,
     extract_object_ids_from_files,
     filter_files_by_source_ids,
+    load_shutters_ecsv,
     load_slits_json,
 )
 from campfire_deploy.generate import (
@@ -33,6 +35,7 @@ from campfire_deploy.supabase import (
     batch_upsert_objects,
     batch_upsert_spectra,
     check_existing_objects,
+    deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
     get_supabase_client,
     refresh_filter_options,
@@ -613,3 +616,35 @@ def deploy_slits(
     print("Deploying slits...")
     n = db_deploy_slits(sb, obs_name, slits_data)
     print(f"Deployed {n} slit records for {obs_name}")
+
+
+def deploy_shutters(
+    obs_name: str,
+    config: dict,
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Deploy shutters ECSV data to Supabase."""
+    obs_dir = resolve_obs_dir(obs_name)
+    ecsv_path = discover_shutters_ecsv(obs_dir, obs_name)
+
+    if not ecsv_path:
+        print(f"Error: Shutters file not found: {obs_dir / f'{obs_name}_shutters.ecsv'}")
+        print(f"Generate it first with: cfpipe nirspec summary --obs {obs_name}")
+        return
+
+    shutters_data = load_shutters_ecsv(ecsv_path)
+    n_sources = len(set(r['object_id'] for r in shutters_data))
+    print(f"Found {len(shutters_data)} shutter records ({n_sources} sources)")
+
+    if dry_run:
+        print("=== DRY RUN ===")
+        print(f"Would delete existing shutters for '{obs_name}'")
+        print(f"Would insert {len(shutters_data)} rows")
+        return
+
+    sb = get_supabase_client(config)
+
+    print("Deploying shutters...")
+    n = db_deploy_shutters(sb, obs_name, shutters_data)
+    print(f"Deployed {n} shutter records for {obs_name}")

@@ -31,6 +31,91 @@ def load_slits_json(slits_path: Path) -> list[dict]:
         return json.load(f)
 
 
+def discover_shutters_ecsv(obs_dir: Path, obs_name: str) -> Path | None:
+    """Find the shutters ECSV file, or None if absent."""
+    ecsv_path = obs_dir / f'{obs_name}_shutters.ecsv'
+    return ecsv_path if ecsv_path.exists() else None
+
+
+def load_shutters_ecsv(ecsv_path: Path) -> list[dict]:
+    """Load shutters ECSV, deduplicate, and return dicts for Supabase insertion.
+
+    The ECSV contains one row per open shutter per exposure (including
+    duplicates from different gratings at the same nod). This function
+    deduplicates by (object_id, shutter_idx, position, v3pa) so that
+    same-nod/different-grating entries collapse, while different nods
+    (different shutter positions on sky) are preserved.
+
+    After dedup, assigns sequential dither_ids per (object_id, shutter_idx)
+    and drops ECSV-only columns (grating, v3pa) before returning.
+    """
+    from astropy.table import Table
+
+    table = Table.read(ecsv_path, format='ascii.ecsv')
+
+    # Deduplicate: same physical shutter at same sky position from different
+    # gratings or repeated exposures. Uses tolerance-based merging (0.05")
+    # rather than fixed binning to avoid boundary artifacts. The tolerance
+    # is well above measurement noise (~10 mas) and well below the shutter
+    # pitch (0.53").
+    TOLERANCE_DEG = 0.05 / 3600  # 0.05 arcsec in degrees
+
+    # Group rows by (object_id, shutter_idx, v3pa) then merge nearby positions
+    from collections import defaultdict
+    groups_raw: dict[tuple, list[dict]] = defaultdict(list)
+    for row in table:
+        gkey = (
+            str(row['object_id']),
+            int(row['shutter_idx']),
+            round(float(row['v3pa']), 2),
+        )
+        groups_raw[gkey].append(dict(row))
+
+    deduped = []
+    for entries in groups_raw.values():
+        # Greedily merge: for each entry, check if it's within tolerance
+        # of an already-accepted entry. If so, skip it.
+        accepted = []
+        for entry in entries:
+            ra = float(entry['center_ra'])
+            dec = float(entry['center_dec'])
+            is_dup = False
+            for acc in accepted:
+                if (abs(ra - float(acc['center_ra'])) < TOLERANCE_DEG and
+                        abs(dec - float(acc['center_dec'])) < TOLERANCE_DEG):
+                    is_dup = True
+                    break
+            if not is_dup:
+                accepted.append(entry)
+        deduped.extend(accepted)
+
+    # Assign sequential dither_ids per (object_id, shutter_idx) group
+    dither_groups: dict[tuple, int] = {}
+    for row in deduped:
+        gkey = (row['object_id'], row['shutter_idx'])
+        if gkey not in dither_groups:
+            dither_groups[gkey] = 0
+        row['dither_id'] = dither_groups[gkey]
+        dither_groups[gkey] += 1
+
+    # Convert to database-ready dicts (drop ECSV-only columns)
+    records = []
+    for row in deduped:
+        records.append({
+            'field': str(row['field']),
+            'observation': str(row['observation']),
+            'object_id': str(row['object_id']),
+            'source_id': int(row['source_id']),
+            'center_ra': float(row['center_ra']),
+            'center_dec': float(row['center_dec']),
+            'position_angle': float(row['position_angle']),
+            'shutter_idx': int(row['shutter_idx']),
+            'dither_id': int(row['dither_id']),
+            'shutter_state': str(row['shutter_state']),
+        })
+    return records
+
+
 def filter_files_by_source_ids(
     files: list[Path],
     source_ids: list[int],

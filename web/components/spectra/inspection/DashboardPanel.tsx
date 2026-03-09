@@ -1,18 +1,20 @@
 'use client';
 
 import React from 'react';
-import { RGBImage } from '../RGBImage';
+import { TileCutoutWrapper } from '../TileCutoutWrapper';
 import { RedshiftSection, type RedshiftSectionHandle } from './RedshiftSection';
 import { QualitySection } from './QualitySection';
 import { FlagsSection } from './FlagsSection';
 import { CommentsPreview } from './CommentsPreview';
 import { SaveButtons } from './SaveButtons';
 import type { SpectrumObject } from '@/lib/types';
+import type { MapLayer, Shutter } from '@/lib/actions/map';
 import type { InspectionState } from '@/lib/hooks/useInspectionState';
 
 interface DashboardPanelProps {
   spectrum: SpectrumObject;
-  rgbImageUrl: string | null;
+  mapLayer: MapLayer | null;
+  shutters: Shutter[];
   inspectionState: InspectionState;
   canEdit: boolean;
   commentCount: number;
@@ -24,7 +26,8 @@ interface DashboardPanelProps {
 
 export const DashboardPanel: React.FC<DashboardPanelProps> = ({
   spectrum,
-  rgbImageUrl,
+  mapLayer,
+  shutters,
   inspectionState,
   canEdit,
   commentCount,
@@ -36,9 +39,17 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
   return (
     <div className="flex-shrink-0 w-[320px] border-l border-border dark:border-slate-700
                     flex flex-col overflow-hidden bg-background dark:bg-slate-900">
-      {/* RGB Image - fixed at top */}
+      {/* Tile Cutout with Shutters - fixed at top */}
       <div className="p-4 flex justify-center border-b border-border dark:border-slate-700 flex-shrink-0">
-        <RGBImage objectId={spectrum.object_id} rgbImageUrl={rgbImageUrl} size={280} />
+        <TileCutoutWrapper
+          objectId={spectrum.object_id}
+          ra={spectrum.ra}
+          dec={spectrum.dec}
+          field={spectrum.field}
+          mapLayer={mapLayer}
+          shutters={shutters}
+          size={280}
+        />
       </div>
 
       {/* Scrollable sections below */}

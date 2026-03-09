@@ -16,13 +16,14 @@ import { CopyLinkButton } from '@/components/spectra/CopyLinkButton';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
 import { ReturnToMapButton } from '@/components/map/ReturnToMapButton';
-import { RGBImage } from '@/components/spectra/RGBImage';
+import { TileCutoutWrapper } from '@/components/spectra/TileCutoutWrapper';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
 import { InspectionModeOverlay } from '@/components/spectra/inspection/InspectionModeOverlay';
 import { EnterInspectionModeButton } from '@/components/spectra/inspection/EnterInspectionModeButton';
 import { getSpectrumById, getObjectMetadata } from '@/lib/actions/spectra';
-import { generateRGBImageUrl } from '@/lib/r2';
+import { getMapLayers, getNearbyShutters } from '@/lib/actions/map';
+import type { MapLayer, Shutter } from '@/lib/actions/map';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
 
 interface SpectrumDetailPageProps {
@@ -83,15 +84,8 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
     }
   });
 
-  // Fetch spectrum data and RGB image URL in parallel for better performance
-  const [spectrumResult, rgbImageUrl] = await Promise.all([
-    getSpectrumById(objectId),
-    generateRGBImageUrl(objectId).catch((error) => {
-      console.error('Failed to generate RGB image URL:', error);
-      return null;
-    }),
-  ]);
-
+  // Fetch spectrum data first (need field for subsequent queries)
+  const spectrumResult = await getSpectrumById(objectId);
   const { spectrum, isAuthenticated } = spectrumResult;
 
   // Show login prompt if not authenticated
@@ -135,6 +129,19 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
     notFound();
   }
 
+  // Fetch map layer and nearby shutters in parallel (need spectrum.field)
+  const [mapLayersResult, shuttersResult] = await Promise.all([
+    getMapLayers(spectrum.field),
+    getNearbyShutters(spectrum.ra, spectrum.dec, spectrum.field),
+  ]);
+
+  // Find the RGB map layer (preferred for cutout), falling back to default
+  const rgbLayer: MapLayer | null = mapLayersResult.layers.find(l => l.filter === 'rgb')
+    || mapLayersResult.layers.find(l => l.is_default)
+    || mapLayersResult.layers[0]
+    || null;
+  const nearbyShutters: Shutter[] = shuttersResult.shutters;
+
   // Parse filters and sorting from URL for navigation
   const filters = parseFiltersFromURL(urlParams);
   const { sortColumn, sortDirection } = parseSortingFromURL(urlParams);
@@ -146,7 +153,8 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
     return (
       <InspectionModeOverlay
         spectrum={spectrum}
-        rgbImageUrl={rgbImageUrl}
+        mapLayer={rgbLayer}
+        nearbyShutters={nearbyShutters}
         filterStr={filterStr}
         filters={filters}
         sortColumn={sortColumn}
@@ -269,11 +277,15 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
             </TabsList>
           </div>
 
-          {/* Right Column: RGB Image */}
+          {/* Right Column: Tile Cutout with Shutters */}
           <div className="flex-shrink-0" style={{ width: '300px' }}>
-            <RGBImage
+            <TileCutoutWrapper
               objectId={spectrum.object_id}
-              rgbImageUrl={rgbImageUrl}
+              ra={spectrum.ra}
+              dec={spectrum.dec}
+              field={spectrum.field}
+              mapLayer={rgbLayer}
+              shutters={nearbyShutters}
               size={300}
             />
           </div>

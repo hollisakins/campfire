@@ -3,7 +3,7 @@
 import { useEffect, useRef, useMemo } from 'react';
 import L from 'leaflet';
 import { useMap } from 'react-leaflet';
-import type { SlitRegion } from '@/lib/actions/map';
+import type { SlitRegion, Shutter } from '@/lib/actions/map';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { skyToPixel } from '@/lib/utils/wcs';
 
@@ -32,16 +32,18 @@ function getObservationColor(observation: string, observations: string[]): strin
 // ============================================
 
 interface PreparedSlit {
-  slit: SlitRegion;
+  slit: SlitRegion | Shutter;
   latLng: L.LatLng;
   paRad: number;  // pre-computed rotation in radians
   color: string;
+  isStuck?: boolean;
 }
 
 export interface CanvasSlitLayerProps {
-  slits: SlitRegion[];
+  slits: (SlitRegion | Shutter)[];
   wcs: WCSParams;
   visible: boolean;
+  highlightObjectId?: string;
 }
 
 // ============================================
@@ -61,11 +63,8 @@ const SHUTTER_HEIGHT_ARCSEC = 0.46;
 // Component
 // ============================================
 
-export function CanvasSlitLayer({
-  slits,
-  wcs,
-  visible,
-}: CanvasSlitLayerProps) {
+export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
+  const { slits, wcs, visible } = props;
   const map = useMap();
 
   // Derive unique observation list for consistent color assignment
@@ -77,11 +76,14 @@ export function CanvasSlitLayer({
   const prepared: PreparedSlit[] = useMemo(() => {
     return slits.map(s => {
       const { x, y } = skyToPixel(wcs, s.center_ra, s.center_dec);
+      const isShutter = 'shutter_state' in s;
+      const isStuck = isShutter && (s as Shutter).shutter_state === 'stuck_closed';
       return {
         slit: s,
         latLng: L.latLng(y, x),
         paRad: s.position_angle * (Math.PI / 180),
-        color: getObservationColor(s.observation, observations),
+        color: isStuck ? '#ef4444' : getObservationColor(s.observation, observations),
+        isStuck,
       };
     });
   }, [slits, wcs, observations]);
@@ -177,6 +179,7 @@ export function CanvasSlitLayer({
       // Group by color for efficient batch drawing
       const groups = new Map<string, L.Point[]>();
       const paByPoint = new Map<string, number>();
+      const stuckPoints = new Set<string>();
 
       for (const item of items) {
         const pt = map.latLngToLayerPoint(item.latLng);
@@ -194,7 +197,9 @@ export function CanvasSlitLayer({
         }
         group.push(pt);
         // Store PA keyed by point identity
-        paByPoint.set(`${pt.x},${pt.y}`, item.paRad);
+        const key = `${pt.x},${pt.y}`;
+        paByPoint.set(key, item.paRad);
+        if (item.isStuck) stuckPoints.add(key);
       }
 
       // Draw each color group
@@ -213,13 +218,18 @@ export function CanvasSlitLayer({
         }
 
         // Stroke pass
-        ctx!.strokeStyle = color;
-        ctx!.globalAlpha = 0.6;
         for (const pt of points) {
-          const pa = paByPoint.get(`${pt.x},${pt.y}`) || 0;
+          const key = `${pt.x},${pt.y}`;
+          const pa = paByPoint.get(key) || 0;
+          const isStuck = stuckPoints.has(key);
           ctx!.save();
           ctx!.translate(pt.x, pt.y);
           ctx!.rotate(-pa);
+          ctx!.strokeStyle = isStuck ? '#ef4444' : color;
+          ctx!.globalAlpha = isStuck ? 1.0 : 0.6;
+          ctx!.lineWidth = isStuck ? 1.5 : 1;
+          if (isStuck) ctx!.setLineDash([3, 2]);
+          else ctx!.setLineDash([]);
           ctx!.strokeRect(-halfW, -halfH, widthPx, heightPx);
           ctx!.restore();
         }

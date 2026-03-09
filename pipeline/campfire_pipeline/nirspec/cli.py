@@ -188,11 +188,15 @@ def zfit(config, obs, source_ids, processes, overwrite):
 
 
 def _run_summary(cfg, obs_obj):
-    """Generate (or regenerate) the observation summary ECSV."""
+    """Generate (or regenerate) the observation summary ECSV and shutters ECSV."""
     from pathlib import Path
     from campfire_pipeline.metadata.summary import (
         generate_observation_summary,
         write_summary_ecsv,
+    )
+    from campfire_pipeline.metadata.shutters import (
+        generate_shutters_table,
+        write_shutters_ecsv,
     )
 
     version = cfg.get('pipeline', {}).get('version', 'unknown')
@@ -206,6 +210,13 @@ def _run_summary(cfg, obs_obj):
         write_summary_ecsv(summary_table, obs_dir, obs_obj.name)
     else:
         log(f"No spectra found for {obs_obj.name}, skipping summary")
+
+    # Generate shutters ECSV
+    shutters_table = generate_shutters_table(obs_obj.name, obs_dir, obs_obj.field)
+    if len(shutters_table) > 0:
+        write_shutters_ecsv(shutters_table, obs_dir, obs_obj.name)
+    else:
+        log(f"No shutters generated for {obs_obj.name}")
 
 
 @main.command()

@@ -67,6 +67,23 @@ export interface SlitRegionsResult {
   error?: string;
 }
 
+export interface Shutter {
+  object_id: string;
+  source_id: number;
+  center_ra: number;
+  center_dec: number;
+  position_angle: number;
+  shutter_idx: number;
+  dither_id: number;
+  shutter_state: 'source' | 'open' | 'stuck_closed';
+  observation: string;
+}
+
+export interface ShuttersResult {
+  shutters: Shutter[];
+  error?: string;
+}
+
 // ============================================
 // Server Actions
 // ============================================
@@ -290,4 +307,62 @@ export async function getFilteredObjectIds(
     console.error('Unexpected error fetching filtered object IDs:', err);
     return { objectIds: [], error: 'An unexpected error occurred' };
   }
+}
+
+/**
+ * Fetch nearby shutters using the get_nearby_shutters RPC.
+ * Used by the spectra detail page TileCutout component.
+ */
+export async function getNearbyShutters(
+  ra: number,
+  dec: number,
+  field: string,
+  radiusArcsec: number = 5.0,
+): Promise<ShuttersResult> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase.rpc('get_nearby_shutters', {
+    p_ra: ra,
+    p_dec: dec,
+    p_radius_arcsec: radiusArcsec,
+    p_field: field,
+  });
+
+  if (error) {
+    return { shutters: [], error: error.message };
+  }
+
+  return { shutters: (data || []) as Shutter[] };
+}
+
+/**
+ * Fetch all shutters for a field, paginating to get past Supabase row limits.
+ * Used by the full map viewer.
+ */
+export async function getFieldShutters(
+  field: string
+): Promise<ShuttersResult> {
+  const supabase = await createClient();
+  const PAGE_SIZE = 1000;
+  const allShutters: Shutter[] = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('shutters')
+      .select('object_id, source_id, center_ra, center_dec, position_angle, shutter_idx, dither_id, shutter_state, observation')
+      .eq('field', field)
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    if (error) {
+      return { shutters: allShutters, error: error.message };
+    }
+
+    if (!data || data.length === 0) break;
+    allShutters.push(...(data as Shutter[]));
+    if (data.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+
+  return { shutters: allShutters };
 }

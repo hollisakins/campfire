@@ -243,6 +243,27 @@ def deploy_slits(
     return total
 
 
+def deploy_shutters(
+    client: Client,
+    obs_name: str,
+    shutters_data: list[dict],
+    batch_size: int = 500,
+) -> int:
+    """
+    Deploy shutters: delete existing rows for the observation,
+    then bulk insert new rows.
+    """
+    client.table('shutters').delete().eq('observation', obs_name).execute()
+
+    total = 0
+    for i in range(0, len(shutters_data), batch_size):
+        batch = shutters_data[i:i + batch_size]
+        client.table('shutters').insert(batch).execute()
+        total += len(batch)
+
+    return total
+
+
 def refresh_filter_options(client: Client) -> None:
     """Refresh the filter options materialized view."""
     print("  Refreshing filter options cache...")

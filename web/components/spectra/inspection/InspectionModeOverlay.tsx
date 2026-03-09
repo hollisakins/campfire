@@ -13,6 +13,8 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import type { FilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import type { SpectrumObject } from '@/lib/types';
+import type { MapLayer, Shutter } from '@/lib/actions/map';
+import { getNearbyShutters } from '@/lib/actions/map';
 import { useSpectrumDataCache } from '@/lib/hooks/useSpectrumDataCache';
 import { useMultiObjectCache } from '@/lib/hooks/useMultiObjectCache';
 import { useObjectNavigation } from '@/lib/hooks/useObjectNavigation';
@@ -21,7 +23,8 @@ import { createClient } from '@/lib/supabase/client';
 
 interface InspectionModeOverlayProps {
   spectrum: SpectrumObject;
-  rgbImageUrl: string | null;
+  mapLayer: MapLayer | null;
+  nearbyShutters: Shutter[];
   filterStr: string;
   filters: Partial<FilterOptions>;
   sortColumn: SortColumn;
@@ -30,7 +33,8 @@ interface InspectionModeOverlayProps {
 
 export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   spectrum,
-  rgbImageUrl,
+  mapLayer,
+  nearbyShutters,
   filterStr,
   filters,
   sortColumn,
@@ -49,7 +53,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
   // Current object state (initialized from props, updated client-side)
   const [currentSpectrum, setCurrentSpectrum] = useState(spectrum);
-  const [currentRgbUrl, setCurrentRgbUrl] = useState(rgbImageUrl);
+  const [currentShutters, setCurrentShutters] = useState<Shutter[]>(nearbyShutters);
 
   // Grating state
   const sortedSpectra = [...currentSpectrum.spectra].sort((a, b) => {
@@ -158,9 +162,9 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       if (data) {
         setCachedObject(queue.firstId!, data);
         setCurrentSpectrum(data.spectrum);
-        if (data.rgbImageUrl !== null) {
-          setCurrentRgbUrl(data.rgbImageUrl);
-        }
+        // Fetch shutters for the new object
+        const shuttersResult = await getNearbyShutters(data.spectrum.ra, data.spectrum.dec, data.spectrum.field);
+        setCurrentShutters(shuttersResult.shutters);
         inspectionState.resetState(data.spectrum);
         window.history.replaceState(null, '', buildUrl(queue.firstId!));
         setRedirectComplete(true);
@@ -171,9 +175,8 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         if (retry) {
           setCachedObject(queue.firstId!, retry);
           setCurrentSpectrum(retry.spectrum);
-          if (retry.rgbImageUrl !== null) {
-            setCurrentRgbUrl(retry.rgbImageUrl);
-          }
+          const shuttersResult = await getNearbyShutters(retry.spectrum.ra, retry.spectrum.dec, retry.spectrum.field);
+          setCurrentShutters(shuttersResult.shutters);
           inspectionState.resetState(retry.spectrum);
           window.history.replaceState(null, '', buildUrl(queue.firstId!));
         }
@@ -238,9 +241,8 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         if (data) {
           if (!cached) setCachedObject(urlObjectId, data);
           setCurrentSpectrum(data.spectrum);
-          if (data.rgbImageUrl !== null) {
-            setCurrentRgbUrl(data.rgbImageUrl);
-          }
+          const shuttersResult = await getNearbyShutters(data.spectrum.ra, data.spectrum.dec, data.spectrum.field);
+          setCurrentShutters(shuttersResult.shutters);
           inspectionState.resetState(data.spectrum);
         }
       }
@@ -290,9 +292,9 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
     // 4. Update state
     setCurrentSpectrum(data.spectrum);
-    if (data.rgbImageUrl !== null) {
-      setCurrentRgbUrl(data.rgbImageUrl);
-    }
+    // Fetch shutters for the new object
+    const shuttersResult = await getNearbyShutters(data.spectrum.ra, data.spectrum.dec, data.spectrum.field);
+    setCurrentShutters(shuttersResult.shutters);
     inspectionState.resetState(data.spectrum);
 
     // 5. Update URL (use replaceState to avoid Next.js router remount)
@@ -514,7 +516,8 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         {/* Right: Dashboard Panel */}
         <DashboardPanel
           spectrum={currentSpectrum}
-          rgbImageUrl={currentRgbUrl}
+          mapLayer={mapLayer}
+          shutters={currentShutters}
           inspectionState={inspectionState}
           canEdit={canEdit}
           commentCount={commentCount}

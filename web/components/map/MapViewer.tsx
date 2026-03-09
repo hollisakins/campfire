@@ -10,7 +10,7 @@ import {
   useMapEvents,
 } from 'react-leaflet';
 import Link from 'next/link';
-import type { MapLayer, MapMarker, SlitRegion } from '@/lib/actions/map';
+import type { MapLayer, MapMarker, SlitRegion, Shutter } from '@/lib/actions/map';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { leafletToSky, skyToLeaflet } from '@/lib/utils/wcs';
 import { QUALITY_LABELS } from '@/lib/types';
@@ -183,7 +183,7 @@ export function MapViewer({
   const [activeLayer, setActiveLayer] = useState<MapLayer | null>(null);
   const [markers, setMarkers] = useState<MapMarker[]>([]);
   const [showMarkers, setShowMarkers] = useState(true);
-  const [slits, setSlits] = useState<SlitRegion[]>([]);
+  const [slits, setSlits] = useState<(SlitRegion | Shutter)[]>([]);
   const [showSlits, setShowSlits] = useState(false);
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
   const [isLoadingMarkers, setIsLoadingMarkers] = useState(false);
@@ -270,11 +270,18 @@ export function MapViewer({
 
     async function loadSlits() {
       try {
-        const { getFieldSlits } = await import('@/lib/actions/map');
-        const result = await getFieldSlits(selectedField);
-        if (!cancelled) setSlits(result.slits);
+        // Try new shutters table first, fall back to legacy slit_regions
+        const { getFieldShutters, getFieldSlits } = await import('@/lib/actions/map');
+        const shuttersResult = await getFieldShutters(selectedField);
+        if (!cancelled && shuttersResult.shutters.length > 0) {
+          setSlits(shuttersResult.shutters);
+        } else if (!cancelled) {
+          // Fall back to legacy slit_regions
+          const slitsResult = await getFieldSlits(selectedField);
+          if (!cancelled) setSlits(slitsResult.slits);
+        }
       } catch (err) {
-        console.error('Failed to load slit regions:', err);
+        console.error('Failed to load shutters/slit regions:', err);
       }
     }
 

@@ -27,6 +27,7 @@ from campfire_deploy.deploy import (
     deploy_observation,
     deploy_rgb,
     deploy_sed,
+    deploy_shutters,
     deploy_slits,
     deploy_thumbnails,
     deploy_zfit,
@@ -176,6 +177,14 @@ def thumbnails(config_path, obs, dry_run, source_ids):
 @main.command()
 @shared_options
 def slits(config_path, obs, dry_run):
-    """Deploy slit geometry data to Supabase."""
+    """Deploy slit geometry data to Supabase (legacy)."""
     config = load_config(config_path)
     deploy_slits(obs, config, dry_run=dry_run)
+
+
+@main.command()
+@shared_options
+def shutters(config_path, obs, dry_run):
+    """Deploy shutters ECSV data to Supabase."""
+    config = load_config(config_path)
+    deploy_shutters(obs, config, dry_run=dry_run)
