@@ -40,11 +40,14 @@ def upload_to_r2(
     local_path: Path,
     r2_key: str,
     content_type: str | None = None,
+    cache_control: str | None = None,
 ) -> None:
     """Upload a single file to R2."""
     extra_args = {}
     if content_type:
         extra_args['ContentType'] = content_type
+    if cache_control:
+        extra_args['CacheControl'] = cache_control
 
     client.upload_file(
         str(local_path),

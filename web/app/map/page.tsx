@@ -3,6 +3,8 @@ import { LogIn } from 'lucide-react';
 import { getMapLayers } from '@/lib/actions/map';
 import { MapPageContent } from './MapPageContent';
 
+export const dynamic = 'force-dynamic';
+
 interface MapPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }

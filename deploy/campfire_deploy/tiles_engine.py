@@ -10,7 +10,7 @@ are built by combining 4 child tiles (FITSMap approach). This avoids ever
 allocating the full mosaic in memory.
 
 Usage:
-    Called from scripts/generate_tiles.py CLI entry point.
+    Called from campfire_deploy.tiles orchestration layer via ``cfdeploy tiles``.
 
 Dependencies:
     astropy, numpy, reproject, Pillow

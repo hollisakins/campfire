@@ -21,7 +21,7 @@ import sys
 
 import click
 
-from campfire_deploy.config import load_config
+from campfire_deploy.config import load_config, resolve_imaging_config, resolve_tiles_dir
 from campfire_deploy.deploy import (
     deploy_json,
     deploy_observation,
@@ -188,3 +188,112 @@ def shutters(config_path, obs, dry_run):
     """Deploy shutters ECSV data to Supabase."""
     config = load_config(config_path)
     deploy_shutters(obs, config, dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------------
+# Tiles subcommand (per-field, does NOT use @shared_options)
+# ---------------------------------------------------------------------------
+
+def _parse_zoom(ctx, param, value):
+    """Click callback to parse zoom range string like '5-8' or '5'."""
+    if value is None:
+        return None
+    if '-' in value:
+        parts = value.split('-')
+        return (int(parts[0]), int(parts[1]))
+    z = int(value)
+    return (z, z)
+
+
+@main.command()
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--field', required=True,
+              help='Field name (e.g. cosmos).')
+@click.option('--filter', 'filter_name', default=None,
+              help='Specific filter (e.g. f444w, rgb). Default: all filters.')
+@click.option('--dry-run', is_flag=True,
+              help='Show estimates without making changes.')
+@click.option('--generate-only', is_flag=True,
+              help='Generate tiles only (no cloud operations).')
+@click.option('--upload-only', is_flag=True,
+              help='Upload existing tiles only (skip generation).')
+@click.option('--register-only', is_flag=True,
+              help='Register layers in Supabase only.')
+@click.option('--clean', is_flag=True,
+              help='Delete stale R2 tiles before uploading.')
+@click.option('--pixel-scale', type=float, default=None,
+              help='Override output pixel scale (arcsec).')
+@click.option('--zoom', callback=_parse_zoom, default=None,
+              help='Zoom range for upload (e.g. "5-8", "5").')
+@click.option('--workers', type=int, default=4,
+              help='Parallel workers (default: 4).')
+@click.option('--overwrite', is_flag=True,
+              help='Regenerate existing tiles.')
+@click.option('--tile-dir', default=None,
+              help='Custom tile output directory.')
+@click.option('--imaging-config', default=None,
+              help='Path to imaging.toml.')
+@click.option('--preview', is_flag=True,
+              help='Generate RGB preview only (use with --filter rgb).')
+@click.option('--preview-ra', type=float, default=None,
+              help='RA for preview center (degrees).')
+@click.option('--preview-dec', type=float, default=None,
+              help='Dec for preview center (degrees).')
+@click.option('--verbose', '-v', is_flag=True,
+              help='Enable debug logging.')
+def tiles(config_path, field, filter_name, dry_run, generate_only,
+          upload_only, register_only, clean, pixel_scale, zoom, workers,
+          overwrite, tile_dir, imaging_config, preview, preview_ra,
+          preview_dec, verbose):
+    """Generate, upload, and register map tiles for a field."""
+    import logging
+
+    if verbose:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='[%(asctime)s] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+        )
+
+    from campfire_deploy.tiles import deploy_tiles
+
+    tile_dir_path = resolve_tiles_dir(tile_dir)
+    imaging_config_path = resolve_imaging_config(imaging_config)
+
+    # Determine which phases to run
+    if generate_only:
+        do_generate, do_upload, do_register = True, False, False
+    elif upload_only:
+        do_generate, do_upload, do_register = False, True, False
+    elif register_only:
+        do_generate, do_upload, do_register = False, False, True
+    else:
+        # Default: all phases
+        do_generate, do_upload, do_register = True, True, True
+
+    # Only load deploy config if we need cloud operations
+    if do_upload or do_register or clean:
+        config = load_config(config_path)
+    else:
+        config = {}
+
+    deploy_tiles(
+        config=config,
+        tile_dir=tile_dir_path,
+        field=field,
+        filter_name=filter_name,
+        pixel_scale=pixel_scale,
+        workers=workers,
+        overwrite=overwrite,
+        dry_run=dry_run,
+        imaging_config_path=imaging_config_path,
+        generate=do_generate,
+        upload=do_upload,
+        register=do_register,
+        clean=clean,
+        zoom_range=zoom,
+        preview=preview,
+        preview_ra=preview_ra,
+        preview_dec=preview_dec,
+    )

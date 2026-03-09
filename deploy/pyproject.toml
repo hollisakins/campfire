@@ -14,6 +14,8 @@ dependencies = [
     "scipy>=1.12",
     "matplotlib>=3.8",
     "photutils>=1.10",
+    "reproject",
+    "Pillow>=10.0",
 ]
 
 [project.scripts]
