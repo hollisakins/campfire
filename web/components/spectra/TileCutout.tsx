@@ -71,7 +71,7 @@ export function TileCutout({
     // but with some surrounding context for the shutter overlay)
     const pixPerArcsec = 1 / (Math.abs(wcs.cd2_2) * 3600);
     const viewportPx = size;
-    const desiredArcsec = 3;
+    const desiredArcsec = 5;
     const desiredPixels = desiredArcsec * pixPerArcsec;
     const scaleFactor = viewportPx / desiredPixels;
     const zoom = mapLayer.max_zoom + Math.log2(scaleFactor);
