@@ -23,7 +23,7 @@ BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
 
 
 def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
-                    obs_id=None):
+                    obs_id=None, token=None):
     """Query MAST for level 1b filesets in a program.
 
     Returns a list of dicts with fileSetName and observation metadata.
@@ -40,6 +40,7 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     if obs_id is not None:
         conditions.append({"observtn": str(obs_id)})
 
+    headers = {"Authorization": f"token {token}"} if token else {}
     resp = requests.post(
         f"{BASE_URL}/search",
         json={
@@ -50,6 +51,7 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
             ],
             "limit": 5000,
         },
+        headers=headers,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -64,7 +66,7 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     return results
 
 
-def list_products_batched(filesets, batch_size=25):
+def list_products_batched(filesets, batch_size=25, token=None):
     """Retrieve product lists for filesets in batches.
 
     Returns a flat list of all product dicts across all filesets.
@@ -72,6 +74,7 @@ def list_products_batched(filesets, batch_size=25):
     fileset_names = [f["fileSetName"] for f in filesets]
     all_products = []
     n_batches = (len(fileset_names) + batch_size - 1) // batch_size
+    headers = {"Authorization": f"token {token}"} if token else {}
 
     for i in range(0, len(fileset_names), batch_size):
         batch = fileset_names[i : i + batch_size]
@@ -81,6 +84,7 @@ def list_products_batched(filesets, batch_size=25):
         resp = requests.get(
             f"{BASE_URL}/list_products",
             params={"dataset_ids": ",".join(batch)},
+            headers=headers,
         )
         resp.raise_for_status()
         all_products.extend(resp.json()["products"])
@@ -140,7 +144,7 @@ def format_speed(bytes_per_sec):
     return f"{bytes_per_sec:.0f} B/s"
 
 
-def download_file(uri, output_path, size, index, total):
+def download_file(uri, output_path, size, index, total, token=None):
     """Download a single file with progress bar and speed.
 
     Returns 'downloaded' or 'error'.
@@ -148,12 +152,14 @@ def download_file(uri, output_path, size, index, total):
     label = f"  [{index}/{total}]"
     name = output_path.name
     size_str = format_size(size)
+    headers = {"Authorization": f"token {token}"} if token else {}
 
     try:
         resp = requests.get(
             f"{BASE_URL}/retrieve_product",
             params={"product_name": uri},
             stream=True,
+            headers=headers,
         )
         resp.raise_for_status()
 
@@ -187,7 +193,7 @@ def download_file(uri, output_path, size, index, total):
 
 
 def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
-                       download_dir="data", dry_run=False, obs_id=None):
+                       download_dir="data", dry_run=False, obs_id=None, token=None):
     """Download JWST level 1b data for a program.
 
     Parameters
@@ -204,16 +210,21 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         If True, list files without downloading.
     obs_id : int or None
         JWST observation number to filter by (e.g. 1, 2, 3).
+    token : str or None
+        MAST API token for accessing proprietary data.
     """
+    if token:
+        print("Using MAST API token for authentication.")
+
     # Step 1: Search for filesets
-    filesets = search_filesets(program_id, instrument, exp_type, obs_id=obs_id)
+    filesets = search_filesets(program_id, instrument, exp_type, obs_id=obs_id, token=token)
     if not filesets:
         print("No filesets found. Exiting.")
         return
 
     # Step 2: List products
     print()
-    products = list_products_batched(filesets)
+    products = list_products_batched(filesets, token=token)
     print(f"  {len(products)} total products across {len(filesets)} filesets")
 
     # Step 3: Filter
@@ -273,7 +284,7 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     errors = 0
     for i, f in enumerate(to_download, 1):
         output_path = output_dir / f["filename"]
-        result = download_file(f["uri"], output_path, f["size"], i, len(to_download))
+        result = download_file(f["uri"], output_path, f["size"], i, len(to_download), token=token)
         if result == "error":
             errors += 1
 
