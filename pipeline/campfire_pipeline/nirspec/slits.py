@@ -24,12 +24,12 @@ def get_exposure_table(spec_file):
     """
     Read exposure table from HDU 7, filtering to one detector side.
 
-    For 3-shutter slitlets with both NRS1 and NRS2 rows, keeps only NRS2
+    For multi-shutter slitlets with both NRS1 and NRS2 rows, keeps only NRS2
     to avoid double-counting.
     """
     exp = Table.read(spec_file, hdu=7)
-    if exp['nod_type'][0] != '3-SHUTTER-SLITLET':
-        raise NotImplementedError(f"Only 3-SHUTTER-SLITLET supported, got {exp['nod_type'][0]}")
+    if 'SHUTTER-SLITLET' not in exp['nod_type'][0]:
+        raise NotImplementedError(f"Only N-SHUTTER-SLITLET types supported, got {exp['nod_type'][0]}")
 
     nrs1_files = [f for f in exp['filename'] if 'nrs1' in f]
     nrs2_files = [f for f in exp['filename'] if 'nrs2' in f]

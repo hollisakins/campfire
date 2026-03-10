@@ -236,8 +236,8 @@ def get_source_pos(spec_file):
 
 def get_exposure_table(spec_file):
     exp = Table.read(spec_file, hdu=7)
-    if exp['nod_type'][0] != '3-SHUTTER-SLITLET':
-        raise NotImplementedError
+    if 'SHUTTER-SLITLET' not in exp['nod_type'][0]:
+        raise NotImplementedError(f"Only N-SHUTTER-SLITLET types supported, got {exp['nod_type'][0]}")
 
     exp = Table.read(spec_file, hdu=7)
     roots = ['_'.join(f.split('_')[:2]) for f in exp['filename']]
