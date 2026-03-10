@@ -112,6 +112,18 @@ class Observation:
             log(f"Created workspace directory: {self.workspace_dir}")
 
         self.raw_dir = os.path.join(data_dir, self.data_subdir)
+        self.rate_files = self.glob('_rate.fits')
+
+        self.directories_setup = True
+
+    def discover_raw_files(self):
+        """Discover raw uncal files and associated MSA metadata.
+
+        Must be called after setup_workspace_directory. Populates
+        self.uncal_files, self.msa_meta_files, and self.rate_files.
+
+        Raises RuntimeError if no raw files are found.
+        """
         self.uncal_files = self.glob('_uncal.fits', check_exp_type=True, directory=self.raw_dir)
 
         if len(self.uncal_files) == 0:
@@ -119,7 +131,7 @@ class Observation:
 
         msa_meta_files_needed = set()
         for src_file in self.uncal_files:
-            # Read MSAMETFL header from rate file to find associated MSA meta file
+            # Read MSAMETFL header from uncal file to find associated MSA meta file
             try:
                 with fits.open(src_file) as hdul:
                     msametfl = hdul[0].header.get('MSAMETFL', '')
@@ -136,8 +148,6 @@ class Observation:
         for uncal_file in self.uncal_files:
             rate_file = uncal_file.replace('_uncal.fits', '_rate.fits').replace(self.raw_dir, self.workspace_dir)
             self.rate_files.append(rate_file)
-
-        self.directories_setup = True
 
     def copy_uncal_files(self, overwrite=False):
 
@@ -330,7 +340,7 @@ class Observation:
 
         filt, grat = [], []
         PATTTYPE, PRIDTPTS, PATT_NUM, NUMDTHPT, NOD_TYPE, SUBPXPTS = [], [], [], [], [], []
-        SHUTTRID = []
+        SHUTTRID, SHUTSTA = [], []
         for f in paths:
             hdr = fits.getheader(f, ext=0)
             filt.append(hdr['FILTER'])
@@ -343,6 +353,7 @@ class Observation:
             SUBPXPTS.append(hdr['SUBPXPTS'])
             hdr1 = fits.getheader(f, ext=1)
             SHUTTRID.append(hdr1['SHUTTRID'])
+            SHUTSTA.append(hdr1.get('SHUTSTA', ''))
 
         files = Table()
         files['path'] = paths
@@ -363,6 +374,7 @@ class Observation:
         files['nod'] = [f['name'].split('_')[2] for f in files]
         files['root'] = ['_'.join(f['name'].split('_')[:2]) for f in files]
         files['shutter_id'] = SHUTTRID
+        files['shutter_state'] = SHUTSTA
 
         # Map configs to group labels for cross-config nod pairing
         files['config_group'] = [self.config_groups.get(f['config'], f['config']) for f in files]
@@ -415,7 +427,7 @@ class Observation:
                     if files3['dither_pattern_type'][0] == 'NONE':
                         pass
 
-                    elif (files3['dither_pattern_type'][0] == '2-POINT-WITH-NIRCAM-SIZE2') and (files3['nod_type'][0] == '3-SHUTTER-SLITLET') and (files3['subpixel_dither_points'][0] == 2):
+                    elif (files3['dither_pattern_type'][0] == '2-POINT-WITH-NIRCAM-SIZE2') and ('SHUTTER-SLITLET' in files3['nod_type'][0]) and (files3['subpixel_dither_points'][0] == 2):
                         subpx_dither = np.where(np.isin(files3['dither_position'], [1,3,5]), 1, 2)
 
                     else:

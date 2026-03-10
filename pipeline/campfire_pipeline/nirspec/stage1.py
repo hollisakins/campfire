@@ -38,6 +38,7 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=overwrite)
 
+    obs.discover_raw_files()
     obs.copy_uncal_files(overwrite=overwrite)
 
     uncal_files = obs.glob("_uncal.fits")
@@ -54,6 +55,10 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     )
 
     # Phase 1: Run Detector1Pipeline on all uncal files
+    if n_processes > 1 and uncal_files:
+        _prefetch_detector1_references(
+            [os.path.join(obs.workspace_dir, f) for f in uncal_files]
+        )
     dispatch(
         run_stage1_single_uncal,
         uncal_files,
@@ -261,6 +266,58 @@ def mask_slits(
 
         #     # Add pedestal to total background
         #     bkg_total += pedestal_model
+
+
+def _prefetch_detector1_references(uncal_files):
+    """Pre-cache CRDS reference files for Detector1Pipeline to avoid race conditions.
+
+    Multiple workers downloading the same CRDS file simultaneously can cause
+    one to read a partially-written file. Running CRDS lookups on one file per
+    unique detector beforehand ensures everything is cached.
+    """
+    import crds
+
+    reftypes = [
+        'dark', 'gain', 'ipc', 'linearity', 'mask',
+        'readnoise', 'refpix', 'saturation', 'superbias',
+    ]
+
+    seen_detectors = set()
+    for uncal_file in uncal_files:
+        hdr = fits.getheader(uncal_file)
+        det = hdr.get('DETECTOR', 'NRS1')
+
+        if det in seen_detectors:
+            continue
+        seen_detectors.add(det)
+
+        log(f"Pre-fetching Detector1Pipeline CRDS references for {det} "
+            f"using {os.path.basename(uncal_file)}")
+
+        params = {
+            "INSTRUME": "NIRSPEC",
+            "DETECTOR": det,
+            "EXP_TYPE": hdr.get('EXP_TYPE', 'NRS_MSASPEC'),
+            "READPATT": hdr.get('READPATT', 'NRSIRS2'),
+            "SUBARRAY": hdr.get('SUBARRAY', 'FULL'),
+            "SUBSTRT1": hdr.get('SUBSTRT1', 1),
+            "SUBSTRT2": hdr.get('SUBSTRT2', 1),
+            "SUBSIZE1": hdr.get('SUBSIZE1', 2048),
+            "SUBSIZE2": hdr.get('SUBSIZE2', 2048),
+            "DATE-OBS": hdr.get('DATE-OBS', '2023-01-01'),
+            "TIME-OBS": hdr.get('TIME-OBS', '00:00:00'),
+        }
+
+        try:
+            refs = crds.getreferences(params, reftypes=reftypes, observatory='jwst')
+            cached = [k for k, v in refs.items()
+                      if v and 'N/A' not in v.upper() and 'NOT FOUND' not in v.upper()]
+            log(f"  Cached {len(cached)}/{len(reftypes)} references: "
+                f"{', '.join(sorted(cached))}")
+        except Exception as e:
+            log(f"  CRDS prefetch warning for {det}: {e}")
+
+    log("Detector1Pipeline CRDS reference pre-fetch complete")
 
 
 def _prefetch_crds_references(rate_files):
