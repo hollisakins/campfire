@@ -234,6 +234,44 @@ export function computeYRange(
 }
 
 /**
+ * Compute nicely-spaced rest-frame wavelength tick values (in Å)
+ * for a given observed wavelength range (in μm).
+ *
+ * @param obsMin - Minimum observed wavelength in μm
+ * @param obsMax - Maximum observed wavelength in μm
+ * @param factor - Conversion factor: 10000 / (1 + z)
+ * @param targetCount - Desired number of ticks (default 6)
+ * @returns Array of nice round rest-frame wavelength values in Å
+ */
+export function computeNiceRestTicks(
+  obsMin: number,
+  obsMax: number,
+  factor: number,
+  targetCount = 6
+): number[] {
+  const restMin = obsMin * factor;
+  const restMax = obsMax * factor;
+  const range = restMax - restMin;
+  if (range <= 0) return [];
+
+  const roughStep = range / targetCount;
+  const mag = Math.pow(10, Math.floor(Math.log10(roughStep)));
+  const residual = roughStep / mag;
+  let niceStep: number;
+  if (residual <= 1.5) niceStep = mag;
+  else if (residual <= 3.5) niceStep = 2 * mag;
+  else if (residual <= 7.5) niceStep = 5 * mag;
+  else niceStep = 10 * mag;
+
+  const ticks: number[] = [];
+  const start = Math.ceil(restMin / niceStep) * niceStep;
+  for (let t = start; t <= restMax; t += niceStep) {
+    ticks.push(parseFloat(t.toFixed(6)));
+  }
+  return ticks;
+}
+
+/**
  * Create Plotly traces for emission line markers
  */
 export function createEmissionLineTraces(

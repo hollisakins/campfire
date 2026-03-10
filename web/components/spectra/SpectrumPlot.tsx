@@ -8,7 +8,7 @@ import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
-import { getPlotColors, EMISSION_LINES, computeYRange } from './plotting-utils';
+import { getPlotColors, EMISSION_LINES, computeYRange, computeNiceRestTicks } from './plotting-utils';
 
 // Dynamic import of Plotly to avoid SSR issues
 const Plot = dynamic(() => import('react-plotly.js'), {
@@ -346,18 +346,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         xaxis: 'x',
         yaxis: 'y',
       },
-      // Invisible anchor trace for rest-frame wavelength axis (Å)
-      {
-        x: wave.map(w => w * restFrameFactor),
-        y: flux,
-        type: 'scatter' as const,
-        mode: 'lines' as const,
-        line: { color: 'transparent' },
-        hoverinfo: 'skip' as const,
-        showlegend: false,
-        xaxis: 'x3',
-        yaxis: 'y',
-      },
     ];
 
     // Add cross-dispersion profile traces if data exists
@@ -481,21 +469,27 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         zerolinecolor: plotColors.grid,
         domain: [0, 0.90],
       },
-      // X-axis: Rest-frame wavelength (Å), overlaying primary axis at top of 1D panel
-      xaxis3: {
-        overlaying: 'x' as const,
-        side: 'top' as const,
-        ticksuffix: ' Å',
-        ticks: 'outside' as const,
-        tickcolor: plotColors.textSecondary,
-        tickfont: { size: 11, color: plotColors.textSecondary },
-        gridcolor: 'transparent',
-        zerolinecolor: 'transparent',
-        domain: [0, 0.90],
-        anchor: 'y' as const,
-        range: [waveMin * restFrameFactor, waveMax * restFrameFactor],
-        autorange: false,
-      },
+      // X-axis: Rest-frame wavelength (Å), overlays primary axis using same μm coordinates
+      // Uses tickvals/ticktext to display Å labels at correct μm positions
+      xaxis3: (() => {
+        const restTicks = computeNiceRestTicks(waveMin, waveMax, restFrameFactor);
+        return {
+          overlaying: 'x' as const,
+          side: 'top' as const,
+          matches: 'x' as const,
+          tickmode: 'array' as const,
+          tickvals: restTicks.map(å => å / restFrameFactor),
+          ticktext: restTicks.map(å => `${å} Å`),
+          ticks: 'outside' as const,
+          tickcolor: plotColors.textSecondary,
+          tickfont: { size: 11, color: plotColors.textSecondary },
+          gridcolor: 'transparent',
+          zerolinecolor: 'transparent',
+          showgrid: false,
+          domain: [0, 0.90],
+          anchor: 'y' as const,
+        };
+      })(),
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
         gridcolor: plotColors.grid,
@@ -553,7 +547,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     return { traces, layout };
   }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating, inspectionMode]);
 
-  // Sync rest-frame axis when primary axis is zoomed/panned
+  // Recompute rest-frame tick labels when primary axis is zoomed/panned
+  // (matches: 'x' keeps ranges in sync automatically, but tick density needs updating)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleRelayout = useCallback((event: any) => {
     if (isRelayoutingRef.current) return;
@@ -575,15 +570,11 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     }
 
     if (obsMin !== undefined && obsMax !== undefined) {
+      const restTicks = computeNiceRestTicks(obsMin, obsMax, factor);
       isRelayoutingRef.current = true;
       plotlyRef.current.relayout(el, {
-        'xaxis3.range': [obsMin * factor, obsMax * factor],
-        'xaxis3.autorange': false,
-      }).then(() => { isRelayoutingRef.current = false; });
-    } else if (event['xaxis.autorange']) {
-      isRelayoutingRef.current = true;
-      plotlyRef.current.relayout(el, {
-        'xaxis3.autorange': true,
+        'xaxis3.tickvals': restTicks.map(å => å / factor),
+        'xaxis3.ticktext': restTicks.map(å => `${å} Å`),
       }).then(() => { isRelayoutingRef.current = false; });
     }
   }, [redshift]);
