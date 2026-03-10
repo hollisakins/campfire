@@ -483,9 +483,12 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       },
       // X-axis: Rest-frame wavelength (Å), overlaying primary axis at top of 1D panel
       xaxis3: {
-        title: { text: 'Rest Wavelength (Å)', font: { size: 12 } },
         overlaying: 'x' as const,
         side: 'top' as const,
+        ticksuffix: ' Å',
+        ticks: 'outside' as const,
+        tickcolor: plotColors.textSecondary,
+        tickfont: { size: 11, color: plotColors.textSecondary },
         gridcolor: 'transparent',
         zerolinecolor: 'transparent',
         domain: [0, 0.90],
@@ -558,8 +561,18 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     if (!el || !plotlyRef.current) return;
 
     const factor = 10000 / (1 + redshift);
-    const obsMin = event['xaxis.range[0]'];
-    const obsMax = event['xaxis.range[1]'];
+
+    // Plotly emits range as separate keys (box zoom) or as an array (pan/drag)
+    let obsMin: number | undefined;
+    let obsMax: number | undefined;
+
+    if (event['xaxis.range[0]'] !== undefined && event['xaxis.range[1]'] !== undefined) {
+      obsMin = event['xaxis.range[0]'];
+      obsMax = event['xaxis.range[1]'];
+    } else if (Array.isArray(event['xaxis.range'])) {
+      obsMin = event['xaxis.range'][0];
+      obsMax = event['xaxis.range'][1];
+    }
 
     if (obsMin !== undefined && obsMax !== undefined) {
       isRelayoutingRef.current = true;
