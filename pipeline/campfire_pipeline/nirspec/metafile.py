@@ -10,6 +10,68 @@ from astropy.io import fits
 from astropy.table import Table
 
 
+def _prune_detached_shutters(shutter_table, source_id):
+    """Remove background shutters that are not contiguous with the source.
+
+    Splits the shutter columns into contiguous groups (allowing gaps of 1
+    for stuck/closed shutters within a slitlet) and keeps only the group
+    that contains the source shutter(s).  Detached background shutters —
+    separated by gaps of 2+ columns — are removed.
+
+    Parameters
+    ----------
+    shutter_table : Table
+        Filtered shutter table for one source/slitlet.
+    source_id : int
+        The primary source ID.
+
+    Returns
+    -------
+    Table
+        Shutter table with detached columns removed.
+    """
+    all_cols = np.sort(np.unique(shutter_table['shutter_column']))
+    if len(all_cols) <= 1:
+        return shutter_table
+
+    # Find which columns contain the source
+    source_cols = set(np.unique(
+        shutter_table['shutter_column'][shutter_table['source_id'] == source_id]
+    ))
+
+    # Split columns into contiguous groups (gap of 3+ starts a new group,
+    # allowing gaps of up to 2 for stuck/closed shutters within a slitlet)
+    groups = []
+    current_group = [all_cols[0]]
+    for i in range(1, len(all_cols)):
+        if all_cols[i] - all_cols[i - 1] <= 3:
+            current_group.append(all_cols[i])
+        else:
+            groups.append(current_group)
+            current_group = [all_cols[i]]
+    groups.append(current_group)
+
+    if len(groups) == 1:
+        return shutter_table
+
+    # Keep only the group containing the source column(s)
+    for group in groups:
+        if source_cols & set(group):
+            keep_cols = set(group)
+            break
+    else:
+        return shutter_table
+
+    from campfire_pipeline.common.io import log
+    removed = set(int(c) for c in all_cols) - set(int(c) for c in keep_cols)
+    if removed:
+        log(f'Pruned {len(removed)} detached shutter column(s) {sorted(removed)} '
+            f'from source {source_id} (keeping columns {sorted(int(c) for c in keep_cols)})')
+
+    mask = np.isin(shutter_table['shutter_column'], sorted(keep_cols))
+    return shutter_table[mask]
+
+
 @dataclass
 class MetaFile:
 
@@ -64,6 +126,14 @@ class MetaFile:
 
         if len(mf.shutter_table) == 0:
             raise RuntimeError("No IDs matched in metafile!")
+
+        # Remove detached background shutters that are far from the source.
+        # Some MSA plans place a background shutter many columns away from
+        # the slitlet; the JWST pipeline interprets the full column range
+        # as one slit, producing an absurdly wide extraction.  We keep only
+        # the contiguous group of shutter columns containing the source.
+        mf.shutter_table = _prune_detached_shutters(
+            mf.shutter_table, source_id)
 
         is_primary = (mf.shutter_table['source_id'] == source_id) & (mf.shutter_table['estimated_source_in_shutter_x'] > 0)
         mf.shutter_table['primary_source'][is_primary] = 'Y'
