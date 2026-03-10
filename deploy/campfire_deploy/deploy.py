@@ -14,7 +14,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from campfire_deploy.config import load_programs, resolve_field, resolve_obs_dir
+from campfire_deploy.config import load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir
 from campfire_deploy.discover import (
     discover_rgb_images,
     discover_sed_plots,
@@ -623,6 +623,7 @@ def deploy_shutters(
     config: dict,
     *,
     dry_run: bool = False,
+    skip_astrometry: bool = False,
 ) -> None:
     """Deploy shutters ECSV data to Supabase."""
     obs_dir = resolve_obs_dir(obs_name)
@@ -636,6 +637,27 @@ def deploy_shutters(
     shutters_data = load_shutters_ecsv(ecsv_path)
     n_sources = len(set(r['object_id'] for r in shutters_data))
     print(f"Found {len(shutters_data)} shutter records ({n_sources} sources)")
+
+    # Astrometric correction: align MSA coordinates to imaging reference frame
+    if skip_astrometry:
+        print("Skipping astrometry correction (--skip-astrometry)")
+    else:
+        import tomllib
+        from campfire_deploy.astrometry import correct_shutter_positions
+
+        field = resolve_field(obs_name)
+        if not field:
+            print("  Could not determine field, skipping astrometry")
+        else:
+            imaging_path = resolve_imaging_config()
+            with open(imaging_path, 'rb') as f:
+                imaging_config = tomllib.load(f)
+            n_corrected, n_matches = correct_shutter_positions(
+                shutters_data, obs_dir, obs_name, field, imaging_config,
+            )
+            if n_corrected:
+                print(f"  Astrometry: corrected {n_corrected} shutters "
+                      f"({n_matches} catalog cross-matches)")
 
     if dry_run:
         print("=== DRY RUN ===")

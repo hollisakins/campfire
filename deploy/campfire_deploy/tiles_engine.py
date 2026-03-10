@@ -16,9 +16,11 @@ Dependencies:
     astropy, numpy, reproject, Pillow
 """
 
+import gc
 import json
 import logging
 import math
+import shutil
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -641,6 +643,8 @@ def _process_supertile(
     in a single reproject call, then sliced into tile_size chunks. This
     amortizes the per-call overhead of reproject across many tiles.
 
+    Uses pre-opened HDUs from ``path_to_hdu`` (shared across threads).
+
     Returns (n_tiles_written, total_bytes).
     """
     # Supertile bounds in output pixel coords
@@ -751,7 +755,7 @@ def _process_supertile(
 
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             img = Image.fromarray(np.flipud(rgba), 'RGBA')
-            img.save(tile_path, 'PNG')
+            img.save(tile_path, 'PNG', compress_level=PNG_COMPRESS_LEVEL)
 
             n_tiles += 1
             total_bytes += tile_path.stat().st_size
@@ -765,6 +769,14 @@ def _process_supertile(
 
 # Default supertile size: 8x8 tiles = 2048x2048 pixels (~16MB float32)
 SUPERTILE_SIZE = 2048
+
+# PNG compression level (0-9). Lower = faster writes, larger files.
+# Level 1 is ~3x faster than default (6) with ~20% larger tiles.
+PNG_COMPRESS_LEVEL = 3
+
+# Intermediate directory name for two-pass RGB tile generation.
+# Pass 1 writes per-filter .npy files here; pass 2 reads and deletes them.
+RGB_INTERMEDIATE_DIR = '.rgb_intermediate'
 
 
 def generate_max_zoom_tiles(
@@ -785,7 +797,13 @@ def generate_max_zoom_tiles(
     reprojects larger supertiles (2048x2048) and slices into PNG tiles.
     This reduces reproject calls by ~64x, amortizing the per-call overhead.
 
-    Uses ThreadPoolExecutor for parallelism across supertiles.
+    Uses ThreadPoolExecutor for parallelism across supertiles. FITS files
+    are pre-opened once (memory-mapped) and shared across all threads in
+    the same process, avoiding per-worker duplication and page cache
+    thrashing that occurs with ProcessPoolExecutor.
+
+    Supertiles are processed row-by-row so threads in the same batch access
+    similar y-ranges of the input FITS files, improving page cache locality.
 
     Returns (total_tiles, total_bytes).
     """
@@ -802,10 +820,9 @@ def generate_max_zoom_tiles(
         f"{'' if overwrite else ', skipping existing'}"
     )
 
-    # Pre-open all FITS files once (memory-mapped, thread-safe for reads)
+    # Pre-open all FITS files once (memory-mapped, thread-safe for reads).
     # When mask_wht is enabled and a corresponding WHT file exists, load SCI
-    # data into memory and mask zero-weight pixels as NaN (some pipelines
-    # encode missing data as 0).
+    # data into memory and mask zero-weight pixels as NaN.
     path_to_hdu: dict[str, object] = {}
     open_hduls = []
     for info in input_infos:
@@ -816,28 +833,29 @@ def generate_max_zoom_tiles(
             try:
                 hdu = hdul[ext_name]
                 if hdu.data is not None and len(hdu.data.shape) == 2:
-                    wht_path = _find_wht_path(info.path) if mask_wht else None
-                    if wht_path is not None:
-                        data = hdu.data.astype(np.float32)
-                        with fits.open(wht_path, memmap=True) as wht_hdul:
-                            wht_ext = _get_ext(wht_hdul, ['WHT', 0], data.shape)
-                            if wht_ext is not None:
-                                mask = wht_ext.data == 0
-                                n_masked = np.count_nonzero(mask)
-                                data[mask] = np.nan
-                                logger.info(
-                                    f"  WHT mask: {n_masked:,} zero-weight pixels "
-                                    f"masked in {info.path.name}"
+                    if mask_wht:
+                        wht_path = _find_wht_path(info.path)
+                        if wht_path is not None:
+                            data = hdu.data.astype(np.float32)
+                            with fits.open(wht_path, memmap=True) as wht_hdul:
+                                wht_ext = _get_ext(
+                                    wht_hdul, ['WHT', 0], data.shape
                                 )
-                        path_to_hdu[path_str] = (data, WCS(hdu.header, naxis=2))
+                                if wht_ext is not None:
+                                    data[wht_ext.data == 0] = np.nan
+                            path_to_hdu[path_str] = (
+                                data, WCS(hdu.header, naxis=2)
+                            )
+                        else:
+                            path_to_hdu[path_str] = hdu
                     else:
                         path_to_hdu[path_str] = hdu
                     break
             except (KeyError, IndexError):
                 continue
 
-    # Build supertile positions grouped by row (for page cache locality)
-    # Supertiles in the same row access similar y-ranges of input files
+    # Build supertile positions grouped by row (for page cache locality).
+    # Supertiles in the same row access similar y-ranges of input files.
     st_rows: list[list[tuple[int, int]]] = [[] for _ in range(n_st_y)]
     total_with_overlap = 0
     for sy in range(n_st_y):
@@ -903,6 +921,79 @@ def generate_max_zoom_tiles(
     return total_tiles, total_bytes
 
 
+def _build_one_lower_tile(
+    tile_dir: Path,
+    zoom: int,
+    tx: int,
+    ty: int,
+    n_tiles_y: int,
+    tile_size: int,
+    overwrite: bool,
+) -> tuple[int, int]:
+    """
+    Build one lower-zoom tile by combining its 4 children.
+
+    Top-level function (also usable from ThreadPoolExecutor).
+    Returns (n_tiles, n_bytes) — (1, size) if written/exists, (0, 0) if empty.
+    """
+    leaflet_y = n_tiles_y - 1 - ty
+    tile_path = tile_dir / str(zoom) / str(tx) / f"{leaflet_y}.png"
+
+    # Skip if already exists
+    if not overwrite and tile_path.exists():
+        return (1, tile_path.stat().st_size)
+
+    # Combine 4 children from zoom+1
+    child_zoom = zoom + 1
+    combined = np.zeros((tile_size * 2, tile_size * 2, 4), dtype=np.uint8)
+    has_any = False
+
+    for dx in range(2):
+        for dy in range(2):
+            child_tx = 2 * tx + dx
+            child_leaflet_y = 2 * leaflet_y + dy
+
+            child_path = (
+                tile_dir / str(child_zoom) / str(child_tx)
+                / f"{child_leaflet_y}.png"
+            )
+            if not child_path.exists():
+                continue
+
+            child_img = Image.open(child_path)
+            child_arr = np.array(child_img)
+
+            # Place in correct quadrant (Leaflet convention: y=0 at top)
+            qx = dx * tile_size
+            qy = dy * tile_size
+            h = min(tile_size, child_arr.shape[0])
+            w = min(tile_size, child_arr.shape[1])
+            channels = min(child_arr.shape[2], 4) if len(child_arr.shape) == 3 else 1
+            combined[qy:qy + h, qx:qx + w, :channels] = child_arr[:h, :w, :channels]
+            has_any = True
+
+    if not has_any:
+        if overwrite:
+            tile_path.unlink(missing_ok=True)
+        return (0, 0)
+
+    # Downsample 2x using Pillow (high quality)
+    combined_img = Image.fromarray(combined, 'RGBA')
+    downsampled = combined_img.resize((tile_size, tile_size), Image.LANCZOS)
+
+    # Check if tile has any non-transparent content
+    ds_arr = np.array(downsampled)
+    if not np.any(ds_arr[:, :, 3] > 0):
+        if overwrite:
+            tile_path.unlink(missing_ok=True)
+        return (0, 0)
+
+    tile_path.parent.mkdir(parents=True, exist_ok=True)
+    downsampled.save(tile_path, 'PNG', compress_level=PNG_COMPRESS_LEVEL)
+
+    return (1, tile_path.stat().st_size)
+
+
 def build_lower_zoom_levels(
     tile_dir: Path,
     min_zoom: int,
@@ -911,6 +1002,7 @@ def build_lower_zoom_levels(
     naxis1: int,
     naxis2: int,
     overwrite: bool = False,
+    n_workers: int = 1,
 ) -> tuple[int, int]:
     """
     Build lower zoom levels by combining 4 child tiles into 1 parent.
@@ -921,6 +1013,7 @@ def build_lower_zoom_levels(
     Each child is placed in its quadrant of a 2*tile_size image, then
     downsampled to tile_size. This is exactly the FITSMap approach.
 
+    Uses ThreadPoolExecutor when n_workers > 1 for parallelism.
     When overwrite is False, existing tiles are skipped (counted in totals).
 
     Returns (total_tiles, total_bytes).
@@ -936,79 +1029,35 @@ def build_lower_zoom_levels(
         zoom_tiles = 0
         positions = [(tx, ty) for tx in range(n_tiles_x) for ty in range(n_tiles_y)]
 
-        for tx, ty in tqdm(positions, desc=f"Zoom {zoom}", unit="tile", smoothing=0.05):
-                leaflet_y = n_tiles_y - 1 - ty
-
-                # Skip if already exists
-                tile_path = tile_dir / str(zoom) / str(tx) / f"{leaflet_y}.png"
-                if not overwrite and tile_path.exists():
-                    total_tiles += 1
-                    total_bytes += tile_path.stat().st_size
-                    zoom_tiles += 1
-                    continue
-
-                # Combine 4 children from zoom+1
-                # Standard pyramid: parent (tx, leaflet_y) at zoom z maps to
-                # children (2*tx+dx, 2*leaflet_y+dy) at zoom z+1
-                child_zoom = zoom + 1
-
-                combined = np.zeros(
-                    (tile_size * 2, tile_size * 2, 4), dtype=np.uint8
+        if n_workers <= 1 or len(positions) < 16:
+            for tx, ty in tqdm(positions, desc=f"Zoom {zoom}", unit="tile", smoothing=0.05):
+                n, nbytes = _build_one_lower_tile(
+                    tile_dir, zoom, tx, ty, n_tiles_y, tile_size, overwrite,
                 )
-                has_any = False
-
-                for dx in range(2):
-                    for dy in range(2):
-                        child_tx = 2 * tx + dx
-                        child_leaflet_y = 2 * leaflet_y + dy
-
-                        child_path = (
-                            tile_dir / str(child_zoom) / str(child_tx)
-                            / f"{child_leaflet_y}.png"
-                        )
-                        if not child_path.exists():
-                            continue
-
-                        child_img = Image.open(child_path)
-                        child_arr = np.array(child_img)
-
-                        # Place in correct quadrant (Leaflet convention: y=0 at top)
-                        # dy=0 is top child, dy=1 is bottom child
-                        qx = dx * tile_size
-                        qy = dy * tile_size
-                        h = min(tile_size, child_arr.shape[0])
-                        w = min(tile_size, child_arr.shape[1])
-                        # Ensure we don't exceed 4 channels
-                        channels = min(child_arr.shape[2], 4) if len(child_arr.shape) == 3 else 1
-                        combined[qy:qy + h, qx:qx + w, :channels] = child_arr[:h, :w, :channels]
-                        has_any = True
-
-                if not has_any:
-                    # Remove stale tile from previous run if overwriting
-                    if overwrite:
-                        tile_path.unlink(missing_ok=True)
-                    continue
-
-                # Downsample 2x using Pillow (high quality)
-                combined_img = Image.fromarray(combined, 'RGBA')
-                downsampled = combined_img.resize(
-                    (tile_size, tile_size), Image.LANCZOS
-                )
-
-                # Check if tile has any non-transparent content
-                ds_arr = np.array(downsampled)
-                if not np.any(ds_arr[:, :, 3] > 0):
-                    if overwrite:
-                        tile_path.unlink(missing_ok=True)
-                    continue
-
-                tile_path = tile_dir / str(zoom) / str(tx) / f"{leaflet_y}.png"
-                tile_path.parent.mkdir(parents=True, exist_ok=True)
-                downsampled.save(tile_path, 'PNG')
-
-                total_tiles += 1
-                total_bytes += tile_path.stat().st_size
-                zoom_tiles += 1
+                total_tiles += n
+                total_bytes += nbytes
+                zoom_tiles += n
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                futures = {
+                    executor.submit(
+                        _build_one_lower_tile,
+                        tile_dir, zoom, tx, ty, n_tiles_y, tile_size, overwrite,
+                    ): (tx, ty)
+                    for tx, ty in positions
+                }
+                for future in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc=f"Zoom {zoom}",
+                    unit="tile",
+                    smoothing=0.05,
+                ):
+                    n, nbytes = future.result()
+                    total_tiles += n
+                    total_bytes += nbytes
+                    zoom_tiles += n
 
         logger.info(
             f"  Zoom {zoom}: {n_tiles_x}x{n_tiles_y} grid, "
@@ -1100,6 +1149,7 @@ def generate_tiles_for_filter(
         naxis1=output_grid.naxis1,
         naxis2=output_grid.naxis2,
         overwrite=overwrite,
+        n_workers=n_workers,
     )
 
     total_tiles = max_tiles + lower_tiles
@@ -1597,11 +1647,64 @@ def _open_filter_hdus(
     return hdus, open_hduls
 
 
-def _process_rgb_supertile(
+def _reproject_filter_supertile(
     sx: int, sy: int,
     supertile_size: int,
     output_grid: OutputGrid,
-    per_filter_input_infos: dict[str, list[InputFileInfo]],
+    input_infos: list[InputFileInfo],
+    path_to_hdu: dict[str, object],
+    intermediate_dir: Path,
+    filter_name: str,
+) -> bool:
+    """
+    Pass 1 worker: reproject one filter onto one supertile, save as .npy.
+
+    Uses pre-opened HDUs from ``path_to_hdu`` (shared across threads).
+
+    Returns True if a .npy file was written (or already existed), False if
+    the filter has no overlap with this supertile.
+    """
+    npy_path = intermediate_dir / f"{filter_name}_{sx}_{sy}.npy"
+
+    # Resume: skip if already reprojected
+    if npy_path.exists():
+        return True
+
+    x0 = sx * supertile_size
+    y0 = sy * supertile_size
+    nx = min(supertile_size, output_grid.naxis1 - x0)
+    ny = min(supertile_size, output_grid.naxis2 - y0)
+
+    overlapping = find_overlapping_inputs(input_infos, x0, y0, supertile_size)
+    if not overlapping:
+        return False
+
+    hdus = [path_to_hdu[str(info.path)] for info in overlapping
+            if str(info.path) in path_to_hdu]
+    if not hdus:
+        return False
+
+    st_header = output_grid.sub_header(x0, y0, nx, ny)
+    data, footprint = _reproject_tile(hdus, st_header)
+
+    data[footprint < 0.5] = np.nan
+    data = data[:ny, :nx]
+
+    # Check if there's any valid data worth saving
+    if not np.any(np.isfinite(data)):
+        return False
+
+    npy_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(npy_path, data.astype(np.float32))
+    return True
+
+
+def _combine_rgb_supertile(
+    sx: int, sy: int,
+    supertile_size: int,
+    output_grid: OutputGrid,
+    intermediate_dir: Path,
+    filter_names: list[str],
     rgb_config: RGBConfig,
     stretch_params: RGBStretchParams,
     tile_dir: Path,
@@ -1611,10 +1714,8 @@ def _process_rgb_supertile(
     overwrite: bool = False,
 ) -> tuple[int, int]:
     """
-    Reproject all filters onto one supertile region and produce RGB PNG tiles.
-
-    Opens FITS files on-demand per filter and closes them after reprojecting,
-    keeping the open file count low (important for fields with many tiles).
+    Pass 2 worker: load per-filter .npy intermediates, apply RGB stretch,
+    slice into PNG tiles, and clean up .npy files.
 
     Returns (n_tiles_written, total_bytes).
     """
@@ -1627,7 +1728,7 @@ def _process_rgb_supertile(
     base_tx = sx * tiles_per_st
     base_ty = sy * tiles_per_st
 
-    # Sentinel file for resume
+    # Sentinel file for resume (same pattern as single-filter tiles)
     sentinel = tile_dir / str(max_zoom) / f".st_{sx}_{sy}.done"
     if not overwrite and sentinel.exists():
         n_existing = 0
@@ -1645,38 +1746,12 @@ def _process_rgb_supertile(
                     existing_bytes += tile_path.stat().st_size
         return (n_existing, existing_bytes)
 
-    # Check if ANY filter has overlap with this supertile
-    has_overlap = False
-    for filt, infos in per_filter_input_infos.items():
-        if find_overlapping_inputs(infos, x0, y0, supertile_size):
-            has_overlap = True
-            break
-
-    if not has_overlap:
-        sentinel.parent.mkdir(parents=True, exist_ok=True)
-        sentinel.touch()
-        return (0, 0)
-
-    # Reproject each filter onto the supertile, opening/closing files
-    # per filter to avoid exhausting file descriptors
-    st_header = output_grid.sub_header(x0, y0, nx, ny)
+    # Load per-filter intermediate data
     per_filter_data = {}
-
-    for filt, infos in per_filter_input_infos.items():
-        overlapping = find_overlapping_inputs(infos, x0, y0, supertile_size)
-        if not overlapping:
-            continue
-
-        hdus, open_hduls = _open_filter_hdus(overlapping, rgb_config.mask_wht)
-        try:
-            if not hdus:
-                continue
-            data, footprint = _reproject_tile(hdus, st_header)
-            data[footprint < 0.5] = np.nan
-            per_filter_data[filt] = data[:ny, :nx]
-        finally:
-            for hdul in open_hduls:
-                hdul.close()
+    for filt in filter_names:
+        npy_path = intermediate_dir / f"{filt}_{sx}_{sy}.npy"
+        if npy_path.exists():
+            per_filter_data[filt] = np.load(npy_path)
 
     if not per_filter_data:
         sentinel.parent.mkdir(parents=True, exist_ok=True)
@@ -1735,13 +1810,19 @@ def _process_rgb_supertile(
 
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             img = Image.fromarray(np.flipud(rgba), 'RGBA')
-            img.save(tile_path, 'PNG')
+            img.save(tile_path, 'PNG', compress_level=PNG_COMPRESS_LEVEL)
 
             n_tiles += 1
             total_bytes += tile_path.stat().st_size
 
+    # Mark supertile as complete
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.touch()
+
+    # Clean up intermediate .npy files for this supertile
+    for filt in filter_names:
+        npy_path = intermediate_dir / f"{filt}_{sx}_{sy}.npy"
+        npy_path.unlink(missing_ok=True)
 
     return (n_tiles, total_bytes)
 
@@ -1758,14 +1839,21 @@ def generate_rgb_max_zoom_tiles(
     overwrite: bool = False,
 ) -> tuple[int, int]:
     """
-    Generate RGB tiles at max zoom using supertile reprojection.
+    Generate RGB tiles at max zoom using two-pass filter-major reprojection.
 
-    FITS files are opened on-demand per supertile per filter (not
-    pre-opened) to avoid exhausting file descriptors on fields with
-    many input tiles (e.g. COSMOS: 20 tiles x 6 filters = 120 files).
+    Pass 1 (filter-major): For each filter sequentially, reproject ALL
+    supertiles in parallel and save intermediate .npy arrays. This keeps
+    each filter's FITS files hot in the OS page cache instead of thrashing
+    across all filters per supertile.
+
+    Pass 2 (RGB combine): For each supertile in parallel, load the per-filter
+    .npy intermediates, apply RGB stretch, and slice into PNG tiles. Clean up
+    .npy files after each supertile.
 
     Returns (total_tiles, total_bytes).
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     n_tiles_x = int(math.ceil(output_grid.naxis1 / tile_size))
     n_tiles_y = int(math.ceil(output_grid.naxis2 / tile_size))
     n_st_x = int(math.ceil(output_grid.naxis1 / SUPERTILE_SIZE))
@@ -1781,58 +1869,218 @@ def generate_rgb_max_zoom_tiles(
     )
 
     # Build supertile positions: overlap if ANY filter overlaps
-    st_rows: list[list[tuple[int, int]]] = [[] for _ in range(n_st_y)]
-    total_with_overlap = 0
+    all_positions = []
     for sy in range(n_st_y):
         for sx in range(n_st_x):
             x0 = sx * SUPERTILE_SIZE
             y0 = sy * SUPERTILE_SIZE
-            has_overlap = False
-            for filt, infos in per_filter_input_infos.items():
+            for infos in per_filter_input_infos.values():
                 if find_overlapping_inputs(infos, x0, y0, SUPERTILE_SIZE):
-                    has_overlap = True
+                    all_positions.append((sx, sy))
                     break
-            if has_overlap:
-                st_rows[sy].append((sx, sy))
-                total_with_overlap += 1
 
+    total_with_overlap = len(all_positions)
     logger.info(
         f"  {total_with_overlap}/{total_supertiles} supertiles have "
         f"overlapping inputs"
     )
 
-    total_tiles = 0
-    total_bytes = 0
+    # Intermediate directory for per-filter .npy files
+    intermediate_dir = tile_dir / RGB_INTERMEDIATE_DIR
+    intermediate_dir.mkdir(parents=True, exist_ok=True)
 
-    def process(pos):
-        return _process_rgb_supertile(
-            pos[0], pos[1], SUPERTILE_SIZE,
-            output_grid, per_filter_input_infos,
-            rgb_config, stretch_params,
-            tile_dir, tile_size, max_zoom, n_tiles_y,
-            overwrite=overwrite,
+    # ------------------------------------------------------------------
+    # Pass 1: Filter-major reprojection
+    # ------------------------------------------------------------------
+    # Process one filter at a time across ALL supertiles so each filter's
+    # FITS files stay hot in the OS page cache. Uses ThreadPoolExecutor
+    # so all threads share the same pre-opened memmap'd files (single
+    # process = single page table, no duplication).
+
+    for filt in rgb_config.filter_channels:
+        # Skip entire filter if already done (resume support)
+        filter_sentinel = intermediate_dir / f".filter_{filt}.done"
+        if not overwrite and filter_sentinel.exists():
+            logger.info(f"  Skipping {filt}: already reprojected")
+            continue
+
+        # Pre-open this filter's FITS files (shared across threads)
+        infos = per_filter_input_infos[filt]
+        path_to_hdu: dict[str, object] = {}
+        open_hduls = []
+        for info in infos:
+            path_str = str(info.path)
+            hdul = fits.open(info.path, memmap=True)
+            open_hduls.append(hdul)
+            for ext_name in ['SCI', 0]:
+                try:
+                    hdu = hdul[ext_name]
+                    if hdu.data is not None and len(hdu.data.shape) == 2:
+                        if rgb_config.mask_wht:
+                            wht_path = _find_wht_path(info.path)
+                            if wht_path is not None:
+                                data = hdu.data.astype(np.float32)
+                                with fits.open(
+                                    wht_path, memmap=True
+                                ) as wht_hdul:
+                                    wht_ext = _get_ext(
+                                        wht_hdul, ['WHT', 0], data.shape
+                                    )
+                                    if wht_ext is not None:
+                                        data[wht_ext.data == 0] = np.nan
+                                path_to_hdu[path_str] = (
+                                    data, WCS(hdu.header, naxis=2)
+                                )
+                            else:
+                                path_to_hdu[path_str] = hdu
+                        else:
+                            path_to_hdu[path_str] = hdu
+                        break
+                except (KeyError, IndexError):
+                    continue
+
+        # Build per-filter work list (only supertiles with overlap)
+        filter_positions = []
+        for sx, sy in all_positions:
+            if overwrite:
+                npy_path = intermediate_dir / f"{filt}_{sx}_{sy}.npy"
+                npy_path.unlink(missing_ok=True)
+            x0 = sx * SUPERTILE_SIZE
+            y0 = sy * SUPERTILE_SIZE
+            if find_overlapping_inputs(infos, x0, y0, SUPERTILE_SIZE):
+                # Skip if .npy already exists (intra-filter resume)
+                if not overwrite:
+                    npy_path = intermediate_dir / f"{filt}_{sx}_{sy}.npy"
+                    if npy_path.exists():
+                        continue
+                filter_positions.append((sx, sy))
+
+        if not filter_positions:
+            logger.info(f"  {filt}: nothing to reproject")
+            for hdul in open_hduls:
+                hdul.close()
+            del path_to_hdu, open_hduls
+            gc.collect()
+            filter_sentinel.touch()
+            continue
+
+        def reproject_one(pos, _infos=infos, _p2h=path_to_hdu, _filt=filt):
+            return _reproject_filter_supertile(
+                pos[0], pos[1], SUPERTILE_SIZE,
+                output_grid, _infos, _p2h,
+                intermediate_dir, _filt,
+            )
+
+        pbar = tqdm(
+            total=len(filter_positions),
+            desc=f"Reproject {filt}", unit="st", smoothing=0.05,
         )
 
-    pbar = tqdm(
-        total=total_with_overlap,
-        desc=f"RGB Zoom {max_zoom}", unit="st", smoothing=0.05,
-    )
+        if n_workers <= 1:
+            for pos in filter_positions:
+                reproject_one(pos)
+                pbar.update(1)
+        else:
+            with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                futures = {
+                    executor.submit(reproject_one, pos): pos
+                    for pos in filter_positions
+                }
+                for future in as_completed(futures):
+                    future.result()  # propagate exceptions
+                    pbar.update(1)
 
-    if n_workers <= 1:
-        for row in st_rows:
-            for pos in row:
-                n, nbytes = process(pos)
+        pbar.close()
+
+        # Release this filter's memmap'd data before moving to the next.
+        # hdul.close() closes the file descriptor but numpy memmap arrays
+        # survive if referenced. Explicitly delete all references and force
+        # GC to avoid accumulating ~5 GB per filter across 6 passes.
+        for hdul in open_hduls:
+            hdul.close()
+        del path_to_hdu, open_hduls
+        gc.collect()
+
+        filter_sentinel.touch()
+        logger.info(f"  {filt}: reprojected {len(filter_positions)} supertiles")
+
+    # ------------------------------------------------------------------
+    # Pass 2: RGB combine + PNG slicing
+    # ------------------------------------------------------------------
+    # Reads .npy intermediates (small, sequential) — no FITS I/O,
+    # so ThreadPoolExecutor is ideal (shared memory, no GIL contention
+    # for numpy/PIL C code).
+
+    # Pre-filter sentinels so the progress bar only tracks real work
+    tiles_per_st = SUPERTILE_SIZE // tile_size
+    work_positions = []
+    skipped_tiles = 0
+    skipped_bytes = 0
+
+    if overwrite:
+        work_positions = list(all_positions)
+    else:
+        for sx, sy in all_positions:
+            sentinel = tile_dir / str(max_zoom) / f".st_{sx}_{sy}.done"
+            if sentinel.exists():
+                base_tx = sx * tiles_per_st
+                base_ty = sy * tiles_per_st
+                for lty in range(tiles_per_st):
+                    for ltx in range(tiles_per_st):
+                        tx = base_tx + ltx
+                        ty = base_ty + lty
+                        leaflet_y = n_tiles_y - 1 - ty
+                        tile_path = (
+                            tile_dir / str(max_zoom) / str(tx)
+                            / f"{leaflet_y}.png"
+                        )
+                        if tile_path.exists():
+                            skipped_tiles += 1
+                            skipped_bytes += tile_path.stat().st_size
+            else:
+                work_positions.append((sx, sy))
+
+    total_tiles = skipped_tiles
+    total_bytes = skipped_bytes
+
+    if skipped_tiles or len(work_positions) < len(all_positions):
+        logger.info(
+            f"  {len(all_positions) - len(work_positions)} supertiles "
+            f"already combined"
+        )
+
+    if not work_positions:
+        logger.info(
+            f"  RGB max zoom {max_zoom}: all supertiles already done, "
+            f"{total_tiles} tiles ({total_bytes / (1024 * 1024):.1f} MB)"
+        )
+    else:
+        filter_names = list(rgb_config.filter_channels.keys())
+
+        def combine_one(pos):
+            return _combine_rgb_supertile(
+                pos[0], pos[1], SUPERTILE_SIZE,
+                output_grid, intermediate_dir, filter_names,
+                rgb_config, stretch_params, tile_dir,
+                tile_size, max_zoom, n_tiles_y, overwrite,
+            )
+
+        pbar = tqdm(
+            total=len(work_positions),
+            desc="RGB combine", unit="st", smoothing=0.05,
+        )
+
+        if n_workers <= 1:
+            for pos in work_positions:
+                n, nbytes = combine_one(pos)
                 total_tiles += n
                 total_bytes += nbytes
                 pbar.update(1)
-    else:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
-            for row in st_rows:
-                if not row:
-                    continue
+        else:
+            with ThreadPoolExecutor(max_workers=n_workers) as executor:
                 futures = {
-                    executor.submit(process, pos): pos for pos in row
+                    executor.submit(combine_one, pos): pos
+                    for pos in work_positions
                 }
                 for future in as_completed(futures):
                     n, nbytes = future.result()
@@ -1840,7 +2088,12 @@ def generate_rgb_max_zoom_tiles(
                     total_bytes += nbytes
                     pbar.update(1)
 
-    pbar.close()
+        pbar.close()
+
+    # Clean up intermediate directory
+    if intermediate_dir.exists():
+        shutil.rmtree(intermediate_dir)
+        logger.info("Cleaned up intermediate directory")
 
     logger.info(
         f"  RGB max zoom {max_zoom}: {total_tiles} non-empty tiles "
@@ -1898,7 +2151,10 @@ def generate_tiles_for_rgb(
         )
 
     # Step 3: Compute global RGB stretch parameters
+    import time as _time
+    _t0 = _time.monotonic()
     stretch_params = compute_rgb_stretch_params(rgb_config)
+    print(f"  Stretch params computed in {_time.monotonic() - _t0:.1f}s")
 
     tile_dir = rgb_config.output_dir / rgb_config.field / 'rgb'
 
@@ -1924,6 +2180,7 @@ def generate_tiles_for_rgb(
         naxis1=output_grid.naxis1,
         naxis2=output_grid.naxis2,
         overwrite=overwrite,
+        n_workers=n_workers,
     )
 
     total_tiles = max_tiles + lower_tiles
