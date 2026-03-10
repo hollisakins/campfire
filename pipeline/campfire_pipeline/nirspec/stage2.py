@@ -15,6 +15,20 @@ from campfire_pipeline.nirspec.metafile import MetaFile
 from campfire_pipeline.nirspec.observation import Observation
 
 
+def _stuck_table_to_dict(table):
+    """Convert a stuck_closed_shutters Table to nested dict.
+
+    Returns ``{root: {source_id: [ordinals]}}`` suitable for passing
+    to ``plot_stage2a_results(stuck_shutters=...)``.
+    """
+    d = {}
+    for row in table:
+        root = row['root']
+        sid = int(row['source_id'])
+        d.setdefault(root, {})[sid] = list(row['shutters'])
+    return d
+
+
 def build_empirical_wavecorr():
     """Build a wavecorr reference file augmented with the JADES DR4 empirical correction.
 
@@ -193,7 +207,8 @@ def _prefetch_crds_references(rate_files):
 
 
 def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
-                n_processes=1, plot=True, data_dir=None, products_dir=None):
+                n_processes=1, plot=True, data_dir=None, products_dir=None,
+                _skip_stuck_detection=False):
     """Orchestrate stage 2a: WCS assignment + unit fixing + optional resampling/plotting.
 
     Parameters
@@ -250,10 +265,69 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
 
     dispatch(fix_units, list(files), n_processes=n_processes)
 
+    # Resample to s2d if plotting or stuck shutter detection needs it
+    detect_enabled = (stage_config.get('detect_stuck_shutters', False)
+                      and not _skip_stuck_detection)
+    if plot or detect_enabled:
+        dispatch(resample_single_exposure, list(files), n_processes=n_processes,
+                overwrite=overwrite)
+
     if plot:
-        dispatch(resample_single_exposure, list(files), n_processes=n_processes)
+        stuck_dict = _stuck_table_to_dict(obs.stuck_closed_shutters)
         plot_inputs = [files[files['source_id'] == sid] for sid in source_ids_processed]
-        dispatch(plot_stage2a_results, plot_inputs, n_processes=n_processes)
+        dispatch(plot_stage2a_results, plot_inputs, n_processes=n_processes,
+                 stuck_shutters=stuck_dict)
+
+    # --- Stuck shutter auto-detection ---
+    if detect_enabled:
+        from campfire_pipeline.nirspec.stuck_shutters import (
+            detect_stuck_shutters, merge_stuck_shutters,
+            write_stuck_shutters_toml, plot_stuck_shutter_diagnostics,
+            _get_n_shutters,
+        )
+        import toml as _toml
+
+        detected = detect_stuck_shutters(obs, files, stage_config,
+                                        n_processes=n_processes)
+
+        if detected:
+            # Merge with existing TOML entries
+            existing = _toml.load(obs.stuck_closed_shutters_file)
+            merged, updated = merge_stuck_shutters(existing, detected)
+            write_stuck_shutters_toml(
+                merged, obs.stuck_closed_shutters_file, obs.name,
+                auto_detected=updated,
+            )
+
+            # Generate diagnostic plots
+            if plot:
+                for root, sources in detected.items():
+                    for sid, stuck_list in sources.items():
+                        root_files = files[(files['root'] == root) &
+                                           (files['source_id'] == sid)]
+                        n_shut = _get_n_shutters(root_files)
+                        plot_stuck_shutter_diagnostics(
+                            files, sid, root, obs.workspace_dir,
+                            n_shut, stuck_list, stage_config,
+                        )
+
+            # Re-run stage2a for affected sources with detection disabled
+            affected_sids = list(set(
+                sid for src in detected.values() for sid in src.keys()
+            ))
+            log(f'Re-running stage2a for {len(affected_sids)} source(s) '
+                f'with detected stuck shutters: {affected_sids}')
+
+            run_stage2a(
+                obs, stage_config,
+                source_ids=affected_sids,
+                overwrite=True,
+                n_processes=n_processes,
+                plot=plot,
+                data_dir=data_dir,
+                products_dir=products_dir,
+                _skip_stuck_detection=True,
+            )
 
 
 def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
@@ -289,6 +363,20 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
         return
     files = Observation.group_files(files)
 
+    # Filter out sources where no exposure has source flux (e.g. all nod
+    # positions land on stuck-closed shutters, leaving only background shutter)
+    srcflux = np.array([
+        fits.getheader(f['path'])['SRCFLUX'] == 'T'
+        if 'SRCFLUX' in fits.getheader(f['path']) else True
+        for f in files
+    ])
+    skip_sources = set()
+    for source_id in np.unique(files['source_id']):
+        mask = files['source_id'] == source_id
+        if not np.any(srcflux[mask]):
+            log(f"ID{source_id}: no exposures with source flux, skipping stage2b")
+            skip_sources.add(source_id)
+
     # Build task list by iterating over bkg_groups
     tasks = []
     for bg in np.unique(files['bkg_group']):
@@ -296,6 +384,9 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
         source_id = bg_files['source_id'][0]
         root = bg_files['root'][0]
         detector = bg_files['detector'][0]
+
+        if source_id in skip_sources:
+            continue
 
         # Skip check: do products already exist?
         all_bkgsub_exist = all(
@@ -337,6 +428,7 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
         if len(bkgsub_files) > 0:
             bkgsub_files = Observation.group_files(bkgsub_files)
             source_ids_done = np.unique(bkgsub_files['source_id'])
+            stuck_dict = _stuck_table_to_dict(obs.stuck_closed_shutters)
             plot_tasks = [
                 (bkgsub_files[bkgsub_files['source_id'] == sid], 'bkgsub')
                 for sid in source_ids_done
@@ -346,6 +438,7 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
                 plot_tasks,
                 n_processes=n_processes,
                 use_starmap=True,
+                stuck_shutters=stuck_dict,
             )
 
 
@@ -566,9 +659,14 @@ def fix_units(file):
         hdul.flush()
 
 
-def resample_single_exposure(file: Table):
+def resample_single_exposure(file: Table, overwrite=False):
 
     cal_file = file['path']
+    s2d_file_out = cal_file.replace('_cal.fits', '_s2d.fits')
+
+    if os.path.exists(s2d_file_out) and not overwrite:
+        return
+
     workspace_dir = os.path.dirname(cal_file)
 
     # Handle directory changes
@@ -594,7 +692,6 @@ def resample_single_exposure(file: Table):
             resampled = pathloss.call(resampled, inverse=True)
         resampled = pixel_replace.call(resampled)
         resampled = resample_spec.call(resampled)
-        s2d_file_out = cal_file.replace('_cal.fits', '_s2d.fits')
         resampled.save(s2d_file_out)
         resampled.close()
         model.close()

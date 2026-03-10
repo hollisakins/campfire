@@ -128,7 +128,74 @@ def plot_zfit_results(zfit_file, spec_file=None):
     return plot_file
 
 
-def plot_stage2a_results(files, plot_suffix='nods'):
+def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list):
+    """Draw shutter boundary lines and ordinal labels on an s2d image axis.
+
+    Handles both pre-reprocessing (stuck shutters still in SHUTSTA as '0')
+    and post-reprocessing (stuck shutters removed from metafile) geometry.
+
+    Parameters
+    ----------
+    ax : matplotlib Axes
+        The s2d image axis to annotate.
+    n_rows : int
+        Number of spatial pixels in the s2d image.
+    shutsta : str
+        SHUTSTA header string from the s2d file.
+    stuck_list : list of int
+        1-indexed shutter ordinals flagged as stuck (from TOML).
+    """
+    from campfire_pipeline.nirspec.stuck_shutters import _compute_shutter_regions
+
+    n_current = len(shutsta)
+    if n_current < 1:
+        return
+
+    if '0' in shutsta:
+        # Pre-reprocessing: all original shutters still in s2d
+        n_effective = n_current
+        # Region 0 (bottom) = shutter N, region N-1 (top) = shutter 1
+        ordinals = [n_current - k for k in range(n_current)]
+    else:
+        # Post-reprocessing: stuck shutters removed from metafile
+        n_original = n_current + len(stuck_list)
+        remaining = sorted(set(range(1, n_original + 1)) - set(stuck_list))
+        if not remaining:
+            return
+        min_remain = min(remaining)
+        max_remain = max(remaining)
+        # s2d spans from min_remain to max_remain (interior stuck visible as dark bands)
+        n_effective = max_remain - min_remain + 1
+        ordinals = [max_remain - k for k in range(n_effective)]
+
+    regions = _compute_shutter_regions(n_effective, n_rows)
+
+    # Boundary lines between adjacent shutter regions
+    for k in range(1, len(regions)):
+        boundary = regions[k][0] - 0.5
+        ax.axhline(boundary, color='gray', linestyle='--', linewidth=0.4, alpha=0.6)
+
+    # Ordinal labels at shutter midpoints
+    for k, (row_start, row_end) in enumerate(regions):
+        ordinal = ordinals[k]
+        y_mid = (row_start + row_end) / 2 - 0.5
+
+        if ordinal in stuck_list:
+            color = 'red'
+            label = f'{ordinal}*'
+            fontweight = 'bold'
+        else:
+            color = '0.5'
+            label = str(ordinal)
+            fontweight = 'normal'
+
+        ax.text(0.98, y_mid, label,
+                transform=ax.get_yaxis_transform(),
+                ha='right', va='center', fontsize=5, color=color,
+                fontweight=fontweight)
+
+
+def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
     """
     Plot s2d cutouts for visual inspection of a single source.
     Groups by root, combining multiple exp_groups (subpixel dither groups)
@@ -167,6 +234,18 @@ def plot_stage2a_results(files, plot_suffix='nods'):
         Nnods = len(plot_rows)
         if Nnods == 0:
             continue
+
+        # Look up stuck shutters for this root/source
+        stuck_list = []
+        shutsta = ''
+        if stuck_shutters:
+            stuck_list = stuck_shutters.get(root, {}).get(int(source_id), [])
+        if stuck_list:
+            for _, n1, n2 in plot_rows:
+                s2d = n1 or n2
+                if s2d:
+                    shutsta = fits.getheader(s2d, ext=1).get('SHUTSTA', '')
+                    break
 
         # Shared ZScale normalization across all nods,
         # masking DQ>0 pixels and >10-sigma outliers
@@ -220,6 +299,8 @@ def plot_stage2a_results(files, plot_suffix='nods'):
                 if nrs1_s2d:
                     nrs1 = fits.getdata(nrs1_s2d, ext=1)
                     ax[i,0].imshow(nrs1, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
+                    if stuck_list and shutsta:
+                        _annotate_stuck_shutters(ax[i,0], nrs1.shape[0], shutsta, stuck_list)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(nrs1, axis=1)
@@ -228,6 +309,8 @@ def plot_stage2a_results(files, plot_suffix='nods'):
                 if nrs2_s2d:
                     nrs2 = fits.getdata(nrs2_s2d, ext=1)
                     ax[i,2].imshow(nrs2, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
+                    if stuck_list and shutsta:
+                        _annotate_stuck_shutters(ax[i,2], nrs2.shape[0], shutsta, stuck_list)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(nrs2, axis=1)
@@ -275,6 +358,8 @@ def plot_stage2a_results(files, plot_suffix='nods'):
                 if s2d_file:
                     data = fits.getdata(s2d_file, ext=1)
                     ax[i,0].imshow(data, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
+                    if stuck_list and shutsta:
+                        _annotate_stuck_shutters(ax[i,0], data.shape[0], shutsta, stuck_list)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(data, axis=1)

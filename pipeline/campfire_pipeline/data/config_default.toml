@@ -46,6 +46,12 @@
     plot_bkgsub = true
     empirical_wavecorr = false
 
+    # Stuck shutter auto-detection
+    detect_stuck_shutters = true                        # master enable/disable
+    stuck_shutter_low_frac_threshold = 0.5              # threshold for PRISM
+    detect_stuck_shutters_grating = false                # enable for grating data (opt-in)
+    stuck_shutter_low_frac_threshold_grating = 0.9      # threshold for gratings (higher due to fainter backgrounds)
+
 [nirspec.stage3]
     method = "nodded"
     combine_method = "2d"
