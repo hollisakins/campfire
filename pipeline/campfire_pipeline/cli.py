@@ -131,7 +131,9 @@ INSTRUMENT_DEFAULTS = {
               help='Download directory (default: $CAMPFIRE_ROOT/raw or ./data).')
 @click.option('--dry-run', is_flag=True,
               help='List files without downloading.')
-def download(program, instrument, obs_id, exp_type, download_dir, dry_run):
+@click.option('--token', default=None,
+              help='MAST API token for proprietary data. Falls back to $MAST_API_TOKEN env var.')
+def download(program, instrument, obs_id, exp_type, download_dir, dry_run, token):
     """Download raw JWST data from MAST."""
     from campfire_pipeline.common.query import download_jwst_data
 
@@ -147,6 +149,8 @@ def download(program, instrument, obs_id, exp_type, download_dir, dry_run):
         else:
             download_dir = 'data'
 
+    token = token or os.environ.get('MAST_API_TOKEN')
+
     try:
         download_jwst_data(
             program_id=program,
@@ -155,6 +159,7 @@ def download(program, instrument, obs_id, exp_type, download_dir, dry_run):
             download_dir=download_dir,
             dry_run=dry_run,
             obs_id=obs_id,
+            token=token,
         )
     except KeyboardInterrupt:
         click.echo("\n\nInterrupted. Re-run to resume (existing files will be skipped).")
