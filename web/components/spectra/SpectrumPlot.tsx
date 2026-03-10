@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { Loader2, AlertCircle } from 'lucide-react';
 import type { SpectrumData } from '@/app/api/spectrum/route';
@@ -112,6 +112,17 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   const [redshiftInput, setRedshiftInput] = useState((initialRedshift ?? 0).toFixed(4));
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
   const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);
+
+  // Refs for rest-frame axis synchronization
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const plotlyRef = useRef<any>(null);
+  const plotDivRef = useRef<HTMLDivElement | null>(null);
+  const isRelayoutingRef = useRef(false);
+
+  // Lazy-import Plotly for imperative relayout calls (avoids SSR)
+  useEffect(() => {
+    import('plotly.js').then(mod => { plotlyRef.current = mod.default || mod; });
+  }, []);
 
   // Update state when preferences change
   useEffect(() => {
@@ -267,6 +278,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     const waveMin = Math.min(...wave);
     const waveMax = Math.max(...wave);
 
+    // Rest-frame wavelength conversion factor: μm → Å in rest frame
+    const restFrameFactor = 10000 / (1 + redshift);
+
     // Build step-function coordinates for cross-dispersion profile
     // Using 'vh' (vertical-horizontal) pattern to match matplotlib's where='post'
     const buildStepCoords = (xVals: number[], yVals: number[]) => {
@@ -330,6 +344,18 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         },
         hovertemplate: `λ: %{x:.3f} μm<br>${hoverLabel}: %{y:.3e}<extra></extra>`,
         xaxis: 'x',
+        yaxis: 'y',
+      },
+      // Invisible anchor trace for rest-frame wavelength axis (Å)
+      {
+        x: wave.map(w => w * restFrameFactor),
+        y: flux,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        line: { color: 'transparent' },
+        hoverinfo: 'skip' as const,
+        showlegend: false,
+        xaxis: 'x3',
         yaxis: 'y',
       },
     ];
@@ -455,6 +481,18 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         zerolinecolor: plotColors.grid,
         domain: [0, 0.90],
       },
+      // X-axis: Rest-frame wavelength (Å), overlaying primary axis at top of 1D panel
+      xaxis3: {
+        title: { text: 'Rest Wavelength (Å)', font: { size: 12 } },
+        overlaying: 'x' as const,
+        side: 'top' as const,
+        gridcolor: 'transparent',
+        zerolinecolor: 'transparent',
+        domain: [0, 0.90],
+        anchor: 'y' as const,
+        range: [waveMin * restFrameFactor, waveMax * restFrameFactor],
+        autorange: false,
+      },
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
         gridcolor: plotColors.grid,
@@ -511,6 +549,31 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
     return { traces, layout };
   }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating, inspectionMode]);
+
+  // Sync rest-frame axis when primary axis is zoomed/panned
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleRelayout = useCallback((event: any) => {
+    if (isRelayoutingRef.current) return;
+    const el = plotDivRef.current;
+    if (!el || !plotlyRef.current) return;
+
+    const factor = 10000 / (1 + redshift);
+    const obsMin = event['xaxis.range[0]'];
+    const obsMax = event['xaxis.range[1]'];
+
+    if (obsMin !== undefined && obsMax !== undefined) {
+      isRelayoutingRef.current = true;
+      plotlyRef.current.relayout(el, {
+        'xaxis3.range': [obsMin * factor, obsMax * factor],
+        'xaxis3.autorange': false,
+      }).then(() => { isRelayoutingRef.current = false; });
+    } else if (event['xaxis.autorange']) {
+      isRelayoutingRef.current = true;
+      plotlyRef.current.relayout(el, {
+        'xaxis3.autorange': true,
+      }).then(() => { isRelayoutingRef.current = false; });
+    }
+  }, [redshift]);
 
   if (loading) {
     return (
@@ -689,6 +752,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           },
         }}
         style={{ width: '100%', height: '700px' }}
+        onInitialized={(_figure, graphDiv) => { plotDivRef.current = graphDiv as HTMLDivElement; }}
+        onUpdate={(_figure, graphDiv) => { plotDivRef.current = graphDiv as HTMLDivElement; }}
+        onRelayout={handleRelayout}
       />
     </div>
   );
