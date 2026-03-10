@@ -99,29 +99,43 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
                 tasks.append((list(target_files['name']), obs.workspace_dir, product_name, source_id))
 
             elif combine_method == '1d':
-                exp_groups = np.unique(target_files['exp_group'])
-                for eg in exp_groups:
-                    eg_files = target_files[target_files['exp_group'] == eg]
-                    if len(eg_files) == 0:
-                        continue
-                    product_name = f"{obs.name}_{filter_grating}_{source_id}_g{eg}"
-                    if os.path.exists(os.path.join(obs.workspace_dir, product_name + "_spec.fits")) and not overwrite:
-                        continue
-                    tasks.append((list(eg_files['name']), obs.workspace_dir, product_name, source_id))
-
-                final_product_name = f"{obs.name}_{filter_grating}_{source_id}"
-                if os.path.exists(os.path.join(obs.workspace_dir, final_product_name + "_spec.fits")) and not overwrite:
+                if len(target_files) == 0:
                     continue
 
-                per_eg_spec_files = [
-                    f"{obs.name}_{filter_grating}_{source_id}_g{eg}_spec.fits"
-                    for eg in exp_groups
-                ]
-                all_cal_files = list(target_files['name'])
-                phase2_tasks.append((
-                    per_eg_spec_files, all_cal_files,
-                    obs.workspace_dir, final_product_name, source_id, filter_grating,
-                ))
+                exp_groups = np.unique(target_files['exp_group'])
+                final_product_name = f"{obs.name}_{filter_grating}_{source_id}"
+
+                if len(exp_groups) == 1:
+                    # Single exposure group: run directly as the final product (no 1D combine needed)
+                    if os.path.exists(os.path.join(obs.workspace_dir, final_product_name + "_spec.fits")) and not overwrite:
+                        continue
+                    eg_files = target_files[target_files['exp_group'] == exp_groups[0]]
+                    if len(eg_files) == 0:
+                        continue
+                    tasks.append((list(eg_files['name']), obs.workspace_dir, final_product_name, source_id))
+                else:
+                    # Multiple exposure groups: per-group extraction then 1D combine
+                    for eg in exp_groups:
+                        eg_files = target_files[target_files['exp_group'] == eg]
+                        if len(eg_files) == 0:
+                            continue
+                        product_name = f"{obs.name}_{filter_grating}_{source_id}_g{eg}"
+                        if os.path.exists(os.path.join(obs.workspace_dir, product_name + "_spec.fits")) and not overwrite:
+                            continue
+                        tasks.append((list(eg_files['name']), obs.workspace_dir, product_name, source_id))
+
+                    if os.path.exists(os.path.join(obs.workspace_dir, final_product_name + "_spec.fits")) and not overwrite:
+                        continue
+
+                    per_eg_spec_files = [
+                        f"{obs.name}_{filter_grating}_{source_id}_g{eg}_spec.fits"
+                        for eg in exp_groups
+                    ]
+                    all_cal_files = list(target_files['name'])
+                    phase2_tasks.append((
+                        per_eg_spec_files, all_cal_files,
+                        obs.workspace_dir, final_product_name, source_id, filter_grating,
+                    ))
 
             else:
                 raise ValueError(f"Unknown combine_method '{combine_method}'. Must be '2d' or '1d'.")
@@ -245,6 +259,7 @@ def run_stage3_single_source(
         exposures['source_xpos'] = [hdr['SRCXPOS'] for hdr in hdrs1]
         exposures['source_ypos'] = [hdr['SRCYPOS'] for hdr in hdrs1]
         exposures['v3pa'] = [hdr['PA_V3'] for hdr in hdrs1]
+           
 
 
         s2d_file = f'{product_name}_s2d.fits'
