@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { Loader2, AlertCircle } from 'lucide-react';
 import type { SpectrumData } from '@/app/api/spectrum/route';
@@ -113,16 +113,12 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
   const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);
 
-  // Refs for rest-frame axis synchronization
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const plotlyRef = useRef<any>(null);
-  const plotDivRef = useRef<HTMLDivElement | null>(null);
-  const isRelayoutingRef = useRef(false);
+  // Track observed wavelength range for rest-frame axis tick computation
+  // null = full range (autorange), [min, max] = user-zoomed range in μm
+  const [obsRange, setObsRange] = useState<[number, number] | null>(null);
 
-  // Lazy-import Plotly for imperative relayout calls (avoids SSR)
-  useEffect(() => {
-    import('plotly.js').then(mod => { plotlyRef.current = mod.default || mod; });
-  }, []);
+  // Reset zoom state when switching spectra
+  useEffect(() => { setObsRange(null); }, [fitsPath]);
 
   // Update state when preferences change
   useEffect(() => {
@@ -346,13 +342,14 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         xaxis: 'x',
         yaxis: 'y',
       },
-      // Invisible trace to make Plotly render xaxis3 (requires at least one trace)
+      // Invisible trace on xaxis3 (Plotly requires a trace to render the axis)
+      // Uses same μm wavelengths as primary axis — xaxis3 is just a relabeled overlay
       {
-        x: [wave[0], wave[wave.length - 1]],
+        x: [data.wave[0], data.wave[data.wave.length - 1]],
         y: [0, 0],
         type: 'scatter' as const,
         mode: 'markers' as const,
-        marker: { opacity: 0 },
+        marker: { size: 0.1, opacity: 0 },
         hoverinfo: 'skip' as const,
         showlegend: false,
         xaxis: 'x3',
@@ -465,6 +462,11 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       });
     }
 
+    // Compute rest-frame ticks for the current view (zoomed or full range)
+    const effectiveMin = obsRange ? obsRange[0] : waveMin;
+    const effectiveMax = obsRange ? obsRange[1] : waveMax;
+    const restTicks = computeNiceRestTicks(effectiveMin, effectiveMax, restFrameFactor);
+
     // Layout configuration with profile panel
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout: any = {
@@ -480,28 +482,34 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         gridcolor: plotColors.grid,
         zerolinecolor: plotColors.grid,
         domain: [0, 0.90],
+        uirevision: 'constant', // Preserve user zoom across re-renders
       },
-      // X-axis: Rest-frame wavelength (Å), overlays primary axis using same μm coordinates
-      // Uses tickvals/ticktext to display Å labels at correct μm positions
-      xaxis3: (() => {
-        const restTicks = computeNiceRestTicks(waveMin, waveMax, restFrameFactor);
-        return {
-          overlaying: 'x' as const,
-          side: 'top' as const,
-          matches: 'x' as const,
-          tickmode: 'array' as const,
-          tickvals: restTicks.map(å => å / restFrameFactor),
-          ticktext: restTicks.map(å => `${å} Å`),
-          ticks: 'outside' as const,
-          tickcolor: plotColors.textSecondary,
-          tickfont: { size: 11, color: plotColors.textSecondary },
-          gridcolor: 'transparent',
-          zerolinecolor: 'transparent',
-          showgrid: false,
-          domain: [0, 0.90],
-          anchor: 'y' as const,
-        };
-      })(),
+      // X-axis: Rest-frame wavelength (Å), overlays primary axis
+      // Shares μm coordinate system with xaxis; tickvals/ticktext relabel to Å
+      xaxis3: {
+        overlaying: 'x' as const,
+        side: 'top' as const,
+        tickmode: 'array' as const,
+        tickvals: restTicks.map(å => å / restFrameFactor),
+        ticktext: restTicks.map(å => `${parseFloat(å.toFixed(1))} Å`),
+        ticks: 'outside' as const,
+        tickcolor: plotColors.textSecondary,
+        tickfont: { size: 11, color: plotColors.textSecondary },
+        showgrid: false,
+        gridcolor: 'transparent',
+        zerolinecolor: 'transparent',
+        domain: [0, 0.90],
+        anchor: 'y' as const,
+        // Range must match primary axis exactly for tick alignment
+        // When zoomed: explicit range from state; when full: autorange from invisible trace
+        ...(obsRange
+          ? { range: obsRange, autorange: false }
+          : { autorange: true }
+        ),
+        // Change uirevision on each zoom so Plotly applies new ticks/range
+        // (xaxis keeps 'constant' to preserve user zoom; xaxis3 resets to accept layout updates)
+        uirevision: obsRange ? `${obsRange[0]}-${obsRange[1]}` : 'default',
+      },
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
         gridcolor: plotColors.grid,
@@ -557,39 +565,34 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     };
 
     return { traces, layout };
-  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating, inspectionMode]);
+  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating, inspectionMode, obsRange]);
 
-  // Recompute rest-frame tick labels when primary axis is zoomed/panned
-  // (matches: 'x' keeps ranges in sync automatically, but tick density needs updating)
+  // Capture observed wavelength range from user zoom/pan/reset events.
+  // Purely updates React state — no imperative Plotly calls. The next render
+  // cycle recomputes xaxis3 ticks and range declaratively via the layout prop.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleRelayout = useCallback((event: any) => {
-    if (isRelayoutingRef.current) return;
-    const el = plotDivRef.current;
-    if (!el || !plotlyRef.current) return;
-
-    const factor = 10000 / (1 + redshift);
-
-    // Plotly emits range as separate keys (box zoom) or as an array (pan/drag)
+    // Extract observed range — Plotly uses different key formats
     let obsMin: number | undefined;
     let obsMax: number | undefined;
 
     if (event['xaxis.range[0]'] !== undefined && event['xaxis.range[1]'] !== undefined) {
+      // Box zoom: separate keys
       obsMin = event['xaxis.range[0]'];
       obsMax = event['xaxis.range[1]'];
     } else if (Array.isArray(event['xaxis.range'])) {
+      // Pan/drag: array
       obsMin = event['xaxis.range'][0];
       obsMax = event['xaxis.range'][1];
     }
 
     if (obsMin !== undefined && obsMax !== undefined) {
-      const restTicks = computeNiceRestTicks(obsMin, obsMax, factor);
-      isRelayoutingRef.current = true;
-      plotlyRef.current.relayout(el, {
-        'xaxis3.tickvals': restTicks.map(å => å / factor),
-        'xaxis3.ticktext': restTicks.map(å => `${å} Å`),
-      }).then(() => { isRelayoutingRef.current = false; });
+      setObsRange([obsMin, obsMax]);
+    } else if (event['xaxis.autorange'] === true) {
+      // Double-click reset
+      setObsRange(null);
     }
-  }, [redshift]);
+  }, []);
 
   if (loading) {
     return (
@@ -768,8 +771,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           },
         }}
         style={{ width: '100%', height: '700px' }}
-        onInitialized={(_figure, graphDiv) => { plotDivRef.current = graphDiv as HTMLDivElement; }}
-        onUpdate={(_figure, graphDiv) => { plotDivRef.current = graphDiv as HTMLDivElement; }}
         onRelayout={handleRelayout}
       />
     </div>
