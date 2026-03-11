@@ -138,6 +138,7 @@ export function MapPageContent({
         initialZoom={initialZoom}
         highlightObjectId={highlightObjectId}
         markerFilter={markerFilter}
+        filteredIdSet={filteredIdSet}
         onOpenFilters={() => setPanelOpen(true)}
         hasActiveFilters={hasActiveFilters}
         onFieldChange={handleFieldChange}

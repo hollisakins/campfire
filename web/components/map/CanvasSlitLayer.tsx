@@ -6,26 +6,7 @@ import { useMap } from 'react-leaflet';
 import type { SlitRegion, Shutter } from '@/lib/actions/map';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { skyToPixel } from '@/lib/utils/wcs';
-
-// ============================================
-// Per-observation color palette
-// ============================================
-
-const OBSERVATION_COLORS = [
-  '#00ff00', // lime green
-  '#00ccff', // cyan
-  '#ff6600', // orange
-  '#ff00ff', // magenta
-  '#ffff00', // yellow
-  '#00ffcc', // teal
-  '#ff3399', // pink
-  '#66ff33', // chartreuse
-];
-
-function getObservationColor(observation: string, observations: string[]): string {
-  const idx = observations.indexOf(observation);
-  return OBSERVATION_COLORS[idx % OBSERVATION_COLORS.length];
-}
+import { getObservationColor } from './observation-colors';
 
 // ============================================
 // Types
@@ -46,6 +27,7 @@ export interface CanvasSlitLayerProps {
   wcs: WCSParams;
   visible: boolean;
   highlightObjectId?: string;
+  slitFilter?: (slit: SlitRegion | Shutter) => boolean;
 }
 
 // ============================================
@@ -67,17 +49,18 @@ const SHUTTER_PITCH_ARCSEC = 0.53;
 // ============================================
 
 export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
-  const { slits, wcs, visible } = props;
+  const { slits, wcs, visible, slitFilter } = props;
   const map = useMap();
 
-  // Derive unique observation list for consistent color assignment
+  // Derive unique observation list from FULL (unfiltered) slits for stable color assignment
   const observations = useMemo(() => {
     return [...new Set(slits.map(s => s.observation))].sort();
   }, [slits]);
 
   // Pre-compute LatLng positions, rotation angles, and slitlet grouping
   const prepared: PreparedSlit[] = useMemo(() => {
-    return slits.map(s => {
+    const filtered = slitFilter ? slits.filter(slitFilter) : slits;
+    return filtered.map(s => {
       const { x, y } = skyToPixel(wcs, s.center_ra, s.center_dec);
       const isShutter = 'shutter_state' in s;
       const isStuck = isShutter && (s as Shutter).shutter_state === 'stuck_closed';
@@ -92,7 +75,7 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
         groupKey: `${s.object_id}|${s.observation}|${ditherId}`,
       };
     });
-  }, [slits, wcs, observations]);
+  }, [slits, wcs, observations, slitFilter]);
 
   // Stable refs for event handlers
   const preparedRef = useRef(prepared);

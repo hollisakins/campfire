@@ -9,6 +9,7 @@ import { AdvancedFiltersPanel } from './AdvancedFiltersPanel';
 import { REDSHIFT_QUALITY } from '@/lib/flags';
 import { filtersToURLParams } from '@/lib/utils/url-params';
 import type { Program } from '@/lib/types';
+import { OBSERVATION_COLORS } from '@/components/map/observation-colors';
 import type { CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
 
 // FilterMode type for filter modes
@@ -178,9 +179,10 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   }));
 
   // Convert observations to filter options
-  const observationOptions: FilterOption[] = availableObservations.map((o) => ({
+  const observationOptions: FilterOption[] = availableObservations.map((o, idx) => ({
     value: o,
     label: o,
+    color: OBSERVATION_COLORS[idx % OBSERVATION_COLORS.length],
   }));
 
   // Convert quality options

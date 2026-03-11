@@ -21,6 +21,7 @@ import { CoordinateOverlay } from './CoordinateOverlay';
 import { MapContextMenu } from './MapContextMenu';
 import { CanvasMarkerLayer } from './CanvasMarkerLayer';
 import { CanvasSlitLayer } from './CanvasSlitLayer';
+import type { SlitRegion, Shutter } from '@/lib/actions/map';
 
 import 'leaflet/dist/leaflet.css';
 
@@ -141,6 +142,7 @@ interface MapViewerProps {
   initialZoom?: number;
   highlightObjectId?: string;
   markerFilter?: (marker: MapMarker) => boolean;
+  filteredIdSet?: Set<string> | null;
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
   onFieldChange?: (field: string, observations: string[]) => void;
@@ -154,6 +156,7 @@ export function MapViewer({
   initialZoom,
   highlightObjectId,
   markerFilter,
+  filteredIdSet,
   onOpenFilters,
   hasActiveFilters,
   onFieldChange: onFieldChangeProp,
@@ -213,6 +216,18 @@ export function MapViewer({
     if (!markerFilter) return undefined;
     return markers.filter(markerFilter).length;
   }, [markers, markerFilter]);
+
+  // Build slit filter from filteredIdSet (reuses same ID set as marker filter)
+  const slitFilter = useMemo(() => {
+    if (!filteredIdSet) return undefined;
+    return (slit: SlitRegion | Shutter) => filteredIdSet.has(slit.object_id);
+  }, [filteredIdSet]);
+
+  // Compute filtered slit count for LayerControl display
+  const filteredSlitCount = useMemo(() => {
+    if (!slitFilter) return undefined;
+    return slits.filter(slitFilter).length;
+  }, [slits, slitFilter]);
 
   // Track whether we've applied the initialFilter (only for first render)
   const initialFilterApplied = useRef(false);
@@ -369,6 +384,7 @@ export function MapViewer({
           slits={slits}
           wcs={activeLayer.wcs_params}
           visible={showSlits}
+          slitFilter={slitFilter}
         />
 
         {/* Canvas-rendered object markers */}
@@ -445,6 +461,7 @@ export function MapViewer({
         onToggleSlits={setShowSlits}
         slitCount={slits.length}
         isLoadingSlits={isLoadingSlits}
+        filteredSlitCount={filteredSlitCount}
         onOpenFilters={onOpenFilters}
         hasActiveFilters={hasActiveFilters}
       />

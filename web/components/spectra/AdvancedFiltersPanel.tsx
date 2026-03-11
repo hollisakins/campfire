@@ -13,6 +13,7 @@ import {
 } from '@/lib/flags';
 import type { AdvancedFilterOptions } from './SpectraFilterBar';
 import { GRATINGS, type Program } from '@/lib/types';
+import { OBSERVATION_COLORS } from '@/components/map/observation-colors';
 
 interface FilterOption {
   value: string | number;
@@ -207,9 +208,10 @@ export function AdvancedFiltersPanel({
     label: p.program_name ? `${p.program_name} (${p.program_id})` : `Program ${p.program_id}`,
   }));
 
-  const observationOptions: FilterOption[] = availableObservations.map((o) => ({
+  const observationOptions: FilterOption[] = availableObservations.map((o, idx) => ({
     value: o,
     label: o,
+    color: OBSERVATION_COLORS[idx % OBSERVATION_COLORS.length],
   }));
 
   const qualityOptions: FilterOption[] = REDSHIFT_QUALITY.map((q) => ({
@@ -334,11 +336,14 @@ export function AdvancedFiltersPanel({
                   onClick={() => setObservationsExpanded(!observationsExpanded)}
                   className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 hover:bg-card-hover dark:hover:bg-slate-800/50 transition-colors"
                 >
-                  <span>
-                    Observations
-                    {(filters.observations?.length ?? 0) > 0 && (
-                      <span className="ml-1.5 text-[10px] font-bold text-primary">({filters.observations.length})</span>
-                    )}
+                  <span className="flex flex-col items-start">
+                    <span>
+                      Observations
+                      {(filters.observations?.length ?? 0) > 0 && (
+                        <span className="ml-1.5 text-[10px] font-bold text-primary">({filters.observations.length})</span>
+                      )}
+                    </span>
+                    <span className="text-[10px] font-normal normal-case tracking-normal text-gray-400 dark:text-slate-500">Filters objects and map shutters</span>
                   </span>
                   <ChevronDown className={`w-4 h-4 transition-transform ${observationsExpanded ? 'rotate-180' : ''}`} />
                 </button>

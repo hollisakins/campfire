@@ -20,6 +20,7 @@ interface LayerControlProps {
   onToggleSlits: (show: boolean) => void;
   slitCount: number;
   isLoadingSlits?: boolean;
+  filteredSlitCount?: number;
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
 }
@@ -40,6 +41,7 @@ export function LayerControl({
   onToggleSlits,
   slitCount,
   isLoadingSlits,
+  filteredSlitCount,
   onOpenFilters,
   hasActiveFilters,
 }: LayerControlProps) {
@@ -150,6 +152,8 @@ export function LayerControl({
                 Shutters
                 {isLoadingSlits ? (
                   <span className="text-xs text-gray-400 ml-1">loading...</span>
+                ) : filteredSlitCount !== undefined && slitCount > 0 ? (
+                  <span className="text-xs text-gray-400 ml-1">({filteredSlitCount} of {slitCount})</span>
                 ) : slitCount > 0 ? (
                   <span className="text-xs text-gray-400 ml-1">({slitCount})</span>
                 ) : null}
