@@ -93,33 +93,36 @@ export function MapPageContent({
     setFieldObservations(observations);
   }, []);
 
-  // Sync filter state to URL (preserving map-specific params)
-  // Note: intentionally omit searchParams from deps to avoid a feedback loop
-  // where router.replace() updates searchParams, re-triggering this effect
+  // Sync filter state to URL (preserving map-specific params).
+  // Only updates the URL when filter params actually change — map params
+  // (field, ra, dec, z, etc.) are managed by MapViewer separately.
   useEffect(() => {
     const filterParams = filtersToURLParams(debouncedFilters);
     const currentUrl = new URL(window.location.href);
 
-    // Preserve map-specific params (field, filter, ra, dec, z, highlight)
-    const mapParams = ['field', 'filter', 'ra', 'dec', 'z', 'zoom', 'highlight'];
-    const preserved = new Map<string, string>();
-    for (const key of mapParams) {
-      const val = currentUrl.searchParams.get(key);
-      if (val !== null) preserved.set(key, val);
+    // Extract current filter params from URL (everything that ISN'T a map param)
+    const mapParamKeys = new Set(['field', 'filter', 'ra', 'dec', 'z', 'zoom', 'highlight']);
+    const currentFilterEntries: [string, string][] = [];
+    for (const [key, val] of currentUrl.searchParams) {
+      if (!mapParamKeys.has(key)) currentFilterEntries.push([key, val]);
     }
 
-    // Clear all params and re-set
-    const newSearch = new URLSearchParams();
-    for (const [key, val] of preserved) {
-      newSearch.set(key, val);
-    }
-    for (const [key, val] of filterParams) {
-      newSearch.set(key, val);
-    }
+    // Compare only the filter portion — sort both to avoid ordering differences
+    const sortEntries = (entries: Iterable<[string, string]>) =>
+      [...entries].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join('&');
+    const newFilterStr = sortEntries(filterParams);
+    const currentFilterStr = sortEntries(currentFilterEntries);
 
-    const newSearchStr = newSearch.toString();
-    const currentSearch = currentUrl.searchParams.toString();
-    if (newSearchStr !== currentSearch) {
+    if (newFilterStr !== currentFilterStr) {
+      // Rebuild the full URL: preserve existing map params, replace filter params
+      const newSearch = new URLSearchParams();
+      for (const [key, val] of currentUrl.searchParams) {
+        if (mapParamKeys.has(key)) newSearch.set(key, val);
+      }
+      for (const [key, val] of filterParams) {
+        newSearch.set(key, val);
+      }
+      const newSearchStr = newSearch.toString();
       router.replace(`${pathname}${newSearchStr ? `?${newSearchStr}` : ''}`, { scroll: false });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

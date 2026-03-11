@@ -265,7 +265,10 @@ export function MapViewer({
       } catch (err) {
         console.error('Failed to load map markers:', err);
       } finally {
-        if (!cancelled) setIsLoadingMarkers(false);
+        // Always clear loading state — React 18+ ignores setState on unmounted
+        // components, and for field-change races the new effect immediately
+        // sets loading back to true.
+        setIsLoadingMarkers(false);
       }
     }
 
@@ -284,7 +287,7 @@ export function MapViewer({
       } catch (err) {
         console.error('Failed to load shutters/slit regions:', err);
       } finally {
-        if (!cancelled) setIsLoadingSlits(false);
+        setIsLoadingSlits(false);
       }
     }
 
