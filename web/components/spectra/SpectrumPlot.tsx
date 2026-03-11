@@ -346,6 +346,18 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         xaxis: 'x',
         yaxis: 'y',
       },
+      // Invisible trace to make Plotly render xaxis3 (requires at least one trace)
+      {
+        x: [wave[0], wave[wave.length - 1]],
+        y: [0, 0],
+        type: 'scatter' as const,
+        mode: 'markers' as const,
+        marker: { opacity: 0 },
+        hoverinfo: 'skip' as const,
+        showlegend: false,
+        xaxis: 'x3',
+        yaxis: 'y',
+      },
     ];
 
     // Add cross-dispersion profile traces if data exists
