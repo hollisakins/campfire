@@ -24,6 +24,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [csvLoading, setCsvLoading] = useState(false);
   const [fitsLoading, setFitsLoading] = useState(false);
+  const [fitsProgress, setFitsProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -75,38 +76,95 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
 
   const handleFitsDownload = async () => {
     setFitsLoading(true);
+    setFitsProgress(null);
     setError(null);
 
     try {
-      // Generate JWT token for download
       const result = await generateFitsDownloadUrl(filters, sortColumn, sortDirection);
 
-      if (result.error || !result.url || !result.token) {
+      if (result.error || !result.files || !result.token || !result.workerUrl) {
         setError(result.error || 'Failed to generate download URL');
         return;
       }
 
-      // Submit via hidden form POST to avoid URL length limits
-      const form = document.createElement('form');
-      form.method = 'POST';
-      form.action = result.url;
-      form.style.display = 'none';
+      const { files, token, workerUrl, zipFilename } = result;
+      setFitsProgress({ done: 0, total: files.length });
 
-      const input = document.createElement('input');
-      input.type = 'hidden';
-      input.name = 'token';
-      input.value = result.token;
-      form.appendChild(input);
+      // Fetch files in parallel with concurrency limit
+      const CONCURRENCY = 6;
+      const fileData: { filename: string; data: Uint8Array }[] = [];
+      const errors: string[] = [];
+      let completed = 0;
+      const queue = [...files];
 
-      document.body.appendChild(form);
-      form.submit();
-      document.body.removeChild(form);
+      async function fetchWorker() {
+        while (queue.length > 0) {
+          const file = queue.shift()!;
+          try {
+            const resp = await fetch(
+              `${workerUrl}/file?key=${encodeURIComponent(file.key)}`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const buf = await resp.arrayBuffer();
+            fileData.push({ filename: file.filename, data: new Uint8Array(buf) });
+          } catch {
+            errors.push(file.filename);
+          }
+          completed++;
+          setFitsProgress({ done: completed, total: files.length });
+        }
+      }
+
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => fetchWorker()));
+
+      if (fileData.length === 0) {
+        setError('All file downloads failed');
+        return;
+      }
+
+      // Build ZIP in browser
+      const { zipSync } = await import('fflate');
+
+      // Deduplicate filenames
+      const zipInput: Record<string, [Uint8Array, { level: 0 }]> = {};
+      const seenNames = new Set<string>();
+      for (const { filename, data } of fileData) {
+        let name = filename;
+        if (seenNames.has(name)) {
+          const dot = name.lastIndexOf('.');
+          const base = dot > 0 ? name.substring(0, dot) : name;
+          const ext = dot > 0 ? name.substring(dot) : '';
+          let counter = 2;
+          while (seenNames.has(`${base}_${counter}${ext}`)) counter++;
+          name = `${base}_${counter}${ext}`;
+        }
+        seenNames.add(name);
+        zipInput[name] = [data, { level: 0 }];
+      }
+
+      const zipped = zipSync(zipInput);
+
+      // Trigger browser download
+      const blob = new Blob([zipped.buffer as ArrayBuffer], { type: 'application/zip' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = zipFilename || 'campfire_download.zip';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      if (errors.length > 0) {
+        setError(`${errors.length} file(s) failed to download`);
+      }
     } catch (err) {
       console.error('FITS download error:', err);
       setError('Failed to download FITS files');
     } finally {
-      // Keep loading state for a moment while download starts
-      setTimeout(() => setFitsLoading(false), 2000);
+      setFitsLoading(false);
+      setFitsProgress(null);
     }
   };
 
@@ -186,7 +244,9 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
               )}
               <div className="flex-1">
                 <div className="font-medium text-text-primary dark:text-slate-100">
-                  {fitsLoading ? 'Preparing...' : 'FITS ZIP'}
+                  {fitsProgress
+                    ? `Downloading ${fitsProgress.done}/${fitsProgress.total}...`
+                    : fitsLoading ? 'Preparing...' : 'FITS ZIP'}
                 </div>
                 <div className="text-xs text-text-secondary dark:text-slate-400">
                   Spectroscopic data files

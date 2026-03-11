@@ -1,10 +1,9 @@
 /**
  * Cloudflare Worker for CAMPFIRE FITS file downloads
- * Streams multiple FITS files from R2 as a ZIP archive
+ * Authenticated file proxy — serves individual files from R2
  */
 
-import { verifyToken, type DownloadPayload } from './auth';
-import { streamZip } from './zip';
+import { verifyToken } from './auth';
 
 export interface Env {
   R2_BUCKET: R2Bucket;
@@ -13,7 +12,7 @@ export interface Env {
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     // Handle CORS preflight
@@ -21,60 +20,50 @@ export default {
       return handleCORS(request, env);
     }
 
-    // Allow GET (token in query) and POST (token in body)
-    if (request.method !== 'GET' && request.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405 });
+    // Only GET /file is supported
+    if (request.method !== 'GET' || url.pathname !== '/file') {
+      return new Response('Not found', { status: 404 });
     }
 
     try {
-      // Extract token from query param (GET) or form body (POST)
-      let token: string | null = null;
-
-      if (request.method === 'GET') {
-        token = url.searchParams.get('token');
-      } else {
-        const formData = await request.formData();
-        token = formData.get('token') as string | null;
+      // Extract parameters
+      const key = url.searchParams.get('key');
+      if (!key) {
+        return new Response('Missing key parameter', { status: 400 });
       }
 
+      const authHeader = request.headers.get('Authorization');
+      const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
       if (!token) {
-        return new Response('Missing token parameter', { status: 400 });
+        return new Response('Missing Authorization header', { status: 401 });
       }
 
-      // Verify JWT and extract payload
+      // Verify JWT
       const payload = await verifyToken(token, env.JWT_SECRET);
 
-      // Check expiration
       if (payload.exp && payload.exp < Date.now()) {
         return new Response('Token expired', { status: 401 });
       }
 
-      // Validate payload
-      if (!payload.files || !Array.isArray(payload.files) || payload.files.length === 0) {
-        return new Response('Invalid token payload', { status: 400 });
+      // Check that requested key is in the token's allowlist
+      const allowed = payload.files?.some((f) => f.key === key);
+      if (!allowed) {
+        return new Response('File not authorized', { status: 403 });
       }
 
-      // Get zip filename from payload (includes timestamp)
-      const zipFilename = payload.zipFilename || 'campfire_download.zip';
+      // Fetch from R2
+      const object = await env.R2_BUCKET.get(key);
+      if (!object) {
+        return new Response('File not found', { status: 404 });
+      }
 
-      // Stream ZIP response
-      const { readable, writable } = new TransformStream();
-
-      // Start ZIP generation in background
-      ctx.waitUntil(
-        streamZip(payload.files, writable, env.R2_BUCKET).catch((err) => {
-          console.error('ZIP generation error:', err);
-        })
-      );
-
-      // Return streaming response
-      return new Response(readable, {
+      return new Response(object.body, {
         headers: {
-          'Content-Type': 'application/zip',
-          'Content-Disposition': `attachment; filename="${zipFilename}"`,
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': object.size.toString(),
           'Access-Control-Allow-Origin': getAllowedOrigin(request, env),
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Allow-Headers': 'Authorization',
         },
       });
     } catch (error) {
@@ -91,24 +80,18 @@ export default {
   },
 };
 
-/**
- * Handle CORS preflight requests
- */
 function handleCORS(request: Request, env: Env): Response {
   return new Response(null, {
     status: 204,
     headers: {
       'Access-Control-Allow-Origin': getAllowedOrigin(request, env),
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Authorization',
       'Access-Control-Max-Age': '86400',
     },
   });
 }
 
-/**
- * Get allowed origin for CORS
- */
 function getAllowedOrigin(request: Request, env: Env): string {
   const origin = request.headers.get('Origin');
   const allowedOrigins = env.ALLOWED_ORIGINS.split(',');
@@ -117,6 +100,5 @@ function getAllowedOrigin(request: Request, env: Env): string {
     return origin;
   }
 
-  // Default to first allowed origin
   return allowedOrigins[0] || '*';
 }
