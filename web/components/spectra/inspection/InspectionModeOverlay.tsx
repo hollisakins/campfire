@@ -92,7 +92,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   });
 
   // Navigation hook (skipNavQuery: queue handles prev/next)
-  const { navigateTo, fetchObject, isNavigating, navigationError, setNavigationError } = useObjectNavigation({
+  const { navigateTo, fetchObject, prefetchObject, isNavigating, navigationError, setNavigationError } = useObjectNavigation({
     filters,
     sortColumn,
     sortDirection,
@@ -189,9 +189,8 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const queueReady = !queue.loading && redirectComplete;
 
   // Prefetch adjacent objects' data when queue position changes.
-  // IMPORTANT: Must gate on queueReady (not just queue.loading) because fetchObject
-  // uses a shared AbortController — prefetching before redirect completes would abort
-  // the redirect's in-flight fetch.
+  // Uses prefetchObject (separate from fetchObject) so prefetch requests
+  // don't share an AbortController with user-initiated navigation.
   useEffect(() => {
     if (!queueReady || queue.isEmpty) return;
 
@@ -199,7 +198,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       if (!objectId) return;
       if (getCachedObject(objectId)) return; // Already cached
       try {
-        const data = await fetchObject(objectId);
+        const data = await prefetchObject(objectId);
         if (data) {
           setCachedObject(objectId, data);
           prefetchGratings(data.spectrum.spectra);
@@ -207,13 +206,10 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       } catch { /* ignore prefetch errors */ }
     };
 
-    // Sequential: fetchObject aborts the previous in-flight request,
-    // so we must await next (priority) before starting prev
-    (async () => {
-      await prefetch(queue.next);
-      await prefetch(queue.prev);
-    })();
-  }, [queue.next, queue.prev, queueReady, queue.isEmpty, fetchObject, prefetchGratings, getCachedObject, setCachedObject]);
+    // Safe to run in parallel — prefetchObject doesn't use a shared AbortController
+    prefetch(queue.next);
+    prefetch(queue.prev);
+  }, [queue.next, queue.prev, queueReady, queue.isEmpty, prefetchObject, prefetchGratings, getCachedObject, setCachedObject]);
 
   // Handle browser back/forward navigation
   useEffect(() => {

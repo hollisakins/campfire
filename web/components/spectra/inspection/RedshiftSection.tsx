@@ -1,8 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import type { InspectionState } from '@/lib/hooks/useInspectionState';
-import { useDebounce } from '@/lib/hooks/useDebounce';
 
 interface RedshiftSectionProps {
   state: InspectionState;
@@ -22,25 +21,32 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
   redshiftInputRef,
 }, ref) => {
   const [localRedshift, setLocalRedshift] = useState(state.redshiftInspected);
-  const debouncedRedshift = useDebounce(localRedshift, 300);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  // Sync debounced value to inspection state.
-  // Use stable setter ref to avoid re-firing on every render
-  // (state object is a new reference each render).
-  const { setRedshiftInspected } = state;
+  // Sync inspection state back to local state on navigation (resetKey change).
+  // Also cancels any pending debounce to prevent stale values leaking across objects.
   useEffect(() => {
-    setRedshiftInspected(debouncedRedshift);
-  }, [debouncedRedshift, setRedshiftInspected]);
-
-  // Sync inspection state back to local state on external changes (e.g. navigation).
-  // resetKey ensures this fires even when the value is batched back to the same string.
-  useEffect(() => {
+    clearTimeout(debounceTimerRef.current);
     setLocalRedshift(state.redshiftInspected);
   }, [state.redshiftInspected, state.resetKey]);
+
+  const handleChange = (value: string) => {
+    setLocalRedshift(value);
+    clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      state.setRedshiftInspected(value);
+    }, 300);
+  };
+
+  // Clean up timer on unmount
+  useEffect(() => {
+    return () => clearTimeout(debounceTimerRef.current);
+  }, []);
 
   // Expose method to immediately flush pending debounced changes
   useImperativeHandle(ref, () => ({
     flushPendingChanges: () => {
+      clearTimeout(debounceTimerRef.current);
       if (localRedshift !== state.redshiftInspected) {
         console.log('[RedshiftSection] Flushing pending redshift:', localRedshift);
         state.setRedshiftInspected(localRedshift);
@@ -92,7 +98,7 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
             type="number"
             step="0.0001"
             value={localRedshift}
-            onChange={(e) => setLocalRedshift(e.target.value)}
+            onChange={(e) => handleChange(e.target.value)}
             placeholder="auto"
             disabled={!canEdit}
             className="w-full px-2 py-1.5 text-sm font-mono border border-border

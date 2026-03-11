@@ -133,11 +133,37 @@ export function useObjectNavigation(options: UseObjectNavigationOptions) {
     }
   }, [fetchObject]);
 
+  /**
+   * Lightweight fetch for prefetching adjacent objects.
+   * Does NOT use the shared AbortController, so it won't cancel
+   * (or be cancelled by) user-initiated navigation.
+   */
+  const prefetchObject = useCallback(async (objectId: string): Promise<NavigationData | null> => {
+    try {
+      const spectrumResult = await getSpectrumById(objectId);
+
+      if (!spectrumResult.isAuthenticated || !spectrumResult.spectrum) {
+        return null;
+      }
+
+      const rgbUrl = `/api/rgb-thumbnail?object_id=${encodeURIComponent(objectId)}`;
+
+      return {
+        spectrum: spectrumResult.spectrum,
+        rgbImageUrl: rgbUrl,
+        nav: { prev: null, next: null, index: 0, total: 0 },
+      };
+    } catch {
+      return null;
+    }
+  }, []);
+
   return {
     isNavigating,
     navigationError,
     setNavigationError,
     navigateTo,
     fetchObject,
+    prefetchObject,
   };
 }
