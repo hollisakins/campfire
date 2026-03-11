@@ -16,21 +16,26 @@ export async function streamZip(
 ): Promise<void> {
   const writer = writable.getWriter();
 
+  // Collect chunks from fflate's synchronous callback, then flush async
+  // fflate's callback data may be a view into a reusable buffer, so we
+  // must copy each chunk before the callback returns.
+  const chunks: Uint8Array[] = [];
+  let zipError: Error | null = null;
+  let finalized = false;
+
   try {
     // Create ZIP instance
     const zip = new Zip((err, data, final) => {
       if (err) {
-        console.error('ZIP error:', err);
-        writer.abort(err);
+        zipError = err instanceof Error ? err : new Error(String(err));
         return;
       }
 
-      // Write chunk to stream
-      writer.write(data);
+      // Copy data — fflate may reuse the underlying buffer
+      chunks.push(new Uint8Array(data));
 
-      // Close stream when ZIP is finalized
       if (final) {
-        writer.close();
+        finalized = true;
       }
     });
 
@@ -53,17 +58,34 @@ export async function streamZip(
         const zipFile = new ZipPassThrough(file.filename);
         zip.add(zipFile);
 
-        // Write file data
-        zipFile.push(uint8Array, true); // true = final chunk
+        // Write file data (triggers synchronous callback)
+        zipFile.push(uint8Array, true);
+
+        if (zipError) throw zipError;
+
+        // Flush accumulated chunks to the stream
+        for (const chunk of chunks) {
+          await writer.write(chunk);
+        }
+        chunks.length = 0;
       } catch (fileError) {
+        if (fileError === zipError) throw fileError;
         console.error(`Error processing file ${file.key}:`, fileError);
-        // Continue with next file instead of failing entire download
         continue;
       }
     }
 
-    // Finalize ZIP
+    // Finalize ZIP (triggers final callback with central directory)
     zip.end();
+
+    if (zipError) throw zipError;
+
+    // Flush remaining chunks (central directory records)
+    for (const chunk of chunks) {
+      await writer.write(chunk);
+    }
+
+    await writer.close();
   } catch (error) {
     console.error('ZIP streaming error:', error);
     await writer.abort(error);
