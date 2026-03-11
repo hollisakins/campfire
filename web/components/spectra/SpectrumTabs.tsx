@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
-import { Spectrum } from '@/lib/types';
+import { GRATINGS, Spectrum } from '@/lib/types';
 import { GratingDetails } from './GratingDetails';
 import { InspectionPanel } from './InspectionPanel';
 import { SpectrumPlot } from './SpectrumPlot';
@@ -27,7 +27,7 @@ interface SpectrumTabsProps {
 
 export const SpectrumTabs: React.FC<SpectrumTabsProps> = ({ spectra, objectId, objectDbId, inspectionData }) => {
   // Sort spectra by grating order
-  const gratingOrder = ['PRISM', 'G140M', 'G235M', 'G395M'];
+  const gratingOrder: readonly string[] = GRATINGS;
   const sortedSpectra = [...spectra].sort(
     (a, b) =>
       gratingOrder.indexOf(a.grating) - gratingOrder.indexOf(b.grating)

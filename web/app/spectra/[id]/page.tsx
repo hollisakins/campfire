@@ -244,7 +244,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
             {/* Tab Navigation */}
             <TabsList>
               {spectrum.spectra.sort((a, b) => {
-                const order = ['PRISM', 'G140M', 'G235M', 'G395M'];
+                const order = ['PRISM', 'G140H', 'G140M', 'G235H', 'G235M', 'G395H', 'G395M'];
                 return order.indexOf(a.grating) - order.indexOf(b.grating);
               }).map((spec) => (
                 <TabsTrigger key={spec.grating} value={spec.grating.toLowerCase()}>

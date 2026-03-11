@@ -12,7 +12,7 @@ import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useI
 import { useAuth } from '@/lib/contexts/AuthContext';
 import type { FilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
-import type { SpectrumObject } from '@/lib/types';
+import { GRATINGS, type SpectrumObject } from '@/lib/types';
 import type { MapLayer, Shutter } from '@/lib/actions/map';
 import { getNearbyShutters } from '@/lib/actions/map';
 import { useSpectrumDataCache } from '@/lib/hooks/useSpectrumDataCache';
@@ -55,12 +55,13 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const [currentSpectrum, setCurrentSpectrum] = useState(spectrum);
   const [currentShutters, setCurrentShutters] = useState<Shutter[]>(nearbyShutters);
 
-  // Grating state
+  // Grating state — track by name so the selection persists across objects
   const sortedSpectra = [...currentSpectrum.spectra].sort((a, b) => {
-    const order = ['PRISM', 'G140M', 'G235M', 'G395M'];
+    const order: readonly string[] = GRATINGS;
     return order.indexOf(a.grating) - order.indexOf(b.grating);
   });
-  const [activeGratingIdx, setActiveGratingIdx] = useState(0);
+  const [activeGrating, setActiveGrating] = useState(sortedSpectra[0]?.grating ?? '');
+  const activeGratingIdx = Math.max(0, sortedSpectra.findIndex(s => s.grating === activeGrating));
   const activeSpec = sortedSpectra[activeGratingIdx];
 
   // Inspection state
@@ -277,8 +278,9 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
   const handleCycleGrating = useCallback(() => {
     if (sortedSpectra.length <= 1) return;
-    setActiveGratingIdx((prev) => (prev + 1) % sortedSpectra.length);
-  }, [sortedSpectra.length]);
+    const nextIdx = (activeGratingIdx + 1) % sortedSpectra.length;
+    setActiveGrating(sortedSpectra[nextIdx].grating);
+  }, [sortedSpectra, activeGratingIdx]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -392,7 +394,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
           commentCount={commentCount}
           gratings={sortedSpectra}
           activeGratingIdx={activeGratingIdx}
-          onGratingChange={setActiveGratingIdx}
+          onGratingChange={(idx) => setActiveGrating(sortedSpectra[idx].grating)}
           onPrev={handlePrev}
           onNext={handleNext}
           onToggleHelp={() => setShowHelp((prev) => !prev)}

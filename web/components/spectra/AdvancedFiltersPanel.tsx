@@ -12,9 +12,7 @@ import {
   REDSHIFT_QUALITY,
 } from '@/lib/flags';
 import type { AdvancedFilterOptions } from './SpectraFilterBar';
-import type { Program } from '@/lib/types';
-
-const GRATINGS = ['PRISM', 'G140M', 'G235M', 'G395M'];
+import { GRATINGS, type Program } from '@/lib/types';
 
 interface FilterOption {
   value: string | number;

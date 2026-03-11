@@ -289,7 +289,7 @@ export const QUALITY_LABELS: FlagDefinition[] = [
   { category: 'redshift_quality', bit_position: null, value: 4, label: 'Secure', short_label: 'Secure', icon: '🟢', color: '#28a745', description: 'Redshift definitely correct (>95% confidence)' },
 ];
 
-export const GRATINGS = ['PRISM', 'G140M', 'G235M', 'G395M'] as const;
+export const GRATINGS = ['PRISM', 'G140H', 'G140M', 'G235H', 'G235M', 'G395H', 'G395M'] as const;
 export type Grating = typeof GRATINGS[number];
 
 // Helper to get flag definition by category and value
