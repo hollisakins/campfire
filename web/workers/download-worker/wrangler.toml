@@ -12,7 +12,7 @@ bucket_name = "campfire"
 
 # Environment variables (non-secret)
 [vars]
-ALLOWED_ORIGINS = "https://campfire.hollisakins.com,http://localhost:3000"
+ALLOWED_ORIGINS = "https://campfire.hollisakins.com,https://dev.campfire.hollisakins.com,http://localhost:3000"
 
 # Secrets (set via: wrangler secret put SECRET_NAME)
 # JWT_SECRET - shared with Next.js for token signing/verification
