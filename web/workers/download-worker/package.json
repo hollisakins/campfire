@@ -8,12 +8,15 @@
     "deploy": "wrangler deploy",
     "tail": "wrangler tail"
   },
-  "keywords": ["cloudflare", "worker", "r2"],
+  "keywords": [
+    "cloudflare",
+    "worker",
+    "r2"
+  ],
   "author": "CAMPFIRE",
   "license": "MIT",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241127.0",
-    "wrangler": "^3.94.0"
-  },
-  "dependencies": {}
+    "wrangler": "^4.72.0"
+  }
 }
