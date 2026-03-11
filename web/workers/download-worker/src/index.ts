@@ -21,14 +21,21 @@ export default {
       return handleCORS(request, env);
     }
 
-    // Only allow GET requests
-    if (request.method !== 'GET') {
+    // Allow GET (token in query) and POST (token in body)
+    if (request.method !== 'GET' && request.method !== 'POST') {
       return new Response('Method not allowed', { status: 405 });
     }
 
     try {
-      // Extract and verify token
-      const token = url.searchParams.get('token');
+      // Extract token from query param (GET) or form body (POST)
+      let token: string | null = null;
+
+      if (request.method === 'GET') {
+        token = url.searchParams.get('token');
+      } else {
+        const formData = await request.formData();
+        token = formData.get('token') as string | null;
+      }
 
       if (!token) {
         return new Response('Missing token parameter', { status: 400 });
@@ -66,7 +73,7 @@ export default {
           'Content-Type': 'application/zip',
           'Content-Disposition': `attachment; filename="${zipFilename}"`,
           'Access-Control-Allow-Origin': getAllowedOrigin(request, env),
-          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type',
         },
       });
@@ -92,7 +99,7 @@ function handleCORS(request: Request, env: Env): Response {
     status: 204,
     headers: {
       'Access-Control-Allow-Origin': getAllowedOrigin(request, env),
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
       'Access-Control-Max-Age': '86400',
     },

@@ -78,21 +78,34 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
     setError(null);
 
     try {
-      // Generate download URL with JWT token
+      // Generate JWT token for download
       const result = await generateFitsDownloadUrl(filters, sortColumn, sortDirection);
 
-      if (result.error || !result.url) {
+      if (result.error || !result.url || !result.token) {
         setError(result.error || 'Failed to generate download URL');
         return;
       }
 
-      // Redirect to Worker URL (will trigger download)
-      window.location.href = result.url;
+      // Submit via hidden form POST to avoid URL length limits
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = result.url;
+      form.style.display = 'none';
+
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'token';
+      input.value = result.token;
+      form.appendChild(input);
+
+      document.body.appendChild(form);
+      form.submit();
+      document.body.removeChild(form);
     } catch (err) {
       console.error('FITS download error:', err);
       setError('Failed to download FITS files');
     } finally {
-      // Keep loading state for a moment while redirect happens
+      // Keep loading state for a moment while download starts
       setTimeout(() => setFitsLoading(false), 2000);
     }
   };

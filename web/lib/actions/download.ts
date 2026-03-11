@@ -222,10 +222,10 @@ export async function generateFitsDownloadUrl(
   filters: FilterOptions,
   sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc'
-): Promise<{ url: string | null; error: string | null }> {
+): Promise<{ url: string | null; token: string | null; error: string | null }> {
   try {
     if (!JWT_SECRET) {
-      return { url: null, error: 'Server configuration error: JWT secret not set' };
+      return { url: null, token: null, error: 'Server configuration error: JWT secret not set' };
     }
 
     // Get user for tracking
@@ -242,7 +242,7 @@ export async function generateFitsDownloadUrl(
     );
 
     if (result.error) {
-      return { url: null, error: result.error };
+      return { url: null, token: null, error: result.error };
     }
 
     // Extract all FITS file paths
@@ -257,7 +257,7 @@ export async function generateFitsDownloadUrl(
     }
 
     if (files.length === 0) {
-      return { url: null, error: 'No FITS files found for selected objects' };
+      return { url: null, token: null, error: 'No FITS files found for selected objects' };
     }
 
     // Generate ZIP filename with date
@@ -275,8 +275,8 @@ export async function generateFitsDownloadUrl(
     // Sign JWT
     const token = await signJWT(payload, JWT_SECRET);
 
-    // Construct Worker URL
-    const url = `${WORKER_URL}?token=${token}`;
+    // Worker URL (token sent via POST body, not query param, to avoid URI length limits)
+    const url = WORKER_URL;
 
     // Track ZIP download (fire-and-forget)
     if (user) {
@@ -291,10 +291,10 @@ export async function generateFitsDownloadUrl(
       });
     }
 
-    return { url, error: null };
+    return { url, token, error: null };
   } catch (error) {
     console.error('Error generating FITS download URL:', error);
-    return { url: null, error: 'Failed to generate download URL' };
+    return { url: null, token: null, error: 'Failed to generate download URL' };
   }
 }
 
