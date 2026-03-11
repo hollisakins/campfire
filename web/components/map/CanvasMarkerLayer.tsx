@@ -99,6 +99,9 @@ export function CanvasMarkerLayer({
   // Cache projected points for hit-testing (updated each redraw)
   const cachedPointsRef = useRef<CachedPoint[]>([]);
 
+  // Ref for decoupled data-change redraws (set inside main useEffect)
+  const scheduleRedrawRef = useRef<() => void>(() => {});
+
   // Main layer lifecycle
   useEffect(() => {
     const canvas = document.createElement('canvas');
@@ -120,6 +123,14 @@ export function CanvasMarkerLayer({
 
     // Hover throttle
     let hoverThrottled = false;
+
+    // rAF batching — coalesce rapid-fire redraws into one per frame
+    let rafId = 0;
+    function scheduleRedraw() {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => redraw());
+    }
+    scheduleRedrawRef.current = scheduleRedraw;
 
     // ---- Drawing ----
 
@@ -326,26 +337,28 @@ export function CanvasMarkerLayer({
 
     // ---- Bind events ----
 
-    map.on('moveend', redraw);
-    map.on('zoomend', redraw);
+    map.on('moveend', scheduleRedraw);
+    map.on('zoomend', scheduleRedraw);
     map.on('zoomanim', onAnimZoom as L.LeafletEventHandlerFn);
     map.on('zoom', onZoom);
-    map.on('viewreset', redraw);
+    map.on('viewreset', scheduleRedraw);
     map.on('click', onClick);
     map.on('mousemove', onMouseMove as L.LeafletEventHandlerFn);
     map.on('mouseout', onMouseOut);
 
     // Initial draw
-    redraw();
+    scheduleRedraw();
 
     // ---- Cleanup ----
 
     return () => {
-      map.off('moveend', redraw);
-      map.off('zoomend', redraw);
+      cancelAnimationFrame(rafId);
+
+      map.off('moveend', scheduleRedraw);
+      map.off('zoomend', scheduleRedraw);
       map.off('zoomanim', onAnimZoom as L.LeafletEventHandlerFn);
       map.off('zoom', onZoom);
-      map.off('viewreset', redraw);
+      map.off('viewreset', scheduleRedraw);
       map.off('click', onClick);
       map.off('mousemove', onMouseMove as L.LeafletEventHandlerFn);
       map.off('mouseout', onMouseOut);
@@ -361,10 +374,8 @@ export function CanvasMarkerLayer({
 
   // Trigger redraw when prepared markers or visibility change
   useEffect(() => {
-    // The layer was set up by the effect above; trigger a redraw by
-    // firing a synthetic moveend (same as Leaflet's approach)
-    map.fire('moveend');
-  }, [map, prepared, visible]);
+    scheduleRedrawRef.current();
+  }, [prepared, visible]);
 
   return null;
 }

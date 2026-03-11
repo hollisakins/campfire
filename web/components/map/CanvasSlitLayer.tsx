@@ -101,6 +101,9 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
 
+  // Ref for decoupled data-change redraws (set inside main useEffect)
+  const scheduleRedrawRef = useRef<() => void>(() => {});
+
   // Main layer lifecycle
   useEffect(() => {
     const canvas = document.createElement('canvas');
@@ -119,6 +122,14 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
     let drawZoom = map.getZoom();
     let boundsMin: L.Point;
     let boundsMax: L.Point;
+
+    // rAF batching — coalesce rapid-fire redraws into one per frame
+    let rafId = 0;
+    function scheduleRedraw() {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => redraw());
+    }
+    scheduleRedrawRef.current = scheduleRedraw;
 
     // ---- Drawing ----
 
@@ -313,23 +324,25 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
 
     // ---- Bind events ----
 
-    map.on('moveend', redraw);
-    map.on('zoomend', redraw);
+    map.on('moveend', scheduleRedraw);
+    map.on('zoomend', scheduleRedraw);
     map.on('zoomanim', onAnimZoom as L.LeafletEventHandlerFn);
     map.on('zoom', onZoom);
-    map.on('viewreset', redraw);
+    map.on('viewreset', scheduleRedraw);
 
     // Initial draw
-    redraw();
+    scheduleRedraw();
 
     // ---- Cleanup ----
 
     return () => {
-      map.off('moveend', redraw);
-      map.off('zoomend', redraw);
+      cancelAnimationFrame(rafId);
+
+      map.off('moveend', scheduleRedraw);
+      map.off('zoomend', scheduleRedraw);
       map.off('zoomanim', onAnimZoom as L.LeafletEventHandlerFn);
       map.off('zoom', onZoom);
-      map.off('viewreset', redraw);
+      map.off('viewreset', scheduleRedraw);
 
       if (canvas.parentNode) {
         canvas.parentNode.removeChild(canvas);
@@ -339,8 +352,8 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
 
   // Trigger redraw when data or visibility changes
   useEffect(() => {
-    map.fire('moveend');
-  }, [map, prepared, visible]);
+    scheduleRedrawRef.current();
+  }, [prepared, visible]);
 
   return null;
 }

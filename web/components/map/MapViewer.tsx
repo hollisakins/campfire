@@ -10,8 +10,9 @@ import {
   useMapEvents,
 } from 'react-leaflet';
 import Link from 'next/link';
-import type { MapLayer, MapMarker, SlitRegion, Shutter } from '@/lib/actions/map';
-import { getFieldMarkers, getFieldShutters, getFieldSlits } from '@/lib/actions/map';
+import type { MapLayer, MapMarker } from '@/lib/actions/map';
+import { useFieldMarkers } from '@/lib/hooks/useFieldMarkers';
+import { useFieldSlits } from '@/lib/hooks/useFieldSlits';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { leafletToSky, skyToLeaflet } from '@/lib/utils/wcs';
 import { QUALITY_LABELS } from '@/lib/types';
@@ -182,13 +183,13 @@ export function MapViewer({
     initialField || fields[0] || ''
   );
   const [activeLayer, setActiveLayer] = useState<MapLayer | null>(null);
-  const [markers, setMarkers] = useState<MapMarker[]>([]);
   const [showMarkers, setShowMarkers] = useState(true);
-  const [slits, setSlits] = useState<(SlitRegion | Shutter)[]>([]);
   const [showSlits, setShowSlits] = useState(false);
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
-  const [isLoadingMarkers, setIsLoadingMarkers] = useState(false);
-  const [isLoadingSlits, setIsLoadingSlits] = useState(false);
+
+  // Fetch markers and slits via React Query (cached per field)
+  const { data: markers = [], isLoading: isLoadingMarkers } = useFieldMarkers(selectedField);
+  const { data: slits = [], isLoading: isLoadingSlits } = useFieldSlits(selectedField);
   const [popupState, setPopupState] = useState<{
     marker: MapMarker; latLng: L.LatLng;
   } | null>(null);
@@ -252,49 +253,6 @@ export function MapViewer({
   // Close popup when field changes
   useEffect(() => { setPopupState(null); }, [selectedField]);
 
-  // Load all markers and slits for the selected field
-  useEffect(() => {
-    if (!selectedField) return;
-    let cancelled = false;
-
-    async function loadMarkers() {
-      setIsLoadingMarkers(true);
-      try {
-        const result = await getFieldMarkers(selectedField);
-        if (!cancelled) setMarkers(result.markers);
-      } catch (err) {
-        console.error('Failed to load map markers:', err);
-      } finally {
-        // Always clear loading state — React 18+ ignores setState on unmounted
-        // components, and for field-change races the new effect immediately
-        // sets loading back to true.
-        setIsLoadingMarkers(false);
-      }
-    }
-
-    async function loadSlits() {
-      setIsLoadingSlits(true);
-      try {
-        // Try new shutters table first, fall back to legacy slit_regions
-        const shuttersResult = await getFieldShutters(selectedField);
-        if (!cancelled && shuttersResult.shutters.length > 0) {
-          setSlits(shuttersResult.shutters);
-        } else if (!cancelled) {
-          // Fall back to legacy slit_regions
-          const slitsResult = await getFieldSlits(selectedField);
-          if (!cancelled) setSlits(slitsResult.slits);
-        }
-      } catch (err) {
-        console.error('Failed to load shutters/slit regions:', err);
-      } finally {
-        setIsLoadingSlits(false);
-      }
-    }
-
-    loadMarkers();
-    loadSlits();
-    return () => { cancelled = true; };
-  }, [selectedField]);
 
   // Compute initial map center and zoom
   const mapConfig = useMemo(() => {
