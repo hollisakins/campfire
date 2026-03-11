@@ -135,13 +135,6 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     fetchCommentCount();
   }, [currentSpectrum.id, user, supabase]);
 
-  // Build navigation URL
-  const buildUrl = useCallback((objectId: string) => {
-    const params = new URLSearchParams(filterStr);
-    params.set('mode', 'inspect');
-    return `/spectra/${encodeURIComponent(objectId)}?${params.toString()}`;
-  }, [filterStr]);
-
   // Handle queue redirect: if initial object not in queue, navigate to first queue item
   const redirectHandledRef = useRef(false);
   const [redirectComplete, setRedirectComplete] = useState(false);
@@ -166,7 +159,6 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         const shuttersResult = await getNearbyShutters(data.spectrum.ra, data.spectrum.dec, data.spectrum.field);
         setCurrentShutters(shuttersResult.shutters);
         inspectionState.resetState(data.spectrum);
-        window.history.replaceState(null, '', buildUrl(queue.firstId!));
         setRedirectComplete(true);
       } else {
         // Fetch was aborted or failed — retry once
@@ -178,7 +170,6 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
           const shuttersResult = await getNearbyShutters(retry.spectrum.ra, retry.spectrum.dec, retry.spectrum.field);
           setCurrentShutters(shuttersResult.shutters);
           inspectionState.resetState(retry.spectrum);
-          window.history.replaceState(null, '', buildUrl(queue.firstId!));
         }
         setRedirectComplete(true);
       }
@@ -210,43 +201,6 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     prefetch(queue.next);
     prefetch(queue.prev);
   }, [queue.next, queue.prev, queueReady, queue.isEmpty, prefetchObject, prefetchGratings, getCachedObject, setCachedObject]);
-
-  // Handle browser back/forward navigation
-  useEffect(() => {
-    const handlePopState = async () => {
-      const pathMatch = window.location.pathname.match(/\/spectra\/([^/?]+)/);
-      if (!pathMatch) return;
-
-      const urlObjectId = decodeURIComponent(pathMatch[1]);
-
-      if (urlObjectId !== currentSpectrum.object_id) {
-        console.log('[InspectionMode] Popstate detected, navigating to:', urlObjectId);
-
-        redshiftSectionRef.current?.flushPendingChanges();
-        const popSaveResult = await inspectionState.saveIfDirty();
-        if (popSaveResult.saved) {
-          deleteCachedObject(currentSpectrum.object_id);
-        }
-
-        // Update queue position
-        queue.goTo(urlObjectId);
-
-        // Check cache first
-        const cached = getCachedObject(urlObjectId);
-        const data = cached || await fetchObject(urlObjectId);
-        if (data) {
-          if (!cached) setCachedObject(urlObjectId, data);
-          setCurrentSpectrum(data.spectrum);
-          const shuttersResult = await getNearbyShutters(data.spectrum.ra, data.spectrum.dec, data.spectrum.field);
-          setCurrentShutters(shuttersResult.shutters);
-          inspectionState.resetState(data.spectrum);
-        }
-      }
-    };
-
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, [currentSpectrum.object_id, fetchObject, inspectionState, queue, getCachedObject, setCachedObject, deleteCachedObject]);
 
   // Body scroll prevention
   useEffect(() => {
@@ -292,10 +246,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     const shuttersResult = await getNearbyShutters(data.spectrum.ra, data.spectrum.dec, data.spectrum.field);
     setCurrentShutters(shuttersResult.shutters);
     inspectionState.resetState(data.spectrum);
-
-    // 5. Update URL (use replaceState to avoid Next.js router remount)
-    window.history.replaceState(null, '', buildUrl(objectId));
-  }, [navigateTo, inspectionState, buildUrl, queue, getCachedObject, setCachedObject, deleteCachedObject, currentSpectrum.object_id]);
+  }, [navigateTo, inspectionState, queue, getCachedObject, setCachedObject, deleteCachedObject, currentSpectrum.object_id]);
 
   const handlePrev = useCallback(() => handleNavigate(queue.prev), [handleNavigate, queue.prev]);
   const handleNext = useCallback(() => handleNavigate(queue.next), [handleNavigate, queue.next]);
@@ -320,9 +271,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     clearGratingCache();
     clearObjectCache();
 
-    const params = new URLSearchParams(filterStr);
-    params.delete('mode');
-    const qs = params.toString();
+    const qs = filterStr;
     router.push(`/spectra/${encodeURIComponent(currentSpectrum.object_id)}${qs ? `?${qs}` : ''}`);
   }, [router, currentSpectrum.object_id, filterStr, clearGratingCache, clearObjectCache, inspectionState]);
 

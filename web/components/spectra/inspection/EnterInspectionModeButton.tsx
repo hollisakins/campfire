@@ -2,24 +2,23 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 import { Maximize2 } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
 interface EnterInspectionModeButtonProps {
+  objectId: string;
   filterStr: string;
 }
 
-export const EnterInspectionModeButton: React.FC<EnterInspectionModeButtonProps> = ({ filterStr }) => {
+export const EnterInspectionModeButton: React.FC<EnterInspectionModeButtonProps> = ({ objectId, filterStr }) => {
   const { user, userProfile } = useAuth();
-  const pathname = usePathname();
   const canInspect = user && userProfile?.can_comment;
 
   if (!canInspect) return null;
 
   const params = new URLSearchParams(filterStr);
-  params.set('mode', 'inspect');
-  const href = `${pathname}?${params.toString()}`;
+  params.set('start', objectId);
+  const href = `/inspect?${params.toString()}`;
 
   return (
     <div className="mb-4">

@@ -19,7 +19,6 @@ import { ReturnToMapButton } from '@/components/map/ReturnToMapButton';
 import { TileCutoutWrapper } from '@/components/spectra/TileCutoutWrapper';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
-import { InspectionModeOverlay } from '@/components/spectra/inspection/InspectionModeOverlay';
 import { EnterInspectionModeButton } from '@/components/spectra/inspection/EnterInspectionModeButton';
 import { getSpectrumById, getObjectMetadata } from '@/lib/actions/spectra';
 import { getMapLayers, getNearbyShutters } from '@/lib/actions/map';
@@ -145,23 +144,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
   // Parse filters and sorting from URL for navigation
   const filters = parseFiltersFromURL(urlParams);
   const { sortColumn, sortDirection } = parseSortingFromURL(urlParams);
-  const isInspectionMode = searchParamsObj.mode === 'inspect';
   const filterStr = urlParams.toString();
-
-  // Inspection mode: render fullscreen overlay
-  if (isInspectionMode) {
-    return (
-      <InspectionModeOverlay
-        spectrum={spectrum}
-        mapLayer={rgbLayer}
-        nearbyShutters={nearbyShutters}
-        filterStr={filterStr}
-        filters={filters}
-        sortColumn={sortColumn}
-        sortDirection={sortDirection}
-      />
-    );
-  }
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -360,7 +343,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
 
           {/* Inspect Tab */}
           <TabsContent value="inspect">
-            <EnterInspectionModeButton filterStr={filterStr} />
+            <EnterInspectionModeButton objectId={objectId} filterStr={filterStr} />
             <InspectionPanel
               objectDbId={spectrum.id}
               objectId={spectrum.object_id}
