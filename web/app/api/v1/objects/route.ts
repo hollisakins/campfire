@@ -155,7 +155,7 @@ function parseUrlToFilters(
  * - radius: search radius (arcsec)
  * - limit: maximum number of results (default: 1000)
  * - offset: pagination offset (default: 0)
- * - sort: sort column (object_id, ra, dec, redshift, redshift_quality, field)
+ * - sort: sort column (object_id, ra, dec, redshift, redshift_quality, field, observation, max_snr, max_exposure_time, distance)
  * - sort_dir: sort direction (asc, desc)
  */
 export async function GET(request: NextRequest) {
@@ -198,7 +198,7 @@ export async function GET(request: NextRequest) {
     // Sorting (validate column)
     const sortColumn = searchParams.get('sort') || 'object_id';
     const sortDirection = searchParams.get('sort_dir') || 'asc';
-    const validSortColumns = ['object_id', 'ra', 'dec', 'redshift', 'redshift_quality', 'field'];
+    const validSortColumns = ['object_id', 'ra', 'dec', 'redshift', 'redshift_quality', 'field', 'observation', 'max_snr', 'max_exposure_time', 'distance'];
     const finalSortColumn = validSortColumns.includes(sortColumn) ? sortColumn : 'object_id';
 
     // Create Supabase client with service role
