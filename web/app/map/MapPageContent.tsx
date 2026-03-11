@@ -5,7 +5,7 @@ import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import type { MapLayer, MapMarker } from '@/lib/actions/map';
 import { MapViewerWrapper } from '@/components/map/MapViewerWrapper';
 import { AdvancedFiltersPanel } from '@/components/spectra/AdvancedFiltersPanel';
-import type { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import type { FilterOptions } from '@/lib/actions/filter-params';
 import { parseFiltersFromURL, filtersToURLParams } from '@/lib/utils/url-params';
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
@@ -36,7 +36,7 @@ export function MapPageContent({
   const initialFilters = useMemo(() => parseFiltersFromURL(searchParams), [searchParams]);
 
   // Filter state
-  const [filters, setFilters] = useState<AdvancedFilterOptions>(initialFilters);
+  const [filters, setFilters] = useState<FilterOptions>(initialFilters);
   const [panelOpen, setPanelOpen] = useState(false);
   const [fieldObservations, setFieldObservations] = useState<string[]>([]);
 
@@ -84,7 +84,7 @@ export function MapPageContent({
   }, [filteredIdSet]);
 
   // Handle filter changes
-  const handleFilterChange = useCallback((newFilters: AdvancedFilterOptions) => {
+  const handleFilterChange = useCallback((newFilters: FilterOptions) => {
     setFilters(newFilters);
   }, []);
 

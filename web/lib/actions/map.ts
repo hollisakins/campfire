@@ -2,7 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server';
 import type { WCSParams } from '@/lib/utils/wcs';
-import type { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import type { FilterOptions } from './filter-params';
 import { buildFilterParams } from './filter-params';
 
 // ============================================
@@ -187,7 +187,7 @@ export async function getFieldSlits(
  * Reuses the same RPC function as the spectra table but only extracts IDs.
  */
 export async function getFilteredObjectIds(
-  filters: AdvancedFilterOptions
+  filters: FilterOptions
 ): Promise<{ objectIds: string[]; error?: string }> {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();

@@ -7,8 +7,69 @@
  * desync when new filters are added.
  */
 
-import type { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import type { CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
+
+// Canonical filter mode type for any/all/none filtering
+export type FilterMode = 'any' | 'all' | 'none';
+
+// Search scope type for the search bar
+export type SearchScope = 'object_id' | 'my_comments' | 'all_comments';
+
+/**
+ * Canonical filter options type used across the entire app.
+ * All fields are required with sensible defaults (see DEFAULT_FILTERS).
+ * Consumers that accept partial filters should use Partial<FilterOptions>.
+ */
+export interface FilterOptions {
+  programs: number[];
+  fields: string[];
+  gratings: string[];
+  observations: string[];
+  redshift_quality: number[];
+  coordinate_search: CoordinateSearchValue | null;
+  redshift_min: number | null;
+  redshift_max: number | null;
+  max_snr_min: number | null;
+  max_snr_max: number | null;
+  max_exposure_time_min: number | null;
+  max_exposure_time_max: number | null;
+  spectral_features: number[];
+  object_flags: number[];
+  dq_flags: number[];
+  inspected_only: boolean | null;
+  search: string;
+  search_scope: SearchScope;
+  gratings_mode: FilterMode;
+  spectral_features_mode: FilterMode;
+  object_flags_mode: FilterMode;
+  dq_flags_mode: FilterMode;
+}
+
+export const DEFAULT_FILTERS: FilterOptions = {
+  programs: [],
+  fields: [],
+  gratings: [],
+  observations: [],
+  redshift_quality: [],
+  coordinate_search: null,
+  redshift_min: null,
+  redshift_max: null,
+  max_snr_min: null,
+  max_snr_max: null,
+  max_exposure_time_min: null,
+  max_exposure_time_max: null,
+  spectral_features: [],
+  object_flags: [],
+  dq_flags: [],
+  inspected_only: null,
+  search: '',
+  search_scope: 'object_id',
+  gratings_mode: 'any',
+  spectral_features_mode: 'any',
+  object_flags_mode: 'any',
+  dq_flags_mode: 'any',
+};
 
 /**
  * Typed RPC params shared by all filter-based Supabase RPCs
@@ -58,7 +119,7 @@ export interface FilterRpcParams {
  * @param userId - Current user's ID (needed for comment search scoping)
  */
 export function buildFilterParams(
-  filters: Partial<AdvancedFilterOptions> | undefined,
+  filters: Partial<FilterOptions> | undefined,
   accessibleProgramIds: number[],
   userId?: string
 ): FilterRpcParams {

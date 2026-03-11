@@ -2,10 +2,10 @@
 
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { getFilteredObjectIds } from '@/lib/actions/map';
-import type { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import type { FilterOptions } from '@/lib/actions/filter-params';
 
 export function useFilteredObjectIds(
-  filters: AdvancedFilterOptions,
+  filters: FilterOptions,
   hasActiveFilters: boolean
 ) {
   return useQuery({

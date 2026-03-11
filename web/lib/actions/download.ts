@@ -2,7 +2,7 @@
 
 import { getSpectra } from './spectra';
 import type { SortColumn, SortDirection } from './spectra-types';
-import { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import type { FilterOptions } from './filter-params';
 import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { buildFilterParams } from './filter-params';
@@ -46,7 +46,7 @@ interface CsvRow {
  * hitting statement timeouts.
  */
 export async function generateCSV(
-  filters: AdvancedFilterOptions,
+  filters: FilterOptions,
   sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc'
 ): Promise<{ csv: string | null; error: string | null }> {
@@ -219,7 +219,7 @@ export async function generateCsvFilename(): Promise<string> {
  * Creates a JWT token with file list and returns Worker URL
  */
 export async function generateFitsDownloadUrl(
-  filters: AdvancedFilterOptions,
+  filters: FilterOptions,
   sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc'
 ): Promise<{ url: string | null; error: string | null }> {

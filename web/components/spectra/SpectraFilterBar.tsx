@@ -10,68 +10,13 @@ import { REDSHIFT_QUALITY } from '@/lib/flags';
 import { filtersToURLParams } from '@/lib/utils/url-params';
 import type { Program } from '@/lib/types';
 import { OBSERVATION_COLORS } from '@/components/map/observation-colors';
-import type { CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
+import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
+import type { FilterOptions, FilterMode, SearchScope } from '@/lib/actions/filter-params';
 
-// FilterMode type for filter modes
-export type FilterMode = 'any' | 'all' | 'none';
-
-// Search scope type for the search bar
-export type SearchScope = 'object_id' | 'my_comments' | 'all_comments';
-
-// Extended filter options for advanced filtering
-export interface AdvancedFilterOptions {
-  // Existing filters
-  programs: number[];
-  fields: string[];
-  gratings: string[];
-  observations: string[];
-  redshift_quality: number[];
-  // New filters
-  coordinate_search: CoordinateSearchValue | null;
-  redshift_min: number | null;
-  redshift_max: number | null;
-  max_snr_min: number | null;
-  max_snr_max: number | null;
-  max_exposure_time_min: number | null;
-  max_exposure_time_max: number | null;
-  spectral_features: number[];
-  object_flags: number[];
-  dq_flags: number[];
-  inspected_only: boolean | null;
-  search: string;
-  search_scope: SearchScope;
-  // Filter modes (any/all/none)
-  gratings_mode: FilterMode;
-  spectral_features_mode: FilterMode;
-  object_flags_mode: FilterMode;
-  dq_flags_mode: FilterMode;
-}
-
-export const DEFAULT_FILTERS: AdvancedFilterOptions = {
-  programs: [],
-  fields: [],
-  gratings: [],
-  observations: [],
-  redshift_quality: [],
-  coordinate_search: null,
-  redshift_min: null,
-  redshift_max: null,
-  max_snr_min: null,
-  max_snr_max: null,
-  max_exposure_time_min: null,
-  max_exposure_time_max: null,
-  spectral_features: [],
-  object_flags: [],
-  dq_flags: [],
-  inspected_only: null,
-  search: '',
-  search_scope: 'object_id',
-  // Default modes (any = match any selected option)
-  gratings_mode: 'any',
-  spectral_features_mode: 'any',
-  object_flags_mode: 'any',
-  dq_flags_mode: 'any',
-};
+// Re-export canonical types for backwards compatibility
+export type { FilterOptions, FilterMode, SearchScope };
+export type AdvancedFilterOptions = FilterOptions;
+export { DEFAULT_FILTERS };
 
 // Search scope options with labels and placeholders
 const SEARCH_SCOPE_OPTIONS: { value: SearchScope; label: string; placeholder: string }[] = [

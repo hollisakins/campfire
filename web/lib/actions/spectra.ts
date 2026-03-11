@@ -3,42 +3,8 @@
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 import type { SpectrumObject, Program, Spectrum } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
-
-// Filter mode type for any/all/none filtering
-export type FilterMode = 'any' | 'all' | 'none';
-
-export interface FilterOptions {
-  // Basic filters
-  programs: number[];
-  fields: string[];
-  gratings: string[];
-  observations?: string[];
-  redshift_quality: number[];
-  // Advanced filters
-  coordinate_search?: {
-    ra: number;
-    dec: number;
-    radius: number;
-    radius_unit: 'degrees' | 'arcmin' | 'arcsec';
-  } | null;
-  redshift_min?: number | null;
-  redshift_max?: number | null;
-  max_snr_min?: number | null;
-  max_snr_max?: number | null;
-  max_exposure_time_min?: number | null;
-  max_exposure_time_max?: number | null;
-  spectral_features?: number[];
-  object_flags?: number[];
-  dq_flags?: number[];
-  inspected_only?: boolean | null;
-  search?: string;
-  search_scope?: 'object_id' | 'my_comments' | 'all_comments';
-  // Filter modes (any/all/none)
-  gratings_mode?: FilterMode;
-  spectral_features_mode?: FilterMode;
-  object_flags_mode?: FilterMode;
-  dq_flags_mode?: FilterMode;
-}
+import type { FilterOptions } from './filter-params';
+export type { FilterOptions, FilterMode } from './filter-params';
 
 export interface SpectraResult {
   spectra: SpectrumObject[];

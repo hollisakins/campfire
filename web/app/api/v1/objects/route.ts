@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms } from '@/lib/api-helpers';
 import { buildFilterParams } from '@/lib/actions/filter-params';
-import type { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import type { FilterOptions } from '@/lib/actions/filter-params';
 
 /**
  * Parse comma-separated string into array, or null if empty/absent.
@@ -58,13 +58,13 @@ function parseFlagArrays(params: URLSearchParams, prefix: string): {
 }
 
 /**
- * Parse URL search params into AdvancedFilterOptions for use with buildFilterParams.
+ * Parse URL search params into FilterOptions for use with buildFilterParams.
  * This ensures the API route uses the exact same filter logic as the web frontend.
  */
 function parseUrlToFilters(
   searchParams: URLSearchParams,
   accessibleProgramIds: number[]
-): Partial<AdvancedFilterOptions> {
+): Partial<FilterOptions> {
   // Program filter (intersect with accessible programs)
   const programsParam = searchParams.get('programs');
   let programs: number[] = [];
