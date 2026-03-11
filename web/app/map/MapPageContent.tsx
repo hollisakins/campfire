@@ -94,15 +94,17 @@ export function MapPageContent({
   }, []);
 
   // Sync filter state to URL (preserving map-specific params)
+  // Note: intentionally omit searchParams from deps to avoid a feedback loop
+  // where router.replace() updates searchParams, re-triggering this effect
   useEffect(() => {
     const filterParams = filtersToURLParams(debouncedFilters);
-    const newUrl = new URL(window.location.href);
+    const currentUrl = new URL(window.location.href);
 
     // Preserve map-specific params (field, filter, ra, dec, z, highlight)
     const mapParams = ['field', 'filter', 'ra', 'dec', 'z', 'zoom', 'highlight'];
     const preserved = new Map<string, string>();
     for (const key of mapParams) {
-      const val = newUrl.searchParams.get(key);
+      const val = currentUrl.searchParams.get(key);
       if (val !== null) preserved.set(key, val);
     }
 
@@ -116,11 +118,12 @@ export function MapPageContent({
     }
 
     const newSearchStr = newSearch.toString();
-    const currentSearch = searchParams.toString();
+    const currentSearch = currentUrl.searchParams.toString();
     if (newSearchStr !== currentSearch) {
       router.replace(`${pathname}${newSearchStr ? `?${newSearchStr}` : ''}`, { scroll: false });
     }
-  }, [debouncedFilters, pathname, router, searchParams]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedFilters, pathname, router]);
 
   return (
     <div className="h-[calc(100vh-72px)] relative">

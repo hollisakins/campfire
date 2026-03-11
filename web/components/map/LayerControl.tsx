@@ -19,6 +19,7 @@ interface LayerControlProps {
   showSlits: boolean;
   onToggleSlits: (show: boolean) => void;
   slitCount: number;
+  isLoadingSlits?: boolean;
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
 }
@@ -38,6 +39,7 @@ export function LayerControl({
   showSlits,
   onToggleSlits,
   slitCount,
+  isLoadingSlits,
   onOpenFilters,
   hasActiveFilters,
 }: LayerControlProps) {
@@ -134,23 +136,26 @@ export function LayerControl({
           </div>
 
           {/* Shutter toggle */}
-          {slitCount > 0 && (
-            <div className="mt-1.5">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={showSlits}
-                  onChange={(e) => onToggleSlits(e.target.checked)}
-                  className="rounded border-gray-300 dark:border-slate-600"
-                />
-                <Grid3X3 className="w-3.5 h-3.5 text-gray-500 dark:text-slate-400" />
-                <span className="text-sm text-gray-700 dark:text-slate-300">
-                  Shutters
+          <div className="mt-1.5">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showSlits}
+                onChange={(e) => onToggleSlits(e.target.checked)}
+                disabled={isLoadingSlits || slitCount === 0}
+                className="rounded border-gray-300 dark:border-slate-600 disabled:opacity-50"
+              />
+              <Grid3X3 className="w-3.5 h-3.5 text-gray-500 dark:text-slate-400" />
+              <span className="text-sm text-gray-700 dark:text-slate-300">
+                Shutters
+                {isLoadingSlits ? (
+                  <span className="text-xs text-gray-400 ml-1">loading...</span>
+                ) : slitCount > 0 ? (
                   <span className="text-xs text-gray-400 ml-1">({slitCount})</span>
-                </span>
-              </label>
-            </div>
-          )}
+                ) : null}
+              </span>
+            </label>
+          </div>
 
           {/* Filter button */}
           {onOpenFilters && (
