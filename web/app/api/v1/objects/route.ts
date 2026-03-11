@@ -2,14 +2,25 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms } from '@/lib/api-helpers';
+import { buildFilterParams } from '@/lib/actions/filter-params';
+import type { AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
 
 /**
- * Flag query parameters for include/exclude filtering
+ * Parse comma-separated string into array, or null if empty/absent.
  */
-interface FlagQueryParams {
-  include_any: number | null;
-  include_all: number | null;
-  exclude: number | null;
+function parseCSV(value: string | null): string[] | null {
+  if (!value) return null;
+  const items = value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  return items.length > 0 ? items : null;
+}
+
+/**
+ * Parse comma-separated integers, or null if empty/absent.
+ */
+function parseIntCSV(value: string | null): number[] | null {
+  if (!value) return null;
+  const items = value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+  return items.length > 0 ? items : null;
 }
 
 /**
@@ -18,18 +29,94 @@ interface FlagQueryParams {
  *
  * New params: prefix_include_any, prefix_include_all, prefix_exclude
  * Legacy: prefix (treated as include_any for backward compatibility)
+ *
+ * Returns values as single-element arrays for compatibility with buildFilterParams,
+ * which expects arrays of flag values (it OR-reduces them internally).
  */
-function parseFlagQuery(params: URLSearchParams, prefix: string): FlagQueryParams {
+function parseFlagArrays(params: URLSearchParams, prefix: string): {
+  values: number[];
+  mode: 'any' | 'all' | 'none';
+} {
   const includeAny = params.get(`${prefix}_include_any`);
   const includeAll = params.get(`${prefix}_include_all`);
   const exclude = params.get(`${prefix}_exclude`);
   const legacy = params.get(prefix); // Backward compatibility
 
+  // Determine mode and mask value
+  if (includeAll) {
+    return { values: [parseInt(includeAll, 10)], mode: 'all' };
+  }
+  if (exclude) {
+    return { values: [parseInt(exclude, 10)], mode: 'none' };
+  }
+  // include_any or legacy (treated as include_any)
+  const anyValue = includeAny || legacy;
+  if (anyValue) {
+    return { values: [parseInt(anyValue, 10)], mode: 'any' };
+  }
+  return { values: [], mode: 'any' };
+}
+
+/**
+ * Parse URL search params into AdvancedFilterOptions for use with buildFilterParams.
+ * This ensures the API route uses the exact same filter logic as the web frontend.
+ */
+function parseUrlToFilters(
+  searchParams: URLSearchParams,
+  accessibleProgramIds: number[]
+): Partial<AdvancedFilterOptions> {
+  // Program filter (intersect with accessible programs)
+  const programsParam = searchParams.get('programs');
+  let programs: number[] = [];
+  if (programsParam) {
+    programs = programsParam
+      .split(',')
+      .map(p => parseInt(p.trim(), 10))
+      .filter(p => !isNaN(p) && accessibleProgramIds.includes(p));
+  }
+
+  // Coordinate search
+  const ra = searchParams.get('ra');
+  const dec = searchParams.get('dec');
+  const radius = searchParams.get('radius'); // in arcsec
+  const coordinateSearch = (ra && dec && radius)
+    ? { ra: parseFloat(ra), dec: parseFloat(dec), radius: parseFloat(radius), radius_unit: 'arcsec' as const }
+    : null;
+
+  // Bitmask filters (legacy + multi-mode support)
+  const sf = parseFlagArrays(searchParams, 'spectral_features');
+  const of = parseFlagArrays(searchParams, 'object_flags');
+  const dq = parseFlagArrays(searchParams, 'dq_flags');
+
+  // Inspected only
+  const inspectedOnlyParam = searchParams.get('inspected_only');
+  const inspectedOnly = inspectedOnlyParam
+    ? inspectedOnlyParam.toLowerCase() === 'true'
+    : null;
+
   return {
-    // Legacy single param is treated as include_any
-    include_any: includeAny ? parseInt(includeAny, 10) : (legacy ? parseInt(legacy, 10) : null),
-    include_all: includeAll ? parseInt(includeAll, 10) : null,
-    exclude: exclude ? parseInt(exclude, 10) : null,
+    programs,
+    fields: parseCSV(searchParams.get('fields')) || [],
+    gratings: parseCSV(searchParams.get('gratings')) || [],
+    gratings_mode: (searchParams.get('gratings_mode') as 'any' | 'all' | 'none') || 'any',
+    observations: parseCSV(searchParams.get('observations')) || [],
+    redshift_quality: parseIntCSV(searchParams.get('redshift_quality')) || [],
+    redshift_min: searchParams.get('redshift_min') ? parseFloat(searchParams.get('redshift_min')!) : null,
+    redshift_max: searchParams.get('redshift_max') ? parseFloat(searchParams.get('redshift_max')!) : null,
+    max_snr_min: searchParams.get('max_snr_min') ? parseFloat(searchParams.get('max_snr_min')!) : null,
+    max_snr_max: searchParams.get('max_snr_max') ? parseFloat(searchParams.get('max_snr_max')!) : null,
+    max_exposure_time_min: searchParams.get('max_exposure_time_min') ? parseFloat(searchParams.get('max_exposure_time_min')!) : null,
+    max_exposure_time_max: searchParams.get('max_exposure_time_max') ? parseFloat(searchParams.get('max_exposure_time_max')!) : null,
+    spectral_features: sf.values,
+    spectral_features_mode: sf.mode,
+    object_flags: of.values,
+    object_flags_mode: of.mode,
+    dq_flags: dq.values,
+    dq_flags_mode: dq.mode,
+    inspected_only: inspectedOnly,
+    search: searchParams.get('search') || '',
+    search_scope: (searchParams.get('search_scope') as 'object_id' | 'my_comments' | 'all_comments') || 'object_id',
+    coordinate_search: coordinateSearch,
   };
 }
 
@@ -43,11 +130,14 @@ function parseFlagQuery(params: URLSearchParams, prefix: string): FlagQueryParam
  * - programs: comma-separated list of program IDs (e.g., "1,2,3")
  * - fields: comma-separated list of field names (e.g., "COSMOS,UDS")
  * - gratings: comma-separated list of gratings (e.g., "PRISM,G395M")
+ * - gratings_mode: filter mode for gratings (any, all, none; default: any)
  * - observations: comma-separated list of observation names
  * - redshift_min: minimum redshift (float)
  * - redshift_max: maximum redshift (float)
  * - max_snr_min: minimum max SNR (float)
  * - max_snr_max: maximum max SNR (float)
+ * - max_exposure_time_min: minimum max exposure time (float)
+ * - max_exposure_time_max: maximum max exposure time (float)
  * - redshift_quality: comma-separated list of quality codes (e.g., "1,2,3")
  *
  * Flag filters (each supports three modes):
@@ -59,12 +149,13 @@ function parseFlagQuery(params: URLSearchParams, prefix: string): FlagQueryParam
  *
  * - inspected_only: "true" to filter to inspected objects only
  * - search: text search on object_id
+ * - search_scope: search scope (object_id, my_comments, all_comments; default: object_id)
  * - ra: right ascension for cone search (degrees)
  * - dec: declination for cone search (degrees)
  * - radius: search radius (arcsec)
  * - limit: maximum number of results (default: 1000)
  * - offset: pagination offset (default: 0)
- * - sort: sort column (object_id, ra, dec, redshift, redshift_quality)
+ * - sort: sort column (object_id, ra, dec, redshift, redshift_quality, field)
  * - sort_dir: sort direction (asc, desc)
  */
 export async function GET(request: NextRequest) {
@@ -93,102 +184,20 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Parse query parameters
     const searchParams = request.nextUrl.searchParams;
 
-    // Program filter (intersect with accessible programs)
-    let filterPrograms: number[] | null = null;
-    const programsParam = searchParams.get('programs');
-    if (programsParam) {
-      const requestedPrograms = programsParam.split(',').map(p => parseInt(p.trim(), 10));
-      filterPrograms = requestedPrograms.filter(p =>
-        !isNaN(p) && accessibleProgramIds.includes(p)
-      );
-    }
-
-    // Field filter
-    let fields: string[] | null = null;
-    const fieldsParam = searchParams.get('fields');
-    if (fieldsParam) {
-      fields = fieldsParam.split(',').map(f => f.trim()).filter(f => f.length > 0);
-    }
-
-    // Grating filter
-    let gratings: string[] | null = null;
-    const gratingsParam = searchParams.get('gratings');
-    if (gratingsParam) {
-      gratings = gratingsParam.split(',').map(g => g.trim()).filter(g => g.length > 0);
-    }
-
-    // Observation filter
-    let observations: string[] | null = null;
-    const observationsParam = searchParams.get('observations');
-    if (observationsParam) {
-      observations = observationsParam.split(',').map(o => o.trim()).filter(o => o.length > 0);
-    }
-
-    // Redshift quality filter
-    let redshiftQuality: number[] | null = null;
-    const redshiftQualityParam = searchParams.get('redshift_quality');
-    if (redshiftQualityParam) {
-      redshiftQuality = redshiftQualityParam
-        .split(',')
-        .map(q => parseInt(q.trim(), 10))
-        .filter(q => !isNaN(q));
-    }
-
-    // Redshift range
-    const redshiftMin = searchParams.get('redshift_min');
-    const redshiftMax = searchParams.get('redshift_max');
-
-    // SNR range
-    const maxSnrMin = searchParams.get('max_snr_min');
-    const maxSnrMax = searchParams.get('max_snr_max');
-
-    // Exposure time range
-    const maxExpTimeMin = searchParams.get('max_exposure_time_min');
-    const maxExpTimeMax = searchParams.get('max_exposure_time_max');
-
-    // Bitmask filters (support both legacy single param and new multi-mode params)
-    const spectralFeaturesQuery = parseFlagQuery(searchParams, 'spectral_features');
-    const objectFlagsQuery = parseFlagQuery(searchParams, 'object_flags');
-    const dqFlagsQuery = parseFlagQuery(searchParams, 'dq_flags');
-
-    // Inspected only filter
-    let inspectedOnly: boolean | null = null;
-    const inspectedOnlyParam = searchParams.get('inspected_only');
-    if (inspectedOnlyParam) {
-      inspectedOnly = inspectedOnlyParam.toLowerCase() === 'true';
-    }
-
-    // Text search
-    const search = searchParams.get('search');
-
-    // Coordinate search
-    const ra = searchParams.get('ra');
-    const dec = searchParams.get('dec');
-    const radius = searchParams.get('radius'); // in arcsec
-
-    let coordRa: number | null = null;
-    let coordDec: number | null = null;
-    let radiusDegrees: number | null = null;
-
-    if (ra && dec && radius) {
-      coordRa = parseFloat(ra);
-      coordDec = parseFloat(dec);
-      radiusDegrees = parseFloat(radius) / 3600; // Convert arcsec to degrees
-    }
+    // Parse URL params into canonical filter format, then build RPC params
+    const filters = parseUrlToFilters(searchParams, accessibleProgramIds);
+    const rpcParams = buildFilterParams(filters, accessibleProgramIds, userId);
 
     // Pagination
     const limit = parseInt(searchParams.get('limit') || '1000', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
     const page = Math.floor(offset / limit) + 1;
 
-    // Sorting
+    // Sorting (validate column)
     const sortColumn = searchParams.get('sort') || 'object_id';
     const sortDirection = searchParams.get('sort_dir') || 'asc';
-
-    // Validate sort column
     const validSortColumns = ['object_id', 'ra', 'dec', 'redshift', 'redshift_quality', 'field'];
     const finalSortColumn = validSortColumns.includes(sortColumn) ? sortColumn : 'object_id';
 
@@ -199,32 +208,7 @@ export async function GET(request: NextRequest) {
 
     // Call the RPC function
     const { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
-      p_program_ids: accessibleProgramIds,
-      p_filter_programs: filterPrograms,
-      p_fields: fields,
-      p_gratings: gratings,
-      p_observations: observations,
-      p_redshift_quality: redshiftQuality,
-      p_redshift_min: redshiftMin ? parseFloat(redshiftMin) : null,
-      p_redshift_max: redshiftMax ? parseFloat(redshiftMax) : null,
-      p_max_snr_min: maxSnrMin ? parseFloat(maxSnrMin) : null,
-      p_max_snr_max: maxSnrMax ? parseFloat(maxSnrMax) : null,
-      p_max_exposure_time_min: maxExpTimeMin ? parseFloat(maxExpTimeMin) : null,
-      p_max_exposure_time_max: maxExpTimeMax ? parseFloat(maxExpTimeMax) : null,
-      p_spectral_features_include_any: spectralFeaturesQuery.include_any,
-      p_spectral_features_include_all: spectralFeaturesQuery.include_all,
-      p_spectral_features_exclude: spectralFeaturesQuery.exclude,
-      p_object_flags_include_any: objectFlagsQuery.include_any,
-      p_object_flags_include_all: objectFlagsQuery.include_all,
-      p_object_flags_exclude: objectFlagsQuery.exclude,
-      p_dq_flags_include_any: dqFlagsQuery.include_any,
-      p_dq_flags_include_all: dqFlagsQuery.include_all,
-      p_dq_flags_exclude: dqFlagsQuery.exclude,
-      p_search: search?.trim() || null,
-      p_inspected_only: inspectedOnly,
-      p_coord_ra: coordRa,
-      p_coord_dec: coordDec,
-      p_radius_degrees: radiusDegrees,
+      ...rpcParams,
       p_sort_column: finalSortColumn,
       p_sort_direction: sortDirection,
       p_page: page,
