@@ -29,7 +29,7 @@ function ProgramCard({ program }: { program: ProgramOverview }) {
             </p>
           </div>
           <a
-            href={`https://www.stsci.edu/cgi-bin/get-proposal-info?id=${program.program_id}&observatory=JWST`}
+            href={`https://www.stsci.edu/jwst-program-info/program/?program=${program.program_id}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors flex-shrink-0"

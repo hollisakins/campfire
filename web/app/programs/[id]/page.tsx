@@ -13,9 +13,9 @@ import { LogIn, Loader2, Telescope, ExternalLink, ArrowRight, AlertCircle } from
 import { useAuth } from '@/lib/contexts/AuthContext';
 
 // Editorial content registry — add imports as markdown files are authored
-// import ember from '@/lib/docs/content/programs/7076.md';
+import ember from '@/lib/docs/content/programs/7076.md';
 const programContent: Record<number, string> = {
-  // 7076: ember,
+  7076: ember,
 };
 
 function formatBytes(bytes: number): string {
@@ -150,7 +150,7 @@ export default function ProgramDetailPage() {
   }
 
   const editorialContent = programContent[program.program_id];
-  const stsciUrl = `https://www.stsci.edu/cgi-bin/get-proposal-info?id=${program.program_id}&observatory=JWST`;
+  const stsciUrl = `https://www.stsci.edu/jwst-program-info/program/?program=${program.program_id}`;
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-5xl">
