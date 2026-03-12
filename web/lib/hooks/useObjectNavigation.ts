@@ -50,7 +50,7 @@ export function useObjectNavigation(options: UseObjectNavigationOptions) {
       const [spectrumResult, adjacentIds] = await Promise.all([spectrumPromise, navPromise]);
 
       // Use API route URL directly as image src (browser follows redirect automatically)
-      const rgbUrl = `/api/rgb-thumbnail?object_id=${encodeURIComponent(objectId)}`;
+      const rgbUrl = `/api/tile-thumbnail?object_id=${encodeURIComponent(objectId)}`;
 
       // Check if aborted during fetch
       if (controller.signal.aborted) {
@@ -146,7 +146,7 @@ export function useObjectNavigation(options: UseObjectNavigationOptions) {
         return null;
       }
 
-      const rgbUrl = `/api/rgb-thumbnail?object_id=${encodeURIComponent(objectId)}`;
+      const rgbUrl = `/api/tile-thumbnail?object_id=${encodeURIComponent(objectId)}`;
 
       return {
         spectrum: spectrumResult.spectrum,

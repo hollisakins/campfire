@@ -15,7 +15,7 @@ import {
 import { ArrowUpDown, ArrowUp, ArrowDown, ScanEye } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { SpectrumObject, QUALITY_LABELS } from '@/lib/types';
-import { RGBThumbnail } from './RGBThumbnail';
+import { TileThumbnail } from './TileThumbnail';
 import { SpectrumThumbnailInline } from './SpectrumThumbnailInline';
 import { SpectraTableRow } from './SpectraTableRow';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
@@ -268,7 +268,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         maxSize: 56,
         header: () => <span className="sr-only">Image</span>,
         cell: ({ row }) => (
-          <RGBThumbnail objectId={row.original.object_id} size={48} />
+          <TileThumbnail objectId={row.original.object_id} size={48} />
         ),
         enableSorting: false,
       },

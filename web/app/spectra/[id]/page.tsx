@@ -16,13 +16,11 @@ import { CopyLinkButton } from '@/components/spectra/CopyLinkButton';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
 import { ReturnToMapButton } from '@/components/map/ReturnToMapButton';
-import { TileCutoutWrapper } from '@/components/spectra/TileCutoutWrapper';
+import { TileThumbnail } from '@/components/spectra/TileThumbnail';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
 import { EnterInspectionModeButton } from '@/components/spectra/inspection/EnterInspectionModeButton';
 import { getSpectrumById, getObjectMetadata } from '@/lib/actions/spectra';
-import { getMapLayers, getNearbyShutters } from '@/lib/actions/map';
-import type { MapLayer, Shutter } from '@/lib/actions/map';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
 
 interface SpectrumDetailPageProps {
@@ -127,19 +125,6 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
   if (!spectrum) {
     notFound();
   }
-
-  // Fetch map layer and nearby shutters in parallel (need spectrum.field)
-  const [mapLayersResult, shuttersResult] = await Promise.all([
-    getMapLayers(spectrum.field),
-    getNearbyShutters(spectrum.ra, spectrum.dec, spectrum.field),
-  ]);
-
-  // Find the RGB map layer (preferred for cutout), falling back to default
-  const rgbLayer: MapLayer | null = mapLayersResult.layers.find(l => l.filter === 'rgb')
-    || mapLayersResult.layers.find(l => l.is_default)
-    || mapLayersResult.layers[0]
-    || null;
-  const nearbyShutters: Shutter[] = shuttersResult.shutters;
 
   // Parse filters and sorting from URL for navigation
   const filters = parseFiltersFromURL(urlParams);
@@ -262,14 +247,11 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
 
           {/* Right Column: Tile Cutout with Shutters */}
           <div className="flex-shrink-0" style={{ width: '300px' }}>
-            <TileCutoutWrapper
+            <TileThumbnail
               objectId={spectrum.object_id}
-              ra={spectrum.ra}
-              dec={spectrum.dec}
-              field={spectrum.field}
-              mapLayer={rgbLayer}
-              shutters={nearbyShutters}
               size={300}
+              shutters
+              linkToMap={{ field: spectrum.field, ra: spectrum.ra, dec: spectrum.dec }}
             />
           </div>
         </div>

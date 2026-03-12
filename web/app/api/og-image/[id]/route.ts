@@ -1,16 +1,17 @@
 import { NextRequest } from 'next/server';
-import { r2Client, generateRGBImagePath } from '@/lib/r2';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
-
-const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || 'campfire-fits';
+import { createServiceClient } from '@/lib/supabase/server';
+import {
+  compositeTileThumbnail,
+  type MapLayerInfo,
+} from '@/lib/utils/tile-compositing';
 
 /**
  * GET /api/og-image/[id]
  *
- * Serves RGB images publicly for social media crawlers (Slack, Twitter, etc.)
- * - No authentication required (unlike /api/rgb-thumbnail)
- * - Returns image bytes directly (not a redirect)
- * - Aggressive caching (1 week) since images rarely change
+ * Serves tile-composited RGB images publicly for social media crawlers.
+ * - No authentication required (unlike /api/tile-thumbnail)
+ * - Returns image bytes directly
+ * - Aggressive caching (1 week) since tiles rarely change
  */
 export async function GET(
   request: NextRequest,
@@ -20,32 +21,47 @@ export async function GET(
   const objectId = decodeURIComponent(id);
 
   try {
-    const rgbPath = generateRGBImagePath(objectId);
+    const supabase = createServiceClient();
 
-    const command = new GetObjectCommand({
-      Bucket: R2_BUCKET_NAME,
-      Key: rgbPath,
-    });
+    // Look up object coordinates
+    const { data: obj, error: objErr } = await supabase
+      .from('objects')
+      .select('ra, dec, field')
+      .eq('object_id', objectId)
+      .single();
 
-    const response = await r2Client.send(command);
-
-    if (!response.Body) {
+    if (objErr || !obj) {
       return new Response('Image not found', { status: 404 });
     }
 
-    // Convert the readable stream to a buffer
-    const chunks: Uint8Array[] = [];
-    const reader = response.Body.transformToWebStream().getReader();
+    // Get RGB map layer for this field
+    const { data: layers, error: layerErr } = await supabase
+      .from('map_layers')
+      .select('tile_base_url, min_zoom, max_zoom, tile_size, wcs_params, tile_version, is_default, filter')
+      .eq('field', obj.field)
+      .order('filter');
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
+    if (layerErr || !layers || layers.length === 0) {
+      return new Response('Image not found', { status: 404 });
     }
 
-    const buffer = Buffer.concat(chunks);
+    const layer: MapLayerInfo = (
+      layers.find(l => l.filter === 'rgb')
+      || layers.find(l => l.is_default)
+      || layers[0]
+    ) as MapLayerInfo;
 
-    return new Response(buffer, {
+    // Composite thumbnail (no shutters for OG images)
+    const png = await compositeTileThumbnail({
+      ra: obj.ra,
+      dec: obj.dec,
+      objectId,
+      layer,
+      outputSize: 300,
+      fovArcsec: 5,
+    });
+
+    return new Response(new Uint8Array(png), {
       status: 200,
       headers: {
         'Content-Type': 'image/png',
@@ -53,9 +69,7 @@ export async function GET(
       },
     });
   } catch (error) {
-    console.error('Error fetching OG image:', error);
-
-    // Return a 404 for any error (image not found, R2 error, etc.)
+    console.error('Error generating OG image:', error);
     return new Response('Image not found', { status: 404 });
   }
 }

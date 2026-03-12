@@ -1,20 +1,17 @@
 'use client';
 
 import React from 'react';
-import { TileCutoutWrapper } from '../TileCutoutWrapper';
+import { TileThumbnail } from '../TileThumbnail';
 import { RedshiftSection, type RedshiftSectionHandle } from './RedshiftSection';
 import { QualitySection } from './QualitySection';
 import { FlagsSection } from './FlagsSection';
 import { CommentsPreview } from './CommentsPreview';
 import { SaveButtons } from './SaveButtons';
 import type { SpectrumObject } from '@/lib/types';
-import type { MapLayer, Shutter } from '@/lib/actions/map';
 import type { InspectionState } from '@/lib/hooks/useInspectionState';
 
 interface DashboardPanelProps {
   spectrum: SpectrumObject;
-  mapLayer: MapLayer | null;
-  shutters: Shutter[];
   inspectionState: InspectionState;
   canEdit: boolean;
   commentCount: number;
@@ -26,8 +23,6 @@ interface DashboardPanelProps {
 
 export const DashboardPanel: React.FC<DashboardPanelProps> = ({
   spectrum,
-  mapLayer,
-  shutters,
   inspectionState,
   canEdit,
   commentCount,
@@ -41,14 +36,11 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
                     flex flex-col overflow-hidden bg-background dark:bg-slate-900">
       {/* Tile Cutout with Shutters - fixed at top */}
       <div className="p-4 flex justify-center border-b border-border dark:border-slate-700 flex-shrink-0">
-        <TileCutoutWrapper
+        <TileThumbnail
           objectId={spectrum.object_id}
-          ra={spectrum.ra}
-          dec={spectrum.dec}
-          field={spectrum.field}
-          mapLayer={mapLayer}
-          shutters={shutters}
           size={280}
+          shutters
+          linkToMap={{ field: spectrum.field, ra: spectrum.ra, dec: spectrum.dec }}
         />
       </div>
 

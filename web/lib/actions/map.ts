@@ -243,7 +243,7 @@ export async function getFilteredObjectIds(
 
 /**
  * Fetch nearby shutters using the get_nearby_shutters RPC.
- * Used by the spectra detail page TileCutout component.
+ * Used by the tile-thumbnail API route for shutter overlays.
  */
 export async function getNearbyShutters(
   ra: number,

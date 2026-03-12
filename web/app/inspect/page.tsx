@@ -6,10 +6,8 @@ import { Loader2 } from 'lucide-react';
 import { InspectionModeOverlay } from '@/components/spectra/inspection/InspectionModeOverlay';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { getSpectrumById } from '@/lib/actions/spectra';
-import { getMapLayers, getNearbyShutters } from '@/lib/actions/map';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
 import type { SpectrumObject } from '@/lib/types';
-import type { MapLayer, Shutter } from '@/lib/actions/map';
 
 function InspectPageInner() {
   const searchParams = useSearchParams();
@@ -27,8 +25,6 @@ function InspectPageInner() {
 
   // Data state
   const [spectrum, setSpectrum] = useState<SpectrumObject | null>(null);
-  const [mapLayer, setMapLayer] = useState<MapLayer | null>(null);
-  const [nearbyShutters, setNearbyShutters] = useState<Shutter[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fetchedRef = useRef(false);
@@ -61,22 +57,7 @@ function InspectPageInner() {
           return;
         }
 
-        const spec = result.spectrum;
-        setSpectrum(spec);
-
-        // Fetch map layer and shutters in parallel
-        const [mapResult, shutterResult] = await Promise.all([
-          getMapLayers(spec.field),
-          getNearbyShutters(spec.ra, spec.dec, spec.field),
-        ]);
-
-        const rgbLayer = mapResult.layers.find(l => l.filter === 'rgb')
-          || mapResult.layers.find(l => l.is_default)
-          || mapResult.layers[0]
-          || null;
-
-        setMapLayer(rgbLayer);
-        setNearbyShutters(shutterResult.shutters);
+        setSpectrum(result.spectrum);
         setLoading(false);
       } catch (err) {
         console.error('[InspectPage] Failed to load data:', err);
@@ -125,8 +106,6 @@ function InspectPageInner() {
   return (
     <InspectionModeOverlay
       spectrum={spectrum}
-      mapLayer={mapLayer}
-      nearbyShutters={nearbyShutters}
       filterStr={filterStr}
       filters={filters}
       sortColumn={sortColumn}
