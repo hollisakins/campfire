@@ -29,6 +29,7 @@ export const Navigation: React.FC = () => {
 
   const navLinks = [
     { href: '/', label: 'Home' },
+    { href: '/programs', label: 'Programs' },
     { href: '/nircam', label: 'NIRCam' },
     { href: '/spectra', label: 'NIRSpec' },
     { href: '/map', label: 'Map' },
