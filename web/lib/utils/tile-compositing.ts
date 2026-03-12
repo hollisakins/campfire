@@ -327,7 +327,11 @@ export async function compositeTileThumbnail(
     canvasHeight - cropTop,
   ));
 
-  let result = await sharp({
+  // Two-step pipeline: sharp validates composite overlay dimensions against the
+  // final (post-extract) size, not the canvas size. When tiles (256x256) are larger
+  // than the extract region (e.g. 83x83 for small thumbnails), this crashes.
+  // So we first composite tiles onto the canvas, then extract+resize separately.
+  const canvas = await sharp({
     create: {
       width: canvasWidth,
       height: canvasHeight,
@@ -336,6 +340,10 @@ export async function compositeTileThumbnail(
     },
   })
     .composite(composites)
+    .png()
+    .toBuffer();
+
+  let result = await sharp(canvas)
     .extract({ left: cropLeft, top: cropTop, width: cropSize, height: cropSize })
     .resize(outputSize, outputSize, { kernel: sharp.kernel.nearest })
     .png()
