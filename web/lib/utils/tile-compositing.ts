@@ -119,6 +119,19 @@ function computeTileRegion(
 // Tile fetching
 // ============================================
 
+const emptyTileCache = new Map<number, Promise<Buffer>>();
+
+function emptyTile(tileSize: number): Promise<Buffer> {
+  let cached = emptyTileCache.get(tileSize);
+  if (!cached) {
+    cached = sharp({
+      create: { width: tileSize, height: tileSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    }).png().toBuffer();
+    emptyTileCache.set(tileSize, cached);
+  }
+  return cached;
+}
+
 async function fetchTile(
   baseUrl: string,
   z: number,
@@ -130,17 +143,19 @@ async function fetchTile(
   const url = `${baseUrl}/${z}/${x}/${y}.png?v=${version}`;
   try {
     const res = await fetch(url, { next: { revalidate: 3600 } });
-    if (!res.ok) {
-      // Return transparent tile on 404/error
-      return await sharp({
-        create: { width: tileSize, height: tileSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
-      }).png().toBuffer();
+    if (!res.ok) return emptyTile(tileSize);
+    const raw = Buffer.from(await res.arrayBuffer());
+    // Ensure tile is exactly tileSize x tileSize (edge tiles may differ)
+    const meta = await sharp(raw).metadata();
+    if (meta.width !== tileSize || meta.height !== tileSize) {
+      return await sharp(raw)
+        .resize(tileSize, tileSize, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+        .png()
+        .toBuffer();
     }
-    return Buffer.from(await res.arrayBuffer());
+    return raw;
   } catch {
-    return await sharp({
-      create: { width: tileSize, height: tileSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
-    }).png().toBuffer();
+    return emptyTile(tileSize);
   }
 }
 
@@ -230,6 +245,14 @@ export async function compositeTileThumbnail(
   const region = computeTileRegion(wcs, layer, ra, dec, outputSize, fovArcsec);
   const { fetchZoom, left, top, cropPixels, tileXMin, tileXMax, tileYMin, tileYMax, tileSize } = region;
 
+  // Validate tile range
+  if (tileXMax < tileXMin || tileYMax < tileYMin) {
+    // Object is outside tile grid — return black square
+    return await sharp({
+      create: { width: outputSize, height: outputSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 255 } },
+    }).png().toBuffer();
+  }
+
   // Fetch all needed tiles in parallel
   const tilePromises: Promise<{ buffer: Buffer; tx: number; ty: number }>[] = [];
   for (let ty = tileYMin; ty <= tileYMax; ty++) {
@@ -254,8 +277,11 @@ export async function compositeTileThumbnail(
   }));
 
   // Extract the region of interest and resize
-  const cropLeft = Math.max(0, Math.round(left - tileXMin * tileSize));
-  const cropTop = Math.max(0, Math.round(top - tileYMin * tileSize));
+  // Clamp crop to canvas bounds
+  const rawLeft = Math.round(left - tileXMin * tileSize);
+  const rawTop = Math.round(top - tileYMin * tileSize);
+  const cropLeft = Math.max(0, Math.min(rawLeft, canvasWidth - 1));
+  const cropTop = Math.max(0, Math.min(rawTop, canvasHeight - 1));
   const cropSize = Math.max(1, Math.min(
     Math.round(cropPixels),
     canvasWidth - cropLeft,
