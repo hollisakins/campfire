@@ -3,6 +3,11 @@
  *
  * Fetches map tiles and composites them into a cropped thumbnail
  * centered on an object's RA/Dec, with optional shutter overlay.
+ *
+ * Tile coordinate system (must match Leaflet's CRS in MapViewer):
+ *   - nTilesY is always computed at maxZoom: ceil(naxis2 / tileSize)
+ *   - World pixel Y at zoom z = (nTilesY * tileSize - fitsPixelY) * 2^(z - maxZoom)
+ *   - This flips the FITS Y-axis (bottom-up) to tile Y-axis (top-down)
  */
 
 import sharp from 'sharp';
@@ -56,6 +61,24 @@ export interface CompositingOptions {
 // Tile math
 // ============================================
 
+/**
+ * Convert FITS pixel coords to world pixel coords at a given zoom level.
+ * Uses the same Y-flip as Leaflet's CRS: worldY = (nTilesY * tileSize - fitsY) * zoomScale
+ * where nTilesY is always computed at maxZoom.
+ */
+function fitsToWorldPixel(
+  fitsX: number,
+  fitsY: number,
+  nTilesYMaxZoom: number,
+  tileSize: number,
+  zoomScale: number,
+): { wx: number; wy: number } {
+  return {
+    wx: fitsX * zoomScale,
+    wy: (nTilesYMaxZoom * tileSize - fitsY) * zoomScale,
+  };
+}
+
 function computeTileRegion(
   wcs: WCSParams,
   layer: MapLayerInfo,
@@ -79,24 +102,26 @@ function computeTileRegion(
   const fetchZoom = Math.min(maxZoom, Math.max(layer.min_zoom, Math.round(idealZoom)));
   const zoomScale = Math.pow(2, fetchZoom - maxZoom);
 
-  // Tile-space coordinates (Y flipped from FITS convention)
-  const nTilesY = Math.ceil(wcs.naxis2 * zoomScale / tileSize);
-  const cx = fitsPixel.x * zoomScale;
-  const cy = nTilesY * tileSize - fitsPixel.y * zoomScale;
+  // Tile grid at maxZoom (fixed reference — must match Leaflet CRS)
+  const nTilesYMaxZoom = Math.ceil(wcs.naxis2 / tileSize);
 
-  // How many tile-space pixels to extract (will be resized to outputSize)
+  // World pixel coordinates of the object at fetchZoom
+  const { wx: cx, wy: cy } = fitsToWorldPixel(
+    fitsPixel.x, fitsPixel.y, nTilesYMaxZoom, tileSize, zoomScale,
+  );
+
+  // How many world pixels to extract (will be resized to outputSize)
   const cropPixels = nativePixelsInFov * zoomScale;
 
-  // Bounding box in tile-space
+  // Bounding box in world pixel space
   const left = cx - cropPixels / 2;
   const top = cy - cropPixels / 2;
 
-  // Which tiles to fetch
-  const nTilesX = Math.ceil(wcs.naxis1 * zoomScale / tileSize);
+  // Which tiles to fetch (clamp to non-negative; fetchTile handles 404s for out-of-range)
   const tileXMin = Math.max(0, Math.floor(left / tileSize));
-  const tileXMax = Math.min(nTilesX - 1, Math.floor((left + cropPixels) / tileSize));
+  const tileXMax = Math.max(tileXMin, Math.floor((left + cropPixels) / tileSize));
   const tileYMin = Math.max(0, Math.floor(top / tileSize));
-  const tileYMax = Math.min(nTilesY - 1, Math.floor((top + cropPixels) / tileSize));
+  const tileYMax = Math.max(tileYMin, Math.floor((top + cropPixels) / tileSize));
 
   return {
     fetchZoom,
@@ -109,7 +134,7 @@ function computeTileRegion(
     tileYMin,
     tileYMax,
     tileSize,
-    nTilesY,
+    nTilesYMaxZoom,
     fitsPixel,
     pixPerArcsec,
   };
@@ -118,19 +143,6 @@ function computeTileRegion(
 // ============================================
 // Tile fetching
 // ============================================
-
-const emptyTileCache = new Map<number, Promise<Buffer>>();
-
-function emptyTile(tileSize: number): Promise<Buffer> {
-  let cached = emptyTileCache.get(tileSize);
-  if (!cached) {
-    cached = sharp({
-      create: { width: tileSize, height: tileSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
-    }).png().toBuffer();
-    emptyTileCache.set(tileSize, cached);
-  }
-  return cached;
-}
 
 async function fetchTile(
   baseUrl: string,
@@ -143,20 +155,54 @@ async function fetchTile(
   const url = `${baseUrl}/${z}/${x}/${y}.png?v=${version}`;
   try {
     const res = await fetch(url, { next: { revalidate: 3600 } });
-    if (!res.ok) return emptyTile(tileSize);
-    const raw = Buffer.from(await res.arrayBuffer());
-    // Ensure tile is exactly tileSize x tileSize (edge tiles may differ)
-    const meta = await sharp(raw).metadata();
-    if (meta.width !== tileSize || meta.height !== tileSize) {
-      return await sharp(raw)
-        .resize(tileSize, tileSize, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-        .png()
-        .toBuffer();
+    if (!res.ok) {
+      return createEmptyTile(tileSize);
     }
-    return raw;
+    const raw = Buffer.from(await res.arrayBuffer());
+    // Ensure tile is exactly tileSize x tileSize
+    // Edge tiles may be smaller; tile servers may return unexpected sizes
+    return await normalizeTile(raw, tileSize);
   } catch {
-    return emptyTile(tileSize);
+    return createEmptyTile(tileSize);
   }
+}
+
+async function createEmptyTile(tileSize: number): Promise<Buffer> {
+  return sharp({
+    create: { width: tileSize, height: tileSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  }).png().toBuffer();
+}
+
+async function normalizeTile(raw: Buffer, tileSize: number): Promise<Buffer> {
+  const meta = await sharp(raw).metadata();
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+
+  if (w === tileSize && h === tileSize) return raw;
+  if (w === 0 || h === 0) return createEmptyTile(tileSize);
+
+  if (w <= tileSize && h <= tileSize) {
+    // Smaller tile (edge of image): pad right/bottom with transparency
+    return sharp(raw)
+      .extend({
+        right: tileSize - w,
+        bottom: tileSize - h,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .png()
+      .toBuffer();
+  }
+
+  // Larger than expected: crop to tileSize
+  return sharp(raw)
+    .extract({ left: 0, top: 0, width: Math.min(w, tileSize), height: Math.min(h, tileSize) })
+    .extend({
+      right: Math.max(0, tileSize - Math.min(w, tileSize)),
+      bottom: Math.max(0, tileSize - Math.min(h, tileSize)),
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png()
+    .toBuffer();
 }
 
 // ============================================
@@ -171,17 +217,18 @@ function generateShutterSvg(
   const { outputSize } = opts;
   if (!shutters || shutters.length === 0) return null;
 
-  const { left, top, cropPixels, zoomScale, nTilesY } = region;
+  const { left, top, cropPixels, zoomScale, nTilesYMaxZoom, tileSize } = region;
   const wcs = opts.layer.wcs_params;
-  const tileSize = opts.layer.tile_size;
   const arcsecPerOutputPx = fovArcsec / outputSize;
 
   const rects: string[] = [];
 
   for (const shutter of shutters) {
+    // Convert shutter RA/Dec to world pixel coords (same transform as object center)
     const sp = skyToPixel(wcs, shutter.center_ra, shutter.center_dec);
-    const sx = sp.x * zoomScale;
-    const sy = nTilesY * tileSize - sp.y * zoomScale;
+    const { wx: sx, wy: sy } = fitsToWorldPixel(
+      sp.x, sp.y, nTilesYMaxZoom, tileSize, zoomScale,
+    );
 
     // Position relative to crop region, scaled to output
     const outX = (sx - left) * (outputSize / cropPixels);
@@ -245,14 +292,6 @@ export async function compositeTileThumbnail(
   const region = computeTileRegion(wcs, layer, ra, dec, outputSize, fovArcsec);
   const { fetchZoom, left, top, cropPixels, tileXMin, tileXMax, tileYMin, tileYMax, tileSize } = region;
 
-  // Validate tile range
-  if (tileXMax < tileXMin || tileYMax < tileYMin) {
-    // Object is outside tile grid — return black square
-    return await sharp({
-      create: { width: outputSize, height: outputSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 255 } },
-    }).png().toBuffer();
-  }
-
   // Fetch all needed tiles in parallel
   const tilePromises: Promise<{ buffer: Buffer; tx: number; ty: number }>[] = [];
   for (let ty = tileYMin; ty <= tileYMax; ty++) {
@@ -277,7 +316,7 @@ export async function compositeTileThumbnail(
   }));
 
   // Extract the region of interest and resize
-  // Clamp crop to canvas bounds
+  // Clamp crop to canvas bounds (handles objects near image edges)
   const rawLeft = Math.round(left - tileXMin * tileSize);
   const rawTop = Math.round(top - tileYMin * tileSize);
   const cropLeft = Math.max(0, Math.min(rawLeft, canvasWidth - 1));
