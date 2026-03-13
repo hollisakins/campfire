@@ -39,6 +39,7 @@ from campfire_deploy.supabase import (
     deploy_slits as db_deploy_slits,
     get_supabase_client,
     refresh_filter_options,
+    refresh_programs_overview,
     update_has_sed_plot,
     upsert_programs,
 )
@@ -253,6 +254,7 @@ def deploy_observation(
 
         print()
         refresh_filter_options(sb)
+        refresh_programs_overview(sb)
 
         print()
         msg = f"Deployed {len(spectra)} spectra from {len(objects)} objects"
@@ -523,6 +525,7 @@ def deploy_zfit(
     print(f"  Updated {n} objects")
 
     refresh_filter_options(sb)
+    refresh_programs_overview(sb)
     print(f"Deployed {len(zfit_paths)} zfit files, updated {n} objects")
 
 

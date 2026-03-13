@@ -273,3 +273,14 @@ def refresh_filter_options(client: Client) -> None:
     except Exception as e:
         print(f"  Warning: Failed to refresh filter options: {e}")
         print("  Run manually: SELECT refresh_filter_options();")
+
+
+def refresh_programs_overview(client: Client) -> None:
+    """Refresh the programs overview materialized view."""
+    print("  Refreshing programs overview cache...")
+    try:
+        client.rpc('refresh_programs_overview').execute()
+        print("  Done")
+    except Exception as e:
+        print(f"  Warning: Failed to refresh programs overview: {e}")
+        print("  Run manually: SELECT refresh_programs_overview();")
