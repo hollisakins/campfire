@@ -46,20 +46,20 @@ export async function getProgramsOverview(): Promise<ProgramsOverviewResult> {
   }
 
   try {
-    const { data, error } = await supabase.rpc('get_programs_overview');
+    // Fetch programs and user access in parallel
+    const [rpcResult, accessResult] = await Promise.all([
+      supabase.rpc('get_programs_overview'),
+      supabase.from('user_program_access').select('program_id').eq('user_id', user.id),
+    ]);
+
+    const { data, error } = rpcResult;
 
     if (error) {
       console.error('Error fetching programs overview:', error);
       return { programs: [], error: error.message, isAuthenticated: true };
     }
 
-    // Filter to programs the user can access
-    const { data: accessData } = await supabase
-      .from('user_program_access')
-      .select('program_id')
-      .eq('user_id', user.id);
-
-    const explicitAccessIds = new Set((accessData || []).map(a => a.program_id));
+    const explicitAccessIds = new Set((accessResult.data || []).map(a => a.program_id));
 
     const programs: ProgramOverview[] = (data || [])
       .filter((p: ProgramOverview) => p.is_public || explicitAccessIds.has(p.program_id))
@@ -91,10 +91,11 @@ export async function getProgramDetail(programId: number): Promise<ProgramDetail
   }
 
   try {
-    // Fetch program overview and observation stats in parallel
-    const [overviewResult, obsResult] = await Promise.all([
+    // Fetch program overview, observation stats, and user access in parallel
+    const [overviewResult, obsResult, accessResult] = await Promise.all([
       supabase.rpc('get_programs_overview'),
       supabase.rpc('get_observation_stats', { p_program_ids: [programId] }),
+      supabase.from('user_program_access').select('program_id').eq('user_id', user.id),
     ]);
 
     if (overviewResult.error) {
@@ -102,13 +103,7 @@ export async function getProgramDetail(programId: number): Promise<ProgramDetail
       return { program: null, observations: [], error: overviewResult.error.message, isAuthenticated: true };
     }
 
-    // Check access
-    const { data: accessData } = await supabase
-      .from('user_program_access')
-      .select('program_id')
-      .eq('user_id', user.id);
-
-    const explicitAccessIds = new Set((accessData || []).map(a => a.program_id));
+    const explicitAccessIds = new Set((accessResult.data || []).map(a => a.program_id));
 
     // Find the specific program
     const programData = (overviewResult.data || []).find(
