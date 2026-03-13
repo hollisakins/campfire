@@ -117,6 +117,7 @@ export interface Program {
   pi_name: string | null;
   description: string | null;
   is_public: boolean;
+  cycle: number | null;
   created_at: string;
 }
 

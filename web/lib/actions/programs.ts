@@ -8,6 +8,7 @@ export interface ProgramOverview {
   pi_name: string | null;
   description: string | null;
   is_public: boolean;
+  cycle: number | null;
   object_count: number;
   gratings: string[];
   fields: string[];
@@ -69,6 +70,7 @@ export async function getProgramsOverview(): Promise<ProgramsOverviewResult> {
         pi_name: p.pi_name,
         description: p.description,
         is_public: p.is_public,
+        cycle: p.cycle ?? null,
         object_count: Number(p.object_count) || 0,
         gratings: p.gratings || [],
         fields: p.fields || [],
@@ -125,6 +127,7 @@ export async function getProgramDetail(programId: number): Promise<ProgramDetail
       pi_name: programData.pi_name,
       description: programData.description,
       is_public: programData.is_public,
+      cycle: programData.cycle ?? null,
       object_count: Number(programData.object_count) || 0,
       gratings: programData.gratings || [],
       fields: programData.fields || [],

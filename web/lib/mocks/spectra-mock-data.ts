@@ -7,10 +7,10 @@ import type { SpectrumObject, Spectrum, Program } from '@/lib/types';
 
 // Mock Programs
 export const MOCK_PROGRAMS: Program[] = [
-  { program_id: 1181, program_name: 'JADES', pi_name: 'N. Lützgendorf', description: 'JWST Advanced Deep Extragalactic Survey', is_public: true, created_at: '2024-01-01T00:00:00Z' },
-  { program_id: 2198, program_name: 'CEERS', pi_name: 'S. Finkelstein', description: 'Cosmic Evolution Early Release Science', is_public: true, created_at: '2024-01-01T00:00:00Z' },
-  { program_id: 3456, program_name: 'CAPERS', pi_name: 'M. Dickinson', description: 'Cycle 2 Deep Fields', is_public: false, created_at: '2024-01-01T00:00:00Z' },
-  { program_id: 4521, program_name: 'EMBER', pi_name: 'P. Oesch', description: 'Emission line Mapping of the Bright Epoch of Reionization', is_public: false, created_at: '2024-01-01T00:00:00Z' },
+  { program_id: 1181, program_name: 'JADES', pi_name: 'N. Lützgendorf', description: 'JWST Advanced Deep Extragalactic Survey', is_public: true, cycle: 1, created_at: '2024-01-01T00:00:00Z' },
+  { program_id: 2198, program_name: 'CEERS', pi_name: 'S. Finkelstein', description: 'Cosmic Evolution Early Release Science', is_public: true, cycle: 1, created_at: '2024-01-01T00:00:00Z' },
+  { program_id: 3456, program_name: 'CAPERS', pi_name: 'M. Dickinson', description: 'Cycle 2 Deep Fields', is_public: false, cycle: 2, created_at: '2024-01-01T00:00:00Z' },
+  { program_id: 4521, program_name: 'EMBER', pi_name: 'P. Oesch', description: 'Emission line Mapping of the Bright Epoch of Reionization', is_public: false, cycle: 4, created_at: '2024-01-01T00:00:00Z' },
 ];
 
 export const MOCK_FIELDS = ['COSMOS', 'UDS', 'EGS', 'GOODS-N', 'GOODS-S'];

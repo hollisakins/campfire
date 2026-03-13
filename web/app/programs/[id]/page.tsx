@@ -149,6 +149,7 @@ export default function ProgramDetailPage() {
               </h1>
               <p className="text-sm text-text-secondary dark:text-slate-400">
                 PID {program.program_id}
+                {program.cycle != null && <> &middot; Cycle {program.cycle}</>}
                 {program.pi_name && <> &middot; PI: {program.pi_name}</>}
               </p>
             </div>

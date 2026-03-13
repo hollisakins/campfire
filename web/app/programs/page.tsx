@@ -54,6 +54,11 @@ function ProgramCard({ program }: { program: ProgramOverview }) {
         )}
 
         <div className="flex flex-wrap gap-2 mt-auto">
+          {program.cycle != null && (
+            <span className="inline-flex items-center px-2.5 py-1 bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 rounded-full text-xs font-medium">
+              Cycle {program.cycle}
+            </span>
+          )}
           <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-primary/10 text-primary rounded-full text-xs font-medium">
             <Hash className="w-3 h-3" />
             {program.object_count.toLocaleString()} objects

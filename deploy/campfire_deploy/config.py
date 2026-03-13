@@ -9,13 +9,11 @@ Credential resolution (env vars take priority over TOML):
   3. $CAMPFIRE_ROOT/config/deploy.toml
 
 Programs resolution:
-  1. Package-shipped data/programs.toml (always loaded)
-  2. $CAMPFIRE_ROOT/config/programs.toml (merged on top if present)
+  $CAMPFIRE_ROOT/config/programs.toml
 """
 
 import os
 import sys
-from importlib import resources
 from pathlib import Path
 
 import tomllib
@@ -167,31 +165,22 @@ def load_config(config_path: str | None = None) -> dict:
 
 def load_programs() -> dict[int, dict]:
     """
-    Load JWST program metadata.
-
-    Always loads the package-shipped data/programs.toml, then merges
-    overrides from $CAMPFIRE_ROOT/config/programs.toml if present.
+    Load JWST program metadata from $CAMPFIRE_ROOT/config/programs.toml.
 
     Returns dict keyed by program_id.
     """
-    # Load package-shipped defaults
-    pkg_data = resources.files('campfire_deploy').parent / 'data' / 'programs.toml'
-    programs = {}
-
-    if pkg_data.is_file():
-        data = _load_toml(pkg_data)
-        programs = {p['program_id']: p for p in data.get('programs', [])}
-
-    # Merge overrides from CAMPFIRE_ROOT if available
     root = os.environ.get('CAMPFIRE_ROOT')
-    if root:
-        override_path = Path(root) / 'config' / 'programs.toml'
-        if override_path.exists():
-            data = _load_toml(override_path)
-            for p in data.get('programs', []):
-                programs[p['program_id']] = p
+    if not root:
+        print("Error: $CAMPFIRE_ROOT is not set.")
+        sys.exit(1)
 
-    return programs
+    path = Path(root) / 'config' / 'programs.toml'
+    if not path.exists():
+        print(f"Error: Programs config not found: {path}")
+        sys.exit(1)
+
+    data = _load_toml(path)
+    return {p['program_id']: p for p in data.get('programs', [])}
 
 
 def load_observations() -> dict:

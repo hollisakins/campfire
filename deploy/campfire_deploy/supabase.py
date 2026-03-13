@@ -44,6 +44,7 @@ def upsert_programs(
             'pi_name': info.get('pi_name', ''),
             'description': info.get('description', ''),
             'is_public': info.get('is_public', False),
+            'cycle': info.get('cycle'),
         }
         client.table('programs').upsert(data, on_conflict='program_id').execute()
         print(f"  + {pid} ({data['program_name']})")
