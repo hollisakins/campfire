@@ -496,15 +496,12 @@ export async function getInspectionQueueIds(
 
     const rpcParams = buildFilterParams(filters, accessibleProgramIds, user.id);
 
-    // Fetch all matching objects (large page size, only need object_id)
-    const { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
+    // Call lightweight RPC that returns only object IDs (no JSONB, no spectra joins)
+    const { data, error } = await supabase.rpc('get_filtered_object_ids', {
       ...rpcParams,
       p_redshift_quality: qualityFilter, // Override: implicit quality=0 for inspection
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,
-      p_page: 1,
-      p_page_size: 100000,
-      p_include_thumbnails: false,
     });
 
     if (error) {
@@ -512,9 +509,8 @@ export async function getInspectionQueueIds(
       return { ids: [], error: error.message };
     }
 
-    const result = data?.[0] || { objects: [], total_count: 0 };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ids = (result.objects || []).map((obj: any) => obj.object_id as string);
+    const ids = (data || []).map((row: any) => row.object_id as string);
 
     return { ids };
   } catch (err) {
