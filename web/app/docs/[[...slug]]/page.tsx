@@ -94,8 +94,8 @@ export default function DocsPage() {
   return (
     <div className="flex gap-8">
       <article className="flex-1 min-w-0">
-        {/* Breadcrumbs */}
-        {breadcrumbs.length > 0 && (
+        {/* Breadcrumbs — dynamic sub-pages render their own */}
+        {breadcrumbs.length > 0 && !getDynamicParentSlug(slug) && (
           <nav className="flex items-center gap-1 text-sm text-text-secondary dark:text-slate-400 mb-6">
             <Link href="/docs" className="hover:text-primary transition-colors">
               Docs

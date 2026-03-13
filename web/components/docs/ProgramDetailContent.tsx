@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { MarkdownRenderer } from '@/components/docs';
 import { useProgramDetailQuery } from '@/lib/hooks/useProgramsQuery';
-import { LogIn, Loader2, Telescope, ExternalLink, ArrowRight, AlertCircle } from 'lucide-react';
+import { LogIn, Loader2, Telescope, ExternalLink, ArrowRight, AlertCircle, ChevronRight } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
 // Editorial content registry
@@ -89,8 +89,23 @@ export default function ProgramDetailContent({ programId }: { programId: number 
   const editorialContent = programContent[program.program_id];
   const stsciUrl = `https://www.stsci.edu/jwst-program-info/program/?program=${program.program_id}`;
 
+  const programLabel = program.program_name
+    ? `${program.program_name} (${program.program_id})`
+    : `Program ${program.program_id}`;
+
   return (
     <div>
+      {/* Breadcrumbs */}
+      <nav className="flex items-center gap-1 text-sm text-text-secondary dark:text-slate-400 mb-6">
+        <Link href="/docs" className="hover:text-primary transition-colors">Docs</Link>
+        <ChevronRight className="w-4 h-4" />
+        <Link href="/docs/data-products" className="hover:text-primary transition-colors">Data Products</Link>
+        <ChevronRight className="w-4 h-4" />
+        <Link href="/docs/data-products/programs" className="hover:text-primary transition-colors">NIRSpec Programs</Link>
+        <ChevronRight className="w-4 h-4" />
+        <span className="text-text-primary dark:text-slate-200">{programLabel}</span>
+      </nav>
+
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-start justify-between mb-3">
