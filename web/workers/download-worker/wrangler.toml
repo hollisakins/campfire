@@ -2,9 +2,6 @@ name = "campfire-download"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
-# Account ID from Cloudflare dashboard
->
-
 # R2 bucket binding
 [[r2_buckets]]
 binding = "R2_BUCKET"
