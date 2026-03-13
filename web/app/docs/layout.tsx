@@ -9,9 +9,11 @@ import { docsNav, type DocPage } from '@/lib/docs/config';
 function NavItem({ item, level = 0 }: { item: DocPage; level?: number }) {
   const pathname = usePathname();
   const currentSlug = pathname.replace('/docs/', '').replace('/docs', '') || 'overview';
-  const isActive = currentSlug === item.slug;
+  const isActive = currentSlug === item.slug || currentSlug.startsWith(item.slug + '/');
   const hasChildren = item.children && item.children.length > 0;
-  const isParentOfActive = hasChildren && item.children?.some(child => child.slug === currentSlug);
+  const isParentOfActive = hasChildren && item.children?.some(
+    child => child.slug === currentSlug || currentSlug.startsWith(child.slug + '/')
+  );
   const [isOpen, setIsOpen] = useState(isParentOfActive || isActive);
 
   const Icon = item.icon;

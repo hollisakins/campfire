@@ -16,7 +16,7 @@ function formatGratings(gratings: string[]): string {
 
 function ProgramCard({ program }: { program: ProgramOverview }) {
   return (
-    <Link href={`/programs/${program.program_id}`}>
+    <Link href={`/docs/data-products/programs/${program.program_id}`}>
       <Card hover className="p-5 h-full">
         <div className="flex items-start justify-between mb-3">
           <div>

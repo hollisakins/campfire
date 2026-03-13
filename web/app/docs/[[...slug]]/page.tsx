@@ -5,8 +5,9 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { ChevronRight, AlertCircle } from 'lucide-react';
 import { MarkdownRenderer, TableOfContents, DocNavigation, type TOCItem } from '@/components/docs';
-import { findDocBySlug, getBreadcrumbs, getAdjacentPages, DYNAMIC_SLUGS } from '@/lib/docs/config';
+import { findDocBySlug, getBreadcrumbs, getAdjacentPages, isDynamicSlug, getDynamicParentSlug } from '@/lib/docs/config';
 import ProgramsContent from '@/components/docs/ProgramsContent';
+import ProgramDetailContent from '@/components/docs/ProgramDetailContent';
 
 // Import all markdown content
 import overviewContent from '@/lib/docs/content/overview.md';
@@ -47,14 +48,14 @@ export default function DocsPage() {
 
   const [tocItems, setTocItems] = useState<TOCItem[]>([]);
 
-  const isDynamic = DYNAMIC_SLUGS.has(slug);
+  const dynamic = isDynamicSlug(slug);
   const content = contentMap[slug];
   const docPage = findDocBySlug(slug);
   const breadcrumbs = getBreadcrumbs(slug);
   const { prev, next } = getAdjacentPages(slug);
 
   // 404 handling
-  if ((!content && !isDynamic) || !docPage) {
+  if ((!content && !dynamic) || !docPage) {
     return (
       <div className="text-center py-16">
         <div className="w-16 h-16 bg-red-100 dark:bg-red-950 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -76,12 +77,19 @@ export default function DocsPage() {
     );
   }
 
-  // Dynamic component map
-  const dynamicComponents: Record<string, React.ComponentType> = {
-    'data-products/programs': ProgramsContent,
-  };
-
-  const DynamicComponent = isDynamic ? dynamicComponents[slug] : null;
+  // Resolve dynamic component
+  const DynamicComponent = (() => {
+    if (!dynamic) return null;
+    if (slug === 'data-products/programs') return ProgramsContent;
+    if (slug.startsWith('data-products/programs/')) {
+      const programId = Number(slug.split('/').pop()!);
+      function ProgramDetail() {
+        return <ProgramDetailContent programId={programId} />;
+      }
+      return ProgramDetail;
+    }
+    return null;
+  })();
 
   return (
     <div className="flex gap-8">
@@ -122,7 +130,7 @@ export default function DocsPage() {
       </article>
 
       {/* Table of Contents - hidden for dynamic pages */}
-      {!isDynamic && <TableOfContents items={tocItems} />}
+      {!dynamic && <TableOfContents items={tocItems} />}
     </div>
   );
 }

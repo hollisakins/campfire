@@ -9,8 +9,22 @@ import {
   type LucideIcon
 } from 'lucide-react';
 
-// Special slug for dynamic (non-markdown) pages
-export const DYNAMIC_SLUGS = new Set(['data-products/programs']);
+// Dynamic (non-markdown) page prefixes — exact match or prefix match (with /)
+const DYNAMIC_PREFIXES = ['data-products/programs'];
+
+/** Check if a slug is a dynamic (non-markdown) page */
+export function isDynamicSlug(slug: string): boolean {
+  return DYNAMIC_PREFIXES.some(
+    prefix => slug === prefix || slug.startsWith(prefix + '/')
+  );
+}
+
+/** For a dynamic sub-page (e.g. data-products/programs/7076), return the parent dynamic slug */
+export function getDynamicParentSlug(slug: string): string | undefined {
+  return DYNAMIC_PREFIXES.find(
+    prefix => slug.startsWith(prefix + '/')
+  );
+}
 
 export interface DocPage {
   title: string;
@@ -121,7 +135,7 @@ export const docsNav: DocPage[] = [
   },
 ];
 
-// Helper to find a doc page by slug
+// Helper to find a doc page by slug (supports dynamic sub-pages)
 export function findDocBySlug(slug: string): DocPage | undefined {
   for (const page of docsNav) {
     if (page.slug === slug) return page;
@@ -131,6 +145,9 @@ export function findDocBySlug(slug: string): DocPage | undefined {
       }
     }
   }
+  // For dynamic sub-pages (e.g. data-products/programs/7076), resolve to the parent entry
+  const parentSlug = getDynamicParentSlug(slug);
+  if (parentSlug) return findDocBySlug(parentSlug);
   return undefined;
 }
 
@@ -152,6 +169,13 @@ export function getBreadcrumbs(slug: string): { title: string; slug: string }[] 
         }
       }
     }
+  }
+
+  // For dynamic sub-pages, build breadcrumbs from the parent dynamic entry
+  const parentSlug = getDynamicParentSlug(slug);
+  if (parentSlug) {
+    const parentBreadcrumbs = getBreadcrumbs(parentSlug);
+    return parentBreadcrumbs;
   }
 
   return breadcrumbs;
