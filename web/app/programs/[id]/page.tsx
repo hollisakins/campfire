@@ -1,14 +1,13 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { MarkdownRenderer } from '@/components/docs';
-import { getProgramDetail } from '@/lib/actions/programs';
-import type { ProgramOverview, ObservationStat } from '@/lib/actions/programs';
+import { useProgramDetailQuery } from '@/lib/hooks/useProgramsQuery';
 import { LogIn, Loader2, Telescope, ExternalLink, ArrowRight, AlertCircle } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
@@ -30,35 +29,11 @@ export default function ProgramDetailPage() {
   const params = useParams();
   const programId = Number(params.id);
   const { user, loading: authLoading } = useAuth();
-
-  const [program, setProgram] = useState<ProgramOverview | null>(null);
-  const [observations, setObservations] = useState<ObservationStat[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (authLoading || isNaN(programId)) return;
-
-    async function fetchProgram() {
-      setLoading(true);
-      setError(null);
-      try {
-        const result = await getProgramDetail(programId);
-        if (result.error) {
-          setError(result.error);
-        } else {
-          setProgram(result.program);
-          setObservations(result.observations);
-        }
-      } catch {
-        setError('Failed to fetch program details');
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    fetchProgram();
-  }, [authLoading, user, programId]);
+  const { data, isLoading } = useProgramDetailQuery(programId, !authLoading && !!user);
+  const program = data?.program ?? null;
+  const observations = data?.observations ?? [];
+  const error = data?.error ?? null;
+  const loading = isLoading;
 
   // Auth gate
   if (!authLoading && !user) {

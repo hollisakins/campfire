@@ -1,11 +1,11 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import Link from 'next/link';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { Card } from '@/components/ui/Card';
-import { getProgramsOverview } from '@/lib/actions/programs';
 import type { ProgramOverview } from '@/lib/actions/programs';
+import { useProgramsOverviewQuery } from '@/lib/hooks/useProgramsQuery';
 import { LogIn, Loader2, Telescope, ExternalLink, Users, Hash } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
@@ -76,32 +76,10 @@ function ProgramCard({ program }: { program: ProgramOverview }) {
 
 export default function ProgramsPage() {
   const { user, loading: authLoading } = useAuth();
-  const [programs, setPrograms] = useState<ProgramOverview[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (authLoading) return;
-
-    async function fetchPrograms() {
-      setLoading(true);
-      setError(null);
-      try {
-        const result = await getProgramsOverview();
-        if (result.error) {
-          setError(result.error);
-        } else {
-          setPrograms(result.programs);
-        }
-      } catch {
-        setError('Failed to fetch programs');
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    fetchPrograms();
-  }, [authLoading, user]);
+  const { data, isLoading } = useProgramsOverviewQuery(!authLoading && !!user);
+  const programs = data?.programs ?? [];
+  const error = data?.error ?? null;
+  const loading = isLoading;
 
   // Show login prompt if not authenticated
   if (!authLoading && !user) {
