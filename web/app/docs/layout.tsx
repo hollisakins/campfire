@@ -75,7 +75,7 @@ export default function DocsLayout({
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8">
+    <div className="max-w-[1400px] mx-auto px-4 py-8">
       {/* Mobile sidebar toggle */}
       <button
         onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -133,7 +133,7 @@ export default function DocsLayout({
         )}
 
         {/* Main Content */}
-        <main className="flex-1 min-w-0 max-w-4xl">
+        <main className="flex-1 min-w-0">
           {children}
         </main>
       </div>

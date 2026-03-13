@@ -5,7 +5,8 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { ChevronRight, AlertCircle } from 'lucide-react';
 import { MarkdownRenderer, TableOfContents, DocNavigation, type TOCItem } from '@/components/docs';
-import { findDocBySlug, getBreadcrumbs, getAdjacentPages } from '@/lib/docs/config';
+import { findDocBySlug, getBreadcrumbs, getAdjacentPages, DYNAMIC_SLUGS } from '@/lib/docs/config';
+import ProgramsContent from '@/components/docs/ProgramsContent';
 
 // Import all markdown content
 import overviewContent from '@/lib/docs/content/overview.md';
@@ -46,13 +47,14 @@ export default function DocsPage() {
 
   const [tocItems, setTocItems] = useState<TOCItem[]>([]);
 
+  const isDynamic = DYNAMIC_SLUGS.has(slug);
   const content = contentMap[slug];
   const docPage = findDocBySlug(slug);
   const breadcrumbs = getBreadcrumbs(slug);
   const { prev, next } = getAdjacentPages(slug);
 
   // 404 handling
-  if (!content || !docPage) {
+  if ((!content && !isDynamic) || !docPage) {
     return (
       <div className="text-center py-16">
         <div className="w-16 h-16 bg-red-100 dark:bg-red-950 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -73,6 +75,13 @@ export default function DocsPage() {
       </div>
     );
   }
+
+  // Dynamic component map
+  const dynamicComponents: Record<string, React.ComponentType> = {
+    'data-products/programs': ProgramsContent,
+  };
+
+  const DynamicComponent = isDynamic ? dynamicComponents[slug] : null;
 
   return (
     <div className="flex gap-8">
@@ -102,14 +111,18 @@ export default function DocsPage() {
         )}
 
         {/* Content */}
-        <MarkdownRenderer content={content} onTOCChange={setTocItems} />
+        {DynamicComponent ? (
+          <DynamicComponent />
+        ) : (
+          <MarkdownRenderer content={content} onTOCChange={setTocItems} />
+        )}
 
         {/* Navigation */}
         <DocNavigation prev={prev} next={next} />
       </article>
 
-      {/* Table of Contents */}
-      <TableOfContents items={tocItems} />
+      {/* Table of Contents - hidden for dynamic pages */}
+      {!isDynamic && <TableOfContents items={tocItems} />}
     </div>
   );
 }

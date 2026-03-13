@@ -9,6 +9,9 @@ import {
   type LucideIcon
 } from 'lucide-react';
 
+// Special slug for dynamic (non-markdown) pages
+export const DYNAMIC_SLUGS = new Set(['data-products/programs']);
+
 export interface DocPage {
   title: string;
   slug: string;
@@ -91,6 +94,11 @@ export const docsNav: DocPage[] = [
         title: 'Overview',
         slug: 'data-products',
         description: 'Data product overview',
+      },
+      {
+        title: 'NIRSpec Programs',
+        slug: 'data-products/programs',
+        description: 'Browse JWST programs with data in CAMPFIRE',
       },
       {
         title: 'FITS Reference',
