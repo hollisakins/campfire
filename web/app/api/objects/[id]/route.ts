@@ -219,12 +219,11 @@ export async function PATCH(
     }
 
     // Update the object — RLS enforces program access + can_comment
-    const { data: updatedObject, error: updateError } = await supabase
+    const { data: updatedRows, error: updateError } = await supabase
       .from('objects')
       .update(updates)
       .eq('id', objectId)
-      .select()
-      .single();
+      .select();
 
     if (updateError) {
       console.error('Error updating object:', updateError);
@@ -234,6 +233,15 @@ export async function PATCH(
         code: updateError.code,
       }, { status: 500 });
     }
+
+    if (!updatedRows || updatedRows.length === 0) {
+      return NextResponse.json({
+        error: 'Update blocked by access policy',
+        details: 'You do not have permission to modify this object.',
+      }, { status: 403 });
+    }
+
+    const updatedObject = updatedRows[0];
 
     // Insert audit log entries — RLS enforces program access
     if (auditEntries.length > 0) {
