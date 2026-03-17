@@ -415,6 +415,25 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
       };
     }
 
+    // Fetch JWST PIDs from observations table for program sorting
+    const { data: obsData } = await supabase
+      .from('observations')
+      .select('program_slug, jwst_program_id');
+
+    const pidsBySlug: Record<string, number[]> = {};
+    for (const obs of (obsData || [])) {
+      if (!obs.jwst_program_id) continue;
+      if (!pidsBySlug[obs.program_slug]) pidsBySlug[obs.program_slug] = [];
+      if (!pidsBySlug[obs.program_slug].includes(obs.jwst_program_id)) {
+        pidsBySlug[obs.program_slug].push(obs.jwst_program_id);
+      }
+    }
+
+    const programsWithPids = accessiblePrograms.map(p => ({
+      ...p,
+      jwst_pids: pidsBySlug[p.slug]?.sort((a, b) => a - b) || [],
+    }));
+
     // Fetch fields and observations from materialized view (cached, refreshed after deployments)
     const { data: filterData, error: filterError } = await supabase
       .from('mv_filter_options')
@@ -424,7 +443,7 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
     if (filterError) {
       console.error('Error fetching filter options:', filterError);
       return {
-        programs: accessiblePrograms,
+        programs: programsWithPids,
         fields: [],
         observations: [],
         error: filterError.message,
@@ -436,7 +455,7 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
     const uniqueObservations = filterData?.observations || [];
 
     return {
-      programs: accessiblePrograms,
+      programs: programsWithPids,
       fields: uniqueFields,
       observations: uniqueObservations,
     };

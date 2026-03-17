@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown, X, Check } from 'lucide-react';
+import { ChevronDown, X, Check, Search, HelpCircle } from 'lucide-react';
+import Link from 'next/link';
 
 export interface FilterOption {
   value: string | number;
@@ -78,6 +79,11 @@ interface ShortcutButton {
   values: (string | number)[];
 }
 
+interface FooterLink {
+  label: string;
+  href: string;
+}
+
 interface FilterChipProps {
   label: string;
   options: FilterOption[];
@@ -87,6 +93,8 @@ interface FilterChipProps {
   className?: string;
   disabled?: boolean;
   shortcut?: ShortcutButton;
+  searchable?: boolean;
+  footerLink?: FooterLink;
 }
 
 export const FilterChip: React.FC<FilterChipProps> = ({
@@ -98,9 +106,13 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   className = '',
   disabled = false,
   shortcut,
+  searchable = false,
+  footerLink,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -113,6 +125,16 @@ export const FilterChip: React.FC<FilterChipProps> = ({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Reset search when dropdown closes
+  useEffect(() => {
+    if (!isOpen) setSearchTerm('');
+  }, [isOpen]);
+
+  // Filter options by search term
+  const filteredOptions = searchable && searchTerm
+    ? options.filter(opt => opt.label.toLowerCase().includes(searchTerm.toLowerCase()))
+    : options;
 
   const handleToggle = (value: string | number) => {
     if (multiSelect) {
@@ -165,42 +187,75 @@ export const FilterChip: React.FC<FilterChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && !disabled && (
-        <div className="absolute z-50 mt-1 min-w-[200px] max-w-[280px] max-h-[400px] overflow-y-auto bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
-          {/* Checkbox list */}
-          <div className="p-1">
-            {options.map((option) => {
-              const isSelected = selected.includes(option.value);
-              return (
-                <button
-                  key={option.value}
-                  onClick={() => handleToggle(option.value)}
-                  className="w-full flex items-center gap-3 px-3 py-2 text-sm text-left hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors"
-                >
-                  {/* Checkbox */}
-                  <div
-                    className={`
-                      w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all duration-200
-                      ${isSelected ? 'bg-primary border-primary scale-110' : 'border-border dark:border-slate-600'}
-                    `}
-                    style={
-                      isSelected && option.color
-                        ? { backgroundColor: option.color, borderColor: darkenColor(option.color, 30) }
-                        : undefined
-                    }
+        <div
+          className={`absolute z-50 mt-1 ${searchable ? 'min-w-[280px] max-w-[360px]' : 'min-w-[200px] max-w-[280px]'} bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg`}
+          onKeyDown={(e) => {
+            if (searchable && searchInputRef.current && e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+              searchInputRef.current.focus();
+            }
+          }}
+        >
+          {/* Search input */}
+          {searchable && (
+            <div className="p-2 border-b border-border dark:border-slate-700">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary dark:text-slate-500" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search..."
+                  className="w-full pl-8 pr-3 py-1.5 text-sm border border-border dark:border-slate-700 rounded-md bg-background dark:bg-slate-900 text-text-primary dark:text-slate-100 placeholder:text-text-secondary dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Scrollable checkbox list */}
+          <div className="max-h-[300px] overflow-y-auto">
+            <div className="p-1">
+              {filteredOptions.map((option) => {
+                const isSelected = selected.includes(option.value);
+                return (
+                  <button
+                    key={option.value}
+                    onClick={() => handleToggle(option.value)}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-sm text-left hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors"
                   >
-                    {isSelected && <Check className="w-3 h-3 text-white" />}
-                  </div>
+                    {/* Checkbox */}
+                    <div
+                      className={`
+                        w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all duration-200
+                        ${isSelected ? 'bg-primary border-primary scale-110' : 'border-border dark:border-slate-600'}
+                      `}
+                      style={
+                        isSelected && option.color
+                          ? { backgroundColor: option.color, borderColor: darkenColor(option.color, 30) }
+                          : undefined
+                      }
+                    >
+                      {isSelected && <Check className="w-3 h-3 text-white" />}
+                    </div>
 
-                  {/* Icon */}
-                  {option.icon && <span className="text-sm">{option.icon}</span>}
+                    {/* Icon */}
+                    {option.icon && <span className="text-sm">{option.icon}</span>}
 
-                  {/* Label */}
-                  <span className={isSelected ? 'text-text-primary dark:text-slate-100' : 'text-text-secondary dark:text-slate-400'}>
-                    {option.label}
-                  </span>
-                </button>
-              );
-            })}
+                    {/* Label */}
+                    <span className={isSelected ? 'text-text-primary dark:text-slate-100' : 'text-text-secondary dark:text-slate-400'}>
+                      {option.label}
+                    </span>
+                  </button>
+                );
+              })}
+
+              {/* Empty state */}
+              {filteredOptions.length === 0 && searchTerm && (
+                <div className="px-3 py-4 text-sm text-text-secondary dark:text-slate-500 text-center">
+                  No matches
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Shortcut button */}
@@ -229,6 +284,19 @@ export const FilterChip: React.FC<FilterChipProps> = ({
               >
                 Clear all
               </button>
+            </div>
+          )}
+
+          {/* Footer link */}
+          {footerLink && (
+            <div className="border-t border-border dark:border-slate-700 px-3 py-2">
+              <Link
+                href={footerLink.href}
+                className="flex items-center gap-1.5 text-xs text-text-secondary dark:text-slate-500 hover:text-primary transition-colors"
+              >
+                <HelpCircle className="w-3 h-3" />
+                <span>{footerLink.label}</span>
+              </Link>
             </div>
           )}
         </div>

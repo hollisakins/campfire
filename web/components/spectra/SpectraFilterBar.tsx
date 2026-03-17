@@ -111,16 +111,21 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     onFiltersChange({ ...filters, [key]: value });
   };
 
-  // Convert programs to filter options
-  const programOptions: FilterOption[] = availablePrograms.map((p) => ({
+  // Sort programs by max JWST PID (ascending), then convert to filter options
+  const sortedPrograms = [...availablePrograms].sort((a, b) => {
+    const maxA = a.jwst_pids?.length ? Math.max(...a.jwst_pids) : 0;
+    const maxB = b.jwst_pids?.length ? Math.max(...b.jwst_pids) : 0;
+    return maxA - maxB;
+  });
+  const programOptions: FilterOption[] = sortedPrograms.map((p) => ({
     value: p.slug,
     label: p.program_name || p.slug,
   }));
 
-  // Convert fields to filter options
+  // Convert fields to filter options (display in all caps)
   const fieldOptions: FilterOption[] = availableFields.map((f) => ({
     value: f,
-    label: f,
+    label: f.toUpperCase(),
   }));
 
   // Convert observations to filter options
@@ -248,6 +253,8 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           options={programOptions}
           selected={filters.programs}
           onChange={(selected) => updateFilter('programs', selected as string[])}
+          searchable
+          footerLink={{ label: "Browse all programs", href: "/docs/data-products/programs" }}
         />
 
         {/* Field filter */}
@@ -256,6 +263,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           options={fieldOptions}
           selected={filters.fields}
           onChange={(selected) => updateFilter('fields', selected as string[])}
+          searchable
         />
 
         {/* Observation filter */}
@@ -264,6 +272,8 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           options={observationOptions}
           selected={filters.observations}
           onChange={(selected) => updateFilter('observations', selected as string[])}
+          searchable
+          footerLink={{ label: "Browse all programs", href: "/docs/data-products/programs" }}
         />
 
         {/* Divider */}
