@@ -251,7 +251,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               objectId={spectrum.object_id}
               size={600}
               displaySize={300}
-              fov={4}
+              fov={3.2}
               shutters
               linkToMap={{ field: spectrum.field, ra: spectrum.ra, dec: spectrum.dec }}
             />

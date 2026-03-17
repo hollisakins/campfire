@@ -40,7 +40,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
           objectId={spectrum.object_id}
           size={560}
           displaySize={280}
-          fov={4}
+          fov={3.2}
           shutters
           linkToMap={{ field: spectrum.field, ra: spectrum.ra, dec: spectrum.dec }}
         />
