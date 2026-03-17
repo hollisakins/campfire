@@ -160,7 +160,15 @@ export const FilterChip: React.FC<FilterChipProps> = ({
     : label;
 
   return (
-    <div ref={containerRef} className={`relative inline-block ${className}`}>
+    <div
+      ref={containerRef}
+      className={`relative inline-block ${className}`}
+      onKeyDown={(e) => {
+        if (isOpen && searchable && searchInputRef.current && e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+          searchInputRef.current.focus();
+        }
+      }}
+    >
       {/* Chip Button */}
       <button
         onClick={() => !disabled && setIsOpen(!isOpen)}
@@ -189,11 +197,6 @@ export const FilterChip: React.FC<FilterChipProps> = ({
       {isOpen && !disabled && (
         <div
           className={`absolute z-50 mt-1 ${searchable ? 'min-w-[280px] max-w-[360px]' : 'min-w-[200px] max-w-[280px]'} bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg`}
-          onKeyDown={(e) => {
-            if (searchable && searchInputRef.current && e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
-              searchInputRef.current.focus();
-            }
-          }}
         >
           {/* Search input */}
           {searchable && (
