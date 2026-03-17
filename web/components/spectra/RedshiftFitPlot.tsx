@@ -229,7 +229,8 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
         emissionLineYRange[0],
         emissionLineYRange[1],
         'x',
-        'y'
+        'y',
+        grating
       );
       traces.push(...emissionTraces);
     }

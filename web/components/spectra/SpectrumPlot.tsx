@@ -8,7 +8,7 @@ import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
-import { getPlotColors, EMISSION_LINES, computeYRange, computeNiceRestTicks } from './plotting-utils';
+import { getPlotColors, getVisibleEmissionLines, computeYRange, computeNiceRestTicks } from './plotting-utils';
 
 // Dynamic import of Plotly to avoid SSR issues
 const Plot = dynamic(() => import('react-plotly.js'), {
@@ -434,12 +434,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
     // Add emission line markers if enabled
     if (showEmissionLines) {
-      const visibleLines = EMISSION_LINES
-        .map(line => ({
-          ...line,
-          observedWave: line.wave * (1 + redshift),
-        }))
-        .filter(line => line.observedWave >= waveMin && line.observedWave <= waveMax);
+      const visibleLines = getVisibleEmissionLines(redshift, waveMin, waveMax, grating);
 
       visibleLines.forEach((line) => {
         traces.push({

@@ -35,29 +35,57 @@ export function getPlotColors(): PlotColors {
 // Colors assigned as rainbow from blue (short λ) to red (long λ)
 // Rest wavelengths in vacuum (microns), matching pipeline templates.py.
 // JWST measures in vacuum — optical/NIR lines converted from air via SDSS formula.
+// gratingOnly: if true, only shown for non-PRISM gratings (blended with neighbor at PRISM resolution)
 export const EMISSION_LINES = [
-  { name: 'Lyα', wave: 0.1215670, color: '#6366f1' },     // indigo (shortest)
-  { name: 'CIV', wave: 0.1549480, color: '#4f46e5' },     // indigo-600
-  { name: 'CIII]', wave: 0.1908734, color: '#4338ca' },   // indigo-700
-  { name: 'MgII', wave: 0.2799942, color: '#2563eb' },    // blue-600
-  { name: '[OII]', wave: 0.3728484, color: '#0ea5e9' },   // sky-500
-  { name: 'Hδ', wave: 0.4102892, color: '#06b6d4' },      // cyan-500
-  { name: 'Hγ', wave: 0.4341692, color: '#14b8a6' },      // teal-500
-  { name: '[OIII]', wave: 0.4364437, color: '#0d9488' },  // teal-600 (auroral)
-  { name: 'Hβ', wave: 0.4862692, color: '#10b981' },      // emerald-500
-  { name: '[OIII]₁', wave: 0.4960296, color: '#22c55e' }, // green-500
-  { name: '[OIII]₂', wave: 0.5008241, color: '#84cc16' }, // lime-500
-  { name: 'HeI', wave: 0.5877255, color: '#a3e635' },     // lime-400
-  { name: 'Hα', wave: 0.6564635, color: '#eab308' },      // yellow-500
-  { name: '[NII]', wave: 0.6585282, color: '#f59e0b' },   // amber-500
-  { name: '[SII]₁', wave: 0.6718298, color: '#f97316' },  // orange-500
-  { name: '[SII]₂', wave: 0.6732671, color: '#ef4444' },  // red-500
-  { name: '[SIII]₁', wave: 0.9071095, color: '#e11d48' }, // rose-600
-  { name: '[SIII]₂', wave: 0.9533721, color: '#be123c' }, // rose-700
-  { name: 'HeI', wave: 1.0833315, color: '#a21caf' },     // fuchsia-700
-  { name: 'Paγ', wave: 1.0941090, color: '#c026d3' },     // fuchsia-600
-  { name: 'Paβ', wave: 1.2821600, color: '#dc2626' },     // red-600
-  { name: 'Paα', wave: 1.8756100, color: '#b91c1c' },     // red-700 (longest)
+  { name: 'Lyα',      wave: 0.1215670, color: '#6366f1' },                     // indigo-500 (shortest)
+  { name: 'NV₁',      wave: 0.1238821, color: '#818cf8', gratingOnly: true },  // indigo-400
+  { name: 'NV₂',      wave: 0.1242804, color: '#818cf8', gratingOnly: true },  // indigo-400
+  { name: 'SiII₁',    wave: 0.1260422, color: '#a78bfa', gratingOnly: true },  // violet-400
+  { name: 'SiII₂',    wave: 0.1264730, color: '#a78bfa', gratingOnly: true },  // violet-400
+  { name: 'SiIV₁',    wave: 0.1393755, color: '#7c3aed', gratingOnly: true },  // violet-700
+  { name: 'OIV]₁',    wave: 0.1397232, color: '#6d28d9', gratingOnly: true },  // violet-800
+  { name: 'OIV]₂',    wave: 0.1399780, color: '#6d28d9', gratingOnly: true },  // violet-800
+  { name: 'SiIV₂',    wave: 0.1402770, color: '#7c3aed', gratingOnly: true },  // violet-700
+  { name: 'NIV]',     wave: 0.1486496, color: '#5b21b6', gratingOnly: true },  // violet-900
+  { name: 'CIV₁',     wave: 0.1548187, color: '#4f46e5', gratingOnly: true },  // indigo-600
+  { name: 'CIV',      wave: 0.1549480, color: '#4f46e5' },                     // indigo-600 (centroid)
+  { name: 'CIV₂',     wave: 0.1550772, color: '#4f46e5', gratingOnly: true },  // indigo-600
+  { name: 'OIII]₁',   wave: 0.1660809, color: '#3730a3', gratingOnly: true },  // indigo-800
+  { name: 'OIII]₂',   wave: 0.1666150, color: '#3730a3', gratingOnly: true },  // indigo-800
+  { name: 'NIII]₁',   wave: 0.1746823, color: '#1e40af', gratingOnly: true },  // blue-800
+  { name: 'NIII]₂',   wave: 0.1748656, color: '#1e40af', gratingOnly: true },  // blue-800
+  { name: 'AlIII₁',   wave: 0.1854716, color: '#1e3a8a', gratingOnly: true },  // blue-900
+  { name: 'AlIII₂',   wave: 0.1862790, color: '#1e3a8a', gratingOnly: true },  // blue-900
+  { name: 'SiIII]',   wave: 0.1892030, color: '#1d4ed8', gratingOnly: true },  // blue-700
+  { name: 'CIII]',    wave: 0.1908734, color: '#4338ca' },                     // indigo-700
+  { name: 'MgII',     wave: 0.2799942, color: '#2563eb' },                     // blue-600
+  { name: '[NeV]',    wave: 0.3426440, color: '#1d4ed8', gratingOnly: true },  // blue-700
+  { name: '[OII]',    wave: 0.3728484, color: '#0ea5e9' },                     // sky-500
+  { name: '[NeIII]₁', wave: 0.3869860, color: '#0284c7', gratingOnly: true },  // sky-600
+  { name: '[NeIII]₂', wave: 0.3968593, color: '#0284c7', gratingOnly: true },  // sky-600 (λ3967)
+  { name: 'Hε',       wave: 0.3971200, color: '#0891b2', gratingOnly: true },  // cyan-600
+  { name: 'Hδ',       wave: 0.4102892, color: '#06b6d4' },                     // cyan-500
+  { name: 'Hγ',       wave: 0.4341692, color: '#14b8a6' },                     // teal-500
+  { name: '[OIII]',   wave: 0.4364437, color: '#0d9488' },                     // teal-600 (auroral; 22Å from Hγ)
+  { name: 'HeII',     wave: 0.4686000, color: '#059669', gratingOnly: true },  // emerald-600
+  { name: 'Hβ',       wave: 0.4862692, color: '#10b981' },                     // emerald-500
+  { name: '[OIII]₁',  wave: 0.4960296, color: '#22c55e' },                     // green-500
+  { name: '[OIII]₂',  wave: 0.5008241, color: '#84cc16' },                     // lime-500
+  { name: 'HeI',      wave: 0.5877255, color: '#a3e635' },                     // lime-400
+  { name: '[OI]',     wave: 0.6302050, color: '#ca8a04', gratingOnly: true },  // yellow-600
+  { name: '[NII]',    wave: 0.6549860, color: '#facc15', gratingOnly: true },  // yellow-400 (λ6549)
+  { name: 'Hα',       wave: 0.6564635, color: '#eab308' },                     // yellow-500
+  { name: '[NII]',    wave: 0.6585282, color: '#f59e0b', gratingOnly: true },  // amber-500 (λ6585; 20Å from Hα)
+  { name: '[SII]₁',   wave: 0.6718298, color: '#f97316' },                     // orange-500
+  { name: '[SII]₂',   wave: 0.6732671, color: '#ef4444', gratingOnly: true },  // red-500 (15Å from [SII]₁)
+  { name: '[ArIII]',  wave: 0.7137770, color: '#c2410c', gratingOnly: true },  // orange-700
+  { name: '[SIII]₁',  wave: 0.9071095, color: '#e11d48' },                     // rose-600
+  { name: '[SIII]₂',  wave: 0.9533721, color: '#be123c' },                     // rose-700
+  { name: 'Paδ',      wave: 1.0049700, color: '#9d174d', gratingOnly: true },  // rose-800
+  { name: 'HeI',      wave: 1.0833315, color: '#a21caf' },                     // fuchsia-700
+  { name: 'Paγ',      wave: 1.0941090, color: '#c026d3' },                     // fuchsia-600 (108Å from HeI)
+  { name: 'Paβ',      wave: 1.2821600, color: '#dc2626' },                     // red-600
+  { name: 'Paα',      wave: 1.8756100, color: '#b91c1c' },                     // red-700 (longest)
 ];
 
 /**
@@ -98,14 +126,17 @@ export function getHoverLabel(unit: FluxUnit): string {
 
 /**
  * Calculate observed wavelengths for emission lines at given redshift
- * and filter to visible range
+ * and filter to visible range. For PRISM, grating-only lines are excluded.
  */
 export function getVisibleEmissionLines(
   redshift: number,
   waveMin: number,
-  waveMax: number
+  waveMax: number,
+  grating?: string
 ) {
+  const isPrism = !grating || grating === 'PRISM';
   return EMISSION_LINES
+    .filter(line => !isPrism || !line.gratingOnly)
     .map(line => ({
       ...line,
       observedWave: line.wave * (1 + redshift),
@@ -281,10 +312,11 @@ export function createEmissionLineTraces(
   fluxMin: number,
   fluxMax: number,
   xaxis: string = 'x',
-  yaxis: string = 'y'
+  yaxis: string = 'y',
+  grating?: string
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): any[] {
-  const visibleLines = getVisibleEmissionLines(redshift, waveMin, waveMax);
+  const visibleLines = getVisibleEmissionLines(redshift, waveMin, waveMax, grating);
 
   return visibleLines.map(line => ({
     x: [line.observedWave, line.observedWave],
