@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 
 /**
  * PATCH /api/users/[id]
@@ -35,13 +35,16 @@ export async function PATCH(
     const body = await request.json();
     const { is_admin, can_comment, program_access } = body;
 
+    // Use service client for admin mutations on other users' data
+    const serviceClient = createServiceClient();
+
     // Update profile fields
     const profileUpdates: Record<string, unknown> = {};
     if (typeof is_admin === 'boolean') profileUpdates.is_admin = is_admin;
     if (typeof can_comment === 'boolean') profileUpdates.can_comment = can_comment;
 
     if (Object.keys(profileUpdates).length > 0) {
-      const { error: updateError } = await supabase
+      const { error: updateError } = await serviceClient
         .from('user_profiles')
         .update(profileUpdates)
         .eq('user_id', userId);
@@ -55,7 +58,7 @@ export async function PATCH(
     // Update program access if provided
     if (Array.isArray(program_access)) {
       // Delete existing access
-      const { error: deleteError } = await supabase
+      const { error: deleteError } = await serviceClient
         .from('user_program_access')
         .delete()
         .eq('user_id', userId);
@@ -73,7 +76,7 @@ export async function PATCH(
           granted_by: user.id,
         }));
 
-        const { error: insertError } = await supabase
+        const { error: insertError } = await serviceClient
           .from('user_program_access')
           .insert(accessRows);
 
@@ -127,14 +130,17 @@ export async function DELETE(
   }
 
   try {
+    // Use service client for admin mutations on other users' data
+    const serviceClient = createServiceClient();
+
     // Delete program access first (foreign key)
-    await supabase
+    await serviceClient
       .from('user_program_access')
       .delete()
       .eq('user_id', userId);
 
     // Delete user profile
-    const { error } = await supabase
+    const { error } = await serviceClient
       .from('user_profiles')
       .delete()
       .eq('user_id', userId);

@@ -218,23 +218,16 @@ export async function PATCH(
       return NextResponse.json({ message: 'No changes detected' });
     }
 
-    // Log what we're trying to update
-    console.log('Updating object:', objectId);
-    console.log('Updates payload:', JSON.stringify(updates, null, 2));
-
-    // Update the object - don't use .single() as RLS might block the select
-    const { data: updatedRows, error: updateError } = await supabase
+    // Update the object — RLS enforces program access + can_comment
+    const { data: updatedObject, error: updateError } = await supabase
       .from('objects')
       .update(updates)
       .eq('id', objectId)
-      .select();
+      .select()
+      .single();
 
     if (updateError) {
       console.error('Error updating object:', updateError);
-      console.error('Error code:', updateError.code);
-      console.error('Error message:', updateError.message);
-      console.error('Error details:', updateError.details);
-      console.error('Error hint:', updateError.hint);
       return NextResponse.json({
         error: 'Failed to update object',
         details: updateError.message,
@@ -242,19 +235,7 @@ export async function PATCH(
       }, { status: 500 });
     }
 
-    // Check if any rows were updated (RLS might silently block updates)
-    if (!updatedRows || updatedRows.length === 0) {
-      console.error('No rows returned from update - RLS policy may be blocking');
-      return NextResponse.json({
-        error: 'Update blocked by database policy',
-        details: 'The objects table needs an UPDATE policy for authenticated users. Run this in Supabase SQL editor: CREATE POLICY "Allow authenticated users to update objects" ON objects FOR UPDATE TO authenticated USING (true) WITH CHECK (true);',
-        code: 'RLS_BLOCKED',
-      }, { status: 403 });
-    }
-
-    const updatedObject = updatedRows[0];
-
-    // Insert audit log entries
+    // Insert audit log entries — RLS enforces program access
     if (auditEntries.length > 0) {
       const { error: auditError } = await supabase
         .from('flag_audit_log')

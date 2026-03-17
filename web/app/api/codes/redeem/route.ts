@@ -116,6 +116,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Use service client for system operations (granting access, incrementing counters)
+    const serviceClient = createServiceClient();
+
     // Grant program access
     if (programSlugs.length > 0) {
       const accessRecords = programSlugs.map(programSlug => ({
@@ -125,7 +128,7 @@ export async function POST(request: NextRequest) {
       }));
 
       // Use upsert to avoid duplicates
-      const { error: accessError } = await supabase
+      const { error: accessError } = await serviceClient
         .from('user_program_access')
         .upsert(accessRecords, {
           onConflict: 'user_id,program_slug',
@@ -153,9 +156,6 @@ export async function POST(request: NextRequest) {
       console.error('Error recording redemption:', redemptionError);
       // Don't fail - access was already granted
     }
-
-    // Increment use count using service client to bypass RLS
-    const serviceClient = createServiceClient();
     const { error: incrementError } = await serviceClient
       .from('access_codes')
       .update({ use_count: accessCode.use_count + 1 })
