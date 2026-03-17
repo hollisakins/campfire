@@ -131,10 +131,22 @@ export const FilterChip: React.FC<FilterChipProps> = ({
     if (!isOpen) setSearchTerm('');
   }, [isOpen]);
 
-  // Filter options by search term
-  const filteredOptions = searchable && searchTerm
-    ? options.filter(opt => opt.label.toLowerCase().includes(searchTerm.toLowerCase()))
-    : options;
+  // Filter options by search term, and sort selected to top when searchable
+  const filteredOptions = (() => {
+    let opts = options;
+    if (searchable && searchTerm) {
+      opts = opts.filter(opt => opt.label.toLowerCase().includes(searchTerm.toLowerCase()));
+    }
+    if (searchable && selected.length > 0 && !searchTerm) {
+      const selectedSet = new Set(selected);
+      opts = [...opts].sort((a, b) => {
+        const aSelected = selectedSet.has(a.value) ? 0 : 1;
+        const bSelected = selectedSet.has(b.value) ? 0 : 1;
+        return aSelected - bSelected;
+      });
+    }
+    return opts;
+  })();
 
   const handleToggle = (value: string | number) => {
     if (multiSelect) {
