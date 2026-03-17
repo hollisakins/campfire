@@ -95,7 +95,7 @@ export interface AccessCode {
   code: string;
   description: string | null;
   grants_all_programs: boolean;
-  program_ids: number[] | null;
+  program_slugs: string[] | null;
   created_by: string | null;
   created_at: string;
   expires_at: string | null;
@@ -112,18 +112,19 @@ export interface CodeRedemption {
 }
 
 export interface Program {
-  program_id: number;
+  slug: string;
   program_name: string | null;
   pi_name: string | null;
   description: string | null;
   is_public: boolean;
   cycle: number | null;
+  jwst_pids?: number[];
   created_at: string;
 }
 
 export interface UserProgramAccess {
   user_id: string;
-  program_id: number;
+  program_slug: string;
   granted_at: string;
   granted_by: string | null;
 }
@@ -138,7 +139,7 @@ export interface AccountRequest {
   status: AccountRequestStatus;
   is_admin: boolean;
   can_comment: boolean;
-  program_ids: number[];
+  program_slugs: string[];
   created_at: string;
   reviewed_at: string | null;
   reviewed_by: string | null;
@@ -149,9 +150,9 @@ export interface AccountRequest {
 export interface DbObject {
   id: number;
   object_id: string;
-  program_id: number;
+  program_slug: string;
   field: string;
-  observation?: string | null;
+  observation: string;
   ra: number;
   dec: number;
   redshift: number | null;           // Computed: COALESCE(redshift_inspected, redshift_auto)
@@ -246,7 +247,7 @@ export interface CommentWithUser extends Comment {
 }
 
 export interface FilterState {
-  programs: number[];
+  programs: string[];
   fields: string[];
   gratings: string[];
   redshift_quality: number[];

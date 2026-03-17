@@ -45,9 +45,9 @@ export async function GET(request: NextRequest) {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Get accessible programs for this user
-    const accessibleProgramIds = await getAccessiblePrograms(userId);
+    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json(
         { error: 'No accessible programs' },
         { status: 403 }
@@ -65,7 +65,7 @@ export async function GET(request: NextRequest) {
       // First verify the object exists and user has access
       const { data: objectData, error: objectError } = await supabase
         .from('objects')
-        .select('program_id')
+        .select('program_slug')
         .eq('object_id', objectId)
         .single();
 
@@ -76,7 +76,7 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      if (!accessibleProgramIds.includes(objectData.program_id)) {
+      if (!accessibleProgramSlugs.includes(objectData.program_slug)) {
         return NextResponse.json(
           { error: 'Access denied to this object' },
           { status: 403 }
@@ -125,11 +125,11 @@ export async function GET(request: NextRequest) {
     // Verify access to the object's program
     const { data: objectData } = await supabase
       .from('objects')
-      .select('program_id')
+      .select('program_slug')
       .eq('object_id', spectrum.object_id)
       .single();
 
-    if (!objectData || !accessibleProgramIds.includes(objectData.program_id)) {
+    if (!objectData || !accessibleProgramSlugs.includes(objectData.program_slug)) {
       return NextResponse.json(
         { error: 'Access denied' },
         { status: 403 }

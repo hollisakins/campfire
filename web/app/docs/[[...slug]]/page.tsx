@@ -82,9 +82,9 @@ export default function DocsPage() {
     if (!dynamic) return null;
     if (slug === 'data-products/programs') return ProgramsContent;
     if (slug.startsWith('data-products/programs/')) {
-      const programId = Number(slug.split('/').pop()!);
+      const programSlug = slug.split('/').pop()!;
       function ProgramDetail() {
-        return <ProgramDetailContent programId={programId} />;
+        return <ProgramDetailContent programSlug={programSlug} />;
       }
       return ProgramDetail;
     }

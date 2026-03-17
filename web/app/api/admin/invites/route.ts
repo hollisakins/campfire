@@ -43,7 +43,7 @@ export async function GET() {
       .select(`
         id,
         email,
-        program_ids,
+        program_slugs,
         is_admin,
         can_comment,
         invited_by,
@@ -97,7 +97,7 @@ export async function GET() {
  * POST /api/admin/invites
  *
  * Send an invite to a new user (admin only)
- * Body: { email: string, program_ids: number[], is_admin?: boolean, can_comment?: boolean }
+ * Body: { email: string, program_slugs: string[], is_admin?: boolean, can_comment?: boolean }
  */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -128,7 +128,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { email, program_ids = [], is_admin = false, can_comment = true } = body;
+    const { email, program_slugs = [], is_admin = false, can_comment = true } = body;
 
     // Validate email
     if (!email || typeof email !== 'string' || !email.includes('@')) {
@@ -174,7 +174,7 @@ export async function POST(request: NextRequest) {
       .from('pending_invites')
       .insert({
         email: normalizedEmail,
-        program_ids,
+        program_slugs,
         is_admin,
         can_comment,
         invited_by: user.id,

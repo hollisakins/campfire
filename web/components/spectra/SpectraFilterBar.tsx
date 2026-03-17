@@ -113,8 +113,8 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
 
   // Convert programs to filter options
   const programOptions: FilterOption[] = availablePrograms.map((p) => ({
-    value: p.program_id,
-    label: p.program_name ? `${p.program_name} (${p.program_id})` : `Program ${p.program_id}`,
+    value: p.slug,
+    label: p.program_name || p.slug,
   }));
 
   // Convert fields to filter options
@@ -247,7 +247,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           label="Program"
           options={programOptions}
           selected={filters.programs}
-          onChange={(selected) => updateFilter('programs', selected as number[])}
+          onChange={(selected) => updateFilter('programs', selected as string[])}
         />
 
         {/* Field filter */}

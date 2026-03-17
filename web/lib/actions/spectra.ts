@@ -74,23 +74,23 @@ export async function getSpectra(
     // First, determine which programs the user can access
     const { data: accessData } = await supabase
       .from('user_program_access')
-      .select('program_id')
+      .select('program_slug')
       .eq('user_id', user.id);
 
-    const explicitAccessIds = (accessData || []).map(a => a.program_id);
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
 
     // Get public programs
     const { data: publicPrograms } = await supabase
       .from('programs')
-      .select('program_id')
+      .select('slug')
       .eq('is_public', true);
 
-    const publicProgramIds = (publicPrograms || []).map(p => p.program_id);
+    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
 
-    // Combine accessible program IDs (public + explicit access)
-    const accessibleProgramIds = [...new Set([...publicProgramIds, ...explicitAccessIds])];
+    // Combine accessible program slugs (public + explicit access)
+    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return {
         spectra: [],
         total: 0,
@@ -102,7 +102,7 @@ export async function getSpectra(
       };
     }
 
-    const rpcParams = buildFilterParams(filters, accessibleProgramIds, user.id);
+    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     // Call the RPC function for server-side filtering, sorting, and pagination
     const { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
@@ -141,10 +141,10 @@ export async function getSpectra(
       return {
         id: obj.id,
         object_id: obj.object_id,
-        program_id: obj.program_id,
+        program_slug: obj.program_slug,
         program_name: obj.program_name || null,
         field: obj.field,
-        observation: obj.observation || null,
+        observation: obj.observation,
         ra: obj.ra,
         dec: obj.dec,
         redshift: obj.redshift,
@@ -218,31 +218,31 @@ export async function getSpectrumById(objectId: string): Promise<{
     // First, determine which programs the user can access
     const { data: accessData } = await supabase
       .from('user_program_access')
-      .select('program_id')
+      .select('program_slug')
       .eq('user_id', user.id);
 
-    const explicitAccessIds = (accessData || []).map(a => a.program_id);
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
 
     // Get public programs
     const { data: publicPrograms } = await supabase
       .from('programs')
-      .select('program_id')
+      .select('slug')
       .eq('is_public', true);
 
-    const publicProgramIds = (publicPrograms || []).map(p => p.program_id);
+    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
 
-    // Combine accessible program IDs
-    const accessibleProgramIds = [...new Set([...publicProgramIds, ...explicitAccessIds])];
+    // Combine accessible program slugs
+    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
     const { data, error } = await supabase
       .from('objects')
       .select(`
         *,
-        programs:program_id (program_name, pi_name, description),
+        programs:program_slug (program_name, pi_name, description, cycle),
         spectra (*)
       `)
       .eq('object_id', objectId)
-      .in('program_id', accessibleProgramIds)
+      .in('program_slug', accessibleProgramSlugs)
       .single();
 
     if (error) {
@@ -273,7 +273,7 @@ export async function getSpectrumById(objectId: string): Promise<{
     const spectrumObject: SpectrumObject = {
       id: data.id,
       object_id: data.object_id,
-      program_id: data.program_id,
+      program_slug: data.program_slug,
       program_name: data.programs?.program_name || null,
       field: data.field,
       observation: data.observation,
@@ -332,7 +332,7 @@ export async function getObjectMetadata(objectId: string): Promise<{
         object_id,
         redshift,
         field,
-        programs:program_id (program_name)
+        programs:program_slug (program_name)
       `)
       .eq('object_id', objectId)
       .single();
@@ -378,14 +378,14 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
     // Fetch programs the user has explicit access to
     const { data: accessData, error: accessError } = await supabase
       .from('user_program_access')
-      .select('program_id')
+      .select('program_slug')
       .eq('user_id', user.id);
 
     if (accessError) {
       console.error('Error fetching program access:', accessError);
     }
 
-    const explicitAccessIds = (accessData || []).map(a => a.program_id);
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
 
     // Fetch all programs (we'll filter for public + explicit access)
     const { data: allPrograms, error: programsError } = await supabase
@@ -404,7 +404,7 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
 
     // Filter to programs that are public OR user has explicit access
     const accessiblePrograms = (allPrograms || []).filter(
-      p => p.is_public || explicitAccessIds.includes(p.program_id)
+      p => p.is_public || explicitAccessSlugs.includes(p.slug)
     );
 
     if (accessiblePrograms.length === 0) {
@@ -473,20 +473,20 @@ export async function getInspectionQueueIds(
     // Determine which programs the user can access
     const { data: accessData } = await supabase
       .from('user_program_access')
-      .select('program_id')
+      .select('program_slug')
       .eq('user_id', user.id);
 
-    const explicitAccessIds = (accessData || []).map(a => a.program_id);
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
 
     const { data: publicPrograms } = await supabase
       .from('programs')
-      .select('program_id')
+      .select('slug')
       .eq('is_public', true);
 
-    const publicProgramIds = (publicPrograms || []).map(p => p.program_id);
-    const accessibleProgramIds = [...new Set([...publicProgramIds, ...explicitAccessIds])];
+    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
+    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return { ids: [] };
     }
 
@@ -494,7 +494,7 @@ export async function getInspectionQueueIds(
     const hasQualityFilter = filters?.redshift_quality && filters.redshift_quality.length > 0;
     const qualityFilter = hasQualityFilter ? filters!.redshift_quality : [0];
 
-    const rpcParams = buildFilterParams(filters, accessibleProgramIds, user.id);
+    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     // Call lightweight RPC that returns only object IDs (no JSONB, no spectra joins)
     const { data, error } = await supabase.rpc('get_filtered_object_ids', {
@@ -546,27 +546,27 @@ export async function getAdjacentObjectIds(
     // First, determine which programs the user can access
     const { data: accessData } = await supabase
       .from('user_program_access')
-      .select('program_id')
+      .select('program_slug')
       .eq('user_id', user.id);
 
-    const explicitAccessIds = (accessData || []).map(a => a.program_id);
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
 
     // Get public programs
     const { data: publicPrograms } = await supabase
       .from('programs')
-      .select('program_id')
+      .select('slug')
       .eq('is_public', true);
 
-    const publicProgramIds = (publicPrograms || []).map(p => p.program_id);
+    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
 
-    // Combine accessible program IDs (public + explicit access)
-    const accessibleProgramIds = [...new Set([...publicProgramIds, ...explicitAccessIds])];
+    // Combine accessible program slugs (public + explicit access)
+    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return { prev: null, next: null, currentIndex: 0, total: 0 };
     }
 
-    const rpcParams = buildFilterParams(filters, accessibleProgramIds, user.id);
+    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     // Call the lightweight RPC function
     const { data, error } = await supabase.rpc('get_adjacent_objects', {

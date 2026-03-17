@@ -13,11 +13,11 @@ export function useProgramsOverviewQuery(enabled: boolean = true) {
   });
 }
 
-export function useProgramDetailQuery(programId: number, enabled: boolean = true) {
+export function useProgramDetailQuery(programSlug: string, enabled: boolean = true) {
   return useQuery<ProgramDetailResult>({
-    queryKey: ['programDetail', programId],
-    queryFn: () => getProgramDetail(programId),
+    queryKey: ['programDetail', programSlug],
+    queryFn: () => getProgramDetail(programSlug),
     staleTime: 10 * 60 * 1000,
-    enabled: enabled && !isNaN(programId),
+    enabled: enabled && !!programSlug,
   });
 }

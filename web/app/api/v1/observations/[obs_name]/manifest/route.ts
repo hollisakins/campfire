@@ -27,9 +27,9 @@ export async function GET(
 
   try {
     const { obs_name } = await params;
-    const accessibleProgramIds = await getAccessiblePrograms(userId);
+    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json(
         { error: 'Observation not found or access denied' },
         { status: 404 }
@@ -43,7 +43,7 @@ export async function GET(
 
     // Get observation metadata (program, field, counts)
     const { data: obsStats, error: obsError } = await supabase.rpc('get_observation_stats', {
-      p_program_ids: accessibleProgramIds,
+      p_program_slugs: accessibleProgramSlugs,
     });
 
     if (obsError) {
@@ -68,7 +68,7 @@ export async function GET(
     // Get all spectra for this observation
     const { data: spectra, error: spectraError } = await supabase.rpc('get_observation_manifest', {
       p_obs_name: obs_name,
-      p_program_ids: accessibleProgramIds,
+      p_program_slugs: accessibleProgramSlugs,
     });
 
     if (spectraError) {
@@ -134,7 +134,7 @@ export async function GET(
 
     return NextResponse.json({
       observation: obsInfo.observation,
-      program_id: obsInfo.program_id,
+      program_slug: obsInfo.program_slug,
       program_name: obsInfo.program_name,
       field: obsInfo.field,
       object_count: obsInfo.object_count,

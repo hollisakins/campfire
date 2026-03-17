@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
     // Verify user has access to this object by checking program access
     const { data: object, error: objectError } = await supabase
       .from('objects')
-      .select('id, observation, program_id')
+      .select('id, observation, program_slug')
       .eq('object_id', objectId)
       .single();
 

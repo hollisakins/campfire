@@ -22,7 +22,7 @@ export type SearchScope = 'object_id' | 'my_comments' | 'all_comments';
  * Consumers that accept partial filters should use Partial<FilterOptions>.
  */
 export interface FilterOptions {
-  programs: number[];
+  programs: string[];
   fields: string[];
   gratings: string[];
   observations: string[];
@@ -79,8 +79,8 @@ export const DEFAULT_FILTERS: FilterOptions = {
  * each caller spreads these base params and adds its own.
  */
 export interface FilterRpcParams {
-  p_program_ids: number[];
-  p_filter_programs: number[] | null;
+  p_program_slugs: string[];
+  p_filter_programs: string[] | null;
   p_fields: string[] | null;
   p_gratings: string[] | null;
   p_gratings_mode: string;
@@ -115,12 +115,12 @@ export interface FilterRpcParams {
  * Transform UI filter state into RPC parameters.
  *
  * @param filters - Filter state from the UI (may be partial/undefined)
- * @param accessibleProgramIds - Programs the current user can access (resolved by caller)
+ * @param accessibleProgramSlugs - Programs the current user can access (resolved by caller)
  * @param userId - Current user's ID (needed for comment search scoping)
  */
 export function buildFilterParams(
   filters: Partial<FilterOptions> | undefined,
-  accessibleProgramIds: number[],
+  accessibleProgramSlugs: string[],
   userId?: string
 ): FilterRpcParams {
   // Bitmask combining: OR individual flag values into a single mask
@@ -168,7 +168,7 @@ export function buildFilterParams(
   const commentUserId = isCommentSearch && userId ? userId : null;
 
   return {
-    p_program_ids: accessibleProgramIds,
+    p_program_slugs: accessibleProgramSlugs,
     p_filter_programs: filters?.programs && filters.programs.length > 0 ? filters.programs : null,
     p_fields: filters?.fields && filters.fields.length > 0 ? filters.fields : null,
     p_gratings: filters?.gratings && filters.gratings.length > 0 ? filters.gratings : null,

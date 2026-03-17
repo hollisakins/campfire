@@ -31,10 +31,10 @@ export async function GET() {
     // Fetch user's explicit program access
     const { data: accessData } = await supabase
       .from('user_program_access')
-      .select('program_id, granted_at')
+      .select('program_slug, granted_at')
       .eq('user_id', user.id);
 
-    const explicitAccessIds = (accessData || []).map(a => a.program_id);
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
 
     // Fetch all programs
     const { data: allPrograms } = await supabase
@@ -45,10 +45,10 @@ export async function GET() {
     // Annotate programs with access info
     const programsWithAccess = (allPrograms || []).map(program => ({
       ...program,
-      has_access: program.is_public || explicitAccessIds.includes(program.program_id),
+      has_access: program.is_public || explicitAccessSlugs.includes(program.slug),
       access_type: program.is_public
         ? 'public'
-        : explicitAccessIds.includes(program.program_id)
+        : explicitAccessSlugs.includes(program.slug)
           ? 'granted'
           : 'none',
     }));

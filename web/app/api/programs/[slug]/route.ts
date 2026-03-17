@@ -2,20 +2,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 
 /**
- * PATCH /api/programs/[id]
+ * PATCH /api/programs/[slug]
  *
  * Update a program (toggle public, update fields).
  * Admin only.
  */
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ slug: string }> }
 ) {
-  const { id } = await params;
-  const programId = parseInt(id, 10);
+  const { slug } = await params;
 
-  if (isNaN(programId)) {
-    return NextResponse.json({ error: 'Invalid program ID' }, { status: 400 });
+  if (!slug) {
+    return NextResponse.json({ error: 'Invalid program slug' }, { status: 400 });
   }
 
   const supabase = await createClient();
@@ -53,7 +52,7 @@ export async function PATCH(
     const { data: updatedProgram, error } = await supabase
       .from('programs')
       .update(updates)
-      .eq('program_id', programId)
+      .eq('slug', slug)
       .select()
       .single();
 

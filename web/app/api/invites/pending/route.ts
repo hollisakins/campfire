@@ -39,12 +39,12 @@ export async function GET() {
     }
 
     // Fetch program names for the invited programs
-    let programs: { program_id: number; program_name: string | null }[] = [];
-    if (invite.program_ids && invite.program_ids.length > 0) {
+    let programs: { slug: string; program_name: string | null }[] = [];
+    if (invite.program_slugs && invite.program_slugs.length > 0) {
       const { data: programData } = await serviceClient
         .from('programs')
-        .select('program_id, program_name')
-        .in('program_id', invite.program_ids);
+        .select('slug, program_name')
+        .in('slug', invite.program_slugs);
 
       programs = programData || [];
     }
@@ -54,7 +54,7 @@ export async function GET() {
         id: invite.id,
         email: invite.email,
         full_name: invite.full_name,
-        program_ids: invite.program_ids,
+        program_slugs: invite.program_slugs,
         is_admin: invite.is_admin,
         can_comment: invite.can_comment,
         invited_by: invite.invited_by,

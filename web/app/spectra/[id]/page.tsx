@@ -178,10 +178,10 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
                 <span>Program:</span>
                 <Link
-                  href={`/spectra?programs=${spectrum.program_id}`}
+                  href={`/spectra?programs=${spectrum.program_slug}`}
                   className="inline-flex items-center hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors text-text-primary dark:text-slate-100"
                 >
-                  {spectrum.program_name || `ID ${spectrum.program_id}`}
+                  {spectrum.program_name || spectrum.program_slug}
                 </Link>
                 <span>·</span>
                 <span>Field:</span>

@@ -40,9 +40,9 @@ export async function GET(request: NextRequest) {
     }
 
     // Get accessible programs for this user
-    const accessibleProgramIds = await getAccessiblePrograms(userId);
+    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json(
         { error: 'No program access' },
         { status: 403 }
@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
         id,
         object_id,
         objects!inner (
-          program_id
+          program_slug
         )
       `)
       .eq('fits_path', fitsPath)
@@ -75,9 +75,9 @@ export async function GET(request: NextRequest) {
     }
 
     // Check if user has access to this program
-    const objects = spectrum.objects as { program_id: number } | { program_id: number }[];
-    const programId = Array.isArray(objects) ? objects[0].program_id : objects.program_id;
-    if (!accessibleProgramIds.includes(programId)) {
+    const objects = spectrum.objects as { program_slug: string } | { program_slug: string }[];
+    const programSlug = Array.isArray(objects) ? objects[0].program_slug : objects.program_slug;
+    if (!accessibleProgramSlugs.includes(programSlug)) {
       return NextResponse.json(
         { error: 'Access denied to this file' },
         { status: 403 }

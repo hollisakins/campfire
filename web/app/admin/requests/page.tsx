@@ -25,7 +25,7 @@ interface AccountRequest {
   status: AccountRequestStatus;
   is_admin: boolean;
   can_comment: boolean;
-  program_ids: number[];
+  program_slugs: string[];
   created_at: string;
   reviewed_at: string | null;
   reviewed_by: string | null;
@@ -51,7 +51,7 @@ export default function AdminRequestsPage() {
   // Approval modal state
   const [showApproveModal, setShowApproveModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<AccountRequest | null>(null);
-  const [approveProgramIds, setApproveProgramIds] = useState<number[]>([]);
+  const [approveProgramSlugs, setApproveProgramSlugs] = useState<string[]>([]);
   const [approveIsAdmin, setApproveIsAdmin] = useState(false);
   const [approveCanComment, setApproveCanComment] = useState(true);
   const [processing, setProcessing] = useState(false);
@@ -104,7 +104,7 @@ export default function AdminRequestsPage() {
 
   const openApproveModal = (request: AccountRequest) => {
     setSelectedRequest(request);
-    setApproveProgramIds([]);
+    setApproveProgramSlugs([]);
     setApproveIsAdmin(false);
     setApproveCanComment(true);
     setShowApproveModal(true);
@@ -126,7 +126,7 @@ export default function AdminRequestsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'approve',
-          program_ids: approveProgramIds,
+          program_slugs: approveProgramSlugs,
           is_admin: approveIsAdmin,
           can_comment: approveCanComment,
         }),
@@ -199,11 +199,11 @@ export default function AdminRequestsPage() {
     }
   };
 
-  const toggleApproveProgram = (programId: number) => {
-    setApproveProgramIds(prev =>
-      prev.includes(programId)
-        ? prev.filter(id => id !== programId)
-        : [...prev, programId]
+  const toggleApproveProgram = (programSlug: string) => {
+    setApproveProgramSlugs(prev =>
+      prev.includes(programSlug)
+        ? prev.filter(s => s !== programSlug)
+        : [...prev, programSlug]
     );
   };
 
@@ -424,11 +424,11 @@ export default function AdminRequestsPage() {
                 <>
                   <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
                     {programs.map((program) => {
-                      const selected = approveProgramIds.includes(program.program_id);
+                      const selected = approveProgramSlugs.includes(program.slug);
                       return (
                         <button
-                          key={program.program_id}
-                          onClick={() => toggleApproveProgram(program.program_id)}
+                          key={program.slug}
+                          onClick={() => toggleApproveProgram(program.slug)}
                           className={`
                             flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left
                             transition-colors
@@ -440,7 +440,7 @@ export default function AdminRequestsPage() {
                         >
                           {selected && <Check className="w-4 h-4 flex-shrink-0" />}
                           <span className="truncate">
-                            {program.program_name || `Program ${program.program_id}`}
+                            {program.program_name || program.slug}
                           </span>
                         </button>
                       );
@@ -448,13 +448,13 @@ export default function AdminRequestsPage() {
                   </div>
                   <div className="flex gap-2 mt-2">
                     <button
-                      onClick={() => setApproveProgramIds(programs.map(p => p.program_id))}
+                      onClick={() => setApproveProgramSlugs(programs.map(p => p.slug))}
                       className="text-xs text-primary hover:underline"
                     >
                       Select All
                     </button>
                     <button
-                      onClick={() => setApproveProgramIds([])}
+                      onClick={() => setApproveProgramSlugs([])}
                       className="text-xs text-primary hover:underline"
                     >
                       Clear All

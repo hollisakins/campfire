@@ -32,22 +32,39 @@ def check_existing_objects(client: Client, object_ids: list[str]) -> set[str]:
 
 def upsert_programs(
     client: Client,
-    program_ids: list[int],
-    programs_config: dict[int, dict],
+    program_slugs: list[str],
+    programs_config: dict[str, dict],
 ) -> None:
     """Upsert program records."""
-    for pid in program_ids:
-        info = programs_config.get(pid, {})
+    for slug in program_slugs:
+        info = programs_config.get(slug, {})
         data = {
-            'program_id': pid,
-            'program_name': info.get('program_name', f'Program {pid}'),
+            'slug': slug,
+            'program_name': info.get('program_name', slug),
             'pi_name': info.get('pi_name', ''),
             'description': info.get('description', ''),
             'is_public': info.get('is_public', False),
             'cycle': info.get('cycle'),
         }
-        client.table('programs').upsert(data, on_conflict='program_id').execute()
-        print(f"  + {pid} ({data['program_name']})")
+        client.table('programs').upsert(data, on_conflict='slug').execute()
+        print(f"  + {slug} ({data['program_name']})")
+
+
+def upsert_observation(
+    client: Client,
+    obs_name: str,
+    program_slug: str,
+    jwst_program_id: int,
+    field: str,
+) -> None:
+    """Upsert an observation record."""
+    data = {
+        'name': obs_name,
+        'program_slug': program_slug,
+        'jwst_program_id': jwst_program_id,
+        'field': field,
+    }
+    client.table('observations').upsert(data, on_conflict='name').execute()
 
 
 def batch_upsert_objects(
@@ -96,7 +113,8 @@ def batch_upsert_objects(
             # Update pipeline fields only
             data = {
                 'object_id': oid,
-                'program_id': obj['program_id'],
+                'program_slug': obj['program_slug'],
+                'observation': obj['observation'],
                 'field': field,
                 'ra': obj['ra'],
                 'dec': obj['dec'],
@@ -108,7 +126,8 @@ def batch_upsert_objects(
             # Reset everything
             data = {
                 'object_id': oid,
-                'program_id': obj['program_id'],
+                'program_slug': obj['program_slug'],
+                'observation': obj['observation'],
                 'field': field,
                 'ra': obj['ra'],
                 'dec': obj['dec'],
@@ -127,7 +146,8 @@ def batch_upsert_objects(
             # New object
             data = {
                 'object_id': oid,
-                'program_id': obj['program_id'],
+                'program_slug': obj['program_slug'],
+                'observation': obj['observation'],
                 'field': field,
                 'ra': obj['ra'],
                 'dec': obj['dec'],

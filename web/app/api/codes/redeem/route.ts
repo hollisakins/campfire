@@ -95,21 +95,21 @@ export async function POST(request: NextRequest) {
     }
 
     // Determine which programs to grant
-    let programIds: number[] = [];
+    let programSlugs: string[] = [];
 
     if (accessCode.grants_all_programs) {
-      // Get all program IDs
+      // Get all program slugs
       const { data: programs } = await supabase
         .from('programs')
-        .select('program_id');
+        .select('slug');
 
-      programIds = (programs || []).map(p => p.program_id);
-    } else if (accessCode.program_ids && accessCode.program_ids.length > 0) {
-      programIds = accessCode.program_ids;
+      programSlugs = (programs || []).map(p => p.slug);
+    } else if (accessCode.program_slugs && accessCode.program_slugs.length > 0) {
+      programSlugs = accessCode.program_slugs;
     }
 
     // Validate that code grants at least one program
-    if (programIds.length === 0) {
+    if (programSlugs.length === 0) {
       return NextResponse.json(
         { error: 'This code does not grant access to any programs' },
         { status: 400 }
@@ -117,10 +117,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Grant program access
-    if (programIds.length > 0) {
-      const accessRecords = programIds.map(programId => ({
+    if (programSlugs.length > 0) {
+      const accessRecords = programSlugs.map(programSlug => ({
         user_id: user.id,
-        program_id: programId,
+        program_slug: programSlug,
         granted_by: accessCode.created_by,
       }));
 
@@ -128,7 +128,7 @@ export async function POST(request: NextRequest) {
       const { error: accessError } = await supabase
         .from('user_program_access')
         .upsert(accessRecords, {
-          onConflict: 'user_id,program_id',
+          onConflict: 'user_id,program_slug',
           ignoreDuplicates: true
         });
 
@@ -170,8 +170,8 @@ export async function POST(request: NextRequest) {
       success: true,
       message: accessCode.grants_all_programs
         ? 'Access granted to all programs'
-        : `Access granted to ${programIds.length} program(s)`,
-      programs_granted: programIds.length,
+        : `Access granted to ${programSlugs.length} program(s)`,
+      programs_granted: programSlugs.length,
     });
 
   } catch (error) {

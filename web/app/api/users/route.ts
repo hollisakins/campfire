@@ -52,19 +52,19 @@ export async function GET() {
     // Fetch all programs for reference
     const { data: programs, error: programsError } = await supabase
       .from('programs')
-      .select('program_id, program_name');
+      .select('slug, program_name');
 
     if (programsError) {
       console.error('Error fetching programs:', programsError);
     }
 
     // Group access by user_id
-    const accessByUser: Record<string, number[]> = {};
+    const accessByUser: Record<string, string[]> = {};
     for (const a of access || []) {
       if (!accessByUser[a.user_id]) {
         accessByUser[a.user_id] = [];
       }
-      accessByUser[a.user_id].push(a.program_id);
+      accessByUser[a.user_id].push(a.program_slug);
     }
 
     // Combine data

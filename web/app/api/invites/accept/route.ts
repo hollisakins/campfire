@@ -95,17 +95,17 @@ export async function POST(request: NextRequest) {
     }
 
     // Grant program access
-    if (invite.program_ids && invite.program_ids.length > 0) {
-      const accessRecords = invite.program_ids.map((programId: number) => ({
+    if (invite.program_slugs && invite.program_slugs.length > 0) {
+      const accessRecords = invite.program_slugs.map((programSlug: string) => ({
         user_id: user.id,
-        program_id: programId,
+        program_slug: programSlug,
         granted_by: invite.invited_by,
       }));
 
       const { error: accessError } = await serviceClient
         .from('user_program_access')
         .upsert(accessRecords, {
-          onConflict: 'user_id,program_id',
+          onConflict: 'user_id,program_slug',
           ignoreDuplicates: true,
         });
 

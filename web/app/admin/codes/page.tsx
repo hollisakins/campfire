@@ -27,7 +27,7 @@ export default function AdminCodesPage() {
 
   // Program selection state
   const [allPrograms, setAllPrograms] = useState<Program[]>([]);
-  const [selectedPrograms, setSelectedPrograms] = useState<number[]>([]);
+  const [selectedPrograms, setSelectedPrograms] = useState<string[]>([]);
 
   // Form state
   const [showForm, setShowForm] = useState(false);
@@ -105,14 +105,14 @@ export default function AdminCodesPage() {
         grants_all_programs: formData.grants_all_programs,
       };
 
-      // Add program_ids if specific programs selected
+      // Add program_slugs if specific programs selected
       if (!formData.grants_all_programs) {
         if (selectedPrograms.length === 0) {
           setFormError('Please select at least one program');
           setFormLoading(false);
           return;
         }
-        payload.program_ids = selectedPrograms;
+        payload.program_slugs = selectedPrograms;
       }
 
       if (formData.expires_in_days) {
@@ -333,7 +333,7 @@ export default function AdminCodesPage() {
             {!formData.grants_all_programs && (
               <div>
                 <MultiSelect
-                  options={allPrograms.map(p => ({ id: p.program_id, name: p.program_name || `Program ${p.program_id}` }))}
+                  options={allPrograms.map(p => ({ id: p.slug, name: p.program_name || p.slug }))}
                   selected={selectedPrograms}
                   onChange={setSelectedPrograms}
                   label="Select Programs"

@@ -41,15 +41,16 @@ from campfire_deploy.supabase import (
     refresh_filter_options,
     refresh_programs_overview,
     update_has_sed_plot,
+    upsert_observation,
     upsert_programs,
 )
 from campfire_deploy.summary import (
     filter_by_source_ids,
     get_field,
+    get_program_slug,
     get_spec_paths,
     get_spectra_records,
     get_unique_objects,
-    get_unique_program_ids,
     get_zfit_paths,
     load_summary,
 )
@@ -77,17 +78,20 @@ def deploy_observation(
         print(f"Filtered {total} spectra to {len(summary)} matching {len(source_ids)} source IDs")
 
     field = get_field(summary)
+    program_slug = get_program_slug(summary)
     objects = get_unique_objects(summary)
     spectra = get_spectra_records(summary, obs_name)
-    program_ids = get_unique_program_ids(summary)
     spec_paths = get_spec_paths(summary, obs_dir)
     zfit_paths = get_zfit_paths(summary, obs_dir)
 
+    # Get JWST PID from first row (all rows share the same PID per observation)
+    jwst_program_id = int(summary['program_id'][0]) if len(summary) > 0 else 0
+
     print(f"Observation: {obs_name}")
     print(f"  Field: {field}")
+    print(f"  Program: {program_slug}")
     print(f"  Objects: {len(objects)}")
     print(f"  Spectra: {len(spectra)}")
-    print(f"  Programs: {program_ids}")
     print(f"  Zfit files: {len(zfit_paths)}")
 
     # Generate RGB/SED if requested (skips existing files)
@@ -138,7 +142,7 @@ def deploy_observation(
             if sed_files:
                 print(f"  {len(sed_files)} SED plots")
         print(f"Would upsert to Supabase:")
-        print(f"  {len(program_ids)} program(s)")
+        print(f"  Program: {program_slug}")
         print(f"  {len(objects)} object(s)")
         print(f"  {len(spectra)} spectrum record(s)")
         if not force_overwrite:
@@ -176,9 +180,12 @@ def deploy_observation(
                     return
     print()
 
-    # Upsert programs
-    print("Upserting programs...")
-    upsert_programs(sb, program_ids, programs_config)
+    # Upsert program
+    print("Upserting program...")
+    upsert_programs(sb, [program_slug], programs_config)
+
+    # Upsert observation record
+    upsert_observation(sb, obs_name, program_slug, jwst_program_id, field)
     print()
 
     # Generate content and upload

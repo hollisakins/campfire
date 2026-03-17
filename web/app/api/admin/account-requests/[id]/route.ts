@@ -14,7 +14,7 @@ interface RouteParams {
  *   // Only for approve:
  *   is_admin?: boolean,
  *   can_comment?: boolean,
- *   program_ids?: number[],
+ *   program_slugs?: string[],
  *   // Only for reject:
  *   rejection_reason?: string
  * }
@@ -52,7 +52,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 
   try {
     const body = await request.json();
-    const { action, is_admin = false, can_comment = true, program_ids = [], rejection_reason } = body;
+    const { action, is_admin = false, can_comment = true, program_slugs = [], rejection_reason } = body;
 
     // Validate action
     if (!action || !['approve', 'reject'].includes(action)) {
@@ -105,7 +105,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         .insert({
           email: accountRequest.email,
           full_name: accountRequest.full_name,
-          program_ids,
+          program_slugs,
           is_admin,
           can_comment,
           invited_by: user.id,
@@ -148,7 +148,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
           status: 'approved',
           is_admin,
           can_comment,
-          program_ids,
+          program_slugs,
           reviewed_at: new Date().toISOString(),
           reviewed_by: user.id,
         })

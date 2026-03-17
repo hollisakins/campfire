@@ -218,6 +218,7 @@ def _consensus_redshift(chi2_by_grating, delta_chi2_peak, dv_tolerance):
 def generate_observation_summary(obs_name: str, obs_dir: Path,
                                   reduction_version: str = 'unknown',
                                   field: str = '',
+                                  program_slug: str = '',
                                   consensus_config: dict | None = None) -> Table:
     """
     Discover all spec/zfit files for an observation, read their metadata,
@@ -233,6 +234,8 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
         Pipeline version string to embed
     field : str
         Field name (e.g. 'uds') to store in table metadata
+    program_slug : str
+        CAMPFIRE program slug (e.g. 'ember') to store in table metadata
     consensus_config : dict, optional
         Redshift consensus parameters (delta_chi2_peak, dv_tolerance).
         Uses defaults if not provided.
@@ -348,6 +351,7 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
     # Add metadata
     summary.meta['obs_name'] = obs_name
     summary.meta['field'] = field
+    summary.meta['program_slug'] = program_slug
     summary.meta['reduction_version'] = reduction_version
     summary.meta['generated_at'] = datetime.utcnow().isoformat()
     summary.meta['n_sources'] = len(set(summary['source_id']))

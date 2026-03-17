@@ -7,10 +7,10 @@ import type { SpectrumObject, Spectrum, Program } from '@/lib/types';
 
 // Mock Programs
 export const MOCK_PROGRAMS: Program[] = [
-  { program_id: 1181, program_name: 'JADES', pi_name: 'N. Lützgendorf', description: 'JWST Advanced Deep Extragalactic Survey', is_public: true, cycle: 1, created_at: '2024-01-01T00:00:00Z' },
-  { program_id: 2198, program_name: 'CEERS', pi_name: 'S. Finkelstein', description: 'Cosmic Evolution Early Release Science', is_public: true, cycle: 1, created_at: '2024-01-01T00:00:00Z' },
-  { program_id: 3456, program_name: 'CAPERS', pi_name: 'M. Dickinson', description: 'Cycle 2 Deep Fields', is_public: false, cycle: 2, created_at: '2024-01-01T00:00:00Z' },
-  { program_id: 4521, program_name: 'EMBER', pi_name: 'P. Oesch', description: 'Emission line Mapping of the Bright Epoch of Reionization', is_public: false, cycle: 4, created_at: '2024-01-01T00:00:00Z' },
+  { slug: 'jades', program_name: 'JADES', pi_name: 'N. Lützgendorf', description: 'JWST Advanced Deep Extragalactic Survey', is_public: true, cycle: 1, created_at: '2024-01-01T00:00:00Z' },
+  { slug: 'ceers', program_name: 'CEERS', pi_name: 'S. Finkelstein', description: 'Cosmic Evolution Early Release Science', is_public: true, cycle: 1, created_at: '2024-01-01T00:00:00Z' },
+  { slug: 'capers', program_name: 'CAPERS', pi_name: 'M. Dickinson', description: 'Cycle 2 Deep Fields', is_public: false, cycle: 2, created_at: '2024-01-01T00:00:00Z' },
+  { slug: 'ember', program_name: 'EMBER', pi_name: 'P. Oesch', description: 'Emission line Mapping of the Bright Epoch of Reionization', is_public: false, cycle: 4, created_at: '2024-01-01T00:00:00Z' },
 ];
 
 export const MOCK_FIELDS = ['COSMOS', 'UDS', 'EGS', 'GOODS-N', 'GOODS-S'];
@@ -141,7 +141,7 @@ function generateMockSpectra(): SpectrumObject[] {
     objects.push({
       id: id++,
       object_id: objectId,
-      program_id: config.program.program_id,
+      program_slug: config.program.slug,
       program_name: config.program.program_name || undefined,
       field: config.field,
       observation: config.obs,
@@ -175,7 +175,7 @@ export const MOCK_SPECTRA: (SpectrumObject & { total_exptime?: number })[] = gen
 export type FilterMode = 'any' | 'all' | 'none';
 
 export interface MockFilterOptions {
-  programs?: number[];
+  programs?: string[];
   fields?: string[];
   gratings?: string[];
   gratings_mode?: FilterMode;
@@ -204,7 +204,7 @@ export function applyFiltersToMockData(
   return data.filter(obj => {
     // Program filter
     if (filters.programs && filters.programs.length > 0) {
-      if (!filters.programs.includes(obj.program_id)) return false;
+      if (!filters.programs.includes(obj.program_slug)) return false;
     }
 
     // Field filter

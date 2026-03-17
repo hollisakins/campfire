@@ -572,8 +572,8 @@ export default function OverflowPanelPage() {
   const observations = [...new Set(MOCK_SPECTRA.map(s => s.observation).filter(Boolean) as string[])].sort();
 
   const programOptions: FilterOption[] = MOCK_PROGRAMS.map(p => ({
-    value: p.program_id,
-    label: p.program_name || `Program ${p.program_id}`,
+    value: p.slug,
+    label: p.program_name || p.slug,
   }));
 
   const fieldOptions: FilterOption[] = fields.map(f => ({ value: f, label: f }));
@@ -662,7 +662,7 @@ export default function OverflowPanelPage() {
           label="Program"
           options={programOptions}
           selected={filters.programs ?? []}
-          onChange={(s) => setFilters({ ...filters, programs: s as number[] })}
+          onChange={(s) => setFilters({ ...filters, programs: s as string[] })}
         />
         <SimpleFilter
           label="Field"

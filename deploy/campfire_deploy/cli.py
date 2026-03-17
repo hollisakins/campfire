@@ -25,7 +25,7 @@ import sys
 
 import click
 
-from campfire_deploy.config import load_config, resolve_imaging_config, resolve_tiles_dir
+from campfire_deploy.config import load_config, load_programs, resolve_imaging_config, resolve_tiles_dir
 
 
 class _VariadicOption(click.Option):
@@ -55,6 +55,7 @@ from campfire_deploy.deploy import (
     deploy_thumbnails,
     deploy_zfit,
 )
+from campfire_deploy.supabase import get_supabase_client, upsert_programs, refresh_programs_overview
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +225,38 @@ def shutters(config_path, obs, dry_run, skip_astrometry):
     for obs_name in obs:
         deploy_shutters(obs_name, config, dry_run=dry_run,
                         skip_astrometry=skip_astrometry)
+
+
+# ---------------------------------------------------------------------------
+# sync-programs subcommand
+# ---------------------------------------------------------------------------
+
+@main.command('sync-programs')
+@click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
+@click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
+def sync_programs(config_path, dry_run):
+    """Upsert all programs from $CAMPFIRE_ROOT/config/programs.toml."""
+    programs_config = load_programs()
+    program_slugs = list(programs_config.keys())
+
+    print(f"Found {len(program_slugs)} programs in programs.toml")
+    for slug, info in programs_config.items():
+        print(f"  {slug}: {info.get('program_name', '?')} (cycle {info.get('cycle', '?')})")
+
+    if dry_run:
+        print("\nDry run — no changes made.")
+        return
+
+    config = load_config(config_path)
+    sb = get_supabase_client(config)
+
+    print("\nUpserting programs...")
+    upsert_programs(sb, program_slugs, programs_config)
+
+    print("\nRefreshing materialized view...")
+    refresh_programs_overview(sb)
+
+    print("Done.")
 
 
 # ---------------------------------------------------------------------------

@@ -67,7 +67,7 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     : 'object_id';
 
   return {
-    programs: parseNumberArray('programs'),
+    programs: parseArray('programs'),
     fields: parseArray('fields'),
     gratings: parseArray('gratings'),
     observations: parseArray('observations'),

@@ -3,7 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 
 export interface ProgramOverview {
-  program_id: number;
+  slug: string;
   program_name: string | null;
   pi_name: string | null;
   description: string | null;
@@ -13,11 +13,12 @@ export interface ProgramOverview {
   gratings: string[];
   fields: string[];
   observations: string[];
+  jwst_pids: number[];
 }
 
 export interface ObservationStat {
   observation: string;
-  program_id: number;
+  program_slug: string;
   program_name: string;
   field: string;
   object_count: number;
@@ -50,7 +51,7 @@ export async function getProgramsOverview(): Promise<ProgramsOverviewResult> {
     // Fetch programs and user access in parallel
     const [rpcResult, accessResult] = await Promise.all([
       supabase.rpc('get_programs_overview'),
-      supabase.from('user_program_access').select('program_id').eq('user_id', user.id),
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
     ]);
 
     const { data, error } = rpcResult;
@@ -60,12 +61,12 @@ export async function getProgramsOverview(): Promise<ProgramsOverviewResult> {
       return { programs: [], error: error.message, isAuthenticated: true };
     }
 
-    const explicitAccessIds = new Set((accessResult.data || []).map(a => a.program_id));
+    const explicitAccessSlugs = new Set((accessResult.data || []).map(a => a.program_slug));
 
     const programs: ProgramOverview[] = (data || [])
-      .filter((p: ProgramOverview) => p.is_public || explicitAccessIds.has(p.program_id))
+      .filter((p: ProgramOverview) => p.is_public || explicitAccessSlugs.has(p.slug))
       .map((p: ProgramOverview) => ({
-        program_id: p.program_id,
+        slug: p.slug,
         program_name: p.program_name,
         pi_name: p.pi_name,
         description: p.description,
@@ -75,6 +76,7 @@ export async function getProgramsOverview(): Promise<ProgramsOverviewResult> {
         gratings: p.gratings || [],
         fields: p.fields || [],
         observations: p.observations || [],
+        jwst_pids: p.jwst_pids || [],
       }));
 
     return { programs, isAuthenticated: true };
@@ -84,7 +86,7 @@ export async function getProgramsOverview(): Promise<ProgramsOverviewResult> {
   }
 }
 
-export async function getProgramDetail(programId: number): Promise<ProgramDetailResult> {
+export async function getProgramDetail(programSlug: string): Promise<ProgramDetailResult> {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
@@ -96,8 +98,8 @@ export async function getProgramDetail(programId: number): Promise<ProgramDetail
     // Fetch program overview, observation stats, and user access in parallel
     const [overviewResult, obsResult, accessResult] = await Promise.all([
       supabase.rpc('get_programs_overview'),
-      supabase.rpc('get_observation_stats', { p_program_ids: [programId] }),
-      supabase.from('user_program_access').select('program_id').eq('user_id', user.id),
+      supabase.rpc('get_observation_stats', { p_program_slugs: [programSlug] }),
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
     ]);
 
     if (overviewResult.error) {
@@ -105,11 +107,11 @@ export async function getProgramDetail(programId: number): Promise<ProgramDetail
       return { program: null, observations: [], error: overviewResult.error.message, isAuthenticated: true };
     }
 
-    const explicitAccessIds = new Set((accessResult.data || []).map(a => a.program_id));
+    const explicitAccessSlugs = new Set((accessResult.data || []).map(a => a.program_slug));
 
     // Find the specific program
     const programData = (overviewResult.data || []).find(
-      (p: ProgramOverview) => p.program_id === programId
+      (p: ProgramOverview) => p.slug === programSlug
     );
 
     if (!programData) {
@@ -117,12 +119,12 @@ export async function getProgramDetail(programId: number): Promise<ProgramDetail
     }
 
     // Check access
-    if (!programData.is_public && !explicitAccessIds.has(programId)) {
+    if (!programData.is_public && !explicitAccessSlugs.has(programSlug)) {
       return { program: null, observations: [], error: 'Access denied', isAuthenticated: true };
     }
 
     const program: ProgramOverview = {
-      program_id: programData.program_id,
+      slug: programData.slug,
       program_name: programData.program_name,
       pi_name: programData.pi_name,
       description: programData.description,
@@ -132,13 +134,14 @@ export async function getProgramDetail(programId: number): Promise<ProgramDetail
       gratings: programData.gratings || [],
       fields: programData.fields || [],
       observations: programData.observations || [],
+      jwst_pids: programData.jwst_pids || [],
     };
 
     const observations: ObservationStat[] = (obsResult.data || []).map(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (o: any) => ({
         observation: o.observation,
-        program_id: o.program_id,
+        program_slug: o.program_slug,
         program_name: o.program_name,
         field: o.field,
         object_count: Number(o.object_count) || 0,

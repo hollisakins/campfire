@@ -32,7 +32,7 @@ interface CsvRow {
   max_snr: number | null;
   max_exposure_time: number | null;
   num_gratings: number;
-  program_id: number;
+  program_slug: string;
   program_name: string | null;
   last_inspected_at: string | null;
   last_inspected_by: string | null;
@@ -61,25 +61,25 @@ export async function generateCSV(
     // Determine accessible programs (same logic as getSpectra)
     const { data: accessData } = await supabase
       .from('user_program_access')
-      .select('program_id')
+      .select('program_slug')
       .eq('user_id', user.id);
 
-    const explicitAccessIds = (accessData || []).map(a => a.program_id);
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
 
     const { data: publicPrograms } = await supabase
       .from('programs')
-      .select('program_id')
+      .select('slug')
       .eq('is_public', true);
 
-    const publicProgramIds = (publicPrograms || []).map(p => p.program_id);
-    const accessibleProgramIds = [...new Set([...publicProgramIds, ...explicitAccessIds])];
+    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
+    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return { csv: null, error: 'No accessible programs' };
     }
 
     const rpcParams = {
-      ...buildFilterParams(filters, accessibleProgramIds, user.id),
+      ...buildFilterParams(filters, accessibleProgramSlugs, user.id),
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,
     };
@@ -141,7 +141,7 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
     'max_snr',
     'max_exposure_time',
     'num_gratings',
-    'program_id',
+    'program_slug',
     'program_name',
     'last_inspected_at',
     'last_inspected_by',
@@ -171,7 +171,7 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
       row.max_snr != null ? row.max_snr.toFixed(2) : '',
       row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
       row.num_gratings ?? 0,
-      row.program_id,
+      escapeCsvValue(row.program_slug),
       escapeCsvValue(row.program_name || ''),
       escapeCsvValue(row.last_inspected_at || ''),
       escapeCsvValue(row.last_inspected_by || '')

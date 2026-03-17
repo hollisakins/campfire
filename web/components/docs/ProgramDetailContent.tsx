@@ -11,8 +11,8 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 
 // Editorial content registry
 import ember from '@/lib/docs/content/programs/7076.md';
-const programContent: Record<number, string> = {
-  7076: ember,
+const programContent: Record<string, string> = {
+  ember: ember,
 };
 
 function formatBytes(bytes: number): string {
@@ -23,9 +23,9 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
-export default function ProgramDetailContent({ programId }: { programId: number }) {
+export default function ProgramDetailContent({ programSlug }: { programSlug: string }) {
   const { user, loading: authLoading } = useAuth();
-  const { data, isLoading } = useProgramDetailQuery(programId, !authLoading && !!user);
+  const { data, isLoading } = useProgramDetailQuery(programSlug, !authLoading && !!user);
   const program = data?.program ?? null;
   const observations = data?.observations ?? [];
   const error = data?.error ?? null;
@@ -86,12 +86,10 @@ export default function ProgramDetailContent({ programId }: { programId: number 
     );
   }
 
-  const editorialContent = programContent[program.program_id];
-  const stsciUrl = `https://www.stsci.edu/jwst-program-info/program/?program=${program.program_id}`;
+  const editorialContent = programContent[program.slug];
+  const firstPid = program.jwst_pids?.[0];
 
-  const programLabel = program.program_name
-    ? `${program.program_name} (${program.program_id})`
-    : `Program ${program.program_id}`;
+  const programLabel = program.program_name || program.slug;
 
   return (
     <div>
@@ -113,24 +111,33 @@ export default function ProgramDetailContent({ programId }: { programId: number 
             <Telescope className="w-8 h-8 text-primary flex-shrink-0" />
             <div>
               <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">
-                {program.program_name || `Program ${program.program_id}`}
+                {program.program_name || program.slug}
               </h1>
               <p className="text-sm text-text-secondary dark:text-slate-400">
-                PID {program.program_id}
+                {program.jwst_pids && program.jwst_pids.length > 0 && (
+                  <>PID{program.jwst_pids.length > 1 ? 's' : ''} {program.jwst_pids.join(', ')}</>
+                )}
                 {program.cycle != null && <> &middot; Cycle {program.cycle}</>}
                 {program.pi_name && <> &middot; PI: {program.pi_name}</>}
               </p>
             </div>
           </div>
-          <a
-            href={stsciUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-primary border border-border dark:border-slate-700 rounded-lg transition-colors"
-          >
-            <ExternalLink className="w-4 h-4" />
-            STScI
-          </a>
+          {program.jwst_pids && program.jwst_pids.length > 0 && (
+            <div className="flex gap-2">
+              {program.jwst_pids.map((pid) => (
+                <a
+                  key={pid}
+                  href={`https://www.stsci.edu/jwst-program-info/program/?program=${pid}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-primary border border-border dark:border-slate-700 rounded-lg transition-colors"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  {program.jwst_pids.length > 1 ? `PID ${pid}` : 'STScI'}
+                </a>
+              ))}
+            </div>
+          )}
         </div>
 
         {program.description && (
@@ -197,7 +204,7 @@ export default function ProgramDetailContent({ programId }: { programId: number 
                       </td>
                       <td className="px-4 py-3 text-right">
                         <Link
-                          href={`/spectra?programs=${program.program_id}&observations=${obs.observation}`}
+                          href={`/spectra?programs=${program.slug}&observations=${obs.observation}`}
                           className="text-primary hover:text-primary-hover transition-colors"
                           title="View spectra"
                         >
@@ -216,7 +223,7 @@ export default function ProgramDetailContent({ programId }: { programId: number 
       {/* View All Link */}
       <div className="text-center">
         <Link
-          href={`/spectra?programs=${program.program_id}`}
+          href={`/spectra?programs=${program.slug}`}
           className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
         >
           View all spectra from this program

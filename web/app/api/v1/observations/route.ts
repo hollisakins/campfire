@@ -22,9 +22,9 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const accessibleProgramIds = await getAccessiblePrograms(userId);
+    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json({ observations: [] });
     }
 
@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
     );
 
     const { data, error } = await supabase.rpc('get_observation_stats', {
-      p_program_ids: accessibleProgramIds,
+      p_program_slugs: accessibleProgramSlugs,
     });
 
     if (error) {

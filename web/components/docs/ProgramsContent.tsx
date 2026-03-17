@@ -15,28 +15,34 @@ function formatGratings(gratings: string[]): string {
 }
 
 function ProgramCard({ program }: { program: ProgramOverview }) {
+  const firstPid = program.jwst_pids?.[0];
   return (
-    <Link href={`/docs/data-products/programs/${program.program_id}`}>
+    <Link href={`/docs/data-products/programs/${program.slug}`}>
       <Card hover className="p-5 h-full">
         <div className="flex items-start justify-between mb-3">
           <div>
             <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
-              {program.program_name || `Program ${program.program_id}`}
+              {program.program_name || program.slug}
             </h3>
-            <p className="text-sm text-text-secondary dark:text-slate-400">
-              PID {program.program_id}
-            </p>
+            {program.jwst_pids && program.jwst_pids.length > 0 && (
+              <p className="text-sm text-text-secondary dark:text-slate-400">
+                PID{program.jwst_pids.length > 1 ? 's' : ''} {program.jwst_pids.join(', ')}
+              </p>
+            )}
           </div>
-          <a
-            href={`https://www.stsci.edu/jwst-program-info/program/?program=${program.program_id}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors flex-shrink-0"
-            onClick={(e) => e.stopPropagation()}
-            title="View on STScI"
-          >
-            <ExternalLink className="w-4 h-4" />
-          </a>
+          {firstPid && (
+            <button
+              className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors flex-shrink-0"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                window.open(`https://www.stsci.edu/jwst-program-info/program/?program=${firstPid}`, '_blank');
+              }}
+              title="View on STScI"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         {program.pi_name && (
@@ -149,7 +155,7 @@ export default function ProgramsContent() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {programs.map((program) => (
-                <ProgramCard key={program.program_id} program={program} />
+                <ProgramCard key={program.slug} program={program} />
               ))}
             </div>
           )}

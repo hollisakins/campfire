@@ -63,16 +63,16 @@ function parseFlagArrays(params: URLSearchParams, prefix: string): {
  */
 function parseUrlToFilters(
   searchParams: URLSearchParams,
-  accessibleProgramIds: number[]
+  accessibleProgramSlugs: string[]
 ): Partial<FilterOptions> {
   // Program filter (intersect with accessible programs)
   const programsParam = searchParams.get('programs');
-  let programs: number[] = [];
+  let programs: string[] = [];
   if (programsParam) {
     programs = programsParam
       .split(',')
-      .map(p => parseInt(p.trim(), 10))
-      .filter(p => !isNaN(p) && accessibleProgramIds.includes(p));
+      .map(p => p.trim())
+      .filter(p => p.length > 0 && accessibleProgramSlugs.includes(p));
   }
 
   // Coordinate search
@@ -171,9 +171,9 @@ export async function GET(request: NextRequest) {
 
   try {
     // Get accessible programs for this user
-    const accessibleProgramIds = await getAccessiblePrograms(userId);
+    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json({
         data: [],
         pagination: {
@@ -187,8 +187,8 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
 
     // Parse URL params into canonical filter format, then build RPC params
-    const filters = parseUrlToFilters(searchParams, accessibleProgramIds);
-    const rpcParams = buildFilterParams(filters, accessibleProgramIds, userId);
+    const filters = parseUrlToFilters(searchParams, accessibleProgramSlugs);
+    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, userId);
 
     // Pagination
     const limit = parseInt(searchParams.get('limit') || '1000', 10);

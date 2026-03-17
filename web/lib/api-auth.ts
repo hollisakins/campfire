@@ -124,7 +124,7 @@ export function generateApiKey(): { key: string; prefix: string; hash: string } 
  */
 export async function checkProgramAccess(
   userId: string,
-  programId: number
+  programSlug: string
 ): Promise<boolean> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -141,8 +141,8 @@ export async function checkProgramAccess(
   // Try to fetch a program - RLS will filter based on user access
   const { data, error } = await supabase
     .from('programs')
-    .select('program_id')
-    .eq('program_id', programId)
+    .select('slug')
+    .eq('slug', programSlug)
     .single();
 
   return !error && !!data;

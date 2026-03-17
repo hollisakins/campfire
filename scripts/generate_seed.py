@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -35,19 +36,26 @@ def load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def load_config(scripts_dir: Path) -> dict:
-    """Load deployment configuration from config.toml."""
-    config_path = scripts_dir / 'config.toml'
+def load_config() -> dict:
+    """Load deployment configuration from $CAMPFIRE_ROOT/config/deploy.toml."""
+    campfire_root = os.environ.get('CAMPFIRE_ROOT')
+    if not campfire_root:
+        print("Error: $CAMPFIRE_ROOT environment variable is not set.")
+        sys.exit(1)
+    config_path = Path(campfire_root) / 'config' / 'deploy.toml'
     if not config_path.exists():
         print(f"Error: Config file not found: {config_path}")
-        print(f"Copy config.example.toml to config.toml and fill in your credentials.")
         sys.exit(1)
     return load_toml(config_path)
 
 
-def load_programs(scripts_dir: Path) -> list[dict]:
-    """Load program definitions from programs.toml."""
-    programs_path = scripts_dir / 'programs.toml'
+def load_programs() -> list[dict]:
+    """Load program definitions from $CAMPFIRE_ROOT/config/programs.toml."""
+    campfire_root = os.environ.get('CAMPFIRE_ROOT')
+    if not campfire_root:
+        print("Error: $CAMPFIRE_ROOT environment variable is not set.")
+        sys.exit(1)
+    programs_path = Path(campfire_root) / 'config' / 'programs.toml'
     if not programs_path.exists():
         print(f"Error: Programs file not found: {programs_path}")
         sys.exit(1)
@@ -161,11 +169,25 @@ FLAG_DEFINITIONS = [
 ]
 
 
+# === PID → slug mapping (production still uses program_id) ===
+
+PID_TO_SLUG = {
+    6368: 'capers', 7076: 'ember', 7417: 'zenith', 6585: 'cosmos_ddt',
+    5224: 'mom', 4233: 'rubies', 1345: 'ceers', 2750: 'ceers_ddt',
+    9214: 'spurs', 2561: 'uncover', 1214: 'gto_wide', 1213: 'gto_wide',
+    8018: 'diver', 8410: 'oceans', 5997: 'oasis', 3543: 'excels',
+    4287: 'egs_bubbles', 3215: 'jades', 1433: 'macs0647jd_coe',
+}
+
+
 # === Query Production Data ===
 
 def select_objects(supabase, objects_per_program: int) -> list[dict]:
     """
     Select a representative subset of objects from production.
+
+    Production still uses program_id (integer). We query by program_id
+    and map to program_slug locally for the new schema.
 
     For each program, picks objects with variety across quality levels:
     - 1-2 with quality 4 (secure) with flags set
@@ -173,7 +195,7 @@ def select_objects(supabase, objects_per_program: int) -> list[dict]:
     - 1 with quality 0 (uninspected)
     - 1 with quality 1 (impossible) if available
     """
-    # Get all distinct program_ids
+    # Get all distinct program_ids from production
     programs_resp = supabase.table('objects').select('program_id').execute()
     program_ids = sorted(set(row['program_id'] for row in programs_resp.data))
 
@@ -249,11 +271,36 @@ def select_objects(supabase, objects_per_program: int) -> list[dict]:
         # Cap at objects_per_program
         program_objects = program_objects[:objects_per_program]
 
-        print(f"  Program {pid}: selected {len(program_objects)} objects "
+        slug = PID_TO_SLUG.get(pid, f'unknown_{pid}')
+        print(f"  Program {pid} ({slug}): selected {len(program_objects)} objects "
               f"(qualities: {[o['redshift_quality'] for o in program_objects]})")
         all_objects.extend(program_objects)
 
+    # Map production fields to new schema fields
+    for obj in all_objects:
+        pid = obj['program_id']
+        obj['program_slug'] = PID_TO_SLUG.get(pid, f'unknown_{pid}')
+        # observation is a generated column in production — keep it as-is
+
     return all_objects
+
+
+def build_observations_from_objects(objects: list[dict]) -> list[dict]:
+    """Build observations records from selected objects (production has no observations table)."""
+    seen = set()
+    observations = []
+    for obj in objects:
+        obs_name = obj.get('observation', '')
+        if not obs_name or obs_name in seen:
+            continue
+        seen.add(obs_name)
+        observations.append({
+            'name': obs_name,
+            'program_slug': obj['program_slug'],
+            'jwst_program_id': obj['program_id'],
+            'field': obj['field'],
+        })
+    return observations
 
 
 def fetch_spectra(supabase, object_ids: list[str]) -> list[dict]:
@@ -361,8 +408,23 @@ def generate_programs_sql(programs: list[dict]) -> str:
     lines.append('')
 
     for p in programs:
-        lines.append(f"""INSERT INTO public.programs (program_id, program_name, pi_name, description, is_public)
-VALUES ({p['program_id']}, {sql_escape(p['program_name'])}, {sql_escape(p['pi_name'])}, {sql_escape(p['description'])}, {sql_escape(p.get('is_public', False))});""")
+        lines.append(f"""INSERT INTO public.programs (slug, program_name, pi_name, description, cycle, is_public)
+VALUES ({sql_escape(p['slug'])}, {sql_escape(p['program_name'])}, {sql_escape(p['pi_name'])}, {sql_escape(p.get('description', ''))}, {sql_escape(p.get('cycle'))}, {sql_escape(p.get('is_public', False))});""")
+
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def generate_observations_sql(observations: list[dict]) -> str:
+    """Generate INSERT statements for observations."""
+    lines = ['-- ============================================']
+    lines.append('-- 2b. Observations')
+    lines.append('-- ============================================')
+    lines.append('')
+
+    for obs in observations:
+        lines.append(f"""INSERT INTO public.observations (name, program_slug, jwst_program_id, field)
+VALUES ({sql_escape(obs['name'])}, {sql_escape(obs['program_slug'])}, {obs['jwst_program_id']}, {sql_escape(obs['field'])});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -400,7 +462,7 @@ VALUES ({sql_escape(user['id'])}, {sql_escape(user['full_name'])}, {sql_escape(u
 
 
 def generate_objects_sql(objects: list[dict]) -> str:
-    """Generate INSERT statements for objects (skipping generated columns)."""
+    """Generate INSERT statements for objects (skipping generated columns: redshift, max_snr)."""
     lines = ['-- ============================================']
     lines.append('-- 5. Objects (from production)')
     lines.append('-- ============================================')
@@ -418,8 +480,8 @@ def generate_objects_sql(objects: list[dict]) -> str:
         else:
             redshift_inspected_sql = 'NULL'
 
-        lines.append(f"""INSERT INTO public.objects (id, object_id, program_id, field, ra, dec, redshift_auto, redshift_inspected, redshift_quality, spectral_features, object_flags, dq_flags, last_inspected_at, last_inspected_by, has_sed_plot)
-VALUES ({obj['id']}, {sql_escape(obj['object_id'])}, {obj['program_id']}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {obj.get('spectral_features', 0)}, {obj.get('object_flags', 0)}, {obj.get('dq_flags', 0)}, {inspected_at}, {inspected_by}, {sql_escape(obj.get('has_sed_plot', False))});""")
+        lines.append(f"""INSERT INTO public.objects (id, object_id, program_slug, observation, field, ra, dec, redshift_auto, redshift_inspected, redshift_quality, spectral_features, object_flags, dq_flags, last_inspected_at, last_inspected_by, has_sed_plot)
+VALUES ({obj['id']}, {sql_escape(obj['object_id'])}, {sql_escape(obj['program_slug'])}, {sql_escape(obj.get('observation', ''))}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {obj.get('spectral_features', 0)}, {obj.get('object_flags', 0)}, {obj.get('dq_flags', 0)}, {inspected_at}, {inspected_by}, {sql_escape(obj.get('has_sed_plot', False))});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -449,20 +511,20 @@ def generate_user_program_access_sql(programs: list[dict]) -> str:
 
     # Admin gets all programs
     for p in programs:
-        lines.append(f"""INSERT INTO public.user_program_access (user_id, program_id)
-VALUES ({sql_escape(ADMIN_UUID)}, {p['program_id']});""")
+        lines.append(f"""INSERT INTO public.user_program_access (user_id, program_slug)
+VALUES ({sql_escape(ADMIN_UUID)}, {sql_escape(p['slug'])});""")
 
     # Regular user gets public programs only
     for p in programs:
         if p.get('is_public', False):
-            lines.append(f"""INSERT INTO public.user_program_access (user_id, program_id)
-VALUES ({sql_escape(USER_UUID)}, {p['program_id']});""")
+            lines.append(f"""INSERT INTO public.user_program_access (user_id, program_slug)
+VALUES ({sql_escape(USER_UUID)}, {sql_escape(p['slug'])});""")
 
     # Viewer gets public programs
     for p in programs:
         if p.get('is_public', False):
-            lines.append(f"""INSERT INTO public.user_program_access (user_id, program_id)
-VALUES ({sql_escape(VIEWER_UUID)}, {p['program_id']});""")
+            lines.append(f"""INSERT INTO public.user_program_access (user_id, program_slug)
+VALUES ({sql_escape(VIEWER_UUID)}, {sql_escape(p['slug'])});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -524,8 +586,8 @@ def generate_access_codes_sql() -> str:
 
     lines.append(f"""INSERT INTO public.access_codes (code, description, grants_all_programs, is_active, created_by)
 VALUES ('CAMPFIRE-DEV', 'Development access code - grants all programs', TRUE, TRUE, {sql_escape(ADMIN_UUID)});""")
-    lines.append(f"""INSERT INTO public.access_codes (code, description, grants_all_programs, program_ids, is_active, created_by)
-VALUES ('EMBER-ACCESS', 'EMBER program access code', FALSE, ARRAY[7076], TRUE, {sql_escape(ADMIN_UUID)});""")
+    lines.append(f"""INSERT INTO public.access_codes (code, description, grants_all_programs, program_slugs, is_active, created_by)
+VALUES ('EMBER-ACCESS', 'EMBER program access code', FALSE, ARRAY['ember'], TRUE, {sql_escape(ADMIN_UUID)});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -539,6 +601,7 @@ def generate_sequence_resets(objects: list[dict], spectra: list[dict],
     lines.append('-- ============================================')
     lines.append('')
     lines.append('REFRESH MATERIALIZED VIEW public.mv_filter_options;')
+    lines.append('REFRESH MATERIALIZED VIEW public.mv_programs_overview;')
     lines.append('')
     lines.append('-- ============================================')
     lines.append('-- 12. Reset Sequences')
@@ -580,13 +643,12 @@ def main():
     args = parser.parse_args()
 
     project_root = Path(__file__).parent.parent
-    scripts_dir = project_root / 'scripts'
     output_path = project_root / 'supabase' / 'seed.sql'
 
     # Load configuration
     print("Loading configuration...")
-    config = load_config(scripts_dir)
-    programs = load_programs(scripts_dir)
+    config = load_config()
+    programs = load_programs()
 
     # Connect to production Supabase
     print("Connecting to production Supabase...")
@@ -604,12 +666,47 @@ def main():
         print("Error: No objects found in production database!")
         sys.exit(1)
 
+    # Inject synthetic GTO WIDE EGS objects (PID 1213 has no production data yet)
+    # so we can test the multi-PID merge: gto_wide = {1213 (egs), 1214 (cosmos)}
+    max_id = max(o['id'] for o in objects) + 1000
+    gto_wide_cosmos = [o for o in objects if o.get('program_id') == 1214]
+    if gto_wide_cosmos and not any(o.get('program_id') == 1213 for o in objects):
+        print("\n  Injecting synthetic GTO WIDE EGS objects (PID 1213)...")
+        template = gto_wide_cosmos[0]
+        for i, sid in enumerate([90001, 90002, 90003]):
+            synth = {
+                'id': max_id + i,
+                'object_id': f'gto_wide_egs_p1_{sid}',
+                'program_id': 1213,
+                'program_slug': 'gto_wide',
+                'field': 'egs',
+                'observation': 'gto_wide_egs_p1',
+                'ra': 214.8 + i * 0.01,
+                'dec': 52.8 + i * 0.01,
+                'redshift_auto': 2.0 + i * 0.5,
+                'redshift_inspected': None,
+                'redshift_quality': [4, 2, 0][i],
+                'spectral_features': 0,
+                'object_flags': 0,
+                'dq_flags': 0,
+                'last_inspected_at': None,
+                'last_inspected_by': None,
+                'has_sed_plot': False,
+                'max_snr': None,
+                'max_exposure_time': None,
+            }
+            objects.append(synth)
+        print(f"    Added 3 synthetic objects (gto_wide_egs_p1)")
+
     # Build maps
     object_ids = [o['object_id'] for o in objects]
     object_int_ids = [o['id'] for o in objects]
     object_id_map = {o['id']: o['id'] for o in objects}  # identity map (keep original IDs)
 
-    # Fetch related data
+    # Build observations from objects (production has no observations table yet)
+    observations = build_observations_from_objects(objects)
+    print(f"  Built {len(observations)} observation records")
+
     print("Fetching spectra...")
     spectra = fetch_spectra(supabase, object_ids)
     print(f"  Found {len(spectra)} spectra")
@@ -631,7 +728,7 @@ def main():
     sql_parts.append(f"""-- ============================================
 -- CAMPFIRE Seed Data
 -- Generated: {datetime.now().isoformat()}
--- Objects: {len(objects)} | Spectra: {len(spectra)}
+-- Objects: {len(objects)} | Observations: {len(observations)} | Spectra: {len(spectra)}
 -- Comments: {len(comments)} | Audit Entries: {len(flag_entries)}
 --
 -- Test Users:
@@ -647,6 +744,7 @@ SET search_path TO public, auth, extensions;
 
     sql_parts.append(generate_auth_users_sql())
     sql_parts.append(generate_programs_sql(programs))
+    sql_parts.append(generate_observations_sql(observations))
     sql_parts.append(generate_flag_definitions_sql())
     sql_parts.append(generate_user_profiles_sql())
     sql_parts.append(generate_objects_sql(objects))

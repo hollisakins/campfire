@@ -163,11 +163,11 @@ def load_config(config_path: str | None = None) -> dict:
     sys.exit(1)
 
 
-def load_programs() -> dict[int, dict]:
+def load_programs() -> dict[str, dict]:
     """
-    Load JWST program metadata from $CAMPFIRE_ROOT/config/programs.toml.
+    Load CAMPFIRE program metadata from $CAMPFIRE_ROOT/config/programs.toml.
 
-    Returns dict keyed by program_id.
+    Returns dict keyed by program slug.
     """
     root = os.environ.get('CAMPFIRE_ROOT')
     if not root:
@@ -180,7 +180,7 @@ def load_programs() -> dict[int, dict]:
         sys.exit(1)
 
     data = _load_toml(path)
-    return {p['program_id']: p for p in data.get('programs', [])}
+    return {p['slug']: p for p in data.get('programs', [])}
 
 
 def load_observations() -> dict:
@@ -191,6 +191,14 @@ def load_observations() -> dict:
         if path.exists():
             return _load_toml(path)
     return {}
+
+
+def resolve_program_slug(obs_name: str) -> str:
+    """Get CAMPFIRE program slug for an observation from observations.toml."""
+    obs = load_observations()
+    if obs_name in obs:
+        return obs[obs_name].get('program', '')
+    return ''
 
 
 def resolve_field(obs_name: str) -> str:

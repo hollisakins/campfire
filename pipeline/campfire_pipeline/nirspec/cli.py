@@ -327,6 +327,7 @@ def _run_summary(cfg, obs_obj):
     summary_table = generate_observation_summary(obs_obj.name, obs_dir,
                                                   reduction_version=version,
                                                   field=obs_obj.field,
+                                                  program_slug=obs_obj.program,
                                                   consensus_config=consensus_config)
     if len(summary_table) > 0:
         write_summary_ecsv(summary_table, obs_dir, obs_obj.name)

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { GRATINGS, QUALITY_LABELS } from '@/lib/types';
 
 interface FilterValues {
-  programs: number[];
+  programs: string[];
   fields: string[];
   gratings: string[];
   redshift_quality: number[];
@@ -16,7 +16,7 @@ interface SpectraFiltersProps {
   filters: FilterValues;
   onChange: (filters: FilterValues) => void;
   onClear: () => void;
-  availablePrograms: { id: number; name: string }[];
+  availablePrograms: { id: string; name: string }[];
   availableFields: string[];
 }
 

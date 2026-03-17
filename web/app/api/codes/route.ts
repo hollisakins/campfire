@@ -57,7 +57,7 @@ export async function GET() {
  * POST /api/codes
  *
  * Create a new access code (admin only)
- * Body: { code, description, grants_all_programs, program_ids, expires_at, max_uses }
+ * Body: { code, description, grants_all_programs, program_slugs, expires_at, max_uses }
  */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
       code,
       description,
       grants_all_programs = false,
-      program_ids = null,
+      program_slugs = null,
       expires_at = null,
       max_uses = null,
     } = body;
@@ -109,7 +109,7 @@ export async function POST(request: NextRequest) {
         code: normalizedCode,
         description: description || null,
         grants_all_programs,
-        program_ids: grants_all_programs ? null : program_ids,
+        program_slugs: grants_all_programs ? null : program_slugs,
         expires_at: expires_at || null,
         max_uses: max_uses || null,
         created_by: user.id,

@@ -22,7 +22,7 @@ export default function AdminProgramsPage() {
   const [programs, setPrograms] = useState<ProgramWithStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [updatingProgram, setUpdatingProgram] = useState<number | null>(null);
+  const [updatingProgram, setUpdatingProgram] = useState<string | null>(null);
 
   const fetchPrograms = useCallback(async () => {
     setLoading(true);
@@ -49,9 +49,9 @@ export default function AdminProgramsPage() {
   }, [fetchPrograms]);
 
   const togglePublic = async (program: ProgramWithStats) => {
-    setUpdatingProgram(program.program_id);
+    setUpdatingProgram(program.slug);
     try {
-      const response = await fetch(`/api/programs/${program.program_id}`, {
+      const response = await fetch(`/api/programs/${program.slug}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_public: !program.is_public }),
@@ -134,14 +134,14 @@ export default function AdminProgramsPage() {
               </tr>
             ) : (
               programs.map((program) => (
-                <tr key={program.program_id}>
+                <tr key={program.slug}>
                   <td className="px-6 py-4">
                     <div>
                       <div className="text-sm font-medium text-text-primary dark:text-slate-100">
-                        {program.program_name || `Program ${program.program_id}`}
+                        {program.program_name || program.slug}
                       </div>
                       <div className="text-xs text-text-secondary dark:text-slate-400">
-                        ID: {program.program_id}
+                        {program.slug}
                       </div>
                     </div>
                   </td>
@@ -186,9 +186,9 @@ export default function AdminProgramsPage() {
                       variant="secondary"
                       size="sm"
                       onClick={() => togglePublic(program)}
-                      disabled={updatingProgram === program.program_id}
+                      disabled={updatingProgram === program.slug}
                     >
-                      {updatingProgram === program.program_id ? (
+                      {updatingProgram === program.slug ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
                       ) : program.is_public ? (
                         <>

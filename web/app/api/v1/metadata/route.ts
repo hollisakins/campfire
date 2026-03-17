@@ -11,7 +11,7 @@ import { getAccessiblePrograms } from '@/lib/api-helpers';
  *
  * Response:
  * {
- *   programs: [{ program_id, program_name, pi_name, is_public }],
+ *   programs: [{ slug, program_name, pi_name, is_public }],
  *   fields: ["COSMOS", "UDS", ...],
  *   gratings: ["PRISM", "G395M", ...],
  *   observations: ["ember_uds_p4", ...]
@@ -35,9 +35,9 @@ export async function GET(request: NextRequest) {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Get accessible programs for this user
-    const accessibleProgramIds = await getAccessiblePrograms(userId);
+    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json({
         programs: [],
         fields: [],
@@ -49,9 +49,9 @@ export async function GET(request: NextRequest) {
     // Fetch programs with full metadata
     const { data: programs, error: programsError } = await supabase
       .from('programs')
-      .select('program_id, program_name, pi_name, is_public')
-      .in('program_id', accessibleProgramIds)
-      .order('program_id');
+      .select('slug, program_name, pi_name, is_public')
+      .in('slug', accessibleProgramSlugs)
+      .order('slug');
 
     if (programsError) {
       console.error('Error fetching programs:', programsError);

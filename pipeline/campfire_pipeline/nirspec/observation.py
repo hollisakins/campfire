@@ -20,6 +20,7 @@ from campfire_pipeline.common.io import log
 class Observation:
     name: str
     field: str
+    program: str
     program_id: int
     data_subdir: str
     files: List[str]
@@ -43,6 +44,7 @@ class Observation:
         obs = observations_config[name]
 
         field_name = obs['field']
+        program_slug = obs['program']
         data_subdir = obs['data_subdir']
         gratings = obs.get('gratings', [])
 
@@ -79,6 +81,7 @@ class Observation:
         return cls(
             name=name,
             field=field_name,
+            program=program_slug,
             program_id=program_id,
             data_subdir=data_subdir,
             files=files,

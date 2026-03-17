@@ -328,14 +328,13 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       {
         id: 'program',
         minSize: 120,
-        accessorFn: (row) => row.program_name || String(row.program_id),
+        accessorFn: (row) => row.program_name || row.program_slug,
         header: () => <span>Program</span>,
         cell: ({ row }) => {
           const name = row.original.program_name;
-          const id = row.original.program_id;
           return (
             <span className="text-sm text-text-primary dark:text-slate-100">
-              {name ? `${name} (${id})` : String(id)}
+              {name || row.original.program_slug}
             </span>
           );
         },

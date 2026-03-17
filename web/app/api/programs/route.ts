@@ -6,7 +6,7 @@ import { createClient } from '@/lib/supabase/server';
  *
  * Fetch programs.
  * - For admins: Returns all programs with access stats
- * - For non-admins (or unauthenticated): Returns basic program list (program_id, program_name)
+ * - For non-admins (or unauthenticated): Returns basic program list (slug, program_name)
  */
 export async function GET() {
   const supabase = await createClient();
@@ -19,7 +19,7 @@ export async function GET() {
     try {
       const { data: programs, error } = await supabase
         .from('programs')
-        .select('program_id, program_name')
+        .select('slug, program_name')
         .order('program_name', { ascending: true });
 
       if (error) {
@@ -45,7 +45,7 @@ export async function GET() {
     try {
       const { data: programs, error } = await supabase
         .from('programs')
-        .select('program_id, program_name')
+        .select('slug, program_name')
         .order('program_name', { ascending: true });
 
       if (error) {
@@ -76,9 +76,9 @@ export async function GET() {
     }
 
     // Build lookup maps from aggregated stats
-    const statsMap = new Map<number, { object_count: number; user_access_count: number }>();
+    const statsMap = new Map<string, { object_count: number; user_access_count: number }>();
     for (const stat of statsResult.data || []) {
-      statsMap.set(stat.program_id, {
+      statsMap.set(stat.slug, {
         object_count: Number(stat.object_count) || 0,
         user_access_count: Number(stat.user_access_count) || 0,
       });
@@ -87,8 +87,8 @@ export async function GET() {
     // Combine data
     const programsWithStats = (programsResult.data || []).map(p => ({
       ...p,
-      object_count: statsMap.get(p.program_id)?.object_count || 0,
-      user_access_count: statsMap.get(p.program_id)?.user_access_count || 0,
+      object_count: statsMap.get(p.slug)?.object_count || 0,
+      user_access_count: statsMap.get(p.slug)?.user_access_count || 0,
     }));
 
     return NextResponse.json({ programs: programsWithStats });

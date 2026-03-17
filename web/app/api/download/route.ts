@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
         id,
         object_id,
         objects!inner (
-          program_id
+          program_slug
         )
       `)
       .eq('fits_path', fitsPath)

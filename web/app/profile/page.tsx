@@ -443,12 +443,12 @@ export default function ProfilePage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
               {grantedPrograms.map((program) => (
                 <div
-                  key={program.program_id}
+                  key={program.slug}
                   className="flex items-center gap-2 px-3 py-2 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded-lg"
                 >
                   <Check className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0" />
                   <span className="text-sm text-text-primary dark:text-slate-100 truncate">
-                    {program.program_name || `Program ${program.program_id}`}
+                    {program.program_name || program.slug}
                   </span>
                 </div>
               ))}

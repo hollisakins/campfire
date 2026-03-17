@@ -38,7 +38,7 @@ export interface MapMarker {
   redshift: number | null;
   redshift_quality: number;
   field: string;
-  program_id: number;
+  program_slug: string;
   observation: string | null;
 }
 
@@ -134,7 +134,7 @@ export async function getFieldMarkers(
   while (true) {
     const { data, error } = await supabase
       .from('objects')
-      .select('object_id, ra, dec, redshift, redshift_quality, field, program_id, observation')
+      .select('object_id, ra, dec, redshift, redshift_quality, field, program_slug, observation')
       .eq('field', field)
       .range(offset, offset + PAGE_SIZE - 1);
 
@@ -200,24 +200,24 @@ export async function getFilteredObjectIds(
     // Determine accessible programs (same as getSpectra)
     const { data: accessData } = await supabase
       .from('user_program_access')
-      .select('program_id')
+      .select('program_slug')
       .eq('user_id', user.id);
 
-    const explicitAccessIds = (accessData || []).map(a => a.program_id);
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
 
     const { data: publicPrograms } = await supabase
       .from('programs')
-      .select('program_id')
+      .select('slug')
       .eq('is_public', true);
 
-    const publicProgramIds = (publicPrograms || []).map(p => p.program_id);
-    const accessibleProgramIds = [...new Set([...publicProgramIds, ...explicitAccessIds])];
+    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
+    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
-    if (accessibleProgramIds.length === 0) {
+    if (accessibleProgramSlugs.length === 0) {
       return { objectIds: [] };
     }
 
-    const rpcParams = buildFilterParams(filters, accessibleProgramIds, user.id);
+    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     // Call the lightweight core function directly (no JSONB, no pagination)
     const { data, error } = await supabase.rpc('get_filtered_object_ids', {

@@ -4,14 +4,14 @@ import React from 'react';
 import { Button } from '@/components/ui/Button';
 
 interface MultiSelectOption {
-  id: number;
+  id: string;
   name: string;
 }
 
 interface MultiSelectProps {
   options: MultiSelectOption[];
-  selected: number[];
-  onChange: (ids: number[]) => void;
+  selected: string[];
+  onChange: (ids: string[]) => void;
   label?: string;
   maxHeight?: string;
 }
@@ -33,7 +33,7 @@ export const MultiSelect: React.FC<MultiSelectProps> = ({
     onChange([]);
   };
 
-  const handleToggle = (id: number) => {
+  const handleToggle = (id: string) => {
     if (selected.includes(id)) {
       onChange(selected.filter(selectedId => selectedId !== id));
     } else {

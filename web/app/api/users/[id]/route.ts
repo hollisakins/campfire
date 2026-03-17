@@ -67,9 +67,9 @@ export async function PATCH(
 
       // Insert new access
       if (program_access.length > 0) {
-        const accessRows = program_access.map((programId: number) => ({
+        const accessRows = program_access.map((programSlug: string) => ({
           user_id: userId,
-          program_id: programId,
+          program_slug: programSlug,
           granted_by: user.id,
         }));
 

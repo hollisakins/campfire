@@ -19,13 +19,13 @@ import {
 import type { UserProfile, Program } from '@/lib/types';
 
 interface UserWithAccess extends UserProfile {
-  program_access: number[];
+  program_access: string[];
 }
 
 interface PendingInvite {
   id: number;
   email: string;
-  program_ids: number[];
+  program_slugs: string[];
   is_admin: boolean;
   can_comment: boolean;
   invited_by: string;
@@ -45,7 +45,7 @@ export default function AdminUsersPage() {
   const [invites, setInvites] = useState<PendingInvite[]>([]);
   const [showInviteForm, setShowInviteForm] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
-  const [inviteProgramIds, setInviteProgramIds] = useState<number[]>([]);
+  const [inviteProgramSlugs, setInviteProgramSlugs] = useState<string[]>([]);
   const [inviteIsAdmin, setInviteIsAdmin] = useState(false);
   const [inviteCanComment, setInviteCanComment] = useState(true);
   const [sendingInvite, setSendingInvite] = useState(false);
@@ -105,7 +105,7 @@ export default function AdminUsersPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: inviteEmail.trim(),
-          program_ids: inviteProgramIds,
+          program_slugs: inviteProgramSlugs,
           is_admin: inviteIsAdmin,
           can_comment: inviteCanComment,
         }),
@@ -119,7 +119,7 @@ export default function AdminUsersPage() {
 
       // Reset form and refresh
       setInviteEmail('');
-      setInviteProgramIds([]);
+      setInviteProgramSlugs([]);
       setInviteIsAdmin(false);
       setInviteCanComment(true);
       setShowInviteForm(false);
@@ -172,11 +172,11 @@ export default function AdminUsersPage() {
     }
   };
 
-  const toggleInviteProgram = (programId: number) => {
-    setInviteProgramIds(prev =>
-      prev.includes(programId)
-        ? prev.filter(id => id !== programId)
-        : [...prev, programId]
+  const toggleInviteProgram = (programSlug: string) => {
+    setInviteProgramSlugs(prev =>
+      prev.includes(programSlug)
+        ? prev.filter(s => s !== programSlug)
+        : [...prev, programSlug]
     );
   };
 
@@ -202,12 +202,12 @@ export default function AdminUsersPage() {
     }
   };
 
-  const updateProgramAccess = async (user: UserWithAccess, programId: number, grant: boolean) => {
+  const updateProgramAccess = async (user: UserWithAccess, programSlug: string, grant: boolean) => {
     setSavingUser(user.user_id);
     try {
       const newAccess = grant
-        ? [...user.program_access, programId]
-        : user.program_access.filter(id => id !== programId);
+        ? [...user.program_access, programSlug]
+        : user.program_access.filter(s => s !== programSlug);
 
       const response = await fetch(`/api/users/${user.user_id}`, {
         method: 'PATCH',
@@ -231,12 +231,12 @@ export default function AdminUsersPage() {
   const grantAllPrograms = async (user: UserWithAccess) => {
     setSavingUser(user.user_id);
     try {
-      const allProgramIds = programs.map(p => p.program_id);
+      const allProgramSlugs = programs.map(p => p.slug);
 
       const response = await fetch(`/api/users/${user.user_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ program_access: allProgramIds }),
+        body: JSON.stringify({ program_access: allProgramSlugs }),
       });
 
       if (!response.ok) {
@@ -376,11 +376,11 @@ export default function AdminUsersPage() {
               </label>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                 {programs.map((program) => {
-                  const selected = inviteProgramIds.includes(program.program_id);
+                  const selected = inviteProgramSlugs.includes(program.slug);
                   return (
                     <button
-                      key={program.program_id}
-                      onClick={() => toggleInviteProgram(program.program_id)}
+                      key={program.slug}
+                      onClick={() => toggleInviteProgram(program.slug)}
                       className={`
                         flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left
                         transition-colors
@@ -392,7 +392,7 @@ export default function AdminUsersPage() {
                     >
                       {selected && <Check className="w-4 h-4 flex-shrink-0" />}
                       <span className="truncate">
-                        {program.program_name || `Program ${program.program_id}`}
+                        {program.program_name || program.slug}
                       </span>
                     </button>
                   );
@@ -400,13 +400,13 @@ export default function AdminUsersPage() {
               </div>
               <div className="flex gap-2 mt-2">
                 <button
-                  onClick={() => setInviteProgramIds(programs.map(p => p.program_id))}
+                  onClick={() => setInviteProgramSlugs(programs.map(p => p.slug))}
                   className="text-xs text-primary hover:underline"
                 >
                   Select All
                 </button>
                 <button
-                  onClick={() => setInviteProgramIds([])}
+                  onClick={() => setInviteProgramSlugs([])}
                   className="text-xs text-primary hover:underline"
                 >
                   Clear All
@@ -490,7 +490,7 @@ export default function AdminUsersPage() {
                       {invite.email}
                     </span>
                     <div className="text-xs text-text-secondary dark:text-slate-400">
-                      {invite.program_ids.length} programs ·
+                      {invite.program_slugs.length} programs ·
                       Invited {formatDate(invite.created_at)}
                       {invite.invited_by_name && ` by ${invite.invited_by_name}`}
                     </div>
@@ -657,11 +657,11 @@ export default function AdminUsersPage() {
                           ) : (
                             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                               {programs.map((program) => {
-                                const hasAccess = user.program_access.includes(program.program_id);
+                                const hasAccess = user.program_access.includes(program.slug);
                                 return (
                                   <button
-                                    key={program.program_id}
-                                    onClick={() => updateProgramAccess(user, program.program_id, !hasAccess)}
+                                    key={program.slug}
+                                    onClick={() => updateProgramAccess(user, program.slug, !hasAccess)}
                                     disabled={savingUser === user.user_id}
                                     className={`
                                       flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left
@@ -674,7 +674,7 @@ export default function AdminUsersPage() {
                                   >
                                     {hasAccess && <Check className="w-4 h-4 flex-shrink-0" />}
                                     <span className="truncate">
-                                      {program.program_name || `Program ${program.program_id}`}
+                                      {program.program_name || program.slug}
                                     </span>
                                   </button>
                                 );

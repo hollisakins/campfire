@@ -9,6 +9,7 @@
 #   files       = glob pattern(s) matching JWST file prefixes
 #                 prefix with '~' to exclude matches
 #   gratings    = list of gratings used in this observation
+#   program     = CAMPFIRE program slug (required, e.g. 'ember', 'jades')
 #   program_id  = (optional) JWST program ID; auto-detected from filename if omitted
 #
 # Per-observation stage overrides can be nested:
@@ -17,12 +18,14 @@
 
 [example_cosmos_p1]
     field = 'cosmos'
+    program = 'example_program'
     data_subdir = '1234'
     files = 'jw01234001001*'
     gratings = ['PRISM']
 
 [example_uds_medium]
     field = 'uds'
+    program = 'example_program'
     data_subdir = '5678'
     files = ['jw05678001001*', 'jw05678002001*']
     gratings = ['G235M', 'G395M']

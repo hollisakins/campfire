@@ -53,8 +53,11 @@ def get_unique_objects(summary: Table) -> list[dict]:
     Deduplicate by object_id and return one record per unique object.
 
     Returns list of dicts with keys:
-        object_id, source_id, program_id, ra, dec, redshift_best
+        object_id, source_id, program_slug, observation, ra, dec, redshift_best
     """
+    program_slug = summary.meta.get('program_slug', '')
+    observation = summary.meta.get('obs_name', '')
+
     seen = set()
     objects = []
 
@@ -66,7 +69,8 @@ def get_unique_objects(summary: Table) -> list[dict]:
         objects.append({
             'object_id': oid,
             'source_id': str(row['source_id']),
-            'program_id': int(row['program_id']),
+            'program_slug': program_slug,
+            'observation': observation,
             'ra': float(row['ra']),
             'dec': float(row['dec']),
             'redshift_best': float(row['redshift_best']) if row['redshift_best'] is not None else None,
@@ -123,6 +127,15 @@ def get_zfit_paths(summary: Table, obs_dir: Path) -> list[Path]:
     return paths
 
 
-def get_unique_program_ids(summary: Table) -> list[int]:
-    """Return sorted list of unique program IDs."""
-    return sorted(set(int(row['program_id']) for row in summary))
+def get_program_slug(summary: Table) -> str:
+    """Return the CAMPFIRE program slug from table metadata.
+
+    Raises SystemExit if missing — all ECSVs must be regenerated
+    with the updated pipeline before deploying.
+    """
+    slug = summary.meta.get('program_slug', '')
+    if not slug:
+        print("Error: ECSV missing 'program_slug' metadata.")
+        print("Re-run: cfpipe nirspec summary --obs <name>")
+        sys.exit(1)
+    return slug

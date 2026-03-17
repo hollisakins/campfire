@@ -1,9 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 
 /**
- * Get all program IDs accessible to a user (public + explicit access)
+ * Get all program slugs accessible to a user (public + explicit access)
  */
-export async function getAccessiblePrograms(userId: string): Promise<number[]> {
+export async function getAccessiblePrograms(userId: string): Promise<string[]> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -11,21 +11,21 @@ export async function getAccessiblePrograms(userId: string): Promise<number[]> {
   // Get programs with explicit access
   const { data: accessData } = await supabase
     .from('user_program_access')
-    .select('program_id')
+    .select('program_slug')
     .eq('user_id', userId);
 
-  const explicitAccessIds = (accessData || []).map((a: { program_id: number }) => a.program_id);
+  const explicitAccessSlugs = (accessData || []).map((a: { program_slug: string }) => a.program_slug);
 
   // Get public programs
   const { data: publicPrograms } = await supabase
     .from('programs')
-    .select('program_id')
+    .select('slug')
     .eq('is_public', true);
 
-  const publicProgramIds = (publicPrograms || []).map((p: { program_id: number }) => p.program_id);
+  const publicProgramSlugs = (publicPrograms || []).map((p: { slug: string }) => p.slug);
 
   // Combine and deduplicate
-  return [...new Set([...publicProgramIds, ...explicitAccessIds])];
+  return [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 }
 
 /**
@@ -34,8 +34,8 @@ export async function getAccessiblePrograms(userId: string): Promise<number[]> {
  */
 export async function checkUserProgramAccess(userId: string): Promise<{
   hasProprietaryAccess: boolean;
-  grantedPrograms: number[];
-  publicPrograms: number[];
+  grantedPrograms: string[];
+  publicPrograms: string[];
 }> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -44,22 +44,22 @@ export async function checkUserProgramAccess(userId: string): Promise<{
   // Get programs with explicit access (proprietary)
   const { data: accessData } = await supabase
     .from('user_program_access')
-    .select('program_id')
+    .select('program_slug')
     .eq('user_id', userId);
 
-  const grantedPrograms = (accessData || []).map((a: { program_id: number }) => a.program_id);
+  const grantedPrograms = (accessData || []).map((a: { program_slug: string }) => a.program_slug);
 
   // Get public programs
   const { data: publicPrograms } = await supabase
     .from('programs')
-    .select('program_id')
+    .select('slug')
     .eq('is_public', true);
 
-  const publicProgramIds = (publicPrograms || []).map((p: { program_id: number }) => p.program_id);
+  const publicProgramSlugs = (publicPrograms || []).map((p: { slug: string }) => p.slug);
 
   return {
     hasProprietaryAccess: grantedPrograms.length > 0,
     grantedPrograms,
-    publicPrograms: publicProgramIds,
+    publicPrograms: publicProgramSlugs,
   };
 }

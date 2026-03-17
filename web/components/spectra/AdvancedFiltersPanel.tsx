@@ -204,8 +204,8 @@ export function AdvancedFiltersPanel({
 
   // Program, observation, and quality options for basic filters
   const programOptions: FilterOption[] = availablePrograms.map((p) => ({
-    value: p.program_id,
-    label: p.program_name ? `${p.program_name} (${p.program_id})` : `Program ${p.program_id}`,
+    value: p.slug,
+    label: p.program_name || p.slug,
   }));
 
   const observationOptions: FilterOption[] = availableObservations.map((o, idx) => ({
@@ -224,7 +224,7 @@ export function AdvancedFiltersPanel({
   const clearPanelFilters = () => {
     const basicClear = showBasicFilters
       ? {
-          programs: [] as number[],
+          programs: [] as string[],
           observations: [] as string[],
           redshift_quality: [] as number[],
           redshift_min: null,
@@ -322,7 +322,7 @@ export function AdvancedFiltersPanel({
                       label=""
                       options={programOptions}
                       selected={filters.programs ?? []}
-                      onChange={(s) => onFiltersChange({ ...filters, programs: s as number[] })}
+                      onChange={(s) => onFiltersChange({ ...filters, programs: s as string[] })}
                       mode="any"
                       onModeChange={() => {}}
                     />

@@ -18,14 +18,14 @@ interface PendingInvite {
   id: number;
   email: string;
   full_name: string | null;
-  program_ids: number[];
+  program_slugs: string[];
   is_admin: boolean;
   can_comment: boolean;
   invited_by: string;
 }
 
 interface Program {
-  program_id: number;
+  slug: string;
   program_name: string | null;
 }
 
@@ -201,8 +201,8 @@ export default function WelcomePage() {
               </div>
               <ul className="ml-7 space-y-1">
                 {programs.map((program) => (
-                  <li key={program.program_id} className="text-sm text-green-700 dark:text-green-300">
-                    {program.program_name || `Program ${program.program_id}`}
+                  <li key={program.slug} className="text-sm text-green-700 dark:text-green-300">
+                    {program.program_name || program.slug}
                   </li>
                 ))}
               </ul>
