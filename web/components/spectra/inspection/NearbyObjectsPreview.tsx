@@ -76,12 +76,6 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
     return QUALITY_LABELS.find((q) => q.value === quality)?.icon || '';
   };
 
-  // Extract the source ID suffix (after the last underscore)
-  const getSuffix = (objectId: string) => {
-    const lastUnderscore = objectId.lastIndexOf('_');
-    return lastUnderscore >= 0 ? objectId.slice(lastUnderscore) : objectId;
-  };
-
   if (loading) {
     return (
       <div className="px-4 py-3 border-b border-border dark:border-slate-700">
@@ -128,7 +122,7 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
               <div className="flex items-center gap-1.5 text-xs">
                 <span className="flex-shrink-0">{getQualityIcon(obj.redshift_quality)}</span>
                 <span className="font-mono text-text-primary dark:text-slate-200 truncate flex-1">
-                  {getSuffix(obj.object_id)}
+                  {obj.object_id}
                 </span>
                 <span className="font-mono text-text-secondary dark:text-slate-500 flex-shrink-0">
                   {obj.distance != null ? formatDistance(obj.distance) : ''}
