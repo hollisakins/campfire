@@ -249,7 +249,9 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
           <div className="flex-shrink-0" style={{ width: '300px' }}>
             <TileThumbnail
               objectId={spectrum.object_id}
-              size={300}
+              size={600}
+              displaySize={300}
+              fov={4}
               shutters
               linkToMap={{ field: spectrum.field, ra: spectrum.ra, dec: spectrum.dec }}
             />

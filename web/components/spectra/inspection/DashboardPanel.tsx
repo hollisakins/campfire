@@ -38,7 +38,9 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
       <div className="p-4 flex justify-center border-b border-border dark:border-slate-700 flex-shrink-0">
         <TileThumbnail
           objectId={spectrum.object_id}
-          size={280}
+          size={560}
+          displaySize={280}
+          fov={4}
           shutters
           linkToMap={{ field: spectrum.field, ra: spectrum.ra, dec: spectrum.dec }}
         />

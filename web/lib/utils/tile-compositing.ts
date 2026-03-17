@@ -254,8 +254,8 @@ function generateShutterSvg(
       fill = '#00ff00'; stroke = '#00ff00';
       fillOpacity = 0.2; strokeOpacity = 1; strokeWidth = 1;
     } else {
-      fill = '#888888'; stroke = '#888888';
-      fillOpacity = 0.05; strokeOpacity = 0.3; strokeWidth = 0.5;
+      fill = '#aaaaaa'; stroke = '#cccccc';
+      fillOpacity = 0.15; strokeOpacity = 0.65; strokeWidth = 0.8;
     }
 
     rects.push(
