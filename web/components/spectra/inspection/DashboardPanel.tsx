@@ -6,6 +6,7 @@ import { RedshiftSection, type RedshiftSectionHandle } from './RedshiftSection';
 import { QualitySection } from './QualitySection';
 import { FlagsSection } from './FlagsSection';
 import { CommentsPreview } from './CommentsPreview';
+import { NearbyObjectsPreview } from './NearbyObjectsPreview';
 import { SaveButtons } from './SaveButtons';
 import type { SpectrumObject } from '@/lib/types';
 import type { InspectionState } from '@/lib/hooks/useInspectionState';
@@ -15,6 +16,8 @@ interface DashboardPanelProps {
   inspectionState: InspectionState;
   canEdit: boolean;
   commentCount: number;
+  queueIds: string[];
+  onNavigateToObject: (objectId: string) => void;
   redshiftInputRef?: React.RefObject<HTMLInputElement | null>;
   redshiftSectionRef?: React.RefObject<RedshiftSectionHandle | null>;
   onSave: () => void;
@@ -26,6 +29,8 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
   inspectionState,
   canEdit,
   commentCount,
+  queueIds,
+  onNavigateToObject,
   redshiftInputRef,
   redshiftSectionRef,
   onSave,
@@ -56,6 +61,13 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
           redshiftInputRef={redshiftInputRef}
         />
         <QualitySection state={inspectionState} canEdit={canEdit} />
+        <NearbyObjectsPreview
+          ra={spectrum.ra}
+          dec={spectrum.dec}
+          currentObjectId={spectrum.object_id}
+          queueIds={queueIds}
+          onNavigate={onNavigateToObject}
+        />
         <FlagsSection state={inspectionState} canEdit={canEdit} />
         <CommentsPreview objectDbId={spectrum.id} commentCount={commentCount} />
       </div>
