@@ -6,6 +6,7 @@ import { AuthProvider } from '@/lib/contexts/AuthContext';
 import { ThemeProvider } from '@/lib/contexts/ThemeContext';
 import { PreferencesProvider } from '@/lib/contexts/PreferencesContext';
 import { QueryProvider } from '@/lib/providers/QueryProvider';
+import { Footer } from '@/components/layout/Footer';
 import { Analytics } from '@vercel/analytics/next';
 
 const roboto = Roboto({
@@ -50,13 +51,14 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className={`${roboto.variable} ${robotoMono.variable} font-sans antialiased min-h-screen bg-background dark:bg-slate-900 text-text-primary dark:text-slate-100`}>
+      <body className={`${roboto.variable} ${robotoMono.variable} font-sans antialiased min-h-screen flex flex-col bg-background dark:bg-slate-900 text-text-primary dark:text-slate-100`}>
         <QueryProvider>
           <AuthProvider>
             <ThemeProvider>
               <PreferencesProvider>
                 <Navigation />
-                <main>{children}</main>
+                <main className="flex-1">{children}</main>
+                <Footer />
               </PreferencesProvider>
             </ThemeProvider>
           </AuthProvider>

@@ -1,0 +1,41 @@
+name: Feature Request
+description: Suggest an improvement or new feature
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of CAMPFIRE does this relate to?
+      options:
+        - Web Portal
+        - Pipeline (NIRSpec)
+        - Pipeline (NIRCam)
+        - Deployment / Infrastructure
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Briefly describe the feature
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this needed? What problem does it solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe how you think this could work (optional)
+    validations:
+      required: false

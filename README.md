@@ -2,44 +2,64 @@
 
 **COSMOS Archive of MultiPle-Field Internal Reductions & Extractions**
 
-CAMPFIRE is a data processing pipeline and web portal for JWST NIRSpec spectroscopy and NIRCam imaging from COSMOS and other deep fields.
+CAMPFIRE is a data reduction pipeline and web portal for JWST spectroscopy and imaging. 
+It contains tools for processing raw JWST data (NIRSpec MSA spectroscopy, NIRCam imaging) 
+through custom reduction stages and hosts the resulting products through an interactive 
+web interface.
 
-## Project Structure
+The pipeline and portal were built to support spectroscopic survey work in COSMOS and 
+other deep fields, but the pipeline components are general enough to be adapted to 
+other JWST programs.
 
+## Repository Structure
+
+This is a monorepo with several components:
+
+| Directory | Description | Stack |
+|-----------|-------------|-------|
+| [`pipeline/`](pipeline/) | JWST reduction pipeline | Python, `jwst`, `astropy` |
+| [`web/`](web/) | Interactive web portal | Next.js, Supabase, Tailwind |
+| [`deploy/`](deploy/) | Deployment CLI for uploading products | Python, Supabase, Cloudflare R2 |
+| [`python/`](python/) | Python API client *(under construction)* | Python, `httpx` |
+
+Supporting directories:
+
+| Directory | Description |
+|-----------|-------------|
+| `supabase/` | Database migrations and local dev config |
+| `scripts/` | One-off utility scripts (seeding, backfills, etc.) |
+
+See the README in each subdirectory for more detail.
+
+## Quick Start
+
+### Pipeline
+
+```bash
+cd pipeline
+pip install -e .
+
+# Set up your data directory (raw data, config, and outputs live here, not in the repo)
+export CAMPFIRE_ROOT=/path/to/your/data
+
+# Download raw data from MAST -> $CAMPFIRE_ROOT/raw/
+cfpipe download --program 6585 --instrument nirspec
+
+# Run the full reduction for an observation (a group of exposures to reduce + stack)
+# Outputs to $CAMPFIRE_ROOT/products/<observation_name>/
+cfpipe nirspec run --obs <observation_name> --all --processes 4
+
+# Or run individual stages
+cfpipe nirspec stage1 --obs <observation_name> --processes 4
+cfpipe nirspec stage2a --obs <observation_name>
+cfpipe nirspec stage3 --obs <observation_name> --processes 4
+cfpipe nirspec zfit --obs <observation_name>
 ```
-campfire/
-├── pipeline/          # NIRSpec data reduction pipeline
-│   ├── reduction.py   # Preprocessing & spectrum extraction
-│   ├── fitting.py     # Redshift fitting
-│   └── plots.py       # Visualization tools
-├── web/               # Next.js web application
-│   ├── app/           # App pages & API routes
-│   ├── components/    # React components
-│   └── lib/           # Utilities & database
-├── scripts/           # CLI tools for reduction & deployment
-└── docs/              # Documentation
-```
 
-## Components
+Requires Python 3.12+ and a [CRDS](https://jwst-crds.stsci.edu/) cache. 
+See [`pipeline/README.md`](pipeline/README.md) for full documentation.
 
-### Pipeline (`pipeline/`)
-Local NIRSpec data reduction pipeline using msaexp and the JWST calibration pipeline. Processes raw MSA data through preprocessing, extraction, and redshift fitting stages.
-
-### Web Portal (`web/`)
-Next.js application with:
-- NIRSpec spectroscopy catalog browser
-- Interactive spectrum viewer with redshift fitting
-- NIRCam imaging data access
-- User authentication and access control
-- Bulk download functionality
-
-### Scripts (`scripts/`)
-- `reduce.py` - Run the data reduction pipeline
-- `deploy.py` - Deploy processed data to the web portal (future)
-
-## Development
-
-### Web Application
+### Web Portal
 
 ```bash
 cd web
@@ -47,27 +67,16 @@ npm install
 npm run dev
 ```
 
-### Data Pipeline
+Requires Supabase and R2 credentials in `.env.local`. 
+See [`web/README.md`](web/README.md) for setup.
 
-```bash
-# Run reduction on an observation
-python scripts/reduce.py --obs <observation_name> --extract
+## Contributing
 
-# With preprocessing
-python scripts/reduce.py --obs <observation_name> --preprocess --extract
-```
+Bug reports and feature requests are welcome via [GitHub Issues](../../issues). If you're 
+interested in contributing code, feel free to open a PR — just note that much of the 
+configuration (observation definitions, deployment targets) is specific to our survey, 
+so pipeline and portal improvements are the most useful contributions.
 
-## Deployment
+## License
 
-- **Production**: Deployed from `main` branch via Vercel
-- **Staging**: Deployed from `develop` branch via Vercel
-- **Database**: Supabase PostgreSQL
-- **Storage**: Cloudflare R2 for FITS files
-
-## Configuration
-
-- `pipeline/config.toml` - Pipeline configuration (safe to commit)
-- `pipeline/observations.toml` - Observation definitions
-- `scripts/config.toml` - Deployment credentials (gitignored)
-
-See [CLAUDE.md](./CLAUDE.md) for detailed project documentation.
+[MIT](LICENSE)
