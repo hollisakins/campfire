@@ -6,7 +6,6 @@ body:
     id: component
     attributes:
       label: Component
-      description: Which part of CAMPFIRE is affected?
       options:
         - Web Portal
         - Pipeline (NIRSpec)
@@ -19,44 +18,7 @@ body:
   - type: textarea
     id: description
     attributes:
-      label: Description
-      description: What happened?
+      label: What happened?
+      placeholder: Describe the bug and what you expected to happen. Screenshots, error messages, or logs are helpful if you have them.
     validations:
       required: true
-
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected behavior
-      description: What did you expect to happen?
-    validations:
-      required: true
-
-  - type: textarea
-    id: steps
-    attributes:
-      label: Steps to reproduce
-      description: How can we reproduce this?
-      placeholder: |
-        1. Go to ...
-        2. Click on ...
-        3. See error ...
-    validations:
-      required: false
-
-  - type: textarea
-    id: environment
-    attributes:
-      label: Environment
-      description: Any relevant environment details
-      placeholder: "Browser / OS / pipeline version / Python version"
-    validations:
-      required: false
-
-  - type: textarea
-    id: screenshots
-    attributes:
-      label: Screenshots or logs
-      description: Paste screenshots, error messages, or log output
-    validations:
-      required: false
