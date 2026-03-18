@@ -523,7 +523,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         exponentformat: 'e' as const,
         domain: [0, 0.7],
         anchor: 'x' as const,
-        ...(yAxisRange && { range: yAxisRange }), // Apply model-based range in inspection mode
+        ...(yAxisRange ? { range: yAxisRange, autorange: false } : {}),
       },
       // Y-axis for 2D heatmap (top-left)
       yaxis2: {
