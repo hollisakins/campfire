@@ -9,8 +9,8 @@
 -- work regardless of whether a coordinate search is active.
 
 CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
-  p_program_ids INTEGER[],
-  p_filter_programs INTEGER[] DEFAULT NULL,
+  p_program_slugs TEXT[],
+  p_filter_programs TEXT[] DEFAULT NULL,
   p_fields TEXT[] DEFAULT NULL,
   p_gratings TEXT[] DEFAULT NULL,
   p_gratings_mode TEXT DEFAULT 'any',
@@ -49,7 +49,7 @@ LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
 AS $$
 DECLARE
-  v_filtered_program_ids INTEGER[];
+  v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
@@ -95,15 +95,15 @@ BEGIN
   -- Determine which programs to query
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(
-      SELECT unnest(p_program_ids)
+      SELECT unnest(p_program_slugs)
       INTERSECT
       SELECT unnest(p_filter_programs)
-    ) INTO v_filtered_program_ids;
+    ) INTO v_filtered_program_slugs;
   ELSE
-    v_filtered_program_ids := p_program_ids;
+    v_filtered_program_slugs := p_program_slugs;
   END IF;
 
-  IF v_filtered_program_ids IS NULL OR array_length(v_filtered_program_ids, 1) IS NULL THEN
+  IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN
     RETURN;
   END IF;
 
@@ -128,7 +128,7 @@ BEGIN
         o.field, o.observation, o.ra, o.dec, o.redshift, o.redshift_quality, o.max_snr, o.max_exposure_time
       FROM objects o
       WHERE
-        o.program_id = ANY(v_filtered_program_ids)
+        o.program_slug = ANY(v_filtered_program_slugs)
         AND (
           NOT v_grating_filter_active
           OR (v_gratings_mode = 'any' AND EXISTS (
@@ -266,7 +266,7 @@ BEGIN
         o.field, o.observation, o.ra, o.dec, o.redshift, o.redshift_quality, o.max_snr, o.max_exposure_time
       FROM objects o
       WHERE
-        o.program_id = ANY(v_filtered_program_ids)
+        o.program_slug = ANY(v_filtered_program_slugs)
         AND (
           NOT v_grating_filter_active
           OR (v_gratings_mode = 'any' AND EXISTS (
