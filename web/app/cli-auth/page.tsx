@@ -250,7 +250,7 @@ function CliAuthContent() {
                       }
                     }
                   }}
-                  className="w-full px-4 py-3 text-2xl text-center font-mono tracking-widest border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-4 py-3 text-2xl text-center font-mono tracking-widest bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
                   placeholder="XXXX-XXXX"
                   maxLength={9}
                   disabled={status === 'validating' || status === 'authorizing'}

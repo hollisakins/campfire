@@ -11,6 +11,14 @@
   --primary: #c026d3;
   --primary-hover: #a21caf;
 
+  /* Theme colors — adapt in dark mode */
+  --background: #ffffff;
+  --card: #f8fafc;
+  --card-hover: #f1f5f9;
+  --border: #e2e8f0;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+
   /* Plotly chart colors (read via JavaScript) */
   --plot-bg: #ffffff;
   --plot-paper: #f8fafc;
@@ -44,6 +52,14 @@
   --primary-hover: #f0abfc;
   --background-start-rgb: 15, 23, 42;
   --background-end-rgb: 15, 23, 42;
+
+  /* Theme colors — dark mode */
+  --background: #0f172a;
+  --card: #1e293b;
+  --card-hover: #334155;
+  --border: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
 
   --plot-bg: #0f172a;
   --plot-paper: #1e293b;

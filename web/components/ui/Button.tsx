@@ -14,12 +14,12 @@ export const Button: React.FC<ButtonProps> = ({
   disabled,
   ...props
 }) => {
-  const baseClasses = 'inline-flex items-center justify-center whitespace-nowrap rounded-lg font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-slate-900';
+  const baseClasses = 'inline-flex items-center justify-center whitespace-nowrap rounded-lg font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background';
 
   const variantClasses = {
     primary: 'bg-primary hover:bg-primary-hover text-white focus:ring-primary',
-    secondary: 'border-2 border-border dark:border-slate-600 hover:border-text-secondary dark:hover:border-slate-500 text-text-primary dark:text-slate-100 bg-background dark:bg-slate-800',
-    ghost: 'text-text-primary dark:text-slate-100 hover:bg-card dark:hover:bg-slate-700',
+    secondary: 'border-2 border-border hover:border-text-secondary text-text-primary bg-card',
+    ghost: 'text-text-primary hover:bg-card',
   };
 
   const disabledClasses = 'opacity-50 cursor-not-allowed pointer-events-none';

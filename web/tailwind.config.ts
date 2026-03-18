@@ -13,13 +13,13 @@ const config: Config = {
         primary: 'var(--primary)',
         'primary-hover': 'var(--primary-hover)',
         header: '#475569',       // Dark slate header
-        background: '#ffffff',
-        card: '#f8fafc',         // Light card background
-        'card-hover': '#f1f5f9',
-        border: '#e2e8f0',       // Subtle borders
+        background: 'var(--background)',
+        card: 'var(--card)',
+        'card-hover': 'var(--card-hover)',
+        border: 'var(--border)',
         text: {
-          primary: '#0f172a',
-          secondary: '#64748b',
+          primary: 'var(--text-primary)',
+          secondary: 'var(--text-secondary)',
         }
       },
       fontFamily: {

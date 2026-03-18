@@ -272,7 +272,7 @@ export const ResetPasswordForm: React.FC = () => {
               type={showPassword ? 'text' : 'password'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2 pr-10 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary dark:bg-slate-900"
+              className="w-full px-4 py-2 pr-10 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
               placeholder="Enter new password"
               required
               minLength={8}
@@ -301,7 +301,7 @@ export const ResetPasswordForm: React.FC = () => {
               type={showConfirmPassword ? 'text' : 'password'}
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full px-4 py-2 pr-10 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary dark:bg-slate-900"
+              className="w-full px-4 py-2 pr-10 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
               placeholder="Confirm new password"
               required
               minLength={8}
