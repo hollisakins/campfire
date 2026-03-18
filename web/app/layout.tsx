@@ -51,7 +51,7 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className={`${roboto.variable} ${robotoMono.variable} font-sans antialiased min-h-screen flex flex-col bg-background dark:bg-slate-900 text-text-primary dark:text-slate-100`}>
+      <body className={`${roboto.variable} ${robotoMono.variable} font-sans antialiased min-h-screen flex flex-col bg-background text-text-primary`}>
         <QueryProvider>
           <AuthProvider>
             <ThemeProvider>
