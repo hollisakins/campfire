@@ -439,7 +439,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       visibleLines.forEach((line) => {
         traces.push({
           x: [line.observedWave, line.observedWave],
-          y: yAxisRange ?? [Math.min(...flux), Math.max(...flux)],
+          y: [0, 1],
           type: 'scatter' as const,
           mode: 'lines' as const,
           name: line.name,
@@ -452,7 +452,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           showlegend: true,
           legendgroup: 'emission_lines',
           xaxis: 'x',
-          yaxis: 'y',
+          yaxis: 'y4',
         });
       });
     }
@@ -523,7 +523,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         exponentformat: 'e' as const,
         domain: [0, 0.7],
         anchor: 'x' as const,
-        ...(yAxisRange && { range: yAxisRange }), // Apply model-based range in inspection mode
+        ...(yAxisRange && { range: yAxisRange }),
       },
       // Y-axis for 2D heatmap (top-left)
       yaxis2: {
@@ -540,6 +540,17 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         anchor: 'x2' as const,
         matches: 'y2' as const, // Link range to yaxis2
         showticklabels: false,
+      },
+      // Y-axis for emission lines — hidden overlay on yaxis, fixed [0,1] range
+      // so emission line traces never affect auto-scaling or double-click reset
+      yaxis4: {
+        overlaying: 'y' as const,
+        range: [0, 1],
+        autorange: false,
+        fixedrange: true,
+        showgrid: false,
+        showticklabels: false,
+        visible: false,
       },
       margin: { l: 80, r: 20, t: 50, b: 50 },
       paper_bgcolor: plotColors.paper,
