@@ -6,6 +6,8 @@ import type { FilterOptions } from './filter-params';
 import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { buildFilterParams } from './filter-params';
+import { SPECTRAL_FEATURES, OBJECT_FLAGS, DQ_FLAGS } from '@/lib/flags';
+import type { FlagDef } from '@/lib/flags';
 
 // JWT signing using Web Crypto API
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_DOWNLOAD_URL || 'http://localhost:8787';
@@ -37,6 +39,9 @@ interface CsvRow {
   last_inspected_at: string | null;
   last_inspected_by: string | null;
   distance: number | null;
+  spectral_features: number;
+  object_flags: number;
+  dq_flags: number;
 }
 
 /**
@@ -128,6 +133,13 @@ export async function generateCSV(
 }
 
 /**
+ * Expand a bitmask into individual 0/1 values for each flag definition
+ */
+function expandBitmask(bitmask: number, flags: FlagDef[]): number[] {
+  return flags.map(flag => (bitmask & flag.value) !== 0 ? 1 : 0);
+}
+
+/**
  * Convert flat CSV export rows to CSV string
  */
 function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
@@ -145,6 +157,9 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
     'program_name',
     'last_inspected_at',
     'last_inspected_by',
+    ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
+    ...OBJECT_FLAGS.map(f => `flag_${f.key}`),
+    ...DQ_FLAGS.map(f => `dq_${f.key}`),
   ];
 
   if (includeDistance) {
@@ -174,7 +189,10 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
       escapeCsvValue(row.program_slug),
       escapeCsvValue(row.program_name || ''),
       escapeCsvValue(row.last_inspected_at || ''),
-      escapeCsvValue(row.last_inspected_by || '')
+      escapeCsvValue(row.last_inspected_by || ''),
+      ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
+      ...expandBitmask(row.object_flags, OBJECT_FLAGS),
+      ...expandBitmask(row.dq_flags, DQ_FLAGS),
     );
 
     csvRows.push(values.join(','));
