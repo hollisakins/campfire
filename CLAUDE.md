@@ -73,8 +73,7 @@ Test users: `admin@campfire.dev`, `user@campfire.dev`, `viewer@campfire.dev` (pa
 ### Git Workflow
 
 - **`main`** → production (auto-deploys via Vercel)
-- **`develop`** → staging (auto-deploys to preview URL)
-- Feature branches → preview deployments
+- Feature/fix branches off `main` → preview deployments, merge back to `main` via PR
 
 ### Build Verification
 
