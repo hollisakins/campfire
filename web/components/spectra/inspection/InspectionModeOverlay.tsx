@@ -335,6 +335,20 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     return () => document.removeEventListener('keydown', handler);
   }, [canEdit, inspectionState, handleNext, handlePrev, handleSave, handleClose, handleCycleGrating, showHelp]);
 
+  // Sync slider redshift changes to inspection state (debounced for performance)
+  const sliderDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const handleRedshiftSliderChange = useCallback((value: number) => {
+    clearTimeout(sliderDebounceRef.current);
+    sliderDebounceRef.current = setTimeout(() => {
+      inspectionState.setRedshiftInspected(value.toFixed(4));
+    }, 100);
+  }, [inspectionState]);
+
+  // Clean up slider debounce timer
+  useEffect(() => {
+    return () => clearTimeout(sliderDebounceRef.current);
+  }, []);
+
   // Current redshift for emission lines
   const currentRedshift = inspectionState.currentRedshift ?? 0;
 
@@ -440,6 +454,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
                 initialRedshift={currentRedshift}
                 inspectionMode={true}
                 getCachedData={getCachedGrating}
+                onRedshiftChange={canEdit ? handleRedshiftSliderChange : undefined}
               />
             </div>
           )}

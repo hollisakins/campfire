@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
+import { RotateCcw } from 'lucide-react';
 import type { InspectionState } from '@/lib/hooks/useInspectionState';
 
 interface RedshiftSectionProps {
@@ -23,14 +24,37 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
   const [localRedshift, setLocalRedshift] = useState(state.redshiftInspected);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  // Sync inspection state back to local state on navigation (resetKey change).
-  // Also cancels any pending debounce to prevent stale values leaking across objects.
+  // Track whether the last change was from local input (typing) vs external (slider)
+  const isLocalChangeRef = useRef(false);
+  const [isSliderSync, setIsSliderSync] = useState(false);
+  const sliderSyncTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const prevResetKeyRef = useRef(state.resetKey);
+
+  // Sync inspection state back to local state on navigation (resetKey change)
+  // or external updates (slider). Detects source to apply highlight.
   useEffect(() => {
     clearTimeout(debounceTimerRef.current);
+    const isNavigation = state.resetKey !== prevResetKeyRef.current;
+    prevResetKeyRef.current = state.resetKey;
+
+    if (!isNavigation && !isLocalChangeRef.current && state.redshiftInspected !== '' && state.redshiftInspected !== localRedshift) {
+      // External change (slider sync) — highlight the override input
+      setIsSliderSync(true);
+      clearTimeout(sliderSyncTimerRef.current);
+      sliderSyncTimerRef.current = setTimeout(() => setIsSliderSync(false), 1500);
+    } else if (isNavigation) {
+      setIsSliderSync(false);
+    }
+
+    isLocalChangeRef.current = false;
     setLocalRedshift(state.redshiftInspected);
+  // localRedshift is intentionally excluded — we only want to react to external state changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.redshiftInspected, state.resetKey]);
 
   const handleChange = (value: string) => {
+    isLocalChangeRef.current = true;
+    setIsSliderSync(false);
     setLocalRedshift(value);
     clearTimeout(debounceTimerRef.current);
     debounceTimerRef.current = setTimeout(() => {
@@ -38,9 +62,20 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
     }, 300);
   };
 
-  // Clean up timer on unmount
+  const handleReset = () => {
+    isLocalChangeRef.current = true;
+    setIsSliderSync(false);
+    setLocalRedshift('');
+    clearTimeout(debounceTimerRef.current);
+    state.setRedshiftInspected('');
+  };
+
+  // Clean up timers on unmount
   useEffect(() => {
-    return () => clearTimeout(debounceTimerRef.current);
+    return () => {
+      clearTimeout(debounceTimerRef.current);
+      clearTimeout(sliderSyncTimerRef.current);
+    };
   }, []);
 
   // Expose method to immediately flush pending debounced changes
@@ -90,9 +125,21 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
 
         {/* Override column */}
         <div>
-          <label className="text-xs text-text-secondary dark:text-slate-400 block mb-1">
-            Override:
-          </label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs text-text-secondary dark:text-slate-400">
+              Override:
+            </label>
+            {localRedshift && canEdit && (
+              <button
+                onClick={handleReset}
+                className="flex items-center gap-0.5 text-xs text-primary hover:text-primary-hover transition-colors"
+                title="Reset to auto-fit redshift"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset
+              </button>
+            )}
+          </div>
           <input
             ref={redshiftInputRef}
             type="number"
@@ -101,10 +148,13 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
             onChange={(e) => handleChange(e.target.value)}
             placeholder="auto"
             disabled={!canEdit}
-            className="w-full px-2 py-1.5 text-sm font-mono border border-border
-                       dark:border-slate-600 rounded bg-background dark:bg-slate-700
+            className={`w-full px-2 py-1.5 text-sm font-mono border rounded bg-background dark:bg-slate-700
                        text-text-primary dark:text-slate-100 focus:outline-none
-                       focus:ring-1 focus:ring-primary disabled:opacity-60"
+                       focus:ring-1 focus:ring-primary disabled:opacity-60 transition-all duration-300
+                       ${isSliderSync
+                         ? 'border-amber-400 dark:border-amber-500 ring-1 ring-amber-400/50 dark:ring-amber-500/50'
+                         : 'border-border dark:border-slate-600'
+                       }`}
             title="Press Z to focus"
           />
         </div>
