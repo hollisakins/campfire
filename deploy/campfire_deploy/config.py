@@ -167,6 +167,12 @@ def load_programs() -> dict[str, dict]:
     """
     Load CAMPFIRE program metadata from $CAMPFIRE_ROOT/config/programs.toml.
 
+    File format: each top-level key is the program slug.
+      [capers]
+      program_name = "CAPERS"
+      pi_name = "M. Dickinson"
+      ...
+
     Returns dict keyed by program slug.
     """
     root = os.environ.get('CAMPFIRE_ROOT')
@@ -180,7 +186,7 @@ def load_programs() -> dict[str, dict]:
         sys.exit(1)
 
     data = _load_toml(path)
-    return {p['slug']: p for p in data.get('programs', [])}
+    return {slug: {**info, 'slug': slug} for slug, info in data.items()}
 
 
 def load_observations() -> dict:

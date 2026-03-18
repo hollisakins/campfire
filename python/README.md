@@ -1,6 +1,7 @@
 # CAMPFIRE Python API
 
 Python client for querying and downloading NIRSpec spectroscopic data from the CAMPFIRE archive.
+*Under construction!*
 
 ## Installation
 
@@ -373,22 +374,6 @@ Get emission lines with observed wavelengths at given redshift.
 ##### `EMISSION_LINES`
 
 List of common emission lines with rest wavelengths.
-
-## Development
-
-```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Run tests with coverage
-pytest --cov=campfire
-
-# Format code
-black campfire/
-```
 
 ## License
 

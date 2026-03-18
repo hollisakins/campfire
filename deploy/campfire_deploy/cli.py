@@ -6,7 +6,10 @@ Usage:
     cfdeploy --obs ember_uds_p4 --dry-run
     cfdeploy --obs ember_uds_p4 --supabase-only
     cfdeploy --obs ember_uds_p4 --force-overwrite --auto-approve
-    cfdeploy --obs ember_uds_p4 --no-rgb --no-sed
+    cfdeploy --obs ember_uds_p4 --rgb              # include RGB generation
+    cfdeploy --obs ember_uds_p4 --no-sed
+    cfdeploy --obs ember_uds_p4 --no-shutters       # skip shutter deployment
+    cfdeploy --obs ember_uds_p4 --skip-astrometry   # deploy shutters without correction
     cfdeploy --obs ember_uds_p4 --source-ids 12345 67890
 
     cfdeploy rgb   --obs ember_uds_p4
@@ -94,11 +97,15 @@ def source_ids_option(f):
 @click.option('--supabase-only', is_flag=True, help='Skip R2 uploads, only update Supabase.')
 @click.option('--force-overwrite', is_flag=True, help='Reset inspection data for existing objects.')
 @click.option('--auto-approve', is_flag=True, help='Skip confirmation prompts.')
-@click.option('--no-rgb', is_flag=True, help='Skip RGB image deployment.')
+@click.option('--rgb', is_flag=True, help='Include RGB image deployment (skipped by default).')
 @click.option('--no-sed', is_flag=True, help='Skip SED plot deployment.')
+@click.option('--no-shutters', is_flag=True, help='Skip shutter deployment.')
+@click.option('--skip-astrometry', is_flag=True,
+              help='Skip astrometric correction for shutters (deploy raw MSA positions).')
 @click.pass_context
 def main(ctx, config_path, obs, dry_run, source_ids, supabase_only,
-         force_overwrite, auto_approve, no_rgb, no_sed):
+         force_overwrite, auto_approve, rgb, no_sed, no_shutters,
+         skip_astrometry):
     """Deploy CAMPFIRE pipeline products to Supabase + R2."""
     ctx.ensure_object(dict)
 
@@ -117,8 +124,10 @@ def main(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                 dry_run=dry_run,
                 supabase_only=supabase_only,
                 force_overwrite=force_overwrite,
-                include_rgb=not no_rgb,
+                include_rgb=rgb,
                 include_sed=not no_sed,
+                include_shutters=not no_shutters,
+                skip_astrometry=skip_astrometry,
                 source_ids=list(source_ids) if source_ids else None,
                 auto_approve=auto_approve,
             )

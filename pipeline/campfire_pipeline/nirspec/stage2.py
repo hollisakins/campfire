@@ -817,7 +817,8 @@ def run_stage2b_single_slitlet(
             resample_spec = ResampleSpecStep() # do these need args?
 
         if len(cal_files)==1:
-            raise RuntimeError("Single exposure only, no background subtraction to be done!")
+            log(f"Single exposure only ({os.path.basename(cal_files[0])}), no background subtraction to be done!")
+            return
 
         elif len(cal_files) in [2, 3, 5]:
             # Load cal files as MultiSlitModels, but undo any pathloss corrections

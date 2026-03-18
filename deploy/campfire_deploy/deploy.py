@@ -63,8 +63,10 @@ def deploy_observation(
     dry_run: bool = False,
     supabase_only: bool = False,
     force_overwrite: bool = False,
-    include_rgb: bool = True,
+    include_rgb: bool = False,
     include_sed: bool = True,
+    include_shutters: bool = True,
+    skip_astrometry: bool = False,
     source_ids: list[int] | None = None,
     auto_approve: bool = False,
 ) -> None:
@@ -145,6 +147,15 @@ def deploy_observation(
         print(f"  Program: {program_slug}")
         print(f"  {len(objects)} object(s)")
         print(f"  {len(spectra)} spectrum record(s)")
+        if include_shutters:
+            ecsv_path = discover_shutters_ecsv(obs_dir, obs_name)
+            if ecsv_path:
+                shutters_data = load_shutters_ecsv(ecsv_path)
+                print(f"  {len(shutters_data)} shutter record(s)")
+            else:
+                print("  No shutters ECSV found, would skip")
+        else:
+            print("  Shutters: skipped (--no-shutters)")
         if not force_overwrite:
             print("  (existing objects: pipeline fields only, inspection data preserved)")
         print()
@@ -263,6 +274,34 @@ def deploy_observation(
         refresh_filter_options(sb)
         refresh_programs_overview(sb)
 
+        # Deploy shutters
+        n_shutters = 0
+        if include_shutters:
+            ecsv_path = discover_shutters_ecsv(obs_dir, obs_name)
+            if ecsv_path:
+                shutters_data = load_shutters_ecsv(ecsv_path)
+                n_src = len(set(r['object_id'] for r in shutters_data))
+                print(f"\nDeploying shutters ({len(shutters_data)} records, {n_src} sources)...")
+
+                if not skip_astrometry:
+                    import tomllib
+                    from campfire_deploy.astrometry import correct_shutter_positions
+
+                    imaging_path = resolve_imaging_config()
+                    with open(imaging_path, 'rb') as f:
+                        imaging_config = tomllib.load(f)
+                    n_corrected, n_matches = correct_shutter_positions(
+                        shutters_data, obs_dir, obs_name, field, imaging_config,
+                    )
+                    if n_corrected:
+                        print(f"  Astrometry: corrected {n_corrected} shutters "
+                              f"({n_matches} catalog cross-matches)")
+
+                n_shutters = db_deploy_shutters(sb, obs_name, shutters_data)
+                print(f"  Deployed {n_shutters} shutter records")
+            else:
+                print(f"\nNo shutters ECSV found for {obs_name}, skipping shutter deployment")
+
         print()
         msg = f"Deployed {len(spectra)} spectra from {len(objects)} objects"
         if zfit_paths:
@@ -271,6 +310,8 @@ def deploy_observation(
             msg += f" + {len(rgb_files)} RGB images"
         if sed_files:
             msg += f" + {len(sed_files)} SED plots"
+        if n_shutters:
+            msg += f" + {n_shutters} shutters"
         print(msg)
 
     finally:

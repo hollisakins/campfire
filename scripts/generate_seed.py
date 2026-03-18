@@ -50,7 +50,11 @@ def load_config() -> dict:
 
 
 def load_programs() -> list[dict]:
-    """Load program definitions from $CAMPFIRE_ROOT/config/programs.toml."""
+    """Load program definitions from $CAMPFIRE_ROOT/config/programs.toml.
+
+    File format: each top-level key is the program slug.
+    Returns list of dicts, each with a 'slug' key injected.
+    """
     campfire_root = os.environ.get('CAMPFIRE_ROOT')
     if not campfire_root:
         print("Error: $CAMPFIRE_ROOT environment variable is not set.")
@@ -60,7 +64,7 @@ def load_programs() -> list[dict]:
         print(f"Error: Programs file not found: {programs_path}")
         sys.exit(1)
     data = load_toml(programs_path)
-    return data.get('programs', [])
+    return [{**info, 'slug': slug} for slug, info in data.items()]
 
 
 # === SQL Escaping ===

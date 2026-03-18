@@ -128,7 +128,7 @@ def plot_zfit_results(zfit_file, spec_file=None):
     return plot_file
 
 
-def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list):
+def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list, stkshtrs='N/A'):
     """Draw shutter boundary lines and ordinal labels on an s2d image axis.
 
     Handles both pre-reprocessing (stuck shutters still in SHUTSTA as '0')
@@ -144,6 +144,11 @@ def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list):
         SHUTSTA header string from the s2d file.
     stuck_list : list of int
         1-indexed shutter ordinals flagged as stuck (from TOML).
+    stkshtrs : str
+        STKSHTRS header from the s2d PRIMARY extension.  ``'N/A'``
+        means no stuck shutters were removed (pre-reprocessing);
+        any other value means the file was reprocessed with stuck
+        shutters removed from the metafile.
     """
     from campfire_pipeline.nirspec.stuck_shutters import _compute_shutter_regions
 
@@ -151,7 +156,12 @@ def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list):
     if n_current < 1:
         return
 
-    if '0' in shutsta:
+    # Use the STKSHTRS header to distinguish pre- vs post-reprocessing.
+    # The old heuristic ('0' in shutsta) fails when the source is nodded
+    # onto the stuck shutter, making it appear as 'x' instead of '0'.
+    reprocessed = (stkshtrs != 'N/A')
+
+    if not reprocessed:
         # Pre-reprocessing: all original shutters still in s2d
         n_effective = n_current
         # Region 0 (bottom) = shutter N, region N-1 (top) = shutter 1
@@ -238,6 +248,7 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
         # Look up stuck shutters for this root/source
         stuck_list = []
         shutsta = ''
+        stkshtrs = 'N/A'
         if stuck_shutters:
             stuck_list = stuck_shutters.get(root, {}).get(int(source_id), [])
         if stuck_list:
@@ -245,6 +256,7 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
                 s2d = n1 or n2
                 if s2d:
                     shutsta = fits.getheader(s2d, ext=1).get('SHUTSTA', '')
+                    stkshtrs = fits.getheader(s2d, ext=0).get('STKSHTRS', 'N/A')
                     break
 
         # Shared ZScale normalization across all nods,
@@ -300,7 +312,7 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
                     nrs1 = fits.getdata(nrs1_s2d, ext=1)
                     ax[i,0].imshow(nrs1, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     if stuck_list and shutsta:
-                        _annotate_stuck_shutters(ax[i,0], nrs1.shape[0], shutsta, stuck_list)
+                        _annotate_stuck_shutters(ax[i,0], nrs1.shape[0], shutsta, stuck_list, stkshtrs)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(nrs1, axis=1)
@@ -310,7 +322,7 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
                     nrs2 = fits.getdata(nrs2_s2d, ext=1)
                     ax[i,2].imshow(nrs2, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     if stuck_list and shutsta:
-                        _annotate_stuck_shutters(ax[i,2], nrs2.shape[0], shutsta, stuck_list)
+                        _annotate_stuck_shutters(ax[i,2], nrs2.shape[0], shutsta, stuck_list, stkshtrs)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(nrs2, axis=1)
@@ -359,7 +371,7 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
                     data = fits.getdata(s2d_file, ext=1)
                     ax[i,0].imshow(data, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     if stuck_list and shutsta:
-                        _annotate_stuck_shutters(ax[i,0], data.shape[0], shutsta, stuck_list)
+                        _annotate_stuck_shutters(ax[i,0], data.shape[0], shutsta, stuck_list, stkshtrs)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(data, axis=1)

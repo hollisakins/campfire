@@ -4,7 +4,7 @@
 -- 1. Add column
 -- =============================================================================
 
-ALTER TABLE public.programs ADD COLUMN cycle integer;
+ALTER TABLE public.programs ADD COLUMN IF NOT EXISTS cycle integer;
 
 -- =============================================================================
 -- 2. Recreate materialized view with cycle column
@@ -46,6 +46,8 @@ GRANT SELECT ON public.mv_programs_overview TO authenticated;
 -- =============================================================================
 -- 3. Recreate RPC to include cycle
 -- =============================================================================
+
+DROP FUNCTION IF EXISTS public.get_programs_overview();
 
 CREATE OR REPLACE FUNCTION public.get_programs_overview()
 RETURNS TABLE(
