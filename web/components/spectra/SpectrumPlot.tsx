@@ -89,6 +89,7 @@ interface SpectrumPlotProps {
   initialRedshift?: number | null;
   inspectionMode?: boolean;
   getCachedData?: (fitsPath: string) => CachedSpectrumData | undefined;
+  onRedshiftChange?: (value: number) => void;
 }
 
 export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
@@ -96,7 +97,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   grating,
   initialRedshift,
   inspectionMode = false,
-  getCachedData
+  getCachedData,
+  onRedshiftChange,
 }) => {
   const { spectrumPreferences, accentColorHex } = usePreferences();
   const { resolvedTheme } = useTheme();
@@ -732,6 +734,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
                 if (!isNaN(parsed) && parsed >= 0 && parsed <= 15) {
                   setRedshift(parsed);
                   setRedshiftInput(parsed.toFixed(4));
+                  onRedshiftChange?.(parsed);
                 } else {
                   setRedshiftInput(redshift.toFixed(4));
                 }
@@ -750,6 +753,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
                 const newValue = parseFloat(e.target.value);
                 setRedshift(newValue);
                 setRedshiftInput(newValue.toFixed(4));
+                onRedshiftChange?.(newValue);
               }}
               min={0}
               max={15}
