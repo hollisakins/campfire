@@ -60,6 +60,7 @@ const COLUMN_TO_SERVER_NAME: Record<string, SortColumn> = {
   'redshift_quality': 'redshift_quality',
   'max_snr': 'max_snr',
   'max_exposure_time': 'max_exposure_time',
+  'distance': 'distance',
 };
 
 interface SpectraTableProps {
