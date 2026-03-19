@@ -4,7 +4,7 @@ Centralizes all URL construction and response parsing. Used by both the
 ``Campfire`` client class and the CLI.
 """
 
-from typing import Dict, Iterator, List, Optional, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 from ..exceptions import (
     APIError,
@@ -207,7 +207,12 @@ class APIClient:
         _handle_response_error(response)
         return response.json()
 
-    def fetch_all_objects(self, observations: Optional[List[str]] = None) -> List[dict]:
+    def fetch_all_objects(
+        self,
+        observations: Optional[List[str]] = None,
+        updated_since: Optional[str] = None,
+        on_observation_complete: Optional[Callable[[str, int], None]] = None,
+    ) -> List[dict]:
         """Fetch all objects, handling pagination.
 
         Parameters
@@ -215,11 +220,10 @@ class APIClient:
         observations : list of str, optional
             Observation names to fetch. If None, fetches all accessible
             observations.
-
-        Returns
-        -------
-        list of dict
-            All object records with nested spectra.
+        updated_since : str, optional
+            ISO 8601 timestamp. Only fetch objects updated after this time.
+        on_observation_complete : callable, optional
+            Callback ``(obs_name, obj_count)`` called after each observation.
         """
         if observations is None:
             obs_list = self.get_observations()
@@ -228,11 +232,15 @@ class APIClient:
         all_objects = []
         for obs in observations:
             self._session._ensure_valid_token()
+            obs_count = 0
             offset = 0
             while True:
+                params = {"observations": obs, "limit": 1000, "offset": offset}
+                if updated_since:
+                    params["updated_since"] = updated_since
                 response = self._session.get(
                     "/objects",
-                    params={"observations": obs, "limit": 1000, "offset": offset},
+                    params=params,
                     timeout=60,
                 )
                 if response.status_code != 200:
@@ -240,11 +248,14 @@ class APIClient:
                 data = response.json()
                 objects = data.get("data", [])
                 all_objects.extend(objects)
+                obs_count += len(objects)
                 pagination = data.get("pagination", {})
                 total = pagination.get("total", 0)
                 offset += len(objects)
                 if offset >= total or not objects:
                     break
+            if on_observation_complete:
+                on_observation_complete(obs, obs_count)
         return all_objects
 
     def get_spectrum_data(self, object_id: str, grating: str) -> dict:

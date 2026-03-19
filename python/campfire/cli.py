@@ -357,12 +357,14 @@ def status(base_url: Optional[str]):
 
 
 @cli.command(name="sync")
+@click.option("--full", is_flag=True, help="Force full sync (skip incremental)")
 @click.option("--base-url", default=None, help="API base URL")
-def sync_cmd(base_url: Optional[str]):
-    """Sync the full object catalog from the server (metadata only).
+def sync_cmd(full: bool, base_url: Optional[str]):
+    """Sync the object catalog from the server (metadata only).
 
-    Pulls all accessible observations' metadata into the local database
-    and regenerates CSV catalogs. Does not download FITS files.
+    On first run, pulls the full catalog. On subsequent runs, only
+    fetches objects modified since the last sync (incremental).
+    Use --full to force a complete re-sync.
     """
     base_url = base_url or resolve_base_url()
 
@@ -378,10 +380,15 @@ def sync_cmd(base_url: Optional[str]):
 
     store = _open_store()
 
-    click.echo("Syncing catalog...")
     try:
-        result = sync_metadata(api, store, _meta_dir())
-        click.echo(f"✓ Synced {result['observations']} observations, "
+        result = sync_metadata(
+            api, store, _meta_dir(),
+            show_progress=True,
+            full=full,
+        )
+
+        mode = "Full sync" if full or not result.get("incremental") else "Incremental sync"
+        click.echo(f"✓ {mode}: {result['observations']} observations, "
                     f"{result['objects']} objects, {result['spectra']} spectra")
 
         if result["stale_count"] > 0:

@@ -153,12 +153,20 @@ class Campfire:
     # Sync and Download
     # -------------------------------------------------------------------------
 
-    def sync(self) -> dict:
-        """Sync the full object/spectra catalog from the server.
+    def sync(self, show_progress: bool = False, full: bool = False) -> dict:
+        """Sync the object/spectra catalog from the server.
 
-        Equivalent to ``campfire sync``. Fetches all accessible observations'
-        metadata, upserts into SQLite, and exports CSV catalogs. Does not
-        download FITS files.
+        Equivalent to ``campfire sync``. On first call, fetches the full
+        catalog. On subsequent calls, only fetches objects modified since
+        the last sync (incremental). Use ``full=True`` to force a
+        complete re-sync.
+
+        Parameters
+        ----------
+        show_progress : bool
+            Show a progress bar during fetch.
+        full : bool
+            Force a full sync, ignoring incremental cache.
 
         Returns
         -------
@@ -189,7 +197,10 @@ class Campfire:
             db_path = self._meta_dir / "campfire.db"
             self._local = LocalStore(db_path)
 
-        result = sync_metadata(self._api, self._local, self._meta_dir)
+        result = sync_metadata(
+            self._api, self._local, self._meta_dir,
+            show_progress=show_progress, full=full,
+        )
         return result
 
     def download(

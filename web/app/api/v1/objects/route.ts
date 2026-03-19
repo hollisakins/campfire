@@ -201,6 +201,9 @@ export async function GET(request: NextRequest) {
     const validSortColumns = ['object_id', 'ra', 'dec', 'redshift', 'redshift_quality', 'field', 'observation', 'max_snr', 'max_exposure_time', 'distance'];
     const finalSortColumn = validSortColumns.includes(sortColumn) ? sortColumn : 'object_id';
 
+    // Incremental sync filter (ISO 8601 timestamp)
+    const updatedSince = searchParams.get('updated_since') || null;
+
     // Create Supabase client with service role
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -213,6 +216,7 @@ export async function GET(request: NextRequest) {
       p_sort_direction: sortDirection,
       p_page: page,
       p_page_size: limit,
+      p_updated_since: updatedSince,
     });
 
     if (error) {

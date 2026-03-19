@@ -655,6 +655,17 @@ class LocalStore:
         ).fetchone()
         return row[0] if row and row[0] else None
 
+    def get_max_updated_at(self) -> Optional[str]:
+        """Get the most recent server-side updated_at across all objects.
+
+        Used for incremental sync — avoids client/server clock skew by
+        using the server's own timestamp as the ``updated_since`` marker.
+        """
+        row = self._conn.execute(
+            "SELECT MAX(updated_at) FROM objects"
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
     # -------------------------------------------------------------------------
     # Sync state operations (migrated from SyncState)
     # -------------------------------------------------------------------------

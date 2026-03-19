@@ -16,11 +16,16 @@ from .api.session import create_download_session
 from .exceptions import DownloadError
 
 
-def sync_metadata(api, store, meta_dir: Path) -> dict:
-    """Sync the full object/spectra catalog from the server.
+def sync_metadata(
+    api, store, meta_dir: Path,
+    show_progress: bool = False,
+    full: bool = False,
+) -> dict:
+    """Sync the object/spectra catalog from the server.
 
-    Fetches all accessible observations' metadata, upserts into the local
-    SQLite database, exports CSV catalogs, and detects stale local files.
+    On first sync (or ``full=True``), fetches the entire catalog.
+    On subsequent syncs, only fetches objects modified since the last
+    sync (incremental), using the server-side ``updated_at`` timestamp.
 
     Parameters
     ----------
@@ -30,31 +35,54 @@ def sync_metadata(api, store, meta_dir: Path) -> dict:
         Local database to update.
     meta_dir : Path
         Meta directory for CSV export (e.g., ``data_dir/meta/``).
+    show_progress : bool
+        Show a tqdm progress bar during fetch.
+    full : bool
+        Force a full sync, ignoring incremental cache.
 
     Returns
     -------
     dict
-        Summary with keys: observations, objects, spectra, stale_count, stale_files.
+        Summary with keys: observations, objects, spectra, stale_count,
+        stale_files, incremental.
     """
-    # TODO: Support incremental sync with updated_since parameter once the
-    # API supports it, to avoid re-fetching the full catalog on every sync.
-
     from .db.export import export_catalogs
 
     # 1. Get all accessible observations
     obs_list = api.get_observations()
     obs_names = [o["observation"] for o in obs_list]
 
-    # 2. Fetch all object metadata (paginated)
-    all_objects = api.fetch_all_objects(obs_names)
+    # 2. Determine if incremental sync is possible
+    updated_since = None
+    if not full:
+        updated_since = store.get_max_updated_at()
 
-    # 3. Upsert into SQLite
+    # 3. Fetch object metadata (paginated, with optional progress)
+    callback = None
+    pbar = None
+    if show_progress:
+        pbar = tqdm(total=len(obs_names), unit="obs")
+
+        def callback(obs_name, count):
+            pbar.set_postfix_str(f"{obs_name} ({count})")
+            pbar.update(1)
+
+    all_objects = api.fetch_all_objects(
+        obs_names,
+        updated_since=updated_since,
+        on_observation_complete=callback,
+    )
+
+    if pbar:
+        pbar.close()
+
+    # 4. Upsert into SQLite
     obj_count, spec_count = store.upsert_objects(all_objects)
 
-    # 4. Export CSVs
+    # 5. Export CSVs (always full export from SQLite)
     export_catalogs(store, meta_dir)
 
-    # 5. Detect stale local files
+    # 6. Detect stale local files
     stale = store.get_stale_files()
 
     return {
@@ -63,6 +91,7 @@ def sync_metadata(api, store, meta_dir: Path) -> dict:
         "spectra": spec_count,
         "stale_count": len(stale),
         "stale_files": stale,
+        "incremental": updated_since is not None,
     }
 
 
