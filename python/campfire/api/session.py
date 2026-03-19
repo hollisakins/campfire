@@ -14,7 +14,7 @@ from urllib3.util.retry import Retry
 from ..auth.tokens import TokenManager
 from ..exceptions import AuthenticationError
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Default API URL
 DEFAULT_BASE_URL = "https://campfire.hollisakins.com/api/v1"

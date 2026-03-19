@@ -28,7 +28,7 @@ from .flags import (
 )
 from .models import SpectrumData
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 logger = logging.getLogger(__name__)
 
@@ -354,6 +354,26 @@ class Campfire:
         ...     path = cf.download_spectrum(spectrum['fits_path'])
         ...     print(f"Downloaded to {path}")
         """
+        # Check if file is available locally via sync
+        if self._local and self._local_data_dir:
+            # Try to find by fits_path in the spectra table
+            rows = self._local._conn.execute(
+                "SELECT local_path FROM spectra WHERE fits_path = ? AND local_path IS NOT NULL",
+                (fits_path,),
+            ).fetchall()
+            if rows:
+                local_file = self._local_data_dir / rows[0][0]
+                if local_file.exists():
+                    if output_path is None:
+                        return str(local_file)
+                    # Copy to requested output_path
+                    output_path = Path(output_path)
+                    if not output_path.exists() or overwrite:
+                        import shutil
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(local_file, output_path)
+                    return str(output_path)
+
         # Default output path
         if output_path is None:
             output_path = Path(fits_path).name

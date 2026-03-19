@@ -60,7 +60,7 @@ def _prompt_data_dir() -> None:
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="campfire")
+@click.version_option(version="0.2.0", prog_name="campfire")
 def cli():
     """CAMPFIRE - query, download, and sync NIRSpec spectroscopic data."""
     pass
@@ -333,24 +333,31 @@ def status(base_url: Optional[str]):
         click.echo("\nNo tracked observations. Run: campfire observations")
         return
 
-    from .state import SyncState
+    from .db.store import LocalStore
     from .sync import format_size
 
-    state = SyncState(config.data_dir / ".campfire_meta" / "sync_state.db")
+    db_path = config.data_dir / ".campfire_meta" / "campfire.db"
+    if not db_path.exists():
+        # Fall back to old path for pre-migration installs
+        old_path = config.data_dir / ".campfire_meta" / "sync_state.db"
+        if old_path.exists():
+            db_path = old_path
+
+    store = LocalStore(db_path)
 
     click.echo()
     click.echo("Tracked observations:")
     click.echo(f"  {'OBSERVATION':<25} {'SYNCED':<12} {'SIZE':<12} {'LAST SYNC'}")
 
     for obs in tracked:
-        stats = state.get_observation_stats(obs)
-        last = state.get_last_sync(obs)
+        stats = store.get_observation_stats(obs)
+        last = store.get_last_sync(obs)
         synced = stats["synced_count"]
         size = format_size(stats["total_bytes"])
         last_str = last[:16].replace("T", " ") if last else "never"
         click.echo(f"  {obs:<25} {synced:<12} {size:<12} {last_str}")
 
-    state.close()
+    store.close()
 
     # Catalog info
     meta_dir = config.data_dir / ".campfire_meta"
@@ -406,13 +413,13 @@ def observations(tracked: bool, json_out: bool, base_url: Optional[str]):
         return
 
     # Determine tracking/sync status for each observation
-    from .state import SyncState
+    from .db.store import LocalStore
 
-    state = None
+    store = None
     if config.exists() and config.data_dir.exists():
-        db_path = config.data_dir / ".campfire_meta" / "sync_state.db"
+        db_path = config.data_dir / ".campfire_meta" / "campfire.db"
         if db_path.exists():
-            state = SyncState(db_path)
+            store = LocalStore(db_path)
 
     click.echo()
     click.echo(f"  {'OBSERVATION':<25} {'PROGRAM':<12} {'FIELD':<10} {'OBJECTS':>8} {'SPECTRA':>8} {'SIZE':>10}   STATUS")
@@ -425,8 +432,8 @@ def observations(tracked: bool, json_out: bool, base_url: Optional[str]):
         size = format_size(obs.get("total_size_bytes", 0))
 
         if name in tracked_set:
-            if state:
-                local_stats = state.get_observation_stats(name)
+            if store:
+                local_stats = store.get_observation_stats(name)
                 synced = local_stats["synced_count"]
                 if synced >= n_spec and n_spec > 0:
                     status_str = "tracked (synced)"
@@ -442,8 +449,8 @@ def observations(tracked: bool, json_out: bool, base_url: Optional[str]):
 
         click.echo(f"  {name:<25} {prog:<12} {field:<10} {n_obj:>8} {n_spec:>8} {size:>10}   {status_str}")
 
-    if state:
-        state.close()
+    if store:
+        store.close()
 
 
 @cli.command()
@@ -542,10 +549,11 @@ def remove(obs_name: str, delete: bool, yes: bool, base_url: Optional[str]):
         return
 
     # Check local state
-    from .state import SyncState
+    from .db.store import LocalStore
 
-    state = SyncState(config.data_dir / ".campfire_meta" / "sync_state.db")
-    stats = state.get_observation_stats(obs_name)
+    db_path = config.data_dir / ".campfire_meta" / "campfire.db"
+    store = LocalStore(db_path)
+    stats = store.get_observation_stats(obs_name)
     synced = stats["synced_count"]
 
     if not yes:
@@ -558,8 +566,8 @@ def remove(obs_name: str, delete: bool, yes: bool, base_url: Optional[str]):
             return
 
     config.remove_observation(obs_name)
-    state.remove_observation(obs_name)
-    state.close()
+    store.remove_observation(obs_name)
+    store.close()
 
     if delete:
         obs_dir = config.data_dir / obs_name
@@ -590,14 +598,14 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
     base_url = base_url or resolve_base_url()
 
     from .config import Config
-    from .state import SyncState
+    from .db.store import LocalStore
+    from .db.export import export_catalogs
     from .sync import (
         compute_download_plan,
         sync_observation,
         format_size,
     )
     from .api.session import create_download_session
-    from .catalog import generate_catalogs
 
     config = Config()
     if not config.exists():
@@ -620,7 +628,7 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
             sys.exit(1)
 
     config.ensure_data_dir()
-    state = SyncState(config.data_dir / ".campfire_meta" / "sync_state.db")
+    store = LocalStore(config.data_dir / ".campfire_meta" / "campfire.db")
 
     # Create authenticated session and API client
     try:
@@ -639,7 +647,7 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
     for obs in tracked:
         try:
             manifest = api.fetch_manifest(obs)
-            synced = state.get_synced_files(obs)
+            synced = store.get_synced_files(obs)
             new_files, updated_files, up_to_date = compute_download_plan(manifest, synced)
             to_download = new_files + updated_files
             download_bytes = sum(s.get("file_size") or 0 for s in to_download)
@@ -668,19 +676,19 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
 
     if total_files == 0:
         click.echo("\nAll observations up to date.")
-        state.close()
+        store.close()
         return
 
     if dry_run:
         click.echo(f"\nDry run: would download {total_files} files ({format_size(total_download)})")
-        state.close()
+        store.close()
         return
 
     # Confirm
     if not yes:
         click.echo(f"\nDownload {total_files} files ({format_size(total_download)})?")
         if not click.confirm("Proceed?", default=True):
-            state.close()
+            store.close()
             return
 
     # Execute sync for each observation
@@ -698,7 +706,7 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
         try:
             stats = sync_observation(
                 api, obs,
-                config.data_dir, state,
+                config.data_dir, store,
                 max_workers=workers,
                 download_session=download_session,
                 manifest=plan["manifest"],
@@ -707,15 +715,18 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
         except Exception as e:
             click.echo(f"✗ Failed to sync {obs}: {e}")
 
-    # Regenerate catalogs
+    # Upsert object metadata into SQLite and regenerate CSV catalogs
     click.echo("\nUpdating catalog...")
     try:
-        # Fetch full object data for all tracked observations
         api_session._ensure_valid_token()
         all_objects = api.fetch_all_objects(config.tracked_observations)
 
-        obj_count, spec_count = generate_catalogs(all_objects, config.data_dir)
-        click.echo(f"  Catalog updated: objects.csv ({obj_count} objects), spectra.csv ({spec_count} spectra)")
+        obj_count, spec_count = store.upsert_objects(all_objects)
+        click.echo(f"  Database updated: {obj_count} objects, {spec_count} spectra")
+
+        meta_dir = config.data_dir / ".campfire_meta"
+        csv_obj, csv_spec = export_catalogs(store, meta_dir)
+        click.echo(f"  CSV catalogs: objects.csv ({csv_obj} objects), spectra.csv ({csv_spec} spectra)")
     except Exception as e:
         click.echo(f"  Warning: Failed to update catalog: {e}")
 
@@ -728,7 +739,7 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
         click.echo(f"  Files failed: {total_failed}")
     click.echo(f"  Total size: {format_size(total_download)}")
 
-    state.close()
+    store.close()
 
 
 def main():
