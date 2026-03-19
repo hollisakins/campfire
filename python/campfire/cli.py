@@ -381,6 +381,11 @@ def sync_cmd(full: bool, base_url: Optional[str]):
     store = _open_store()
 
     try:
+        if full or not store.get_max_updated_at():
+            click.echo("Syncing catalog...")
+        else:
+            click.echo("Syncing catalog (incremental)...")
+
         result = sync_metadata(
             api, store, _meta_dir(),
             show_progress=True,
@@ -388,7 +393,7 @@ def sync_cmd(full: bool, base_url: Optional[str]):
         )
 
         mode = "Full sync" if full or not result.get("incremental") else "Incremental sync"
-        click.echo(f"✓ {mode}: {result['observations']} observations, "
+        click.echo(f"✓ {mode} complete: {result['observations']} observations, "
                     f"{result['objects']} objects, {result['spectra']} spectra")
 
         if result["stale_count"] > 0:

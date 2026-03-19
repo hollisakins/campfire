@@ -57,24 +57,37 @@ def sync_metadata(
     if not full:
         updated_since = store.get_max_updated_at()
 
-    # 3. Fetch object metadata (paginated, with optional progress)
-    callback = None
-    pbar = None
-    if show_progress:
-        pbar = tqdm(total=len(obs_names), unit="obs")
+    incremental = updated_since is not None
 
-        def callback(obs_name, count):
-            pbar.set_postfix_str(f"{obs_name} ({count})")
-            pbar.update(1)
+    # 3. Fetch object metadata
+    if incremental:
+        # Single query for changed objects — no per-observation iteration
+        if show_progress:
+            print("Checking for updates...", end="", flush=True)
+        all_objects = api.fetch_all_objects(
+            obs_names,
+            updated_since=updated_since,
+        )
+        if show_progress:
+            print(f" {len(all_objects)} updated objects found.")
+    else:
+        # Full sync: iterate per observation with progress bar
+        callback = None
+        pbar = None
+        if show_progress:
+            pbar = tqdm(total=len(obs_names), unit="obs")
 
-    all_objects = api.fetch_all_objects(
-        obs_names,
-        updated_since=updated_since,
-        on_observation_complete=callback,
-    )
+            def callback(obs_name, count):
+                pbar.set_postfix_str(f"{obs_name} ({count})")
+                pbar.update(1)
 
-    if pbar:
-        pbar.close()
+        all_objects = api.fetch_all_objects(
+            obs_names,
+            on_observation_complete=callback,
+        )
+
+        if pbar:
+            pbar.close()
 
     # 4. Upsert into SQLite
     obj_count, spec_count = store.upsert_objects(all_objects)
@@ -91,7 +104,7 @@ def sync_metadata(
         "spectra": spec_count,
         "stale_count": len(stale),
         "stale_files": stale,
-        "incremental": updated_since is not None,
+        "incremental": incremental,
     }
 
 
