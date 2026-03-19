@@ -1,11 +1,11 @@
 """CAMPFIRE CLI configuration management.
 
-Manages ~/.campfire/config (TOML format) for data directory and tracked observations.
+Manages ~/.campfire/config.toml (TOML format) for API URL and data directory.
 """
 
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -19,7 +19,7 @@ DEFAULT_DATA_DIR = CAMPFIRE_DIR / "data"
 
 
 class Config:
-    """Manages ~/.campfire/config for sync settings and tracked observations."""
+    """Manages ~/.campfire/config.toml for client settings."""
 
     def __init__(self, config_path: Optional[Path] = None):
         self.config_path = config_path or CONFIG_FILE
@@ -27,9 +27,12 @@ class Config:
 
     def _load(self) -> dict:
         if not self.config_path.exists():
-            return {"settings": {}, "observations": {"tracked": []}}
+            return {"settings": {}}
         with open(self.config_path, "rb") as f:
-            return tomllib.load(f)
+            data = tomllib.load(f)
+        # Drop legacy [observations] section if present
+        data.pop("observations", None)
+        return data
 
     def _save(self) -> None:
         """Atomic write: temp file + rename."""
@@ -62,26 +65,6 @@ class Config:
     def data_dir(self, path: Path) -> None:
         self._data.setdefault("settings", {})["data_dir"] = str(path)
         self._save()
-
-    @property
-    def tracked_observations(self) -> List[str]:
-        return list(self._data.get("observations", {}).get("tracked", []))
-
-    def add_observation(self, obs_name: str) -> None:
-        tracked = self.tracked_observations
-        if obs_name not in tracked:
-            tracked.append(obs_name)
-            self._data.setdefault("observations", {})["tracked"] = tracked
-            self._save()
-
-    def remove_observation(self, obs_name: str) -> bool:
-        tracked = self.tracked_observations
-        if obs_name in tracked:
-            tracked.remove(obs_name)
-            self._data.setdefault("observations", {})["tracked"] = tracked
-            self._save()
-            return True
-        return False
 
     def exists(self) -> bool:
         return self.config_path.exists()

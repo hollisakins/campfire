@@ -350,3 +350,147 @@ class TestDistinctValues:
         store.upsert_objects(sample_objects)
         obs = store.get_synced_observations()
         assert obs == ["ember_uds_p4"]
+
+
+class TestStaleness:
+    """Test staleness detection with split hash columns."""
+
+    def test_no_stale_when_hashes_match(self, store, sample_objects):
+        """No stale files when server and local hashes match."""
+        # Set server hash via upsert
+        sample_objects[0]["spectra"][0]["file_hash"] = "sha256:serverhash"
+        store.upsert_objects(sample_objects)
+
+        # Download with matching hash
+        store.mark_synced(
+            10, "ember_uds_p4_100", "ember_uds_p4", "PRISM",
+            "spectra/ember_uds_p4/file.fits", "ember_uds_p4/file.fits",
+            "sha256:serverhash", 1000,
+        )
+
+        stale = store.get_stale_files()
+        assert len(stale) == 0
+
+    def test_stale_when_server_hash_changes(self, store, sample_objects):
+        """Stale file detected when server hash differs from local."""
+        # Initial state: server hash = abc
+        sample_objects[0]["spectra"][0]["file_hash"] = "sha256:abc"
+        store.upsert_objects(sample_objects)
+
+        # Download with hash abc
+        store.mark_synced(
+            10, "ember_uds_p4_100", "ember_uds_p4", "PRISM",
+            "spectra/ember_uds_p4/file.fits", "ember_uds_p4/file.fits",
+            "sha256:abc", 1000,
+        )
+
+        # Server reprocesses — hash changes to xyz
+        sample_objects[0]["spectra"][0]["file_hash"] = "sha256:xyz"
+        store.upsert_objects(sample_objects)
+
+        stale = store.get_stale_files()
+        assert len(stale) == 1
+        assert stale[0]["spectra_id"] == 10
+        assert stale[0]["server_hash"] == "sha256:xyz"
+        assert stale[0]["local_file_hash"] == "sha256:abc"
+
+    def test_not_stale_if_not_downloaded(self, store, sample_objects):
+        """Files not downloaded are not reported as stale."""
+        sample_objects[0]["spectra"][0]["file_hash"] = "sha256:abc"
+        store.upsert_objects(sample_objects)
+        # Don't download — no local_path
+
+        stale = store.get_stale_files()
+        assert len(stale) == 0
+
+    def test_mark_synced_writes_local_file_hash(self, store, sample_objects):
+        """mark_synced stores hash in local_file_hash, not file_hash."""
+        sample_objects[0]["spectra"][0]["file_hash"] = "sha256:server"
+        store.upsert_objects(sample_objects)
+
+        store.mark_synced(
+            10, "ember_uds_p4_100", "ember_uds_p4", "PRISM",
+            "spectra/ember_uds_p4/file.fits", "ember_uds_p4/file.fits",
+            "sha256:local", 1000,
+        )
+
+        # file_hash should still be the server hash
+        row = store._conn.execute(
+            "SELECT file_hash, local_file_hash FROM spectra WHERE spectra_id = 10"
+        ).fetchone()
+        assert row["file_hash"] == "sha256:server"
+        assert row["local_file_hash"] == "sha256:local"
+
+
+class TestV3Migration:
+    """Test schema v2 to v3 migration."""
+
+    def test_migrates_v2_to_v3(self, tmp_path):
+        """V2 database gets local_file_hash column added."""
+        import sqlite3
+
+        db_path = tmp_path / "campfire.db"
+
+        # Create a v2 database (no local_file_hash column)
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO _meta VALUES ('schema_version', '2');
+
+            CREATE TABLE objects (
+                id INTEGER PRIMARY KEY,
+                object_id TEXT UNIQUE NOT NULL,
+                program_slug TEXT, program_name TEXT,
+                field TEXT, observation TEXT,
+                ra REAL, dec REAL,
+                redshift REAL, redshift_auto REAL, redshift_inspected REAL,
+                redshift_quality INTEGER DEFAULT 0,
+                spectral_features INTEGER DEFAULT 0,
+                object_flags INTEGER DEFAULT 0,
+                dq_flags INTEGER DEFAULT 0,
+                max_snr REAL, max_exposure_time REAL,
+                last_inspected_at TEXT, created_at TEXT, updated_at TEXT,
+                _synced_at TEXT
+            );
+
+            CREATE TABLE spectra (
+                spectra_id INTEGER PRIMARY KEY,
+                object_id TEXT NOT NULL,
+                grating TEXT NOT NULL,
+                fits_path TEXT, file_hash TEXT, file_size INTEGER,
+                signal_to_noise REAL, exposure_time REAL,
+                reduction_version TEXT,
+                local_path TEXT, synced_at TEXT, _synced_at TEXT
+            );
+
+            -- Simulate a downloaded file (v2 style: file_hash = download hash)
+            INSERT INTO objects (id, object_id, observation) VALUES (1, 'obj1', 'obs1');
+            INSERT INTO spectra (spectra_id, object_id, grating, fits_path,
+                                 file_hash, local_path, synced_at)
+            VALUES (10, 'obj1', 'PRISM', 'spectra/obs1/file.fits',
+                    'sha256:downloadhash', 'obs1/file.fits', '2026-01-01');
+
+            CREATE TABLE sync_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observation TEXT NOT NULL, started_at TEXT NOT NULL,
+                completed_at TEXT, files_downloaded INTEGER DEFAULT 0,
+                files_skipped INTEGER DEFAULT 0, bytes_downloaded INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'in_progress'
+            );
+        """)
+        conn.close()
+
+        # Open with LocalStore — should auto-migrate
+        store = LocalStore(db_path)
+
+        # Verify local_file_hash was populated from old file_hash
+        row = store._conn.execute(
+            "SELECT file_hash, local_file_hash FROM spectra WHERE spectra_id = 10"
+        ).fetchone()
+        assert row["local_file_hash"] == "sha256:downloadhash"
+
+        # Verify schema version is 3
+        version = store._get_schema_version()
+        assert version == 3
+
+        store.close()

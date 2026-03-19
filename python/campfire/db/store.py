@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 
 # Schema version — bump when tables change
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Column lists used by both store and export
 OBJECT_COLUMNS = [
@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS spectra (
     exposure_time REAL,
     reduction_version TEXT,
     local_path TEXT,
+    local_file_hash TEXT,
     synced_at TEXT,
     _synced_at TEXT
 );
@@ -160,7 +161,7 @@ class LocalStore:
         has_new_schema = cursor.fetchone() is not None
 
         if has_old_schema and not has_new_schema:
-            # Migrate from v1 (sync-only) to v2 (full catalog)
+            # Migrate from v1 (sync-only) to v3 (full catalog + hash split)
             self._migrate_from_v1()
         elif not has_new_schema:
             # Fresh install
@@ -170,7 +171,21 @@ class LocalStore:
                 (str(SCHEMA_VERSION),),
             )
             self._conn.commit()
-        # else: already has new schema, nothing to do
+        else:
+            # Existing schema — check if migration needed
+            version = self._get_schema_version()
+            if version < 3:
+                self._migrate_from_v2()
+
+    def _get_schema_version(self) -> int:
+        """Get current schema version from _meta table."""
+        try:
+            row = self._conn.execute(
+                "SELECT value FROM _meta WHERE key = 'schema_version'"
+            ).fetchone()
+            return int(row[0]) if row else 1
+        except Exception:
+            return 1
 
     def _migrate_from_v1(self) -> None:
         """Migrate from old synced_files-only schema to full catalog schema."""
@@ -192,6 +207,29 @@ class LocalStore:
         self._conn.execute("DROP TABLE IF EXISTS synced_files")
 
         # Mark schema version
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
+        self._conn.commit()
+
+    def _migrate_from_v2(self) -> None:
+        """Migrate from v2 to v3: add local_file_hash column."""
+        # Add the new column
+        try:
+            self._conn.execute(
+                "ALTER TABLE spectra ADD COLUMN local_file_hash TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        # Copy file_hash to local_file_hash for already-downloaded files
+        # (in v2, mark_synced wrote the download hash into file_hash)
+        self._conn.execute("""
+            UPDATE spectra SET local_file_hash = file_hash
+            WHERE local_path IS NOT NULL AND file_hash IS NOT NULL
+        """)
+
         self._conn.execute(
             "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -292,7 +330,7 @@ class LocalStore:
                         object_id=excluded.object_id,
                         grating=excluded.grating,
                         fits_path=excluded.fits_path,
-                        file_hash=COALESCE(excluded.file_hash, spectra.file_hash),
+                        file_hash=excluded.file_hash,
                         file_size=COALESCE(excluded.file_size, spectra.file_size),
                         signal_to_noise=excluded.signal_to_noise,
                         exposure_time=excluded.exposure_time,
@@ -604,39 +642,42 @@ class LocalStore:
     # -------------------------------------------------------------------------
 
     def get_synced_files(self, observation: str) -> Dict[int, dict]:
-        """Return {spectra_id: row_dict} for locally synced files in an observation."""
+        """Return {spectra_id: row_dict} for locally downloaded files in an observation.
+
+        The returned dicts include ``local_file_hash`` (the hash of the file on
+        disk) which ``compute_download_plan`` compares against the manifest's
+        ``file_hash`` to detect updated files.
+        """
         rows = self._conn.execute("""
             SELECT s.spectra_id, s.object_id, s.grating, s.fits_path,
-                   s.local_path, s.file_hash, s.file_size, s.synced_at
+                   s.local_path, s.local_file_hash, s.file_hash,
+                   s.file_size, s.synced_at
             FROM spectra s
             JOIN objects o ON s.object_id = o.object_id
             WHERE o.observation = ? AND s.local_path IS NOT NULL
         """, (observation,)).fetchall()
 
-        # Also check for spectra not yet linked to objects (legacy data)
-        legacy_rows = self._conn.execute("""
-            SELECT spectra_id, object_id, grating, fits_path,
-                   local_path, file_hash, file_size, synced_at
-            FROM spectra
-            WHERE local_path IS NOT NULL
-            AND object_id IN (
-                SELECT object_id FROM spectra
-                WHERE spectra_id NOT IN (
-                    SELECT spectra_id FROM spectra s2
-                    JOIN objects o ON s2.object_id = o.object_id
-                    WHERE o.observation = ?
-                )
-            )
-        """, (observation,)).fetchall()
-
         result = {}
         for row in rows:
-            result[row["spectra_id"]] = dict(row)
-        # For legacy: match by checking if the local_path starts with the observation
+            d = dict(row)
+            # compute_download_plan compares local["file_hash"] against manifest
+            # After the v3 schema split, the download hash is in local_file_hash
+            d["file_hash"] = d.get("local_file_hash")
+            result[row["spectra_id"]] = d
+
+        # Also check for spectra with local_path matching the observation dir
+        # (legacy data from before full catalog sync)
+        legacy_rows = self._conn.execute("""
+            SELECT spectra_id, object_id, grating, fits_path,
+                   local_path, local_file_hash, file_hash, file_size, synced_at
+            FROM spectra
+            WHERE local_path IS NOT NULL AND local_path LIKE ?
+        """, (f"{observation}/%",)).fetchall()
         for row in legacy_rows:
-            lp = row["local_path"] or ""
-            if lp.startswith(f"{observation}/"):
-                result[row["spectra_id"]] = dict(row)
+            if row["spectra_id"] not in result:
+                d = dict(row)
+                d["file_hash"] = d.get("local_file_hash")
+                result[row["spectra_id"]] = d
 
         return result
 
@@ -653,18 +694,19 @@ class LocalStore:
     ) -> None:
         """Record that a file has been downloaded locally.
 
-        Updates the spectra row with local_path and synced_at if it exists,
-        or inserts a new row if the spectra hasn't been cataloged yet.
+        The ``file_hash`` parameter is stored as ``local_file_hash`` — the
+        hash of the downloaded file on disk. The server-authoritative
+        ``file_hash`` column is only set by ``upsert_objects()``.
         """
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute("""
             INSERT INTO spectra
                 (spectra_id, object_id, grating, fits_path, local_path,
-                 file_hash, file_size, synced_at)
+                 local_file_hash, file_size, synced_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(spectra_id) DO UPDATE SET
                 local_path = excluded.local_path,
-                file_hash = excluded.file_hash,
+                local_file_hash = excluded.local_file_hash,
                 file_size = excluded.file_size,
                 synced_at = excluded.synced_at
         """, (
@@ -672,6 +714,26 @@ class LocalStore:
             local_path, file_hash, file_size, now,
         ))
         self._conn.commit()
+
+    def get_stale_files(self) -> List[dict]:
+        """Return locally downloaded files whose server hash differs from local.
+
+        After a metadata sync, the server's ``file_hash`` may have changed
+        (e.g., reprocessed data). This method finds files where the local
+        copy is outdated.
+        """
+        rows = self._conn.execute("""
+            SELECT s.spectra_id, s.object_id, s.grating, s.fits_path,
+                   s.local_path, s.file_hash AS server_hash,
+                   s.local_file_hash, o.observation
+            FROM spectra s
+            JOIN objects o ON s.object_id = o.object_id
+            WHERE s.local_path IS NOT NULL
+              AND s.file_hash IS NOT NULL
+              AND s.local_file_hash IS NOT NULL
+              AND s.file_hash != s.local_file_hash
+        """).fetchall()
+        return [dict(r) for r in rows]
 
     def remove_observation(self, observation: str) -> int:
         """Remove sync state for an observation (nullify local_path)."""

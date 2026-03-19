@@ -121,19 +121,19 @@ class TestLocalFirstQueryObjects:
         assert len(results) == 1
         assert results[0]["object_id"] == "test_obj_100"
 
-    def test_falls_back_to_remote(self, local_client):
-        """query_objects falls back to API for non-local observations."""
-        client, mock_session, _, _ = local_client
+    def test_queries_local_for_unknown_obs(self, local_client):
+        """query_objects queries local store even for unknown observations.
 
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"data": [], "pagination": {"total": 0}}
-        mock_session.get.return_value = mock_response
+        After full catalog sync, local store has the complete catalog.
+        Unknown observations simply return no results from SQLite.
+        """
+        client, mock_session, _, _ = local_client
 
         results = client.query_objects(observations=["unknown_obs"])
 
-        # Should have hit the API
-        mock_session.get.assert_called()
+        # Should NOT have hit the API — local store handles it
+        mock_session.get.assert_not_called()
+        assert len(results) == 0
 
     def test_remote_flag_forces_api(self, local_client):
         """remote=True bypasses local store."""

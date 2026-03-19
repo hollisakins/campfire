@@ -51,37 +51,40 @@ Generate API keys from your [Profile page](/profile/api-keys). Keys start with `
 
 ## Two Ways to Access Data
 
-### CLI: Bulk Download and Local Catalog
+### CLI: Catalog Sync + Bulk Download
 
-For astronomers who want to download data and work with their own tools. The CLI maintains a local mirror of tracked observations with FITS files and CSV catalogs.
+For astronomers who want to download data and work with their own tools.
 
 ```bash
-campfire add ember_uds_p4         # Track an observation
-campfire sync                      # Download all tracked data
+campfire sync                         # Pull full catalog (metadata only, fast)
+campfire download --obs ember_uds_p4  # Download FITS files
 ```
 
-After syncing, you have:
-- FITS files organized by observation in `~/.campfire/data/`
-- `objects.csv` and `spectra.csv` catalogs ready for pandas/astropy
-- A SQLite database for the Python client to query locally
+After syncing, you have `objects.csv` and `spectra.csv` catalogs ready for pandas/astropy. FITS downloads are separate — download only what you need.
 
 See the [CLI Reference](/docs/api/cli) for the full command reference.
 
 ### Python Client: Interactive Notebook Workflows
 
-For exploratory analysis, filtering, and plotting. The client automatically uses locally synced data when available, falling back to the remote API.
+For exploratory analysis, filtering, and plotting. The client queries the local catalog after sync, falling back to the remote API.
 
 ```python
 from campfire import Campfire
 
 cf = Campfire()
+cf.sync()  # Pull full catalog
+
+# Query locally — instant, no network
 results = cf.query_objects(
     redshift_range=(3.0, 6.0),
     redshift_quality=[2, 3]
 )
 
+# Download FITS for specific observations
+cf.download(observations=['ember_uds_p4'], gratings=['PRISM'])
+
+# Open spectrum (local FITS if downloaded, API fallback)
 spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
-print(spec.wavelength.shape, spec.flux.shape)
 ```
 
 See the [Python Client](/docs/api/python-client) for the full API reference.
@@ -91,12 +94,13 @@ See the [Python Client](/docs/api/python-client) for the full API reference.
 ## Architecture
 
 ```
-campfire sync (CLI)
-  Downloads FITS files + populates local SQLite database + exports CSVs
+campfire sync       → full catalog into SQLite + CSVs (no FITS, fast)
+campfire download   → FITS files by observation/program/field/grating
 
-Campfire() (Python client)
-  Queries local SQLite when data is synced, falls back to remote API
-  Opens FITS files from local disk when available
+Campfire.sync()     → same as campfire sync
+Campfire.download() → same as campfire download
+Campfire.query_objects() → queries local SQLite (instant after sync)
+Campfire.open_spectrum() → local FITS if downloaded, API fallback
 ```
 
-The CLI and Python client share the same local data store. When you `campfire sync`, the Python client automatically detects the local data and serves queries from SQLite instead of hitting the remote API. This means instant queries over your synced catalog.
+The CLI and Python client share the same local data store at `~/.campfire/data/`. Metadata sync is separate from FITS downloads — sync the catalog often (it's fast), download spectra only when you need them.

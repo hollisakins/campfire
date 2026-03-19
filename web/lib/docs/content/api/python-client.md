@@ -46,6 +46,52 @@ print(cf.last_synced)    # Timestamp of last sync
 
 ---
 
+## Sync and Download
+
+### `sync()`
+
+Sync the full object/spectra catalog from the server. Equivalent to `campfire sync`. Metadata only — no FITS files.
+
+```python
+result = cf.sync()
+# {'observations': 8, 'objects': 2450, 'spectra': 7200, 'stale_count': 0}
+```
+
+After syncing, all queries via `query_objects()` are served from the local SQLite database.
+
+### `download()`
+
+Download FITS files. Equivalent to `campfire download`. Requires a prior `sync()`.
+
+```python
+cf.download(observations=['ember_uds_p4'])                    # By observation
+cf.download(programs=['EMBER-UDS'], gratings=['PRISM'])        # By program + grating
+cf.download(fields=['COSMOS'])                                 # By field
+cf.download(stale_only=True)                                   # Re-download updated files
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `observations` | list[str] | None | Filter by observation name |
+| `programs` | list[str] | None | Filter by program slug |
+| `fields` | list[str] | None | Filter by field |
+| `gratings` | list[str] | None | Filter by grating |
+| `stale_only` | bool | False | Only re-download changed files |
+| `max_workers` | int | 4 | Parallel download workers |
+
+### Staleness Detection
+
+When spectra are reprocessed on the server, `sync()` detects the change by comparing server-side file hashes against your local copies:
+
+```python
+result = cf.sync()
+if result['stale_count'] > 0:
+    print(f"{result['stale_count']} files updated on server")
+    cf.download(stale_only=True)
+```
+
+---
+
 ## Querying Objects
 
 ### `query_objects()`

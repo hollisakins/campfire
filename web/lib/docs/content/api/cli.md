@@ -1,86 +1,87 @@
 # CLI Reference
 
-The `campfire` command-line tool manages authentication, bulk downloads, and local data. After installing the Python package, the `campfire` command is available in your terminal.
+The `campfire` command-line tool manages authentication, catalog sync, and FITS downloads. After installing the Python package, the `campfire` command is available in your terminal.
 
 ## Quick Start
 
 ```bash
-campfire login                     # Authenticate
-campfire add ember_uds_p4          # Track an observation
-campfire sync                      # Download everything
-campfire status                    # Check what you have
+campfire login                        # Authenticate
+campfire sync                         # Sync the full catalog (metadata only)
+campfire download --obs ember_uds_p4  # Download FITS files
+campfire status                       # Check catalog and download status
 ```
 
 ---
 
-## Observation Management
-
-### `campfire observations`
-
-List all available observations with stats.
-
-```bash
-campfire observations              # List all observations
-campfire observations --tracked    # Only show tracked observations
-campfire observations --json       # JSON output for scripting
-```
-
-**Output:**
-
-```
-  OBSERVATION               PROGRAM      FIELD       OBJECTS  SPECTRA       SIZE   STATUS
-  ember_uds_p4              EMBER-UDS    UDS             450     1350     2.1 GB   tracked (synced)
-  capers_cosmos_p1          CAPERS       COSMOS          320      960     1.5 GB   not tracked
-```
-
-### `campfire add`
-
-Track observations for syncing. Tracked observations are downloaded when you run `campfire sync`.
-
-```bash
-campfire add ember_uds_p4                    # Track one observation
-campfire add ember_uds_p4 capers_cosmos_p1   # Track multiple
-campfire add --all                            # Track everything
-```
-
-### `campfire remove`
-
-Stop tracking an observation.
-
-```bash
-campfire remove ember_uds_p4                 # Stop tracking (keep files)
-campfire remove ember_uds_p4 --delete        # Stop tracking and delete files
-campfire remove ember_uds_p4 --delete --yes  # Skip confirmation
-```
-
----
-
-## Syncing Data
+## Catalog Sync
 
 ### `campfire sync`
 
-Download and update all tracked observations. Sync is incremental: only new or changed files are downloaded.
+Sync the full object/spectra catalog from the server. This is a **metadata-only** operation — it pulls all accessible observations' metadata into a local SQLite database and regenerates CSV catalogs. No FITS files are downloaded.
 
 ```bash
-campfire sync                                # Download everything
-campfire sync --dry-run                      # Show what would be downloaded
-campfire sync --observation ember_uds_p4     # Sync specific observation
-campfire sync --workers 8                    # Use 8 parallel download workers
-campfire sync --yes                          # Skip confirmation prompt
+campfire sync
 ```
 
-**What sync does:**
+**What it does:**
 
-1. Fetches a download manifest for each tracked observation
-2. Compares against your local files (using SHA-256 hashes)
-3. Downloads new and updated FITS files in parallel
-4. Updates the local metadata database (SQLite)
-5. Regenerates `objects.csv` and `spectra.csv` catalogs
+1. Fetches all objects and spectra metadata you have access to
+2. Upserts into the local SQLite database
+3. Exports `objects.csv` and `spectra.csv` catalogs
+4. Detects stale local files (FITS files that have been reprocessed on the server)
 
 **Output:**
 
 ```
-Checking tracked observations...
+Syncing catalog...
+✓ Synced 8 observations, 2450 objects, 7200 spectra
+
+⚠ 3 local file(s) have been updated on the server.
+  Run: campfire download --stale
+```
+
+Sync is fast and safe to run often — it refreshes inspection results, redshifts, flags, and any new objects added to the database.
+
+---
+
+## Downloading FITS Files
+
+### `campfire download`
+
+Download FITS spectrum files. Requires a prior `campfire sync` to populate the local catalog.
+
+```bash
+campfire download --obs ember_uds_p4              # By observation
+campfire download --program EMBER-UDS             # By program
+campfire download --field COSMOS                  # By field
+campfire download --program EMBER-UDS --grating PRISM  # With grating filter
+campfire download --stale                         # Re-download reprocessed files
+campfire download --all                           # Everything accessible
+campfire download --obs ember_uds_p4 --dry-run    # Preview without downloading
+```
+
+At least one filter is required (or `--all` / `--stale`).
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--obs NAME` | Download by observation name (repeatable) |
+| `--program NAME` | Download by program slug (repeatable) |
+| `--field NAME` | Download by field name (repeatable) |
+| `--grating NAME` | Filter by grating type (repeatable) |
+| `--stale` | Re-download files updated on the server |
+| `--all` | Download everything accessible |
+| `--workers N` | Parallel download workers (default: 4) |
+| `--yes` | Skip confirmation prompt |
+| `--dry-run` | Show plan without downloading |
+
+Downloads are incremental — only new or changed files are downloaded. Files are verified with SHA-256 hashes.
+
+**Output:**
+
+```
+Checking files...
   ember_uds_p4: 12 new (450.2 MB)
   capers_cosmos_p1: up to date
 
@@ -89,17 +90,40 @@ Proceed? [Y/n]: y
 
 ember_uds_p4: 100%|██████████| 12/12 [00:45<00:00]
 
-Updating catalog...
-  Catalog updated: objects.csv (770 objects), spectra.csv (2310 spectra)
-
-✓ Sync complete
+✓ Download complete
   Files downloaded: 12
   Total size: 450.2 MB
 ```
 
+---
+
+## Observations
+
+### `campfire observations`
+
+List all available observations with stats and local download status.
+
+```bash
+campfire observations              # List all observations
+campfire observations --json       # JSON output for scripting
+```
+
+**Output:**
+
+```
+  OBSERVATION               PROGRAM      FIELD       OBJECTS  SPECTRA       SIZE   LOCAL
+  ember_uds_p4              EMBER-UDS    UDS             450     1350     2.1 GB   1350 files (complete)
+  capers_cosmos_p1          CAPERS       COSMOS          320      960     1.5 GB   480/960 files
+  rubies_egs_p2             RUBIES       EGS             200      600     900 MB
+```
+
+---
+
+## Status
+
 ### `campfire status`
 
-Check credentials, tracked observations, and disk usage.
+Check credentials, catalog, and download status.
 
 ```bash
 campfire status
@@ -112,34 +136,54 @@ campfire status
   User: user@example.com
 
 Data directory: /Users/you/.campfire/data
+Catalog: 8 observations (last synced 2026-03-15 14:30)
 
-Tracked observations:
-  OBSERVATION               SYNCED       SIZE         LAST SYNC
-  ember_uds_p4              1350         2.1 GB       2026-03-15 14:30
-  capers_cosmos_p1          960          1.5 GB       2026-03-14 09:15
+  OBSERVATION               DOWNLOADED     SIZE
+  ember_uds_p4              1350           2.1 GB
+  capers_cosmos_p1          480            750 MB
 
-Catalog: objects.csv (770 objects), spectra.csv (2310 spectra)
-Disk usage: 3.6 GB
+⚠ 3 local file(s) updated on server. Run: campfire download --stale
+
+Disk usage: 2.9 GB
 ```
+
+---
+
+## Authentication
+
+### `campfire login`
+
+Authenticate with CAMPFIRE.
+
+```bash
+campfire login              # Browser-based OAuth (recommended)
+campfire login --api-key    # Manual API key paste (headless environments)
+```
+
+### Other auth commands
+
+| Command | Description |
+|---------|-------------|
+| `campfire logout` | Remove stored credentials |
+| `campfire whoami` | Show current authenticated user |
 
 ---
 
 ## Local Data Layout
 
-After syncing, your data directory looks like:
+After syncing and downloading, your data directory looks like:
 
 ```
 ~/.campfire/
 ├── credentials              # OAuth tokens or API key (0600 permissions)
-├── config.toml              # Settings (base_url, data_dir, tracked observations)
+├── config.toml              # Settings (base_url, data_dir)
 └── data/
     ├── .campfire_meta/
-    │   ├── campfire.db      # SQLite database (objects + spectra metadata)
+    │   ├── campfire.db      # SQLite database (full catalog + download tracking)
     │   ├── objects.csv      # Object catalog (for pandas/astropy)
     │   └── spectra.csv      # Spectra catalog (for pandas/astropy)
     ├── ember_uds_p4/
     │   ├── ember_uds_p4_PRISM_CLEAR_123456_spec.fits
-    │   ├── ember_uds_p4_G395M_F290LP_123456_spec.fits
     │   └── ...
     └── capers_cosmos_p1/
         └── ...
@@ -147,7 +191,7 @@ After syncing, your data directory looks like:
 
 ### CSV Catalogs
 
-The CSV catalogs are regenerated after each sync. They're designed for direct use with astropy or pandas:
+The CSV catalogs are regenerated after each `campfire sync`:
 
 ```python
 from astropy.table import Table
@@ -155,9 +199,7 @@ from astropy.table import Table
 objects = Table.read('~/.campfire/data/.campfire_meta/objects.csv')
 spectra = Table.read('~/.campfire/data/.campfire_meta/spectra.csv')
 
-# Filter locally
 high_z = objects[objects['redshift'] > 3.0]
-print(f"Found {len(high_z)} high-z objects")
 ```
 
 **objects.csv columns:**
@@ -187,8 +229,6 @@ print(f"Found {len(high_z)} high-z objects")
 | `object_id` | str | Parent object ID |
 | `grating` | str | Grating (PRISM, G140M, G235M, G395M, etc.) |
 | `fits_path` | str | Remote FITS file path |
-| `file_hash` | str | SHA-256 hash for integrity |
-| `file_size` | int | File size in bytes |
 | `signal_to_noise` | float | Spectrum S/N |
 | `local_path` | str | Relative path to local FITS file |
 
@@ -196,25 +236,8 @@ print(f"Found {len(high_z)} high-z objects")
 
 ## Global Options
 
-All commands support these options:
-
 | Option | Description |
 |--------|-------------|
 | `--base-url URL` | Override API URL (for development) |
 | `--version` | Show version |
 | `--help` | Show help |
-
-## Configuration
-
-Settings are stored in `~/.campfire/config.toml`:
-
-```toml
-[settings]
-base_url = "https://campfire.hollisakins.com/api/v1"
-data_dir = "/Users/you/.campfire/data"
-
-[observations]
-tracked = ["ember_uds_p4", "capers_cosmos_p1"]
-```
-
-You can edit this file directly or use the CLI commands to manage it.

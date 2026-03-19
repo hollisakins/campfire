@@ -207,19 +207,24 @@ class APIClient:
         _handle_response_error(response)
         return response.json()
 
-    def fetch_all_objects(self, observations: List[str]) -> List[dict]:
-        """Fetch all objects for given observations, handling pagination.
+    def fetch_all_objects(self, observations: Optional[List[str]] = None) -> List[dict]:
+        """Fetch all objects, handling pagination.
 
         Parameters
         ----------
-        observations : list of str
-            Observation names to fetch objects for.
+        observations : list of str, optional
+            Observation names to fetch. If None, fetches all accessible
+            observations.
 
         Returns
         -------
         list of dict
             All object records with nested spectra.
         """
+        if observations is None:
+            obs_list = self.get_observations()
+            observations = [o["observation"] for o in obs_list]
+
         all_objects = []
         for obs in observations:
             self._session._ensure_valid_token()

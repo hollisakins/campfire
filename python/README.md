@@ -1,6 +1,6 @@
 # CAMPFIRE Python Client
 
-Python package for querying, downloading, and analyzing NIRSpec spectroscopic data from the CAMPFIRE archive. Includes a **CLI** for bulk data management and a **Python client** for interactive analysis.
+Python package for querying, downloading, and analyzing NIRSpec spectroscopic data from the CAMPFIRE archive. Includes a **CLI** for catalog sync and bulk downloads, and a **Python client** for interactive analysis.
 
 ## Installation
 
@@ -19,39 +19,66 @@ campfire login              # Browser-based OAuth (recommended)
 campfire login --api-key    # Paste an API key (for headless systems)
 ```
 
-## CLI: Bulk Download
+## CLI Workflow
 
-Track observations and maintain a local mirror with FITS files and CSV catalogs.
+### 1. Sync the catalog
 
 ```bash
-campfire observations           # List available observations
-campfire add ember_uds_p4       # Track an observation
-campfire sync                   # Download all tracked data
-campfire status                 # Check sync status and disk usage
+campfire sync               # Pulls full object/spectra metadata (~seconds)
 ```
 
-After syncing, your data is in `~/.campfire/data/`:
-- FITS files organized by observation
-- `objects.csv` and `spectra.csv` catalogs for pandas/astropy
-- SQLite database (used automatically by the Python client)
+This downloads the complete catalog into a local SQLite database and exports `objects.csv` + `spectra.csv`. No FITS files are downloaded. Safe to run often — refreshes inspection results, redshifts, and flags.
 
-## Python Client: Interactive Analysis
+### 2. Download spectra
 
-The `Campfire` class queries locally synced data when available, falling back to the remote API.
+```bash
+campfire download --obs ember_uds_p4              # By observation
+campfire download --program EMBER-UDS             # By program
+campfire download --field COSMOS --grating PRISM   # By field + grating
+campfire download --stale                          # Re-download reprocessed files
+campfire download --all                            # Everything accessible
+```
+
+### 3. Check status
+
+```bash
+campfire status             # Credentials, catalog stats, downloads, disk usage
+campfire observations       # List all observations with download status
+```
+
+### CSV-only workflow
+
+After `campfire sync`, the CSV catalogs are ready for pandas/astropy:
 
 ```python
-from campfire import Campfire
+from astropy.table import Table
+objects = Table.read('~/.campfire/data/.campfire_meta/objects.csv')
+high_z = objects[objects['redshift'] > 3.0]
+```
+
+## Python Client
+
+The `Campfire` class queries the local catalog when available, falling back to the remote API.
+
+```python
+from campfire import Campfire, ObjectFlags
 
 cf = Campfire()
 
-# Query objects (uses local SQLite if synced, API otherwise)
+# Sync the catalog (same as CLI)
+cf.sync()
+
+# Query locally — instant, no network
 results = cf.query_objects(
     redshift_range=(3.0, 6.0),
     redshift_quality=[2, 3],
     inspected_only=True
 )
 
-# Open a spectrum directly (local FITS if available, downloads if not)
+# Download FITS files
+cf.download(observations=['ember_uds_p4'], gratings=['PRISM'])
+
+# Open a spectrum (local FITS if downloaded, API fallback otherwise)
 spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
 print(spec.wavelength.shape, spec.flux.shape)
 
@@ -79,7 +106,6 @@ results = cf.query_objects(object_flags=['LRD', 'LYA_EMITTER'])
 ```python
 from campfire import SpectrumData
 
-# Open from the client (checks local files first)
 spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
 spec.wavelength   # np.ndarray, microns
 spec.flux         # np.ndarray, microjansky
@@ -90,6 +116,17 @@ spec.header       # FITS header as dict
 spec = SpectrumData.from_fits('/path/to/file.fits')
 ```
 
+### Staleness Detection
+
+When spectra are reprocessed on the server, `sync()` detects the change:
+
+```python
+result = cf.sync()
+if result['stale_count'] > 0:
+    print(f"{result['stale_count']} files updated on server")
+    cf.download(stale_only=True)
+```
+
 ### Plotting
 
 ```python
@@ -98,35 +135,20 @@ from campfire import plot_spectrum, plot_redshift_fit
 data = cf.get_spectrum_data('ember_uds_p4_123456', 'PRISM')
 fig = plot_spectrum(data, redshift=2.5, show_emission_lines=True)
 fig.show()
-
-fit = cf.get_redshift_fit_data('ember_uds_p4_123456', 'PRISM')
-fig = plot_redshift_fit(fit, spectrum_data=data)
-fig.show()
-```
-
-### Download Files
-
-```python
-# Download a single FITS file (returns local path if already synced)
-path = cf.download_spectrum(spectrum['fits_path'])
-
-# Batch download from query results
-paths = cf.download_spectra(table=results, download_dir='./spectra/', gratings=['PRISM'])
 ```
 
 ## Architecture
 
 ```
-campfire sync (CLI)
-  └── Downloads FITS → populates SQLite → exports CSVs
+campfire sync       → pulls full catalog into SQLite + CSVs (no FITS)
+campfire download   → downloads FITS files by obs/program/field/grating
 
-Campfire() (Python client)
-  └── Queries SQLite when local data available, API otherwise
-  └── Opens FITS from disk when synced, downloads on demand
+Campfire.sync()     → same as campfire sync
+Campfire.download() → same as campfire download
+Campfire.query_objects() → queries local SQLite (or API fallback)
+Campfire.open_spectrum() → opens local FITS (or downloads on demand)
 ```
-
-Both share the same local data store at `~/.campfire/data/.campfire_meta/campfire.db`.
 
 ## Full Documentation
 
-See the [CAMPFIRE docs](https://campfire.hollisakins.com/docs/api) for the complete API reference, CLI command reference, and REST API documentation.
+See the [CAMPFIRE docs](https://campfire.hollisakins.com/docs/api) for the complete reference.

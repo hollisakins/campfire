@@ -145,6 +145,143 @@ class Campfire:
             return self._local.get_last_synced_at()
         return None
 
+    # -------------------------------------------------------------------------
+    # Sync and Download
+    # -------------------------------------------------------------------------
+
+    def sync(self) -> dict:
+        """Sync the full object/spectra catalog from the server.
+
+        Equivalent to ``campfire sync``. Fetches all accessible observations'
+        metadata, upserts into SQLite, and exports CSV catalogs. Does not
+        download FITS files.
+
+        Returns
+        -------
+        dict
+            Summary with keys: observations, objects, spectra, stale_count.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> result = cf.sync()
+        >>> print(f"Synced {result['objects']} objects")
+        """
+        from .sync import sync_metadata
+
+        # Ensure data dir and store exist
+        if self._local_data_dir is None:
+            resolved = self._resolve_data_dir(None)
+            if resolved is None:
+                from .config import Config
+                config = Config()
+                config.ensure_data_dir()
+                resolved = config.data_dir
+            self._local_data_dir = resolved
+
+        self._local_data_dir.mkdir(parents=True, exist_ok=True)
+        (self._local_data_dir / ".campfire_meta").mkdir(exist_ok=True)
+
+        # Open store (create if needed)
+        if self._local is None:
+            from .db.store import LocalStore
+            db_path = self._local_data_dir / ".campfire_meta" / "campfire.db"
+            self._local = LocalStore(db_path)
+
+        result = sync_metadata(self._api, self._local, self._local_data_dir)
+        return result
+
+    def download(
+        self,
+        observations: Optional[List[str]] = None,
+        programs: Optional[List[str]] = None,
+        fields: Optional[List[str]] = None,
+        gratings: Optional[List[str]] = None,
+        stale_only: bool = False,
+        max_workers: int = 4,
+        show_progress: bool = True,
+    ) -> dict:
+        """Download FITS files for matching spectra.
+
+        Equivalent to ``campfire download``. Requires a prior ``sync()``
+        to populate the local catalog.
+
+        Parameters
+        ----------
+        observations : list of str, optional
+            Download by observation name.
+        programs : list of str, optional
+            Download by program slug.
+        fields : list of str, optional
+            Download by field name.
+        gratings : list of str, optional
+            Filter by grating type.
+        stale_only : bool, optional
+            Re-download only files updated on the server.
+        max_workers : int, optional
+            Parallel download workers (default 4).
+        show_progress : bool, optional
+            Show progress bars (default True).
+
+        Returns
+        -------
+        dict
+            Summary with total downloaded, failed, and bytes.
+        """
+        from .sync import download_observation
+        from .api.session import create_download_session
+
+        if self._local is None:
+            raise ValidationError("No local catalog. Run cf.sync() first.")
+
+        # Determine target observations
+        target_obs = set()
+
+        if stale_only:
+            stale_files = self._local.get_stale_files()
+            target_obs = set(f["observation"] for f in stale_files)
+            if not target_obs:
+                return {"downloaded": 0, "failed": 0, "bytes": 0, "message": "All files up to date"}
+        else:
+            if observations:
+                target_obs.update(observations)
+            if programs:
+                for prog in programs:
+                    results = self._local.query_objects(programs=[prog], limit=999999)
+                    target_obs.update(r["observation"] for r in results)
+            if fields:
+                for fld in fields:
+                    results = self._local.query_objects(fields=[fld], limit=999999)
+                    target_obs.update(r["observation"] for r in results)
+
+            if not target_obs:
+                raise ValidationError(
+                    "Specify at least one of: observations, programs, fields, or stale_only=True"
+                )
+
+        dl_session = create_download_session(max_workers)
+        total_downloaded = 0
+        total_failed = 0
+        total_bytes = 0
+
+        for obs in sorted(target_obs):
+            self._api_session._ensure_valid_token()
+            stats = download_observation(
+                self._api, obs, self._local_data_dir, self._local,
+                max_workers=max_workers,
+                download_session=dl_session,
+                grating_filter=gratings,
+            )
+            total_downloaded += stats.get("downloaded", 0)
+            total_failed += stats.get("failed", 0)
+            total_bytes += stats.get("download_bytes", 0)
+
+        return {
+            "downloaded": total_downloaded,
+            "failed": total_failed,
+            "bytes": total_bytes,
+        }
+
     @staticmethod
     def _flag_to_dict(flag_input, flag_class):
         """Convert a flag input to a dict for local query."""
@@ -256,17 +393,8 @@ class Campfire:
         >>> # Exclude contaminated objects
         >>> results = cf.query_objects(dq_flags=~DQFlags.CONTAMINATION)
         """
-        # Determine whether to use local store
-        use_local = False
-        if self._local and not remote:
-            # Check if the requested observations are all available locally
-            if observations:
-                synced_obs = set(self._local.get_synced_observations())
-                use_local = all(o in synced_obs for o in observations)
-            else:
-                # No observation filter — use local if we have any data
-                synced_obs = self._local.get_synced_observations()
-                use_local = len(synced_obs) > 0
+        # Use local store when available (full catalog after sync)
+        use_local = self._local is not None and not remote
 
         if use_local:
             self._log_local_use()
@@ -764,32 +892,24 @@ class Campfire:
         ...     print(obj['object_id'], obj['redshift'])
         """
         remote = filters.pop("remote", False)
+        use_local = self._local is not None and not remote
 
-        if self._local and not remote:
-            observations = filters.get("observations")
-            use_local = False
-            if observations:
-                synced_obs = set(self._local.get_synced_observations())
-                use_local = all(o in synced_obs for o in observations)
-            else:
-                use_local = len(self._local.get_synced_observations()) > 0
-
-            if use_local:
-                self._log_local_use()
-                # Convert flag inputs for local query
-                for flag_name, flag_class in [
-                    ("spectral_features", SpectralFeatures),
-                    ("object_flags", ObjectFlags),
-                    ("dq_flags", DQFlags),
-                ]:
-                    if flag_name in filters:
-                        filters[flag_name] = self._flag_to_dict(
-                            filters[flag_name], flag_class
-                        )
-                # Local query — no pagination needed, SQLite handles it
-                filters["limit"] = filters.get("limit", 999999)
-                yield from self._local.query_objects(**filters)
-                return
+        if use_local:
+            self._log_local_use()
+            # Convert flag inputs for local query
+            for flag_name, flag_class in [
+                ("spectral_features", SpectralFeatures),
+                ("object_flags", ObjectFlags),
+                ("dq_flags", DQFlags),
+            ]:
+                if flag_name in filters:
+                    filters[flag_name] = self._flag_to_dict(
+                        filters[flag_name], flag_class
+                    )
+            # Local query — no pagination needed, SQLite handles it
+            filters["limit"] = filters.get("limit", 999999)
+            yield from self._local.query_objects(**filters)
+            return
 
         # Remote auto-pagination
         yield from self._api.iter_objects(**filters)

@@ -1,8 +1,7 @@
-"""CAMPFIRE sync engine for bulk downloading spectra.
+"""CAMPFIRE sync engine.
 
-Computes download plans by diffing manifests against local state, and
-downloads files in parallel with hash verification. Session creation and
-manifest fetching are delegated to the ``api`` subpackage.
+Provides metadata synchronization (catalog pull) and FITS file downloading.
+Session creation and manifest fetching are delegated to the ``api`` subpackage.
 """
 
 import hashlib
@@ -17,11 +16,66 @@ from .api.session import create_download_session
 from .exceptions import DownloadError
 
 
+def sync_metadata(api, store, data_dir: Path) -> dict:
+    """Sync the full object/spectra catalog from the server.
+
+    Fetches all accessible observations' metadata, upserts into the local
+    SQLite database, exports CSV catalogs, and detects stale local files.
+
+    Parameters
+    ----------
+    api : APIClient
+        Authenticated API client.
+    store : LocalStore
+        Local database to update.
+    data_dir : Path
+        Data directory (for CSV export).
+
+    Returns
+    -------
+    dict
+        Summary with keys: observations, objects, spectra, stale_count, stale_files.
+    """
+    # TODO: Support incremental sync with updated_since parameter once the
+    # API supports it, to avoid re-fetching the full catalog on every sync.
+
+    from .db.export import export_catalogs
+
+    # 1. Get all accessible observations
+    obs_list = api.get_observations()
+    obs_names = [o["observation"] for o in obs_list]
+
+    # 2. Fetch all object metadata (paginated)
+    all_objects = api.fetch_all_objects(obs_names)
+
+    # 3. Upsert into SQLite
+    obj_count, spec_count = store.upsert_objects(all_objects)
+
+    # 4. Export CSVs
+    meta_dir = data_dir / ".campfire_meta"
+    export_catalogs(store, meta_dir)
+
+    # 5. Detect stale local files
+    stale = store.get_stale_files()
+
+    return {
+        "observations": len(obs_names),
+        "objects": obj_count,
+        "spectra": spec_count,
+        "stale_count": len(stale),
+        "stale_files": stale,
+    }
+
+
 def compute_download_plan(
     manifest: dict,
     synced_files: Dict[int, dict],
 ) -> Tuple[List[dict], List[dict], List[dict]]:
     """Compare manifest against local state to determine what needs downloading.
+
+    The ``synced_files`` dict should have ``file_hash`` set to the local
+    download hash (``local_file_hash`` from the store). This is compared
+    against the manifest's server-side ``file_hash``.
 
     Returns
     -------
@@ -104,28 +158,29 @@ def download_and_verify(
         raise DownloadError(f"Failed to download {spec['fits_path']}: {e}")
 
 
-def sync_observation(
-    api_session,
+def download_observation(
+    api_client,
     obs_name: str,
     data_dir: Path,
-    state,
+    store,
     max_workers: int = 4,
     dry_run: bool = False,
     download_session: Optional[requests.Session] = None,
     manifest: Optional[dict] = None,
+    grating_filter: Optional[List[str]] = None,
 ) -> dict:
-    """Sync a single observation: fetch manifest, diff, download, update state.
+    """Download FITS files for a single observation.
 
     Parameters
     ----------
-    api_session : APISession or APIClient
-        Authenticated session or client for fetching manifests.
+    api_client : APIClient
+        Authenticated API client for fetching manifests.
     obs_name : str
         Observation name.
     data_dir : Path
         Local data directory.
-    state : LocalStore or SyncState
-        State tracker with get_synced_files/mark_synced methods.
+    store : LocalStore
+        Database for tracking downloaded files.
     max_workers : int
         Parallel download workers.
     dry_run : bool
@@ -134,6 +189,8 @@ def sync_observation(
         Reusable download session for presigned URLs.
     manifest : dict, optional
         Pre-fetched manifest (avoids re-fetching if caller already has it).
+    grating_filter : list of str, optional
+        Only download spectra matching these gratings.
 
     Returns
     -------
@@ -141,15 +198,18 @@ def sync_observation(
         Stats with counts of new/updated/skipped/failed files.
     """
     if manifest is None:
-        from .api.client import APIClient
-        if isinstance(api_session, APIClient):
-            manifest = api_session.fetch_manifest(obs_name)
-        else:
-            # Treat as APISession — build an APIClient on the fly
-            client = APIClient(api_session)
-            manifest = client.fetch_manifest(obs_name)
+        manifest = api_client.fetch_manifest(obs_name)
 
-    synced = state.get_synced_files(obs_name)
+    # Apply grating filter to manifest entries
+    if grating_filter:
+        grating_set = set(g.upper() for g in grating_filter)
+        manifest = dict(manifest)  # shallow copy
+        manifest["spectra"] = [
+            s for s in manifest.get("spectra", [])
+            if s.get("grating", "").upper() in grating_set
+        ]
+
+    synced = store.get_synced_files(obs_name)
     new_files, updated_files, up_to_date = compute_download_plan(manifest, synced)
 
     to_download = new_files + updated_files
@@ -176,7 +236,7 @@ def sync_observation(
     # Use provided download session or create one
     dl_session = download_session or create_download_session(max_workers)
 
-    log_id = state.log_sync_start(obs_name)
+    log_id = store.log_sync_start(obs_name)
     bytes_downloaded = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -190,7 +250,7 @@ def sync_observation(
                 spec = future_to_spec[future]
                 try:
                     result = future.result()
-                    state.mark_synced(
+                    store.mark_synced(
                         result["spectra_id"],
                         result["object_id"],
                         obs_name,
@@ -207,8 +267,12 @@ def sync_observation(
                     tqdm.write(f"  Failed: {spec['fits_path']}: {e}")
                 pbar.update(1)
 
-    state.log_sync_complete(log_id, stats["downloaded"], stats["skipped"], bytes_downloaded)
+    store.log_sync_complete(log_id, stats["downloaded"], stats["skipped"], bytes_downloaded)
     return stats
+
+
+# Keep old name as alias for backward compatibility
+sync_observation = download_observation
 
 
 def format_size(size_bytes: int) -> str:
