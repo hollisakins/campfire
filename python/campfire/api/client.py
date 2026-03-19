@@ -211,77 +211,44 @@ class APIClient:
         self,
         observations: Optional[List[str]] = None,
         updated_since: Optional[str] = None,
-        on_observation_complete: Optional[Callable[[str, int], None]] = None,
+        on_page_complete: Optional[Callable[[int, int], None]] = None,
     ) -> List[dict]:
-        """Fetch all objects, handling pagination.
+        """Fetch all objects via the lightweight sync endpoint.
+
+        Uses ``/sync/catalog`` which is optimized for bulk fetches
+        (no complex sorting or window functions).
 
         Parameters
         ----------
         observations : list of str, optional
-            Observation names to fetch. If None, fetches all accessible
-            observations.
+            Not used directly (the sync endpoint returns all accessible
+            objects). Kept for API compatibility.
         updated_since : str, optional
             ISO 8601 timestamp. Only fetch objects updated after this time.
-            When set, uses a single query across all observations instead
-            of per-observation iteration (much faster when few objects changed).
-        on_observation_complete : callable, optional
-            Callback ``(obs_name, obj_count)`` called after each observation.
-            Only used for full (non-incremental) fetches.
+        on_page_complete : callable, optional
+            Callback ``(fetched_so_far, total)`` called after each page.
         """
-        if observations is None:
-            obs_list = self.get_observations()
-            observations = [o["observation"] for o in obs_list]
-
-        # Incremental sync: single query across all observations
-        if updated_since:
-            return self._fetch_updated_objects(updated_since)
-
-        # Full sync: iterate per observation (supports progress callback)
-        all_objects = []
-        for obs in observations:
-            self._session._ensure_valid_token()
-            obs_count = 0
-            offset = 0
-            while True:
-                params = {"observations": obs, "limit": 1000, "offset": offset}
-                response = self._session.get(
-                    "/objects",
-                    params=params,
-                    timeout=60,
-                )
-                _handle_response_error(response, f"fetching objects for {obs}")
-                data = response.json()
-                objects = data.get("data", [])
-                all_objects.extend(objects)
-                obs_count += len(objects)
-                pagination = data.get("pagination", {})
-                total = pagination.get("total", 0)
-                offset += len(objects)
-                if offset >= total or not objects:
-                    break
-            if on_observation_complete:
-                on_observation_complete(obs, obs_count)
-        return all_objects
-
-    def _fetch_updated_objects(self, updated_since: str) -> List[dict]:
-        """Fetch all objects updated since a timestamp in a single paginated query."""
         all_objects = []
         offset = 0
         while True:
             self._session._ensure_valid_token()
-            params = {
-                "updated_since": updated_since,
-                "limit": 1000,
-                "offset": offset,
-            }
-            response = self._session.get("/objects", params=params, timeout=60)
-            _handle_response_error(response, "fetching updated objects")
+            params: dict = {"limit": 1000, "offset": offset}
+            if updated_since:
+                params["updated_since"] = updated_since
+            response = self._session.get(
+                "/sync/catalog",
+                params=params,
+                timeout=60,
+            )
+            _handle_response_error(response, "fetching catalog")
             data = response.json()
             objects = data.get("data", [])
             all_objects.extend(objects)
             pagination = data.get("pagination", {})
             total = pagination.get("total", 0)
             offset += len(objects)
+            if on_page_complete:
+                on_page_complete(offset, total)
             if offset >= total or not objects:
                 break
         return all_objects

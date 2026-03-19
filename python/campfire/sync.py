@@ -48,58 +48,46 @@ def sync_metadata(
     """
     from .db.export import export_catalogs
 
-    # 1. Get all accessible observations
-    obs_list = api.get_observations()
-    obs_names = [o["observation"] for o in obs_list]
-
-    # 2. Determine if incremental sync is possible
+    # 1. Determine if incremental sync is possible
     updated_since = None
     if not full:
         updated_since = store.get_max_updated_at()
 
     incremental = updated_since is not None
 
-    # 3. Fetch object metadata
-    if incremental:
-        # Single query for changed objects — no per-observation iteration
-        if show_progress:
-            print("Checking for updates...", end="", flush=True)
-        all_objects = api.fetch_all_objects(
-            obs_names,
-            updated_since=updated_since,
-        )
-        if show_progress:
-            print(f" {len(all_objects)} updated objects found.")
-    else:
-        # Full sync: iterate per observation with progress bar
-        callback = None
-        pbar = None
-        if show_progress:
-            pbar = tqdm(total=len(obs_names), unit="obs")
+    # 2. Fetch object metadata via lightweight sync endpoint
+    pbar = None
+    callback = None
+    if show_progress:
+        pbar = tqdm(unit="obj", desc="Fetching")
 
-            def callback(obs_name, count):
-                pbar.set_postfix_str(f"{obs_name} ({count})")
-                pbar.update(1)
+        def callback(fetched, total):
+            pbar.total = total
+            pbar.n = fetched
+            pbar.refresh()
 
-        all_objects = api.fetch_all_objects(
-            obs_names,
-            on_observation_complete=callback,
-        )
+    all_objects = api.fetch_all_objects(
+        updated_since=updated_since,
+        on_page_complete=callback,
+    )
 
-        if pbar:
-            pbar.close()
+    if pbar:
+        pbar.close()
 
-    # 4. Upsert into SQLite
+    # 3. Upsert into SQLite
     obj_count, spec_count = store.upsert_objects(all_objects)
 
-    # 5. Export CSVs (always full export from SQLite)
+    # 4. Export CSVs (always full export from SQLite)
     export_catalogs(store, meta_dir)
 
-    # 6. Detect stale local files
+    # 5. Detect stale local files
     stale = store.get_stale_files()
 
+    # Count distinct observations from fetched objects
+    obs_set = set(o.get("observation") for o in all_objects if o.get("observation"))
+
     return {
-        "observations": len(obs_names),
+        "observations": len(obs_set),
         "objects": obj_count,
         "spectra": spec_count,
         "stale_count": len(stale),
