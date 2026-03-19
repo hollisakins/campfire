@@ -325,7 +325,7 @@ class Campfire:
         inspected_only: Optional[bool] = None,
         search: Optional[str] = None,
         cone_search: Optional[Tuple[float, float, float]] = None,
-        limit: int = 1000,
+        limit: Optional[int] = None,
         offset: int = 0,
         sort: str = "object_id",
         sort_dir: str = "asc",
@@ -368,7 +368,7 @@ class Campfire:
         cone_search : tuple of (ra, dec, radius), optional
             (ra, dec, radius) in degrees, arcsec, arcsec for cone search.
         limit : int, optional
-            Maximum number of results (default: 1000).
+            Maximum number of results. Default: no limit (local), 1000 (remote).
         offset : int, optional
             Pagination offset (default: 0).
         sort : str, optional
@@ -434,6 +434,8 @@ class Campfire:
                 offset=offset,
             )
         else:
+            # Remote queries need a concrete limit for pagination
+            remote_limit = limit if limit is not None else 1000
             objects, pagination = self._api.query_objects(
                 programs=programs,
                 fields=fields,
@@ -448,11 +450,22 @@ class Campfire:
                 inspected_only=inspected_only,
                 search=search,
                 cone_search=cone_search,
-                limit=limit,
+                limit=remote_limit,
                 offset=offset,
                 sort=sort,
                 sort_dir=sort_dir,
             )
+
+        if not use_local and pagination:
+            total = pagination.get("total", 0)
+            if total > len(objects):
+                import warnings
+                warnings.warn(
+                    f"Query returned {len(objects)} of {total} matching objects. "
+                    f"Use limit/offset to paginate, iter_objects() to stream all, "
+                    f"or sync the catalog locally with cf.sync() for unlimited queries.",
+                    stacklevel=2,
+                )
 
         if len(objects) == 0:
             return Table()

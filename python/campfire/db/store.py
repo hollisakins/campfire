@@ -369,7 +369,7 @@ class LocalStore:
         cone_search: Optional[Tuple[float, float, float]] = None,
         sort: str = "object_id",
         sort_dir: str = "asc",
-        limit: int = 1000,
+        limit: Optional[int] = None,
         offset: int = 0,
         **kwargs,
     ) -> List[dict]:
@@ -532,9 +532,13 @@ class LocalStore:
             FROM objects o
             WHERE {where_sql}
             ORDER BY {order_clause}
-            LIMIT ? OFFSET ?
         """
-        params.extend([limit, offset])
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        elif offset:
+            sql += " LIMIT -1 OFFSET ?"
+            params.append(offset)
 
         rows = self._conn.execute(sql, params).fetchall()
 
@@ -570,7 +574,7 @@ class LocalStore:
         """Count objects matching filters (same params as query_objects)."""
         # Simple implementation: query and count
         # For performance, could build a COUNT query, but this is fine for now
-        results = self.query_objects(limit=999999, offset=0, **filters)
+        results = self.query_objects(**filters)
         return len(results)
 
     def get_object(self, object_id: str) -> Optional[dict]:
