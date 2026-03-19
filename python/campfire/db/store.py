@@ -710,6 +710,49 @@ class LocalStore:
 
         return result
 
+    def verify_local_files(self, products_dir: Path, observation: Optional[str] = None) -> int:
+        """Check that files marked as downloaded still exist on disk.
+
+        Clears ``local_path`` for any files that are missing, so they
+        will be re-downloaded on the next sync.
+
+        Parameters
+        ----------
+        products_dir : Path
+            Root products directory (contains ``<obs>/`` subdirs).
+        observation : str, optional
+            Limit check to a single observation. If None, checks all.
+
+        Returns
+        -------
+        int
+            Number of stale entries cleared.
+        """
+        if observation:
+            rows = self._conn.execute(
+                """SELECT s.spectra_id, s.local_path FROM spectra s
+                   JOIN objects o ON s.object_id = o.object_id
+                   WHERE o.observation = ? AND s.local_path IS NOT NULL""",
+                (observation,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT spectra_id, local_path FROM spectra WHERE local_path IS NOT NULL"
+            ).fetchall()
+
+        cleared = 0
+        for row in rows:
+            if not (products_dir / row["local_path"]).exists():
+                self._conn.execute(
+                    "UPDATE spectra SET local_path = NULL, local_file_hash = NULL, synced_at = NULL WHERE spectra_id = ?",
+                    (row["spectra_id"],),
+                )
+                cleared += 1
+
+        if cleared:
+            self._conn.commit()
+        return cleared
+
     def mark_synced(
         self,
         spectra_id: int,
