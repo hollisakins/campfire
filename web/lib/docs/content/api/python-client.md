@@ -32,7 +32,7 @@ Campfire(base_url=None, data_dir=None, auto_refresh=True)
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `base_url` | str | None | API URL. Uses `CAMPFIRE_API_URL` env var or production server. |
-| `data_dir` | str/Path | None | Root data directory. Uses `$CAMPFIRE_ROOT`, config.toml, or `~/campfire`. |
+| `data_dir` | str/Path | None | Root data directory. Defaults to `$CAMPFIRE_ROOT` or `~/campfire`. |
 | `auto_refresh` | bool | True | Automatically refresh OAuth tokens. |
 
 The client auto-detects locally synced data. If `<data_dir>/meta/campfire.db` exists, queries are served from SQLite. When `$CAMPFIRE_ROOT` is set, the client uses the same `products/` directory as the pipeline, so already-reduced spectra are found without re-downloading.

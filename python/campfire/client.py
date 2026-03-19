@@ -53,7 +53,7 @@ class Campfire:
         variable or defaults to production CAMPFIRE server.
     data_dir : str or Path, optional
         Root data directory (contains ``products/`` and ``meta/``). If not
-        provided, uses ``$CAMPFIRE_ROOT``, config.toml, or ``~/campfire``.
+        provided, uses ``$CAMPFIRE_ROOT`` or ``~/campfire``.
     auto_refresh : bool, optional
         If True (default), automatically refresh OAuth tokens when they expire.
 
@@ -101,23 +101,17 @@ class Campfire:
 
     @staticmethod
     def _resolve_data_dir(data_dir: Optional[Union[str, Path]]) -> Optional[Path]:
-        """Resolve the root data directory from argument, env, config, or default.
+        """Resolve the root data directory.
 
-        Resolution order: explicit arg → $CAMPFIRE_ROOT → config.toml → None.
+        Resolution order: explicit arg → $CAMPFIRE_ROOT → ~/campfire.
+        Returns None if the resolved directory has no meta/campfire.db.
         """
         if data_dir:
             return Path(data_dir).expanduser()
-        try:
-            from .config import Config, _default_data_dir
-            config = Config()
-            if config.exists():
-                return config.data_dir
-            # Check env / default even without config
-            default = _default_data_dir()
-            if (default / "meta" / "campfire.db").exists():
-                return default
-        except Exception:
-            pass
+        from .config import resolve_data_dir
+        resolved = resolve_data_dir()
+        if (resolved / "meta" / "campfire.db").exists():
+            return resolved
         return None
 
     def _log_local_use(self) -> None:
@@ -181,17 +175,13 @@ class Campfire:
 
         # Ensure data dir and store exist
         if self._meta_dir is None:
+            from .config import resolve_data_dir, ensure_data_dir
             resolved = self._resolve_data_dir(None)
             if resolved is None:
-                from .config import Config
-                config = Config()
-                config.ensure_data_dir()
-                resolved = config.data_dir
+                resolved = resolve_data_dir()
+            ensure_data_dir(resolved)
             self._products_dir = resolved / "products"
             self._meta_dir = resolved / "meta"
-
-        self._products_dir.mkdir(parents=True, exist_ok=True)
-        self._meta_dir.mkdir(parents=True, exist_ok=True)
 
         # Open store (create if needed)
         if self._local is None:

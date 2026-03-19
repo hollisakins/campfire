@@ -29,14 +29,6 @@ def resolve_base_url(base_url: Optional[str] = None) -> str:
     if env_url:
         return env_url
 
-    try:
-        from ..config import Config
-        config = Config()
-        if config.exists() and config.base_url:
-            return config.base_url
-    except Exception:
-        pass
-
     return DEFAULT_BASE_URL
 
 

@@ -187,7 +187,7 @@ $CAMPFIRE_ROOT/            # or ~/campfire/
         └── ...
 ```
 
-Credentials and config are stored separately in `~/.campfire/` (credentials, config.toml).
+Credentials are stored separately in `~/.campfire/credentials`.
 
 ### CSV Catalogs
 
