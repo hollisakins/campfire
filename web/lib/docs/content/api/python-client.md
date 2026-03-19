@@ -219,7 +219,7 @@ encode_flags(['LRD', 'LYA_EMITTER'], 'object_flags') # 5
 
 ### `open_spectrum()`
 
-Open a spectrum as a `SpectrumData` object with wavelength, flux, and error arrays. Checks for locally synced FITS files first, then downloads from the API if needed.
+Open a spectrum as a `SpectrumData` object with wavelength, flux, and error arrays. Checks for locally downloaded FITS files first. If not found locally, downloads from the API and caches in the managed data directory so subsequent calls are instant.
 
 ```python
 spec = cf.open_spectrum(object_id, grating)
@@ -253,6 +253,9 @@ plt.ylabel('f_ν (μJy)')
 
 # Access FITS header
 print(spec.header.get('EXPTIME'))
+
+# Second call is instant — file is cached locally
+spec2 = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
 ```
 
 You can also create a `SpectrumData` from any FITS file:
@@ -260,34 +263,6 @@ You can also create a `SpectrumData` from any FITS file:
 ```python
 from campfire import SpectrumData
 spec = SpectrumData.from_fits('/path/to/local/file.fits')
-```
-
-### `download_spectrum()`
-
-Download a single FITS file. If the file exists locally (from sync), returns the local path without re-downloading.
-
-```python
-path = cf.download_spectrum(
-    fits_path,              # str: FITS path from query results
-    output_path=None,       # str/Path: Save location (default: basename)
-    overwrite=False,        # bool: Overwrite existing
-    show_progress=True      # bool: Show progress bar
-)
-```
-
-### `download_spectra()`
-
-Download multiple spectra from query results.
-
-```python
-results = cf.query_objects(programs=['EMBER-UDS'], limit=50)
-
-paths = cf.download_spectra(
-    table=results,
-    download_dir='./spectra/',
-    gratings=['PRISM']        # Only PRISM spectra
-)
-# Returns: {'object_id': {'PRISM': '/path/to/file.fits'}, ...}
 ```
 
 ---

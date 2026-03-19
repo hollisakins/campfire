@@ -163,34 +163,86 @@ class TestLocalFirstQueryObjects:
             assert client.is_local is False
 
 
-class TestLocalFirstDownload:
-    """Test that download_spectrum checks local files first."""
+class TestOpenSpectrum:
+    """Test that open_spectrum checks local files and caches downloads."""
 
-    def test_returns_local_path(self, local_client):
-        """download_spectrum returns local path when file exists."""
+    def test_returns_local_file(self, local_client):
+        """open_spectrum returns local SpectrumData when file exists."""
+        from astropy.io import fits
+        from astropy.table import Table as FitsTable
+
         client, mock_session, store, tmp_path = local_client
 
-        # Create a fake local FITS file
+        # Create a real FITS file locally
         obs_dir = tmp_path / "test_obs"
         obs_dir.mkdir()
         fits_file = obs_dir / "test_obj_100_PRISM_spec.fits"
-        fits_file.write_bytes(b"fake fits data")
 
-        # Mark it as synced
+        wave = np.linspace(0.6, 5.3, 50)
+        flux = np.ones(50)
+        err = np.ones(50) * 0.1
+        t = FitsTable([wave, flux, err], names=["WAVELENGTH", "FLUX", "FLUX_ERR"])
+        hdul = fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(t)])
+        hdul.writeto(str(fits_file))
+
+        # Mark it as synced in the store
         store.mark_synced(
             10, "test_obj_100", "test_obs", "PRISM",
             "spectra/test_obs/test_obj_100_PRISM_spec.fits",
             "test_obs/test_obj_100_PRISM_spec.fits",
-            "sha256:abc", 14,
+            "sha256:abc", fits_file.stat().st_size,
         )
 
-        path = client.download_spectrum(
-            "spectra/test_obs/test_obj_100_PRISM_spec.fits"
-        )
+        spec = client.open_spectrum("test_obj_100", "PRISM")
 
-        # Should return the local path without hitting API
+        # Should NOT have hit the API
         mock_session.get.assert_not_called()
-        assert Path(path).exists()
+        assert isinstance(spec, SpectrumData)
+        assert spec.wavelength.shape == (50,)
+        assert spec.object_id == "test_obj_100"
+        assert spec.grating == "PRISM"
+
+    def test_downloads_and_caches(self, local_client):
+        """open_spectrum downloads from API and caches in managed dir."""
+        from astropy.io import fits
+        from astropy.table import Table as FitsTable
+        import io
+
+        client, mock_session, store, tmp_path = local_client
+
+        # Build a valid FITS file in memory for the mock response
+        wave = np.linspace(0.6, 5.3, 30)
+        flux = np.ones(30)
+        err = np.ones(30) * 0.1
+        t = FitsTable([wave, flux, err], names=["WAVELENGTH", "FLUX", "FLUX_ERR"])
+        hdul = fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(t)])
+        buf = io.BytesIO()
+        hdul.writeto(buf)
+        fits_bytes = buf.getvalue()
+
+        # Mock get_signed_url
+        client._api.get_signed_url = Mock(return_value="https://r2.example.com/signed")
+
+        # Mock the download response
+        mock_response = MagicMock()
+        mock_response.__enter__ = Mock(return_value=mock_response)
+        mock_response.__exit__ = Mock(return_value=False)
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_content = Mock(return_value=[fits_bytes])
+
+        with patch("campfire.client.requests.get", return_value=mock_response):
+            spec = client.open_spectrum("test_obj_100", "PRISM")
+
+        assert isinstance(spec, SpectrumData)
+        assert spec.wavelength.shape == (30,)
+
+        # File should now be cached in managed dir
+        cached = tmp_path / "test_obs" / "test_obj_100_PRISM_spec.fits"
+        assert cached.exists()
+
+        # Store should be updated
+        local_path = store.find_local_path("test_obj_100", "PRISM")
+        assert local_path is not None
 
 
 class TestIterObjects:

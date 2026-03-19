@@ -1,13 +1,12 @@
 """Main CAMPFIRE API client."""
 
+import hashlib
 import logging
-import tempfile
 from pathlib import Path
 from typing import Iterator, Optional, List, Union, Tuple
 
 import requests
 from astropy.table import Table
-from tqdm import tqdm
 
 from .api.session import APISession
 from .api.client import APIClient
@@ -87,6 +86,7 @@ class Campfire:
         self._local = None
         self._local_data_dir: Optional[Path] = None
         self._local_logged = False  # For one-time "Using local catalog" message
+        self._api_download_count = 0  # Track consecutive API downloads for warning
 
         resolved_dir = self._resolve_data_dir(data_dir)
         if resolved_dir:
@@ -447,194 +447,6 @@ class Campfire:
 
         return Table(rows=objects)
 
-    def download_spectrum(
-        self,
-        fits_path: str,
-        output_path: Optional[Union[str, Path]] = None,
-        overwrite: bool = False,
-        show_progress: bool = True,
-    ) -> str:
-        """
-        Download a FITS spectrum file.
-
-        Parameters
-        ----------
-        fits_path : str
-            FITS file path from the objects query result (e.g., from spectra['fits_path']).
-        output_path : str or Path, optional
-            Local path to save the file. If not provided, uses the basename from fits_path.
-        overwrite : bool, optional
-            If True, overwrite existing file (default: False).
-        show_progress : bool, optional
-            If True, show download progress bar (default: True).
-
-        Returns
-        -------
-        str
-            Path to the downloaded file.
-
-        Examples
-        --------
-        >>> cf = Campfire()
-        >>> results = cf.query_objects(search='ember_uds_p4_123')
-        >>> # Download all spectra for this object
-        >>> for spectrum in results[0]['spectra']:
-        ...     path = cf.download_spectrum(spectrum['fits_path'])
-        ...     print(f"Downloaded to {path}")
-        """
-        # Check if file is available locally via sync
-        if self._local and self._local_data_dir:
-            # Try to find by fits_path in the spectra table
-            rows = self._local._conn.execute(
-                "SELECT local_path FROM spectra WHERE fits_path = ? AND local_path IS NOT NULL",
-                (fits_path,),
-            ).fetchall()
-            if rows:
-                local_file = self._local_data_dir / rows[0][0]
-                if local_file.exists():
-                    if output_path is None:
-                        return str(local_file)
-                    # Copy to requested output_path
-                    output_path = Path(output_path)
-                    if not output_path.exists() or overwrite:
-                        import shutil
-                        output_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(local_file, output_path)
-                    return str(output_path)
-
-        # Default output path
-        if output_path is None:
-            output_path = Path(fits_path).name
-
-        output_path = Path(output_path)
-
-        # Check if file already exists
-        if output_path.exists() and not overwrite:
-            if show_progress:
-                print(f"File already exists: {output_path} (use overwrite=True to replace)")
-            return str(output_path)
-
-        # Get signed URL from API
-        signed_url = self._api.get_signed_url(fits_path)
-
-        # Download the file from R2
-        try:
-            with requests.get(signed_url, stream=True) as r:
-                r.raise_for_status()
-                total_size = int(r.headers.get("content-length", 0))
-
-                # Create parent directories if needed
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-
-                with open(output_path, "wb") as f:
-                    if show_progress and total_size > 0:
-                        with tqdm(
-                            total=total_size,
-                            unit="B",
-                            unit_scale=True,
-                            desc=output_path.name,
-                        ) as pbar:
-                            for chunk in r.iter_content(chunk_size=8192):
-                                f.write(chunk)
-                                pbar.update(len(chunk))
-                    else:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            f.write(chunk)
-
-        except requests.exceptions.RequestException as e:
-            raise DownloadError(f"Download failed: {e}")
-
-        return str(output_path)
-
-    def download_spectra(
-        self,
-        object_ids: Union[str, List[str]] = None,
-        table: Optional[Table] = None,
-        download_dir: Union[str, Path] = ".",
-        gratings: Optional[List[str]] = None,
-        overwrite: bool = False,
-        show_progress: bool = True,
-    ) -> dict:
-        """
-        Download multiple spectra.
-
-        Parameters
-        ----------
-        object_ids : str or list of str, optional
-            Object ID(s) to download. Must also provide ``table`` parameter.
-        table : astropy.table.Table, optional
-            Table from query_objects() containing spectra to download.
-        download_dir : str or Path, optional
-            Directory to save files (default: current directory).
-        gratings : list of str, optional
-            Only download specific gratings (e.g., ['PRISM']).
-        overwrite : bool, optional
-            If True, overwrite existing files (default: False).
-        show_progress : bool, optional
-            If True, show download progress (default: True).
-
-        Returns
-        -------
-        dict
-            Dictionary mapping object_id to dict of {grating: filepath}.
-
-        Examples
-        --------
-        >>> cf = Campfire()
-        >>> results = cf.query_objects(programs=['EMBER-UDS'], limit=10)
-        >>> # Download all spectra
-        >>> paths = cf.download_spectra(table=results, download_dir='./spectra/')
-        >>> # Download only PRISM spectra
-        >>> paths = cf.download_spectra(table=results, gratings=['PRISM'])
-        """
-        download_dir = Path(download_dir)
-        download_dir.mkdir(parents=True, exist_ok=True)
-
-        if table is None:
-            raise ValidationError("Must provide 'table' parameter")
-
-        # Filter by object_ids if provided
-        if object_ids is not None:
-            if isinstance(object_ids, str):
-                object_ids = [object_ids]
-            table = table[table["object_id"].isin(object_ids)]
-
-        results = {}
-
-        for row in table:
-            object_id = row["object_id"]
-            spectra = row.get("spectra", [])
-
-            if not spectra:
-                continue
-
-            results[object_id] = {}
-
-            for spectrum in spectra:
-                grating = spectrum["grating"]
-
-                # Skip if grating filter is active and doesn't match
-                if gratings and grating not in gratings:
-                    continue
-
-                fits_path = spectrum["fits_path"]
-                filename = Path(fits_path).name
-                output_path = download_dir / filename
-
-                try:
-                    downloaded_path = self.download_spectrum(
-                        fits_path,
-                        output_path=output_path,
-                        overwrite=overwrite,
-                        show_progress=show_progress,
-                    )
-                    results[object_id][grating] = downloaded_path
-                except Exception as e:
-                    if show_progress:
-                        print(f"Failed to download {fits_path}: {e}")
-
-        return results
-
     # -------------------------------------------------------------------------
     # Metadata Methods
     # -------------------------------------------------------------------------
@@ -792,9 +604,9 @@ class Campfire:
         """
         Open a spectrum as a SpectrumData object.
 
-        Checks for locally synced FITS files first. If the file exists
-        locally, opens it directly. Otherwise, downloads via the API to
-        a temporary location.
+        Checks for locally downloaded FITS files first. If not found
+        locally, downloads from the API and caches in the managed data
+        directory so subsequent calls are instant.
 
         Parameters
         ----------
@@ -820,38 +632,93 @@ class Campfire:
             if local_path:
                 full_path = self._local_data_dir / local_path
                 if full_path.exists():
+                    self._api_download_count = 0
                     return SpectrumData.from_fits(
                         str(full_path), object_id=object_id, grating=grating
                     )
 
-        # Need to find the fits_path for this object + grating
-        fits_path = self._resolve_fits_path(object_id, grating)
+        # Warn if downloading many spectra one at a time
+        self._api_download_count += 1
+        if self._api_download_count == 3:
+            import warnings
+            warnings.warn(
+                "Downloading spectra one at a time from the API. "
+                "For bulk access, use cf.download() first, then open_spectrum() "
+                "will read from local files.",
+                stacklevel=2,
+            )
 
-        # Download to temp file
+        # Resolve spectrum metadata from store or API
+        spec_info = self._resolve_spectrum_info(object_id, grating)
+        fits_path = spec_info["fits_path"]
+
+        # Download the file
         signed_url = self._api.get_signed_url(fits_path)
-        tmp_dir = Path(tempfile.mkdtemp(prefix="campfire_"))
-        tmp_file = tmp_dir / Path(fits_path).name
+        filename = Path(fits_path).name
+
+        # Determine where to save: managed data dir if available, else temp
+        if self._local and self._local_data_dir:
+            observation = spec_info.get("observation", object_id.rsplit("_", 1)[0])
+            obs_dir = self._local_data_dir / observation
+            obs_dir.mkdir(parents=True, exist_ok=True)
+            dest = obs_dir / filename
+        else:
+            import tempfile
+            dest = Path(tempfile.mkdtemp(prefix="campfire_")) / filename
+
+        # Download to temp file then rename (atomic)
+        tmp_dest = dest.with_suffix(".tmp")
+        sha256 = hashlib.sha256()
+        file_size = 0
 
         try:
             with requests.get(signed_url, stream=True) as r:
                 r.raise_for_status()
-                with open(tmp_file, "wb") as f:
+                tmp_dest.parent.mkdir(parents=True, exist_ok=True)
+                with open(tmp_dest, "wb") as f:
                     for chunk in r.iter_content(chunk_size=65536):
                         f.write(chunk)
+                        sha256.update(chunk)
+                        file_size += len(chunk)
+            tmp_dest.rename(dest)
         except requests.RequestException as e:
+            tmp_dest.unlink(missing_ok=True)
             raise DownloadError(f"Failed to download spectrum: {e}")
 
+        # Update the store so next call finds it locally
+        if self._local and self._local_data_dir:
+            observation = spec_info.get("observation", object_id.rsplit("_", 1)[0])
+            local_rel_path = f"{observation}/{filename}"
+            self._local.mark_synced(
+                spectra_id=spec_info["spectra_id"],
+                object_id=object_id,
+                observation=observation,
+                grating=grating,
+                fits_path=fits_path,
+                local_path=local_rel_path,
+                file_hash=sha256.hexdigest(),
+                file_size=file_size,
+            )
+
         return SpectrumData.from_fits(
-            str(tmp_file), object_id=object_id, grating=grating
+            str(dest), object_id=object_id, grating=grating
         )
 
-    def _resolve_fits_path(self, object_id: str, grating: str) -> str:
-        """Resolve the FITS path for an object + grating."""
+    def _resolve_spectrum_info(self, object_id: str, grating: str) -> dict:
+        """Resolve spectrum metadata (fits_path, spectra_id, observation) for an object + grating."""
         # Check local store first
         if self._local:
             spectra = self._local.get_spectra_for_object(object_id, grating)
             if spectra:
-                return spectra[0]["fits_path"]
+                spec = spectra[0]
+                # Get observation from the objects table
+                row = self._local._conn.execute(
+                    "SELECT observation FROM objects WHERE object_id = ?",
+                    (object_id,),
+                ).fetchone()
+                if row:
+                    spec["observation"] = row["observation"]
+                return spec
 
         # Fall back to API query
         objects, _ = self._api.query_objects(
@@ -860,9 +727,11 @@ class Campfire:
         if not objects:
             raise NotFoundError(f"Object not found: {object_id}")
 
-        for spec in objects[0].get("spectra", []):
+        obj = objects[0]
+        for spec in obj.get("spectra", []):
             if spec.get("grating") == grating:
-                return spec["fits_path"]
+                spec["observation"] = obj.get("observation", "")
+                return spec
 
         raise NotFoundError(f"No {grating} spectrum found for {object_id}")
 
