@@ -451,8 +451,9 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         summary = store.get_observation_summary()
         store.close()
 
-        click.echo()
-        click.echo(f"  {'OBSERVATION':<25} {'PROGRAM':<15} {'FIELD':<10} {'SPECTRA':>8}   LOCAL")
+        lines = []
+        lines.append("")
+        lines.append(f"  {'OBSERVATION':<25} {'PROGRAM':<15} {'FIELD':<10} {'SPECTRA':>8}   LOCAL")
         for row in summary:
             downloaded = row["downloaded_count"]
             total = row["spectrum_count"]
@@ -462,15 +463,22 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
                 local_str = f"{downloaded}/{total}"
             else:
                 local_str = ""
-            click.echo(
+            lines.append(
                 f"  {row['observation']:<25} "
                 f"{row['program_slug']:<15} "
                 f"{row['field']:<10} "
                 f"{total:>8}   {local_str}"
             )
 
-        click.echo()
-        click.echo("Use --obs, --program, or --field to download, or --all for everything.")
+        lines.append("")
+        lines.append("Use --obs, --program, or --field to download, or --all for everything.")
+        lines.append("")
+
+        output = "\n".join(lines)
+        if len(summary) > 30:
+            click.echo_via_pager(output)
+        else:
+            click.echo(output)
         return
 
     base_url = base_url or resolve_base_url()
