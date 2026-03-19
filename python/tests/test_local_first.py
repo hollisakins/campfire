@@ -13,7 +13,9 @@ from campfire.models import SpectrumData
 @pytest.fixture
 def local_store(tmp_path):
     """Create a populated LocalStore in a temp directory."""
-    db_path = tmp_path / ".campfire_meta" / "campfire.db"
+    (tmp_path / "meta").mkdir()
+    (tmp_path / "products").mkdir()
+    db_path = tmp_path / "meta" / "campfire.db"
     store = LocalStore(db_path)
 
     objects = [
@@ -173,9 +175,9 @@ class TestOpenSpectrum:
 
         client, mock_session, store, tmp_path = local_client
 
-        # Create a real FITS file locally
-        obs_dir = tmp_path / "test_obs"
-        obs_dir.mkdir()
+        # Create a real FITS file locally (under products/)
+        obs_dir = tmp_path / "products" / "test_obs"
+        obs_dir.mkdir(parents=True, exist_ok=True)
         fits_file = obs_dir / "test_obj_100_PRISM_spec.fits"
 
         wave = np.linspace(0.6, 5.3, 50)
@@ -236,8 +238,8 @@ class TestOpenSpectrum:
         assert isinstance(spec, SpectrumData)
         assert spec.wavelength.shape == (30,)
 
-        # File should now be cached in managed dir
-        cached = tmp_path / "test_obs" / "test_obj_100_PRISM_spec.fits"
+        # File should now be cached in products dir
+        cached = tmp_path / "products" / "test_obs" / "test_obj_100_PRISM_spec.fits"
         assert cached.exists()
 
         # Store should be updated

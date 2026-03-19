@@ -39,12 +39,12 @@ def _require_auth(base_url: str) -> APISession:
 
 
 def _open_store(config):
-    """Open the LocalStore, creating it if needed. Returns (store, data_dir)."""
+    """Open the LocalStore, creating it if needed. Returns (store, config)."""
     from .db.store import LocalStore
 
     config.ensure_data_dir()
-    db_path = config.data_dir / ".campfire_meta" / "campfire.db"
-    return LocalStore(db_path), config.data_dir
+    db_path = config.meta_dir / "campfire.db"
+    return LocalStore(db_path), config
 
 
 def _prompt_data_dir() -> None:
@@ -58,7 +58,7 @@ def _prompt_data_dir() -> None:
     click.echo()
     default = str(config.data_dir)
     data_dir = click.prompt(
-        "Where should CAMPFIRE store downloaded data?",
+        "Where should CAMPFIRE store data?",
         default=default,
     )
     config.data_dir = Path(data_dir).expanduser()
@@ -328,7 +328,7 @@ def status(base_url: Optional[str]):
     click.echo()
     click.echo(f"Data directory: {config.data_dir}")
 
-    db_path = config.data_dir / ".campfire_meta" / "campfire.db"
+    db_path = config.meta_dir / "campfire.db"
     if not db_path.exists():
         click.echo("\nNo local catalog. Run: campfire sync")
         return
@@ -414,7 +414,7 @@ def observations(json_out: bool, base_url: Optional[str]):
     config = Config()
     store = None
     if config.exists() and config.data_dir.exists():
-        db_path = config.data_dir / ".campfire_meta" / "campfire.db"
+        db_path = config.meta_dir / "campfire.db"
         if db_path.exists():
             store = LocalStore(db_path)
 
@@ -473,11 +473,11 @@ def sync_cmd(base_url: Optional[str]):
         click.echo(f"✗ {e}")
         sys.exit(1)
 
-    store, data_dir = _open_store(config)
+    store, config = _open_store(config)
 
     click.echo("Syncing catalog...")
     try:
-        result = sync_metadata(api, store, data_dir)
+        result = sync_metadata(api, store, config.meta_dir)
         click.echo(f"✓ Synced {result['observations']} observations, "
                     f"{result['objects']} objects, {result['spectra']} spectra")
 
@@ -546,7 +546,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         click.echo("✗ Not configured. Run: campfire login")
         sys.exit(1)
 
-    store, data_dir = _open_store(config)
+    store, config = _open_store(config)
 
     # Check that catalog has been synced
     catalog_obs = store.get_synced_observations()
@@ -696,7 +696,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         try:
             stats = download_observation(
                 api, obs,
-                data_dir, store,
+                config.products_dir, store,
                 max_workers=workers,
                 download_session=dl_session,
                 manifest=plan["manifest"],

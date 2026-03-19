@@ -103,4 +103,4 @@ Campfire.query_objects() → queries local SQLite (instant after sync)
 Campfire.open_spectrum() → local FITS if downloaded, API fallback
 ```
 
-The CLI and Python client share the same local data store at `~/.campfire/data/`. Metadata sync is separate from FITS downloads — sync the catalog often (it's fast), download spectra only when you need them.
+The CLI and Python client share the same local data store (defaults to `$CAMPFIRE_ROOT` or `~/campfire`). FITS files go in `products/` (matching the pipeline layout), metadata in `meta/`. Sync the catalog often (it's fast), download spectra only when you need them.

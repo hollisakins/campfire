@@ -20,7 +20,7 @@ def export_catalogs(store: LocalStore, output_dir: Path) -> Tuple[int, int]:
     store : LocalStore
         The local database to export from.
     output_dir : Path
-        Directory to write CSV files into (typically .campfire_meta/).
+        Directory to write CSV files into (typically meta/).
 
     Returns
     -------

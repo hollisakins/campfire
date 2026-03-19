@@ -52,8 +52,8 @@ class Campfire:
         Base URL for the API. If not provided, uses CAMPFIRE_API_URL environment
         variable or defaults to production CAMPFIRE server.
     data_dir : str or Path, optional
-        Path to the local data directory. If not provided, auto-detected from
-        ``~/.campfire/config.toml``.
+        Root data directory (contains ``products/`` and ``meta/``). If not
+        provided, uses ``$CAMPFIRE_ROOT``, config.toml, or ``~/campfire``.
     auto_refresh : bool, optional
         If True (default), automatically refresh OAuth tokens when they expire.
 
@@ -84,28 +84,38 @@ class Campfire:
 
         # Detect local data store
         self._local = None
-        self._local_data_dir: Optional[Path] = None
+        self._products_dir: Optional[Path] = None
+        self._meta_dir: Optional[Path] = None
         self._local_logged = False  # For one-time "Using local catalog" message
         self._api_download_count = 0  # Track consecutive API downloads for warning
 
         resolved_dir = self._resolve_data_dir(data_dir)
         if resolved_dir:
-            db_path = resolved_dir / ".campfire_meta" / "campfire.db"
+            meta_dir = resolved_dir / "meta"
+            db_path = meta_dir / "campfire.db"
             if db_path.exists():
                 from .db.store import LocalStore
                 self._local = LocalStore(db_path)
-                self._local_data_dir = resolved_dir
+                self._products_dir = resolved_dir / "products"
+                self._meta_dir = meta_dir
 
     @staticmethod
     def _resolve_data_dir(data_dir: Optional[Union[str, Path]]) -> Optional[Path]:
-        """Resolve the local data directory from argument, config, or default."""
+        """Resolve the root data directory from argument, env, config, or default.
+
+        Resolution order: explicit arg → $CAMPFIRE_ROOT → config.toml → None.
+        """
         if data_dir:
             return Path(data_dir).expanduser()
         try:
-            from .config import Config
+            from .config import Config, _default_data_dir
             config = Config()
             if config.exists():
                 return config.data_dir
+            # Check env / default even without config
+            default = _default_data_dir()
+            if (default / "meta" / "campfire.db").exists():
+                return default
         except Exception:
             pass
         return None
@@ -170,25 +180,26 @@ class Campfire:
         from .sync import sync_metadata
 
         # Ensure data dir and store exist
-        if self._local_data_dir is None:
+        if self._meta_dir is None:
             resolved = self._resolve_data_dir(None)
             if resolved is None:
                 from .config import Config
                 config = Config()
                 config.ensure_data_dir()
                 resolved = config.data_dir
-            self._local_data_dir = resolved
+            self._products_dir = resolved / "products"
+            self._meta_dir = resolved / "meta"
 
-        self._local_data_dir.mkdir(parents=True, exist_ok=True)
-        (self._local_data_dir / ".campfire_meta").mkdir(exist_ok=True)
+        self._products_dir.mkdir(parents=True, exist_ok=True)
+        self._meta_dir.mkdir(parents=True, exist_ok=True)
 
         # Open store (create if needed)
         if self._local is None:
             from .db.store import LocalStore
-            db_path = self._local_data_dir / ".campfire_meta" / "campfire.db"
+            db_path = self._meta_dir / "campfire.db"
             self._local = LocalStore(db_path)
 
-        result = sync_metadata(self._api, self._local, self._local_data_dir)
+        result = sync_metadata(self._api, self._local, self._meta_dir)
         return result
 
     def download(
@@ -267,7 +278,7 @@ class Campfire:
         for obs in sorted(target_obs):
             self._api_session._ensure_valid_token()
             stats = download_observation(
-                self._api, obs, self._local_data_dir, self._local,
+                self._api, obs, self._products_dir, self._local,
                 max_workers=max_workers,
                 download_session=dl_session,
                 grating_filter=gratings,
@@ -627,10 +638,10 @@ class Campfire:
         >>> print(spec.wavelength.shape, spec.flux.shape)
         """
         # Check local store first
-        if self._local and self._local_data_dir:
+        if self._local and self._products_dir:
             local_path = self._local.find_local_path(object_id, grating)
             if local_path:
-                full_path = self._local_data_dir / local_path
+                full_path = self._products_dir / local_path
                 if full_path.exists():
                     self._api_download_count = 0
                     return SpectrumData.from_fits(
@@ -657,9 +668,9 @@ class Campfire:
         filename = Path(fits_path).name
 
         # Determine where to save: managed data dir if available, else temp
-        if self._local and self._local_data_dir:
+        if self._local and self._products_dir:
             observation = spec_info.get("observation", object_id.rsplit("_", 1)[0])
-            obs_dir = self._local_data_dir / observation
+            obs_dir = self._products_dir / observation
             obs_dir.mkdir(parents=True, exist_ok=True)
             dest = obs_dir / filename
         else:
@@ -686,7 +697,7 @@ class Campfire:
             raise DownloadError(f"Failed to download spectrum: {e}")
 
         # Update the store so next call finds it locally
-        if self._local and self._local_data_dir:
+        if self._local and self._products_dir:
             observation = spec_info.get("observation", object_id.rsplit("_", 1)[0])
             local_rel_path = f"{observation}/{filename}"
             self._local.mark_synced(

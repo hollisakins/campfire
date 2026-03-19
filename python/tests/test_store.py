@@ -9,7 +9,7 @@ from campfire.db.store import LocalStore
 @pytest.fixture
 def store(tmp_path):
     """Create a LocalStore in a temp directory."""
-    db_path = tmp_path / ".campfire_meta" / "campfire.db"
+    db_path = tmp_path / "meta" / "campfire.db"
     s = LocalStore(db_path)
     yield s
     s.close()
@@ -110,7 +110,7 @@ class TestLocalStoreInit:
         """Store migrates from sync_state.db if it exists."""
         import sqlite3
 
-        meta_dir = tmp_path / ".campfire_meta"
+        meta_dir = tmp_path / "meta"
         meta_dir.mkdir()
         old_path = meta_dir / "sync_state.db"
         new_path = meta_dir / "campfire.db"

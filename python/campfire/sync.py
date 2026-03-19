@@ -16,7 +16,7 @@ from .api.session import create_download_session
 from .exceptions import DownloadError
 
 
-def sync_metadata(api, store, data_dir: Path) -> dict:
+def sync_metadata(api, store, meta_dir: Path) -> dict:
     """Sync the full object/spectra catalog from the server.
 
     Fetches all accessible observations' metadata, upserts into the local
@@ -28,8 +28,8 @@ def sync_metadata(api, store, data_dir: Path) -> dict:
         Authenticated API client.
     store : LocalStore
         Local database to update.
-    data_dir : Path
-        Data directory (for CSV export).
+    meta_dir : Path
+        Meta directory for CSV export (e.g., ``data_dir/meta/``).
 
     Returns
     -------
@@ -52,7 +52,6 @@ def sync_metadata(api, store, data_dir: Path) -> dict:
     obj_count, spec_count = store.upsert_objects(all_objects)
 
     # 4. Export CSVs
-    meta_dir = data_dir / ".campfire_meta"
     export_catalogs(store, meta_dir)
 
     # 5. Detect stale local files
@@ -102,7 +101,7 @@ def compute_download_plan(
 def download_and_verify(
     spec: dict,
     obs_dir: Path,
-    data_dir: Path,
+    products_dir: Path,
     download_session: requests.Session,
 ) -> dict:
     """Download a single file, verify checksum, return result dict.
@@ -145,7 +144,7 @@ def download_and_verify(
             "observation": spec.get("observation", obs_dir.name),
             "grating": spec["grating"],
             "fits_path": spec["fits_path"],
-            "local_path": str(local_path.relative_to(data_dir)),
+            "local_path": str(local_path.relative_to(products_dir)),
             "file_hash": computed_hash,
             "file_size": local_path.stat().st_size,
         }
@@ -161,7 +160,7 @@ def download_and_verify(
 def download_observation(
     api_client,
     obs_name: str,
-    data_dir: Path,
+    products_dir: Path,
     store,
     max_workers: int = 4,
     dry_run: bool = False,
@@ -177,8 +176,8 @@ def download_observation(
         Authenticated API client for fetching manifests.
     obs_name : str
         Observation name.
-    data_dir : Path
-        Local data directory.
+    products_dir : Path
+        Products directory (contains ``<obs>/`` subdirs).
     store : LocalStore
         Database for tracking downloaded files.
     max_workers : int
@@ -230,7 +229,7 @@ def download_observation(
         return stats
 
     # Create observation directory
-    obs_dir = data_dir / obs_name
+    obs_dir = products_dir / obs_name
     obs_dir.mkdir(parents=True, exist_ok=True)
 
     # Use provided download session or create one
@@ -241,7 +240,7 @@ def download_observation(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_spec = {
-            executor.submit(download_and_verify, spec, obs_dir, data_dir, dl_session): spec
+            executor.submit(download_and_verify, spec, obs_dir, products_dir, dl_session): spec
             for spec in to_download
         }
 

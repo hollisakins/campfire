@@ -52,7 +52,7 @@ After `campfire sync`, the CSV catalogs are ready for pandas/astropy:
 
 ```python
 from astropy.table import Table
-objects = Table.read('~/.campfire/data/.campfire_meta/objects.csv')
+objects = Table.read('~/campfire/meta/objects.csv')
 high_z = objects[objects['redshift'] > 3.0]
 ```
 

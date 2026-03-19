@@ -171,23 +171,23 @@ campfire login --api-key    # Manual API key paste (headless environments)
 
 ## Local Data Layout
 
-After syncing and downloading, your data directory looks like:
+The data directory defaults to `$CAMPFIRE_ROOT` if set, otherwise `~/campfire`. This matches the pipeline's directory structure, so pipeline users can access reduced spectra without re-downloading.
 
 ```
-~/.campfire/
-├── credentials              # OAuth tokens or API key (0600 permissions)
-├── config.toml              # Settings (base_url, data_dir)
-└── data/
-    ├── .campfire_meta/
-    │   ├── campfire.db      # SQLite database (full catalog + download tracking)
-    │   ├── objects.csv      # Object catalog (for pandas/astropy)
-    │   └── spectra.csv      # Spectra catalog (for pandas/astropy)
+$CAMPFIRE_ROOT/            # or ~/campfire/
+├── meta/
+│   ├── campfire.db        # SQLite database (full catalog + download tracking)
+│   ├── objects.csv        # Object catalog (for pandas/astropy)
+│   └── spectra.csv        # Spectra catalog (for pandas/astropy)
+└── products/
     ├── ember_uds_p4/
-    │   ├── ember_uds_p4_PRISM_CLEAR_123456_spec.fits
+    │   ├── ember_uds_p4_prism_clear_123456_spec.fits
     │   └── ...
     └── capers_cosmos_p1/
         └── ...
 ```
+
+Credentials and config are stored separately in `~/.campfire/` (credentials, config.toml).
 
 ### CSV Catalogs
 
@@ -196,8 +196,8 @@ The CSV catalogs are regenerated after each `campfire sync`:
 ```python
 from astropy.table import Table
 
-objects = Table.read('~/.campfire/data/.campfire_meta/objects.csv')
-spectra = Table.read('~/.campfire/data/.campfire_meta/spectra.csv')
+objects = Table.read('~/campfire/meta/objects.csv')
+spectra = Table.read('~/campfire/meta/spectra.csv')
 
 high_z = objects[objects['redshift'] > 3.0]
 ```

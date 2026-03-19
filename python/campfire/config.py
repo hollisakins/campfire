@@ -1,8 +1,18 @@
 """CAMPFIRE CLI configuration management.
 
-Manages ~/.campfire/config.toml (TOML format) for API URL and data directory.
+Manages ~/.campfire/config.toml for API URL and data directory.
+
+Data directory resolution order:
+  1. Explicit ``data_dir`` in config.toml
+  2. ``$CAMPFIRE_ROOT`` environment variable
+  3. ``~/campfire`` (visible default)
+
+Layout within the data directory:
+  - ``products/<obs>/``  — FITS files (mirrors pipeline structure)
+  - ``meta/``            — campfire.db, objects.csv, spectra.csv
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -15,7 +25,17 @@ import tomli_w
 
 CAMPFIRE_DIR = Path.home() / ".campfire"
 CONFIG_FILE = CAMPFIRE_DIR / "config.toml"
-DEFAULT_DATA_DIR = CAMPFIRE_DIR / "data"
+
+
+def _default_data_dir() -> Path:
+    """Resolve the default data directory.
+
+    Checks ``$CAMPFIRE_ROOT`` first, then falls back to ``~/campfire``.
+    """
+    campfire_root = os.environ.get("CAMPFIRE_ROOT")
+    if campfire_root:
+        return Path(campfire_root)
+    return Path.home() / "campfire"
 
 
 class Config:
@@ -58,20 +78,33 @@ class Config:
 
     @property
     def data_dir(self) -> Path:
-        raw = self._data.get("settings", {}).get("data_dir", str(DEFAULT_DATA_DIR))
-        return Path(raw).expanduser()
+        raw = self._data.get("settings", {}).get("data_dir")
+        if raw:
+            return Path(raw).expanduser()
+        return _default_data_dir()
 
     @data_dir.setter
     def data_dir(self, path: Path) -> None:
         self._data.setdefault("settings", {})["data_dir"] = str(path)
         self._save()
 
+    @property
+    def products_dir(self) -> Path:
+        """Directory for FITS files: data_dir/products/."""
+        return self.data_dir / "products"
+
+    @property
+    def meta_dir(self) -> Path:
+        """Directory for SQLite + CSVs: data_dir/meta/."""
+        return self.data_dir / "meta"
+
     def exists(self) -> bool:
         return self.config_path.exists()
 
     def ensure_data_dir(self) -> Path:
-        """Create data directory and .campfire_meta subdirectory."""
+        """Create data directory with products/ and meta/ subdirectories."""
         d = self.data_dir
         d.mkdir(parents=True, exist_ok=True)
-        (d / ".campfire_meta").mkdir(exist_ok=True)
+        (d / "products").mkdir(exist_ok=True)
+        (d / "meta").mkdir(exist_ok=True)
         return d
