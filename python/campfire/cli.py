@@ -21,40 +21,18 @@ from typing import Optional, Tuple
 import click
 import requests
 
+from .api.session import APISession, resolve_base_url
+from .api.client import APIClient
 from .auth.credentials import CredentialManager
 from .auth.device_flow import run_device_flow
 from .auth.tokens import TokenManager
 from .exceptions import AuthenticationError
 
-# Default API URL
-DEFAULT_BASE_URL = "https://campfire.hollisakins.com/api/v1"
 
-
-def get_base_url() -> str:
-    """Get the API base URL from environment, config, or default."""
-    import os
-
-    env_url = os.environ.get("CAMPFIRE_API_URL")
-    if env_url:
-        return env_url
-
-    from .config import Config
-    config = Config()
-    if config.exists() and config.base_url:
-        return config.base_url
-
-    return DEFAULT_BASE_URL
-
-
-def _require_auth(base_url: str) -> Tuple[TokenManager, str]:
-    """Verify credentials and return (token_manager, valid_token). Exits on failure."""
+def _require_auth(base_url: str) -> APISession:
+    """Verify credentials and return an APISession. Exits on failure."""
     try:
-        tm = TokenManager(base_url)
-        if not tm.has_credentials():
-            click.echo("✗ Not logged in. Run: campfire login")
-            sys.exit(1)
-        token = tm.get_valid_token(auto_refresh=True)
-        return tm, token
+        return APISession(base_url=base_url)
     except AuthenticationError as e:
         click.echo(f"✗ {e}")
         click.echo("  Run: campfire login")
@@ -111,7 +89,7 @@ def login(browser: Optional[bool], base_url: Optional[str]):
     By default, opens a browser for secure authentication.
     Use --api-key for headless environments.
     """
-    base_url = base_url or get_base_url()
+    base_url = base_url or resolve_base_url()
     creds = CredentialManager()
 
     # Check if already logged in
@@ -259,7 +237,7 @@ def logout():
 @click.option("--base-url", default=None, help="API base URL")
 def whoami(base_url: Optional[str]):
     """Show current authenticated user."""
-    base_url = base_url or get_base_url()
+    base_url = base_url or resolve_base_url()
     creds = CredentialManager()
 
     if not creds.exists():
@@ -302,7 +280,7 @@ def whoami(base_url: Optional[str]):
 @click.option("--base-url", default=None, help="API base URL")
 def status(base_url: Optional[str]):
     """Check credentials and sync status."""
-    base_url = base_url or get_base_url()
+    base_url = base_url or resolve_base_url()
 
     try:
         token_manager = TokenManager(base_url)
@@ -400,24 +378,15 @@ def status(base_url: Optional[str]):
 @click.option("--base-url", default=None, help="API base URL")
 def observations(tracked: bool, json_out: bool, base_url: Optional[str]):
     """List available observations with stats."""
-    base_url = base_url or get_base_url()
-    _, token = _require_auth(base_url)
+    base_url = base_url or resolve_base_url()
+    api_session = _require_auth(base_url)
+    api = APIClient(api_session)
 
     try:
-        response = requests.get(
-            f"{base_url}/observations",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        if response.status_code == 401:
-            click.echo("✗ Authentication failed. Run: campfire login", err=True)
-            sys.exit(1)
-        response.raise_for_status()
-    except requests.RequestException as e:
+        obs_list = api.get_observations()
+    except Exception as e:
         click.echo(f"✗ Failed to fetch observations: {e}", err=True)
         sys.exit(1)
-
-    obs_list = response.json().get("observations", [])
 
     from .config import Config
     from .sync import format_size
@@ -491,22 +460,17 @@ def add(obs_names: tuple, add_all: bool, base_url: Optional[str]):
         sys.exit(1)
 
     explicit_base_url = base_url is not None
-    base_url = base_url or get_base_url()
-    _, token = _require_auth(base_url)
+    base_url = base_url or resolve_base_url()
+    api_session = _require_auth(base_url)
+    api = APIClient(api_session)
 
     # Fetch available observations
     try:
-        response = requests.get(
-            f"{base_url}/observations",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        response.raise_for_status()
-    except requests.RequestException as e:
+        obs_list = api.get_observations()
+    except Exception as e:
         click.echo(f"✗ Failed to fetch observations: {e}", err=True)
         sys.exit(1)
 
-    obs_list = response.json().get("observations", [])
     obs_by_name = {o["observation"]: o for o in obs_list}
 
     from .config import Config
@@ -623,17 +587,16 @@ def remove(obs_name: str, delete: bool, yes: bool, base_url: Optional[str]):
 @click.option("--base-url", default=None, help="API base URL")
 def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url: Optional[str]):
     """Download and update tracked observations."""
-    base_url = base_url or get_base_url()
+    base_url = base_url or resolve_base_url()
 
     from .config import Config
     from .state import SyncState
     from .sync import (
-        create_authenticated_session,
-        create_download_session,
-        refresh_session_token,
+        compute_download_plan,
         sync_observation,
         format_size,
     )
+    from .api.session import create_download_session
     from .catalog import generate_catalogs
 
     config = Config()
@@ -659,9 +622,10 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
     config.ensure_data_dir()
     state = SyncState(config.data_dir / ".campfire_meta" / "sync_state.db")
 
-    # Create authenticated session
+    # Create authenticated session and API client
     try:
-        session = create_authenticated_session(base_url)
+        api_session = APISession(base_url=base_url)
+        api = APIClient(api_session)
     except AuthenticationError as e:
         click.echo(f"✗ {e}")
         sys.exit(1)
@@ -674,9 +638,7 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
 
     for obs in tracked:
         try:
-            from .sync import fetch_manifest, compute_download_plan
-
-            manifest = fetch_manifest(session, base_url, obs)
+            manifest = api.fetch_manifest(obs)
             synced = state.get_synced_files(obs)
             new_files, updated_files, up_to_date = compute_download_plan(manifest, synced)
             to_download = new_files + updated_files
@@ -731,14 +693,15 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
             continue
 
         # Refresh token between observations for long syncs
-        refresh_session_token(session, base_url)
+        api_session._ensure_valid_token()
 
         try:
             stats = sync_observation(
-                session, base_url, obs,
+                api, obs,
                 config.data_dir, state,
                 max_workers=workers,
                 download_session=download_session,
+                manifest=plan["manifest"],
             )
             all_stats.append(stats)
         except Exception as e:
@@ -748,26 +711,8 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
     click.echo("\nUpdating catalog...")
     try:
         # Fetch full object data for all tracked observations
-        all_objects = []
-        for obs in config.tracked_observations:
-            refresh_session_token(session, base_url)
-            offset = 0
-            while True:
-                resp = session.get(
-                    f"{base_url}/objects",
-                    params={"observations": obs, "limit": 1000, "offset": offset},
-                    timeout=60,
-                )
-                if resp.status_code != 200:
-                    break
-                data = resp.json()
-                objects = data.get("data", [])
-                all_objects.extend(objects)
-                pagination = data.get("pagination", {})
-                total = pagination.get("total", 0)
-                offset += len(objects)
-                if offset >= total or not objects:
-                    break
+        api_session._ensure_valid_token()
+        all_objects = api.fetch_all_objects(config.tracked_observations)
 
         obj_count, spec_count = generate_catalogs(all_objects, config.data_dir)
         click.echo(f"  Catalog updated: objects.csv ({obj_count} objects), spectra.csv ({spec_count} spectra)")

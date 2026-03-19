@@ -6,6 +6,7 @@ from the CAMPFIRE archive (COSMOS Archive of MultiPle-Field Internal Reductions 
 """
 
 from .client import Campfire
+from .models import SpectrumData
 from .exceptions import (
     CampfireError,
     AuthenticationError,
@@ -36,6 +37,7 @@ def __getattr__(name):
 __version__ = "0.1.0"
 __all__ = [
     "Campfire",
+    "SpectrumData",
     # Exceptions
     "CampfireError",
     "AuthenticationError",

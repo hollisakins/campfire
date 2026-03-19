@@ -1,13 +1,16 @@
 """Main CAMPFIRE API client."""
 
-import os
+import logging
+import tempfile
 from pathlib import Path
-from typing import Optional, List, Union, Tuple, Type
+from typing import Iterator, Optional, List, Union, Tuple
+
 import requests
 from astropy.table import Table
-from astropy.io import fits
 from tqdm import tqdm
 
+from .api.session import APISession
+from .api.client import APIClient
 from .exceptions import (
     AuthenticationError,
     NotFoundError,
@@ -23,8 +26,11 @@ from .flags import (
     DQFlags,
     parse_flag_input,
 )
+from .models import SpectrumData
 
 __version__ = "0.1.0"
+
+logger = logging.getLogger(__name__)
 
 
 class Campfire:
@@ -33,15 +39,22 @@ class Campfire:
 
     Query and download NIRSpec spectroscopic data from the CAMPFIRE archive.
 
+    When locally synced data is available (from ``campfire sync``), queries
+    are served from the local SQLite database for speed. Otherwise, falls
+    back to the remote API.
+
     Authentication uses stored credentials from 'campfire login'. Run one of:
-    - `campfire login` for browser-based authentication (recommended)
-    - `campfire login --api-key` to paste an API key (for headless systems)
+    - ``campfire login`` for browser-based authentication (recommended)
+    - ``campfire login --api-key`` to paste an API key (for headless systems)
 
     Parameters
     ----------
     base_url : str, optional
         Base URL for the API. If not provided, uses CAMPFIRE_API_URL environment
         variable or defaults to production CAMPFIRE server.
+    data_dir : str or Path, optional
+        Path to the local data directory. If not provided, auto-detected from
+        ``~/.campfire/config.toml``.
     auto_refresh : bool, optional
         If True (default), automatically refresh OAuth tokens when they expire.
 
@@ -61,79 +74,88 @@ class Campfire:
     def __init__(
         self,
         base_url: Optional[str] = None,
+        data_dir: Optional[Union[str, Path]] = None,
         auto_refresh: bool = True,
     ):
         """Initialize the CAMPFIRE client."""
-        self.base_url = base_url or os.environ.get("CAMPFIRE_API_URL") or self.DEFAULT_BASE_URL
-        self._auto_refresh = auto_refresh
-        self._token_manager = None
+        # Create shared API session and client
+        self._api_session = APISession(base_url=base_url, auto_refresh=auto_refresh)
+        self._api = APIClient(self._api_session)
+        self.base_url = self._api_session.base_url
 
-        # Load credentials from ~/.campfire/credentials
-        self._load_stored_credentials()
+        # Detect local data store
+        self._local = None
+        self._local_data_dir: Optional[Path] = None
+        self._local_logged = False  # For one-time "Using local catalog" message
 
-        # Validate API key format if using API key
-        if self._auth_type == "api_key" and not self._auth_token.startswith("sk_"):
-            raise ValidationError(
-                "Invalid API key format. Keys should start with 'sk_'"
-            )
+        resolved_dir = self._resolve_data_dir(data_dir)
+        if resolved_dir:
+            db_path = resolved_dir / ".campfire_meta" / "campfire.db"
+            if db_path.exists():
+                from .db.store import LocalStore
+                self._local = LocalStore(db_path)
+                self._local_data_dir = resolved_dir
 
-        # Create session
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": f"campfire-python/{__version__}",
-            }
-        )
-        self._update_auth_header()
-
-    def _load_stored_credentials(self):
-        """Load credentials from ~/.campfire/credentials."""
+    @staticmethod
+    def _resolve_data_dir(data_dir: Optional[Union[str, Path]]) -> Optional[Path]:
+        """Resolve the local data directory from argument, config, or default."""
+        if data_dir:
+            return Path(data_dir).expanduser()
         try:
-            from .auth.tokens import TokenManager
+            from .config import Config
+            config = Config()
+            if config.exists():
+                return config.data_dir
+        except Exception:
+            pass
+        return None
 
-            self._token_manager = TokenManager(self.base_url)
-
-            if not self._token_manager.has_credentials():
-                raise AuthenticationError(
-                    "No credentials found. Run 'campfire login' to authenticate."
-                )
-
-            if self._token_manager.is_api_key():
-                self._auth_token = self._token_manager.get_valid_token(auto_refresh=False)
-                self._auth_type = "api_key"
-            else:
-                self._auth_token = self._token_manager.get_valid_token(
-                    auto_refresh=self._auto_refresh
-                )
-                self._auth_type = "oauth"
-
-        except ImportError:
-            raise AuthenticationError(
-                "No credentials found. Run 'campfire login' to authenticate."
-            )
-
-    def _update_auth_header(self):
-        """Update the session's Authorization header."""
-        self.session.headers["Authorization"] = f"Bearer {self._auth_token}"
-
-    def _ensure_valid_token(self):
-        """Ensure we have a valid token, refreshing if necessary."""
-        if self._auth_type != "oauth" or not self._auto_refresh:
+    def _log_local_use(self) -> None:
+        """Log a one-time message when using local data."""
+        if self._local_logged or self._local is None:
             return
-
-        if self._token_manager and self._token_manager.needs_refresh():
+        self._local_logged = True
+        last = self._local.get_last_synced_at()
+        if last:
+            from datetime import datetime, timezone
             try:
-                self._auth_token = self._token_manager.get_valid_token(auto_refresh=True)
-                self._update_auth_header()
-            except AuthenticationError:
-                # If refresh fails, continue with current token
-                # The request will fail with 401 and user will know to re-login
-                pass
+                synced = datetime.fromisoformat(last.replace("Z", "+00:00"))
+                delta = datetime.now(timezone.utc) - synced
+                if delta.days > 0:
+                    ago = f"{delta.days}d ago"
+                elif delta.seconds > 3600:
+                    ago = f"{delta.seconds // 3600}h ago"
+                else:
+                    ago = f"{delta.seconds // 60}m ago"
+                logger.info(f"Using local catalog (last synced {ago})")
+            except (ValueError, TypeError):
+                logger.info("Using local catalog")
+        else:
+            logger.info("Using local catalog")
 
-    def _make_request(self, method: str, url: str, **kwargs) -> requests.Response:
-        """Make an authenticated request, refreshing token if needed."""
-        self._ensure_valid_token()
-        return self.session.request(method, url, **kwargs)
+    @property
+    def is_local(self) -> bool:
+        """Whether a local data store is available."""
+        return self._local is not None
+
+    @property
+    def last_synced(self) -> Optional[str]:
+        """Timestamp of last sync, or None if no local data."""
+        if self._local:
+            return self._local.get_last_synced_at()
+        return None
+
+    @staticmethod
+    def _flag_to_dict(flag_input, flag_class):
+        """Convert a flag input to a dict for local query."""
+        query = parse_flag_input(flag_input, flag_class)
+        if query is None:
+            return None
+        return {
+            "include_any": query.include_any,
+            "include_all": query.include_all,
+            "exclude": query.exclude,
+        }
 
     def query_objects(
         self,
@@ -158,6 +180,7 @@ class Campfire:
         offset: int = 0,
         sort: str = "object_id",
         sort_dir: str = "asc",
+        remote: bool = False,
     ) -> Table:
         """
         Query objects with filters.
@@ -233,78 +256,64 @@ class Campfire:
         >>> # Exclude contaminated objects
         >>> results = cf.query_objects(dq_flags=~DQFlags.CONTAMINATION)
         """
-        # Build query parameters
-        params = {
-            "limit": limit,
-            "offset": offset,
-            "sort": sort,
-            "sort_dir": sort_dir,
-        }
+        # Determine whether to use local store
+        use_local = False
+        if self._local and not remote:
+            # Check if the requested observations are all available locally
+            if observations:
+                synced_obs = set(self._local.get_synced_observations())
+                use_local = all(o in synced_obs for o in observations)
+            else:
+                # No observation filter — use local if we have any data
+                synced_obs = self._local.get_synced_observations()
+                use_local = len(synced_obs) > 0
 
-        if programs:
-            # Convert program names to IDs if needed (just pass as-is for now)
-            params["programs"] = ",".join(str(p) for p in programs)
+        if use_local:
+            self._log_local_use()
+            # Convert flag inputs to dicts for local query
+            sf_dict = self._flag_to_dict(spectral_features, SpectralFeatures)
+            of_dict = self._flag_to_dict(object_flags, ObjectFlags)
+            dq_dict = self._flag_to_dict(dq_flags, DQFlags)
 
-        if fields:
-            params["fields"] = ",".join(fields)
+            objects = self._local.query_objects(
+                programs=programs,
+                fields=fields,
+                observations=observations,
+                redshift_range=redshift_range,
+                redshift_quality=redshift_quality,
+                max_snr_range=max_snr_range,
+                spectral_features=sf_dict,
+                object_flags=of_dict,
+                dq_flags=dq_dict,
+                inspected_only=inspected_only,
+                search=search,
+                cone_search=cone_search,
+                sort=sort,
+                sort_dir=sort_dir,
+                limit=limit,
+                offset=offset,
+            )
+        else:
+            objects, pagination = self._api.query_objects(
+                programs=programs,
+                fields=fields,
+                gratings=gratings,
+                observations=observations,
+                redshift_range=redshift_range,
+                redshift_quality=redshift_quality,
+                max_snr_range=max_snr_range,
+                spectral_features=spectral_features,
+                object_flags=object_flags,
+                dq_flags=dq_flags,
+                inspected_only=inspected_only,
+                search=search,
+                cone_search=cone_search,
+                limit=limit,
+                offset=offset,
+                sort=sort,
+                sort_dir=sort_dir,
+            )
 
-        if gratings:
-            params["gratings"] = ",".join(gratings)
-
-        if observations:
-            params["observations"] = ",".join(observations)
-
-        if redshift_range:
-            params["redshift_min"] = redshift_range[0]
-            params["redshift_max"] = redshift_range[1]
-
-        if max_snr_range:
-            params["max_snr_min"] = max_snr_range[0]
-            params["max_snr_max"] = max_snr_range[1]
-
-        if redshift_quality:
-            params["redshift_quality"] = ",".join(str(q) for q in redshift_quality)
-
-        # Process flag parameters with numpy-style query support
-        sf_query = parse_flag_input(spectral_features, SpectralFeatures)
-        if sf_query:
-            params.update(sf_query.to_params("spectral_features"))
-
-        of_query = parse_flag_input(object_flags, ObjectFlags)
-        if of_query:
-            params.update(of_query.to_params("object_flags"))
-
-        dq_query = parse_flag_input(dq_flags, DQFlags)
-        if dq_query:
-            params.update(dq_query.to_params("dq_flags"))
-
-        if inspected_only is not None:
-            params["inspected_only"] = "true" if inspected_only else "false"
-
-        if search:
-            params["search"] = search
-
-        if cone_search:
-            ra, dec, radius_arcsec = cone_search
-            params["ra"] = ra
-            params["dec"] = dec
-            params["radius"] = radius_arcsec
-
-        # Make request
-        url = f"{self.base_url}/objects"
-        response = self._make_request("GET", url, params=params)
-
-        if response.status_code == 401:
-            raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
-        elif response.status_code == 403:
-            raise AuthenticationError("Access denied")
-        elif response.status_code != 200:
-            raise Exception(f"API error: {response.status_code} - {response.text}")
-
-        data = response.json()
-        objects = data.get("data", [])
-
-        # Convert to astropy Table
         if len(objects) == 0:
             return Table()
 
@@ -358,27 +367,7 @@ class Campfire:
             return str(output_path)
 
         # Get signed URL from API
-        url = f"{self.base_url}/spectra"
-        params = {"path": fits_path}
-
-        response = self._make_request("GET", url, params=params)
-
-        if response.status_code == 401:
-            raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
-        elif response.status_code == 403:
-            raise AuthenticationError("Access denied to this file")
-        elif response.status_code == 404:
-            raise NotFoundError(f"File not found: {fits_path}")
-        elif response.status_code != 200:
-            raise DownloadError(
-                f"Failed to get download URL: {response.status_code} - {response.text}"
-            )
-
-        data = response.json()
-        signed_url = data.get("url")
-
-        if not signed_url:
-            raise DownloadError("No download URL returned from API")
+        signed_url = self._api.get_signed_url(fits_path)
 
         # Download the file from R2
         try:
@@ -424,7 +413,7 @@ class Campfire:
         Parameters
         ----------
         object_ids : str or list of str, optional
-            Object ID(s) to download. Must also provide `table` parameter.
+            Object ID(s) to download. Must also provide ``table`` parameter.
         table : astropy.table.Table, optional
             Table from query_objects() containing spectra to download.
         download_dir : str or Path, optional
@@ -518,15 +507,7 @@ class Campfire:
         >>> print(meta['fields'])
         ['COSMOS', 'UDS', ...]
         """
-        url = f"{self.base_url}/metadata"
-        response = self._make_request("GET", url)
-
-        if response.status_code == 401:
-            raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
-        elif response.status_code != 200:
-            raise APIError(f"API error: {response.status_code} - {response.text}")
-
-        return response.json()
+        return self._api.get_metadata()
 
     def get_programs(self) -> Table:
         """
@@ -543,7 +524,7 @@ class Campfire:
         >>> programs = cf.get_programs()
         >>> print(programs)
         """
-        metadata = self.get_metadata()
+        metadata = self._api.get_metadata()
         programs = metadata.get("programs", [])
 
         if len(programs) == 0:
@@ -560,7 +541,7 @@ class Campfire:
         list of str
             List of field names (e.g., ['COSMOS', 'UDS']).
         """
-        metadata = self.get_metadata()
+        metadata = self._api.get_metadata()
         return metadata.get("fields", [])
 
     def get_gratings(self) -> List[str]:
@@ -572,7 +553,7 @@ class Campfire:
         list of str
             List of grating names (e.g., ['PRISM', 'G395M']).
         """
-        metadata = self.get_metadata()
+        metadata = self._api.get_metadata()
         return metadata.get("gratings", [])
 
     def get_observations(self) -> List[str]:
@@ -584,7 +565,7 @@ class Campfire:
         list of str
             List of observation names (e.g., ['ember_uds_p4']).
         """
-        metadata = self.get_metadata()
+        metadata = self._api.get_metadata()
         return metadata.get("observations", [])
 
     # -------------------------------------------------------------------------
@@ -620,21 +601,7 @@ class Campfire:
         >>> from campfire.plotting import plot_spectrum
         >>> fig = plot_spectrum(data, redshift=2.5)
         """
-        url = f"{self.base_url}/spectrum"
-        params = {"object_id": object_id, "grating": grating}
-
-        response = self._make_request("GET", url, params=params)
-
-        if response.status_code == 401:
-            raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
-        elif response.status_code == 403:
-            raise AuthenticationError("Access denied to this object")
-        elif response.status_code == 404:
-            raise NotFoundError(f"No {grating} spectrum found for {object_id}")
-        elif response.status_code != 200:
-            raise APIError(f"API error: {response.status_code} - {response.text}")
-
-        return response.json()
+        return self._api.get_spectrum_data(object_id, grating)
 
     def get_redshift_fit_data(
         self,
@@ -663,20 +630,146 @@ class Campfire:
         >>> fit_data = cf.get_redshift_fit_data('ember_uds_p4_123456', 'PRISM')
         >>> print(f"Best-fit redshift: z={fit_data['redshift']:.4f}")
         """
-        url = f"{self.base_url}/redshift-fit"
-        params = {"object_id": object_id, "grating": grating}
+        return self._api.get_redshift_fit_data(object_id, grating)
 
-        response = self._make_request("GET", url, params=params)
+    # -------------------------------------------------------------------------
+    # Spectrum Access Methods
+    # -------------------------------------------------------------------------
 
-        if response.status_code == 401:
-            raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
-        elif response.status_code == 403:
-            raise AuthenticationError("Access denied to this object")
-        elif response.status_code == 404:
-            raise NotFoundError(
-                f"No redshift fit data found for {object_id} ({grating})"
-            )
-        elif response.status_code != 200:
-            raise APIError(f"API error: {response.status_code} - {response.text}")
+    def open_spectrum(
+        self,
+        object_id: str,
+        grating: str,
+    ) -> SpectrumData:
+        """
+        Open a spectrum as a SpectrumData object.
 
-        return response.json()
+        Checks for locally synced FITS files first. If the file exists
+        locally, opens it directly. Otherwise, downloads via the API to
+        a temporary location.
+
+        Parameters
+        ----------
+        object_id : str
+            Object ID.
+        grating : str
+            Grating type (e.g., 'PRISM', 'G395M').
+
+        Returns
+        -------
+        SpectrumData
+            Spectrum with .wavelength, .flux, .flux_err, .header attributes.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
+        >>> print(spec.wavelength.shape, spec.flux.shape)
+        """
+        # Check local store first
+        if self._local and self._local_data_dir:
+            local_path = self._local.find_local_path(object_id, grating)
+            if local_path:
+                full_path = self._local_data_dir / local_path
+                if full_path.exists():
+                    return SpectrumData.from_fits(
+                        str(full_path), object_id=object_id, grating=grating
+                    )
+
+        # Need to find the fits_path for this object + grating
+        fits_path = self._resolve_fits_path(object_id, grating)
+
+        # Download to temp file
+        signed_url = self._api.get_signed_url(fits_path)
+        tmp_dir = Path(tempfile.mkdtemp(prefix="campfire_"))
+        tmp_file = tmp_dir / Path(fits_path).name
+
+        try:
+            with requests.get(signed_url, stream=True) as r:
+                r.raise_for_status()
+                with open(tmp_file, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=65536):
+                        f.write(chunk)
+        except requests.RequestException as e:
+            raise DownloadError(f"Failed to download spectrum: {e}")
+
+        return SpectrumData.from_fits(
+            str(tmp_file), object_id=object_id, grating=grating
+        )
+
+    def _resolve_fits_path(self, object_id: str, grating: str) -> str:
+        """Resolve the FITS path for an object + grating."""
+        # Check local store first
+        if self._local:
+            spectra = self._local.get_spectra_for_object(object_id, grating)
+            if spectra:
+                return spectra[0]["fits_path"]
+
+        # Fall back to API query
+        objects, _ = self._api.query_objects(
+            search=object_id, limit=1
+        )
+        if not objects:
+            raise NotFoundError(f"Object not found: {object_id}")
+
+        for spec in objects[0].get("spectra", []):
+            if spec.get("grating") == grating:
+                return spec["fits_path"]
+
+        raise NotFoundError(f"No {grating} spectrum found for {object_id}")
+
+    def iter_objects(self, **filters) -> Iterator[dict]:
+        """
+        Iterate over all matching objects with automatic pagination.
+
+        Yields individual object dicts. When local data is available and
+        covers the requested observations, iterates from SQLite. Otherwise,
+        auto-paginates through the remote API.
+
+        Parameters
+        ----------
+        **filters
+            Same filters as ``query_objects()``. ``limit`` controls page
+            size for remote queries (default 1000).
+
+        Yields
+        ------
+        dict
+            Individual object records.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> for obj in cf.iter_objects(redshift_range=(2.0, 4.0)):
+        ...     print(obj['object_id'], obj['redshift'])
+        """
+        remote = filters.pop("remote", False)
+
+        if self._local and not remote:
+            observations = filters.get("observations")
+            use_local = False
+            if observations:
+                synced_obs = set(self._local.get_synced_observations())
+                use_local = all(o in synced_obs for o in observations)
+            else:
+                use_local = len(self._local.get_synced_observations()) > 0
+
+            if use_local:
+                self._log_local_use()
+                # Convert flag inputs for local query
+                for flag_name, flag_class in [
+                    ("spectral_features", SpectralFeatures),
+                    ("object_flags", ObjectFlags),
+                    ("dq_flags", DQFlags),
+                ]:
+                    if flag_name in filters:
+                        filters[flag_name] = self._flag_to_dict(
+                            filters[flag_name], flag_class
+                        )
+                # Local query — no pagination needed, SQLite handles it
+                filters["limit"] = filters.get("limit", 999999)
+                yield from self._local.query_objects(**filters)
+                return
+
+        # Remote auto-pagination
+        yield from self._api.iter_objects(**filters)

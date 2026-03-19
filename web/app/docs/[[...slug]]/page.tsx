@@ -23,6 +23,9 @@ import dataProductsContent from '@/lib/docs/content/data-products/index.md';
 import fitsColumnsContent from '@/lib/docs/content/data-products/fits-columns.md';
 import usageContent from '@/lib/docs/content/usage/index.md';
 import apiContent from '@/lib/docs/content/api/index.md';
+import cliContent from '@/lib/docs/content/api/cli.md';
+import pythonClientContent from '@/lib/docs/content/api/python-client.md';
+import restApiContent from '@/lib/docs/content/api/rest.md';
 
 // Content registry
 const contentMap: Record<string, string> = {
@@ -39,6 +42,9 @@ const contentMap: Record<string, string> = {
   'data-products/fits-columns': fitsColumnsContent,
   'usage': usageContent,
   'api': apiContent,
+  'api/cli': cliContent,
+  'api/python-client': pythonClientContent,
+  'api/rest': restApiContent,
 };
 
 export default function DocsPage() {

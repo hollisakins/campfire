@@ -1,7 +1,8 @@
 """CAMPFIRE sync engine for bulk downloading spectra.
 
-Fetches manifests from the API, computes download plans by diffing against
-local state, and downloads files in parallel with hash verification.
+Computes download plans by diffing manifests against local state, and
+downloads files in parallel with hash verification. Session creation and
+manifest fetching are delegated to the ``api`` subpackage.
 """
 
 import hashlib
@@ -10,74 +11,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
-from requests.adapters import HTTPAdapter
 from tqdm import tqdm
-from urllib3.util.retry import Retry
 
+from .api.session import create_download_session
 from .exceptions import DownloadError
-from .state import SyncState
-
-
-def create_download_session(max_workers: int = 4) -> requests.Session:
-    """Create a requests.Session with connection pooling and retry for downloads.
-
-    Presigned R2 URLs are self-authenticating, so no auth headers are needed.
-    The pool is sized to match the number of workers so each thread gets a
-    persistent connection without contention.
-    """
-    session = requests.Session()
-    retry = Retry(
-        total=4,
-        backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(
-        max_retries=retry,
-        pool_connections=max_workers,
-        pool_maxsize=max_workers,
-    )
-    session.mount("https://", adapter)
-    return session
-
-
-def create_authenticated_session(base_url: str) -> requests.Session:
-    """Create a requests.Session with valid auth headers from stored credentials."""
-    from .auth.tokens import TokenManager
-
-    tm = TokenManager(base_url)
-    token = tm.get_valid_token(auto_refresh=True)
-    session = requests.Session()
-    session.headers.update({
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "campfire-python/0.1.0",
-    })
-    return session
-
-
-def refresh_session_token(session: requests.Session, base_url: str) -> None:
-    """Refresh the session's auth token if needed (for long-running syncs)."""
-    from .auth.tokens import TokenManager
-
-    tm = TokenManager(base_url)
-    if tm.needs_refresh():
-        token = tm.get_valid_token(auto_refresh=True)
-        session.headers["Authorization"] = f"Bearer {token}"
-
-
-def fetch_manifest(session: requests.Session, base_url: str, obs_name: str) -> dict:
-    """Fetch the download manifest for an observation from the API."""
-    url = f"{base_url}/observations/{obs_name}/manifest"
-    response = session.get(url, timeout=60)
-
-    if response.status_code == 404:
-        raise ValueError(f"Observation '{obs_name}' not found or you don't have access")
-    if response.status_code == 401:
-        from .exceptions import AuthenticationError
-        raise AuthenticationError("Invalid or expired token. Run 'campfire login' to re-authenticate.")
-    response.raise_for_status()
-    return response.json()
 
 
 def compute_download_plan(
@@ -168,20 +105,50 @@ def download_and_verify(
 
 
 def sync_observation(
-    session: requests.Session,
-    base_url: str,
+    api_session,
     obs_name: str,
     data_dir: Path,
-    state: SyncState,
+    state,
     max_workers: int = 4,
     dry_run: bool = False,
     download_session: Optional[requests.Session] = None,
+    manifest: Optional[dict] = None,
 ) -> dict:
     """Sync a single observation: fetch manifest, diff, download, update state.
 
-    Returns a stats dict with counts of new/updated/skipped/failed files.
+    Parameters
+    ----------
+    api_session : APISession or APIClient
+        Authenticated session or client for fetching manifests.
+    obs_name : str
+        Observation name.
+    data_dir : Path
+        Local data directory.
+    state : LocalStore or SyncState
+        State tracker with get_synced_files/mark_synced methods.
+    max_workers : int
+        Parallel download workers.
+    dry_run : bool
+        If True, compute plan but don't download.
+    download_session : requests.Session, optional
+        Reusable download session for presigned URLs.
+    manifest : dict, optional
+        Pre-fetched manifest (avoids re-fetching if caller already has it).
+
+    Returns
+    -------
+    dict
+        Stats with counts of new/updated/skipped/failed files.
     """
-    manifest = fetch_manifest(session, base_url, obs_name)
+    if manifest is None:
+        from .api.client import APIClient
+        if isinstance(api_session, APIClient):
+            manifest = api_session.fetch_manifest(obs_name)
+        else:
+            # Treat as APISession — build an APIClient on the fly
+            client = APIClient(api_session)
+            manifest = client.fetch_manifest(obs_name)
+
     synced = state.get_synced_files(obs_name)
     new_files, updated_files, up_to_date = compute_download_plan(manifest, synced)
 
