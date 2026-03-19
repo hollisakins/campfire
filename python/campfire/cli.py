@@ -11,7 +11,6 @@ Provides commands for authentication, catalog sync, and FITS downloading:
 - campfire download: Download FITS spectrum files
 """
 
-import json as json_mod
 import shutil
 import sys
 from pathlib import Path
@@ -352,65 +351,6 @@ def status(base_url: Optional[str]):
 # ---------------------------------------------------------------------------
 
 
-@cli.command()
-@click.option("--json", "json_out", is_flag=True, help="JSON output for scripting")
-@click.option("--base-url", default=None, help="API base URL")
-def observations(json_out: bool, base_url: Optional[str]):
-    """List available observations with stats."""
-    base_url = base_url or resolve_base_url()
-    api_session = _require_auth(base_url)
-    api = APIClient(api_session)
-
-    try:
-        obs_list = api.get_observations()
-    except Exception as e:
-        click.echo(f"✗ Failed to fetch observations: {e}", err=True)
-        sys.exit(1)
-
-    if json_out:
-        click.echo(json_mod.dumps(obs_list, indent=2))
-        return
-
-    if not obs_list:
-        click.echo("No observations available.")
-        return
-
-    # Check local download stats
-    from .config import resolve_data_dir, meta_dir as _meta_dir
-    from .db.store import LocalStore
-    from .sync import format_size
-
-    data_dir = resolve_data_dir()
-    store = None
-    db_path = _meta_dir(data_dir) / "campfire.db"
-    if db_path.exists():
-        store = LocalStore(db_path)
-
-    click.echo()
-    click.echo(f"  {'OBSERVATION':<25} {'PROGRAM':<12} {'FIELD':<10} {'OBJECTS':>8} {'SPECTRA':>8} {'SIZE':>10}   LOCAL")
-    for obs in obs_list:
-        name = obs["observation"]
-        prog = obs.get("program_name", "")
-        field = obs.get("field", "")
-        n_obj = obs.get("object_count", 0)
-        n_spec = obs.get("spectrum_count", 0)
-        size = format_size(obs.get("total_size_bytes", 0))
-
-        local_str = ""
-        if store:
-            local_stats = store.get_observation_stats(name)
-            downloaded = local_stats["synced_count"]
-            if downloaded >= n_spec and n_spec > 0:
-                local_str = f"{downloaded} files (complete)"
-            elif downloaded > 0:
-                local_str = f"{downloaded}/{n_spec} files"
-
-        click.echo(f"  {name:<25} {prog:<12} {field:<10} {n_obj:>8} {n_spec:>8} {size:>10}   {local_str}")
-
-    if store:
-        store.close()
-
-
 # ---------------------------------------------------------------------------
 # Sync command (metadata only)
 # ---------------------------------------------------------------------------
@@ -485,18 +425,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
       campfire download --stale
       campfire download --all
     """
-    if not obs_filter and not program_filter and not field_filter and not stale and not download_all:
-        click.echo("Specify what to download. Options:", err=True)
-        click.echo("  --obs <name>       Download by observation", err=True)
-        click.echo("  --program <name>   Download by program", err=True)
-        click.echo("  --field <name>     Download by field", err=True)
-        click.echo("  --stale            Re-download updated files", err=True)
-        click.echo("  --all              Download everything", err=True)
-        sys.exit(1)
-
-    base_url = base_url or resolve_base_url()
-
-    from .config import products_dir as _products_dir
+    from .config import products_dir as _products_dir, meta_dir as _meta_dir
     from .sync import (
         download_observation,
         compute_download_plan,
@@ -504,14 +433,47 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
     )
     from .api.session import create_download_session
 
-    store = _open_store()
-
     # Check that catalog has been synced
+    db_path = _meta_dir() / "campfire.db"
+    if not db_path.exists():
+        click.echo("✗ No catalog data. Run: campfire sync")
+        sys.exit(1)
+
+    store = _open_store()
     catalog_obs = store.get_synced_observations()
     if not catalog_obs:
         click.echo("✗ No catalog data. Run: campfire sync")
         store.close()
         sys.exit(1)
+
+    # No filters specified — show available observations and exit
+    if not obs_filter and not program_filter and not field_filter and not stale and not download_all:
+        summary = store.get_observation_summary()
+        store.close()
+
+        click.echo()
+        click.echo(f"  {'OBSERVATION':<25} {'PROGRAM':<15} {'FIELD':<10} {'SPECTRA':>8}   LOCAL")
+        for row in summary:
+            downloaded = row["downloaded_count"]
+            total = row["spectrum_count"]
+            if downloaded >= total and total > 0:
+                local_str = f"{downloaded} (complete)"
+            elif downloaded > 0:
+                local_str = f"{downloaded}/{total}"
+            else:
+                local_str = ""
+            click.echo(
+                f"  {row['observation']:<25} "
+                f"{row['program_slug']:<15} "
+                f"{row['field']:<10} "
+                f"{total:>8}   {local_str}"
+            )
+
+        click.echo()
+        click.echo("Use --obs, --program, or --field to download, or --all for everything.")
+        return
+
+    base_url = base_url or resolve_base_url()
 
     try:
         api_session = APISession(base_url=base_url)

@@ -630,6 +630,24 @@ class LocalStore:
         ).fetchall()
         return [r[0] for r in rows if r[0]]
 
+    def get_observation_summary(self) -> List[dict]:
+        """Get per-observation summary with program, field, counts, and download status."""
+        rows = self._conn.execute("""
+            SELECT
+                o.observation,
+                o.program_slug,
+                o.field,
+                COUNT(DISTINCT o.object_id) AS object_count,
+                COUNT(DISTINCT s.spectra_id) AS spectrum_count,
+                COUNT(DISTINCT CASE WHEN s.local_path IS NOT NULL
+                      THEN s.spectra_id END) AS downloaded_count
+            FROM objects o
+            LEFT JOIN spectra s ON o.object_id = s.object_id
+            GROUP BY o.observation
+            ORDER BY o.observation
+        """).fetchall()
+        return [dict(r) for r in rows]
+
     def get_last_synced_at(self) -> Optional[str]:
         """Get the most recent _synced_at timestamp across all objects."""
         row = self._conn.execute(

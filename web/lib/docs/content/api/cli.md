@@ -97,24 +97,23 @@ ember_uds_p4: 100%|██████████| 12/12 [00:45<00:00]
 
 ---
 
-## Observations
+## Listing Observations
 
-### `campfire observations`
-
-List all available observations with stats and local download status.
+Running `campfire download` with no filters shows all available observations and their download status:
 
 ```bash
-campfire observations              # List all observations
-campfire observations --json       # JSON output for scripting
+campfire download
 ```
 
 **Output:**
 
 ```
-  OBSERVATION               PROGRAM      FIELD       OBJECTS  SPECTRA       SIZE   LOCAL
-  ember_uds_p4              EMBER-UDS    UDS             450     1350     2.1 GB   1350 files (complete)
-  capers_cosmos_p1          CAPERS       COSMOS          320      960     1.5 GB   480/960 files
-  rubies_egs_p2             RUBIES       EGS             200      600     900 MB
+  OBSERVATION               PROGRAM         FIELD       SPECTRA   LOCAL
+  ember_uds_p4              EMBER-UDS       UDS            1350   1350 (complete)
+  capers_cosmos_p1          CAPERS          COSMOS          960   480/960
+  rubies_egs_p2             RUBIES          EGS             600
+
+Use --obs, --program, or --field to download, or --all for everything.
 ```
 
 ---

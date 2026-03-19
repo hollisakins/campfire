@@ -43,7 +43,7 @@ campfire download --all                            # Everything accessible
 
 ```bash
 campfire status             # Credentials, catalog stats, downloads, disk usage
-campfire observations       # List all observations with download status
+campfire download           # List available observations and download status
 ```
 
 ### CSV-only workflow
