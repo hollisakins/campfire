@@ -373,18 +373,8 @@ $$;
 
 
 -- ---- get_filtered_objects_paginated (pass through p_updated_since) ----
-
--- Must drop first because we are adding a new parameter
-DROP FUNCTION IF EXISTS public.get_filtered_objects_paginated(
-  TEXT[], TEXT[], TEXT[], TEXT[], TEXT, TEXT[], INTEGER[], DOUBLE PRECISION, DOUBLE PRECISION,
-  DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION,
-  INTEGER, INTEGER, INTEGER,
-  INTEGER, INTEGER, INTEGER,
-  INTEGER, INTEGER, INTEGER,
-  TEXT, BOOLEAN, TEXT, TEXT, UUID,
-  DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION,
-  TEXT, TEXT, INTEGER, INTEGER, BOOLEAN
-);
+-- Creates a new overload with p_updated_since. The old overload (without
+-- this param) is dropped by 20260319100001_fix_paginated_overload.sql.
 
 CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_program_slugs TEXT[],
@@ -543,6 +533,4 @@ BEGIN
 END;
 $$;
 
--- Grant execute to authenticated users
-GRANT EXECUTE ON FUNCTION public.get_filtered_objects_paginated TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_filtered_objects_paginated TO service_role;
+-- GRANTs are in the fix migration (20260319100001) to handle the overload cleanup
