@@ -206,7 +206,7 @@ export default function ApiKeysPage() {
     );
   }
 
-  if ((loading && sessionsLoading) || authLoading) {
+  if (loading || sessionsLoading || authLoading) {
     return (
       <div className="container mx-auto px-4 py-8">
         <Breadcrumbs items={breadcrumbs} className="mb-6" />

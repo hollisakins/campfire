@@ -29,7 +29,7 @@ def export_catalogs(store: LocalStore, output_dir: Path) -> Tuple[int, int]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Query all objects
-    objects = store.query_objects(limit=999999)
+    objects = store.query_objects()
 
     object_rows = []
     spectra_rows = []
