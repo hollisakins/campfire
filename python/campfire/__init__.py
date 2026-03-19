@@ -16,6 +16,7 @@ from .exceptions import (
     APIError,
 )
 from .flags import (
+    RedshiftQuality,
     SpectralFeatures,
     ObjectFlags,
     DQFlags,
@@ -46,6 +47,7 @@ __all__ = [
     "ValidationError",
     "APIError",
     # Flags
+    "RedshiftQuality",
     "SpectralFeatures",
     "ObjectFlags",
     "DQFlags",

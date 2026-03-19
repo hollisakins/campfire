@@ -20,6 +20,7 @@ from .exceptions import (
 from .flags import (
     FlagQuery,
     QueryableFlag,
+    RedshiftQuality,
     SpectralFeatures,
     ObjectFlags,
     DQFlags,
@@ -313,7 +314,7 @@ class Campfire:
         gratings: Optional[List[str]] = None,
         observations: Optional[List[str]] = None,
         redshift_range: Optional[Tuple[float, float]] = None,
-        redshift_quality: Optional[List[int]] = None,
+        redshift_quality: Optional[List[Union[int, str]]] = None,
         max_snr_range: Optional[Tuple[float, float]] = None,
         spectral_features: Optional[
             Union[int, str, List[str], SpectralFeatures, FlagQuery]
@@ -339,15 +340,16 @@ class Campfire:
         programs : list of int or str, optional
             Program IDs or names to filter by.
         fields : list of str, optional
-            Field names (e.g., ['COSMOS', 'UDS']).
+            Field names (e.g., ['COSMOS', 'UDS']). Case-insensitive.
         gratings : list of str, optional
             Grating names (e.g., ['PRISM', 'G395M']).
         observations : list of str, optional
             Observation names.
         redshift_range : tuple of (float, float), optional
             (min, max) redshift range.
-        redshift_quality : list of int, optional
-            Quality codes to include.
+        redshift_quality : list of int or str, optional
+            Quality codes to include. Accepts integers (0-4) or strings
+            ('tentative', 'probable', 'secure', etc.).
         max_snr_range : tuple of (float, float), optional
             (min, max) maximum SNR range.
         spectral_features : int, str, list, SpectralFeatures, or FlagQuery, optional
@@ -389,7 +391,7 @@ class Campfire:
         >>> # Query high-z galaxies with good redshift quality
         >>> results = cf.query_objects(
         ...     redshift_range=(3.0, 6.0),
-        ...     redshift_quality=[2, 3],
+        ...     redshift_quality=['probable', 'secure'],  # or [3, 4]
         ...     inspected_only=True
         ... )
         >>>
@@ -405,6 +407,19 @@ class Campfire:
         >>> # Exclude contaminated objects
         >>> results = cf.query_objects(dq_flags=~DQFlags.CONTAMINATION)
         """
+        # Normalize inputs to match DB conventions
+        if fields:
+            fields = [f.lower() for f in fields]
+        if gratings:
+            gratings = [g.upper() for g in gratings]
+        if observations:
+            observations = [o.lower() for o in observations]
+        if redshift_quality:
+            redshift_quality = [
+                int(RedshiftQuality(q)) if isinstance(q, str) else q
+                for q in redshift_quality
+            ]
+
         # Use local store when available (full catalog after sync)
         use_local = self._local is not None and not remote
 
