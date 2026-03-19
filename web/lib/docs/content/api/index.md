@@ -4,16 +4,16 @@ CAMPFIRE provides a Python package for querying, downloading, and analyzing NIRS
 
 ## Installation
 
-Install the Python client using pip:
+Install the Python client directly from GitHub:
 
 ```bash
-pip install campfire
+pip install "git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
 For plotting functionality, install with optional dependencies:
 
 ```bash
-pip install campfire[plotting]
+pip install "campfire[plotting] @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
 ## Authentication
@@ -77,7 +77,7 @@ cf.sync()  # Pull full catalog
 # Query locally — instant, no network
 results = cf.query_objects(
     redshift_range=(3.0, 6.0),
-    redshift_quality=[2, 3]
+    redshift_quality=['probable', 'secure']
 )
 
 # Download FITS for specific observations

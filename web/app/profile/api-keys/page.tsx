@@ -417,7 +417,7 @@ export default function ApiKeysPage() {
 
           <div className="bg-white dark:bg-slate-800 rounded-lg p-4 font-mono text-sm border border-blue-200 dark:border-slate-700">
             <div className="text-gray-600 dark:text-slate-400 mb-2"># Install the Python client</div>
-            <div className="text-gray-900 dark:text-slate-100 mb-4">pip install campfire-api</div>
+            <div className="text-gray-900 dark:text-slate-100 mb-4">pip install &quot;git+https://github.com/hollisakins/campfire.git#subdirectory=python/&quot;</div>
 
             <div className="text-gray-600 dark:text-slate-400 mb-2"># Set your API key</div>
             <div className="text-gray-900 dark:text-slate-100 mb-4">export CAMPFIRE_API_KEY=sk_live_...</div>

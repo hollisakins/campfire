@@ -321,7 +321,7 @@ Returns a dict with: `redshift`, `chi2_min`, `confidence`, `z_grid`, `chi2_grid`
 
 ## Plotting
 
-CAMPFIRE includes Plotly-based plotting functions. Requires `pip install campfire[plotting]`.
+CAMPFIRE includes Plotly-based plotting functions. Requires installing with the `plotting` extra (see [Installation](/docs/api#installation)).
 
 ```python
 from campfire import plot_spectrum, plot_redshift_fit, plot_spectrum_simple
