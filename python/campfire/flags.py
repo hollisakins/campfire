@@ -19,7 +19,7 @@ Operators:
     ~  : NOT (must not have this flag)
 """
 
-from enum import IntFlag
+from enum import IntEnum, IntFlag
 from dataclasses import dataclass
 from typing import Union, List, Dict, Optional, Type
 
@@ -174,6 +174,43 @@ class QueryableFlag(IntFlag):
     """
 
     pass
+
+
+class RedshiftQuality(IntEnum):
+    """
+    Redshift quality codes assigned during visual inspection.
+
+    Accepts integers or case-insensitive strings::
+
+        RedshiftQuality.SECURE          # 4
+        RedshiftQuality("secure")       # 4
+        RedshiftQuality(4)              # 4
+    """
+
+    NOT_INSPECTED = 0
+    """Not yet visually inspected."""
+
+    IMPOSSIBLE = 1
+    """Impossible to determine redshift from available data."""
+
+    TENTATIVE = 2
+    """Redshift uncertain but plausible (~50% confidence)."""
+
+    PROBABLE = 3
+    """Redshift likely correct (~80% confidence)."""
+
+    SECURE = 4
+    """Redshift definitely correct (>95% confidence)."""
+
+    @classmethod
+    def _missing_(cls, value):
+        """Allow lookup by string name, e.g. RedshiftQuality('secure')."""
+        if isinstance(value, str):
+            key = value.upper().replace(" ", "_")
+            for member in cls:
+                if member.name == key:
+                    return member
+        return None
 
 
 @queryable

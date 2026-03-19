@@ -4,6 +4,8 @@ OAuth 2.0 Device Authorization Grant implementation for CAMPFIRE.
 This module implements RFC 8628 device flow for CLI authentication.
 """
 
+import platform
+import socket
 import time
 import webbrowser
 from dataclasses import dataclass
@@ -34,6 +36,23 @@ class TokenResponse:
     refresh_token: str
     expires_in: int
     token_type: str
+
+
+def get_device_name() -> str:
+    """Generate a human-readable device name from hostname and OS."""
+    try:
+        hostname = socket.gethostname()
+        # Strip common suffixes like .local
+        hostname = hostname.removesuffix(".local")
+    except Exception:
+        hostname = "unknown"
+
+    system = platform.system()
+    system_label = {"Darwin": "macOS", "Linux": "Linux", "Windows": "Windows"}.get(
+        system, system
+    )
+
+    return f"{hostname} ({system_label})"
 
 
 class DeviceFlowAuth:
@@ -161,6 +180,7 @@ class DeviceFlowAuth:
                     json={
                         "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                         "device_code": device_code,
+                        "device_name": get_device_name(),
                     },
                 )
 

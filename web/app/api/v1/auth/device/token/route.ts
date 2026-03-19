@@ -46,7 +46,7 @@ setInterval(() => {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { grant_type, device_code } = body;
+    const { grant_type, device_code, device_name } = body;
 
     // Validate grant type
     if (grant_type !== 'urn:ietf:params:oauth:grant-type:device_code') {
@@ -149,7 +149,7 @@ export async function POST(request: NextRequest) {
         // Issue tokens
         const tokens = await issueTokens(
           userId,
-          'Python Client', // Default device name
+          device_name || 'Python Client',
           clientIp,
           userAgent
         );

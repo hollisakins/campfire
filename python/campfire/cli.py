@@ -1,88 +1,54 @@
 """
 CAMPFIRE CLI commands.
 
-Provides commands for authentication, data sync, and observation management:
+Provides commands for authentication, catalog sync, and FITS downloading:
 - campfire login: Authenticate with CAMPFIRE
 - campfire logout: Remove stored credentials
 - campfire whoami: Show current authenticated user
-- campfire status: Check credentials and sync status
+- campfire status: Check credentials, catalog, and download status
 - campfire observations: List available observations
-- campfire add: Track an observation for syncing
-- campfire remove: Stop tracking an observation
-- campfire sync: Download/update tracked observations
+- campfire sync: Sync the full object catalog (metadata only)
+- campfire download: Download FITS spectrum files
 """
 
-import json as json_mod
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import click
 import requests
 
+from .api.session import APISession, resolve_base_url
+from .api.client import APIClient
 from .auth.credentials import CredentialManager
 from .auth.device_flow import run_device_flow
 from .auth.tokens import TokenManager
 from .exceptions import AuthenticationError
 
-# Default API URL
-DEFAULT_BASE_URL = "https://campfire.hollisakins.com/api/v1"
 
-
-def get_base_url() -> str:
-    """Get the API base URL from environment, config, or default."""
-    import os
-
-    env_url = os.environ.get("CAMPFIRE_API_URL")
-    if env_url:
-        return env_url
-
-    from .config import Config
-    config = Config()
-    if config.exists() and config.base_url:
-        return config.base_url
-
-    return DEFAULT_BASE_URL
-
-
-def _require_auth(base_url: str) -> Tuple[TokenManager, str]:
-    """Verify credentials and return (token_manager, valid_token). Exits on failure."""
+def _require_auth(base_url: str) -> APISession:
+    """Verify credentials and return an APISession. Exits on failure."""
     try:
-        tm = TokenManager(base_url)
-        if not tm.has_credentials():
-            click.echo("✗ Not logged in. Run: campfire login")
-            sys.exit(1)
-        token = tm.get_valid_token(auto_refresh=True)
-        return tm, token
+        return APISession(base_url=base_url)
     except AuthenticationError as e:
         click.echo(f"✗ {e}")
         click.echo("  Run: campfire login")
         sys.exit(1)
 
 
-def _prompt_data_dir() -> None:
-    """First-time setup: prompt for data directory and save config."""
-    from .config import Config
+def _open_store():
+    """Open the LocalStore, creating it if needed. Returns store."""
+    from .db.store import LocalStore
+    from .config import ensure_data_dir, meta_dir
 
-    config = Config()
-    if config.exists():
-        return
-
-    click.echo()
-    default = str(config.data_dir)
-    data_dir = click.prompt(
-        "Where should CAMPFIRE store downloaded data?",
-        default=default,
-    )
-    config.data_dir = Path(data_dir).expanduser()
-    config.ensure_data_dir()
-    click.echo(f"  Data directory set to: {config.data_dir}")
-    click.echo(f"  Config saved to: {config.config_path}")
+    ensure_data_dir()
+    db_path = meta_dir() / "campfire.db"
+    return LocalStore(db_path)
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="campfire")
+@click.version_option(version="0.2.0", prog_name="campfire")
 def cli():
     """CAMPFIRE - query, download, and sync NIRSpec spectroscopic data."""
     pass
@@ -111,7 +77,7 @@ def login(browser: Optional[bool], base_url: Optional[str]):
     By default, opens a browser for secure authentication.
     Use --api-key for headless environments.
     """
-    base_url = base_url or get_base_url()
+    base_url = base_url or resolve_base_url()
     creds = CredentialManager()
 
     # Check if already logged in
@@ -128,7 +94,6 @@ def login(browser: Optional[bool], base_url: Optional[str]):
 
     # Determine authentication method
     if browser is None:
-        # Interactive choice
         click.echo("\nHow would you like to authenticate?")
         click.echo("  1. Login with web browser (recommended)")
         click.echo("  2. Paste an API key")
@@ -140,14 +105,6 @@ def login(browser: Optional[bool], base_url: Optional[str]):
     else:
         _api_key_login(base_url, creds)
 
-    # Save the base URL so subsequent commands use the same server
-    from .config import Config
-    config = Config()
-    config.base_url = base_url
-
-    # First-time config setup
-    _prompt_data_dir()
-
 
 def _browser_login(base_url: str, creds: CredentialManager):
     """Handle browser-based OAuth flow."""
@@ -155,11 +112,8 @@ def _browser_login(base_url: str, creds: CredentialManager):
 
     try:
         tokens = run_device_flow(base_url, open_browser=True, show_progress=True)
-
-        # Get user email from whoami endpoint
         user_email = _get_user_email(base_url, tokens.access_token)
 
-        # Save credentials
         creds.save_oauth(
             tokens.access_token,
             tokens.refresh_token,
@@ -196,7 +150,6 @@ def _api_key_login(base_url: str, creds: CredentialManager):
         click.echo("✗ Invalid API key format (should start with 'sk_')", err=True)
         sys.exit(1)
 
-    # Validate the key by making a test request
     click.echo("Validating...", nl=False)
 
     try:
@@ -214,7 +167,6 @@ def _api_key_login(base_url: str, creds: CredentialManager):
         response.raise_for_status()
         click.echo(" ✓")
 
-        # Save credentials
         creds.save_api_key(api_key)
 
         click.echo(f"\n✓ API key saved successfully!")
@@ -243,13 +195,27 @@ def _get_user_email(base_url: str, access_token: str) -> Optional[str]:
 
 
 @cli.command()
-def logout():
-    """Remove stored credentials."""
+@click.option("--base-url", default=None, help="API base URL")
+def logout(base_url: Optional[str]):
+    """Remove stored credentials and revoke server session."""
+    base_url = base_url or resolve_base_url()
     creds = CredentialManager()
 
     if not creds.exists():
         click.echo("Not logged in.")
         return
+
+    # Revoke server-side refresh token before deleting local credentials
+    loaded = creds.load()
+    if loaded and loaded.type == "oauth" and loaded.refresh_token:
+        try:
+            requests.post(
+                f"{base_url}/auth/revoke",
+                json={"token": loaded.refresh_token},
+                timeout=5,
+            )
+        except Exception:
+            pass  # Best-effort; still delete local creds
 
     creds.delete()
     click.echo("✓ Logged out successfully")
@@ -259,7 +225,7 @@ def logout():
 @click.option("--base-url", default=None, help="API base URL")
 def whoami(base_url: Optional[str]):
     """Show current authenticated user."""
-    base_url = base_url or get_base_url()
+    base_url = base_url or resolve_base_url()
     creds = CredentialManager()
 
     if not creds.exists():
@@ -272,12 +238,10 @@ def whoami(base_url: Optional[str]):
         sys.exit(1)
 
     if loaded.is_api_key():
-        # For API keys, we need to fetch user info
         click.echo("Authentication: API key")
         if loaded.api_key:
             click.echo(f"Key prefix: {loaded.api_key[:20]}...")
 
-        # Try to get user info
         try:
             response = requests.get(
                 f"{base_url}/auth/whoami",
@@ -301,8 +265,8 @@ def whoami(base_url: Optional[str]):
 @cli.command()
 @click.option("--base-url", default=None, help="API base URL")
 def status(base_url: Optional[str]):
-    """Check credentials and sync status."""
-    base_url = base_url or get_base_url()
+    """Check credentials, catalog, and download status."""
+    base_url = base_url or resolve_base_url()
 
     try:
         token_manager = TokenManager(base_url)
@@ -312,10 +276,8 @@ def status(base_url: Optional[str]):
             click.echo("  Run: campfire login")
             sys.exit(1)
 
-        # Try to get a valid token (will refresh if needed)
         token = token_manager.get_valid_token(auto_refresh=True)
 
-        # Verify the token works
         response = requests.get(
             f"{base_url}/auth/whoami",
             headers={"Authorization": f"Bearer {token}"},
@@ -340,350 +302,319 @@ def status(base_url: Optional[str]):
         click.echo(f"✗ Failed to verify credentials: {e}")
         sys.exit(1)
 
-    # Show sync status if config exists
-    from .config import Config
-
-    config = Config()
-    if not config.exists():
-        return
-
-    click.echo()
-    click.echo(f"Data directory: {config.data_dir}")
-
-    tracked = config.tracked_observations
-    if not tracked:
-        click.echo("\nNo tracked observations. Run: campfire observations")
-        return
-
-    from .state import SyncState
+    # Show catalog and download status
+    from .config import resolve_data_dir, meta_dir as _meta_dir
     from .sync import format_size
 
-    state = SyncState(config.data_dir / ".campfire_meta" / "sync_state.db")
-
+    data_dir = resolve_data_dir()
     click.echo()
-    click.echo("Tracked observations:")
-    click.echo(f"  {'OBSERVATION':<25} {'SYNCED':<12} {'SIZE':<12} {'LAST SYNC'}")
+    click.echo(f"Data directory: {data_dir}")
 
-    for obs in tracked:
-        stats = state.get_observation_stats(obs)
-        last = state.get_last_sync(obs)
-        synced = stats["synced_count"]
-        size = format_size(stats["total_bytes"])
-        last_str = last[:16].replace("T", " ") if last else "never"
-        click.echo(f"  {obs:<25} {synced:<12} {size:<12} {last_str}")
+    db_path = _meta_dir(data_dir) / "campfire.db"
+    if not db_path.exists():
+        click.echo("\nNo local catalog. Run: campfire sync")
+        return
 
-    state.close()
+    from .db.store import LocalStore
 
-    # Catalog info
-    meta_dir = config.data_dir / ".campfire_meta"
-    objects_csv = meta_dir / "objects.csv"
-    spectra_csv = meta_dir / "spectra.csv"
-    if objects_csv.exists() and spectra_csv.exists():
-        obj_count = sum(1 for _ in open(objects_csv)) - 1  # minus header
-        spec_count = sum(1 for _ in open(spectra_csv)) - 1
-        click.echo(f"\nCatalog: objects.csv ({obj_count} objects), spectra.csv ({spec_count} spectra)")
+    store = LocalStore(db_path)
+
+    # Catalog stats
+    obs_list = store.get_synced_observations()
+    last_synced = store.get_last_synced_at()
+    if last_synced:
+        last_str = last_synced[:16].replace("T", " ")
+        click.echo(f"Catalog: {len(obs_list)} observations (last synced {last_str})")
+    else:
+        click.echo(f"Catalog: {len(obs_list)} observations")
+
+    # Download stats per observation
+    if obs_list:
+        click.echo()
+        click.echo(f"  {'OBSERVATION':<25} {'DOWNLOADED':<14} {'SIZE':<12}")
+
+        total_downloaded = 0
+        total_bytes = 0
+        for obs in obs_list:
+            stats = store.get_observation_stats(obs)
+            downloaded = stats["synced_count"]
+            size = format_size(stats["total_bytes"])
+            total_downloaded += downloaded
+            total_bytes += stats["total_bytes"]
+            if downloaded > 0:
+                click.echo(f"  {obs:<25} {downloaded:<14} {size:<12}")
+
+        if total_downloaded == 0:
+            click.echo("  No FITS files downloaded yet. Run: campfire download --obs <name>")
+
+    # Stale files
+    stale = store.get_stale_files()
+    if stale:
+        click.echo(f"\n⚠ {len(stale)} local file(s) updated on server. Run: campfire download --stale")
 
     # Disk usage
-    if config.data_dir.exists():
-        total = sum(f.stat().st_size for f in config.data_dir.rglob("*") if f.is_file())
-        click.echo(f"Disk usage: {format_size(total)}")
+    if data_dir.exists():
+        total = sum(f.stat().st_size for f in data_dir.rglob("*") if f.is_file())
+        click.echo(f"\nDisk usage: {format_size(total)}")
+
+    store.close()
 
 
 # ---------------------------------------------------------------------------
-# Observation management commands
+# Observations
 # ---------------------------------------------------------------------------
 
 
-@cli.command()
-@click.option("--tracked", is_flag=True, help="Only show tracked observations")
-@click.option("--json", "json_out", is_flag=True, help="JSON output for scripting")
-@click.option("--base-url", default=None, help="API base URL")
-def observations(tracked: bool, json_out: bool, base_url: Optional[str]):
-    """List available observations with stats."""
-    base_url = base_url or get_base_url()
-    _, token = _require_auth(base_url)
-
-    try:
-        response = requests.get(
-            f"{base_url}/observations",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        if response.status_code == 401:
-            click.echo("✗ Authentication failed. Run: campfire login", err=True)
-            sys.exit(1)
-        response.raise_for_status()
-    except requests.RequestException as e:
-        click.echo(f"✗ Failed to fetch observations: {e}", err=True)
-        sys.exit(1)
-
-    obs_list = response.json().get("observations", [])
-
-    from .config import Config
-    from .sync import format_size
-
-    config = Config()
-    tracked_set = set(config.tracked_observations) if config.exists() else set()
-
-    if tracked:
-        obs_list = [o for o in obs_list if o["observation"] in tracked_set]
-
-    if json_out:
-        click.echo(json_mod.dumps(obs_list, indent=2))
-        return
-
-    if not obs_list:
-        click.echo("No observations available.")
-        return
-
-    # Determine tracking/sync status for each observation
-    from .state import SyncState
-
-    state = None
-    if config.exists() and config.data_dir.exists():
-        db_path = config.data_dir / ".campfire_meta" / "sync_state.db"
-        if db_path.exists():
-            state = SyncState(db_path)
-
-    click.echo()
-    click.echo(f"  {'OBSERVATION':<25} {'PROGRAM':<12} {'FIELD':<10} {'OBJECTS':>8} {'SPECTRA':>8} {'SIZE':>10}   STATUS")
-    for obs in obs_list:
-        name = obs["observation"]
-        prog = obs.get("program_name", "")
-        field = obs.get("field", "")
-        n_obj = obs.get("object_count", 0)
-        n_spec = obs.get("spectrum_count", 0)
-        size = format_size(obs.get("total_size_bytes", 0))
-
-        if name in tracked_set:
-            if state:
-                local_stats = state.get_observation_stats(name)
-                synced = local_stats["synced_count"]
-                if synced >= n_spec and n_spec > 0:
-                    status_str = "tracked (synced)"
-                elif synced > 0:
-                    diff = n_spec - synced
-                    status_str = f"tracked ({diff} new)"
-                else:
-                    status_str = "tracked (not synced)"
-            else:
-                status_str = "tracked"
-        else:
-            status_str = "not tracked"
-
-        click.echo(f"  {name:<25} {prog:<12} {field:<10} {n_obj:>8} {n_spec:>8} {size:>10}   {status_str}")
-
-    if state:
-        state.close()
-
-
-@cli.command()
-@click.argument("obs_names", nargs=-1)
-@click.option("--all", "add_all", is_flag=True, help="Track all available observations")
-@click.option("--base-url", default=None, help="API base URL")
-def add(obs_names: tuple, add_all: bool, base_url: Optional[str]):
-    """Track observations for syncing.
-
-    Pass one or more observation names, or use --all to track everything.
-    """
-    if not obs_names and not add_all:
-        click.echo("Usage: campfire add <obs_name> [obs_name ...] or campfire add --all", err=True)
-        sys.exit(1)
-
-    explicit_base_url = base_url is not None
-    base_url = base_url or get_base_url()
-    _, token = _require_auth(base_url)
-
-    # Fetch available observations
-    try:
-        response = requests.get(
-            f"{base_url}/observations",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        response.raise_for_status()
-    except requests.RequestException as e:
-        click.echo(f"✗ Failed to fetch observations: {e}", err=True)
-        sys.exit(1)
-
-    obs_list = response.json().get("observations", [])
-    obs_by_name = {o["observation"]: o for o in obs_list}
-
-    from .config import Config
-    from .sync import format_size
-
-    config = Config()
-
-    # Persist the base URL if explicitly provided via --base-url
-    if explicit_base_url:
-        config.base_url = base_url
-
-    if add_all:
-        to_add = [o for o in obs_list if o["observation"] not in config.tracked_observations]
-        if not to_add:
-            click.echo("Already tracking all available observations.")
-            return
-    else:
-        # Validate all requested names
-        to_add = []
-        for name in obs_names:
-            if name in config.tracked_observations:
-                click.echo(f"  Already tracking: {name}")
-                continue
-            if name not in obs_by_name:
-                click.echo(f"✗ Observation '{name}' not found or you don't have access", err=True)
-                available = list(obs_by_name.keys())
-                if available:
-                    click.echo(f"  Available: {', '.join(available)}")
-                sys.exit(1)
-            to_add.append(obs_by_name[name])
-
-        if not to_add:
-            return
-
-    config.ensure_data_dir()
-    total_obj = 0
-    total_spec = 0
-    total_bytes = 0
-
-    for obs_info in to_add:
-        name = obs_info["observation"]
-        config.add_observation(name)
-        n_obj = obs_info.get("object_count", 0)
-        n_spec = obs_info.get("spectrum_count", 0)
-        size_bytes = obs_info.get("total_size_bytes", 0)
-        total_obj += n_obj
-        total_spec += n_spec
-        total_bytes += size_bytes
-        click.echo(f"  + {name} ({n_obj} objects, {n_spec} spectra, {format_size(size_bytes)})")
-
-    click.echo(f"\n✓ Now tracking {len(to_add)} observation(s) ({total_obj} objects, {total_spec} spectra, {format_size(total_bytes)})")
-    click.echo(f"  Run 'campfire sync' to download.")
-
-
-@cli.command()
-@click.argument("obs_name")
-@click.option("--delete", is_flag=True, help="Also delete local files")
-@click.option("--yes", is_flag=True, help="Skip confirmation")
-@click.option("--base-url", default=None, help="API base URL")
-def remove(obs_name: str, delete: bool, yes: bool, base_url: Optional[str]):
-    """Stop tracking an observation."""
-    from .config import Config
-    from .sync import format_size
-
-    config = Config()
-
-    if obs_name not in config.tracked_observations:
-        click.echo(f"Not tracking: {obs_name}")
-        return
-
-    # Check local state
-    from .state import SyncState
-
-    state = SyncState(config.data_dir / ".campfire_meta" / "sync_state.db")
-    stats = state.get_observation_stats(obs_name)
-    synced = stats["synced_count"]
-
-    if not yes:
-        click.echo(f"\nRemove {obs_name} from tracking?")
-        if synced > 0 and not delete:
-            click.echo(f"  {synced} local files will be kept.")
-        if delete and synced > 0:
-            click.echo(f"  Also delete {synced} local files ({format_size(stats['total_bytes'])})?")
-        if not click.confirm("Proceed?"):
-            return
-
-    config.remove_observation(obs_name)
-    state.remove_observation(obs_name)
-    state.close()
-
-    if delete:
-        obs_dir = config.data_dir / obs_name
-        if obs_dir.exists():
-            shutil.rmtree(obs_dir)
-            click.echo(f"✓ Stopped tracking: {obs_name} (local files deleted)")
-        else:
-            click.echo(f"✓ Stopped tracking: {obs_name}")
-    else:
-        click.echo(f"✓ Stopped tracking: {obs_name}")
-        if synced > 0:
-            click.echo(f"  Local files kept in: {config.data_dir / obs_name}/")
-
-
 # ---------------------------------------------------------------------------
-# Sync command
+# Sync command (metadata only)
 # ---------------------------------------------------------------------------
 
 
 @cli.command(name="sync")
-@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
-@click.option("--workers", default=4, help="Parallel download workers")
-@click.option("--observation", "obs_filter", multiple=True, help="Only sync specific observation(s)")
-@click.option("--dry-run", is_flag=True, help="Show plan without downloading")
+@click.option("--full", is_flag=True, help="Force full sync (skip incremental)")
 @click.option("--base-url", default=None, help="API base URL")
-def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url: Optional[str]):
-    """Download and update tracked observations."""
-    base_url = base_url or get_base_url()
+def sync_cmd(full: bool, base_url: Optional[str]):
+    """Sync the object catalog from the server (metadata only).
 
-    from .config import Config
-    from .state import SyncState
-    from .sync import (
-        create_authenticated_session,
-        create_download_session,
-        refresh_session_token,
-        sync_observation,
-        format_size,
-    )
-    from .catalog import generate_catalogs
+    On first run, pulls the full catalog. On subsequent runs, only
+    fetches objects modified since the last sync (incremental).
+    Use --full to force a complete re-sync.
+    """
+    base_url = base_url or resolve_base_url()
 
-    config = Config()
-    if not config.exists():
-        click.echo("✗ Not configured. Run: campfire login")
-        sys.exit(1)
+    from .config import meta_dir as _meta_dir
+    from .sync import sync_metadata
 
-    tracked = config.tracked_observations
-    if not tracked:
-        click.echo("No tracked observations. Run: campfire add <obs_name>")
-        sys.exit(1)
-
-    # Filter to specific observations if requested
-    if obs_filter:
-        tracked = [o for o in tracked if o in obs_filter]
-        missing = [o for o in obs_filter if o not in config.tracked_observations]
-        for m in missing:
-            click.echo(f"Warning: '{m}' is not tracked, skipping")
-        if not tracked:
-            click.echo("No matching tracked observations.")
-            sys.exit(1)
-
-    config.ensure_data_dir()
-    state = SyncState(config.data_dir / ".campfire_meta" / "sync_state.db")
-
-    # Create authenticated session
     try:
-        session = create_authenticated_session(base_url)
+        api_session = APISession(base_url=base_url)
+        api = APIClient(api_session)
     except AuthenticationError as e:
         click.echo(f"✗ {e}")
         sys.exit(1)
 
-    # Gather download plans for all observations
-    click.echo("Checking tracked observations...")
+    store = _open_store()
+
+    try:
+        is_incremental = not full and store.get_max_updated_at() is not None
+        if is_incremental:
+            click.echo("Syncing catalog (updating existing)...")
+        else:
+            click.echo("Syncing full CAMPFIRE catalog (may take a while)...")
+
+        result = sync_metadata(
+            api, store, _meta_dir(),
+            show_progress=True,
+            full=full,
+        )
+
+        if result.get("incremental"):
+            click.echo(f"✓ Incremental sync complete: {result['observations']} observations, "
+                        f"{result['objects']} objects, {result['spectra']} spectra updated.")
+        else:
+            click.echo(f"✓ Full sync complete: {result['observations']} observations, "
+                        f"{result['objects']} objects, {result['spectra']} spectra.")
+
+        if result["stale_count"] > 0:
+            click.echo(f"\n⚠ {result['stale_count']} local file(s) have been updated on the server.")
+            click.echo("  Run: campfire download --stale")
+    except Exception as e:
+        click.echo(f"✗ Sync failed: {e}", err=True)
+        sys.exit(1)
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# Download command (FITS files)
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option("--obs", "obs_filter", multiple=True, help="Download by observation name")
+@click.option("--program", "program_filter", multiple=True, help="Download by program slug")
+@click.option("--field", "field_filter", multiple=True, help="Download by field name")
+@click.option("--grating", "grating_filter", multiple=True, help="Filter by grating type")
+@click.option("--stale", is_flag=True, help="Re-download files updated on the server")
+@click.option("--all", "download_all", is_flag=True, help="Download everything accessible")
+@click.option("--workers", default=4, help="Parallel download workers")
+@click.option("--yes", is_flag=True, help="Skip confirmation")
+@click.option("--dry-run", is_flag=True, help="Show plan without downloading")
+@click.option("--base-url", default=None, help="API base URL")
+def download(obs_filter, program_filter, field_filter, grating_filter,
+             stale, download_all, workers, yes, dry_run, base_url):
+    """Download FITS spectrum files.
+
+    Requires a prior 'campfire sync' to populate the local catalog.
+    Use filters to select which observations to download.
+
+    \b
+    Examples:
+      campfire download --obs ember_uds_p4
+      campfire download --program EMBER-UDS --grating PRISM
+      campfire download --field COSMOS
+      campfire download --stale
+      campfire download --all
+    """
+    from .config import products_dir as _products_dir, meta_dir as _meta_dir
+    from .sync import (
+        download_observation,
+        compute_download_plan,
+        format_size,
+    )
+    from .api.session import create_download_session
+
+    # Check that catalog has been synced
+    db_path = _meta_dir() / "campfire.db"
+    if not db_path.exists():
+        click.echo("✗ No catalog data. Run: campfire sync")
+        sys.exit(1)
+
+    store = _open_store()
+    catalog_obs = store.get_synced_observations()
+    if not catalog_obs:
+        click.echo("✗ No catalog data. Run: campfire sync")
+        store.close()
+        sys.exit(1)
+
+    # No filters specified — show available observations and exit
+    if not obs_filter and not program_filter and not field_filter and not stale and not download_all:
+        summary = store.get_observation_summary()
+        store.close()
+
+        lines = []
+        lines.append("")
+        lines.append(f"Available observations ({len(summary)} total):")
+        if len(summary) > 30:
+            lines.append("(scroll with arrow keys, q to quit)")
+        lines.append("")
+        lines.append(f"  {'OBSERVATION':<25} {'PROGRAM':<15} {'FIELD':<10} {'SPECTRA':>8}   LOCAL")
+        for row in summary:
+            downloaded = row["downloaded_count"]
+            total = row["spectrum_count"]
+            if downloaded >= total and total > 0:
+                local_str = f"{downloaded} (complete)"
+            elif downloaded > 0:
+                local_str = f"{downloaded}/{total}"
+            else:
+                local_str = ""
+            lines.append(
+                f"  {row['observation']:<25} "
+                f"{row['program_slug']:<15} "
+                f"{row['field']:<10} "
+                f"{total:>8}   {local_str}"
+            )
+
+        lines.append("")
+        lines.append("Use --obs, --program, or --field to download, or --all for everything.")
+        lines.append("")
+
+        output = "\n".join(lines)
+        if len(summary) > 30:
+            click.echo_via_pager(output)
+        else:
+            click.echo(output)
+        return
+
+    base_url = base_url or resolve_base_url()
+
+    try:
+        api_session = APISession(base_url=base_url)
+        api = APIClient(api_session)
+    except AuthenticationError as e:
+        click.echo(f"✗ {e}")
+        store.close()
+        sys.exit(1)
+
+    # Determine which observations to download
+    if stale:
+        stale_files = store.get_stale_files()
+        if not stale_files:
+            click.echo("All local files are up to date.")
+            store.close()
+            return
+        # Group stale files by observation
+        stale_obs = set(f["observation"] for f in stale_files)
+        target_obs = sorted(stale_obs)
+        click.echo(f"Found {len(stale_files)} stale file(s) across {len(target_obs)} observation(s)")
+    else:
+        target_obs = set()
+
+        if download_all:
+            target_obs = set(catalog_obs)
+
+        if obs_filter:
+            for name in obs_filter:
+                if name not in catalog_obs:
+                    click.echo(f"✗ Observation '{name}' not in catalog. Run: campfire sync", err=True)
+                    store.close()
+                    sys.exit(1)
+                target_obs.add(name)
+
+        if program_filter:
+            for prog in program_filter:
+                matching = store.get_distinct_values("observation")
+                # Query store for observations matching this program
+                results = store.query_objects(programs=[prog], limit=999999)
+                obs_for_prog = set(r["observation"] for r in results)
+                if not obs_for_prog:
+                    click.echo(f"✗ No observations found for program '{prog}'", err=True)
+                    store.close()
+                    sys.exit(1)
+                target_obs.update(obs_for_prog)
+
+        if field_filter:
+            for fld in field_filter:
+                results = store.query_objects(fields=[fld], limit=999999)
+                obs_for_field = set(r["observation"] for r in results)
+                if not obs_for_field:
+                    click.echo(f"✗ No observations found for field '{fld}'", err=True)
+                    store.close()
+                    sys.exit(1)
+                target_obs.update(obs_for_field)
+
+        target_obs = sorted(target_obs)
+
+    if not target_obs:
+        click.echo("Nothing to download.")
+        store.close()
+        return
+
+    # Reconcile DB with filesystem before planning
+    verify = store.verify_local_files(_products_dir())
+    if verify["cleared"]:
+        click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
+    if verify["discovered"]:
+        click.echo(f"  Found {verify['discovered']} existing local file(s), skipping download.")
+
+    # Gather download plans
+    grating_list = list(grating_filter) if grating_filter else None
+    click.echo("Checking files...")
     plans = []
     total_download = 0
     total_files = 0
 
-    for obs in tracked:
+    for obs in target_obs:
         try:
-            from .sync import fetch_manifest, compute_download_plan
+            manifest = api.fetch_manifest(obs)
+            synced = store.get_synced_files(obs)
 
-            manifest = fetch_manifest(session, base_url, obs)
-            synced = state.get_synced_files(obs)
-            new_files, updated_files, up_to_date = compute_download_plan(manifest, synced)
+            # Apply grating filter to manifest
+            if grating_list:
+                grating_set = set(g.upper() for g in grating_list)
+                manifest_filtered = dict(manifest)
+                manifest_filtered["spectra"] = [
+                    s for s in manifest.get("spectra", [])
+                    if s.get("grating", "").upper() in grating_set
+                ]
+            else:
+                manifest_filtered = manifest
+
+            new_files, updated_files, up_to_date = compute_download_plan(manifest_filtered, synced)
             to_download = new_files + updated_files
             download_bytes = sum(s.get("file_size") or 0 for s in to_download)
 
             if not to_download:
-                click.echo(f"  {obs}: {len(up_to_date)} files synced, up to date")
+                click.echo(f"  {obs}: up to date")
             else:
                 parts = []
                 if new_files:
@@ -696,7 +627,6 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
                 "observation": obs,
                 "manifest": manifest,
                 "to_download": to_download,
-                "up_to_date": up_to_date,
                 "download_bytes": download_bytes,
             })
             total_download += download_bytes
@@ -705,85 +635,56 @@ def sync_cmd(yes: bool, workers: int, obs_filter: tuple, dry_run: bool, base_url
             click.echo(f"  {obs}: ✗ {e}")
 
     if total_files == 0:
-        click.echo("\nAll observations up to date.")
-        state.close()
+        click.echo("\nAll files up to date.")
+        store.close()
         return
 
     if dry_run:
         click.echo(f"\nDry run: would download {total_files} files ({format_size(total_download)})")
-        state.close()
+        store.close()
         return
 
-    # Confirm
     if not yes:
         click.echo(f"\nDownload {total_files} files ({format_size(total_download)})?")
         if not click.confirm("Proceed?", default=True):
-            state.close()
+            store.close()
             return
 
-    # Execute sync for each observation
+    # Execute downloads
     click.echo()
-    download_session = create_download_session(max_workers=workers)
+    dl_session = create_download_session(max_workers=workers)
     all_stats = []
+
     for plan in plans:
         obs = plan["observation"]
         if not plan["to_download"]:
             continue
 
-        # Refresh token between observations for long syncs
-        refresh_session_token(session, base_url)
+        api_session._ensure_valid_token()
 
         try:
-            stats = sync_observation(
-                session, base_url, obs,
-                config.data_dir, state,
+            stats = download_observation(
+                api, obs,
+                _products_dir(), store,
                 max_workers=workers,
-                download_session=download_session,
+                download_session=dl_session,
+                manifest=plan["manifest"],
+                grating_filter=grating_list,
             )
             all_stats.append(stats)
         except Exception as e:
-            click.echo(f"✗ Failed to sync {obs}: {e}")
+            click.echo(f"✗ Failed to download {obs}: {e}")
 
-    # Regenerate catalogs
-    click.echo("\nUpdating catalog...")
-    try:
-        # Fetch full object data for all tracked observations
-        all_objects = []
-        for obs in config.tracked_observations:
-            refresh_session_token(session, base_url)
-            offset = 0
-            while True:
-                resp = session.get(
-                    f"{base_url}/objects",
-                    params={"observations": obs, "limit": 1000, "offset": offset},
-                    timeout=60,
-                )
-                if resp.status_code != 200:
-                    break
-                data = resp.json()
-                objects = data.get("data", [])
-                all_objects.extend(objects)
-                pagination = data.get("pagination", {})
-                total = pagination.get("total", 0)
-                offset += len(objects)
-                if offset >= total or not objects:
-                    break
-
-        obj_count, spec_count = generate_catalogs(all_objects, config.data_dir)
-        click.echo(f"  Catalog updated: objects.csv ({obj_count} objects), spectra.csv ({spec_count} spectra)")
-    except Exception as e:
-        click.echo(f"  Warning: Failed to update catalog: {e}")
-
-    # Print summary
+    # Summary
     total_downloaded = sum(s.get("downloaded", 0) for s in all_stats)
     total_failed = sum(s.get("failed", 0) for s in all_stats)
-    click.echo(f"\n✓ Sync complete")
+    click.echo(f"\n✓ Download complete")
     click.echo(f"  Files downloaded: {total_downloaded}")
     if total_failed:
         click.echo(f"  Files failed: {total_failed}")
     click.echo(f"  Total size: {format_size(total_download)}")
 
-    state.close()
+    store.close()
 
 
 def main():

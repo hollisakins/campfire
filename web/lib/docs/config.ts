@@ -128,10 +128,32 @@ export const docsNav: DocPage[] = [
     description: 'Guidelines for using and publishing with CAMPFIRE data products',
   },
   {
-    title: 'API Reference',
+    title: 'Programmatic Access',
     slug: 'api',
     icon: Code,
-    description: 'Programmatic access to CAMPFIRE data',
+    description: 'CLI, Python client, and REST API reference',
+    children: [
+      {
+        title: 'Overview',
+        slug: 'api',
+        description: 'Installation, authentication, and architecture',
+      },
+      {
+        title: 'CLI Reference',
+        slug: 'api/cli',
+        description: 'Bulk download, sync, and observation management',
+      },
+      {
+        title: 'Python Client',
+        slug: 'api/python-client',
+        description: 'Interactive querying, spectrum access, and plotting',
+      },
+      {
+        title: 'REST API',
+        slug: 'api/rest',
+        description: 'Direct HTTP endpoint reference',
+      },
+    ],
   },
 ];
 

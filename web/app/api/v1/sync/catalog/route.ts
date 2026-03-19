@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
 
   if (!userId) {
     return NextResponse.json(
-      { error: 'Invalid or missing API key' },
+      { error: 'Invalid or missing authentication' },
       { status: 401 }
     );
   }

@@ -6,6 +6,7 @@ from the CAMPFIRE archive (COSMOS Archive of MultiPle-Field Internal Reductions 
 """
 
 from .client import Campfire
+from .models import SpectrumData
 from .exceptions import (
     CampfireError,
     AuthenticationError,
@@ -15,6 +16,7 @@ from .exceptions import (
     APIError,
 )
 from .flags import (
+    RedshiftQuality,
     SpectralFeatures,
     ObjectFlags,
     DQFlags,
@@ -33,9 +35,10 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "Campfire",
+    "SpectrumData",
     # Exceptions
     "CampfireError",
     "AuthenticationError",
@@ -44,6 +47,7 @@ __all__ = [
     "ValidationError",
     "APIError",
     # Flags
+    "RedshiftQuality",
     "SpectralFeatures",
     "ObjectFlags",
     "DQFlags",
