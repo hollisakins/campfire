@@ -16,7 +16,7 @@ import { CopyLinkButton } from '@/components/spectra/CopyLinkButton';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
 import { ReturnToMapButton } from '@/components/map/ReturnToMapButton';
-import { TileThumbnail } from '@/components/spectra/TileThumbnail';
+import { TileThumbnailWithToggle } from '@/components/spectra/TileThumbnailWithToggle';
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
 import { EnterInspectionModeButton } from '@/components/spectra/inspection/EnterInspectionModeButton';
@@ -247,12 +247,11 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
 
           {/* Right Column: Tile Cutout with Shutters */}
           <div className="flex-shrink-0" style={{ width: '300px' }}>
-            <TileThumbnail
+            <TileThumbnailWithToggle
               objectId={spectrum.object_id}
               size={600}
               displaySize={300}
               fov={3.2}
-              shutters
               linkToMap={{ field: spectrum.field, ra: spectrum.ra, dec: spectrum.dec }}
             />
           </div>
