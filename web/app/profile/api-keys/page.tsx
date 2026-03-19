@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import {
+  Terminal,
   Key,
   Plus,
   Trash2,
@@ -19,6 +20,8 @@ import {
   Eye,
   EyeOff,
   Shield,
+  ExternalLink,
+  XCircle,
 } from 'lucide-react';
 import {
   createUserApiKey,
@@ -26,14 +29,22 @@ import {
   deleteApiKey,
   type ApiKey,
 } from '@/lib/actions/api-keys';
+import {
+  getUserSessions,
+  revokeSession,
+  type Session,
+} from '@/lib/actions/sessions';
 
 export default function ApiKeysPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
 
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [revokingSession, setRevokingSession] = useState<string | null>(null);
 
   // Create key state
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -64,9 +75,27 @@ export default function ApiKeysPage() {
     }
   }, [authLoading, user]);
 
+  const fetchSessions = useCallback(async () => {
+    if (authLoading || !user) return;
+
+    setSessionsLoading(true);
+
+    try {
+      const result = await getUserSessions();
+      if (!result.error) {
+        setSessions(result.sessions);
+      }
+    } catch {
+      // Sessions are non-critical, don't show error
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, [authLoading, user]);
+
   useEffect(() => {
     fetchApiKeys();
-  }, [fetchApiKeys]);
+    fetchSessions();
+  }, [fetchApiKeys, fetchSessions]);
 
   const handleCreateKey = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,12 +138,30 @@ export default function ApiKeysPage() {
     }
   };
 
+  const handleRevokeSession = async (sessionId: string) => {
+    setRevokingSession(sessionId);
+
+    try {
+      const result = await revokeSession(sessionId);
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to revoke session');
+      }
+
+      fetchSessions();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to revoke session');
+    } finally {
+      setRevokingSession(null);
+    }
+  };
+
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedKey(true);
       setTimeout(() => setCopiedKey(false), 2000);
-    } catch (err) {
+    } catch {
       alert('Failed to copy to clipboard');
     }
   };
@@ -125,28 +172,27 @@ export default function ApiKeysPage() {
     setCopiedKey(false);
   };
 
+  const breadcrumbs = [
+    { label: 'CAMPFIRE', href: '/' },
+    { label: 'Profile', href: '/profile' },
+    { label: 'CLI & API Access' },
+  ];
+
   // Show login prompt if not authenticated
   if (!authLoading && !user) {
     return (
       <div className="container mx-auto px-4 py-8">
-        <Breadcrumbs
-          items={[
-            { label: 'CAMPFIRE', href: '/' },
-            { label: 'Profile', href: '/profile' },
-            { label: 'API Keys' },
-          ]}
-          className="mb-6"
-        />
+        <Breadcrumbs items={breadcrumbs} className="mb-6" />
 
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
             <LogIn className="w-8 h-8 text-text-secondary" />
           </div>
           <h2 className="text-2xl font-semibold text-text-primary mb-2">
-            Sign in to manage API keys
+            Sign in to manage CLI & API access
           </h2>
           <p className="text-text-secondary mb-6 max-w-md">
-            Please sign in to create and manage your API keys.
+            Please sign in to manage your CLI sessions and API keys.
           </p>
           <Link
             href="/login"
@@ -160,20 +206,13 @@ export default function ApiKeysPage() {
     );
   }
 
-  if (loading || authLoading) {
+  if ((loading && sessionsLoading) || authLoading) {
     return (
       <div className="container mx-auto px-4 py-8">
-        <Breadcrumbs
-          items={[
-            { label: 'CAMPFIRE', href: '/' },
-            { label: 'Profile', href: '/profile' },
-            { label: 'API Keys' },
-          ]}
-          className="mb-6"
-        />
+        <Breadcrumbs items={breadcrumbs} className="mb-6" />
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary">Loading API keys...</span>
+          <span className="ml-3 text-text-secondary">Loading...</span>
         </div>
       </div>
     );
@@ -181,44 +220,27 @@ export default function ApiKeysPage() {
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <Breadcrumbs
-        items={[
-          { label: 'CAMPFIRE', href: '/' },
-          { label: 'Profile', href: '/profile' },
-          { label: 'API Keys' },
-        ]}
-        className="mb-6"
-      />
+      <Breadcrumbs items={breadcrumbs} className="mb-6" />
 
       <div className="max-w-4xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold text-text-primary flex items-center gap-2">
-              <Key className="w-6 h-6 text-primary" />
-              API Keys
+              <Terminal className="w-6 h-6 text-primary" />
+              CLI & API Access
             </h1>
             <p className="text-text-secondary mt-1">
-              Manage your API keys for the CAMPFIRE Python client
+              Manage CLI sessions and API keys for programmatic access
             </p>
           </div>
-          {!showCreateForm && (
-            <Button
-              variant="primary"
-              onClick={() => setShowCreateForm(true)}
-              className="flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              New API Key
-            </Button>
-          )}
         </div>
 
         {/* Error Message */}
         {error && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
-            <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-red-800">{error}</p>
+          <div className="p-4 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg flex items-start gap-2">
+            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-red-800 dark:text-red-400">{error}</p>
           </div>
         )}
 
@@ -284,73 +306,200 @@ export default function ApiKeysPage() {
           </Card>
         )}
 
-        {/* Create Form */}
-        {showCreateForm && (
-          <Card className="p-6">
-            <h3 className="text-lg font-semibold text-text-primary mb-4">Create New API Key</h3>
-            <form onSubmit={handleCreateKey} className="space-y-4">
-              <div>
-                <label htmlFor="keyName" className="block text-sm font-medium text-text-primary mb-2">
-                  Key Name (optional)
-                </label>
-                <input
-                  id="keyName"
-                  type="text"
-                  value={newKeyName}
-                  onChange={(e) => setNewKeyName(e.target.value)}
-                  placeholder="e.g., My Laptop, Production Server"
-                  className="w-full px-4 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-                  disabled={creating}
-                />
-                <p className="text-sm text-text-secondary mt-1">
-                  Give your key a name to help identify where it&apos;s being used
-                </p>
-              </div>
-
-              <div className="flex gap-3">
-                <Button
-                  type="submit"
-                  variant="primary"
-                  disabled={creating}
-                  className="flex items-center gap-2"
-                >
-                  {creating ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Creating...
-                    </>
-                  ) : (
-                    <>
-                      <Plus className="w-4 h-4" />
-                      Create Key
-                    </>
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => {
-                    setShowCreateForm(false);
-                    setNewKeyName('');
-                  }}
-                  disabled={creating}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </form>
-          </Card>
-        )}
-
-        {/* API Keys List */}
+        {/* Getting Started */}
         <Card className="p-6">
-          <h3 className="text-lg font-semibold text-text-primary mb-4">Your API Keys</h3>
+          <h3 className="text-lg font-semibold text-text-primary mb-2">Getting Started</h3>
+          <p className="text-sm text-text-secondary mb-4">
+            Install the Python client and authenticate to access CAMPFIRE data programmatically.
+          </p>
 
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm font-medium text-text-primary mb-1.5">1. Install</p>
+              <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-3 font-mono text-sm border border-border">
+                <span className="text-text-primary">pip install &quot;git+https://github.com/hollisakins/campfire.git#subdirectory=python/&quot;</span>
+              </div>
+            </div>
+
+            <div>
+              <p className="text-sm font-medium text-text-primary mb-1.5">2. Authenticate <span className="text-xs font-normal text-text-secondary">(recommended)</span></p>
+              <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-3 font-mono text-sm border border-border">
+                <span className="text-text-primary">campfire login</span>
+              </div>
+              <p className="text-xs text-text-secondary mt-1.5">
+                Opens your browser for secure OAuth authentication. Tokens refresh automatically.
+              </p>
+            </div>
+
+            <div>
+              <p className="text-sm font-medium text-text-primary mb-1.5">3. Alternative: API key <span className="text-xs font-normal text-text-secondary">(headless environments)</span></p>
+              <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-3 font-mono text-sm border border-border">
+                <span className="text-text-primary">campfire login --api-key</span>
+              </div>
+              <p className="text-xs text-text-secondary mt-1.5">
+                For servers and HPC clusters without a browser. Create an API key below.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-border">
+            <Link
+              href="/docs/api"
+              className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary-hover transition-colors"
+            >
+              View full documentation
+              <ExternalLink className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        </Card>
+
+        {/* Active Sessions */}
+        <Card className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-lg font-semibold text-text-primary">Active Sessions</h3>
+              <p className="text-sm text-text-secondary mt-0.5">
+                Devices authenticated via <code className="text-xs bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded">campfire login</code>
+              </p>
+            </div>
+          </div>
+
+          {sessionsLoading ? (
+            <div className="flex items-center justify-center py-6">
+              <Loader2 className="w-5 h-5 animate-spin text-text-secondary" />
+            </div>
+          ) : sessions.length === 0 ? (
+            <div className="text-center py-6">
+              <Terminal className="w-10 h-10 text-text-secondary mx-auto mb-2 opacity-50" />
+              <p className="text-sm text-text-secondary">
+                No active CLI sessions. Run <code className="text-xs bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded">campfire login</code> to get started.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {sessions.map((session) => (
+                <div
+                  key={session.id}
+                  className="p-4 border border-border rounded-lg bg-background"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-text-primary">
+                        {session.device_name || 'Python Client'}
+                      </p>
+                      <div className="flex items-center gap-4 text-xs text-text-secondary mt-1">
+                        <span>Signed in {new Date(session.created_at).toLocaleDateString()}</span>
+                        {session.last_used_at && (
+                          <span>Last used {new Date(session.last_used_at).toLocaleDateString()}</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => handleRevokeSession(session.id)}
+                      disabled={revokingSession === session.id}
+                      className="flex items-center gap-1.5 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30"
+                    >
+                      {revokingSession === session.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5" />
+                      )}
+                      Revoke
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {/* API Keys Section */}
+        <Card className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-lg font-semibold text-text-primary">API Keys</h3>
+              <p className="text-sm text-text-secondary mt-0.5">
+                For headless environments without a browser
+              </p>
+            </div>
+            {!showCreateForm && (
+              <Button
+                variant="primary"
+                onClick={() => setShowCreateForm(true)}
+                className="flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                New API Key
+              </Button>
+            )}
+          </div>
+
+          {/* Create Form */}
+          {showCreateForm && (
+            <div className="mb-6 p-4 border border-border rounded-lg">
+              <form onSubmit={handleCreateKey} className="space-y-4">
+                <div>
+                  <label htmlFor="keyName" className="block text-sm font-medium text-text-primary mb-2">
+                    Key Name (optional)
+                  </label>
+                  <input
+                    id="keyName"
+                    type="text"
+                    value={newKeyName}
+                    onChange={(e) => setNewKeyName(e.target.value)}
+                    placeholder="e.g., My Laptop, Production Server"
+                    className="w-full px-4 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                    disabled={creating}
+                  />
+                  <p className="text-sm text-text-secondary mt-1">
+                    Give your key a name to help identify where it&apos;s being used
+                  </p>
+                </div>
+
+                <div className="flex gap-3">
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    disabled={creating}
+                    className="flex items-center gap-2"
+                  >
+                    {creating ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Creating...
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-4 h-4" />
+                        Create Key
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      setShowCreateForm(false);
+                      setNewKeyName('');
+                    }}
+                    disabled={creating}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* Keys List */}
           {apiKeys.length === 0 ? (
-            <div className="text-center py-8">
-              <Key className="w-12 h-12 text-text-secondary mx-auto mb-3 opacity-50" />
-              <p className="text-text-secondary">
-                No API keys yet. Create one to get started with the Python client.
+            <div className="text-center py-6">
+              <Key className="w-10 h-10 text-text-secondary mx-auto mb-2 opacity-50" />
+              <p className="text-sm text-text-secondary">
+                No API keys yet. Create one for use on headless servers or HPC clusters.
               </p>
             </div>
           ) : (
@@ -361,13 +510,13 @@ export default function ApiKeysPage() {
                   className={`p-4 border rounded-lg ${
                     key.is_active
                       ? 'border-border bg-background'
-                      : 'border-gray-300 bg-gray-50 opacity-60'
+                      : 'border-gray-300 dark:border-slate-600 bg-gray-50 dark:bg-slate-800 opacity-60'
                   }`}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-2">
-                        <code className="text-sm font-mono text-text-primary dark:text-slate-100 bg-gray-100 dark:bg-slate-700 px-2 py-1 rounded">
+                        <code className="text-sm font-mono text-text-primary bg-gray-100 dark:bg-slate-700 px-2 py-1 rounded">
                           {key.key_prefix}
                         </code>
                         {!key.is_active && (
@@ -406,37 +555,6 @@ export default function ApiKeysPage() {
               ))}
             </div>
           )}
-        </Card>
-
-        {/* Documentation Card */}
-        <Card className="p-6 bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-900">
-          <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100 mb-2">Using Your API Key</h3>
-          <p className="text-sm text-blue-800 dark:text-blue-300 mb-4">
-            Use your API key with the CAMPFIRE Python client to query and download spectra programmatically.
-          </p>
-
-          <div className="bg-white dark:bg-slate-800 rounded-lg p-4 font-mono text-sm border border-blue-200 dark:border-slate-700">
-            <div className="text-gray-600 dark:text-slate-400 mb-2"># Install the Python client</div>
-            <div className="text-gray-900 dark:text-slate-100 mb-4">pip install &quot;git+https://github.com/hollisakins/campfire.git#subdirectory=python/&quot;</div>
-
-            <div className="text-gray-600 dark:text-slate-400 mb-2"># Set your API key</div>
-            <div className="text-gray-900 dark:text-slate-100 mb-4">export CAMPFIRE_API_KEY=sk_live_...</div>
-
-            <div className="text-gray-600 dark:text-slate-400 mb-2"># Use the client</div>
-            <div className="text-gray-900 dark:text-slate-100">from campfire import Campfire</div>
-            <div className="text-gray-900 dark:text-slate-100">cf = Campfire()</div>
-            <div className="text-gray-900 dark:text-slate-100">results = cf.query_objects(limit=10)</div>
-          </div>
-
-          <div className="mt-4">
-            <a
-              href="/python/README.md"
-              target="_blank"
-              className="text-sm text-blue-700 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline"
-            >
-              View full Python client documentation →
-            </a>
-          </div>
         </Card>
       </div>
     </div>

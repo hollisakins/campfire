@@ -20,6 +20,7 @@ import {
   Save,
   X,
   Key,
+  Terminal,
   ChevronRight,
 } from 'lucide-react';
 import { SettingsCard } from '@/components/settings/SettingsCard';
@@ -456,24 +457,19 @@ export default function ProfilePage() {
           </Card>
         )}
 
-        {/* API Keys */}
+        {/* CLI & API Access */}
         {!profileData.profile.is_group_account && (
           <Link href="/profile/api-keys" className="block">
           <Card className="p-6 hover:bg-background-hover dark:hover:bg-slate-700 transition-colors cursor-pointer">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-12 h-12 bg-purple-100 dark:bg-purple-900 rounded-full flex items-center justify-center">
-                  <Key className="w-6 h-6 text-purple-600 dark:text-purple-400" />
+                <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center">
+                  <Terminal className="w-6 h-6 text-primary" />
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">API Keys</h2>
-                    <span className="inline-flex px-2 py-0.5 text-xs font-medium bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-300 rounded-full">
-                      Experimental
-                    </span>
-                  </div>
+                  <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">CLI & API Access</h2>
                   <p className="text-sm text-text-secondary dark:text-slate-400">
-                    Manage API keys for the Python client (experimental preview)
+                    Manage CLI sessions and API keys for programmatic access
                   </p>
                 </div>
               </div>
