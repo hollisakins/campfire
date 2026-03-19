@@ -710,11 +710,16 @@ class LocalStore:
 
         return result
 
-    def verify_local_files(self, products_dir: Path, observation: Optional[str] = None) -> int:
-        """Check that files marked as downloaded still exist on disk.
+    def verify_local_files(self, products_dir: Path, observation: Optional[str] = None) -> dict:
+        """Reconcile database sync state with the local filesystem.
 
-        Clears ``local_path`` for any files that are missing, so they
-        will be re-downloaded on the next sync.
+        Performs two checks:
+
+        1. **Missing files**: spectra marked as downloaded but no longer
+           on disk → clears ``local_path`` so they are re-downloaded.
+        2. **Discovered files**: spectra not marked as downloaded but the
+           expected file exists on disk (e.g., from the pipeline) →
+           sets ``local_path`` so they are not re-downloaded.
 
         Parameters
         ----------
@@ -725,23 +730,22 @@ class LocalStore:
 
         Returns
         -------
-        int
-            Number of stale entries cleared.
+        dict
+            ``{"cleared": int, "discovered": int}``
         """
-        if observation:
-            rows = self._conn.execute(
-                """SELECT s.spectra_id, s.local_path FROM spectra s
-                   JOIN objects o ON s.object_id = o.object_id
-                   WHERE o.observation = ? AND s.local_path IS NOT NULL""",
-                (observation,),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT spectra_id, local_path FROM spectra WHERE local_path IS NOT NULL"
-            ).fetchall()
+        now = datetime.now(timezone.utc).isoformat()
+        obs_filter = "AND o.observation = ?" if observation else ""
+        obs_params: tuple = (observation,) if observation else ()
+
+        # 1. Clear entries for files that no longer exist
+        tracked_rows = self._conn.execute(f"""
+            SELECT s.spectra_id, s.local_path FROM spectra s
+            JOIN objects o ON s.object_id = o.object_id
+            WHERE s.local_path IS NOT NULL {obs_filter}
+        """, obs_params).fetchall()
 
         cleared = 0
-        for row in rows:
+        for row in tracked_rows:
             if not (products_dir / row["local_path"]).exists():
                 self._conn.execute(
                     "UPDATE spectra SET local_path = NULL, local_file_hash = NULL, synced_at = NULL WHERE spectra_id = ?",
@@ -749,9 +753,31 @@ class LocalStore:
                 )
                 cleared += 1
 
-        if cleared:
+        # 2. Discover files that exist but aren't tracked
+        untracked_rows = self._conn.execute(f"""
+            SELECT s.spectra_id, s.fits_path, s.file_hash, o.observation
+            FROM spectra s
+            JOIN objects o ON s.object_id = o.object_id
+            WHERE s.local_path IS NULL AND s.fits_path IS NOT NULL {obs_filter}
+        """, obs_params).fetchall()
+
+        discovered = 0
+        for row in untracked_rows:
+            filename = Path(row["fits_path"]).name
+            obs_name = row["observation"]
+            local_path = products_dir / obs_name / filename
+            if local_path.exists():
+                rel_path = f"{obs_name}/{filename}"
+                self._conn.execute(
+                    """UPDATE spectra SET local_path = ?, local_file_hash = ?,
+                       file_size = ?, synced_at = ? WHERE spectra_id = ?""",
+                    (rel_path, row["file_hash"], local_path.stat().st_size, now, row["spectra_id"]),
+                )
+                discovered += 1
+
+        if cleared or discovered:
             self._conn.commit()
-        return cleared
+        return {"cleared": cleared, "discovered": discovered}
 
     def mark_synced(
         self,

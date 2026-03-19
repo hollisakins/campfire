@@ -565,10 +565,12 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         store.close()
         return
 
-    # Verify local files still exist before planning
-    cleared = store.verify_local_files(_products_dir(), observation=None)
-    if cleared:
-        click.echo(f"  Detected {cleared} missing local file(s), will re-download.")
+    # Reconcile DB with filesystem before planning
+    verify = store.verify_local_files(_products_dir())
+    if verify["cleared"]:
+        click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
+    if verify["discovered"]:
+        click.echo(f"  Found {verify['discovered']} existing local file(s), skipping download.")
 
     # Gather download plans
     grating_list = list(grating_filter) if grating_filter else None
