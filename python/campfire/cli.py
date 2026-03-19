@@ -381,10 +381,11 @@ def sync_cmd(full: bool, base_url: Optional[str]):
     store = _open_store()
 
     try:
-        if full or not store.get_max_updated_at():
-            click.echo("Syncing catalog...")
+        is_incremental = not full and store.get_max_updated_at() is not None
+        if is_incremental:
+            click.echo("Syncing catalog (updating existing)...")
         else:
-            click.echo("Syncing catalog (incremental)...")
+            click.echo("Syncing full CAMPFIRE catalog (may take a while)...")
 
         result = sync_metadata(
             api, store, _meta_dir(),
@@ -392,9 +393,12 @@ def sync_cmd(full: bool, base_url: Optional[str]):
             full=full,
         )
 
-        mode = "Full sync" if full or not result.get("incremental") else "Incremental sync"
-        click.echo(f"✓ {mode} complete: {result['observations']} observations, "
-                    f"{result['objects']} objects, {result['spectra']} spectra")
+        if result.get("incremental"):
+            click.echo(f"✓ Incremental sync complete: {result['observations']} observations, "
+                        f"{result['objects']} objects, {result['spectra']} spectra updated.")
+        else:
+            click.echo(f"✓ Full sync complete: {result['observations']} observations, "
+                        f"{result['objects']} objects, {result['spectra']} spectra.")
 
         if result["stale_count"] > 0:
             click.echo(f"\n⚠ {result['stale_count']} local file(s) have been updated on the server.")
@@ -464,6 +468,10 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         store.close()
 
         lines = []
+        lines.append("")
+        lines.append(f"Available observations ({len(summary)} total):")
+        if len(summary) > 30:
+            lines.append("(scroll with arrow keys, q to quit)")
         lines.append("")
         lines.append(f"  {'OBSERVATION':<25} {'PROGRAM':<15} {'FIELD':<10} {'SPECTRA':>8}   LOCAL")
         for row in summary:
