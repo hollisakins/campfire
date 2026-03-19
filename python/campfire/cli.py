@@ -195,13 +195,27 @@ def _get_user_email(base_url: str, access_token: str) -> Optional[str]:
 
 
 @cli.command()
-def logout():
-    """Remove stored credentials."""
+@click.option("--base-url", default=None, help="API base URL")
+def logout(base_url: Optional[str]):
+    """Remove stored credentials and revoke server session."""
+    base_url = base_url or resolve_base_url()
     creds = CredentialManager()
 
     if not creds.exists():
         click.echo("Not logged in.")
         return
+
+    # Revoke server-side refresh token before deleting local credentials
+    loaded = creds.load()
+    if loaded and loaded.type == "oauth" and loaded.refresh_token:
+        try:
+            requests.post(
+                f"{base_url}/auth/revoke",
+                json={"token": loaded.refresh_token},
+                timeout=5,
+            )
+        except Exception:
+            pass  # Best-effort; still delete local creds
 
     creds.delete()
     click.echo("✓ Logged out successfully")
