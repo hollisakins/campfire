@@ -208,6 +208,12 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     const saveResult = await inspectionState.saveIfDirty();
     if (saveResult.saved) {
       deleteCachedObject(currentSpectrum.object_id);
+      // Show cross-match propagation hint if any were auto-secured
+      if (inspectionState.propagatedCount > 0) {
+        const n = inspectionState.propagatedCount;
+        setAutoSaveHint(`${n} cross-match${n !== 1 ? 'es' : ''} auto-secured`);
+        setTimeout(() => setAutoSaveHint(null), 3000);
+      }
     }
     if (saveResult.reason === 'quality-zero') {
       setAutoSaveHint('Set quality to auto-save');
@@ -477,7 +483,11 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
       {/* Auto-save hint */}
       {autoSaveHint && (
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 text-xs rounded-lg shadow">
+        <div className={`absolute top-14 left-1/2 -translate-x-1/2 px-3 py-1.5 text-xs rounded-lg shadow ${
+          autoSaveHint.includes('auto-secured')
+            ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200'
+            : 'bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200'
+        }`}>
           {autoSaveHint}
         </div>
       )}
