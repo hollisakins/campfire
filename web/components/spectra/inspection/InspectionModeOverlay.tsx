@@ -483,7 +483,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
       {/* Auto-save hint */}
       {autoSaveHint && (
-        <div className={`absolute top-14 left-1/2 -translate-x-1/2 px-3 py-1.5 text-xs rounded-lg shadow ${
+        <div className={`absolute top-14 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 text-xs rounded-lg shadow-lg ${
           autoSaveHint.includes('auto-secured')
             ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200'
             : 'bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200'
