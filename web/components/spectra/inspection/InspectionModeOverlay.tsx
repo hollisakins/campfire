@@ -215,10 +215,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         setTimeout(() => setAutoSaveHint(null), 3000);
       }
     }
-    if (saveResult.reason === 'quality-zero') {
-      setAutoSaveHint('Set quality to auto-save');
-      setTimeout(() => setAutoSaveHint(null), 2000);
-    }
+    // quality-zero skip is now communicated by greyed-out flags inline
 
     // 2. Update queue position
     queue.goTo(objectId);

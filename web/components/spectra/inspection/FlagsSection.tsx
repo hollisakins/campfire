@@ -38,6 +38,11 @@ export const FlagsSection: React.FC<FlagsSectionProps> = ({ state, canEdit }) =>
     <div className="p-4 border-b border-border dark:border-slate-700">
       <h3 className="text-xs font-semibold text-text-secondary dark:text-slate-400 uppercase mb-3">
         Flags
+        {canEdit && state.redshiftQuality === 0 && (
+          <span className="normal-case font-normal ml-1.5 text-amber-600 dark:text-amber-400">
+            — set quality first
+          </span>
+        )}
       </h3>
 
       <div className="space-y-3">
@@ -52,7 +57,7 @@ export const FlagsSection: React.FC<FlagsSectionProps> = ({ state, canEdit }) =>
                 key={f.key}
                 flag={f}
                 active={state.spectralFeatures.includes(f.value)}
-                disabled={!canEdit}
+                disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('spectralFeatures', f.value)}
               />
             ))}
@@ -70,7 +75,7 @@ export const FlagsSection: React.FC<FlagsSectionProps> = ({ state, canEdit }) =>
                 key={f.key}
                 flag={f}
                 active={state.objectFlags.includes(f.value)}
-                disabled={!canEdit}
+                disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('objectFlags', f.value)}
               />
             ))}
@@ -88,7 +93,7 @@ export const FlagsSection: React.FC<FlagsSectionProps> = ({ state, canEdit }) =>
                 key={f.key}
                 flag={f}
                 active={state.dqFlags.includes(f.value)}
-                disabled={!canEdit}
+                disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('dqFlags', f.value)}
               />
             ))}

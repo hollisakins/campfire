@@ -155,6 +155,9 @@ export const InspectionControls = forwardRef<HTMLInputElement, InspectionControl
         </div>
 
         {/* Row 2: Flag pills */}
+        {canEdit && state.redshiftQuality === 0 && (
+          <p className="text-[10px] text-amber-600 dark:text-amber-400 mb-1">Set quality to enable flags</p>
+        )}
         <div className="flex items-start gap-4 mb-2 flex-wrap">
           {/* Spectral Features */}
           <div className="flex items-center gap-1 flex-wrap">
@@ -164,7 +167,7 @@ export const InspectionControls = forwardRef<HTMLInputElement, InspectionControl
                 key={f.key}
                 flag={f}
                 active={state.spectralFeatures.includes(f.value)}
-                disabled={!canEdit}
+                disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('spectralFeatures', f.value)}
               />
             ))}
@@ -178,7 +181,7 @@ export const InspectionControls = forwardRef<HTMLInputElement, InspectionControl
                 key={f.key}
                 flag={f}
                 active={state.objectFlags.includes(f.value)}
-                disabled={!canEdit}
+                disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('objectFlags', f.value)}
               />
             ))}
@@ -192,7 +195,7 @@ export const InspectionControls = forwardRef<HTMLInputElement, InspectionControl
                 key={f.key}
                 flag={f}
                 active={state.dqFlags.includes(f.value)}
-                disabled={!canEdit}
+                disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('dqFlags', f.value)}
               />
             ))}
