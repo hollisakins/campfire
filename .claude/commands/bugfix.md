@@ -6,9 +6,12 @@ allowed-tools: "*"
 
 Fix the bug described in GitHub issue #$ARGUMENTS. Work autonomously through all steps below — do not ask for input unless you hit a genuine ambiguity that blocks progress.
 
+**Important**: Always use relative paths for all file operations. 
+Do not use absolute paths. Your working directory is the project root.
+
 ## 1. Read & Understand
 
-- Run `gh issue view $ARGUMENTS --json title,body,labels` to read the full bug report.
+- Run `gh issue view $ARGUMENTS --json title,body,labels,comments` to read the full bug report.
 - Identify the **component** (Web Portal, Pipeline NIRSpec, Pipeline NIRCam, Deployment/Infrastructure) from the issue metadata.
 - Parse the reporter's description: what happened, what they expected, and any error messages, logs, or screenshots provided.
 
@@ -21,8 +24,8 @@ Fix the bug described in GitHub issue #$ARGUMENTS. Work autonomously through all
 
 ## 3. Branch
 
-- Run `git checkout main && git pull origin main`
-- Create a branch: `git checkout -b fix/issue-$ARGUMENTS-<short-kebab-description>`
+- If you're already on a dedicated worktree branch (not `main`) just rename it something descriptive (`git branch -m fix/issue-$ARGUMENTS-<short-kebab-description>`) and use as is
+- Otherwise, run `git checkout main && git pull origin main` and create a branch: `git checkout -b fix/issue-$ARGUMENTS-<short-kebab-description>`
 
 ## 4. Fix & Verify
 

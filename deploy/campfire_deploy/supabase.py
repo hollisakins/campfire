@@ -91,10 +91,10 @@ def batch_upsert_objects(
         batch_size: Records per batch
 
     Returns:
-        Number of objects upserted
+        Tuple of (number of objects upserted, list of new object_ids)
     """
     if not objects:
-        return 0
+        return 0, []
     if objects_with_sed is None:
         objects_with_sed = set()
 
@@ -173,7 +173,8 @@ def batch_upsert_objects(
         batch = update_records[i:i + batch_size]
         client.table('objects').upsert(batch, on_conflict='object_id').execute()
 
-    return len(objects)
+    new_ids = [r['object_id'] for r in new_records]
+    return len(objects), new_ids
 
 
 def batch_upsert_spectra(
@@ -224,6 +225,52 @@ def batch_upsert_spectra(
         client.table('spectra').upsert(batch, on_conflict='id').execute()
 
     return len(spectra)
+
+
+def propagate_crossmatches(
+    client: Client,
+    object_ids: list[str],
+    batch_size: int = 500,
+) -> int:
+    """
+    Check new objects against existing inspected cross-matches.
+
+    For each new object (quality=0), calls the DB function to check if
+    a nearby Secure (quality=4) object with matching redshift exists.
+    If so, the new object is automatically marked Secure.
+
+    Args:
+        object_ids: String object_ids of newly inserted objects
+        batch_size: Records per batch for ID lookups
+
+    Returns:
+        Number of objects auto-secured
+    """
+    if not object_ids:
+        return 0
+
+    # Batch-fetch integer IDs for the new objects
+    id_map: dict[str, int] = {}
+    for i in range(0, len(object_ids), batch_size):
+        batch = object_ids[i:i + batch_size]
+        resp = client.table('objects').select('id, object_id').in_('object_id', batch).execute()
+        for row in resp.data:
+            id_map[row['object_id']] = row['id']
+
+    total = 0
+    for oid in object_ids:
+        db_id = id_map.get(oid)
+        if db_id is None:
+            continue
+        try:
+            result = client.rpc('propagate_crossmatch_inspection', {
+                'p_object_id': db_id,
+            }).execute()
+            total += result.data or 0
+        except Exception as e:
+            print(f"  Warning: cross-match check failed for {oid}: {e}")
+
+    return total
 
 
 def update_has_sed_plot(

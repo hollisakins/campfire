@@ -255,9 +255,24 @@ export async function PATCH(
       }
     }
 
+    // Propagate to cross-matched objects when quality is set to Secure
+    let propagatedCount = 0;
+    if (updates.redshift_quality === 4) {
+      try {
+        const { data: propResult } = await supabase.rpc('propagate_crossmatch_inspection', {
+          p_object_id: objectId,
+        });
+        propagatedCount = propResult ?? 0;
+      } catch (e) {
+        console.error('Cross-match propagation error:', e);
+        // Non-fatal: the primary save succeeded
+      }
+    }
+
     return NextResponse.json({
       object: updatedObject,
       changes: auditEntries.length,
+      propagated: propagatedCount,
     });
   } catch (error) {
     console.error('Error:', error);

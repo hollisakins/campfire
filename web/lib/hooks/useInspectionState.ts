@@ -40,6 +40,7 @@ export interface InspectionState {
   saving: boolean;
   saveError: string | null;
   saveSuccess: boolean;
+  propagatedCount: number;
   currentRedshift: number | null;
   save: () => Promise<boolean>;
   isDirty: () => boolean;
@@ -72,6 +73,7 @@ export function useInspectionState(
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [propagatedCount, setPropagatedCount] = useState(0);
   // Bumped after each save to force useMemo recomputation of hasChanges
   const [saveCount, setSaveCount] = useState(0);
   // Bumped on every resetState to force dependent effects to re-run
@@ -200,6 +202,7 @@ export function useInspectionState(
         dq_flags: encodeBitmask(v.dqFlags, DQ_FLAGS),
       };
 
+      setPropagatedCount(data.propagated || 0);
       setSaveSuccess(true);
       setSaveCount(c => c + 1); // Force hasChanges useMemo recomputation
       setTimeout(() => setSaveSuccess(false), 3000);
@@ -294,6 +297,7 @@ export function useInspectionState(
     saving,
     saveError,
     saveSuccess,
+    propagatedCount,
     currentRedshift,
     save,
     isDirty,
