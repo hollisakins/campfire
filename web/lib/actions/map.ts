@@ -219,6 +219,12 @@ export async function getFilteredObjectIds(
 
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
+    // DEBUG: log filter params for multi-program investigation
+    if (rpcParams.p_filter_programs && rpcParams.p_filter_programs.length > 0) {
+      console.log('[getFilteredObjectIds] p_filter_programs:', rpcParams.p_filter_programs);
+      console.log('[getFilteredObjectIds] p_program_slugs count:', rpcParams.p_program_slugs.length);
+    }
+
     // Call the lightweight core function directly (no JSONB, no pagination)
     const { data, error } = await supabase.rpc('get_filtered_object_ids', {
       ...rpcParams,
@@ -233,6 +239,11 @@ export async function getFilteredObjectIds(
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const objectIds = (data || []).map((row: any) => row.object_id as string);
+
+    // DEBUG: log result count for multi-program investigation
+    if (rpcParams.p_filter_programs && rpcParams.p_filter_programs.length > 0) {
+      console.log('[getFilteredObjectIds] returned', objectIds.length, 'objects');
+    }
 
     return { objectIds };
   } catch (err) {
