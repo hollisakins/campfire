@@ -37,6 +37,7 @@ export function MapPageContent({
   // Filter state
   const [filters, setFilters] = useState<FilterOptions>(initialFilters);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [currentField, setCurrentField] = useState<string | undefined>(initialField);
   const [fieldObservations, setFieldObservations] = useState<string[]>([]);
 
   // Debounce filters for queries
@@ -68,8 +69,15 @@ export function MapPageContent({
   const { data: filterOptionsResult } = useFilterOptionsQuery(true);
   const availablePrograms = filterOptionsResult?.programs ?? [];
 
+  // Scope filter query to the current map field so the RPC only returns
+  // objects visible on this field (avoids fetching IDs across all fields).
+  const queryFilters = useMemo(() => {
+    if (!currentField || debouncedFilters.fields.length > 0) return debouncedFilters;
+    return { ...debouncedFilters, fields: [currentField] };
+  }, [debouncedFilters, currentField]);
+
   // Fetch filtered object IDs when filters are active
-  const { data: filteredResult } = useFilteredObjectIds(debouncedFilters, hasActiveFilters);
+  const { data: filteredResult } = useFilteredObjectIds(queryFilters, hasActiveFilters);
 
   // Build the ID set and marker filter function
   const filteredIdSet = useMemo(() => {
@@ -88,7 +96,8 @@ export function MapPageContent({
   }, []);
 
   // Track selected field and its observations (derived from loaded markers)
-  const handleFieldChange = useCallback((_field: string, observations: string[]) => {
+  const handleFieldChange = useCallback((field: string, observations: string[]) => {
+    setCurrentField(field);
     setFieldObservations(observations);
   }, []);
 
