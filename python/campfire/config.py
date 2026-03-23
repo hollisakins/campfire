@@ -39,10 +39,16 @@ def meta_dir(data_dir: Path = None) -> Path:
     return (data_dir or resolve_data_dir()) / "meta"
 
 
+def cutouts_dir(data_dir: Path = None) -> Path:
+    """Cutouts cache directory for PNG thumbnails."""
+    return (data_dir or resolve_data_dir()) / "cutouts"
+
+
 def ensure_data_dir(data_dir: Path = None) -> Path:
-    """Create data directory with products/ and meta/ subdirectories."""
+    """Create data directory with products/, meta/, and cutouts/ subdirectories."""
     d = data_dir or resolve_data_dir()
     d.mkdir(parents=True, exist_ok=True)
     (d / "products").mkdir(exist_ok=True)
     (d / "meta").mkdir(exist_ok=True)
+    (d / "cutouts").mkdir(exist_ok=True)
     return d

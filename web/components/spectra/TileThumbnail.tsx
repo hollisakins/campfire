@@ -1,7 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { getNearbyShutters } from '@/lib/actions/map';
+import { computeShutterRects, type ShutterGeometry } from '@/lib/utils/shutter-overlay';
 
 interface TileThumbnailProps {
   objectId: string;
@@ -10,6 +12,10 @@ interface TileThumbnailProps {
   displaySize?: number;
   shutters?: boolean;
   fov?: number;
+  /** Required when shutters=true: object coordinates for shutter geometry lookup */
+  ra?: number;
+  dec?: number;
+  field?: string;
   linkToMap?: {
     field: string;
     ra: number;
@@ -20,7 +26,8 @@ interface TileThumbnailProps {
 
 /**
  * Displays a tile-composited thumbnail for a NIRSpec object.
- * Replaces both RGBThumbnail (table) and TileCutout (detail page).
+ * When shutters=true and coordinates are provided, renders a client-side
+ * SVG overlay with vector shutter rectangles.
  */
 export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   objectId,
@@ -28,14 +35,40 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   displaySize,
   shutters = false,
   fov = 5,
+  ra,
+  dec,
+  field,
   linkToMap,
   className,
 }) => {
   const cssSize = displaySize ?? size;
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const [shutterRects, setShutterRects] = useState<ReturnType<typeof computeShutterRects>>([]);
 
-  const src = `/api/tile-thumbnail?object_id=${encodeURIComponent(objectId)}&size=${size}&fov=${fov}${shutters ? '&shutters=true' : ''}`;
+  // Cutout image URL (never includes shutters — always a clean RGB crop)
+  const src = `/api/tile-thumbnail?object_id=${encodeURIComponent(objectId)}&size=${size}&fov=${fov}`;
+
+  // Fetch shutter geometry when shutters are enabled
+  const hasCoordinates = ra !== undefined && dec !== undefined && field !== undefined;
+  useEffect(() => {
+    if (!shutters || !hasCoordinates) {
+      setShutterRects([]);
+      return;
+    }
+
+    let cancelled = false;
+    getNearbyShutters(ra, dec, field, fov).then(({ shutters: shutterData }) => {
+      if (cancelled) return;
+      const rects = computeShutterRects(
+        shutterData as ShutterGeometry[],
+        ra, dec, fov, cssSize, objectId,
+      );
+      setShutterRects(rects);
+    });
+
+    return () => { cancelled = true; };
+  }, [shutters, ra, dec, field, fov, cssSize, objectId, hasCoordinates]);
 
   if (hasError) {
     const placeholder = (
@@ -84,6 +117,32 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
         className={`object-cover ${isLoading ? 'opacity-0' : 'opacity-100'}`}
         style={{ width: cssSize, height: cssSize, imageRendering: 'auto', transition: 'opacity 0.2s' }}
       />
+      {/* Vector shutter overlay */}
+      {shutters && shutterRects.length > 0 && (
+        <svg
+          width={cssSize}
+          height={cssSize}
+          className="absolute inset-0 pointer-events-none"
+          style={{ width: cssSize, height: cssSize }}
+        >
+          {shutterRects.map((rect, i) => (
+            <rect
+              key={i}
+              x={-rect.width / 2}
+              y={-rect.height / 2}
+              width={rect.width}
+              height={rect.height}
+              fill={rect.fill}
+              fillOpacity={rect.fillOpacity}
+              stroke={rect.stroke}
+              strokeOpacity={rect.strokeOpacity}
+              strokeWidth={rect.strokeWidth}
+              strokeDasharray={rect.strokeDasharray}
+              transform={`translate(${rect.x},${rect.y}) rotate(${rect.rotation})`}
+            />
+          ))}
+        </svg>
+      )}
     </div>
   );
 

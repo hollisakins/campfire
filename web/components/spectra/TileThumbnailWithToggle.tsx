@@ -9,6 +9,9 @@ interface TileThumbnailWithToggleProps {
   size?: number;
   displaySize?: number;
   fov?: number;
+  ra: number;
+  dec: number;
+  field: string;
   linkToMap?: {
     field: string;
     ra: number;
@@ -18,12 +21,16 @@ interface TileThumbnailWithToggleProps {
 
 /**
  * TileThumbnail with a toggle button to show/hide shutter overlays.
+ * Toggle is instant (CSS visibility) — no image refetch needed.
  */
 export const TileThumbnailWithToggle: React.FC<TileThumbnailWithToggleProps> = ({
   objectId,
   size = 600,
   displaySize = 300,
   fov = 3.2,
+  ra,
+  dec,
+  field,
   linkToMap,
 }) => {
   const [showShutters, setShowShutters] = useState(true);
@@ -36,6 +43,9 @@ export const TileThumbnailWithToggle: React.FC<TileThumbnailWithToggleProps> = (
         displaySize={displaySize}
         fov={fov}
         shutters={showShutters}
+        ra={ra}
+        dec={dec}
+        field={field}
         linkToMap={linkToMap}
       />
       <button

@@ -822,3 +822,101 @@ class Campfire:
 
         # Remote auto-pagination
         yield from self._api.iter_objects(**filters)
+
+    # -------------------------------------------------------------------------
+    # Imaging Methods (cutouts + shutters)
+    # -------------------------------------------------------------------------
+
+    def get_cutout(
+        self,
+        object_id: str,
+        size: Optional[int] = None,
+        fov: float = 5.0,
+        cache: bool = True,
+    ) -> Path:
+        """
+        Download a cutout PNG for an object.
+
+        Returns the path to the cached PNG file. When ``cache=True``
+        (default), subsequent calls return instantly from local cache.
+
+        Parameters
+        ----------
+        object_id : str
+            Object ID.
+        size : int, optional
+            Output size in pixels. Defaults to native resolution.
+        fov : float, optional
+            Field of view in arcseconds (default 5).
+        cache : bool, optional
+            Cache the cutout locally (default True).
+
+        Returns
+        -------
+        Path
+            Path to the PNG file.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> path = cf.get_cutout('cosmos_ddt_66964', fov=3.2)
+        >>> # Use with imaging module
+        >>> from campfire.imaging import plot_cutout
+        >>> fig = plot_cutout(path)
+        """
+        # Build cache filename
+        size_tag = f"_s{size}" if size is not None else ""
+        filename = f"{object_id}_fov{fov}{size_tag}.png"
+
+        # Check cache
+        from .config import resolve_data_dir
+        cutouts = resolve_data_dir() / "cutouts"
+
+        dest = cutouts / filename
+        if cache and dest.exists():
+            return dest
+
+        # Fetch from API
+        png_data = self._api.get_cutout(object_id, size=size, fov=fov)
+
+        # Save to cache
+        cutouts.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(".tmp")
+        try:
+            tmp.write_bytes(png_data)
+            tmp.rename(dest)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+
+        return dest
+
+    def get_shutters(
+        self,
+        object_id: str,
+        fov: float = 5.0,
+    ) -> dict:
+        """
+        Get shutter geometry near an object.
+
+        Parameters
+        ----------
+        object_id : str
+            Object ID.
+        fov : float, optional
+            Search radius in arcseconds (default 5).
+
+        Returns
+        -------
+        dict
+            Keys: ``shutters`` (list of shutter dicts), ``meta`` (dict with
+            shutter_width_arcsec, shutter_height_arcsec, center_ra, center_dec,
+            radius_arcsec, field).
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> result = cf.get_shutters('cosmos_ddt_66964', fov=3.2)
+        >>> print(f"Found {len(result['shutters'])} nearby shutters")
+        """
+        return self._api.get_shutters(object_id=object_id, radius=fov)

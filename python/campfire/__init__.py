@@ -26,12 +26,15 @@ from .flags import (
     encode_flags,
 )
 
-# Lazy import for plotting to avoid requiring plotly for basic usage
+# Lazy imports for optional dependencies (plotly for spectra, matplotlib for imaging)
 def __getattr__(name):
     if name in ("plot_spectrum", "plot_redshift_fit", "plot_spectrum_simple",
                 "EMISSION_LINES", "convert_flux_units", "get_emission_lines"):
         from . import plotting
         return getattr(plotting, name)
+    if name in ("plot_cutout",):
+        from . import imaging
+        return getattr(imaging, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -62,4 +65,6 @@ __all__ = [
     "EMISSION_LINES",
     "convert_flux_units",
     "get_emission_lines",
+    # Imaging (lazy loaded)
+    "plot_cutout",
 ]

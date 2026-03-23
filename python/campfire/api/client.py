@@ -303,3 +303,82 @@ class APIClient:
         if not url:
             raise DownloadError("No download URL returned from API")
         return url
+
+    def get_cutout(
+        self,
+        object_id: str,
+        size: Optional[int] = None,
+        fov: float = 5.0,
+    ) -> bytes:
+        """Fetch a PNG cutout image for an object.
+
+        Parameters
+        ----------
+        object_id : str
+            Object identifier.
+        size : int, optional
+            Output size in pixels. Defaults to native resolution for the
+            requested FOV. Maximum 2048.
+        fov : float, optional
+            Field of view in arcseconds (default 5).
+
+        Returns
+        -------
+        bytes
+            Raw PNG image data.
+        """
+        params: Dict[str, Union[str, int, float]] = {
+            "object_id": object_id,
+            "fov": fov,
+        }
+        if size is not None:
+            params["size"] = size
+        response = self._session.get("/cutout", params=params, timeout=30)
+        _handle_response_error(response, f"Cutout for {object_id}")
+        return response.content
+
+    def get_shutters(
+        self,
+        object_id: Optional[str] = None,
+        ra: Optional[float] = None,
+        dec: Optional[float] = None,
+        field: Optional[str] = None,
+        radius: float = 5.0,
+    ) -> dict:
+        """Fetch nearby shutter geometry.
+
+        Parameters
+        ----------
+        object_id : str, optional
+            Object identifier. If provided, RA/Dec/field are looked up.
+        ra : float, optional
+            Right ascension in degrees (required if no object_id).
+        dec : float, optional
+            Declination in degrees (required if no object_id).
+        field : str, optional
+            Field name (required if no object_id).
+        radius : float, optional
+            Search radius in arcseconds (default 5).
+
+        Returns
+        -------
+        dict
+            Keys: ``shutters`` (list of shutter dicts), ``meta`` (dict with
+            shutter dimensions, center coordinates, and search radius).
+        """
+        params: Dict[str, Union[str, float]] = {}
+        if object_id:
+            params["object_id"] = object_id
+            params["fov"] = radius
+        else:
+            if ra is None or dec is None or field is None:
+                raise ValueError(
+                    "Provide either object_id, or all of ra, dec, field"
+                )
+            params["ra"] = ra
+            params["dec"] = dec
+            params["field"] = field
+            params["radius"] = radius
+        response = self._session.get("/shutters", params=params, timeout=30)
+        _handle_response_error(response, "Shutter query")
+        return response.json()
