@@ -150,7 +150,10 @@ def plot_cutout(
 
     # Render shutters as vector patches
     if shutter_list and center_ra is not None and center_dec is not None:
-        colors = {**DEFAULT_SHUTTER_COLORS, **(shutter_colors or {})}
+        colors = {
+            k: {**v, **(shutter_colors or {}).get(k, {})}
+            for k, v in DEFAULT_SHUTTER_COLORS.items()
+        }
         cos_dec = math.cos(math.radians(center_dec))
 
         for shutter in shutter_list:
