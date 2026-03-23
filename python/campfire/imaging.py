@@ -12,14 +12,7 @@ Usage
 >>> cf = Campfire()
 >>> path = cf.get_cutout('cosmos_ddt_66964', fov=3.2)
 >>> result = cf.get_shutters('cosmos_ddt_66964', fov=3.2)
->>> fig = plot_cutout(
-...     path,
-...     shutters=result['shutters'],
-...     object_id='cosmos_ddt_66964',
-...     fov=3.2,
-...     center_ra=result['meta']['center_ra'],
-...     center_dec=result['meta']['center_dec'],
-... )
+>>> fig = plot_cutout(path, shutters=result, object_id='cosmos_ddt_66964', fov=3.2)
 >>> fig.savefig('cutout.pdf')  # vector output
 """
 
@@ -56,7 +49,7 @@ DEFAULT_SHUTTER_COLORS: Dict[str, Dict[str, Union[str, float, Tuple]]] = {
 
 def plot_cutout(
     image_path: Union[str, Path],
-    shutters: Optional[List[dict]] = None,
+    shutters: Optional[Union[List[dict], dict]] = None,
     object_id: Optional[str] = None,
     fov: float = 5.0,
     center_ra: Optional[float] = None,
@@ -73,19 +66,20 @@ def plot_cutout(
     ----------
     image_path : str or Path
         Path to the PNG cutout image (from ``Campfire.get_cutout()``).
-    shutters : list of dict, optional
-        Shutter geometry dicts (from ``Campfire.get_shutters()['shutters']``).
-        Each dict must have keys: ``center_ra``, ``center_dec``,
-        ``position_angle``, ``shutter_state``, ``object_id``.
+    shutters : list of dict or dict, optional
+        Either the full result dict from ``Campfire.get_shutters()``
+        (with ``shutters`` and ``meta`` keys — center_ra/center_dec
+        are extracted automatically), or a plain list of shutter dicts.
     object_id : str, optional
         Current object ID. This object's shutters are highlighted.
     fov : float, optional
         Field of view in arcseconds (must match the cutout). Default 5.
     center_ra : float, optional
-        RA of the cutout center in degrees. Required if shutters are provided.
-        Available from ``Campfire.get_shutters()['meta']['center_ra']``.
+        RA of the cutout center in degrees. Auto-extracted from
+        ``shutters['meta']`` if the full result dict is passed.
     center_dec : float, optional
-        Dec of the cutout center in degrees. Required if shutters are provided.
+        Dec of the cutout center in degrees. Auto-extracted from
+        ``shutters['meta']`` if the full result dict is passed.
     ax : matplotlib.axes.Axes, optional
         Existing axes to plot on. If None, a new figure is created.
     shutter_colors : dict, optional
@@ -109,28 +103,41 @@ def plot_cutout(
     >>> fig = plot_cutout('cutout.png', fov=3.2)
     >>> fig.savefig('figure.pdf')
 
-    >>> fig = plot_cutout(
-    ...     path, shutters=data['shutters'], object_id='cosmos_ddt_66964',
-    ...     fov=3.2, center_ra=data['meta']['center_ra'],
-    ...     center_dec=data['meta']['center_dec'],
-    ... )
+    >>> result = cf.get_shutters('cosmos_ddt_66964', fov=3.2)
+    >>> fig = plot_cutout(path, shutters=result, object_id='cosmos_ddt_66964', fov=3.2)
     """
     try:
-        import matplotlib.pyplot as plt
         import matplotlib.image as mpimg
         import matplotlib.patches as mpatches
-        import matplotlib.patheffects as pe
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
     except ImportError as exc:
         raise ImportError(
             "plot_cutout requires matplotlib. "
             "Install it with: pip install matplotlib"
         ) from exc
 
+    # Unpack full get_shutters() result dict if passed
+    shutter_list: Optional[List[dict]] = None
+    if isinstance(shutters, dict) and "shutters" in shutters:
+        meta = shutters.get("meta", {})
+        if center_ra is None:
+            center_ra = meta.get("center_ra")
+        if center_dec is None:
+            center_dec = meta.get("center_dec")
+        shutter_list = shutters["shutters"]
+    elif isinstance(shutters, list):
+        shutter_list = shutters
+
     image = mpimg.imread(str(image_path))
     half = fov / 2
 
+    # Use Figure() directly instead of plt.subplots() to avoid
+    # pyplot's auto-display in Jupyter (which causes double rendering)
     if ax is None:
-        fig, ax = plt.subplots(1, 1, figsize=figsize)
+        fig = Figure(figsize=figsize)
+        FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
     else:
         fig = ax.figure
 
@@ -143,11 +150,11 @@ def plot_cutout(
     )
 
     # Render shutters as vector patches
-    if shutters and center_ra is not None and center_dec is not None:
+    if shutter_list and center_ra is not None and center_dec is not None:
         colors = {**DEFAULT_SHUTTER_COLORS, **(shutter_colors or {})}
         cos_dec = math.cos(math.radians(center_dec))
 
-        for shutter in shutters:
+        for shutter in shutter_list:
             # Offset from center in arcseconds
             dra = (shutter["center_ra"] - center_ra) * cos_dec * 3600
             ddec = (shutter["center_dec"] - center_dec) * 3600
@@ -201,6 +208,7 @@ def plot_cutout(
 def _draw_scalebar(ax, fov: float, length: Optional[float] = None):
     """Draw a scalebar in the lower-right corner."""
     import matplotlib.patheffects as pe
+
     if length is None:
         # Pick a round value ~1/5 of FOV
         target = fov / 5
