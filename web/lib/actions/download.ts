@@ -5,6 +5,7 @@ import type { SortColumn, SortDirection } from './spectra-types';
 import type { FilterOptions } from './filter-params';
 import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
+import { paginateRpc } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
 import { SPECTRAL_FEATURES, OBJECT_FLAGS, DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
@@ -91,25 +92,13 @@ export async function generateCSV(
 
     // Call the lightweight CSV export RPC (flat rows, no JSONB).
     // Paginate to work around PostgREST's server-side max_rows cap (5000).
-    const PAGE_SIZE = 5000;
+    const { data: rows, error: rpcError } = await paginateRpc<CsvRow>(
+      supabase, 'get_csv_export', rpcParams,
+    );
 
-    const rows: CsvRow[] = [];
-    let offset = 0;
-    while (true) {
-      const { data, error } = await supabase
-        .rpc('get_csv_export', rpcParams)
-        .range(offset, offset + PAGE_SIZE - 1);
-
-      if (error) {
-        console.error('Error fetching CSV data:', error);
-        return { csv: null, error: error.message };
-      }
-
-      const page = (data || []) as CsvRow[];
-      rows.push(...page);
-
-      if (page.length < PAGE_SIZE) break;
-      offset += PAGE_SIZE;
+    if (rpcError) {
+      console.error('Error fetching CSV data:', rpcError);
+      return { csv: null, error: rpcError.message };
     }
     const includeDistance = filters.coordinate_search !== null;
     const csv = rowsToCsv(rows, includeDistance);
