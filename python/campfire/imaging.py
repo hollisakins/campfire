@@ -27,27 +27,81 @@ from typing import Dict, List, Optional, Tuple, Union
 SHUTTER_WIDTH_ARCSEC = 0.22
 SHUTTER_HEIGHT_ARCSEC = 0.46
 
-# Default shutter colors
-DEFAULT_SHUTTER_COLORS: Dict[str, Dict[str, Union[str, float, Tuple]]] = {
+# Default shutter style per category.
+# "marker" controls shape: "box" (full rectangle) or "corners" (L-shaped corner marks).
+DEFAULT_SHUTTER_STYLE: Dict[str, Dict[str, Union[str, float, Tuple]]] = {
     "target": {
         "facecolor": (0, 1, 0, 0.2),
         "edgecolor": "#00ff00",
         "linewidth": 1.0,
         "linestyle": "-",
+        "marker": "box",
     },
     "other": {
         "facecolor": (0.67, 0.67, 0.67, 0.15),
         "edgecolor": "#cccccc",
         "linewidth": 0.8,
         "linestyle": "-",
+        "marker": "box",
     },
     "stuck_closed": {
         "facecolor": "none",
         "edgecolor": "#ef4444",
         "linewidth": 1.5,
         "linestyle": "--",
+        "marker": "box",
     },
 }
+
+
+def _draw_shutter_box(ax, cx, cy, w, h, angle, style):
+    """Draw a full shutter rectangle."""
+    import matplotlib.patches as mpatches
+
+    patch_style = {k: v for k, v in style.items() if k != "marker"}
+    rect = mpatches.Rectangle(
+        (cx - w / 2, cy - h / 2), w, h,
+        angle=angle,
+        rotation_point="center",
+        **patch_style,
+    )
+    ax.add_patch(rect)
+
+
+def _draw_shutter_corners(ax, cx, cy, w, h, angle, style):
+    """Draw L-shaped corner marks at the four corners of a shutter."""
+    import numpy as np
+
+    # Corner tick length as fraction of shutter dimensions
+    tw = w * 0.35
+    th = h * 0.25
+
+    # Four corners (unrotated, centered at origin)
+    corners = [
+        # (corner_x, corner_y, dx_tick, dy_tick) — two line segments per corner
+        (-w/2, -h/2, (tw, 0), (0, th)),    # bottom-left
+        ( w/2, -h/2, (-tw, 0), (0, th)),   # bottom-right
+        (-w/2,  h/2, (tw, 0), (0, -th)),   # top-left
+        ( w/2,  h/2, (-tw, 0), (0, -th)),  # top-right
+    ]
+
+    rad = np.radians(angle)
+    cos_a, sin_a = np.cos(rad), np.sin(rad)
+
+    color = style.get("edgecolor", "white")
+    lw = style.get("linewidth", 1.0)
+
+    for corner_x, corner_y, (dx1, dy1), (dx2, dy2) in corners:
+        # Rotate corner and tick endpoints around center
+        def rot(x, y):
+            return cx + x * cos_a - y * sin_a, cy + x * sin_a + y * cos_a
+
+        x0, y0 = rot(corner_x, corner_y)
+        x1, y1 = rot(corner_x + dx1, corner_y + dy1)
+        x2, y2 = rot(corner_x + dx2, corner_y + dy2)
+
+        ax.plot([x1, x0, x2], [y1, y0, y2], color=color, linewidth=lw,
+                solid_capstyle="butt", solid_joinstyle="miter")
 
 
 def plot_cutout(
@@ -58,7 +112,7 @@ def plot_cutout(
     center_ra: Optional[float] = None,
     center_dec: Optional[float] = None,
     ax=None,
-    shutter_colors: Optional[Dict[str, dict]] = None,
+    shutter_style: Optional[Dict[str, dict]] = None,
     scalebar: bool = True,
     scalebar_length: Optional[float] = None,
 ):
@@ -87,10 +141,12 @@ def plot_cutout(
         ``shutters['meta']`` if the full result dict is passed.
     ax : matplotlib.axes.Axes, optional
         Axes to plot on. If None, uses ``plt.gca()``.
-    shutter_colors : dict, optional
-        Custom color mapping. Keys: ``'current'``, ``'other'``,
-        ``'stuck_closed'``. Each value is a dict with matplotlib patch
-        kwargs (facecolor, edgecolor, linewidth, linestyle).
+    shutter_style : dict, optional
+        Per-category style overrides. Keys: ``'target'``, ``'other'``,
+        ``'stuck_closed'``. Values are dicts with any of: ``facecolor``,
+        ``edgecolor``, ``linewidth``, ``linestyle``, ``marker``
+        (``'box'`` or ``'corners'``). Partial overrides are merged with
+        defaults.
     scalebar : bool, optional
         Draw a scalebar (default True).
     scalebar_length : float, optional
@@ -108,14 +164,13 @@ def plot_cutout(
     >>> plot_cutout('cutout.png', fov=3.2, ax=ax)
     >>> fig.savefig('figure.pdf')
 
-    >>> # Or with shutters (pass full get_shutters() result):
-    >>> result = cf.get_shutters('cosmos_ddt_66964', fov=3.2)
-    >>> plot_cutout(path, shutters=result, object_id='cosmos_ddt_66964', fov=3.2, ax=ax)
+    >>> # Corner markers instead of full boxes:
+    >>> plot_cutout(path, shutters=result, object_id='obj', fov=3.2, ax=ax,
+    ...            shutter_style={"target": {"marker": "corners"}})
     """
     try:
         import matplotlib.pyplot as plt
         import matplotlib.image as mpimg
-        import matplotlib.patches as mpatches
     except ImportError as exc:
         raise ImportError(
             "plot_cutout requires matplotlib. "
@@ -150,9 +205,9 @@ def plot_cutout(
 
     # Render shutters as vector patches
     if shutter_list and center_ra is not None and center_dec is not None:
-        colors = {
-            k: {**v, **(shutter_colors or {}).get(k, {})}
-            for k, v in DEFAULT_SHUTTER_COLORS.items()
+        styles = {
+            k: {**v, **(shutter_style or {}).get(k, {})}
+            for k, v in DEFAULT_SHUTTER_STYLE.items()
         }
         cos_dec = math.cos(math.radians(center_dec))
 
@@ -169,32 +224,29 @@ def plot_cutout(
             if abs(cx) > half + 1 or abs(cy) > half + 1:
                 continue
 
-            is_current = object_id and shutter.get("object_id") == object_id
+            is_target = object_id and shutter.get("object_id") == object_id
             is_stuck = shutter.get("shutter_state") == "stuck_closed"
 
             if is_stuck:
-                style = colors["stuck_closed"]
-            elif is_current:
-                style = colors["target"]
+                style = styles["stuck_closed"]
+            elif is_target:
+                style = styles["target"]
             else:
-                style = colors["other"]
+                style = styles["other"]
 
             # SVG uses rotate(-PA) with +Y down; matplotlib has +Y up,
             # so the sign flips to +PA
             angle = shutter["position_angle"]
 
-            rect = mpatches.Rectangle(
-                (cx - SHUTTER_WIDTH_ARCSEC / 2, cy - SHUTTER_HEIGHT_ARCSEC / 2),
-                SHUTTER_WIDTH_ARCSEC,
-                SHUTTER_HEIGHT_ARCSEC,
-                angle=angle,
-                rotation_point="center",
-                facecolor=style["facecolor"],
-                edgecolor=style["edgecolor"],
-                linewidth=style["linewidth"],
-                linestyle=style["linestyle"],
-            )
-            ax.add_patch(rect)
+            marker = style.get("marker", "box")
+            if marker == "corners":
+                _draw_shutter_corners(ax, cx, cy,
+                                      SHUTTER_WIDTH_ARCSEC, SHUTTER_HEIGHT_ARCSEC,
+                                      angle, style)
+            else:
+                _draw_shutter_box(ax, cx, cy,
+                                  SHUTTER_WIDTH_ARCSEC, SHUTTER_HEIGHT_ARCSEC,
+                                  angle, style)
 
     # Draw scalebar
     if scalebar:

@@ -981,7 +981,7 @@ class Campfire:
         **kwargs
             Additional keyword arguments passed to
             :func:`campfire.imaging.plot_cutout` (e.g.
-            ``shutter_colors``, ``scalebar``, ``scalebar_length``).
+            ``shutter_style``, ``scalebar``, ``scalebar_length``).
 
         Returns
         -------
