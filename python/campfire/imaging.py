@@ -29,7 +29,7 @@ SHUTTER_HEIGHT_ARCSEC = 0.46
 
 # Default shutter colors
 DEFAULT_SHUTTER_COLORS: Dict[str, Dict[str, Union[str, float, Tuple]]] = {
-    "current": {
+    "target": {
         "facecolor": (0, 1, 0, 0.2),
         "edgecolor": "#00ff00",
         "linewidth": 1.0,
@@ -172,7 +172,7 @@ def plot_cutout(
             if is_stuck:
                 style = colors["stuck_closed"]
             elif is_current:
-                style = colors["current"]
+                style = colors["target"]
             else:
                 style = colors["other"]
 
