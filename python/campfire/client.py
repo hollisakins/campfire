@@ -33,6 +33,14 @@ __version__ = "0.2.0"
 logger = logging.getLogger(__name__)
 
 
+def _safe_cache_path(cache_dir: Path, filename: str, object_id: str) -> Path:
+    """Resolve a cache path and ensure it stays within cache_dir."""
+    dest = (cache_dir / filename).resolve()
+    if not str(dest).startswith(str(cache_dir.resolve())):
+        raise ValueError(f"Invalid object_id produces unsafe cache path: {object_id!r}")
+    return dest
+
+
 class Campfire:
     """
     CAMPFIRE Python API Client.
@@ -873,7 +881,7 @@ class Campfire:
         from .config import resolve_data_dir
         cutouts = resolve_data_dir() / "cutouts"
 
-        dest = cutouts / filename
+        dest = _safe_cache_path(cutouts, filename, object_id)
         if cache and dest.exists():
             return dest
 
@@ -929,7 +937,7 @@ class Campfire:
         fov_str = format(fov, "g")
         filename = f"{object_id}_fov{fov_str}_shutters.json"
         cutouts = resolve_data_dir() / "cutouts"
-        dest = cutouts / filename
+        dest = _safe_cache_path(cutouts, filename, object_id)
 
         if cache and dest.exists():
             return json.loads(dest.read_text())
