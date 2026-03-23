@@ -303,3 +303,64 @@ class APIClient:
         if not url:
             raise DownloadError("No download URL returned from API")
         return url
+
+    def get_cutout(
+        self,
+        object_id: str,
+        size: Optional[int] = None,
+        fov: float = 5.0,
+    ) -> bytes:
+        """Fetch a PNG cutout image for an object.
+
+        Parameters
+        ----------
+        object_id : str
+            Object identifier.
+        size : int, optional
+            Output size in pixels. Defaults to native resolution for the
+            requested FOV. Maximum 2048.
+        fov : float, optional
+            Field of view in arcseconds (default 5).
+
+        Returns
+        -------
+        bytes
+            Raw PNG image data.
+        """
+        params: Dict[str, Union[str, int, float]] = {
+            "object_id": object_id,
+            "fov": fov,
+        }
+        if size is not None:
+            params["size"] = size
+        response = self._session.get("/cutout", params=params, timeout=30)
+        _handle_response_error(response, f"Cutout for {object_id}")
+        return response.content
+
+    def get_shutters(
+        self,
+        object_id: str,
+        radius: float = 5.0,
+    ) -> dict:
+        """Fetch nearby shutter geometry for an object.
+
+        Parameters
+        ----------
+        object_id : str
+            Object identifier. RA/Dec/field are looked up on the server.
+        radius : float, optional
+            Search radius in arcseconds (default 5).
+
+        Returns
+        -------
+        dict
+            Keys: ``shutters`` (list of shutter dicts), ``meta`` (dict with
+            shutter dimensions, center coordinates, and search radius).
+        """
+        params: Dict[str, Union[str, float]] = {
+            "object_id": object_id,
+            "fov": radius,
+        }
+        response = self._session.get("/shutters", params=params, timeout=30)
+        _handle_response_error(response, "Shutter query")
+        return response.json()

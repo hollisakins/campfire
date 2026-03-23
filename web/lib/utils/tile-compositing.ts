@@ -2,7 +2,7 @@
  * Server-side tile compositing utilities.
  *
  * Fetches map tiles and composites them into a cropped thumbnail
- * centered on an object's RA/Dec, with optional shutter overlay.
+ * centered on an object's RA/Dec.
  *
  * Tile coordinate system (must match Leaflet's CRS in MapViewer):
  *   - nTilesY is always computed at maxZoom: ceil(naxis2 / tileSize)
@@ -17,8 +17,10 @@ import { skyToPixel, type WCSParams } from './wcs';
 // Constants
 // ============================================
 
-const SHUTTER_WIDTH_ARCSEC = 0.22;
-const SHUTTER_HEIGHT_ARCSEC = 0.46;
+/** NIRSpec shutter width in arcseconds */
+export const SHUTTER_WIDTH_ARCSEC = 0.22;
+/** NIRSpec shutter height in arcseconds */
+export const SHUTTER_HEIGHT_ARCSEC = 0.46;
 
 // Transparent 1x1 GIF (used as fallback/placeholder)
 export const TRANSPARENT_GIF = Buffer.from(
@@ -39,22 +41,12 @@ export interface MapLayerInfo {
   tile_version: number;
 }
 
-export interface ShutterInfo {
-  object_id: string;
-  center_ra: number;
-  center_dec: number;
-  position_angle: number;
-  shutter_state: 'source' | 'open' | 'stuck_closed';
-}
-
 export interface CompositingOptions {
   ra: number;
   dec: number;
-  objectId: string;
   layer: MapLayerInfo;
   outputSize: number;
   fovArcsec: number;
-  shutters?: ShutterInfo[];
 }
 
 // ============================================
@@ -206,81 +198,11 @@ async function normalizeTile(raw: Buffer, tileSize: number): Promise<Buffer> {
 }
 
 // ============================================
-// Shutter SVG overlay
-// ============================================
-
-function generateShutterSvg(
-  opts: CompositingOptions,
-  region: ReturnType<typeof computeTileRegion>,
-): Buffer | null {
-  const { shutters, objectId, fovArcsec } = opts;
-  const { outputSize } = opts;
-  if (!shutters || shutters.length === 0) return null;
-
-  const { left, top, cropPixels, zoomScale, nTilesYMaxZoom, tileSize } = region;
-  const wcs = opts.layer.wcs_params;
-  const arcsecPerOutputPx = fovArcsec / outputSize;
-
-  const rects: string[] = [];
-
-  for (const shutter of shutters) {
-    // Convert shutter RA/Dec to world pixel coords (same transform as object center)
-    const sp = skyToPixel(wcs, shutter.center_ra, shutter.center_dec);
-    const { wx: sx, wy: sy } = fitsToWorldPixel(
-      sp.x, sp.y, nTilesYMaxZoom, tileSize, zoomScale,
-    );
-
-    // Position relative to crop region, scaled to output
-    const outX = (sx - left) * (outputSize / cropPixels);
-    const outY = (sy - top) * (outputSize / cropPixels);
-
-    // Skip if outside output bounds (with some padding)
-    if (outX < -20 || outX > outputSize + 20 || outY < -20 || outY > outputSize + 20) continue;
-
-    // Shutter dimensions in output pixels
-    const wPx = SHUTTER_WIDTH_ARCSEC / arcsecPerOutputPx;
-    const hPx = SHUTTER_HEIGHT_ARCSEC / arcsecPerOutputPx;
-
-    const isCurrentObject = shutter.object_id === objectId;
-    const isStuck = shutter.shutter_state === 'stuck_closed';
-
-    let fill: string, stroke: string, fillOpacity: number, strokeOpacity: number, strokeWidth: number;
-    let strokeDash = '';
-
-    if (isStuck) {
-      fill = 'none'; stroke = '#ef4444'; strokeDash = ' stroke-dasharray="3,2"';
-      fillOpacity = 0; strokeOpacity = 1; strokeWidth = 1.5;
-    } else if (isCurrentObject) {
-      fill = '#00ff00'; stroke = '#00ff00';
-      fillOpacity = 0.2; strokeOpacity = 1; strokeWidth = 1;
-    } else {
-      fill = '#aaaaaa'; stroke = '#cccccc';
-      fillOpacity = 0.15; strokeOpacity = 0.65; strokeWidth = 0.8;
-    }
-
-    rects.push(
-      `<rect x="${-wPx / 2}" y="${-hPx / 2}" width="${wPx}" height="${hPx}" ` +
-      `fill="${fill}" fill-opacity="${fillOpacity}" ` +
-      `stroke="${stroke}" stroke-opacity="${strokeOpacity}" stroke-width="${strokeWidth}"` +
-      `${strokeDash} ` +
-      `transform="translate(${outX},${outY}) rotate(${-shutter.position_angle})" />`,
-    );
-  }
-
-  if (rects.length === 0) return null;
-
-  return Buffer.from(
-    `<svg width="${outputSize}" height="${outputSize}" xmlns="http://www.w3.org/2000/svg">${rects.join('')}</svg>`,
-  );
-}
-
-// ============================================
 // Main compositing function
 // ============================================
 
 /**
  * Composite map tiles into a thumbnail PNG centered on the given coordinates.
- * Optionally draws shutter overlays.
  */
 export async function compositeTileThumbnail(
   opts: CompositingOptions,
@@ -343,20 +265,11 @@ export async function compositeTileThumbnail(
     .png()
     .toBuffer();
 
-  let result = await sharp(canvas)
+  const result = await sharp(canvas)
     .extract({ left: cropLeft, top: cropTop, width: cropSize, height: cropSize })
     .resize(outputSize, outputSize, { kernel: sharp.kernel.nearest })
     .png()
     .toBuffer();
-
-  // Add shutter overlay if requested
-  const shutterSvg = generateShutterSvg(opts, region);
-  if (shutterSvg) {
-    result = await sharp(result)
-      .composite([{ input: shutterSvg, top: 0, left: 0 }])
-      .png()
-      .toBuffer();
-  }
 
   return result;
 }

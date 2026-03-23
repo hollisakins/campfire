@@ -252,6 +252,9 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               size={600}
               displaySize={300}
               fov={3.2}
+              ra={spectrum.ra}
+              dec={spectrum.dec}
+              field={spectrum.field}
               linkToMap={{ field: spectrum.field, ra: spectrum.ra, dec: spectrum.dec }}
             />
           </div>

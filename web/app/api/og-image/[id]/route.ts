@@ -55,7 +55,6 @@ export async function GET(
     const png = await compositeTileThumbnail({
       ra: obj.ra,
       dec: obj.dec,
-      objectId,
       layer,
       outputSize: 300,
       fovArcsec: 5,

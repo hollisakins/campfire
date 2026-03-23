@@ -137,16 +137,57 @@ fig = plot_spectrum(data, redshift=2.5, show_emission_lines=True)
 fig.show()
 ```
 
+### NIRCam Cutouts
+
+Generate publication-quality RGB cutout images with vector shutter overlays. Cutout images and shutter geometry are cached locally after the first fetch.
+
+```python
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(5, 5))
+cf.plot_cutout('ember_uds_p4_123456', fov=3.2, ax=ax)
+fig.savefig('cutout.pdf')  # vector shutter overlay in PDF
+```
+
+Control which shutters are shown:
+
+```python
+cf.plot_cutout('obj_id', fov=3.2, shutters='target', ax=ax)  # target only
+cf.plot_cutout('obj_id', fov=3.2, shutters=False, ax=ax)     # no shutters
+```
+
+Customize shutter style — use `"box"` (default) or `"corners"` (JADES-style L-shaped marks):
+
+```python
+cf.plot_cutout('obj_id', fov=3.2, ax=ax, shutter_style={
+    "target": {"marker": "corners", "edgecolor": "cyan"},
+    "other": {"marker": "corners", "edgecolor": "white", "linewidth": 0.5},
+})
+```
+
+For full control, fetch data separately and use `plot_cutout` directly:
+
+```python
+from campfire.imaging import plot_cutout
+
+path = cf.get_cutout('obj_id', fov=3.2)       # cached PNG
+data = cf.get_shutters('obj_id', fov=3.2)     # cached JSON
+plot_cutout(path, shutters=data, object_id='obj_id', fov=3.2, ax=ax)
+```
+
 ## Architecture
 
 ```
 campfire sync       → pulls full catalog into SQLite + CSVs (no FITS)
 campfire download   → downloads FITS files by obs/program/field/grating
 
-Campfire.sync()     → same as campfire sync
-Campfire.download() → same as campfire download
-Campfire.query_objects() → queries local SQLite (or API fallback)
-Campfire.open_spectrum() → opens local FITS (or downloads on demand)
+Campfire.sync()         → same as campfire sync
+Campfire.download()     → same as campfire download
+Campfire.query_objects()→ queries local SQLite (or API fallback)
+Campfire.open_spectrum()→ opens local FITS (or downloads on demand)
+Campfire.plot_cutout()  → RGB cutout with vector shutter overlay
+Campfire.get_cutout()   → cached PNG cutout
+Campfire.get_shutters() → cached shutter geometry JSON
 ```
 
 ## Full Documentation

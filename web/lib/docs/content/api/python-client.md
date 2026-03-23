@@ -343,6 +343,54 @@ fig = plot_spectrum_simple(data, redshift=2.5)
 fig.show()
 ```
 
+### NIRCam Cutouts
+
+Generate publication-quality RGB cutout images with vector shutter overlays. Cutout images and shutter geometry are cached locally after the first fetch.
+
+```python
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(5, 5))
+cf.plot_cutout('ember_uds_p4_123456', fov=3.2, ax=ax)
+fig.savefig('cutout.pdf')  # vector shutter overlay in PDF
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `object_id` | str | — | Object ID |
+| `fov` | float | 5.0 | Field of view in arcseconds |
+| `size` | int | None | Output size in pixels (default: native resolution) |
+| `shutters` | bool/str | True | `True` or `'all'`: all shutters. `'target'`: target only. `False`: none. |
+| `ax` | Axes | None | Matplotlib axes (uses `plt.gca()` if None) |
+| `shutter_style` | dict | None | Per-category style overrides (see below) |
+| `scalebar` | bool | True | Draw a scalebar |
+
+**Shutter filtering:**
+
+```python
+cf.plot_cutout('obj_id', fov=3.2, shutters='target', ax=ax)  # target only
+cf.plot_cutout('obj_id', fov=3.2, shutters=False, ax=ax)     # no shutters
+```
+
+**Custom shutter style** — override per category (`'target'`, `'other'`, `'stuck_closed'`). Partial overrides are merged with defaults. The `marker` key controls shape: `'box'` (default) or `'corners'` (JADES-style L-shaped marks).
+
+```python
+cf.plot_cutout('obj_id', fov=3.2, ax=ax, shutter_style={
+    "target": {"marker": "corners", "edgecolor": "cyan"},
+    "other": {"marker": "corners", "edgecolor": "white", "linewidth": 0.5},
+})
+```
+
+**Low-level access** — fetch data separately for full control:
+
+```python
+from campfire.imaging import plot_cutout
+
+path = cf.get_cutout('obj_id', fov=3.2)       # cached PNG
+data = cf.get_shutters('obj_id', fov=3.2)     # cached JSON
+plot_cutout(path, shutters=data, object_id='obj_id', fov=3.2, ax=ax)
+```
+
 ### Helper Functions
 
 ```python
