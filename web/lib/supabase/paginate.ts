@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-const DEFAULT_PAGE_SIZE = 1000;
+const DEFAULT_PAGE_SIZE = 5000;
 
 /**
  * Paginate through all results of a Supabase RPC call.
