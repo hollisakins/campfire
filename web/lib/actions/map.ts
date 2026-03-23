@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
+import { paginateRpc, paginateQuery } from '@/lib/supabase/paginate';
 import type { WCSParams } from '@/lib/utils/wcs';
 import type { FilterOptions } from './filter-params';
 import { buildFilterParams } from './filter-params';
@@ -127,28 +128,21 @@ export async function getFieldMarkers(
   field: string
 ): Promise<MapMarkersResult> {
   const supabase = await createClient();
-  const PAGE_SIZE = 1000;
-  const allMarkers: MapMarker[] = [];
-  let offset = 0;
 
-  while (true) {
-    const { data, error } = await supabase
+  const { data, error } = await paginateQuery<MapMarker>(
+    () => supabase
       .from('objects')
       .select('object_id, ra, dec, redshift, redshift_quality, field, program_slug, observation')
       .eq('field', field)
-      .range(offset, offset + PAGE_SIZE - 1);
+      .order('object_id'),
+    1000,
+  );
 
-    if (error) {
-      return { markers: allMarkers, error: error.message };
-    }
-
-    if (!data || data.length === 0) break;
-    allMarkers.push(...data);
-    if (data.length < PAGE_SIZE) break;
-    offset += PAGE_SIZE;
+  if (error) {
+    return { markers: data, error: error.message };
   }
 
-  return { markers: allMarkers };
+  return { markers: data };
 }
 
 /**
@@ -158,28 +152,21 @@ export async function getFieldSlits(
   field: string
 ): Promise<SlitRegionsResult> {
   const supabase = await createClient();
-  const PAGE_SIZE = 1000;
-  const allSlits: SlitRegion[] = [];
-  let offset = 0;
 
-  while (true) {
-    const { data, error } = await supabase
+  const { data, error } = await paginateQuery<SlitRegion>(
+    () => supabase
       .from('slit_regions')
       .select('center_ra, center_dec, position_angle, object_id, observation, shutter_idx')
       .eq('field', field)
-      .range(offset, offset + PAGE_SIZE - 1);
+      .order('object_id'),
+    1000,
+  );
 
-    if (error) {
-      return { slits: allSlits, error: error.message };
-    }
-
-    if (!data || data.length === 0) break;
-    allSlits.push(...data);
-    if (data.length < PAGE_SIZE) break;
-    offset += PAGE_SIZE;
+  if (error) {
+    return { slits: data, error: error.message };
   }
 
-  return { slits: allSlits };
+  return { slits: data };
 }
 
 /**
@@ -225,30 +212,16 @@ export async function getFilteredObjectIds(
       p_sort_direction: 'asc',
     };
 
-    // Paginate through all results to avoid PostgREST max-rows truncation.
-    // The RPC returns a stable sort by object_id, so .range() pages are safe.
-    const PAGE_SIZE = 5000;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const allRows: any[] = [];
-    let offset = 0;
+    const { data: allRows, error: rpcError } = await paginateRpc<{ object_id: string }>(
+      supabase, 'get_filtered_object_ids', fullRpcParams,
+    );
 
-    while (true) {
-      const { data, error } = await supabase
-        .rpc('get_filtered_object_ids', fullRpcParams)
-        .range(offset, offset + PAGE_SIZE - 1);
-
-      if (error) {
-        console.error('Error fetching filtered object IDs:', error);
-        return { objectIds: [], error: error.message };
-      }
-
-      if (!data || data.length === 0) break;
-      allRows.push(...data);
-      if (data.length < PAGE_SIZE) break;
-      offset += PAGE_SIZE;
+    if (rpcError) {
+      console.error('Error fetching filtered object IDs:', rpcError);
+      return { objectIds: [], error: rpcError.message };
     }
 
-    const objectIds = allRows.map((row: { object_id: string }) => row.object_id);
+    const objectIds = allRows.map(row => row.object_id);
 
     return { objectIds };
   } catch (err) {
@@ -291,26 +264,19 @@ export async function getFieldShutters(
   field: string
 ): Promise<ShuttersResult> {
   const supabase = await createClient();
-  const PAGE_SIZE = 1000;
-  const allShutters: Shutter[] = [];
-  let offset = 0;
 
-  while (true) {
-    const { data, error } = await supabase
+  const { data, error } = await paginateQuery<Shutter>(
+    () => supabase
       .from('shutters')
       .select('object_id, source_id, center_ra, center_dec, position_angle, shutter_idx, dither_id, shutter_state, observation')
       .eq('field', field)
-      .range(offset, offset + PAGE_SIZE - 1);
+      .order('object_id'),
+    1000,
+  );
 
-    if (error) {
-      return { shutters: allShutters, error: error.message };
-    }
-
-    if (!data || data.length === 0) break;
-    allShutters.push(...(data as Shutter[]));
-    if (data.length < PAGE_SIZE) break;
-    offset += PAGE_SIZE;
+  if (error) {
+    return { shutters: data, error: error.message };
   }
 
-  return { shutters: allShutters };
+  return { shutters: data };
 }

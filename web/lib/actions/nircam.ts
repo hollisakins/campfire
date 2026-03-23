@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
+import { paginateQuery } from '@/lib/supabase/paginate';
 import type { NircamImage } from '@/lib/types';
 
 export interface NircamImagesResult {
@@ -38,12 +39,15 @@ export async function getNircamImages(): Promise<NircamImagesResult> {
   }
 
   try {
-    const { data, error } = await supabase
-      .from('nircam_images')
-      .select('*')
-      .order('field', { ascending: true })
-      .order('filter', { ascending: true })
-      .order('tile', { ascending: true });
+    const { data, error } = await paginateQuery<NircamImage>(
+      () => supabase
+        .from('nircam_images')
+        .select('*')
+        .order('field', { ascending: true })
+        .order('filter', { ascending: true })
+        .order('tile', { ascending: true })
+        .order('id', { ascending: true }),
+    );
 
     if (error) {
       console.error('Error fetching NIRCam images:', error);
@@ -55,7 +59,7 @@ export async function getNircamImages(): Promise<NircamImagesResult> {
     }
 
     return {
-      images: data || [],
+      images: data,
       isAuthenticated: true,
     };
   } catch (err) {
@@ -90,9 +94,17 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
   }
 
   try {
-    const { data, error } = await supabase
-      .from('nircam_images')
-      .select('field, tile, filter, pixel_scale, version, extension');
+    const { data: images, error } = await paginateQuery<{
+      field: string; tile: string; filter: string;
+      pixel_scale: string; version: string; extension: string;
+    }>(
+      () => supabase
+        .from('nircam_images')
+        .select('field, tile, filter, pixel_scale, version, extension')
+        .order('field')
+        .order('filter')
+        .order('tile'),
+    );
 
     if (error) {
       console.error('Error fetching NIRCam filter options:', error);
@@ -106,9 +118,6 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
         error: error.message,
       };
     }
-
-    // Extract unique values for each field
-    const images = data || [];
 
     const fields = [...new Set(images.map(i => i.field))].sort();
     const filters = [...new Set(images.map(i => i.filter))].sort();

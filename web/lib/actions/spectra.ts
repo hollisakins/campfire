@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { paginateRpc } from '@/lib/supabase/paginate';
 import type { SpectrumObject, Program, Spectrum } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
 import type { FilterOptions } from './filter-params';
@@ -515,21 +516,25 @@ export async function getInspectionQueueIds(
 
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
-    // Call lightweight RPC that returns only object IDs (no JSONB, no spectra joins)
-    const { data, error } = await supabase.rpc('get_filtered_object_ids', {
-      ...rpcParams,
-      p_redshift_quality: qualityFilter, // Override: implicit quality=0 for inspection
-      p_sort_column: sortColumn,
-      p_sort_direction: sortDirection,
-    });
+    // Call lightweight RPC that returns only object IDs (no JSONB, no spectra joins).
+    // Paginate to avoid PostgREST max-rows truncation (5000).
+    const { data: allRows, error: rpcError } = await paginateRpc<{ object_id: string }>(
+      supabase,
+      'get_filtered_object_ids',
+      {
+        ...rpcParams,
+        p_redshift_quality: qualityFilter, // Override: implicit quality=0 for inspection
+        p_sort_column: sortColumn,
+        p_sort_direction: sortDirection,
+      },
+    );
 
-    if (error) {
-      console.error('Error fetching inspection queue:', error);
-      return { ids: [], error: error.message };
+    if (rpcError) {
+      console.error('Error fetching inspection queue:', rpcError);
+      return { ids: [], error: rpcError.message };
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ids = (data || []).map((row: any) => row.object_id as string);
+    const ids = allRows.map(row => row.object_id);
 
     return { ids };
   } catch (err) {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { paginateQuery } from '@/lib/supabase/paginate';
 import type { Activity, CommentActivity, InspectionActivity } from '@/lib/types';
 
 /**
@@ -70,31 +71,35 @@ export async function GET(request: NextRequest) {
     let commentActivities: CommentActivity[] = [];
     let inspectionActivities: InspectionActivity[] = [];
 
-    // Fetch comments if included
+    // Fetch comments if included (paginate to avoid PostgREST max-rows truncation)
     if (includeComments) {
-      let commentsQuery = serviceClient
-        .from('comments')
-        .select(`
-          id,
-          object_id,
-          user_id,
-          content,
-          created_at,
-          edited_at,
-          objects!inner(object_id)
-        `)
-        .eq('is_deleted', false)
-        .order('created_at', { ascending: false });
+      const { data: comments, error: commentsError } = await paginateQuery(
+        () => {
+          let q = serviceClient
+            .from('comments')
+            .select(`
+              id,
+              object_id,
+              user_id,
+              content,
+              created_at,
+              edited_at,
+              objects!inner(object_id)
+            `)
+            .eq('is_deleted', false)
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: false });
 
-      // Apply user filter
-      if (userIdFilters.length > 0) {
-        commentsQuery = commentsQuery.in('user_id', userIdFilters);
-      }
-
-      const { data: comments, error: commentsError } = await commentsQuery;
+          if (userIdFilters.length > 0) {
+            q = q.in('user_id', userIdFilters);
+          }
+          return q;
+        },
+      );
       if (commentsError) throw commentsError;
 
-      commentActivities = (comments || []).map(c => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      commentActivities = comments.map((c: any) => {
         const objectData = Array.isArray(c.objects) ? c.objects[0] : c.objects;
         return {
           id: `comment-${c.id}`,
@@ -109,36 +114,38 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Fetch audit logs if included
+    // Fetch audit logs if included (paginate to avoid PostgREST max-rows truncation)
     if (includeInspections) {
-      let auditQuery = serviceClient
-        .from('flag_audit_log')
-        .select(`
-          id,
-          object_id,
-          user_id,
-          field_name,
-          old_value,
-          new_value,
-          changed_at,
-          objects!inner(object_id)
-        `)
-        .order('changed_at', { ascending: false });
+      const { data: auditLogs, error: auditError } = await paginateQuery(
+        () => {
+          let q = serviceClient
+            .from('flag_audit_log')
+            .select(`
+              id,
+              object_id,
+              user_id,
+              field_name,
+              old_value,
+              new_value,
+              changed_at,
+              objects!inner(object_id)
+            `)
+            .order('changed_at', { ascending: false })
+            .order('id', { ascending: false });
 
-      // Apply user filter
-      if (userIdFilters.length > 0) {
-        auditQuery = auditQuery.in('user_id', userIdFilters);
-      }
-
-      // Apply field name filter
-      if (fieldNameFilters.length > 0) {
-        auditQuery = auditQuery.in('field_name', fieldNameFilters);
-      }
-
-      const { data: auditLogs, error: auditError } = await auditQuery;
+          if (userIdFilters.length > 0) {
+            q = q.in('user_id', userIdFilters);
+          }
+          if (fieldNameFilters.length > 0) {
+            q = q.in('field_name', fieldNameFilters);
+          }
+          return q;
+        },
+      );
       if (auditError) throw auditError;
 
-      inspectionActivities = (auditLogs || []).map(a => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      inspectionActivities = auditLogs.map((a: any) => {
         const objectData = Array.isArray(a.objects) ? a.objects[0] : a.objects;
         return {
           id: `audit-${a.id}`,
@@ -188,20 +195,26 @@ export async function GET(request: NextRequest) {
     }));
 
     // Fetch available users for filter dropdown (users who have activity)
-    // Get distinct user IDs from both tables
+    // Paginate to avoid PostgREST max-rows truncation
     const [commentsUsers, auditUsers] = await Promise.all([
-      serviceClient
-        .from('comments')
-        .select('user_id')
-        .eq('is_deleted', false),
-      serviceClient
-        .from('flag_audit_log')
-        .select('user_id'),
+      paginateQuery<{ user_id: string }>(
+        () => serviceClient
+          .from('comments')
+          .select('user_id')
+          .eq('is_deleted', false)
+          .order('user_id'),
+      ),
+      paginateQuery<{ user_id: string }>(
+        () => serviceClient
+          .from('flag_audit_log')
+          .select('user_id')
+          .order('user_id'),
+      ),
     ]);
 
     const allActiveUserIds = [...new Set([
-      ...(commentsUsers.data || []).map(c => c.user_id),
-      ...(auditUsers.data || []).map(a => a.user_id),
+      ...commentsUsers.data.map(c => c.user_id),
+      ...auditUsers.data.map(a => a.user_id),
     ])];
 
     // Fetch profiles for all active users

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { paginateQuery } from '@/lib/supabase/paginate';
 
 /**
  * GET /api/users
@@ -39,10 +40,12 @@ export async function GET() {
       return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500 });
     }
 
-    // Fetch all program access
-    const { data: access, error: accessError } = await supabase
-      .from('user_program_access')
-      .select('*');
+    // Fetch all program access (paginate to avoid PostgREST max-rows truncation)
+    const { data: access, error: accessError } = await paginateQuery(
+      () => supabase.from('user_program_access').select('*')
+        .order('user_id')
+        .order('program_slug'),
+    );
 
     if (accessError) {
       console.error('Error fetching access:', accessError);
