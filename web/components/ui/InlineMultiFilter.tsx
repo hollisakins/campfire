@@ -17,6 +17,8 @@ interface InlineMultiFilterProps {
   onChange: (selected: (string | number)[]) => void;
   mode: FilterMode;
   onModeChange: (mode: FilterMode) => void;
+  /** Hide the Any/All/None mode selector (for filters where mode doesn't apply, e.g. programs) */
+  hideModeSelector?: boolean;
 }
 
 function darkenColor(hex: string, percent: number): string {
@@ -78,6 +80,7 @@ export function InlineMultiFilter({
   onChange,
   mode,
   onModeChange,
+  hideModeSelector = false,
 }: InlineMultiFilterProps) {
   const toggle = (value: string | number) => {
     if (selected.includes(value)) {
@@ -95,29 +98,31 @@ export function InlineMultiFilter({
         <label className="text-sm font-medium text-text-primary dark:text-slate-200">
           {label}
         </label>
-        {/* Always show mode selector to prevent layout shift */}
-        <div className={`flex gap-0.5 bg-slate-100 dark:bg-slate-800 rounded-md p-0.5 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
-          {(['any', 'all', 'none'] as FilterMode[]).map((m) => (
-            <button
-              key={m}
-              onClick={() => onModeChange(m)}
-              disabled={!hasSelection}
-              className={`
-                px-2.5 py-1 text-xs font-medium rounded transition-all duration-200
-                ${mode === m
-                  ? m === 'any'
-                    ? 'bg-primary text-white shadow-sm'
-                    : m === 'all'
-                      ? 'bg-green-500 text-white shadow-sm'
-                      : 'bg-red-500 text-white shadow-sm'
-                  : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
-                }
-              `}
-            >
-              {m === 'any' ? 'Any' : m === 'all' ? 'All' : 'None'}
-            </button>
-          ))}
-        </div>
+        {/* Mode selector (hidden for filters where mode doesn't apply) */}
+        {!hideModeSelector && (
+          <div className={`flex gap-0.5 bg-slate-100 dark:bg-slate-800 rounded-md p-0.5 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+            {(['any', 'all', 'none'] as FilterMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => onModeChange(m)}
+                disabled={!hasSelection}
+                className={`
+                  px-2.5 py-1 text-xs font-medium rounded transition-all duration-200
+                  ${mode === m
+                    ? m === 'any'
+                      ? 'bg-primary text-white shadow-sm'
+                      : m === 'all'
+                        ? 'bg-green-500 text-white shadow-sm'
+                        : 'bg-red-500 text-white shadow-sm'
+                    : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                  }
+                `}
+              >
+                {m === 'any' ? 'Any' : m === 'all' ? 'All' : 'None'}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex flex-wrap gap-2">
         {options.map((option) => {
@@ -148,13 +153,15 @@ export function InlineMultiFilter({
           );
         })}
       </div>
-      {/* Always reserve space for description to prevent layout shift */}
-      <p className={`mt-2 text-xs text-text-secondary dark:text-slate-500 h-4 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-0'}`}>
-        {mode === 'any' && 'Show objects with any of the selected'}
-        {mode === 'all' && 'Show objects with all of the selected'}
-        {mode === 'none' && 'Exclude objects with any of the selected'}
-        {!hasSelection && '\u00A0'}
-      </p>
+      {/* Mode description (hidden when mode selector is hidden) */}
+      {!hideModeSelector && (
+        <p className={`mt-2 text-xs text-text-secondary dark:text-slate-500 h-4 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-0'}`}>
+          {mode === 'any' && 'Show objects with any of the selected'}
+          {mode === 'all' && 'Show objects with all of the selected'}
+          {mode === 'none' && 'Exclude objects with any of the selected'}
+          {!hasSelection && '\u00A0'}
+        </p>
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { useSearchParams, useRouter, usePathname } from 'next/navigation';
+import { useSearchParams, usePathname } from 'next/navigation';
 import type { MapLayer, MapMarker } from '@/lib/actions/map';
 import { MapViewerWrapper } from '@/components/map/MapViewerWrapper';
 import { AdvancedFiltersPanel } from '@/components/spectra/AdvancedFiltersPanel';
@@ -28,7 +28,6 @@ export function MapPageContent({
   initialZoom,
   highlightObjectId,
 }: MapPageContentProps) {
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
@@ -38,6 +37,7 @@ export function MapPageContent({
   // Filter state
   const [filters, setFilters] = useState<FilterOptions>(initialFilters);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [currentField, setCurrentField] = useState<string | undefined>(initialField);
   const [fieldObservations, setFieldObservations] = useState<string[]>([]);
 
   // Debounce filters for queries
@@ -69,8 +69,15 @@ export function MapPageContent({
   const { data: filterOptionsResult } = useFilterOptionsQuery(true);
   const availablePrograms = filterOptionsResult?.programs ?? [];
 
+  // Scope filter query to the current map field so the RPC only returns
+  // objects visible on this field (avoids fetching IDs across all fields).
+  const queryFilters = useMemo(() => {
+    if (!currentField || debouncedFilters.fields.length > 0) return debouncedFilters;
+    return { ...debouncedFilters, fields: [currentField] };
+  }, [debouncedFilters, currentField]);
+
   // Fetch filtered object IDs when filters are active
-  const { data: filteredResult } = useFilteredObjectIds(debouncedFilters, hasActiveFilters);
+  const { data: filteredResult } = useFilteredObjectIds(queryFilters, hasActiveFilters);
 
   // Build the ID set and marker filter function
   const filteredIdSet = useMemo(() => {
@@ -89,13 +96,16 @@ export function MapPageContent({
   }, []);
 
   // Track selected field and its observations (derived from loaded markers)
-  const handleFieldChange = useCallback((_field: string, observations: string[]) => {
+  const handleFieldChange = useCallback((field: string, observations: string[]) => {
+    setCurrentField(field);
     setFieldObservations(observations);
   }, []);
 
   // Sync filter state to URL (preserving map-specific params).
-  // Only updates the URL when filter params actually change — map params
-  // (field, ra, dec, z, etc.) are managed by MapViewer separately.
+  // Uses history.replaceState (not router.replace) to avoid triggering a
+  // Next.js soft navigation on this force-dynamic page, which would
+  // re-execute the server component and could race with in-flight filter
+  // queries. This matches how MapViewer syncs map params (zoom, pan).
   useEffect(() => {
     const filterParams = filtersToURLParams(debouncedFilters);
     const currentUrl = new URL(window.location.href);
@@ -115,18 +125,18 @@ export function MapPageContent({
 
     if (newFilterStr !== currentFilterStr) {
       // Rebuild the full URL: preserve existing map params, replace filter params
-      const newSearch = new URLSearchParams();
-      for (const [key, val] of currentUrl.searchParams) {
-        if (mapParamKeys.has(key)) newSearch.set(key, val);
+      const url = new URL(window.location.href);
+      // Clear non-map params
+      for (const key of [...url.searchParams.keys()]) {
+        if (!mapParamKeys.has(key)) url.searchParams.delete(key);
       }
+      // Add filter params
       for (const [key, val] of filterParams) {
-        newSearch.set(key, val);
+        url.searchParams.set(key, val);
       }
-      const newSearchStr = newSearch.toString();
-      router.replace(`${pathname}${newSearchStr ? `?${newSearchStr}` : ''}`, { scroll: false });
+      window.history.replaceState(null, '', url.toString());
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedFilters, pathname, router]);
+  }, [debouncedFilters, pathname]);
 
   return (
     <div className="h-[calc(100vh-72px)] relative">

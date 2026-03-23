@@ -325,6 +325,7 @@ export function AdvancedFiltersPanel({
                       onChange={(s) => onFiltersChange({ ...filters, programs: s as string[] })}
                       mode="any"
                       onModeChange={() => {}}
+                      hideModeSelector
                     />
                   </div>
                 )}
@@ -356,6 +357,7 @@ export function AdvancedFiltersPanel({
                       onChange={(s) => onFiltersChange({ ...filters, observations: s as string[] })}
                       mode="any"
                       onModeChange={() => {}}
+                      hideModeSelector
                     />
                   </div>
                 )}
@@ -370,6 +372,7 @@ export function AdvancedFiltersPanel({
                   onChange={(s) => onFiltersChange({ ...filters, redshift_quality: s as number[] })}
                   mode="any"
                   onModeChange={() => {}}
+                  hideModeSelector
                 />
               </div>
 
