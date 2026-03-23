@@ -6,13 +6,16 @@ Produces publication-quality figures that can be exported as PDF or high-DPI PNG
 
 Usage
 -----
+>>> import matplotlib.pyplot as plt
 >>> from campfire import Campfire
 >>> from campfire.imaging import plot_cutout
 >>>
 >>> cf = Campfire()
 >>> path = cf.get_cutout('cosmos_ddt_66964', fov=3.2)
 >>> result = cf.get_shutters('cosmos_ddt_66964', fov=3.2)
->>> fig = plot_cutout(path, shutters=result, object_id='cosmos_ddt_66964', fov=3.2)
+>>>
+>>> fig, ax = plt.subplots(figsize=(5, 5))
+>>> plot_cutout(path, shutters=result, object_id='cosmos_ddt_66964', fov=3.2, ax=ax)
 >>> fig.savefig('cutout.pdf')  # vector output
 """
 
@@ -56,11 +59,13 @@ def plot_cutout(
     center_dec: Optional[float] = None,
     ax=None,
     shutter_colors: Optional[Dict[str, dict]] = None,
-    figsize: Tuple[float, float] = (5, 5),
     scalebar: bool = True,
     scalebar_length: Optional[float] = None,
 ):
     """Plot a cutout image with optional vector shutter overlay.
+
+    Plots onto the provided axes, or ``plt.gca()`` if none given.
+    The caller is responsible for figure creation and display.
 
     Parameters
     ----------
@@ -81,13 +86,11 @@ def plot_cutout(
         Dec of the cutout center in degrees. Auto-extracted from
         ``shutters['meta']`` if the full result dict is passed.
     ax : matplotlib.axes.Axes, optional
-        Existing axes to plot on. If None, a new figure is created.
+        Axes to plot on. If None, uses ``plt.gca()``.
     shutter_colors : dict, optional
         Custom color mapping. Keys: ``'current'``, ``'other'``,
         ``'stuck_closed'``. Each value is a dict with matplotlib patch
         kwargs (facecolor, edgecolor, linewidth, linestyle).
-    figsize : tuple of float, optional
-        Figure size in inches (default (5, 5)). Ignored if ``ax`` is provided.
     scalebar : bool, optional
         Draw a scalebar (default True).
     scalebar_length : float, optional
@@ -95,16 +98,19 @@ def plot_cutout(
 
     Returns
     -------
-    matplotlib.figure.Figure
-        The figure containing the plot.
+    matplotlib.axes.Axes
+        The axes with the plot.
 
     Examples
     --------
-    >>> fig = plot_cutout('cutout.png', fov=3.2)
+    >>> import matplotlib.pyplot as plt
+    >>> fig, ax = plt.subplots(figsize=(5, 5))
+    >>> plot_cutout('cutout.png', fov=3.2, ax=ax)
     >>> fig.savefig('figure.pdf')
 
+    >>> # Or with shutters (pass full get_shutters() result):
     >>> result = cf.get_shutters('cosmos_ddt_66964', fov=3.2)
-    >>> fig = plot_cutout(path, shutters=result, object_id='cosmos_ddt_66964', fov=3.2)
+    >>> plot_cutout(path, shutters=result, object_id='cosmos_ddt_66964', fov=3.2, ax=ax)
     """
     try:
         import matplotlib.pyplot as plt
@@ -132,9 +138,7 @@ def plot_cutout(
     half = fov / 2
 
     if ax is None:
-        fig, ax = plt.subplots(1, 1, figsize=figsize)
-    else:
-        fig = ax.figure
+        ax = plt.gca()
 
     # Display image with arcsecond extent (0,0) at center
     ax.imshow(
@@ -195,14 +199,8 @@ def plot_cutout(
     ax.set_ylim(-half, half)
     ax.set_aspect("equal")
     ax.axis("off")
-    fig.tight_layout(pad=0.5)
 
-    # Deregister from pyplot to prevent Jupyter's auto-display
-    # (which causes duplicate rendering). The returned Figure is
-    # still fully functional for display, savefig, etc.
-    plt.close(fig)
-
-    return fig
+    return ax
 
 
 def _draw_scalebar(ax, fov: float, length: Optional[float] = None):
