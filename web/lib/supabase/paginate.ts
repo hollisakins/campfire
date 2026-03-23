@@ -1,11 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-const DEFAULT_PAGE_SIZE = 5000;
+const DEFAULT_PAGE_SIZE = 1000;
 
 /**
  * Paginate through all results of a Supabase RPC call.
  *
- * PostgREST silently truncates results at the configured max_rows limit (5000).
+ * PostgREST silently truncates results at the configured max_rows limit.
  * This utility loops through .range() pages until all rows are collected.
  */
 export async function paginateRpc<T = Record<string, unknown>>(

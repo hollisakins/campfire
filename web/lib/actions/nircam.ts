@@ -45,7 +45,8 @@ export async function getNircamImages(): Promise<NircamImagesResult> {
         .select('*')
         .order('field', { ascending: true })
         .order('filter', { ascending: true })
-        .order('tile', { ascending: true }),
+        .order('tile', { ascending: true })
+        .order('id', { ascending: true }),
     );
 
     if (error) {
@@ -99,7 +100,10 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
     }>(
       () => supabase
         .from('nircam_images')
-        .select('field, tile, filter, pixel_scale, version, extension'),
+        .select('field, tile, filter, pixel_scale, version, extension')
+        .order('field')
+        .order('filter')
+        .order('tile'),
     );
 
     if (error) {

@@ -87,7 +87,8 @@ export async function GET(request: NextRequest) {
               objects!inner(object_id)
             `)
             .eq('is_deleted', false)
-            .order('created_at', { ascending: false });
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: false });
 
           if (userIdFilters.length > 0) {
             q = q.in('user_id', userIdFilters);
@@ -129,7 +130,8 @@ export async function GET(request: NextRequest) {
               changed_at,
               objects!inner(object_id)
             `)
-            .order('changed_at', { ascending: false });
+            .order('changed_at', { ascending: false })
+            .order('id', { ascending: false });
 
           if (userIdFilters.length > 0) {
             q = q.in('user_id', userIdFilters);
@@ -199,12 +201,14 @@ export async function GET(request: NextRequest) {
         () => serviceClient
           .from('comments')
           .select('user_id')
-          .eq('is_deleted', false),
+          .eq('is_deleted', false)
+          .order('user_id'),
       ),
       paginateQuery<{ user_id: string }>(
         () => serviceClient
           .from('flag_audit_log')
-          .select('user_id'),
+          .select('user_id')
+          .order('user_id'),
       ),
     ]);
 

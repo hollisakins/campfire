@@ -42,7 +42,9 @@ export async function GET() {
 
     // Fetch all program access (paginate to avoid PostgREST max-rows truncation)
     const { data: access, error: accessError } = await paginateQuery(
-      () => supabase.from('user_program_access').select('*'),
+      () => supabase.from('user_program_access').select('*')
+        .order('user_id')
+        .order('program_slug'),
     );
 
     if (accessError) {

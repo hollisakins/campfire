@@ -133,7 +133,8 @@ export async function getFieldMarkers(
     () => supabase
       .from('objects')
       .select('object_id, ra, dec, redshift, redshift_quality, field, program_slug, observation')
-      .eq('field', field),
+      .eq('field', field)
+      .order('object_id'),
     1000,
   );
 
@@ -156,7 +157,8 @@ export async function getFieldSlits(
     () => supabase
       .from('slit_regions')
       .select('center_ra, center_dec, position_angle, object_id, observation, shutter_idx')
-      .eq('field', field),
+      .eq('field', field)
+      .order('object_id'),
     1000,
   );
 
@@ -267,7 +269,8 @@ export async function getFieldShutters(
     () => supabase
       .from('shutters')
       .select('object_id, source_id, center_ra, center_dec, position_angle, shutter_idx, dither_id, shutter_state, observation')
-      .eq('field', field),
+      .eq('field', field)
+      .order('object_id'),
     1000,
   );
 
