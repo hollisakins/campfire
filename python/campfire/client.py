@@ -896,6 +896,7 @@ class Campfire:
         self,
         object_id: str,
         fov: float = 5.0,
+        cache: bool = True,
     ) -> dict:
         """
         Get shutter geometry near an object.
@@ -906,6 +907,8 @@ class Campfire:
             Object ID.
         fov : float, optional
             Search radius in arcseconds (default 5).
+        cache : bool, optional
+            Cache the result locally (default True).
 
         Returns
         -------
@@ -920,4 +923,90 @@ class Campfire:
         >>> result = cf.get_shutters('cosmos_ddt_66964', fov=3.2)
         >>> print(f"Found {len(result['shutters'])} nearby shutters")
         """
-        return self._api.get_shutters(object_id=object_id, radius=fov)
+        import json
+        from .config import resolve_data_dir
+
+        fov_str = format(fov, "g")
+        filename = f"{object_id}_fov{fov_str}_shutters.json"
+        cutouts = resolve_data_dir() / "cutouts"
+        dest = cutouts / filename
+
+        if cache and dest.exists():
+            return json.loads(dest.read_text())
+
+        result = self._api.get_shutters(object_id=object_id, radius=fov)
+
+        if cache:
+            cutouts.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_suffix(".tmp")
+            try:
+                tmp.write_text(json.dumps(result))
+                tmp.rename(dest)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
+
+        return result
+
+    def plot_cutout(
+        self,
+        object_id: str,
+        fov: float = 5.0,
+        size: Optional[int] = None,
+        shutters: bool = True,
+        ax=None,
+        **kwargs,
+    ):
+        """
+        Plot a cutout image with optional vector shutter overlay.
+
+        Convenience method that fetches the cutout and shutter geometry
+        (with local caching) and renders them using
+        :func:`campfire.imaging.plot_cutout`.
+
+        Parameters
+        ----------
+        object_id : str
+            Object ID.
+        fov : float, optional
+            Field of view in arcseconds (default 5).
+        size : int, optional
+            Output size in pixels. Defaults to native resolution.
+        shutters : bool, optional
+            Overlay shutter geometry (default True).
+        ax : matplotlib.axes.Axes, optional
+            Axes to plot on. If None, uses ``plt.gca()``.
+        **kwargs
+            Additional keyword arguments passed to
+            :func:`campfire.imaging.plot_cutout` (e.g.
+            ``shutter_colors``, ``scalebar``, ``scalebar_length``).
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes with the plot.
+
+        Examples
+        --------
+        >>> import matplotlib.pyplot as plt
+        >>> cf = Campfire()
+        >>> fig, ax = plt.subplots(figsize=(5, 5))
+        >>> cf.plot_cutout('cosmos_ddt_66964', fov=3.2, ax=ax)
+        >>> fig.savefig('cutout.pdf')
+        """
+        from .imaging import plot_cutout
+
+        path = self.get_cutout(object_id, size=size, fov=fov)
+
+        shutter_data = None
+        if shutters:
+            shutter_data = self.get_shutters(object_id, fov=fov)
+
+        return plot_cutout(
+            path,
+            shutters=shutter_data,
+            object_id=object_id,
+            fov=fov,
+            ax=ax,
+            **kwargs,
+        )
