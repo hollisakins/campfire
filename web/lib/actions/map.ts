@@ -219,31 +219,36 @@ export async function getFilteredObjectIds(
 
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
-    // DEBUG: log filter params for multi-program investigation
-    if (rpcParams.p_filter_programs && rpcParams.p_filter_programs.length > 0) {
-      console.log('[getFilteredObjectIds] p_filter_programs:', rpcParams.p_filter_programs);
-      console.log('[getFilteredObjectIds] p_program_slugs count:', rpcParams.p_program_slugs.length);
-    }
-
-    // Call the lightweight core function directly (no JSONB, no pagination)
-    const { data, error } = await supabase.rpc('get_filtered_object_ids', {
+    const fullRpcParams = {
       ...rpcParams,
       p_sort_column: 'object_id',
       p_sort_direction: 'asc',
-    });
+    };
 
-    if (error) {
-      console.error('Error fetching filtered object IDs:', error);
-      return { objectIds: [], error: error.message };
-    }
-
+    // Paginate through all results to avoid PostgREST max-rows truncation.
+    // The RPC returns a stable sort by object_id, so .range() pages are safe.
+    const PAGE_SIZE = 5000;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const objectIds = (data || []).map((row: any) => row.object_id as string);
+    const allRows: any[] = [];
+    let offset = 0;
 
-    // DEBUG: log result count for multi-program investigation
-    if (rpcParams.p_filter_programs && rpcParams.p_filter_programs.length > 0) {
-      console.log('[getFilteredObjectIds] returned', objectIds.length, 'objects');
+    while (true) {
+      const { data, error } = await supabase
+        .rpc('get_filtered_object_ids', fullRpcParams)
+        .range(offset, offset + PAGE_SIZE - 1);
+
+      if (error) {
+        console.error('Error fetching filtered object IDs:', error);
+        return { objectIds: [], error: error.message };
+      }
+
+      if (!data || data.length === 0) break;
+      allRows.push(...data);
+      if (data.length < PAGE_SIZE) break;
+      offset += PAGE_SIZE;
     }
+
+    const objectIds = allRows.map((row: { object_id: string }) => row.object_id);
 
     return { objectIds };
   } catch (err) {

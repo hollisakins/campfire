@@ -69,17 +69,7 @@ export function MapPageContent({
   const availablePrograms = filterOptionsResult?.programs ?? [];
 
   // Fetch filtered object IDs when filters are active
-  const { data: filteredResult, isPlaceholderData } = useFilteredObjectIds(debouncedFilters, hasActiveFilters);
-
-  // DEBUG: trace filter pipeline (remove after investigation)
-  useEffect(() => {
-    if (!hasActiveFilters) return;
-    console.log('[MapFilter] programs:', filters.programs,
-      '| debounced:', debouncedFilters.programs,
-      '| results:', filteredResult?.objectIds?.length ?? 'pending',
-      '| placeholder:', isPlaceholderData,
-      '| error:', filteredResult?.error ?? 'none');
-  }, [hasActiveFilters, filters.programs, debouncedFilters.programs, filteredResult, isPlaceholderData]);
+  const { data: filteredResult } = useFilteredObjectIds(debouncedFilters, hasActiveFilters);
 
   // Build the ID set and marker filter function
   const filteredIdSet = useMemo(() => {
