@@ -953,7 +953,7 @@ class Campfire:
         object_id: str,
         fov: float = 5.0,
         size: Optional[int] = None,
-        shutters: bool = True,
+        shutters: Union[bool, str] = True,
         ax=None,
         **kwargs,
     ):
@@ -972,8 +972,10 @@ class Campfire:
             Field of view in arcseconds (default 5).
         size : int, optional
             Output size in pixels. Defaults to native resolution.
-        shutters : bool, optional
-            Overlay shutter geometry (default True).
+        shutters : bool or str, optional
+            Control shutter overlay. ``True`` or ``'all'`` shows all
+            shutters (default). ``'target'`` shows only the current
+            object's shutters. ``False`` disables the overlay.
         ax : matplotlib.axes.Axes, optional
             Axes to plot on. If None, uses ``plt.gca()``.
         **kwargs
@@ -993,14 +995,27 @@ class Campfire:
         >>> fig, ax = plt.subplots(figsize=(5, 5))
         >>> cf.plot_cutout('cosmos_ddt_66964', fov=3.2, ax=ax)
         >>> fig.savefig('cutout.pdf')
+        >>>
+        >>> # Target shutters only:
+        >>> cf.plot_cutout('cosmos_ddt_66964', fov=3.2, shutters='target', ax=ax)
         """
         from .imaging import plot_cutout
 
         path = self.get_cutout(object_id, size=size, fov=fov)
 
         shutter_data = None
-        if shutters:
-            shutter_data = self.get_shutters(object_id, fov=fov)
+        if shutters and shutters != False:  # noqa: E712
+            result = self.get_shutters(object_id, fov=fov)
+            if shutters == 'target':
+                # Filter to only this object's shutters
+                result = {
+                    **result,
+                    "shutters": [
+                        s for s in result["shutters"]
+                        if s.get("object_id") == object_id
+                    ],
+                }
+            shutter_data = result
 
         return plot_cutout(
             path,
