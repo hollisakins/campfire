@@ -107,10 +107,9 @@ def plot_cutout(
     >>> fig = plot_cutout(path, shutters=result, object_id='cosmos_ddt_66964', fov=3.2)
     """
     try:
+        import matplotlib.pyplot as plt
         import matplotlib.image as mpimg
         import matplotlib.patches as mpatches
-        from matplotlib.figure import Figure
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
     except ImportError as exc:
         raise ImportError(
             "plot_cutout requires matplotlib. "
@@ -132,12 +131,8 @@ def plot_cutout(
     image = mpimg.imread(str(image_path))
     half = fov / 2
 
-    # Use Figure() directly instead of plt.subplots() to avoid
-    # pyplot's auto-display in Jupyter (which causes double rendering)
     if ax is None:
-        fig = Figure(figsize=figsize)
-        FigureCanvasAgg(fig)
-        ax = fig.add_subplot(111)
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
     else:
         fig = ax.figure
 
@@ -201,6 +196,11 @@ def plot_cutout(
     ax.set_aspect("equal")
     ax.axis("off")
     fig.tight_layout(pad=0.5)
+
+    # Deregister from pyplot to prevent Jupyter's auto-display
+    # (which causes duplicate rendering). The returned Figure is
+    # still fully functional for display, savefig, etc.
+    plt.close(fig)
 
     return fig
 
