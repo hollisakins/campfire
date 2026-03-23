@@ -55,7 +55,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const fov = Math.min(30, Math.max(1, parseFloat(params.get('fov') || '5')));
+    const parsedFov = parseFloat(params.get('fov') || '5');
+    if (!Number.isFinite(parsedFov)) {
+      return NextResponse.json(
+        { error: 'Invalid parameter: fov must be a finite number' },
+        { status: 400 }
+      );
+    }
+    const fov = Math.min(30, Math.max(1, parsedFov));
 
     // Look up object
     const { data: obj, error: objErr } = await supabase
@@ -105,9 +112,19 @@ export async function GET(request: NextRequest) {
 
     // Use requested size or native resolution, clamped to 16–2048
     const sizeParam = params.get('size');
-    const outputSize = sizeParam
-      ? Math.min(2048, Math.max(16, parseInt(sizeParam, 10)))
-      : Math.min(2048, Math.max(16, nativeSize));
+    let outputSize: number;
+    if (sizeParam !== null) {
+      const parsedSize = parseInt(sizeParam, 10);
+      if (!Number.isFinite(parsedSize)) {
+        return NextResponse.json(
+          { error: 'Invalid parameter: size must be a number' },
+          { status: 400 }
+        );
+      }
+      outputSize = Math.min(2048, Math.max(16, parsedSize));
+    } else {
+      outputSize = Math.min(2048, Math.max(16, nativeSize));
+    }
 
     // Composite the thumbnail
     const png = await compositeTileThumbnail({

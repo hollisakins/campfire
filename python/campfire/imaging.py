@@ -115,10 +115,16 @@ def plot_cutout(
     ...     center_dec=data['meta']['center_dec'],
     ... )
     """
-    import matplotlib.pyplot as plt
-    import matplotlib.image as mpimg
-    import matplotlib.patches as mpatches
-    import matplotlib.patheffects as pe
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.image as mpimg
+        import matplotlib.patches as mpatches
+        import matplotlib.patheffects as pe
+    except ImportError as exc:
+        raise ImportError(
+            "plot_cutout requires matplotlib. "
+            "Install it with: pip install matplotlib"
+        ) from exc
 
     image = mpimg.imread(str(image_path))
     half = fov / 2
@@ -194,6 +200,7 @@ def plot_cutout(
 
 def _draw_scalebar(ax, fov: float, length: Optional[float] = None):
     """Draw a scalebar in the lower-right corner."""
+    import matplotlib.patheffects as pe
     if length is None:
         # Pick a round value ~1/5 of FOV
         target = fov / 5

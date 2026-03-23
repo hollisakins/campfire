@@ -864,9 +864,10 @@ class Campfire:
         >>> from campfire.imaging import plot_cutout
         >>> fig = plot_cutout(path)
         """
-        # Build cache filename
+        # Build cache filename (use format(g) to avoid float repr oddities)
+        fov_str = format(fov, "g")
         size_tag = f"_s{size}" if size is not None else ""
-        filename = f"{object_id}_fov{fov}{size_tag}.png"
+        filename = f"{object_id}_fov{fov_str}{size_tag}.png"
 
         # Check cache
         from .config import resolve_data_dir

@@ -49,10 +49,11 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   // Cutout image URL (never includes shutters — always a clean RGB crop)
   const src = `/api/tile-thumbnail?object_id=${encodeURIComponent(objectId)}&size=${size}&fov=${fov}`;
 
-  // Fetch shutter geometry when shutters are enabled
+  // Fetch shutter geometry when coordinates are provided (independent of visibility toggle).
+  // This way toggling shutters on/off is instant CSS — no refetch needed.
   const hasCoordinates = ra !== undefined && dec !== undefined && field !== undefined;
   useEffect(() => {
-    if (!shutters || !hasCoordinates) {
+    if (!hasCoordinates) {
       setShutterRects([]);
       return;
     }
@@ -68,7 +69,7 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
     });
 
     return () => { cancelled = true; };
-  }, [shutters, ra, dec, field, fov, cssSize, objectId, hasCoordinates]);
+  }, [ra, dec, field, fov, cssSize, objectId, hasCoordinates]);
 
   if (hasError) {
     const placeholder = (

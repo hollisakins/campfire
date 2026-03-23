@@ -339,24 +339,15 @@ class APIClient:
 
     def get_shutters(
         self,
-        object_id: Optional[str] = None,
-        ra: Optional[float] = None,
-        dec: Optional[float] = None,
-        field: Optional[str] = None,
+        object_id: str,
         radius: float = 5.0,
     ) -> dict:
-        """Fetch nearby shutter geometry.
+        """Fetch nearby shutter geometry for an object.
 
         Parameters
         ----------
-        object_id : str, optional
-            Object identifier. If provided, RA/Dec/field are looked up.
-        ra : float, optional
-            Right ascension in degrees (required if no object_id).
-        dec : float, optional
-            Declination in degrees (required if no object_id).
-        field : str, optional
-            Field name (required if no object_id).
+        object_id : str
+            Object identifier. RA/Dec/field are looked up on the server.
         radius : float, optional
             Search radius in arcseconds (default 5).
 
@@ -366,19 +357,10 @@ class APIClient:
             Keys: ``shutters`` (list of shutter dicts), ``meta`` (dict with
             shutter dimensions, center coordinates, and search radius).
         """
-        params: Dict[str, Union[str, float]] = {}
-        if object_id:
-            params["object_id"] = object_id
-            params["fov"] = radius
-        else:
-            if ra is None or dec is None or field is None:
-                raise ValueError(
-                    "Provide either object_id, or all of ra, dec, field"
-                )
-            params["ra"] = ra
-            params["dec"] = dec
-            params["field"] = field
-            params["radius"] = radius
+        params: Dict[str, Union[str, float]] = {
+            "object_id": object_id,
+            "fov": radius,
+        }
         response = self._session.get("/shutters", params=params, timeout=30)
         _handle_response_error(response, "Shutter query")
         return response.json()
