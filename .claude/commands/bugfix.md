@@ -8,7 +8,7 @@ Fix the bug described in GitHub issue #$ARGUMENTS. Work autonomously through all
 
 ## 1. Read & Understand
 
-- Run `gh issue view $ARGUMENTS --json title,body,labels` to read the full bug report.
+- Run `gh issue view $ARGUMENTS --json title,body,labels,comments` to read the full bug report.
 - Identify the **component** (Web Portal, Pipeline NIRSpec, Pipeline NIRCam, Deployment/Infrastructure) from the issue metadata.
 - Parse the reporter's description: what happened, what they expected, and any error messages, logs, or screenshots provided.
 
