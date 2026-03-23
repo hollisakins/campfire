@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 
 # Schema version — bump when tables change
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Column lists used by both store and export
 OBJECT_COLUMNS = [
@@ -21,7 +21,7 @@ OBJECT_COLUMNS = [
     "ra", "dec", "redshift", "redshift_auto", "redshift_inspected",
     "redshift_quality", "spectral_features", "object_flags", "dq_flags",
     "max_snr", "max_exposure_time",
-    "last_inspected_at", "created_at", "updated_at",
+    "last_inspected_at", "last_inspected_by", "created_at", "updated_at",
 ]
 
 SPECTRA_COLUMNS = [
@@ -36,7 +36,7 @@ OBJECT_EXPORT_COLUMNS = [
     "ra", "dec", "redshift", "redshift_auto", "redshift_inspected",
     "redshift_quality", "spectral_features", "object_flags", "dq_flags",
     "max_snr", "max_exposure_time",
-    "last_inspected_at", "created_at", "updated_at",
+    "last_inspected_at", "last_inspected_by", "created_at", "updated_at",
 ]
 
 SPECTRA_EXPORT_COLUMNS = [
@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS objects (
     max_snr REAL,
     max_exposure_time REAL,
     last_inspected_at TEXT,
+    last_inspected_by TEXT,
     created_at TEXT,
     updated_at TEXT,
     _synced_at TEXT
@@ -176,6 +177,8 @@ class LocalStore:
             version = self._get_schema_version()
             if version < 3:
                 self._migrate_from_v2()
+            if version < 4:
+                self._migrate_from_v3()
 
     def _get_schema_version(self) -> int:
         """Get current schema version from _meta table."""
@@ -236,6 +239,21 @@ class LocalStore:
         )
         self._conn.commit()
 
+    def _migrate_from_v3(self) -> None:
+        """Migrate from v3 to v4: add last_inspected_by column to objects."""
+        try:
+            self._conn.execute(
+                "ALTER TABLE objects ADD COLUMN last_inspected_by TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
+        self._conn.commit()
+
     # -------------------------------------------------------------------------
     # Catalog operations
     # -------------------------------------------------------------------------
@@ -265,8 +283,9 @@ class LocalStore:
                      ra, dec, redshift, redshift_auto, redshift_inspected,
                      redshift_quality, spectral_features, object_flags, dq_flags,
                      max_snr, max_exposure_time,
-                     last_inspected_at, created_at, updated_at, _synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     last_inspected_at, last_inspected_by,
+                     created_at, updated_at, _synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(object_id) DO UPDATE SET
                     program_slug=excluded.program_slug,
                     program_name=excluded.program_name,
@@ -283,6 +302,7 @@ class LocalStore:
                     max_snr=excluded.max_snr,
                     max_exposure_time=excluded.max_exposure_time,
                     last_inspected_at=excluded.last_inspected_at,
+                    last_inspected_by=excluded.last_inspected_by,
                     updated_at=excluded.updated_at,
                     _synced_at=excluded._synced_at
             """, (
@@ -304,6 +324,7 @@ class LocalStore:
                 obj.get("max_snr"),
                 obj.get("max_exposure_time"),
                 obj.get("last_inspected_at"),
+                obj.get("last_inspected_by"),
                 obj.get("created_at"),
                 obj.get("updated_at"),
                 now,
