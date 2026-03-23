@@ -176,7 +176,9 @@ def plot_cutout(
             else:
                 style = colors["other"]
 
-            angle = -shutter["position_angle"]
+            # SVG uses rotate(-PA) with +Y down; matplotlib has +Y up,
+            # so the sign flips to +PA
+            angle = shutter["position_angle"]
 
             rect = mpatches.Rectangle(
                 (cx - SHUTTER_WIDTH_ARCSEC / 2, cy - SHUTTER_HEIGHT_ARCSEC / 2),
