@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 
-from campfire.db.store import LocalStore
+from campfire.db.store import LocalStore, SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -489,8 +489,325 @@ class TestV3Migration:
         ).fetchone()
         assert row["local_file_hash"] == "sha256:downloadhash"
 
-        # Verify schema version is 3
+        # Verify schema version is current (cascading migration)
         version = store._get_schema_version()
-        assert version == 3
+        assert version == SCHEMA_VERSION
 
         store.close()
+
+
+class TestV5Migration:
+    """Test schema v4 → v5 migration (local_file_mtime/local_file_size columns)."""
+
+    def test_migrates_v4_to_v5(self, tmp_path):
+        import sqlite3
+
+        db_path = tmp_path / "meta" / "campfire.db"
+        db_path.parent.mkdir(parents=True)
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+
+        # Create a v4-like schema (without the new columns)
+        conn.executescript("""
+            CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO _meta (key, value) VALUES ('schema_version', '4');
+
+            CREATE TABLE objects (
+                id INTEGER PRIMARY KEY, object_id TEXT UNIQUE NOT NULL,
+                program_slug TEXT, program_name TEXT, field TEXT, observation TEXT,
+                ra REAL, dec REAL, redshift REAL, redshift_auto REAL,
+                redshift_inspected REAL, redshift_quality INTEGER DEFAULT 0,
+                spectral_features INTEGER DEFAULT 0, object_flags INTEGER DEFAULT 0,
+                dq_flags INTEGER DEFAULT 0, max_snr REAL, max_exposure_time REAL,
+                last_inspected_at TEXT, last_inspected_by TEXT,
+                created_at TEXT, updated_at TEXT, _synced_at TEXT
+            );
+
+            CREATE TABLE spectra (
+                spectra_id INTEGER PRIMARY KEY, object_id TEXT NOT NULL,
+                grating TEXT NOT NULL, fits_path TEXT, file_hash TEXT,
+                file_size INTEGER, signal_to_noise REAL, exposure_time REAL,
+                reduction_version TEXT, local_path TEXT, local_file_hash TEXT,
+                synced_at TEXT, _synced_at TEXT
+            );
+
+            INSERT INTO spectra (spectra_id, object_id, grating, fits_path,
+                    file_hash, local_file_hash, local_path, synced_at)
+            VALUES (10, 'obj1', 'PRISM', 'spectra/obs1/file.fits',
+                    'sha256:server', 'sha256:local', 'obs1/file.fits', '2026-01-01');
+
+            CREATE TABLE sync_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observation TEXT NOT NULL, started_at TEXT NOT NULL,
+                completed_at TEXT, files_downloaded INTEGER DEFAULT 0,
+                files_skipped INTEGER DEFAULT 0, bytes_downloaded INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'in_progress'
+            );
+        """)
+        conn.close()
+
+        store = LocalStore(db_path)
+
+        # Verify new columns exist
+        row = store._conn.execute(
+            "SELECT local_file_mtime, local_file_size FROM spectra WHERE spectra_id = 10"
+        ).fetchone()
+        assert row["local_file_mtime"] is None
+        assert row["local_file_size"] is None
+
+        # Verify schema version
+        assert store._get_schema_version() == SCHEMA_VERSION
+
+        store.close()
+
+
+class TestVerifyLocalFiles:
+    """Test verify_local_files with mtime/size tracking and real hashing."""
+
+    def test_clears_missing_files(self, store, sample_objects, tmp_path):
+        store.upsert_objects(sample_objects)
+        products_dir = tmp_path / "products"
+        products_dir.mkdir()
+
+        # Mark as synced but don't create the file
+        store.mark_synced(10, "ember_uds_p4_100", "ember_uds_p4", "PRISM",
+                          "spectra/ember_uds_p4/file.fits", "ember_uds_p4/file.fits",
+                          "sha256:abc", 1000, local_file_mtime=1000.0, local_file_size=1000)
+
+        result = store.verify_local_files(products_dir)
+        assert result["cleared"] == 1
+
+        # local_path should be cleared
+        row = store._conn.execute(
+            "SELECT local_path, local_file_hash, local_file_mtime, local_file_size "
+            "FROM spectra WHERE spectra_id = 10"
+        ).fetchone()
+        assert row["local_path"] is None
+        assert row["local_file_hash"] is None
+        assert row["local_file_mtime"] is None
+        assert row["local_file_size"] is None
+
+    def test_discovers_files_with_real_hash(self, store, sample_objects, tmp_path):
+        store.upsert_objects(sample_objects)
+        products_dir = tmp_path / "products"
+
+        # Create a file on disk that matches expected path
+        obs_dir = products_dir / "ember_uds_p4"
+        obs_dir.mkdir(parents=True)
+        file_path = obs_dir / "ember_uds_p4_PRISM_100_spec.fits"
+        file_path.write_bytes(b"fake fits content")
+
+        result = store.verify_local_files(products_dir)
+        assert result["discovered"] == 1
+
+        # Should have computed real hash, not copied server hash
+        from campfire.sync import compute_file_hash
+        expected_hash = compute_file_hash(file_path)
+
+        row = store._conn.execute(
+            "SELECT local_path, local_file_hash, local_file_mtime, local_file_size "
+            "FROM spectra WHERE spectra_id = 10"
+        ).fetchone()
+        assert row["local_path"] == "ember_uds_p4/ember_uds_p4_PRISM_100_spec.fits"
+        assert row["local_file_hash"] == expected_hash
+        assert row["local_file_mtime"] is not None
+        assert row["local_file_size"] == len(b"fake fits content")
+
+    def test_rehashes_modified_files(self, store, sample_objects, tmp_path):
+        store.upsert_objects(sample_objects)
+        products_dir = tmp_path / "products"
+        obs_dir = products_dir / "ember_uds_p4"
+        obs_dir.mkdir(parents=True)
+
+        file_path = obs_dir / "file.fits"
+        file_path.write_bytes(b"original content")
+        st = file_path.stat()
+
+        # Mark as synced with current stat
+        store.mark_synced(10, "ember_uds_p4_100", "ember_uds_p4", "PRISM",
+                          "spectra/ember_uds_p4/file.fits", "ember_uds_p4/file.fits",
+                          "sha256:originalhash", 1000,
+                          local_file_mtime=st.st_mtime, local_file_size=st.st_size)
+
+        # Modify the file
+        file_path.write_bytes(b"modified content that is different")
+
+        result = store.verify_local_files(products_dir)
+        assert result["rehashed"] == 1
+
+        # Hash should be updated
+        from campfire.sync import compute_file_hash
+        expected_hash = compute_file_hash(file_path)
+
+        row = store._conn.execute(
+            "SELECT local_file_hash, local_file_mtime, local_file_size "
+            "FROM spectra WHERE spectra_id = 10"
+        ).fetchone()
+        assert row["local_file_hash"] == expected_hash
+
+    def test_skips_unchanged_files(self, store, sample_objects, tmp_path):
+        store.upsert_objects(sample_objects)
+        products_dir = tmp_path / "products"
+        obs_dir = products_dir / "ember_uds_p4"
+        obs_dir.mkdir(parents=True)
+
+        file_path = obs_dir / "file.fits"
+        file_path.write_bytes(b"content")
+        st = file_path.stat()
+
+        store.mark_synced(10, "ember_uds_p4_100", "ember_uds_p4", "PRISM",
+                          "spectra/ember_uds_p4/file.fits", "ember_uds_p4/file.fits",
+                          "sha256:somehash", 1000,
+                          local_file_mtime=st.st_mtime, local_file_size=st.st_size)
+
+        result = store.verify_local_files(products_dir)
+        assert result["rehashed"] == 0
+        assert result["cleared"] == 0
+
+        # Hash should remain unchanged
+        row = store._conn.execute(
+            "SELECT local_file_hash FROM spectra WHERE spectra_id = 10"
+        ).fetchone()
+        assert row["local_file_hash"] == "sha256:somehash"
+
+
+class TestPurgeStaleRows:
+    """Test purge_stale_rows for cleaning up server-deleted records."""
+
+    def test_purges_deleted_objects(self, store, sample_objects):
+        store.upsert_objects(sample_objects)
+
+        # Simulate a full sync that only returns one of the two objects
+        store._conn.execute(
+            "UPDATE objects SET _synced_at = '2026-01-02T00:00:00Z' WHERE object_id = 'ember_uds_p4_100'"
+        )
+        store._conn.execute(
+            "UPDATE objects SET _synced_at = '2026-01-01T00:00:00Z' WHERE object_id = 'ember_uds_p4_200'"
+        )
+        store._conn.execute(
+            "UPDATE spectra SET _synced_at = '2026-01-02T00:00:00Z' WHERE spectra_id IN (10, 11)"
+        )
+        store._conn.execute(
+            "UPDATE spectra SET _synced_at = '2026-01-01T00:00:00Z' WHERE spectra_id = 20"
+        )
+        store._conn.commit()
+
+        result = store.purge_stale_rows("2026-01-02T00:00:00Z")
+        assert result["purged_objects"] == 1
+        assert result["purged_spectra"] == 1
+
+        # Only the first object should remain
+        rows = store._conn.execute("SELECT object_id FROM objects").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["object_id"] == "ember_uds_p4_100"
+
+    def test_reports_orphaned_files(self, store, sample_objects):
+        store.upsert_objects(sample_objects)
+
+        # Mark one spectrum as downloaded
+        store.mark_synced(20, "ember_uds_p4_200", "ember_uds_p4", "PRISM",
+                          "spectra/ember_uds_p4/file200.fits", "ember_uds_p4/file200.fits",
+                          "sha256:abc", 1000)
+
+        # Set timestamps so object 200's spectrum gets purged
+        store._conn.execute(
+            "UPDATE objects SET _synced_at = '2026-01-02T00:00:00Z' WHERE object_id = 'ember_uds_p4_100'"
+        )
+        store._conn.execute(
+            "UPDATE objects SET _synced_at = '2026-01-01T00:00:00Z' WHERE object_id = 'ember_uds_p4_200'"
+        )
+        store._conn.execute("UPDATE spectra SET _synced_at = '2026-01-02T00:00:00Z' WHERE spectra_id IN (10, 11)")
+        store._conn.execute("UPDATE spectra SET _synced_at = '2026-01-01T00:00:00Z' WHERE spectra_id = 20")
+        store._conn.commit()
+
+        result = store.purge_stale_rows("2026-01-02T00:00:00Z")
+        assert "ember_uds_p4/file200.fits" in result["orphaned_files"]
+
+    def test_no_purge_when_all_current(self, store, sample_objects):
+        store.upsert_objects(sample_objects)
+
+        result = store.purge_stale_rows("2026-01-01T00:00:00Z")
+        assert result["purged_objects"] == 0
+        assert result["purged_spectra"] == 0
+        assert result["orphaned_files"] == []
+
+
+class TestPendingDownloads:
+    """Test get_pending_downloads for local download planning."""
+
+    def test_new_files_detected(self, store, sample_objects):
+        """Spectra never downloaded should be returned as 'new'."""
+        store.upsert_objects(sample_objects)
+
+        pending = store.get_pending_downloads()
+        all_pending = [s for specs in pending.values() for s in specs]
+        assert len(all_pending) == 3  # 2 for obj1 + 1 for obj2
+        assert all(s["status"] == "new" for s in all_pending)
+
+    def test_updated_files_detected(self, store, sample_objects):
+        """Spectra with stale local hash should be returned as 'updated'."""
+        for obj in sample_objects:
+            for spec in obj.get("spectra", []):
+                spec["file_hash"] = f"sha256:server_{spec['id']}"
+        store.upsert_objects(sample_objects)
+
+        # Mark one as downloaded with a different hash
+        store.mark_synced(10, "ember_uds_p4_100", "ember_uds_p4", "PRISM",
+                          "spectra/ember_uds_p4/file.fits", "ember_uds_p4/file.fits",
+                          "sha256:old_hash", 1000)
+
+        pending = store.get_pending_downloads()
+        all_pending = [s for specs in pending.values() for s in specs]
+
+        updated = [s for s in all_pending if s["status"] == "updated"]
+        assert len(updated) == 1
+        assert updated[0]["spectra_id"] == 10
+
+    def test_up_to_date_excluded(self, store, sample_objects):
+        """Spectra with matching hashes should not be returned."""
+        for obj in sample_objects:
+            for spec in obj.get("spectra", []):
+                spec["file_hash"] = f"sha256:hash_{spec['id']}"
+        store.upsert_objects(sample_objects)
+
+        # Mark one as downloaded with matching hash
+        store.mark_synced(10, "ember_uds_p4_100", "ember_uds_p4", "PRISM",
+                          "spectra/ember_uds_p4/file.fits", "ember_uds_p4/file.fits",
+                          "sha256:hash_10", 1000)
+
+        pending = store.get_pending_downloads()
+        all_pending = [s for specs in pending.values() for s in specs]
+
+        ids = [s["spectra_id"] for s in all_pending]
+        assert 10 not in ids
+        assert 11 in ids  # Still pending (never downloaded)
+
+    def test_observation_filter(self, store):
+        """get_pending_downloads filters by observation."""
+        objects = [
+            {
+                "id": 1, "object_id": "obs1_100", "program_slug": "prog",
+                "field": "F", "observation": "obs1",
+                "spectra": [{"id": 10, "object_id": "obs1_100", "grating": "PRISM",
+                             "fits_path": "spectra/obs1/f.fits"}],
+            },
+            {
+                "id": 2, "object_id": "obs2_200", "program_slug": "prog",
+                "field": "F", "observation": "obs2",
+                "spectra": [{"id": 20, "object_id": "obs2_200", "grating": "PRISM",
+                             "fits_path": "spectra/obs2/f.fits"}],
+            },
+        ]
+        store.upsert_objects(objects)
+
+        pending = store.get_pending_downloads(observations=["obs1"])
+        assert "obs1" in pending
+        assert "obs2" not in pending
+
+    def test_grating_filter(self, store, sample_objects):
+        """get_pending_downloads filters by grating."""
+        store.upsert_objects(sample_objects)
+
+        pending = store.get_pending_downloads(gratings=["PRISM"])
+        all_pending = [s for specs in pending.values() for s in specs]
+        assert all(s["grating"] == "PRISM" for s in all_pending)

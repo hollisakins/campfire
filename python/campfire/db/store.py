@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 
 # Schema version — bump when tables change
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Column lists used by both store and export
 OBJECT_COLUMNS = [
@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS spectra (
     reduction_version TEXT,
     local_path TEXT,
     local_file_hash TEXT,
+    local_file_mtime REAL,
+    local_file_size INTEGER,
     synced_at TEXT,
     _synced_at TEXT
 );
@@ -179,6 +181,8 @@ class LocalStore:
                 self._migrate_from_v2()
             if version < 4:
                 self._migrate_from_v3()
+            if version < 5:
+                self._migrate_from_v4()
 
     def _get_schema_version(self) -> int:
         """Get current schema version from _meta table."""
@@ -247,6 +251,25 @@ class LocalStore:
             )
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
+        self._conn.commit()
+
+    def _migrate_from_v4(self) -> None:
+        """Migrate from v4 to v5: add local_file_mtime and local_file_size to spectra."""
+        for col, col_type in [
+            ("local_file_mtime", "REAL"),
+            ("local_file_size", "INTEGER"),
+        ]:
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE spectra ADD COLUMN {col} {col_type}"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
         self._conn.execute(
             "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
@@ -738,13 +761,15 @@ class LocalStore:
     def verify_local_files(self, products_dir: Path, observation: Optional[str] = None) -> dict:
         """Reconcile database sync state with the local filesystem.
 
-        Performs two checks:
+        Performs three checks:
 
         1. **Missing files**: spectra marked as downloaded but no longer
            on disk → clears ``local_path`` so they are re-downloaded.
-        2. **Discovered files**: spectra not marked as downloaded but the
+        2. **Modified files**: spectra on disk whose mtime or size differs
+           from stored values → re-hashes and updates ``local_file_hash``.
+        3. **Discovered files**: spectra not marked as downloaded but the
            expected file exists on disk (e.g., from the pipeline) →
-           sets ``local_path`` so they are not re-downloaded.
+           computes hash and sets ``local_path``.
 
         Parameters
         ----------
@@ -756,27 +781,53 @@ class LocalStore:
         Returns
         -------
         dict
-            ``{"cleared": int, "discovered": int}``
+            ``{"cleared": int, "rehashed": int, "discovered": int}``
         """
+        from ..sync import compute_file_hash
+
         now = datetime.now(timezone.utc).isoformat()
         obs_filter = "AND o.observation = ?" if observation else ""
         obs_params: tuple = (observation,) if observation else ()
 
-        # 1. Clear entries for files that no longer exist
+        # 1. Check tracked files: clear missing, re-hash modified
         tracked_rows = self._conn.execute(f"""
-            SELECT s.spectra_id, s.local_path FROM spectra s
+            SELECT s.spectra_id, s.local_path, s.local_file_mtime,
+                   s.local_file_size, s.local_file_hash
+            FROM spectra s
             JOIN objects o ON s.object_id = o.object_id
             WHERE s.local_path IS NOT NULL {obs_filter}
         """, obs_params).fetchall()
 
         cleared = 0
+        rehashed = 0
         for row in tracked_rows:
-            if not (products_dir / row["local_path"]).exists():
+            full_path = products_dir / row["local_path"]
+            if not full_path.exists():
                 self._conn.execute(
-                    "UPDATE spectra SET local_path = NULL, local_file_hash = NULL, synced_at = NULL WHERE spectra_id = ?",
+                    """UPDATE spectra SET local_path = NULL, local_file_hash = NULL,
+                       local_file_mtime = NULL, local_file_size = NULL, synced_at = NULL
+                       WHERE spectra_id = ?""",
                     (row["spectra_id"],),
                 )
                 cleared += 1
+            else:
+                st = full_path.stat()
+                stored_mtime = row["local_file_mtime"]
+                stored_size = row["local_file_size"]
+                if (stored_mtime is not None
+                        and stored_size is not None
+                        and abs(st.st_mtime - stored_mtime) < 0.001
+                        and st.st_size == stored_size):
+                    continue  # Fast path: unchanged
+                # Re-hash — mtime/size changed or not yet tracked (pre-v5)
+                new_hash = compute_file_hash(full_path)
+                self._conn.execute(
+                    """UPDATE spectra SET local_file_hash = ?,
+                       local_file_mtime = ?, local_file_size = ?
+                       WHERE spectra_id = ?""",
+                    (new_hash, st.st_mtime, st.st_size, row["spectra_id"]),
+                )
+                rehashed += 1
 
         # 2. Discover files that exist but aren't tracked
         untracked_rows = self._conn.execute(f"""
@@ -793,16 +844,19 @@ class LocalStore:
             local_path = products_dir / obs_name / filename
             if local_path.exists():
                 rel_path = f"{obs_name}/{filename}"
+                st = local_path.stat()
+                actual_hash = compute_file_hash(local_path)
                 self._conn.execute(
                     """UPDATE spectra SET local_path = ?, local_file_hash = ?,
-                       file_size = ?, synced_at = ? WHERE spectra_id = ?""",
-                    (rel_path, row["file_hash"], local_path.stat().st_size, now, row["spectra_id"]),
+                       local_file_mtime = ?, local_file_size = ?, synced_at = ?
+                       WHERE spectra_id = ?""",
+                    (rel_path, actual_hash, st.st_mtime, st.st_size, now, row["spectra_id"]),
                 )
                 discovered += 1
 
-        if cleared or discovered:
+        if cleared or discovered or rehashed:
             self._conn.commit()
-        return {"cleared": cleared, "discovered": discovered}
+        return {"cleared": cleared, "rehashed": rehashed, "discovered": discovered}
 
     def mark_synced(
         self,
@@ -814,6 +868,8 @@ class LocalStore:
         local_path: str,
         file_hash: Optional[str],
         file_size: Optional[int],
+        local_file_mtime: Optional[float] = None,
+        local_file_size: Optional[int] = None,
     ) -> None:
         """Record that a file has been downloaded locally.
 
@@ -825,16 +881,20 @@ class LocalStore:
         self._conn.execute("""
             INSERT INTO spectra
                 (spectra_id, object_id, grating, fits_path, local_path,
-                 local_file_hash, file_size, synced_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 local_file_hash, file_size, local_file_mtime, local_file_size,
+                 synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(spectra_id) DO UPDATE SET
                 local_path = excluded.local_path,
                 local_file_hash = excluded.local_file_hash,
                 file_size = excluded.file_size,
+                local_file_mtime = excluded.local_file_mtime,
+                local_file_size = excluded.local_file_size,
                 synced_at = excluded.synced_at
         """, (
             spectra_id, object_id, grating, fits_path,
-            local_path, file_hash, file_size, now,
+            local_path, file_hash, file_size, local_file_mtime,
+            local_file_size, now,
         ))
         self._conn.commit()
 
@@ -857,6 +917,118 @@ class LocalStore:
               AND s.file_hash != s.local_file_hash
         """).fetchall()
         return [dict(r) for r in rows]
+
+    def purge_stale_rows(self, sync_timestamp: str) -> dict:
+        """Delete objects and spectra not seen in the latest full sync.
+
+        After a full sync, rows with ``_synced_at < sync_timestamp`` were
+        not in the server response — meaning they were deleted on the server.
+
+        Only call this after a **full** sync (not incremental).
+
+        Parameters
+        ----------
+        sync_timestamp : str
+            ISO 8601 timestamp from the start of the sync.
+
+        Returns
+        -------
+        dict
+            ``{"purged_objects": int, "purged_spectra": int,
+              "orphaned_files": list}``
+        """
+        # Find spectra that will be purged and have local files
+        orphaned = self._conn.execute(
+            """SELECT local_path FROM spectra
+               WHERE _synced_at < ? AND local_path IS NOT NULL""",
+            (sync_timestamp,),
+        ).fetchall()
+        orphaned_files = [r["local_path"] for r in orphaned]
+
+        cursor_s = self._conn.execute(
+            "DELETE FROM spectra WHERE _synced_at < ?",
+            (sync_timestamp,),
+        )
+        purged_spectra = cursor_s.rowcount
+
+        cursor_o = self._conn.execute(
+            "DELETE FROM objects WHERE _synced_at < ?",
+            (sync_timestamp,),
+        )
+        purged_objects = cursor_o.rowcount
+
+        self._conn.commit()
+        return {
+            "purged_objects": purged_objects,
+            "purged_spectra": purged_spectra,
+            "orphaned_files": orphaned_files,
+        }
+
+    def get_pending_downloads(
+        self,
+        observations: Optional[List[str]] = None,
+        gratings: Optional[List[str]] = None,
+    ) -> Dict[str, List[dict]]:
+        """Find spectra that need downloading, grouped by observation.
+
+        A spectrum needs downloading if:
+
+        - ``local_file_hash IS NULL`` (never downloaded), OR
+        - ``local_file_hash != file_hash`` (stale — server has newer version)
+
+        Parameters
+        ----------
+        observations : list of str, optional
+            Limit to these observations. If None, checks all.
+        gratings : list of str, optional
+            Limit to these gratings.
+
+        Returns
+        -------
+        dict
+            ``{observation_name: [spectra_dicts]}`` for observations
+            needing downloads. Each dict includes a ``status`` key
+            (``"new"`` or ``"updated"``).
+        """
+        where = ["s.fits_path IS NOT NULL"]
+        params: list = []
+
+        if observations:
+            placeholders = ",".join("?" * len(observations))
+            where.append(f"o.observation IN ({placeholders})")
+            params.extend(observations)
+
+        if gratings:
+            placeholders = ",".join("?" * len(gratings))
+            where.append(f"UPPER(s.grating) IN ({placeholders})")
+            params.extend(g.upper() for g in gratings)
+
+        # Core condition: needs download
+        where.append("""(
+            s.local_file_hash IS NULL
+            OR (s.file_hash IS NOT NULL AND s.local_file_hash != s.file_hash)
+        )""")
+
+        where_sql = " AND ".join(where)
+
+        rows = self._conn.execute(f"""
+            SELECT s.spectra_id, s.object_id, s.grating, s.fits_path,
+                   s.file_hash, s.file_size, s.local_file_hash,
+                   o.observation
+            FROM spectra s
+            JOIN objects o ON s.object_id = o.object_id
+            WHERE {where_sql}
+            ORDER BY o.observation, s.spectra_id
+        """, params).fetchall()
+
+        result: Dict[str, List[dict]] = {}
+        for row in rows:
+            d = dict(row)
+            d["status"] = "new" if d["local_file_hash"] is None else "updated"
+            obs = d["observation"]
+            result.setdefault(obs, []).append(d)
+
+        return result
 
     def remove_observation(self, observation: str) -> int:
         """Remove sync state for an observation (nullify local_path)."""

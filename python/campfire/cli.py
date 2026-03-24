@@ -414,6 +414,10 @@ def sync_cmd(full: bool, base_url: Optional[str]):
             click.echo(f"✓ Full sync complete: {result['observations']} observations, "
                         f"{result['objects']} objects, {result['spectra']} spectra.")
 
+        if result.get("purged_objects") or result.get("purged_spectra"):
+            click.echo(f"  Removed {result['purged_objects']} objects and "
+                        f"{result['purged_spectra']} spectra deleted from server.")
+
         if result["stale_count"] > 0:
             click.echo(f"\n⚠ {result['stale_count']} local file(s) have been updated on the server.")
             click.echo("  Run: campfire download --stale")
@@ -458,7 +462,6 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
     from .config import products_dir as _products_dir, meta_dir as _meta_dir
     from .sync import (
         download_observation,
-        compute_download_plan,
         format_size,
     )
     from .api.session import create_download_session
@@ -583,56 +586,45 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
     verify = store.verify_local_files(_products_dir())
     if verify["cleared"]:
         click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
+    if verify.get("rehashed"):
+        click.echo(f"  Re-verified {verify['rehashed']} modified local file(s).")
     if verify["discovered"]:
         click.echo(f"  Found {verify['discovered']} existing local file(s), skipping download.")
 
-    # Gather download plans
+    # Compute download plan locally (no HTTP requests)
     grating_list = list(grating_filter) if grating_filter else None
     click.echo("Checking files...")
-    plans = []
+
+    pending = store.get_pending_downloads(
+        observations=list(target_obs),
+        gratings=grating_list,
+    )
+
+    # Show per-observation status
+    obs_with_downloads = []
     total_download = 0
     total_files = 0
 
     for obs in target_obs:
-        try:
-            manifest = api.fetch_manifest(obs)
-            synced = store.get_synced_files(obs)
+        obs_pending = pending.get(obs, [])
+        if not obs_pending:
+            click.echo(f"  {obs}: up to date")
+            continue
 
-            # Apply grating filter to manifest
-            if grating_list:
-                grating_set = set(g.upper() for g in grating_list)
-                manifest_filtered = dict(manifest)
-                manifest_filtered["spectra"] = [
-                    s for s in manifest.get("spectra", [])
-                    if s.get("grating", "").upper() in grating_set
-                ]
-            else:
-                manifest_filtered = manifest
+        new_count = sum(1 for s in obs_pending if s["status"] == "new")
+        updated_count = sum(1 for s in obs_pending if s["status"] == "updated")
+        download_bytes = sum(s.get("file_size") or 0 for s in obs_pending)
 
-            new_files, updated_files, up_to_date = compute_download_plan(manifest_filtered, synced)
-            to_download = new_files + updated_files
-            download_bytes = sum(s.get("file_size") or 0 for s in to_download)
+        parts = []
+        if new_count:
+            parts.append(f"{new_count} new")
+        if updated_count:
+            parts.append(f"{updated_count} updated")
+        click.echo(f"  {obs}: {', '.join(parts)} ({format_size(download_bytes)})")
 
-            if not to_download:
-                click.echo(f"  {obs}: up to date")
-            else:
-                parts = []
-                if new_files:
-                    parts.append(f"{len(new_files)} new")
-                if updated_files:
-                    parts.append(f"{len(updated_files)} updated")
-                click.echo(f"  {obs}: {', '.join(parts)} ({format_size(download_bytes)})")
-
-            plans.append({
-                "observation": obs,
-                "manifest": manifest,
-                "to_download": to_download,
-                "download_bytes": download_bytes,
-            })
-            total_download += download_bytes
-            total_files += len(to_download)
-        except Exception as e:
-            click.echo(f"  {obs}: ✗ {e}")
+        obs_with_downloads.append(obs)
+        total_download += download_bytes
+        total_files += len(obs_pending)
 
     if total_files == 0:
         click.echo("\nAll files up to date.")
@@ -650,16 +642,12 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             store.close()
             return
 
-    # Execute downloads
+    # Execute downloads — only fetch manifests for observations that need them
     click.echo()
     dl_session = create_download_session(max_workers=workers)
     all_stats = []
 
-    for plan in plans:
-        obs = plan["observation"]
-        if not plan["to_download"]:
-            continue
-
+    for obs in obs_with_downloads:
         api_session._ensure_valid_token()
 
         try:
@@ -668,7 +656,6 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
                 _products_dir(), store,
                 max_workers=workers,
                 download_session=dl_session,
-                manifest=plan["manifest"],
                 grating_filter=grating_list,
             )
             all_stats.append(stats)

@@ -6,6 +6,7 @@ Session creation and manifest fetching are delegated to the ``api`` subpackage.
 
 import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -14,6 +15,15 @@ from tqdm import tqdm
 
 from .api.session import create_download_session
 from .exceptions import DownloadError
+
+
+def compute_file_hash(path: Path) -> str:
+    """Compute SHA-256 hash of a file, returning ``sha256:<hex>`` format."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return f"sha256:{hasher.hexdigest()}"
 
 
 def sync_metadata(
@@ -55,6 +65,9 @@ def sync_metadata(
 
     incremental = updated_since is not None
 
+    # Record sync start time before upsert (used for purge)
+    sync_timestamp = datetime.now(timezone.utc).isoformat()
+
     # 2. Fetch object metadata via lightweight sync endpoint
     pbar = None
     callback = None
@@ -77,6 +90,11 @@ def sync_metadata(
     # 3. Upsert into SQLite
     obj_count, spec_count = store.upsert_objects(all_objects)
 
+    # 3a. Purge rows deleted on server (full sync only)
+    purge_result = None
+    if not incremental:
+        purge_result = store.purge_stale_rows(sync_timestamp)
+
     # 4. Export CSVs (always full export from SQLite)
     export_catalogs(store, meta_dir)
 
@@ -86,7 +104,7 @@ def sync_metadata(
     # Count distinct observations from fetched objects
     obs_set = set(o.get("observation") for o in all_objects if o.get("observation"))
 
-    return {
+    result = {
         "observations": len(obs_set),
         "objects": obj_count,
         "spectra": spec_count,
@@ -94,6 +112,12 @@ def sync_metadata(
         "stale_files": stale,
         "incremental": incremental,
     }
+    if purge_result:
+        result["purged_objects"] = purge_result["purged_objects"]
+        result["purged_spectra"] = purge_result["purged_spectra"]
+        result["orphaned_files"] = purge_result["orphaned_files"]
+
+    return result
 
 
 def compute_download_plan(
@@ -168,6 +192,7 @@ def download_and_verify(
         # Atomic rename
         tmp_path.rename(local_path)
 
+        st = local_path.stat()
         return {
             "spectra_id": spec["spectra_id"],
             "object_id": spec["object_id"],
@@ -176,7 +201,9 @@ def download_and_verify(
             "fits_path": spec["fits_path"],
             "local_path": str(local_path.relative_to(products_dir)),
             "file_hash": computed_hash,
-            "file_size": local_path.stat().st_size,
+            "file_size": st.st_size,
+            "local_file_mtime": st.st_mtime,
+            "local_file_size": st.st_size,
         }
 
     except DownloadError:
@@ -288,6 +315,8 @@ def download_observation(
                         result["local_path"],
                         result["file_hash"],
                         result["file_size"],
+                        local_file_mtime=result.get("local_file_mtime"),
+                        local_file_size=result.get("local_file_size"),
                     )
                     stats["downloaded"] += 1
                     bytes_downloaded += result.get("file_size") or 0

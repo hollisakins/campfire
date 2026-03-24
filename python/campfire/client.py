@@ -737,6 +737,7 @@ class Campfire:
         if self._local and self._products_dir:
             observation = spec_info.get("observation", object_id.rsplit("_", 1)[0])
             local_rel_path = f"{observation}/{filename}"
+            st = dest.stat()
             self._local.mark_synced(
                 spectra_id=spec_info["spectra_id"],
                 object_id=object_id,
@@ -744,8 +745,10 @@ class Campfire:
                 grating=grating,
                 fits_path=fits_path,
                 local_path=local_rel_path,
-                file_hash=sha256.hexdigest(),
+                file_hash=f"sha256:{sha256.hexdigest()}",
                 file_size=file_size,
+                local_file_mtime=st.st_mtime,
+                local_file_size=st.st_size,
             )
 
         return SpectrumData.from_fits(
