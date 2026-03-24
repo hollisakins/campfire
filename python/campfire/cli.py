@@ -47,6 +47,31 @@ def _open_store():
     return LocalStore(db_path)
 
 
+def _check_client_version(base_url: str) -> None:
+    """Check if a newer client version is available. Never raises."""
+    from . import __version__
+    from packaging.version import Version
+
+    try:
+        resp = requests.get(f"{base_url}/version", timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+
+        current = Version(__version__)
+        latest = Version(data.get("latest", __version__))
+        minimum = Version(data.get("minimum", "0.0.0"))
+
+        if current < minimum:
+            click.echo(f"\n⚠ campfire v{__version__} is no longer supported "
+                        f"(minimum: v{minimum}). Please update:")
+            click.echo("  pip install -U git+https://github.com/hollisakins/campfire.git#subdirectory=python")
+        elif current < latest:
+            click.echo(f"\n  Update available: v{__version__} → v{latest}")
+            click.echo("  pip install -U git+https://github.com/hollisakins/campfire.git#subdirectory=python")
+    except Exception:
+        pass  # Never block sync for a version check failure
+
+
 @click.group()
 @click.version_option(version="0.2.0", prog_name="campfire")
 def cli():
@@ -421,6 +446,9 @@ def sync_cmd(full: bool, base_url: Optional[str]):
         if result["stale_count"] > 0:
             click.echo(f"\n⚠ {result['stale_count']} local file(s) have been updated on the server.")
             click.echo("  Run: campfire download --stale")
+
+        # Check for client updates (non-blocking)
+        _check_client_version(base_url)
     except Exception as e:
         click.echo(f"✗ Sync failed: {e}", err=True)
         sys.exit(1)
