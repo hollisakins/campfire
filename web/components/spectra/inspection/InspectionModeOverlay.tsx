@@ -209,8 +209,8 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     if (saveResult.saved) {
       deleteCachedObject(currentSpectrum.object_id);
       // Show cross-match propagation hint if any were auto-secured
-      if (inspectionState.propagatedCount > 0) {
-        const n = inspectionState.propagatedCount;
+      if (saveResult.propagated && saveResult.propagated > 0) {
+        const n = saveResult.propagated;
         setAutoSaveHint(`${n} cross-match${n !== 1 ? 'es' : ''} auto-secured`);
         setTimeout(() => setAutoSaveHint(null), 3000);
       }
@@ -241,8 +241,8 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const handleNext = useCallback(() => handleNavigate(queue.next), [handleNavigate, queue.next]);
 
   const handleSave = useCallback(async () => {
-    const saved = await inspectionState.save();
-    if (saved) {
+    const result = await inspectionState.save();
+    if (result.success) {
       deleteCachedObject(currentSpectrum.object_id);
     }
   }, [inspectionState, deleteCachedObject, currentSpectrum.object_id]);

@@ -23,6 +23,7 @@ export interface InspectionInitialData {
 export interface SaveIfDirtyResult {
   saved: boolean;
   reason?: 'no-changes' | 'quality-zero' | 'save-failed' | 'already-saving';
+  propagated?: number;
 }
 
 export interface InspectionState {
@@ -42,7 +43,7 @@ export interface InspectionState {
   saveSuccess: boolean;
   propagatedCount: number;
   currentRedshift: number | null;
-  save: () => Promise<boolean>;
+  save: () => Promise<{ success: boolean; propagated: number }>;
   isDirty: () => boolean;
   saveIfDirty: () => Promise<SaveIfDirtyResult>;
   toggleFlag: (category: 'spectralFeatures' | 'objectFlags' | 'dqFlags', value: number) => void;
@@ -156,10 +157,10 @@ export function useInspectionState(
     : initialData.redshift_auto;
 
   // === Save: reads from refs, always sends current values ===
-  const save = useCallback(async (): Promise<boolean> => {
+  const save = useCallback(async (): Promise<{ success: boolean; propagated: number }> => {
     if (savingRef.current) {
       console.log('[Inspection] Save already in progress, skipping duplicate');
-      return true;
+      return { success: true, propagated: 0 };
     }
 
     savingRef.current = true;
@@ -202,14 +203,15 @@ export function useInspectionState(
         dq_flags: encodeBitmask(v.dqFlags, DQ_FLAGS),
       };
 
-      setPropagatedCount(data.propagated || 0);
+      const propagated = data.propagated || 0;
+      setPropagatedCount(propagated);
       setSaveSuccess(true);
       setSaveCount(c => c + 1); // Force hasChanges useMemo recomputation
       setTimeout(() => setSaveSuccess(false), 3000);
-      return true;
+      return { success: true, propagated };
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Failed to save changes');
-      return false;
+      return { success: false, propagated: 0 };
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -233,9 +235,9 @@ export function useInspectionState(
     }
 
     console.log('[Inspection] saveIfDirty: saving changes...');
-    const success = await save();
-    return success
-      ? { saved: true }
+    const result = await save();
+    return result.success
+      ? { saved: true, propagated: result.propagated }
       : { saved: false, reason: 'save-failed' };
   }, [isDirty, save]);
 
