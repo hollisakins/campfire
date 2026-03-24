@@ -79,7 +79,7 @@ def sync_metadata(
             pbar.n = fetched
             pbar.refresh()
 
-    all_objects = api.fetch_all_objects(
+    all_objects, server_total = api.fetch_all_objects(
         updated_since=updated_since,
         on_page_complete=callback,
     )
@@ -90,7 +90,15 @@ def sync_metadata(
     # 3. Upsert into SQLite
     obj_count, spec_count = store.upsert_objects(all_objects)
 
-    # 3a. Purge rows deleted on server (full sync only)
+    # 3a. Check if local count matches server total (detect deletions)
+    # If incremental and counts diverge, escalate to full sync
+    needs_full_sync = False
+    if incremental and server_total > 0:
+        local_total = store._conn.execute("SELECT COUNT(*) FROM objects").fetchone()[0]
+        if local_total != server_total:
+            needs_full_sync = True
+
+    # 3b. Purge rows deleted on server (full sync only)
     purge_result = None
     if not incremental:
         purge_result = store.purge_stale_rows(sync_timestamp)
@@ -111,6 +119,7 @@ def sync_metadata(
         "stale_count": len(stale),
         "stale_files": stale,
         "incremental": incremental,
+        "needs_full_sync": needs_full_sync,
     }
     if purge_result:
         result["purged_objects"] = purge_result["purged_objects"]

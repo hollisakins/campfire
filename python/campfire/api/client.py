@@ -212,7 +212,7 @@ class APIClient:
         observations: Optional[List[str]] = None,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
-    ) -> List[dict]:
+    ) -> Tuple[List[dict], int]:
         """Fetch all objects via the lightweight sync endpoint.
 
         Uses ``/sync/catalog`` which is optimized for bulk fetches
@@ -227,8 +227,15 @@ class APIClient:
             ISO 8601 timestamp. Only fetch objects updated after this time.
         on_page_complete : callable, optional
             Callback ``(fetched_so_far, total)`` called after each page.
+
+        Returns
+        -------
+        (objects, total_accessible_count)
+            The fetched objects and the total number of accessible objects
+            on the server (regardless of ``updated_since`` filter).
         """
         all_objects = []
+        total_accessible_count = 0
         offset = 0
         while True:
             self._session._ensure_valid_token()
@@ -246,12 +253,13 @@ class APIClient:
             all_objects.extend(objects)
             pagination = data.get("pagination", {})
             total = pagination.get("total", 0)
+            total_accessible_count = data.get("total_accessible_count", 0)
             offset += len(objects)
             if on_page_complete:
                 on_page_complete(offset, total)
             if offset >= total or not objects:
                 break
-        return all_objects
+        return all_objects, total_accessible_count
 
     def get_spectrum_data(self, object_id: str, grating: str) -> dict:
         """Fetch spectrum JSON data for plotting.

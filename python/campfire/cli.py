@@ -490,20 +490,52 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
     from .config import products_dir as _products_dir, meta_dir as _meta_dir
     from .sync import (
         download_observation,
+        sync_metadata,
         format_size,
     )
     from .api.session import create_download_session
 
-    # Check that catalog has been synced
-    db_path = _meta_dir() / "campfire.db"
-    if not db_path.exists():
-        click.echo("✗ No catalog data. Run: campfire sync")
+    base_url = base_url or resolve_base_url()
+
+    try:
+        api_session = APISession(base_url=base_url)
+        api = APIClient(api_session)
+    except AuthenticationError as e:
+        click.echo(f"✗ {e}")
         sys.exit(1)
 
     store = _open_store()
+
+    # Auto-sync catalog before download
+    try:
+        is_first_sync = store.get_max_updated_at() is None
+        if is_first_sync:
+            click.echo("Syncing catalog for the first time...")
+        else:
+            click.echo("Syncing catalog...")
+
+        result = sync_metadata(api, store, _meta_dir(), show_progress=is_first_sync)
+
+        if result.get("needs_full_sync"):
+            click.echo("  Local catalog out of sync with server, running full sync...")
+            result = sync_metadata(api, store, _meta_dir(), show_progress=True, full=True)
+
+        parts = []
+        if result["objects"]:
+            parts.append(f"{result['objects']} objects updated")
+        if result.get("purged_objects"):
+            parts.append(f"{result['purged_objects']} removed")
+        if parts:
+            click.echo(f"  {', '.join(parts)}")
+        else:
+            click.echo("  Up to date.")
+    except Exception as e:
+        click.echo(f"  ⚠ Sync failed: {e}", err=True)
+        click.echo("  Continuing with existing catalog data.")
+
     catalog_obs = store.get_synced_observations()
     if not catalog_obs:
-        click.echo("✗ No catalog data. Run: campfire sync")
+        click.echo("✗ No catalog data.")
         store.close()
         sys.exit(1)
 
@@ -545,16 +577,6 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         else:
             click.echo(output)
         return
-
-    base_url = base_url or resolve_base_url()
-
-    try:
-        api_session = APISession(base_url=base_url)
-        api = APIClient(api_session)
-    except AuthenticationError as e:
-        click.echo(f"✗ {e}")
-        store.close()
-        sys.exit(1)
 
     # Determine which observations to download
     if stale:

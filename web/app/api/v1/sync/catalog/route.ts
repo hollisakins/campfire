@@ -62,7 +62,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const result = data?.[0] || { objects: [], total_count: 0 };
+    const result = data?.[0] || { objects: [], total_count: 0, total_accessible_count: 0 };
 
     return NextResponse.json({
       data: result.objects || [],
@@ -71,6 +71,7 @@ export async function GET(request: NextRequest) {
         limit,
         offset,
       },
+      total_accessible_count: result.total_accessible_count || 0,
     });
   } catch (error) {
     console.error('Error in API /v1/sync/catalog:', error);
