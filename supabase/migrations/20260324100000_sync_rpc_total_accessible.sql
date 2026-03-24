@@ -5,6 +5,8 @@
 -- count to detect server-side deletions and trigger a full sync when the
 -- local database is out of sync.
 
+DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], TIMESTAMP WITHOUT TIME ZONE, INTEGER, INTEGER);
+
 CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMP WITHOUT TIME ZONE DEFAULT NULL,
