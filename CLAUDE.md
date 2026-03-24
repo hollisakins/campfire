@@ -62,6 +62,8 @@ Main RPC function: `get_filtered_object_ids` — server-side filtering, sorting,
 
 Migrations tracked in `supabase/migrations/`. Test locally with `supabase db reset`, push with `supabase db push`.
 
+**Naming migrations**: Always check existing files in `supabase/migrations/` before naming a new one. Timestamps must sort after the latest existing migration to avoid conflicts with already-applied remote migrations. Use the pattern `YYYYMMDDHHMMSS_description.sql` and pick a timestamp greater than the last file's.
+
 ### Local Supabase
 
 Seed generator: `python scripts/generate_seed.py` → `supabase/seed.sql` → `supabase db reset`
@@ -79,7 +81,7 @@ Test users: `admin@campfire.dev`, `user@campfire.dev`, `viewer@campfire.dev` (pa
 
 **Required before merging to main:**
 ```bash
-cd web && npm run build
+cd web && npm run build && cd ..
 ```
 
 ### Infrastructure

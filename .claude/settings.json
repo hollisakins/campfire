@@ -1,37 +1,26 @@
 {
   "permissions": {
     "allow": [
+      "Bash(*)",
       "WebSearch",
-      "WebFetch(domain:github.com)",
-      "Bash(ls:*)",
-      "Bash(mv:*)",
-      "Bash(cat:*)",
-      "Bash(mkdir:*)",
-      "Bash(tree:*)",
-      "Bash(find:*)",
-      "Bash(grep:*)",
-      "Bash(head:*)",
-      "Bash(du:*)",
-      "Bash(wc:*)",
-      "Bash(export:*)",
-      "Bash(npm install:*)",
-      "Bash(npm run build:*)",
-      "Bash(gh:*)",
-      "Bash(git:*)",
-      "Bash(python:*)",
-      "Bash(pytest:*)",
-      "Bash(conda run:*)",
-      "Bash(conda env:*)"
+      "WebFetch(domain:github.com)"
     ],
     "deny": [
-      "Bash(rm:*)",
-      "Bash(pip install:*)"
+      "Bash(rm -rf:*)",
+      "Bash(sudo:*)",
+      "Bash(chmod:*)",
+      "Bash(chown:*)"
     ],
-    "ask": []
+    "ask": [
+      "Bash(rm:*)"
+    ]
   },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "supabase"
   ],
-  "spinnerTipsEnabled": false
+  "spinnerTipsEnabled": false,
+  "attribution": {
+    "pr": "Generated with Claude Code"
+  }
 }

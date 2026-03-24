@@ -38,6 +38,7 @@ from campfire_deploy.supabase import (
     deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
     get_supabase_client,
+    propagate_crossmatches,
     refresh_filter_options,
     refresh_programs_overview,
     update_has_sed_plot,
@@ -263,12 +264,21 @@ def deploy_observation(
 
         # Supabase upserts
         print("Upserting objects...")
-        n_obj = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
+        n_obj, new_object_ids = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
         print(f"  {n_obj} objects")
 
         print("Upserting spectra...")
         n_spec = batch_upsert_spectra(sb, spectra)
         print(f"  {n_spec} spectra")
+
+        # Cross-match propagation for new objects
+        if new_object_ids:
+            print("Checking cross-matches...")
+            n_propagated = propagate_crossmatches(sb, new_object_ids)
+            if n_propagated:
+                print(f"  Auto-secured {n_propagated} objects via cross-match")
+            else:
+                print("  No cross-matches found")
 
         print()
         refresh_filter_options(sb)

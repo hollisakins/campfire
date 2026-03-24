@@ -204,7 +204,9 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
         {inspection.saveSuccess && (
           <div className="mb-4 p-3 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded-lg flex items-start gap-2">
             <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-green-800 dark:text-green-400">Changes saved successfully</p>
+            <p className="text-sm text-green-800 dark:text-green-400">
+              Changes saved successfully{inspection.propagatedCount > 0 && ` · ${inspection.propagatedCount} cross-match${inspection.propagatedCount !== 1 ? 'es' : ''} auto-secured`}
+            </p>
           </div>
         )}
 

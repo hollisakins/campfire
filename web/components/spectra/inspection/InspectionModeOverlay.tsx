@@ -208,11 +208,14 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     const saveResult = await inspectionState.saveIfDirty();
     if (saveResult.saved) {
       deleteCachedObject(currentSpectrum.object_id);
+      // Show cross-match propagation hint if any were auto-secured
+      if (saveResult.propagated && saveResult.propagated > 0) {
+        const n = saveResult.propagated;
+        setAutoSaveHint(`${n} cross-match${n !== 1 ? 'es' : ''} auto-secured`);
+        setTimeout(() => setAutoSaveHint(null), 3000);
+      }
     }
-    if (saveResult.reason === 'quality-zero') {
-      setAutoSaveHint('Set quality to auto-save');
-      setTimeout(() => setAutoSaveHint(null), 2000);
-    }
+    // quality-zero skip is now communicated by greyed-out flags inline
 
     // 2. Update queue position
     queue.goTo(objectId);
@@ -238,8 +241,8 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const handleNext = useCallback(() => handleNavigate(queue.next), [handleNavigate, queue.next]);
 
   const handleSave = useCallback(async () => {
-    const saved = await inspectionState.save();
-    if (saved) {
+    const result = await inspectionState.save();
+    if (result.success) {
       deleteCachedObject(currentSpectrum.object_id);
     }
   }, [inspectionState, deleteCachedObject, currentSpectrum.object_id]);
@@ -477,7 +480,11 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
       {/* Auto-save hint */}
       {autoSaveHint && (
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 text-xs rounded-lg shadow">
+        <div className={`absolute top-14 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 text-xs rounded-lg shadow-lg ${
+          autoSaveHint.includes('auto-secured')
+            ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200'
+            : 'bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200'
+        }`}>
           {autoSaveHint}
         </div>
       )}

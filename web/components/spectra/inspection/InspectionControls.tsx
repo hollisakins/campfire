@@ -72,7 +72,9 @@ export const InspectionControls = forwardRef<HTMLInputElement, InspectionControl
         {state.saveSuccess && (
           <div className="mb-2 p-2 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded flex items-start gap-2">
             <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
-            <p className="text-xs text-green-800 dark:text-green-400">Saved</p>
+            <p className="text-xs text-green-800 dark:text-green-400">
+              Saved{state.propagatedCount > 0 && ` · ${state.propagatedCount} cross-match${state.propagatedCount !== 1 ? 'es' : ''} auto-secured`}
+            </p>
           </div>
         )}
 
@@ -153,6 +155,9 @@ export const InspectionControls = forwardRef<HTMLInputElement, InspectionControl
         </div>
 
         {/* Row 2: Flag pills */}
+        {canEdit && state.redshiftQuality === 0 && (
+          <p className="text-[10px] text-amber-600 dark:text-amber-400 mb-1">Set quality to enable flags</p>
+        )}
         <div className="flex items-start gap-4 mb-2 flex-wrap">
           {/* Spectral Features */}
           <div className="flex items-center gap-1 flex-wrap">
@@ -162,7 +167,7 @@ export const InspectionControls = forwardRef<HTMLInputElement, InspectionControl
                 key={f.key}
                 flag={f}
                 active={state.spectralFeatures.includes(f.value)}
-                disabled={!canEdit}
+                disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('spectralFeatures', f.value)}
               />
             ))}
@@ -176,7 +181,7 @@ export const InspectionControls = forwardRef<HTMLInputElement, InspectionControl
                 key={f.key}
                 flag={f}
                 active={state.objectFlags.includes(f.value)}
-                disabled={!canEdit}
+                disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('objectFlags', f.value)}
               />
             ))}
@@ -190,7 +195,7 @@ export const InspectionControls = forwardRef<HTMLInputElement, InspectionControl
                 key={f.key}
                 flag={f}
                 active={state.dqFlags.includes(f.value)}
-                disabled={!canEdit}
+                disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('dqFlags', f.value)}
               />
             ))}
