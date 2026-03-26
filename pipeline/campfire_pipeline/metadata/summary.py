@@ -106,27 +106,62 @@ def _lookup_chi2_at_z(z_grid, chi2_grid, z_cand, dv_tolerance):
     return None
 
 
+def _filter_informative(chi2_by_grating, min_chi2_range_per_pix):
+    """
+    Exclude chi2 curves that are too flat to be informative.
+
+    A curve is informative if (chi2_max - chi2_min) / n_pix >= threshold.
+    Flat chi2 surfaces have no constraining power and generate spurious
+    candidate peaks that pollute the consensus.
+    """
+    result = {}
+    for grating, data in chi2_by_grating.items():
+        n_pix = data.get('n_pix', 0)
+        if n_pix <= 0:
+            continue
+        chi2_range = float(np.max(data['chi2']) - np.min(data['chi2']))
+        if chi2_range / n_pix >= min_chi2_range_per_pix:
+            result[grating] = data
+    return result
+
+
+def _scalar_fallback(scalar_by_grating):
+    """Pick best-ranked grating's redshift from scalar metadata."""
+    if not scalar_by_grating:
+        return None
+    best = min(scalar_by_grating,
+               key=lambda g: _grating_sort_key(g, scalar_by_grating[g]))
+    return scalar_by_grating[best].get('redshift')
+
+
 def determine_best_redshift(
     chi2_by_grating: dict[str, dict] | None = None,
     scalar_by_grating: dict[str, dict] | None = None,
     delta_chi2_peak: float = 30.0,
     dv_tolerance: float = 1000.0,
+    dz_prism_confirm: float = 0.1,
+    min_chi2_range_per_pix: float = 0.05,
 ) -> float | None:
     """
-    Choose the best redshift using chi2-informed multi-grating consensus.
+    Choose the best redshift using a PRISM-priority hierarchy.
 
-    When chi2 curves are available for multiple gratings, finds candidate
-    peaks in each grating's chi2(z) curve and scores them by cross-grating
-    support (summed delta-chi2 at matching grid points).
+    PRISM covers 3x the wavelength range of any single grating and is the
+    most reliable for redshift identification. Gratings provide precision
+    refinement when they agree with PRISM.
 
-    Falls back to scalar decision (best-ranked grating's zbest) for single
-    gratings or when chi2 curves are unavailable.
+    Hierarchy:
+    1. PRISM only → PRISM zbest
+    2. PRISM + 1 grating → grating zbest if within dz_prism_confirm, else PRISM
+    3. PRISM + N gratings → grating consensus if within dz_prism_confirm, else PRISM
+    4. No PRISM, 2+ gratings → grating consensus (with flat-curve gate)
+    5. Single grating → that grating's zbest
+    6. No chi2 data → scalar fallback
 
     Parameters
     ----------
     chi2_by_grating : dict, optional
         Mapping grating name -> dict with 'z', 'chi2' (ndarrays),
-        'chi2_min', 'zbest' keys (from read_zfit_chi2).
+        'chi2_min', 'zbest', 'n_pix' keys.
     scalar_by_grating : dict, optional
         Mapping grating name -> dict with 'redshift', 'exposure_time',
         'signal_to_noise' keys (legacy scalar data for fallback).
@@ -134,30 +169,62 @@ def determine_best_redshift(
         Maximum delta-chi2 above global minimum for candidate peaks.
     dv_tolerance : float
         Maximum velocity offset (km/s) for nearest grid-point lookup.
+    dz_prism_confirm : float
+        Maximum |dz| for a grating result to confirm PRISM.
+    min_chi2_range_per_pix : float
+        Minimum (chi2_max - chi2_min) / n_pix for a curve to participate
+        in grating-only consensus. Filters flat/uninformative curves.
 
     Returns
     -------
     float or None
         Best consensus redshift, or None if no valid data.
     """
-    # Try consensus with chi2 curves
-    if chi2_by_grating and len(chi2_by_grating) > 1:
-        result = _consensus_redshift(chi2_by_grating, delta_chi2_peak, dv_tolerance)
-        if result is not None:
-            return result
+    if not chi2_by_grating:
+        return _scalar_fallback(scalar_by_grating)
 
-    # Single grating with chi2 data: return its zbest directly
-    if chi2_by_grating and len(chi2_by_grating) == 1:
-        only = next(iter(chi2_by_grating.values()))
-        return only['zbest']
+    # Partition into PRISM vs gratings
+    prism_data = chi2_by_grating.get('PRISM')
+    grating_chi2 = {k: v for k, v in chi2_by_grating.items() if k != 'PRISM'}
+    has_prism = prism_data is not None
+    n_gratings = len(grating_chi2)
 
-    # Scalar fallback: pick best-ranked grating's redshift
-    if scalar_by_grating:
-        best = min(scalar_by_grating,
-                   key=lambda g: _grating_sort_key(g, scalar_by_grating[g]))
-        return scalar_by_grating[best].get('redshift')
+    # Case 1: PRISM only
+    if has_prism and n_gratings == 0:
+        return prism_data['zbest']
 
-    return None
+    # Case 5: single grating, no PRISM
+    if not has_prism and n_gratings == 1:
+        return next(iter(grating_chi2.values()))['zbest']
+
+    # Case 2: PRISM + 1 grating
+    if has_prism and n_gratings == 1:
+        grating_zbest = next(iter(grating_chi2.values()))['zbest']
+        if abs(grating_zbest - prism_data['zbest']) <= dz_prism_confirm:
+            return grating_zbest
+        return prism_data['zbest']
+
+    # Case 3: PRISM + N gratings
+    if has_prism and n_gratings >= 2:
+        consensus_z = _consensus_redshift(grating_chi2, delta_chi2_peak, dv_tolerance)
+        if consensus_z is not None and abs(consensus_z - prism_data['zbest']) <= dz_prism_confirm:
+            return consensus_z
+        return prism_data['zbest']
+
+    # Case 4: no PRISM, multiple gratings
+    if n_gratings >= 2:
+        informative = _filter_informative(grating_chi2, min_chi2_range_per_pix)
+        if len(informative) >= 2:
+            result = _consensus_redshift(informative, delta_chi2_peak, dv_tolerance)
+            if result is not None:
+                return result
+        # Fall back to best single grating
+        pool = informative if informative else grating_chi2
+        best_g = min(pool, key=lambda g: GRATING_PRIORITY.get(g, 99))
+        return pool[best_g]['zbest']
+
+    # Case 6: scalar fallback
+    return _scalar_fallback(scalar_by_grating)
 
 
 def _consensus_redshift(chi2_by_grating, delta_chi2_peak, dv_tolerance):
@@ -257,6 +324,8 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
     cc = consensus_config or {}
     delta_chi2_peak = cc.get('delta_chi2_peak', 30.0)
     dv_tolerance = cc.get('dv_tolerance', 1000.0)
+    dz_prism_confirm = cc.get('dz_prism_confirm', 0.1)
+    min_chi2_range_per_pix = cc.get('min_chi2_range_per_pix', 0.05)
 
     # ------------------------------------------------------------------
     # Phase 1: read per-grating metadata + zfit data
@@ -320,6 +389,8 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
             scalar_by_grating=scalar_by_source.get(source_id),
             delta_chi2_peak=delta_chi2_peak,
             dv_tolerance=dv_tolerance,
+            dz_prism_confirm=dz_prism_confirm,
+            min_chi2_range_per_pix=min_chi2_range_per_pix,
         )
 
     # Inject best redshift into each row
