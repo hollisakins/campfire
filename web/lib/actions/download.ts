@@ -1,7 +1,7 @@
 'use server';
 
 import { getSpectra } from './spectra';
-import type { SortColumn, SortDirection } from './spectra-types';
+import type { SortColumn, SortDirection, ViewMode } from './spectra-types';
 import type { FilterOptions } from './filter-params';
 import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
@@ -45,6 +45,27 @@ interface CsvRow {
   dq_flags: number;
 }
 
+interface SpectraCsvRow {
+  object_id: string;
+  grating: string;
+  field: string;
+  ra: number;
+  dec: number;
+  redshift: number | null;
+  redshift_quality: number;
+  signal_to_noise: number | null;
+  exposure_time: number | null;
+  fits_path: string;
+  program_slug: string;
+  program_name: string | null;
+  last_inspected_at: string | null;
+  last_inspected_by: string | null;
+  distance: number | null;
+  spectral_features: number;
+  object_flags: number;
+  dq_flags: number;
+}
+
 /**
  * Generate a CSV file from filtered spectra results.
  * Uses a lightweight RPC that returns flat rows — no JSONB object building
@@ -54,7 +75,8 @@ interface CsvRow {
 export async function generateCSV(
   filters: FilterOptions,
   sortColumn: SortColumn = 'object_id',
-  sortDirection: SortDirection = 'asc'
+  sortDirection: SortDirection = 'asc',
+  viewMode: ViewMode = 'objects'
 ): Promise<{ csv: string | null; error: string | null }> {
   try {
     const supabase = await createClient();
@@ -90,8 +112,34 @@ export async function generateCSV(
       p_sort_direction: sortDirection,
     };
 
-    // Call the lightweight CSV export RPC (flat rows, no JSONB).
-    // Paginate to work around PostgREST's server-side max_rows cap (5000).
+    const includeDistance = filters.coordinate_search !== null;
+
+    if (viewMode === 'spectra') {
+      // Spectra mode: one row per (object_id, grating)
+      const { data: rows, error: rpcError } = await paginateRpc<SpectraCsvRow>(
+        supabase, 'get_csv_export_spectra', rpcParams,
+      );
+
+      if (rpcError) {
+        console.error('Error fetching spectra CSV data:', rpcError);
+        return { csv: null, error: rpcError.message };
+      }
+      const csv = spectraRowsToCsv(rows, includeDistance);
+
+      const objectIds = [...new Set(rows.map(r => r.object_id))];
+      trackDownload({
+        userId: user.id,
+        downloadType: 'csv',
+        objectIds,
+        objectCount: objectIds.length,
+        fileCount: 1,
+        filterSnapshot: filters as unknown as Record<string, unknown>,
+      });
+
+      return { csv, error: null };
+    }
+
+    // Objects mode: one row per object (existing behavior)
     const { data: rows, error: rpcError } = await paginateRpc<CsvRow>(
       supabase, 'get_csv_export', rpcParams,
     );
@@ -100,7 +148,6 @@ export async function generateCSV(
       console.error('Error fetching CSV data:', rpcError);
       return { csv: null, error: rpcError.message };
     }
-    const includeDistance = filters.coordinate_search !== null;
     const csv = rowsToCsv(rows, includeDistance);
 
     // Track CSV download (fire-and-forget)
@@ -175,6 +222,70 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
       row.max_snr != null ? row.max_snr.toFixed(2) : '',
       row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
       row.num_gratings ?? 0,
+      escapeCsvValue(row.program_slug),
+      escapeCsvValue(row.program_name || ''),
+      escapeCsvValue(row.last_inspected_at || ''),
+      escapeCsvValue(row.last_inspected_by || ''),
+      ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
+      ...expandBitmask(row.object_flags, OBJECT_FLAGS),
+      ...expandBitmask(row.dq_flags, DQ_FLAGS),
+    );
+
+    csvRows.push(values.join(','));
+  }
+
+  return csvRows.join('\n');
+}
+
+/**
+ * Convert spectra-mode CSV export rows to CSV string (one row per spectrum)
+ */
+function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): string {
+  const columns = [
+    'object_id',
+    'grating',
+    'field',
+    'ra',
+    'dec',
+    'redshift',
+    'redshift_quality',
+    'signal_to_noise',
+    'exposure_time',
+    'fits_path',
+    'program_slug',
+    'program_name',
+    'last_inspected_at',
+    'last_inspected_by',
+    ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
+    ...OBJECT_FLAGS.map(f => `flag_${f.key}`),
+    ...DQ_FLAGS.map(f => `dq_${f.key}`),
+  ];
+
+  if (includeDistance) {
+    columns.splice(5, 0, 'distance_degrees');
+  }
+
+  const csvRows: string[] = [columns.join(',')];
+
+  for (const row of rows) {
+    const values: (string | number)[] = [
+      escapeCsvValue(row.object_id),
+      escapeCsvValue(row.grating),
+      escapeCsvValue(row.field),
+      row.ra.toFixed(8),
+      row.dec.toFixed(8),
+    ];
+
+    if (includeDistance) {
+      values.push(row.distance != null ? row.distance.toFixed(8) : '');
+    }
+
+    values.push(
+      row.redshift != null ? row.redshift.toFixed(6) : '',
+      row.redshift_quality,
+      row.signal_to_noise != null ? row.signal_to_noise.toFixed(2) : '',
+      row.exposure_time != null ? row.exposure_time.toFixed(0) : '',
+      escapeCsvValue(row.fits_path),
       escapeCsvValue(row.program_slug),
       escapeCsvValue(row.program_name || ''),
       escapeCsvValue(row.last_inspected_at || ''),

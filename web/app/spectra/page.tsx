@@ -6,13 +6,15 @@ import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { SpectraTable } from '@/components/spectra/SpectraTable';
 import { SpectraFilterBar, AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
-import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
+import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
+import { isValidSortColumn } from '@/lib/actions/spectra-types';
 import { LogIn, Loader2, Info, KeyRound } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import {
   parseFiltersFromURL,
   parsePaginationFromURL,
   parseSortingFromURL,
+  parseViewModeFromURL,
   filtersToURLParams,
 } from '@/lib/utils/url-params';
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
@@ -29,12 +31,14 @@ function SpectraPageContent() {
   // useTransition for non-blocking state updates
   const [isPending, startTransition] = useTransition();
 
-  // Parse filters, pagination, and sorting from URL on initial load
+  // Parse filters, pagination, view mode, and sorting from URL on initial load
+  const initialViewMode = useMemo(() => parseViewModeFromURL(searchParams), [searchParams]);
   const initialFilters = useMemo(() => parseFiltersFromURL(searchParams), [searchParams]);
   const initialPagination = useMemo(() => parsePaginationFromURL(searchParams), [searchParams]);
-  const initialSorting = useMemo(() => parseSortingFromURL(searchParams), [searchParams]);
+  const initialSorting = useMemo(() => parseSortingFromURL(searchParams, initialViewMode), [searchParams, initialViewMode]);
 
   // UI state (kept local)
+  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode);
   const [filters, setFilters] = useState<AdvancedFilterOptions>(initialFilters);
   const [page, setPage] = useState(initialPagination.page);
   const [pageSize, setPageSize] = useState(initialPagination.pageSize);
@@ -60,6 +64,7 @@ function SpectraPageContent() {
     pageSize,
     sortColumn,
     sortDirection,
+    viewMode,
     enabled: !authLoading && !!user,
   });
 
@@ -91,14 +96,14 @@ function SpectraPageContent() {
   // Update URL when debounced filters, pagination, or sorting change
   // Using debouncedFilters prevents URL updates on every keystroke, improving performance
   useEffect(() => {
-    const params = filtersToURLParams(debouncedFilters, page, pageSize, sortColumn, sortDirection);
+    const params = filtersToURLParams(debouncedFilters, page, pageSize, sortColumn, sortDirection, viewMode);
     const newSearch = params.toString();
     const currentSearch = searchParams.toString();
 
     if (newSearch !== currentSearch) {
       router.replace(`${pathname}${newSearch ? `?${newSearch}` : ''}`, { scroll: false });
     }
-  }, [debouncedFilters, page, pageSize, sortColumn, sortDirection, pathname, router, searchParams]);
+  }, [debouncedFilters, page, pageSize, sortColumn, sortDirection, viewMode, pathname, router, searchParams]);
 
   // Handle filter changes with useTransition for non-blocking updates
   const handleFilterChange = (newFilters: AdvancedFilterOptions) => {
@@ -132,6 +137,19 @@ function SpectraPageContent() {
     // since the filter params haven't changed, only sort params
     setSortColumn(column);
     setSortDirection(direction);
+  };
+
+  // Handle view mode change
+  const handleViewModeChange = (newMode: ViewMode) => {
+    startTransition(() => {
+      setViewMode(newMode);
+      setPage(1);
+      // Reset sort column if invalid for the new mode
+      if (!isValidSortColumn(sortColumn, newMode)) {
+        setSortColumn('object_id');
+        setSortDirection('asc');
+      }
+    });
   };
 
   // Show login prompt if not authenticated
@@ -234,8 +252,10 @@ function SpectraPageContent() {
           sortColumn={sortColumn}
           sortDirection={sortDirection}
           onSortChange={handleSortChange}
+          viewMode={viewMode}
+          onViewModeChange={handleViewModeChange}
           hasCoordinateSearch={filters.coordinate_search !== null}
-          currentFilterParams={filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection)}
+          currentFilterParams={filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection, viewMode)}
           loading={loading}
           error={error}
           filters={filters}

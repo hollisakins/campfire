@@ -26,8 +26,8 @@ export interface PaginatedSpectraResult {
 }
 
 // Re-export types from separate file (can't define non-async exports in "use server" file)
-export type { SortDirection, SortColumn } from './spectra-types';
-import type { SortColumn, SortDirection } from './spectra-types';
+export type { SortDirection, SortColumn, ViewMode } from './spectra-types';
+import type { SortColumn, SortDirection, ViewMode } from './spectra-types';
 
 export interface FilterOptionsResult {
   programs: Program[];
@@ -52,7 +52,8 @@ export async function getSpectra(
   page: number = 1,
   pageSize: number = 50,
   sortColumn: SortColumn = 'object_id',
-  sortDirection: SortDirection = 'asc'
+  sortDirection: SortDirection = 'asc',
+  viewMode: ViewMode = 'objects'
 ): Promise<PaginatedSpectraResult> {
   const supabase = await createClient();
 
@@ -105,8 +106,13 @@ export async function getSpectra(
 
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
+    // Choose RPC based on view mode
+    const rpcName = viewMode === 'spectra'
+      ? 'get_filtered_spectra_paginated'
+      : 'get_filtered_objects_paginated';
+
     // Call the RPC function for server-side filtering, sorting, and pagination
-    const { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
+    const { data, error } = await supabase.rpc(rpcName, {
       ...rpcParams,
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,

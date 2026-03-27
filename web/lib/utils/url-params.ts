@@ -4,8 +4,8 @@
  */
 
 import type { AdvancedFilterOptions, SearchScope, FilterMode } from '@/components/spectra/SpectraFilterBar';
-import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
-import { VALID_SORT_COLUMNS } from '@/lib/actions/spectra-types';
+import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
+import { VALID_SORT_COLUMNS, isValidSortColumn } from '@/lib/actions/spectra-types';
 
 // Valid search scope values
 const VALID_SEARCH_SCOPES: SearchScope[] = ['object_id', 'my_comments', 'all_comments'];
@@ -106,13 +106,24 @@ export function parsePaginationFromURL(searchParams: URLSearchParams): { page: n
 }
 
 /**
- * Parse sorting parameters from URL search parameters
+ * Parse view mode from URL search parameters
  */
-export function parseSortingFromURL(searchParams: URLSearchParams): { sortColumn: SortColumn; sortDirection: SortDirection } {
+export function parseViewModeFromURL(searchParams: URLSearchParams): ViewMode {
+  const view = searchParams.get('view');
+  if (view === 'spectra') return 'spectra';
+  return 'objects';
+}
+
+/**
+ * Parse sorting parameters from URL search parameters.
+ * Validates the sort column against the current view mode.
+ */
+export function parseSortingFromURL(searchParams: URLSearchParams, viewMode: ViewMode = 'objects'): { sortColumn: SortColumn; sortDirection: SortDirection } {
   const sort = searchParams.get('sort') || 'object_id';
   const dir = searchParams.get('dir') || 'asc';
+  const isValid = VALID_SORT_COLUMNS.includes(sort as SortColumn) && isValidSortColumn(sort, viewMode);
   return {
-    sortColumn: VALID_SORT_COLUMNS.includes(sort as SortColumn) ? (sort as SortColumn) : 'object_id',
+    sortColumn: isValid ? (sort as SortColumn) : 'object_id',
     sortDirection: dir === 'desc' ? 'desc' : 'asc',
   };
 }
@@ -125,7 +136,8 @@ export function filtersToURLParams(
   page: number = 1,
   pageSize: number = DEFAULT_PAGE_SIZE,
   sortColumn: SortColumn = 'object_id',
-  sortDirection: SortDirection = 'asc'
+  sortDirection: SortDirection = 'asc',
+  viewMode: ViewMode = 'objects'
 ): URLSearchParams {
   const params = new URLSearchParams();
 
@@ -206,6 +218,10 @@ export function filtersToURLParams(
   }
   if (pageSize !== DEFAULT_PAGE_SIZE) {
     params.set('pageSize', pageSize.toString());
+  }
+  // Only include view mode when non-default
+  if (viewMode !== 'objects') {
+    params.set('view', viewMode);
   }
   // Only include sorting params when non-default
   if (sortColumn !== 'object_id') {

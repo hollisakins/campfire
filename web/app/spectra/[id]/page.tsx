@@ -165,7 +165,11 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
       </div>
 
       {/* Main Content with Tabs */}
-      <Tabs defaultValue={spectrum.spectra[0]?.grating.toLowerCase() || 'prism'}>
+      <Tabs defaultValue={(() => {
+        const gratingParam = typeof searchParamsObj.grating === 'string' ? searchParamsObj.grating.toLowerCase() : null;
+        const hasGrating = gratingParam && spectrum.spectra.some(s => s.grating.toLowerCase() === gratingParam);
+        return hasGrating ? gratingParam : (spectrum.spectra[0]?.grating.toLowerCase() || 'prism');
+      })()}>
         {/* Header and RGB Image Side-by-Side */}
         <div className="flex gap-6 items-start mb-6">
           {/* Left Column: Header and Tab Navigation (~80% width) */}
