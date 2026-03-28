@@ -73,14 +73,14 @@ def create_impersonation_token(jwt_secret: str, user_uuid: str) -> str:
 
 
 def fetch_objects_for_program(supabase: Client, program_id: int) -> list[dict]:
-    """Fetch all objects for a given program ID, paginating past the 1000-row default."""
+    """Fetch all targets for a given program ID, paginating past the 1000-row default."""
     PAGE_SIZE = 1000
     all_data = []
     offset = 0
     while True:
         result = (
-            supabase.table("objects")
-            .select("id, object_id, ra, dec, redshift_auto, redshift_inspected, redshift_quality")
+            supabase.table("targets")
+            .select("id, target_id, ra, dec, redshift_auto, redshift_inspected, redshift_quality")
             .eq("program_id", program_id)
             .range(offset, offset + PAGE_SIZE - 1)
             .execute()
@@ -183,7 +183,7 @@ def process_inspections(
         stats["matched"] += len(matches)
 
         for obj in matches:
-            obj_id = obj["object_id"]
+            obj_id = obj["target_id"]
 
             # Step 3: Skip if already manually inspected (quality > 0 means someone reviewed it)
             if obj["redshift_quality"] > 0:
@@ -230,7 +230,7 @@ def process_inspections(
                     "last_inspected_at": now,
                     "last_inspected_by": inspector_uuid,
                 }
-                supabase.table("objects").update(update_data).eq("id", obj["id"]).execute()
+                supabase.table("targets").update(update_data).eq("id", obj["id"]).execute()
 
     # Print summary
     print("\n--- Summary ---")

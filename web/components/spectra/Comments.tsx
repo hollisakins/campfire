@@ -9,10 +9,10 @@ import { CommentWithUser } from '@/lib/types';
 import { MessageSquare, Send } from 'lucide-react';
 
 interface CommentsProps {
-  objectId: number;
+  targetId: number;
 }
 
-export const Comments: React.FC<CommentsProps> = ({ objectId }) => {
+export const Comments: React.FC<CommentsProps> = ({ targetId }) => {
   const { user, userProfile } = useAuth();
   const supabase = createClient();
 
@@ -24,7 +24,7 @@ export const Comments: React.FC<CommentsProps> = ({ objectId }) => {
 
   useEffect(() => {
     fetchComments();
-  }, [objectId]);
+  }, [targetId]);
 
   const fetchComments = async () => {
     try {
@@ -39,13 +39,13 @@ export const Comments: React.FC<CommentsProps> = ({ objectId }) => {
         return;
       }
 
-      console.log('Fetching comments for object_id:', objectId);
+      console.log('Fetching comments for target_id:', targetId);
 
       // Fetch comments
       const { data: commentsData, error: commentsError } = await supabase
         .from('comments')
         .select('*')
-        .eq('object_id', objectId)
+        .eq('target_id', targetId)
         .eq('is_deleted', false)
         .order('created_at', { ascending: true });
 
@@ -125,7 +125,7 @@ export const Comments: React.FC<CommentsProps> = ({ objectId }) => {
       const { error } = await supabase
         .from('comments')
         .insert({
-          object_id: objectId,
+          target_id: targetId,
           user_id: user.id,
           content: newComment.trim(),
         });

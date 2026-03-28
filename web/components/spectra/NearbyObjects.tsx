@@ -3,24 +3,24 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getSpectra } from '@/lib/actions/spectra';
-import { SpectrumObject, QUALITY_LABELS } from '@/lib/types';
+import { SpectrumTarget, QUALITY_LABELS } from '@/lib/types';
 import { formatDistance } from '@/lib/utils/coordinate-parser';
 import { Card } from '@/components/ui/Card';
 
 interface NearbyObjectsProps {
   ra: number;
   dec: number;
-  currentObjectId: string;
+  currentTargetId: string;
 }
 
 export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
   ra,
   dec,
-  currentObjectId,
+  currentTargetId,
 }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [nearbyObjects, setNearbyObjects] = useState<SpectrumObject[]>([]);
+  const [nearbyObjects, setNearbyObjects] = useState<SpectrumTarget[]>([]);
 
   useEffect(() => {
     const fetchNearbyObjects = async () => {
@@ -39,7 +39,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
           },
           1, // page
           10, // pageSize (limit to 10 results)
-          'object_id', // sortColumn (will be overridden by distance sorting in RPC)
+          'target_id', // sortColumn (will be overridden by distance sorting in RPC)
           'asc' // sortDirection
         );
 
@@ -48,7 +48,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
         } else {
           // Filter out the current object
           const filtered = result.spectra.filter(
-            (obj) => obj.object_id !== currentObjectId
+            (obj) => obj.target_id !== currentTargetId
           );
           setNearbyObjects(filtered);
         }
@@ -61,7 +61,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
     };
 
     fetchNearbyObjects();
-  }, [ra, dec, currentObjectId]);
+  }, [ra, dec, currentTargetId]);
 
   // Helper to get quality info
   const getQualityInfo = (quality: number) => {
@@ -120,7 +120,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
             <thead>
               <tr className="border-b border-border dark:border-slate-700">
                 <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary dark:text-slate-400">
-                  Object ID
+                  Target ID
                 </th>
                 <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary dark:text-slate-400">
                   Distance
@@ -149,10 +149,10 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
                   >
                     <td className="py-3 px-4">
                       <Link
-                        href={`/spectra/${encodeURIComponent(obj.object_id)}`}
+                        href={`/spectra/${encodeURIComponent(obj.target_id)}`}
                         className="text-sm font-mono text-primary hover:underline"
                       >
-                        {obj.object_id}
+                        {obj.target_id}
                       </Link>
                     </td>
                     <td className="py-3 px-4">

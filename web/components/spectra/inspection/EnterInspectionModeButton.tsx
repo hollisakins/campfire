@@ -6,18 +6,18 @@ import { Maximize2 } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
 interface EnterInspectionModeButtonProps {
-  objectId: string;
+  targetId: string;
   filterStr: string;
 }
 
-export const EnterInspectionModeButton: React.FC<EnterInspectionModeButtonProps> = ({ objectId, filterStr }) => {
+export const EnterInspectionModeButton: React.FC<EnterInspectionModeButtonProps> = ({ targetId, filterStr }) => {
   const { user, userProfile } = useAuth();
   const canInspect = user && userProfile?.can_comment;
 
   if (!canInspect) return null;
 
   const params = new URLSearchParams(filterStr);
-  params.set('start', objectId);
+  params.set('start', targetId);
   const href = `/inspect?${params.toString()}`;
 
   return (

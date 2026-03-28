@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { getSpectra } from '@/lib/actions/spectra';
 import type { FilterOptions, PaginatedSpectraResult } from '@/lib/actions/spectra';
-import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
+import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
 
 export interface UseSpectraQueryParams {
   filters: Partial<FilterOptions>;
@@ -12,6 +12,7 @@ export interface UseSpectraQueryParams {
   pageSize: number;
   sortColumn: SortColumn;
   sortDirection: SortDirection;
+  viewMode?: ViewMode;
   enabled?: boolean;
 }
 
@@ -28,12 +29,12 @@ function scheduleIdleWork(callback: () => void): () => void {
 }
 
 export function useSpectraQuery(params: UseSpectraQueryParams) {
-  const { filters, page, pageSize, sortColumn, sortDirection, enabled = true } = params;
+  const { filters, page, pageSize, sortColumn, sortDirection, viewMode = 'targets', enabled = true } = params;
   const queryClient = useQueryClient();
 
   const query = useQuery<PaginatedSpectraResult>({
-    queryKey: ['spectra', { filters, page, pageSize, sortColumn, sortDirection }],
-    queryFn: () => getSpectra(filters, page, pageSize, sortColumn, sortDirection),
+    queryKey: ['spectra', { filters, page, pageSize, sortColumn, sortDirection, viewMode }],
+    queryFn: () => getSpectra(filters, page, pageSize, sortColumn, sortDirection, viewMode),
     enabled,
     placeholderData: keepPreviousData,
   });
@@ -53,8 +54,8 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
       // Prefetch next page
       if (page < totalPages) {
         queryClient.prefetchQuery({
-          queryKey: ['spectra', { filters, page: page + 1, pageSize, sortColumn, sortDirection }],
-          queryFn: () => getSpectra(filters, page + 1, pageSize, sortColumn, sortDirection),
+          queryKey: ['spectra', { filters, page: page + 1, pageSize, sortColumn, sortDirection, viewMode }],
+          queryFn: () => getSpectra(filters, page + 1, pageSize, sortColumn, sortDirection, viewMode),
           staleTime: 30 * 1000, // Consider fresh for 30 seconds
         });
       }
@@ -62,15 +63,15 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
       // Prefetch previous page
       if (page > 1) {
         queryClient.prefetchQuery({
-          queryKey: ['spectra', { filters, page: page - 1, pageSize, sortColumn, sortDirection }],
-          queryFn: () => getSpectra(filters, page - 1, pageSize, sortColumn, sortDirection),
+          queryKey: ['spectra', { filters, page: page - 1, pageSize, sortColumn, sortDirection, viewMode }],
+          queryFn: () => getSpectra(filters, page - 1, pageSize, sortColumn, sortDirection, viewMode),
           staleTime: 30 * 1000,
         });
       }
     });
 
     return cancelIdle;
-  }, [query.data, query.isFetching, page, pageSize, filters, sortColumn, sortDirection, enabled, queryClient]);
+  }, [query.data, query.isFetching, page, pageSize, filters, sortColumn, sortDirection, viewMode, enabled, queryClient]);
 
   return query;
 }

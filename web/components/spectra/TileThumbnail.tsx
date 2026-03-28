@@ -6,7 +6,7 @@ import { getNearbyShutters } from '@/lib/actions/map';
 import { computeShutterRects, type ShutterGeometry } from '@/lib/utils/shutter-overlay';
 
 interface TileThumbnailProps {
-  objectId: string;
+  targetId: string;
   size?: number;
   /** CSS display size in px. Defaults to `size`. Use a smaller value than `size` for higher-resolution rendering. */
   displaySize?: number;
@@ -30,7 +30,7 @@ interface TileThumbnailProps {
  * SVG overlay with vector shutter rectangles.
  */
 export const TileThumbnail: React.FC<TileThumbnailProps> = ({
-  objectId,
+  targetId,
   size = 48,
   displaySize,
   shutters = false,
@@ -47,7 +47,7 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   const [shutterRects, setShutterRects] = useState<ReturnType<typeof computeShutterRects>>([]);
 
   // Cutout image URL (never includes shutters — always a clean RGB crop)
-  const src = `/api/tile-thumbnail?object_id=${encodeURIComponent(objectId)}&size=${size}&fov=${fov}`;
+  const src = `/api/tile-thumbnail?target_id=${encodeURIComponent(targetId)}&size=${size}&fov=${fov}`;
 
   // Fetch shutter geometry when coordinates are provided (independent of visibility toggle).
   // This way toggling shutters on/off is instant CSS — no refetch needed.
@@ -63,13 +63,13 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
       if (cancelled) return;
       const rects = computeShutterRects(
         shutterData as ShutterGeometry[],
-        ra, dec, fov, cssSize, objectId,
+        ra, dec, fov, cssSize, targetId,
       );
       setShutterRects(rects);
     });
 
     return () => { cancelled = true; };
-  }, [ra, dec, field, fov, cssSize, objectId, hasCoordinates]);
+  }, [ra, dec, field, fov, cssSize, targetId, hasCoordinates]);
 
   if (hasError) {
     const placeholder = (
@@ -82,7 +82,7 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
     );
     return linkToMap ? (
       <Link
-        href={`/map?field=${encodeURIComponent(linkToMap.field)}&ra=${linkToMap.ra}&dec=${linkToMap.dec}&z=8&highlight=${encodeURIComponent(objectId)}`}
+        href={`/map?field=${encodeURIComponent(linkToMap.field)}&ra=${linkToMap.ra}&dec=${linkToMap.dec}&z=8&highlight=${encodeURIComponent(targetId)}`}
         title="View on map"
       >
         {placeholder}
@@ -106,7 +106,7 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src}
-        alt={`Tile cutout for ${objectId}`}
+        alt={`Tile cutout for ${targetId}`}
         width={cssSize}
         height={cssSize}
         loading="lazy"
@@ -150,7 +150,7 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   if (linkToMap) {
     return (
       <Link
-        href={`/map?field=${encodeURIComponent(linkToMap.field)}&ra=${linkToMap.ra}&dec=${linkToMap.dec}&z=8&highlight=${encodeURIComponent(objectId)}`}
+        href={`/map?field=${encodeURIComponent(linkToMap.field)}&ra=${linkToMap.ra}&dec=${linkToMap.dec}&z=8&highlight=${encodeURIComponent(targetId)}`}
         className="block"
         title="View on map"
       >

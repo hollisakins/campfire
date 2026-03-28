@@ -31,8 +31,8 @@ class SpectrumData:
         FITS primary header as a dict.
     grating : str
         Grating name (e.g., 'PRISM', 'G395M').
-    object_id : str
-        CAMPFIRE object ID (e.g., 'ember_cosmos_p1_920424').
+    target_id : str
+        CAMPFIRE target ID (e.g., 'ember_cosmos_p1_920424').
     fits_path : str or None
         Local file path if loaded from disk, None if from API.
     """
@@ -42,7 +42,7 @@ class SpectrumData:
     flux_err: np.ndarray
     header: dict
     grating: str
-    object_id: str
+    target_id: str
     flam: Optional[np.ndarray] = field(default=None, repr=False)
     flam_err: Optional[np.ndarray] = field(default=None, repr=False)
     fits_path: Optional[str] = None
@@ -52,20 +52,20 @@ class SpectrumData:
         wmin = self.wavelength.min() if n > 0 else 0
         wmax = self.wavelength.max() if n > 0 else 0
         return (
-            f"SpectrumData({self.object_id}, {self.grating}, "
+            f"SpectrumData({self.target_id}, {self.grating}, "
             f"{n} pixels, {wmin:.2f}-{wmax:.2f} μm)"
         )
 
     @staticmethod
-    def _parse_object_id_from_filename(filename: str) -> str:
-        """Extract object_id from a CAMPFIRE FITS filename.
+    def _parse_target_id_from_filename(filename: str) -> str:
+        """Extract target_id from a CAMPFIRE FITS filename.
 
         Filename pattern: {obs}_{grating}_{filter}_{source_id}_spec.fits
-        Object ID pattern: {obs}_{source_id}
+        Target ID pattern: {obs}_{source_id}
 
         Examples
         --------
-        >>> SpectrumData._parse_object_id_from_filename(
+        >>> SpectrumData._parse_target_id_from_filename(
         ...     'ember_cosmos_p1_prism_clear_920424_spec.fits')
         'ember_cosmos_p1_920424'
         """
@@ -94,7 +94,7 @@ class SpectrumData:
         fits_path : str
             Path to the FITS file.
         object_id : str, optional
-            Object ID. If not provided, parsed from the FILENAME header
+            Target ID. If not provided, parsed from the FILENAME header
             keyword (e.g., 'ember_cosmos_p1_920424').
         grating : str, optional
             Grating name. If not provided, read from the GRATING header.
@@ -167,7 +167,7 @@ class SpectrumData:
             # Infer metadata from header if not provided
             if not object_id:
                 filename = header.get("FILENAME", "")
-                object_id = cls._parse_object_id_from_filename(filename)
+                object_id = cls._parse_target_id_from_filename(filename)
                 if not object_id:
                     object_id = header.get("OBJECT", header.get("SRCNAME", "unknown"))
             if not grating:
@@ -181,6 +181,6 @@ class SpectrumData:
             flam_err=flam_err,
             header=header,
             grating=grating,
-            object_id=object_id,
+            target_id=object_id,
             fits_path=fits_path,
         )

@@ -8,8 +8,8 @@ export type DownloadType = 'fits_single' | 'fits_object' | 'fits_batch' | 'fits_
 export interface TrackDownloadParams {
   userId: string;
   downloadType: DownloadType;
-  objectIds?: string[];
-  objectCount?: number;
+  targetIds?: string[];
+  targetCount?: number;
   fileCount?: number;
   filterSnapshot?: Record<string, unknown>;
 }
@@ -35,8 +35,8 @@ export async function trackDownload(params: TrackDownloadParams): Promise<void> 
       .insert({
         user_id: params.userId,
         download_type: params.downloadType,
-        object_ids: params.objectIds || null,
-        object_count: params.objectCount ?? params.objectIds?.length ?? null,
+        target_ids: params.targetIds || null,
+        target_count: params.targetCount ?? params.targetIds?.length ?? null,
         file_count: params.fileCount ?? null,
         filter_snapshot: params.filterSnapshot || null,
         ip_address: ipAddress,
@@ -53,10 +53,10 @@ export async function trackDownload(params: TrackDownloadParams): Promise<void> 
 }
 
 /**
- * Helper to extract object ID from a FITS path.
- * Paths are like: "spectra/observation/objectid_grating.fits"
+ * Helper to extract target ID from a FITS path.
+ * Paths are like: "spectra/observation/targetid_grating.fits"
  */
-export async function extractObjectIdFromFitsPath(fitsPath: string): Promise<string | null> {
+export async function extractTargetIdFromFitsPath(fitsPath: string): Promise<string | null> {
   try {
     const filename = fitsPath.split('/').pop() || '';
     // Remove .fits extension and grating suffix

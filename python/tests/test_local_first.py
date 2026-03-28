@@ -21,7 +21,7 @@ def local_store(tmp_path):
     objects = [
         {
             "id": 1,
-            "object_id": "test_obj_100",
+            "target_id": "test_obj_100",
             "program_slug": "test-prog",
             "program_name": "TEST",
             "field": "COSMOS",
@@ -39,7 +39,7 @@ def local_store(tmp_path):
             "spectra": [
                 {
                     "id": 10,
-                    "object_id": "test_obj_100",
+                    "target_id": "test_obj_100",
                     "grating": "PRISM",
                     "fits_path": "spectra/test_obs/test_obj_100_PRISM_spec.fits",
                     "signal_to_noise": 15.0,
@@ -48,7 +48,7 @@ def local_store(tmp_path):
         },
         {
             "id": 2,
-            "object_id": "test_obj_200",
+            "target_id": "test_obj_200",
             "program_slug": "test-prog",
             "program_name": "TEST",
             "field": "COSMOS",
@@ -66,7 +66,7 @@ def local_store(tmp_path):
             "spectra": [
                 {
                     "id": 20,
-                    "object_id": "test_obj_200",
+                    "target_id": "test_obj_200",
                     "grating": "PRISM",
                     "fits_path": "spectra/test_obs/test_obj_200_PRISM_spec.fits",
                     "signal_to_noise": 5.0,
@@ -121,7 +121,7 @@ class TestLocalFirstQueryObjects:
 
         mock_session.get.assert_not_called()
         assert len(results) == 1
-        assert results[0]["object_id"] == "test_obj_100"
+        assert results[0]["target_id"] == "test_obj_100"
 
     def test_queries_local_for_unknown_obs(self, local_client):
         """query_objects queries local store even for unknown observations.
@@ -201,7 +201,7 @@ class TestOpenSpectrum:
         mock_session.get.assert_not_called()
         assert isinstance(spec, SpectrumData)
         assert spec.wavelength.shape == (50,)
-        assert spec.object_id == "test_obj_100"
+        assert spec.target_id == "test_obj_100"
         assert spec.grating == "PRISM"
 
     def test_downloads_and_caches(self, local_client):
@@ -269,7 +269,7 @@ class TestIterObjects:
         ))
 
         assert len(objects) == 1
-        assert objects[0]["object_id"] == "test_obj_100"
+        assert objects[0]["target_id"] == "test_obj_100"
 
 
 class TestSpectrumData:
@@ -287,13 +287,13 @@ class TestSpectrumData:
             flux_err=flux_err,
             header={"OBJECT": "test"},
             grating="PRISM",
-            object_id="test_123",
+            target_id="test_123",
         )
 
         assert spec.wavelength.shape == (100,)
         assert spec.flux.shape == (100,)
         assert spec.grating == "PRISM"
-        assert spec.object_id == "test_123"
+        assert spec.target_id == "test_123"
         assert spec.fits_path is None
 
     def test_repr(self):
@@ -305,7 +305,7 @@ class TestSpectrumData:
             flux_err=np.zeros(100),
             header={},
             grating="G395M",
-            object_id="obj_456",
+            target_id="obj_456",
         )
 
         r = repr(spec)
@@ -338,7 +338,7 @@ class TestSpectrumData:
         assert spec.wavelength.shape == (50,)
         assert spec.flux.shape == (50,)
         assert spec.flux_err.shape == (50,)
-        assert spec.object_id == "test_obj"
+        assert spec.target_id == "test_obj"
         assert spec.grating == "PRISM"
         assert spec.fits_path == str(fits_path)
 
@@ -363,5 +363,5 @@ class TestSpectrumData:
             str(fits_path), object_id="custom_id", grating="G395M"
         )
 
-        assert spec.object_id == "custom_id"
+        assert spec.target_id == "custom_id"
         assert spec.grating == "G395M"

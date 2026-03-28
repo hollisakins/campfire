@@ -54,7 +54,7 @@ def main():
     offset = 0
     while True:
         result = (supabase.table('spectra')
-                  .select('id,object_id,grating,fits_path')
+                  .select('id,target_id,grating,fits_path')
                   .is_('exposure_time', 'null')
                   .range(offset, offset + page_size - 1)
                   .execute())
@@ -93,7 +93,7 @@ def main():
                 exposure_time = float(hdul['PRIMARY'].header.get('EFFEXPTM', 0))
             updates.append({
                 'id': row['id'],
-                'object_id': row['object_id'],
+                'target_id': row['target_id'],
                 'grating': row['grating'],
                 'fits_path': row['fits_path'],
                 'exposure_time': exposure_time,

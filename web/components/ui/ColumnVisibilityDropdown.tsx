@@ -7,7 +7,7 @@ export interface ColumnDefinition {
   id: string;
   label: string;
   defaultVisible?: boolean;
-  alwaysVisible?: boolean;  // Cannot be hidden (e.g., object_id)
+  alwaysVisible?: boolean;  // Cannot be hidden (e.g., target_id)
 }
 
 interface ColumnVisibilityDropdownProps {

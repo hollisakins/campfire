@@ -68,10 +68,10 @@ export async function GET() {
     const { data: statsData } = await supabase
       .rpc('get_user_profile_stats', { p_user_id: user.id });
 
-    const userStats = statsData as { objects_inspected: number; comments_posted: number; last_activity: string | null } | null;
+    const userStats = statsData as { targets_inspected: number; comments_posted: number; last_activity: string | null } | null;
 
-    // Fetch recent comments with object info (for comment history)
-    // Note: comments.object_id is FK to objects.id (many-to-one), so Supabase returns single object
+    // Fetch recent comments with target info (for comment history)
+    // Note: comments.target_id is FK to targets.id (many-to-one), so Supabase returns single target
     const { data: recentComments, count: totalComments } = await supabase
       .from('comments')
       .select(`
@@ -79,9 +79,9 @@ export async function GET() {
         content,
         created_at,
         edited_at,
-        objects (
+        targets (
           id,
-          object_id
+          target_id
         )
       `, { count: 'exact' })
       .eq('user_id', user.id)
@@ -90,18 +90,18 @@ export async function GET() {
       .limit(5);
 
     // Transform comments to match CommentHistoryItem interface
-    // Supabase types infer objects as array, but runtime returns single object for many-to-one
+    // Supabase types infer targets as array, but runtime returns single target for many-to-one
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const commentHistoryItems = (recentComments || []).map((comment: any) => {
       // Handle both array (typed) and object (runtime) cases
-      const obj = Array.isArray(comment.objects) ? comment.objects[0] : comment.objects;
+      const obj = Array.isArray(comment.targets) ? comment.targets[0] : comment.targets;
       return {
         id: comment.id,
         content: comment.content,
         created_at: comment.created_at,
         edited_at: comment.edited_at,
-        object_db_id: obj?.id,
-        object_display_id: obj?.object_id,
+        target_db_id: obj?.id,
+        target_display_id: obj?.target_id,
       };
     });
 
@@ -111,7 +111,7 @@ export async function GET() {
       programs: programsWithAccess,
       redemptions: redemptions || [],
       stats: {
-        objects_inspected: userStats?.objects_inspected || 0,
+        targets_inspected: userStats?.targets_inspected || 0,
         comments_posted: userStats?.comments_posted || 0,
         last_activity: userStats?.last_activity || null,
       },

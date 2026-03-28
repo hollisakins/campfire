@@ -89,7 +89,7 @@ class TestQueryObjects:
         result = client.query_objects()
 
         assert len(result) == 1
-        assert result[0]["object_id"] == "ember_uds_p4_123456"
+        assert result[0]["target_id"] == "ember_uds_p4_123456"
 
     def test_query_objects_empty(self, mock_api_session):
         """query_objects returns empty Table when no results."""

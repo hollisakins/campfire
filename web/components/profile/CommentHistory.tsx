@@ -88,7 +88,7 @@ export const CommentHistory: React.FC<CommentHistoryProps> = ({
           {comments.map(comment => (
             <Link
               key={comment.id}
-              href={`/spectra/${comment.object_display_id}`}
+              href={`/spectra/${comment.target_display_id}`}
               className="block p-3 rounded-lg border border-border dark:border-slate-700
                          hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
             >
@@ -98,7 +98,7 @@ export const CommentHistory: React.FC<CommentHistoryProps> = ({
                     {comment.content}
                   </p>
                   <p className="mt-1 text-xs text-text-secondary dark:text-slate-400">
-                    on <span className="font-mono">{comment.object_display_id}</span>
+                    on <span className="font-mono">{comment.target_display_id}</span>
                     {comment.edited_at && ' (edited)'}
                   </p>
                 </div>

@@ -9,7 +9,7 @@ import type { FilterOptions } from '@/lib/actions/filter-params';
 import { parseFiltersFromURL, filtersToURLParams } from '@/lib/utils/url-params';
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
-import { useFilteredObjectIds } from '@/lib/hooks/useFilteredObjectIds';
+import { useFilteredTargetIds } from '@/lib/hooks/useFilteredTargetIds';
 
 interface MapPageContentProps {
   layers: MapLayer[];
@@ -76,18 +76,18 @@ export function MapPageContent({
     return { ...debouncedFilters, fields: [currentField] };
   }, [debouncedFilters, currentField]);
 
-  // Fetch filtered object IDs when filters are active
-  const { data: filteredResult } = useFilteredObjectIds(queryFilters, hasActiveFilters);
+  // Fetch filtered target IDs when filters are active
+  const { data: filteredResult } = useFilteredTargetIds(queryFilters, hasActiveFilters);
 
   // Build the ID set and marker filter function
   const filteredIdSet = useMemo(() => {
-    if (!hasActiveFilters || !filteredResult?.objectIds) return null;
-    return new Set(filteredResult.objectIds);
+    if (!hasActiveFilters || !filteredResult?.targetIds) return null;
+    return new Set(filteredResult.targetIds);
   }, [hasActiveFilters, filteredResult]);
 
   const markerFilter = useMemo(() => {
     if (!filteredIdSet) return undefined;
-    return (marker: MapMarker) => filteredIdSet.has(marker.object_id);
+    return (marker: MapMarker) => filteredIdSet.has(marker.target_id);
   }, [filteredIdSet]);
 
   // Handle filter changes

@@ -94,7 +94,7 @@ def sync_metadata(
     # If incremental and counts diverge, escalate to full sync
     needs_full_sync = False
     if incremental and server_total > 0:
-        local_total = store._conn.execute("SELECT COUNT(*) FROM objects").fetchone()[0]
+        local_total = store._conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
         if local_total != server_total:
             needs_full_sync = True
 
@@ -204,7 +204,7 @@ def download_and_verify(
         st = local_path.stat()
         return {
             "spectra_id": spec["spectra_id"],
-            "object_id": spec["object_id"],
+            "target_id": spec.get("target_id") or spec.get("object_id"),
             "observation": spec.get("observation", obs_dir.name),
             "grating": spec["grating"],
             "fits_path": spec["fits_path"],
@@ -317,7 +317,7 @@ def download_observation(
                     result = future.result()
                     store.mark_synced(
                         result["spectra_id"],
-                        result["object_id"],
+                        result["target_id"],
                         obs_name,
                         result["grating"],
                         result["fits_path"],

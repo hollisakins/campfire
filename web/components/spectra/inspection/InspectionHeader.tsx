@@ -8,7 +8,7 @@ interface GratingInfo {
 }
 
 interface InspectionHeaderProps {
-  objectId: string;
+  targetId: string;
   field: string;
   programName: string | null;
   index: number;
@@ -27,7 +27,7 @@ interface InspectionHeaderProps {
 }
 
 export const InspectionHeader: React.FC<InspectionHeaderProps> = ({
-  objectId,
+  targetId,
   field,
   programName,
   index,
@@ -71,7 +71,7 @@ export const InspectionHeader: React.FC<InspectionHeaderProps> = ({
       {/* Center: Object info */}
       <div className="flex items-center gap-3">
         <span className="font-mono font-bold text-text-primary dark:text-slate-100 text-sm">
-          {objectId}
+          {targetId}
         </span>
         {commentCount > 0 && (
           <span className="text-xs text-text-secondary dark:text-slate-400 flex items-center gap-1">

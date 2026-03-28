@@ -88,6 +88,8 @@
 [nirspec.redshift_consensus]
     delta_chi2_peak = 30.0      # max delta-chi2 above global min for candidate peaks
     dv_tolerance = 1000.0       # km/s, max velocity offset for nearest grid-point lookup
+    dz_prism_confirm = 0.1      # max |dz| for grating result to confirm PRISM
+    min_chi2_range_per_pix = 0.05  # min chi2 dynamic range / n_pix to include in consensus
 
 [nirspec.template_grids.prism]
     file = "sfhz_templates_prism.pickle"

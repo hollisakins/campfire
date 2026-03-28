@@ -464,12 +464,25 @@ def run_stage2a_single_rate(
     os.chdir(obs.workspace_dir)
 
 
+    # Restore MSAMETFL from OGMETFL if a previous interrupted run left it corrupted
+    with fits.open(rate_file, mode='update') as hdul:
+        msametfl = hdul[0].header['MSAMETFL']
+        ogmetfl = hdul[0].header.get('OGMETFL')
+        if ogmetfl and msametfl != ogmetfl:
+            log(f"Restoring MSAMETFL from OGMETFL for {os.path.basename(rate_file)}: "
+                f"'{msametfl}' -> '{ogmetfl}'")
+            hdul[0].header['MSAMETFL'] = ogmetfl
+            hdul.flush()
+
     # figure out list of source ids to extract from this rate file (using meta file)
     main_metafile = MetaFile.load_for_rate_file(rate_file)
-    # update rate file header to point to the right metafile
+    # Save original metafile path as backup — only on first run, never overwrite
+    # (if a previous run crashed, MSAMETFL may already be corrupted; overwriting
+    # OGMETFL with that value would destroy the only recovery path)
     with fits.open(rate_file, mode='update') as hdul:
-        hdul[0].header['OGMETFL'] = main_metafile.filename
-        hdul.flush()
+        if 'OGMETFL' not in hdul[0].header:
+            hdul[0].header['OGMETFL'] = main_metafile.filename
+            hdul.flush()
 
     root = '_'.join(os.path.basename(rate_file).split('_')[:2])
     nod = int(os.path.basename(rate_file).split('_')[2])
@@ -613,6 +626,7 @@ def run_stage2a_single_rate(
                 hdul[0].header['MSAMETFL'] = hdul[0].header['OGMETFL']
             else:
                 hdul[0].header['MSAMETFL'] = main_metafile.filename
+            hdul.flush()
 
         # Cleanup any remaining ASN files
         asn_files = glob.glob(rate_file.replace('_rate.fits','*.json'))

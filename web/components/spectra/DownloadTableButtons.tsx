@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Download, FileText, Package, Loader2, ChevronDown } from 'lucide-react';
 import { generateCSV, generateCsvFilename, generateFitsDownloadUrl } from '@/lib/actions/download';
-import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
+import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
 import { AdvancedFilterOptions } from './SpectraFilterBar';
 
 interface DownloadDropdownProps {
@@ -11,6 +11,7 @@ interface DownloadDropdownProps {
   filters: AdvancedFilterOptions;
   sortColumn: SortColumn;
   sortDirection: SortDirection;
+  viewMode?: ViewMode;
   loading?: boolean;
 }
 
@@ -19,6 +20,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
   filters,
   sortColumn,
   sortDirection,
+  viewMode = 'targets',
   loading = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -49,7 +51,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
     setError(null);
 
     try {
-      const result = await generateCSV(filters, sortColumn, sortDirection);
+      const result = await generateCSV(filters, sortColumn, sortDirection, viewMode);
 
       if (result.error || !result.csv) {
         setError(result.error || 'Failed to generate CSV');
@@ -190,7 +192,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
               Download Results
             </div>
             <div className="text-xs text-text-secondary dark:text-slate-400 mt-0.5">
-              {loading ? 'Loading...' : `${totalCount.toLocaleString()} ${totalCount === 1 ? 'object' : 'objects'}`}
+              {loading ? 'Loading...' : `${totalCount.toLocaleString()} ${viewMode === 'spectra' ? 'spectra' : (totalCount === 1 ? 'target' : 'targets')}`}
             </div>
           </div>
 

@@ -33,11 +33,11 @@ __version__ = "0.2.0"
 logger = logging.getLogger(__name__)
 
 
-def _safe_cache_path(cache_dir: Path, filename: str, object_id: str) -> Path:
+def _safe_cache_path(cache_dir: Path, filename: str, target_id: str) -> Path:
     """Resolve a cache path and ensure it stays within cache_dir."""
     dest = (cache_dir / filename).resolve()
     if not str(dest).startswith(str(cache_dir.resolve())):
-        raise ValueError(f"Invalid object_id produces unsafe cache path: {object_id!r}")
+        raise ValueError(f"Invalid target_id produces unsafe cache path: {target_id!r}")
     return dest
 
 
@@ -336,12 +336,12 @@ class Campfire:
         cone_search: Optional[Tuple[float, float, float]] = None,
         limit: Optional[int] = None,
         offset: int = 0,
-        sort: str = "object_id",
+        sort: str = "target_id",
         sort_dir: str = "asc",
         remote: bool = False,
     ) -> Table:
         """
-        Query objects with filters.
+        Query targets with filters.
 
         Parameters
         ----------
@@ -372,9 +372,9 @@ class Campfire:
         dq_flags : int, str, list, DQFlags, or FlagQuery, optional
             Filter by data quality flags. Same input types as spectral_features.
         inspected_only : bool, optional
-            If True, only return visually inspected objects.
+            If True, only return visually inspected targets.
         search : str, optional
-            Text search on object_id.
+            Text search on target_id.
         cone_search : tuple of (ra, dec, radius), optional
             (ra, dec, radius) in degrees, arcsec, arcsec for cone search.
         limit : int, optional
@@ -382,14 +382,14 @@ class Campfire:
         offset : int, optional
             Pagination offset (default: 0).
         sort : str, optional
-            Sort column (default: 'object_id').
+            Sort column (default: 'target_id').
         sort_dir : str, optional
             Sort direction: 'asc' or 'desc' (default: 'asc').
 
         Returns
         -------
         astropy.table.Table
-            Table of matching objects with columns: object_id, ra, dec, redshift, etc.
+            Table of matching targets with columns: target_id, ra, dec, redshift, etc.
 
         Examples
         --------
@@ -682,7 +682,7 @@ class Campfire:
                 if full_path.exists():
                     self._api_download_count = 0
                     return SpectrumData.from_fits(
-                        str(full_path), object_id=object_id, grating=grating
+                        str(full_path), object_id=object_id, grating=grating,
                     )
 
         # Warn if downloading many spectra one at a time
@@ -740,7 +740,7 @@ class Campfire:
             st = dest.stat()
             self._local.mark_synced(
                 spectra_id=spec_info["spectra_id"],
-                object_id=object_id,
+                target_id=object_id,
                 observation=observation,
                 grating=grating,
                 fits_path=fits_path,
@@ -756,15 +756,15 @@ class Campfire:
         )
 
     def _resolve_spectrum_info(self, object_id: str, grating: str) -> dict:
-        """Resolve spectrum metadata (fits_path, spectra_id, observation) for an object + grating."""
+        """Resolve spectrum metadata (fits_path, spectra_id, observation) for a target + grating."""
         # Check local store first
         if self._local:
             spectra = self._local.get_spectra_for_object(object_id, grating)
             if spectra:
                 spec = spectra[0]
-                # Get observation from the objects table
+                # Get observation from the targets table
                 row = self._local._conn.execute(
-                    "SELECT observation FROM objects WHERE object_id = ?",
+                    "SELECT observation FROM targets WHERE target_id = ?",
                     (object_id,),
                 ).fetchone()
                 if row:
@@ -776,7 +776,7 @@ class Campfire:
             search=object_id, limit=1
         )
         if not objects:
-            raise NotFoundError(f"Object not found: {object_id}")
+            raise NotFoundError(f"Target not found: {object_id}")
 
         obj = objects[0]
         for spec in obj.get("spectra", []):
@@ -809,7 +809,7 @@ class Campfire:
         --------
         >>> cf = Campfire()
         >>> for obj in cf.iter_objects(redshift_range=(2.0, 4.0)):
-        ...     print(obj['object_id'], obj['redshift'])
+        ...     print(obj['target_id'], obj['redshift'])
         """
         remote = filters.pop("remote", False)
         use_local = self._local is not None and not remote

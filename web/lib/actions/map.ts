@@ -33,7 +33,7 @@ export interface MapLayer {
 }
 
 export interface MapMarker {
-  object_id: string;
+  target_id: string;
   ra: number;
   dec: number;
   redshift: number | null;
@@ -122,7 +122,7 @@ export async function getMapLayers(
 }
 
 /**
- * Fetch all objects for a field, paginating to get past Supabase row limits.
+ * Fetch all targets for a field, paginating to get past Supabase row limits.
  */
 export async function getFieldMarkers(
   field: string
@@ -131,10 +131,10 @@ export async function getFieldMarkers(
 
   const { data, error } = await paginateQuery<MapMarker>(
     () => supabase
-      .from('objects')
-      .select('object_id, ra, dec, redshift, redshift_quality, field, program_slug, observation')
+      .from('targets')
+      .select('target_id, ra, dec, redshift, redshift_quality, field, program_slug, observation')
       .eq('field', field)
-      .order('object_id'),
+      .order('target_id'),
     1000,
   );
 
@@ -173,14 +173,14 @@ export async function getFieldSlits(
  * Fetch object IDs matching the given filters (for map marker filtering).
  * Reuses the same RPC function as the spectra table but only extracts IDs.
  */
-export async function getFilteredObjectIds(
+export async function getFilteredTargetIds(
   filters: FilterOptions
-): Promise<{ objectIds: string[]; error?: string }> {
+): Promise<{ targetIds: string[]; error?: string }> {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
-    return { objectIds: [], error: 'Not authenticated' };
+    return { targetIds: [], error: 'Not authenticated' };
   }
 
   try {
@@ -201,32 +201,32 @@ export async function getFilteredObjectIds(
     const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
     if (accessibleProgramSlugs.length === 0) {
-      return { objectIds: [] };
+      return { targetIds: [] };
     }
 
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     const fullRpcParams = {
       ...rpcParams,
-      p_sort_column: 'object_id',
+      p_sort_column: 'target_id',
       p_sort_direction: 'asc',
     };
 
-    const { data: allRows, error: rpcError } = await paginateRpc<{ object_id: string }>(
-      supabase, 'get_filtered_object_ids', fullRpcParams,
+    const { data: allRows, error: rpcError } = await paginateRpc<{ target_id: string }>(
+      supabase, 'get_filtered_target_ids', fullRpcParams,
     );
 
     if (rpcError) {
-      console.error('Error fetching filtered object IDs:', rpcError);
-      return { objectIds: [], error: rpcError.message };
+      console.error('Error fetching filtered target IDs:', rpcError);
+      return { targetIds: [], error: rpcError.message };
     }
 
-    const objectIds = allRows.map(row => row.object_id);
+    const targetIds = allRows.map(row => row.target_id);
 
-    return { objectIds };
+    return { targetIds };
   } catch (err) {
-    console.error('Unexpected error fetching filtered object IDs:', err);
-    return { objectIds: [], error: 'An unexpected error occurred' };
+    console.error('Unexpected error fetching filtered target IDs:', err);
+    return { targetIds: [], error: 'An unexpected error occurred' };
   }
 }
 

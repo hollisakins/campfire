@@ -115,6 +115,7 @@ class MetaFile:
         """
 
         mf = copy(self)
+        mf.hdul = deepcopy(self.hdul)
 
         slits = np.unique(mf.shutter_table['slitlet_id'][mf.shutter_table['source_id'] == source_id])
         condition = np.logical_and.reduce((

@@ -4,11 +4,11 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { lookupInCache, isAtCacheBoundary } from '@/lib/navigation-cache';
-import { getAdjacentObjectIds, type FilterOptions } from '@/lib/actions/spectra';
+import { getAdjacentTargetIds, type FilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 
 interface ObjectNavigationProps {
-  objectId: string;
+  targetId: string;
   filters: Partial<FilterOptions>;
   sortColumn: SortColumn;
   sortDirection: SortDirection;
@@ -31,7 +31,7 @@ interface NavState {
  * falls back to server query when cache misses.
  */
 export function ObjectNavigation({
-  objectId,
+  targetId,
   filters,
   sortColumn,
   sortDirection,
@@ -53,11 +53,11 @@ export function ObjectNavigation({
     async function loadNavigation() {
       // First, try sessionStorage cache for instant response
       const sortKey = `${sortColumn}_${sortDirection}`;
-      const cached = lookupInCache(objectId, filterStr, sortKey);
+      const cached = lookupInCache(targetId, filterStr, sortKey);
 
       if (cached) {
         // Check if we're at a boundary and might need server data
-        const boundary = isAtCacheBoundary(objectId);
+        const boundary = isAtCacheBoundary(targetId);
 
         // If we have valid prev/next from cache, use it
         if (!boundary.atStart && !boundary.atEnd) {
@@ -89,8 +89,8 @@ export function ObjectNavigation({
 
       // Fall back to server query
       try {
-        const result = await getAdjacentObjectIds(
-          objectId,
+        const result = await getAdjacentTargetIds(
+          targetId,
           filters,
           sortColumn,
           sortDirection
@@ -124,7 +124,7 @@ export function ObjectNavigation({
     return () => {
       cancelled = true;
     };
-  }, [objectId, filters, sortColumn, sortDirection, filterStr]);
+  }, [targetId, filters, sortColumn, sortDirection, filterStr]);
 
   // Build navigation URLs
   const prevHref = nav.prev

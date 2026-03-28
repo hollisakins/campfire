@@ -17,14 +17,14 @@ export interface SpectrumData {
 }
 
 /**
- * GET /api/v1/spectrum?object_id=X&grating=Y
+ * GET /api/v1/spectrum?target_id=X&grating=Y
  * GET /api/v1/spectrum?path=<fits_path>
  *
  * Fetches the JSON spectrum data for plotting.
  * Requires API key authentication.
  *
  * Query parameters:
- * - object_id: Object ID to fetch spectrum for
+ * - target_id: Target ID to fetch spectrum for
  * - grating: Grating type (e.g., PRISM, G395M)
  * OR
  * - path: Direct FITS path (from query results)
@@ -58,27 +58,27 @@ export async function GET(request: NextRequest) {
 
     // Parse query parameters
     const searchParams = request.nextUrl.searchParams;
-    const objectId = searchParams.get('object_id');
+    const targetId = searchParams.get('target_id');
     const grating = searchParams.get('grating');
     let fitsPath = searchParams.get('path');
 
-    // If object_id and grating provided, look up the fits_path
-    if (objectId && grating && !fitsPath) {
-      // First verify the object exists and user has access
-      const { data: objectData, error: objectError } = await supabase
-        .from('objects')
+    // If target_id and grating provided, look up the fits_path
+    if (targetId && grating && !fitsPath) {
+      // First verify the target exists and user has access
+      const { data: targetData, error: targetError } = await supabase
+        .from('targets')
         .select('program_slug')
-        .eq('object_id', objectId)
+        .eq('target_id', targetId)
         .single();
 
-      if (objectError || !objectData) {
+      if (targetError || !targetData) {
         return NextResponse.json(
           { error: 'Object not found' },
           { status: 404 }
         );
       }
 
-      if (!accessibleProgramSlugs.includes(objectData.program_slug)) {
+      if (!accessibleProgramSlugs.includes(targetData.program_slug)) {
         return NextResponse.json(
           { error: 'Access denied to this object' },
           { status: 403 }
@@ -89,13 +89,13 @@ export async function GET(request: NextRequest) {
       const { data: spectrumData, error: spectrumError } = await supabase
         .from('spectra')
         .select('fits_path')
-        .eq('object_id', objectId)
+        .eq('target_id', targetId)
         .eq('grating', grating)
         .single();
 
       if (spectrumError || !spectrumData) {
         return NextResponse.json(
-          { error: `No ${grating} spectrum found for ${objectId}` },
+          { error: `No ${grating} spectrum found for ${targetId}` },
           { status: 404 }
         );
       }
@@ -105,7 +105,7 @@ export async function GET(request: NextRequest) {
 
     if (!fitsPath) {
       return NextResponse.json(
-        { error: 'Missing required parameters: either (object_id, grating) or path' },
+        { error: 'Missing required parameters: either (target_id, grating) or path' },
         { status: 400 }
       );
     }
@@ -113,7 +113,7 @@ export async function GET(request: NextRequest) {
     // Verify user has access to this file via the spectra table
     const { data: spectrum, error: spectrumError } = await supabase
       .from('spectra')
-      .select('id, object_id')
+      .select('id, target_id')
       .eq('fits_path', fitsPath)
       .single();
 
@@ -124,14 +124,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Verify access to the object's program
-    const { data: objectData } = await supabase
-      .from('objects')
+    // Verify access to the target's program
+    const { data: targetData } = await supabase
+      .from('targets')
       .select('program_slug')
-      .eq('object_id', spectrum.object_id)
+      .eq('target_id', spectrum.target_id)
       .single();
 
-    if (!objectData || !accessibleProgramSlugs.includes(objectData.program_slug)) {
+    if (!targetData || !accessibleProgramSlugs.includes(targetData.program_slug)) {
       return NextResponse.json(
         { error: 'Access denied' },
         { status: 403 }

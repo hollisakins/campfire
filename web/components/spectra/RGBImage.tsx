@@ -4,13 +4,13 @@ import React, { useState, useEffect } from 'react';
 import Image from 'next/image';
 
 interface RGBImageProps {
-  objectId: string;
+  targetId: string;
   rgbImageUrl: string | null;
   size?: number;
 }
 
 export const RGBImage: React.FC<RGBImageProps> = ({
-  objectId,
+  targetId,
   rgbImageUrl,
   size = 350
 }) => {
@@ -18,9 +18,9 @@ export const RGBImage: React.FC<RGBImageProps> = ({
 
   // Reset error state when URL or object changes
   useEffect(() => {
-    console.log('[RGBImage] Props updated - objectId:', objectId, 'URL:', rgbImageUrl?.substring(0, 80) + '...');
+    console.log('[RGBImage] Props updated - targetId:', targetId, 'URL:', rgbImageUrl?.substring(0, 80) + '...');
     setImageError(false);
-  }, [rgbImageUrl, objectId]);
+  }, [rgbImageUrl, targetId]);
 
   // Show placeholder if no URL provided or if image failed to load
   if (!rgbImageUrl || imageError) {
@@ -43,15 +43,15 @@ export const RGBImage: React.FC<RGBImageProps> = ({
     >
       <Image
         src={rgbImageUrl}
-        alt={`RGB image for ${objectId}`}
+        alt={`RGB image for ${targetId}`}
         fill
         className="object-cover"
         onError={() => {
-          console.log('[RGBImage] Image load error for:', objectId);
+          console.log('[RGBImage] Image load error for:', targetId);
           setImageError(true);
         }}
         onLoad={() => {
-          console.log('[RGBImage] Image loaded successfully for:', objectId);
+          console.log('[RGBImage] Image loaded successfully for:', targetId);
         }}
         unoptimized // For R2 signed URLs
       />

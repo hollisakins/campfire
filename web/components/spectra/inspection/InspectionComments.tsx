@@ -7,10 +7,10 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import type { CommentWithUser } from '@/lib/types';
 
 interface InspectionCommentsProps {
-  objectDbId: number;
+  targetDbId: number;
 }
 
-export const InspectionComments: React.FC<InspectionCommentsProps> = ({ objectDbId }) => {
+export const InspectionComments: React.FC<InspectionCommentsProps> = ({ targetDbId }) => {
   const { user, userProfile } = useAuth();
   const supabase = createClient();
   const canEdit = user && userProfile?.can_comment;
@@ -32,7 +32,7 @@ export const InspectionComments: React.FC<InspectionCommentsProps> = ({ objectDb
       const { data: commentsData, error } = await supabase
         .from('comments')
         .select('*')
-        .eq('object_id', objectDbId)
+        .eq('target_id', targetDbId)
         .eq('is_deleted', false)
         .order('created_at', { ascending: true });
 
@@ -59,7 +59,7 @@ export const InspectionComments: React.FC<InspectionCommentsProps> = ({ objectDb
     } finally {
       setLoading(false);
     }
-  }, [objectDbId, user, supabase]);
+  }, [targetDbId, user, supabase]);
 
   useEffect(() => {
     fetchComments();
@@ -71,7 +71,7 @@ export const InspectionComments: React.FC<InspectionCommentsProps> = ({ objectDb
     setSubmitting(true);
     try {
       const { error } = await supabase.from('comments').insert({
-        object_id: objectDbId,
+        target_id: targetDbId,
         user_id: user.id,
         content: newComment.trim(),
       });

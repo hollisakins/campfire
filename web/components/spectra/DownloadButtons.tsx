@@ -7,10 +7,10 @@ import type { Spectrum } from '@/lib/types';
 
 interface DownloadButtonsProps {
   spectra: Spectrum[];
-  objectId: string;
+  targetId: string;
 }
 
-export const DownloadButtons: React.FC<DownloadButtonsProps> = ({ spectra, objectId }) => {
+export const DownloadButtons: React.FC<DownloadButtonsProps> = ({ spectra, targetId }) => {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,7 +38,7 @@ export const DownloadButtons: React.FC<DownloadButtonsProps> = ({ spectra, objec
 
       // Download each file
       for (const [path, url] of Object.entries(urls)) {
-        const filename = path.split('/').pop() || `${objectId}.fits`;
+        const filename = path.split('/').pop() || `${targetId}.fits`;
         await downloadFile(url as string, filename);
         // Small delay between downloads to prevent browser blocking
         await new Promise(resolve => setTimeout(resolve, 300));

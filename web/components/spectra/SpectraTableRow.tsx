@@ -2,10 +2,10 @@
 
 import React, { memo } from 'react';
 import { flexRender, Row, Cell } from '@tanstack/react-table';
-import type { SpectrumObject } from '@/lib/types';
+import type { SpectrumTarget } from '@/lib/types';
 
 interface SpectraTableRowProps {
-  row: Row<SpectrumObject>;
+  row: Row<SpectrumTarget>;
   visibleColumnIds: string; // Comma-separated list of visible column IDs for memo comparison
 }
 
@@ -16,7 +16,7 @@ interface SpectraTableRowProps {
 const SpectraTableRowComponent: React.FC<SpectraTableRowProps> = ({ row }) => {
   return (
     <tr className="hover:bg-card-hover dark:hover:bg-slate-700 transition-colors">
-      {row.getVisibleCells().map((cell: Cell<SpectrumObject, unknown>) => (
+      {row.getVisibleCells().map((cell: Cell<SpectrumTarget, unknown>) => (
         <td
           key={cell.id}
           className="px-4 py-3 whitespace-nowrap"

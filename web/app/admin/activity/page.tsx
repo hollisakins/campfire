@@ -271,10 +271,10 @@ export default function AdminActivityPage() {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <Link
-                      href={`/spectra/${activity.object_display_id}`}
+                      href={`/spectra/${activity.target_display_id}`}
                       className="text-sm font-mono text-primary hover:underline"
                     >
-                      {activity.object_display_id}
+                      {activity.target_display_id}
                     </Link>
                   </td>
                   <td className="px-6 py-4">

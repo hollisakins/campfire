@@ -4,12 +4,12 @@ import React, { useState, useEffect } from 'react';
 import { Download, Loader2, FileX } from 'lucide-react';
 
 interface SEDPlotViewerProps {
-  objectId: string;
+  targetId: string;
   className?: string;
 }
 
 export const SEDPlotViewer: React.FC<SEDPlotViewerProps> = ({
-  objectId,
+  targetId,
   className = '',
 }) => {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
@@ -22,7 +22,7 @@ export const SEDPlotViewer: React.FC<SEDPlotViewerProps> = ({
       setError(null);
 
       try {
-        const response = await fetch(`/api/sed-plot?object_id=${encodeURIComponent(objectId)}`);
+        const response = await fetch(`/api/sed-plot?target_id=${encodeURIComponent(targetId)}`);
 
         if (!response.ok) {
           if (response.status === 404) {
@@ -45,14 +45,14 @@ export const SEDPlotViewer: React.FC<SEDPlotViewerProps> = ({
     };
 
     fetchSedPlot();
-  }, [objectId]);
+  }, [targetId]);
 
   const handleDownload = () => {
     if (pdfUrl) {
       // Create temporary link to trigger download
       const link = document.createElement('a');
       link.href = pdfUrl;
-      link.download = `${objectId}_sed.pdf`;
+      link.download = `${targetId}_sed.pdf`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -97,7 +97,7 @@ export const SEDPlotViewer: React.FC<SEDPlotViewerProps> = ({
         <iframe
           src={pdfUrl}
           className="w-full h-[800px] border-0"
-          title={`SED plot for ${objectId}`}
+          title={`SED plot for ${targetId}`}
         />
       </div>
     </div>

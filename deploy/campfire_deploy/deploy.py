@@ -32,6 +32,7 @@ from campfire_deploy.generate import (
 )
 from campfire_deploy.r2 import UploadTask, get_r2_client, upload_files_parallel
 from campfire_deploy.supabase import (
+    REDSHIFT_DRIFT_THRESHOLD,
     batch_upsert_objects,
     batch_upsert_spectra,
     check_existing_objects,
@@ -171,9 +172,9 @@ def deploy_observation(
     programs_config = load_programs()
     sb = get_supabase_client(config)
 
-    # Check for existing objects and confirm
-    object_ids = [o['object_id'] for o in objects]
-    existing = check_existing_objects(sb, object_ids)
+    # Check for existing targets and confirm
+    target_ids = [o['object_id'] for o in objects]
+    existing = check_existing_objects(sb, target_ids)
     if existing:
         print(f"Found {len(existing)} existing objects")
         if force_overwrite:
@@ -264,8 +265,10 @@ def deploy_observation(
 
         # Supabase upserts
         print("Upserting objects...")
-        n_obj, new_object_ids = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
+        n_obj, new_object_ids, n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
         print(f"  {n_obj} objects")
+        if n_quality_reset:
+            print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift > {REDSHIFT_DRIFT_THRESHOLD}, no manual override)")
 
         print("Upserting spectra...")
         n_spec = batch_upsert_spectra(sb, spectra)
@@ -579,8 +582,10 @@ def deploy_zfit(
                 return
 
     print("Updating objects...")
-    n = batch_upsert_objects(sb, objects, field, force_overwrite)
+    n, _, n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite)
     print(f"  Updated {n} objects")
+    if n_quality_reset:
+        print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift)")
 
     refresh_filter_options(sb)
     refresh_programs_overview(sb)
@@ -631,7 +636,7 @@ def deploy_thumbnails(
             for row in summary:
                 if row['spec_file'] == spec_path.name:
                     sb.table('spectra').update(thumbs).eq(
-                        'object_id', row['object_id']
+                        'target_id', row['object_id']
                     ).eq('grating', row['grating']).execute()
                     updated += 1
                     break

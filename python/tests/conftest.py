@@ -16,7 +16,7 @@ def sample_objects_response():
     return {
         "data": [
             {
-                "object_id": "ember_uds_p4_123456",
+                "target_id": "ember_uds_p4_123456",
                 "program_id": 1,
                 "program_name": "EMBER-UDS",
                 "field": "UDS",
@@ -33,14 +33,14 @@ def sample_objects_response():
                 "spectra": [
                     {
                         "id": 1,
-                        "object_id": "ember_uds_p4_123456",
+                        "target_id": "ember_uds_p4_123456",
                         "grating": "PRISM",
                         "fits_path": "spectra/ember_uds_p4/ember_uds_p4_PRISM_CLEAR_123456_spec.fits",
                         "signal_to_noise": 15.5,
                     },
                     {
                         "id": 2,
-                        "object_id": "ember_uds_p4_123456",
+                        "target_id": "ember_uds_p4_123456",
                         "grating": "G395M",
                         "fits_path": "spectra/ember_uds_p4/ember_uds_p4_G395M_F290LP_123456_spec.fits",
                         "signal_to_noise": 8.2,

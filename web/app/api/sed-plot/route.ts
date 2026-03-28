@@ -4,13 +4,13 @@ import { generateDownloadUrl } from '@/lib/r2';
 import { trackDownload } from '@/lib/actions/download-tracking';
 
 /**
- * GET /api/sed-plot?object_id=<object_id>
+ * GET /api/sed-plot?target_id=<target_id>
  *
  * Generates a signed URL for viewing/downloading a SED plot PDF from R2.
- * Requires authentication and checks user access to the object.
+ * Requires authentication and checks user access to the target.
  *
- * SED plots are stored at: sed/{observation}/{object_id}_sed.pdf
- * where observation is extracted from the object_id pattern.
+ * SED plots are stored at: sed/{observation}/{target_id}_sed.pdf
+ * where observation is extracted from the target_id pattern.
  */
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
@@ -25,38 +25,38 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // Get the object_id from query parameters
+  // Get the target_id from query parameters
   const searchParams = request.nextUrl.searchParams;
-  const objectId = searchParams.get('object_id');
+  const targetId = searchParams.get('target_id');
 
-  if (!objectId) {
+  if (!targetId) {
     return NextResponse.json(
-      { error: 'Missing object_id parameter' },
+      { error: 'Missing target_id parameter' },
       { status: 400 }
     );
   }
 
   try {
-    // Verify user has access to this object by checking program access
-    const { data: object, error: objectError } = await supabase
-      .from('objects')
+    // Verify user has access to this target by checking program access
+    const { data: target, error: targetError } = await supabase
+      .from('targets')
       .select('id, observation, program_slug')
-      .eq('object_id', objectId)
+      .eq('target_id', targetId)
       .single();
 
-    if (objectError || !object) {
+    if (targetError || !target) {
       return NextResponse.json(
-        { error: 'Object not found or access denied' },
+        { error: 'Target not found or access denied' },
         { status: 404 }
       );
     }
 
-    // Extract observation name from object_id if observation column doesn't exist
+    // Extract observation name from target_id if observation column doesn't exist
     // Pattern: {observation}_{srcid} e.g., "ember_cosmos_p1_12345"
-    const observation = object.observation || objectId.substring(0, objectId.lastIndexOf('_'));
+    const observation = target.observation || targetId.substring(0, targetId.lastIndexOf('_'));
 
     // Construct SED plot path in R2
-    const sedPlotPath = `sed/${observation}/${objectId}_sed.pdf`;
+    const sedPlotPath = `sed/${observation}/${targetId}_sed.pdf`;
 
     // Generate signed URL (expires in 1 hour)
     const signedUrl = await generateDownloadUrl(sedPlotPath, 3600);
@@ -73,8 +73,8 @@ export async function GET(request: NextRequest) {
     trackDownload({
       userId: user.id,
       downloadType: 'sed_plot',
-      objectIds: [objectId],
-      objectCount: 1,
+      targetIds: [targetId],
+      targetCount: 1,
       fileCount: 1,
     });
 

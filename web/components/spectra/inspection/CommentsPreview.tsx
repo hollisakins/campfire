@@ -7,11 +7,11 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import type { CommentWithUser } from '@/lib/types';
 
 interface CommentsPreviewProps {
-  objectDbId: number;
+  targetDbId: number;
   commentCount: number;
 }
 
-export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ objectDbId, commentCount }) => {
+export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ targetDbId, commentCount }) => {
   const { user } = useAuth();
   const supabase = createClient();
   const [comments, setComments] = useState<CommentWithUser[]>([]);
@@ -28,7 +28,7 @@ export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ objectDbId, co
         const { data: commentsData, error } = await supabase
           .from('comments')
           .select('*')
-          .eq('object_id', objectDbId)
+          .eq('target_id', targetDbId)
           .eq('is_deleted', false)
           .order('created_at', { ascending: false })
           .limit(2);
@@ -58,7 +58,7 @@ export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ objectDbId, co
     }
 
     fetchLatestComments();
-  }, [objectDbId, commentCount, user, supabase]);
+  }, [targetDbId, commentCount, user, supabase]);
 
   // Format relative time
   const formatDistanceToNow = (date: Date) => {

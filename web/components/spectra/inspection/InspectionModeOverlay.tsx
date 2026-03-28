@@ -12,7 +12,7 @@ import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useI
 import { useAuth } from '@/lib/contexts/AuthContext';
 import type { FilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
-import { GRATINGS, type SpectrumObject } from '@/lib/types';
+import { GRATINGS, type SpectrumTarget } from '@/lib/types';
 import { useSpectrumDataCache } from '@/lib/hooks/useSpectrumDataCache';
 import { useMultiObjectCache } from '@/lib/hooks/useMultiObjectCache';
 import { useObjectNavigation } from '@/lib/hooks/useObjectNavigation';
@@ -20,7 +20,7 @@ import { useInspectionQueue } from '@/lib/hooks/useInspectionQueue';
 import { createClient } from '@/lib/supabase/client';
 
 interface InspectionModeOverlayProps {
-  spectrum: SpectrumObject;
+  spectrum: SpectrumTarget;
   filterStr: string;
   filters: Partial<FilterOptions>;
   sortColumn: SortColumn;
@@ -79,7 +79,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
   // Snapshot-based inspection queue (fetched once, stable navigation)
   const queue = useInspectionQueue({
-    initialObjectId: spectrum.object_id,
+    initialTargetId: spectrum.target_id,
     filters,
     sortColumn,
     sortDirection,
@@ -111,7 +111,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         const { count, error } = await supabase
           .from('comments')
           .select('*', { count: 'exact', head: true })
-          .eq('object_id', currentSpectrum.id)
+          .eq('target_id', currentSpectrum.id)
           .eq('is_deleted', false);
 
         if (error) {
@@ -174,13 +174,13 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   useEffect(() => {
     if (!queueReady || queue.isEmpty) return;
 
-    const prefetch = async (objectId: string | null) => {
-      if (!objectId) return;
-      if (getCachedObject(objectId)) return; // Already cached
+    const prefetch = async (targetId: string | null) => {
+      if (!targetId) return;
+      if (getCachedObject(targetId)) return; // Already cached
       try {
-        const data = await prefetchObject(objectId);
+        const data = await prefetchObject(targetId);
         if (data) {
-          setCachedObject(objectId, data);
+          setCachedObject(targetId, data);
           prefetchGratings(data.spectrum.spectra);
         }
       } catch { /* ignore prefetch errors */ }
@@ -200,14 +200,14 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   }, []);
 
   // Navigate with client-side data swapping (queue-based)
-  const handleNavigate = useCallback(async (objectId: string | null) => {
-    if (!objectId) return;
+  const handleNavigate = useCallback(async (targetId: string | null) => {
+    if (!targetId) return;
 
     // 1. Auto-save FIRST
     redshiftSectionRef.current?.flushPendingChanges();
     const saveResult = await inspectionState.saveIfDirty();
     if (saveResult.saved) {
-      deleteCachedObject(currentSpectrum.object_id);
+      deleteCachedObject(currentSpectrum.target_id);
       // Show cross-match propagation hint if any were auto-secured
       if (saveResult.propagated && saveResult.propagated > 0) {
         const n = saveResult.propagated;
@@ -218,24 +218,24 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     // quality-zero skip is now communicated by greyed-out flags inline
 
     // 2. Update queue position
-    queue.goTo(objectId);
+    queue.goTo(targetId);
 
     // 3. Check object cache first
-    const cached = getCachedObject(objectId);
+    const cached = getCachedObject(targetId);
     let data;
     if (cached) {
       data = cached;
     } else {
       // Cache miss — fetch from server
-      data = await navigateTo(objectId, async () => true);
+      data = await navigateTo(targetId, async () => true);
       if (!data) return;
-      setCachedObject(objectId, data);
+      setCachedObject(targetId, data);
     }
 
     // 4. Update state
     setCurrentSpectrum(data.spectrum);
     inspectionState.resetState(data.spectrum);
-  }, [navigateTo, inspectionState, queue, getCachedObject, setCachedObject, deleteCachedObject, currentSpectrum.object_id]);
+  }, [navigateTo, inspectionState, queue, getCachedObject, setCachedObject, deleteCachedObject, currentSpectrum.target_id]);
 
   const handlePrev = useCallback(() => handleNavigate(queue.prev), [handleNavigate, queue.prev]);
   const handleNext = useCallback(() => handleNavigate(queue.next), [handleNavigate, queue.next]);
@@ -243,9 +243,9 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const handleSave = useCallback(async () => {
     const result = await inspectionState.save();
     if (result.success) {
-      deleteCachedObject(currentSpectrum.object_id);
+      deleteCachedObject(currentSpectrum.target_id);
     }
-  }, [inspectionState, deleteCachedObject, currentSpectrum.object_id]);
+  }, [inspectionState, deleteCachedObject, currentSpectrum.target_id]);
 
   const handleSaveAndNext = useCallback(() => {
     handleNavigate(queue.next);
@@ -261,8 +261,8 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     clearObjectCache();
 
     const qs = filterStr;
-    router.push(`/spectra/${encodeURIComponent(currentSpectrum.object_id)}${qs ? `?${qs}` : ''}`);
-  }, [router, currentSpectrum.object_id, filterStr, clearGratingCache, clearObjectCache, inspectionState]);
+    router.push(`/spectra/${encodeURIComponent(currentSpectrum.target_id)}${qs ? `?${qs}` : ''}`);
+  }, [router, currentSpectrum.target_id, filterStr, clearGratingCache, clearObjectCache, inspectionState]);
 
   const handleCycleGrating = useCallback(() => {
     if (sortedSpectra.length <= 1) return;
@@ -385,7 +385,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         </div>
       ) : (
         <InspectionHeader
-          objectId={currentSpectrum.object_id}
+          targetId={currentSpectrum.target_id}
           field={currentSpectrum.field}
           programName={currentSpectrum.program_name || null}
           index={queue.index}

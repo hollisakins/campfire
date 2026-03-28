@@ -14,7 +14,7 @@ import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 export type FilterMode = 'any' | 'all' | 'none';
 
 // Search scope type for the search bar
-export type SearchScope = 'object_id' | 'my_comments' | 'all_comments';
+export type SearchScope = 'target_id' | 'my_comments' | 'all_comments';
 
 /**
  * Canonical filter options type used across the entire app.
@@ -64,7 +64,7 @@ export const DEFAULT_FILTERS: FilterOptions = {
   dq_flags: [],
   inspected_only: null,
   search: '',
-  search_scope: 'object_id',
+  search_scope: 'target_id',
   gratings_mode: 'any',
   spectral_features_mode: 'any',
   object_flags_mode: 'any',
@@ -73,7 +73,7 @@ export const DEFAULT_FILTERS: FilterOptions = {
 
 /**
  * Typed RPC params shared by all filter-based Supabase RPCs
- * (get_filtered_objects_paginated, get_csv_export, get_adjacent_objects).
+ * (get_filtered_targets_paginated, get_csv_export, get_adjacent_targets).
  *
  * Consumer-specific params (pagination, sorting, thumbnails) are NOT included —
  * each caller spreads these base params and adds its own.
@@ -157,10 +157,10 @@ export function buildFilterParams(
 
   // Search routing based on scope
   const searchText = filters?.search?.trim() || null;
-  const searchScope = filters?.search_scope || 'object_id';
+  const searchScope = filters?.search_scope || 'target_id';
   const isCommentSearch = searchScope === 'my_comments' || searchScope === 'all_comments';
 
-  const objectIdSearch = searchScope === 'object_id' ? searchText : null;
+  const targetIdSearch = searchScope === 'target_id' ? searchText : null;
   const commentSearch = isCommentSearch ? searchText : null;
   const commentSearchScope = isCommentSearch
     ? (searchScope === 'my_comments' ? 'just_me' : 'everyone')
@@ -190,7 +190,7 @@ export function buildFilterParams(
     p_dq_flags_include_any: dqMode === 'any' ? dqFlagsMask : null,
     p_dq_flags_include_all: dqMode === 'all' ? dqFlagsMask : null,
     p_dq_flags_exclude: dqMode === 'none' ? dqFlagsMask : null,
-    p_search: objectIdSearch,
+    p_search: targetIdSearch,
     p_inspected_only: filters?.inspected_only ?? null,
     p_coord_ra: coordRa,
     p_coord_dec: coordDec,

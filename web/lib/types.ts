@@ -147,9 +147,9 @@ export interface AccountRequest {
   rejection_reason: string | null;
 }
 
-export interface DbObject {
+export interface DbTarget {
   id: number;
-  object_id: string;
+  target_id: string;
   program_slug: string;
   field: string;
   observation: string;
@@ -171,7 +171,7 @@ export interface DbObject {
 
 export interface Spectrum {
   id: number;
-  object_id: string;  // FK to objects.object_id (text)
+  target_id: string;  // FK to targets.target_id (text)
   grating: string;
   fits_path: string;
   reduction_version: string;
@@ -185,7 +185,7 @@ export interface Spectrum {
 
 export interface Comment {
   id: number;
-  object_id: number;
+  target_id: number;
   user_id: string;
   content: string;
   created_at: string;
@@ -195,7 +195,7 @@ export interface Comment {
 
 export interface FlagAuditLog {
   id: number;
-  object_id: number;
+  target_id: number;
   user_id: string;
   field_name: string;
   old_value: number | null;
@@ -230,8 +230,8 @@ export interface NircamImage {
 // Frontend-specific Types
 // ============================================
 
-// Extended object with joined data for display
-export interface SpectrumObject extends DbObject {
+// Extended target with joined data for display
+export interface SpectrumTarget extends DbTarget {
   program_name?: string;
   spectra: Spectrum[];
   max_snr?: number;
@@ -260,7 +260,7 @@ export interface FilterState {
 // ============================================
 
 export interface ProfileStats {
-  objects_inspected: number;
+  targets_inspected: number;
   comments_posted: number;
   last_activity: string | null;
 }
@@ -270,8 +270,8 @@ export interface CommentHistoryItem {
   content: string;
   created_at: string;
   edited_at: string | null;
-  object_db_id: number;
-  object_display_id: string;
+  target_db_id: number;
+  target_display_id: string;
 }
 
 export interface ProfileRecentComments {
@@ -318,8 +318,8 @@ export type ActivityType = 'comment' | 'inspection';
 export interface BaseActivity {
   id: string;                    // "comment-{id}" or "audit-{id}"
   type: ActivityType;
-  object_db_id: number;
-  object_display_id: string;     // e.g., "ember_uds_p4_123456"
+  target_db_id: number;
+  target_display_id: string;     // e.g., "ember_uds_p4_123456"
   user_id: string;
   timestamp: string;
   user_profile?: UserProfile;

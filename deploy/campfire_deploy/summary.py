@@ -50,10 +50,13 @@ def get_obs_name(summary: Table) -> str:
 
 def get_unique_objects(summary: Table) -> list[dict]:
     """
-    Deduplicate by object_id and return one record per unique object.
+    Deduplicate by object_id and return one record per unique target.
 
     Returns list of dicts with keys:
         object_id, source_id, program_slug, observation, ra, dec, redshift_best
+
+    Note: ``object_id`` here is the ECSV column (the target identifier value).
+    It maps to ``target_id`` in the database.
     """
     program_slug = summary.meta.get('program_slug', '')
     observation = summary.meta.get('obs_name', '')
@@ -84,14 +87,14 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     Build per-spectrum records for Supabase spectra upserts.
 
     Returns list of dicts with keys:
-        object_id, grating, fits_path (R2 key), reduction_version,
+        target_id, grating, fits_path (R2 key), reduction_version,
         signal_to_noise, exposure_time, file_hash, file_size
     """
     records = []
     for row in summary:
         r2_key = f"spectra/{obs_name}/{row['fits_filename']}"
         records.append({
-            'object_id': row['object_id'],
+            'target_id': row['object_id'],
             'grating': row['grating'],
             'fits_path': r2_key,
             'reduction_version': row['reduction_version'],

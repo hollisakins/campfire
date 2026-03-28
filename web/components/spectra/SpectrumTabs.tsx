@@ -20,12 +20,12 @@ interface InspectionData {
 
 interface SpectrumTabsProps {
   spectra: Spectrum[];
-  objectId: string;         // String object_id for display
-  objectDbId: number;       // Numeric database ID for API calls
+  targetId: string;         // String target_id for display
+  targetDbId: number;       // Numeric database ID for API calls
   inspectionData: InspectionData;
 }
 
-export const SpectrumTabs: React.FC<SpectrumTabsProps> = ({ spectra, objectId, objectDbId, inspectionData }) => {
+export const SpectrumTabs: React.FC<SpectrumTabsProps> = ({ spectra, targetId, targetDbId, inspectionData }) => {
   // Sort spectra by grating order
   const gratingOrder: readonly string[] = GRATINGS;
   const sortedSpectra = [...spectra].sort(
@@ -91,8 +91,8 @@ export const SpectrumTabs: React.FC<SpectrumTabsProps> = ({ spectra, objectId, o
       {/* Inspect Tab */}
       <TabsContent value="inspect" className="mt-6">
         <InspectionPanel
-          objectDbId={objectDbId}
-          objectId={objectId}
+          targetDbId={targetDbId}
+          targetId={targetId}
           initialData={inspectionData}
         />
       </TabsContent>

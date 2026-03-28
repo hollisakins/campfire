@@ -4,11 +4,11 @@
  */
 
 import type { AdvancedFilterOptions, SearchScope, FilterMode } from '@/components/spectra/SpectraFilterBar';
-import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
-import { VALID_SORT_COLUMNS } from '@/lib/actions/spectra-types';
+import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
+import { VALID_SORT_COLUMNS, isValidSortColumn } from '@/lib/actions/spectra-types';
 
 // Valid search scope values
-const VALID_SEARCH_SCOPES: SearchScope[] = ['object_id', 'my_comments', 'all_comments'];
+const VALID_SEARCH_SCOPES: SearchScope[] = ['target_id', 'my_comments', 'all_comments'];
 
 // Valid filter mode values
 const VALID_FILTER_MODES: FilterMode[] = ['any', 'all', 'none'];
@@ -64,7 +64,7 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
   const scopeParam = searchParams.get('scope');
   const searchScope: SearchScope = VALID_SEARCH_SCOPES.includes(scopeParam as SearchScope)
     ? (scopeParam as SearchScope)
-    : 'object_id';
+    : 'target_id';
 
   return {
     programs: parseArray('programs'),
@@ -106,13 +106,24 @@ export function parsePaginationFromURL(searchParams: URLSearchParams): { page: n
 }
 
 /**
- * Parse sorting parameters from URL search parameters
+ * Parse view mode from URL search parameters
  */
-export function parseSortingFromURL(searchParams: URLSearchParams): { sortColumn: SortColumn; sortDirection: SortDirection } {
-  const sort = searchParams.get('sort') || 'object_id';
+export function parseViewModeFromURL(searchParams: URLSearchParams): ViewMode {
+  const view = searchParams.get('view');
+  if (view === 'spectra') return 'spectra';
+  return 'targets';
+}
+
+/**
+ * Parse sorting parameters from URL search parameters.
+ * Validates the sort column against the current view mode.
+ */
+export function parseSortingFromURL(searchParams: URLSearchParams, viewMode: ViewMode = 'targets'): { sortColumn: SortColumn; sortDirection: SortDirection } {
+  const sort = searchParams.get('sort') || 'target_id';
   const dir = searchParams.get('dir') || 'asc';
+  const isValid = VALID_SORT_COLUMNS.includes(sort as SortColumn) && isValidSortColumn(sort, viewMode);
   return {
-    sortColumn: VALID_SORT_COLUMNS.includes(sort as SortColumn) ? (sort as SortColumn) : 'object_id',
+    sortColumn: isValid ? (sort as SortColumn) : 'target_id',
     sortDirection: dir === 'desc' ? 'desc' : 'asc',
   };
 }
@@ -124,8 +135,9 @@ export function filtersToURLParams(
   filters: AdvancedFilterOptions,
   page: number = 1,
   pageSize: number = DEFAULT_PAGE_SIZE,
-  sortColumn: SortColumn = 'object_id',
-  sortDirection: SortDirection = 'asc'
+  sortColumn: SortColumn = 'target_id',
+  sortDirection: SortDirection = 'asc',
+  viewMode: ViewMode = 'targets'
 ): URLSearchParams {
   const params = new URLSearchParams();
 
@@ -184,7 +196,7 @@ export function filtersToURLParams(
     params.set('search', filters.search);
   }
   // Only include search_scope if not default
-  if (filters.search_scope && filters.search_scope !== 'object_id') {
+  if (filters.search_scope && filters.search_scope !== 'target_id') {
     params.set('scope', filters.search_scope);
   }
   // Only include filter modes if not default ('any') and filter is active
@@ -207,8 +219,12 @@ export function filtersToURLParams(
   if (pageSize !== DEFAULT_PAGE_SIZE) {
     params.set('pageSize', pageSize.toString());
   }
+  // Only include view mode when non-default
+  if (viewMode !== 'targets') {
+    params.set('view', viewMode);
+  }
   // Only include sorting params when non-default
-  if (sortColumn !== 'object_id') {
+  if (sortColumn !== 'target_id') {
     params.set('sort', sortColumn);
   }
   if (sortDirection !== 'asc') {
