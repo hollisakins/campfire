@@ -29,7 +29,7 @@ function scheduleIdleWork(callback: () => void): () => void {
 }
 
 export function useSpectraQuery(params: UseSpectraQueryParams) {
-  const { filters, page, pageSize, sortColumn, sortDirection, viewMode = 'objects', enabled = true } = params;
+  const { filters, page, pageSize, sortColumn, sortDirection, viewMode = 'targets', enabled = true } = params;
   const queryClient = useQueryClient();
 
   const query = useQuery<PaginatedSpectraResult>({

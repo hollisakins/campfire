@@ -17,7 +17,7 @@ SCHEMA_VERSION = 5
 
 # Column lists used by both store and export
 OBJECT_COLUMNS = [
-    "id", "object_id", "program_slug", "program_name", "field", "observation",
+    "id", "target_id", "program_slug", "program_name", "field", "observation",
     "ra", "dec", "redshift", "redshift_auto", "redshift_inspected",
     "redshift_quality", "spectral_features", "object_flags", "dq_flags",
     "max_snr", "max_exposure_time",
@@ -25,14 +25,14 @@ OBJECT_COLUMNS = [
 ]
 
 SPECTRA_COLUMNS = [
-    "spectra_id", "object_id", "grating", "fits_path", "file_hash",
+    "spectra_id", "target_id", "grating", "fits_path", "file_hash",
     "file_size", "signal_to_noise", "exposure_time", "reduction_version",
     "local_path",
 ]
 
-# Columns exported to objects.csv (subset, user-friendly order)
+# Columns exported to targets.csv (subset, user-friendly order)
 OBJECT_EXPORT_COLUMNS = [
-    "object_id", "program_slug", "program_name", "field", "observation",
+    "target_id", "program_slug", "program_name", "field", "observation",
     "ra", "dec", "redshift", "redshift_auto", "redshift_inspected",
     "redshift_quality", "spectral_features", "object_flags", "dq_flags",
     "max_snr", "max_exposure_time",
@@ -40,7 +40,7 @@ OBJECT_EXPORT_COLUMNS = [
 ]
 
 SPECTRA_EXPORT_COLUMNS = [
-    "spectra_id", "object_id", "grating", "fits_path", "file_hash",
+    "spectra_id", "target_id", "grating", "fits_path", "file_hash",
     "file_size", "signal_to_noise", "exposure_time", "reduction_version",
     "local_path",
 ]
@@ -52,9 +52,9 @@ CREATE TABLE IF NOT EXISTS _meta (
     value TEXT
 );
 
-CREATE TABLE IF NOT EXISTS objects (
+CREATE TABLE IF NOT EXISTS targets (
     id INTEGER PRIMARY KEY,
-    object_id TEXT UNIQUE NOT NULL,
+    target_id TEXT UNIQUE NOT NULL,
     program_slug TEXT,
     program_name TEXT,
     field TEXT,
@@ -77,15 +77,15 @@ CREATE TABLE IF NOT EXISTS objects (
     _synced_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_objects_object_id ON objects(object_id);
-CREATE INDEX IF NOT EXISTS idx_objects_observation ON objects(observation);
-CREATE INDEX IF NOT EXISTS idx_objects_field ON objects(field);
-CREATE INDEX IF NOT EXISTS idx_objects_redshift ON objects(redshift);
-CREATE INDEX IF NOT EXISTS idx_objects_object_flags ON objects(object_flags);
+CREATE INDEX IF NOT EXISTS idx_targets_target_id ON targets(target_id);
+CREATE INDEX IF NOT EXISTS idx_targets_observation ON targets(observation);
+CREATE INDEX IF NOT EXISTS idx_targets_field ON targets(field);
+CREATE INDEX IF NOT EXISTS idx_targets_redshift ON targets(redshift);
+CREATE INDEX IF NOT EXISTS idx_targets_object_flags ON targets(object_flags);
 
 CREATE TABLE IF NOT EXISTS spectra (
     spectra_id INTEGER PRIMARY KEY,
-    object_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
     grating TEXT NOT NULL,
     fits_path TEXT,
     file_hash TEXT,
@@ -101,9 +101,9 @@ CREATE TABLE IF NOT EXISTS spectra (
     _synced_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_spectra_object_id ON spectra(object_id);
+CREATE INDEX IF NOT EXISTS idx_spectra_target_id ON spectra(target_id);
 CREATE INDEX IF NOT EXISTS idx_spectra_grating ON spectra(grating);
-CREATE INDEX IF NOT EXISTS idx_spectra_object_grating ON spectra(object_id, grating);
+CREATE INDEX IF NOT EXISTS idx_spectra_target_grating ON spectra(target_id, grating);
 
 CREATE TABLE IF NOT EXISTS sync_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,7 +159,7 @@ class LocalStore:
         has_old_schema = cursor.fetchone() is not None
 
         cursor = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='objects'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='targets'"
         )
         has_new_schema = cursor.fetchone() is not None
 
@@ -202,7 +202,7 @@ class LocalStore:
         # Copy synced_files data into the new spectra table
         self._conn.execute("""
             INSERT OR IGNORE INTO spectra
-                (spectra_id, object_id, grating, fits_path, file_hash, file_size,
+                (spectra_id, target_id, grating, fits_path, file_hash, file_size,
                  local_path, synced_at)
             SELECT
                 spectra_id, object_id, grating, fits_path, file_hash, file_size,
@@ -299,17 +299,19 @@ class LocalStore:
         spec_count = 0
 
         for obj in objects_data:
-            # Upsert the object
+            # Upsert the target
+            # Accept both "target_id" (new schema) and "object_id" (API compat)
+            target_id = obj.get("target_id") or obj.get("object_id")
             self._conn.execute("""
-                INSERT INTO objects
-                    (id, object_id, program_slug, program_name, field, observation,
+                INSERT INTO targets
+                    (id, target_id, program_slug, program_name, field, observation,
                      ra, dec, redshift, redshift_auto, redshift_inspected,
                      redshift_quality, spectral_features, object_flags, dq_flags,
                      max_snr, max_exposure_time,
                      last_inspected_at, last_inspected_by,
                      created_at, updated_at, _synced_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(object_id) DO UPDATE SET
+                ON CONFLICT(target_id) DO UPDATE SET
                     program_slug=excluded.program_slug,
                     program_name=excluded.program_name,
                     field=excluded.field,
@@ -330,7 +332,7 @@ class LocalStore:
                     _synced_at=excluded._synced_at
             """, (
                 obj.get("id"),
-                obj.get("object_id"),
+                target_id,
                 obj.get("program_slug"),
                 obj.get("program_name"),
                 obj.get("field"),
@@ -364,14 +366,16 @@ class LocalStore:
                 filename = Path(spec.get("fits_path", "")).name
                 inferred_local_path = f"{obs}/{filename}" if obs else filename
 
+                spec_target_id = spec.get("target_id") or spec.get("object_id") or target_id
+
                 self._conn.execute("""
                     INSERT INTO spectra
-                        (spectra_id, object_id, grating, fits_path, file_hash,
+                        (spectra_id, target_id, grating, fits_path, file_hash,
                          file_size, signal_to_noise, exposure_time,
                          reduction_version, _synced_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(spectra_id) DO UPDATE SET
-                        object_id=excluded.object_id,
+                        target_id=excluded.target_id,
                         grating=excluded.grating,
                         fits_path=excluded.fits_path,
                         file_hash=excluded.file_hash,
@@ -382,7 +386,7 @@ class LocalStore:
                         _synced_at=excluded._synced_at
                 """, (
                     spec_id,
-                    spec.get("object_id") or obj.get("object_id"),
+                    spec_target_id,
                     spec.get("grating"),
                     spec.get("fits_path"),
                     spec.get("file_hash"),
@@ -411,7 +415,7 @@ class LocalStore:
         inspected_only: Optional[bool] = None,
         search: Optional[str] = None,
         cone_search: Optional[Tuple[float, float, float]] = None,
-        sort: str = "object_id",
+        sort: str = "target_id",
         sort_dir: str = "asc",
         limit: Optional[int] = None,
         offset: int = 0,
@@ -482,7 +486,7 @@ class LocalStore:
             where_clauses.append("o.redshift_quality > 0")
 
         if search:
-            where_clauses.append("o.object_id LIKE ?")
+            where_clauses.append("o.target_id LIKE ?")
             params.append(f"%{search}%")
 
         # Flag filters
@@ -530,16 +534,16 @@ class LocalStore:
 
         # Validate sort column
         allowed_sorts = {
-            "object_id", "ra", "dec", "redshift", "redshift_quality",
+            "target_id", "ra", "dec", "redshift", "redshift_quality",
             "field", "observation", "max_snr", "max_exposure_time",
         }
         if sort not in allowed_sorts:
-            sort = "object_id"
+            sort = "target_id"
         if sort_dir not in ("asc", "desc"):
             sort_dir = "asc"
 
         order_clause = f"o.{sort} {sort_dir}"
-        if order_by_distance and sort == "object_id":
+        if order_by_distance and sort == "target_id":
             # Default to distance sort for cone searches
             order_clause = "distance ASC"
 
@@ -573,7 +577,7 @@ class LocalStore:
 
         sql = f"""
             SELECT o.*, {distance_expr}
-            FROM objects o
+            FROM targets o
             WHERE {where_sql}
             ORDER BY {order_clause}
         """
@@ -603,10 +607,10 @@ class LocalStore:
 
             # Fetch associated spectra
             spectra_rows = self._conn.execute(
-                """SELECT spectra_id as id, object_id, grating, fits_path,
+                """SELECT spectra_id as id, target_id, grating, fits_path,
                           signal_to_noise, exposure_time, reduction_version
-                   FROM spectra WHERE object_id = ?""",
-                (obj["object_id"],),
+                   FROM spectra WHERE target_id = ?""",
+                (obj["target_id"],),
             ).fetchall()
             obj["spectra"] = [dict(s) for s in spectra_rows]
 
@@ -621,10 +625,10 @@ class LocalStore:
         results = self.query_objects(**filters)
         return len(results)
 
-    def get_object(self, object_id: str) -> Optional[dict]:
-        """Get a single object by ID."""
+    def get_object(self, target_id: str) -> Optional[dict]:
+        """Get a single target by ID."""
         row = self._conn.execute(
-            "SELECT * FROM objects WHERE object_id = ?", (object_id,)
+            "SELECT * FROM targets WHERE target_id = ?", (target_id,)
         ).fetchone()
         if not row:
             return None
@@ -632,26 +636,26 @@ class LocalStore:
         obj.pop("_synced_at", None)
 
         spectra_rows = self._conn.execute(
-            """SELECT spectra_id as id, object_id, grating, fits_path,
+            """SELECT spectra_id as id, target_id, grating, fits_path,
                       signal_to_noise, exposure_time, reduction_version
-               FROM spectra WHERE object_id = ?""",
-            (object_id,),
+               FROM spectra WHERE target_id = ?""",
+            (target_id,),
         ).fetchall()
         obj["spectra"] = [dict(s) for s in spectra_rows]
         return obj
 
     def get_spectra_for_object(
-        self, object_id: str, grating: Optional[str] = None
+        self, target_id: str, grating: Optional[str] = None
     ) -> List[dict]:
-        """Get spectra for an object, optionally filtered by grating."""
+        """Get spectra for a target, optionally filtered by grating."""
         if grating:
             rows = self._conn.execute(
-                "SELECT * FROM spectra WHERE object_id = ? AND grating = ?",
-                (object_id, grating),
+                "SELECT * FROM spectra WHERE target_id = ? AND grating = ?",
+                (target_id, grating),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT * FROM spectra WHERE object_id = ?", (object_id,),
+                "SELECT * FROM spectra WHERE target_id = ?", (target_id,),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -667,14 +671,14 @@ class LocalStore:
         if column not in allowed:
             return []
         rows = self._conn.execute(
-            f"SELECT DISTINCT {column} FROM objects ORDER BY {column}"
+            f"SELECT DISTINCT {column} FROM targets ORDER BY {column}"
         ).fetchall()
         return [r[0] for r in rows if r[0]]
 
     def get_synced_observations(self) -> List[str]:
-        """Get list of observations that have been synced (have objects in DB)."""
+        """Get list of observations that have been synced (have targets in DB)."""
         rows = self._conn.execute(
-            "SELECT DISTINCT observation FROM objects ORDER BY observation"
+            "SELECT DISTINCT observation FROM targets ORDER BY observation"
         ).fetchall()
         return [r[0] for r in rows if r[0]]
 
@@ -685,12 +689,12 @@ class LocalStore:
                 o.observation,
                 o.program_slug,
                 o.field,
-                COUNT(DISTINCT o.object_id) AS object_count,
+                COUNT(DISTINCT o.target_id) AS target_count,
                 COUNT(DISTINCT s.spectra_id) AS spectrum_count,
                 COUNT(DISTINCT CASE WHEN s.local_path IS NOT NULL
                       THEN s.spectra_id END) AS downloaded_count
-            FROM objects o
-            LEFT JOIN spectra s ON o.object_id = s.object_id
+            FROM targets o
+            LEFT JOIN spectra s ON o.target_id = s.target_id
             GROUP BY o.observation
             ORDER BY o.observation
         """).fetchall()
@@ -699,18 +703,18 @@ class LocalStore:
     def get_last_synced_at(self) -> Optional[str]:
         """Get the most recent _synced_at timestamp across all objects."""
         row = self._conn.execute(
-            "SELECT MAX(_synced_at) FROM objects"
+            "SELECT MAX(_synced_at) FROM targets"
         ).fetchone()
         return row[0] if row and row[0] else None
 
     def get_max_updated_at(self) -> Optional[str]:
-        """Get the most recent server-side updated_at across all objects.
+        """Get the most recent server-side updated_at across all targets.
 
         Used for incremental sync — avoids client/server clock skew by
         using the server's own timestamp as the ``updated_since`` marker.
         """
         row = self._conn.execute(
-            "SELECT MAX(updated_at) FROM objects"
+            "SELECT MAX(updated_at) FROM targets"
         ).fetchone()
         return row[0] if row and row[0] else None
 
@@ -726,11 +730,11 @@ class LocalStore:
         ``file_hash`` to detect updated files.
         """
         rows = self._conn.execute("""
-            SELECT s.spectra_id, s.object_id, s.grating, s.fits_path,
+            SELECT s.spectra_id, s.target_id, s.grating, s.fits_path,
                    s.local_path, s.local_file_hash, s.file_hash,
                    s.file_size, s.synced_at
             FROM spectra s
-            JOIN objects o ON s.object_id = o.object_id
+            JOIN targets o ON s.target_id = o.target_id
             WHERE o.observation = ? AND s.local_path IS NOT NULL
         """, (observation,)).fetchall()
 
@@ -745,7 +749,7 @@ class LocalStore:
         # Also check for spectra with local_path matching the observation dir
         # (legacy data from before full catalog sync)
         legacy_rows = self._conn.execute("""
-            SELECT spectra_id, object_id, grating, fits_path,
+            SELECT spectra_id, target_id, grating, fits_path,
                    local_path, local_file_hash, file_hash, file_size, synced_at
             FROM spectra
             WHERE local_path IS NOT NULL AND local_path LIKE ?
@@ -794,7 +798,7 @@ class LocalStore:
             SELECT s.spectra_id, s.local_path, s.local_file_mtime,
                    s.local_file_size, s.local_file_hash
             FROM spectra s
-            JOIN objects o ON s.object_id = o.object_id
+            JOIN targets o ON s.target_id = o.target_id
             WHERE s.local_path IS NOT NULL {obs_filter}
         """, obs_params).fetchall()
 
@@ -833,7 +837,7 @@ class LocalStore:
         untracked_rows = self._conn.execute(f"""
             SELECT s.spectra_id, s.fits_path, s.file_hash, o.observation
             FROM spectra s
-            JOIN objects o ON s.object_id = o.object_id
+            JOIN targets o ON s.target_id = o.target_id
             WHERE s.local_path IS NULL AND s.fits_path IS NOT NULL {obs_filter}
         """, obs_params).fetchall()
 
@@ -861,7 +865,7 @@ class LocalStore:
     def mark_synced(
         self,
         spectra_id: int,
-        object_id: str,
+        target_id: str,
         observation: str,
         grating: str,
         fits_path: str,
@@ -880,7 +884,7 @@ class LocalStore:
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute("""
             INSERT INTO spectra
-                (spectra_id, object_id, grating, fits_path, local_path,
+                (spectra_id, target_id, grating, fits_path, local_path,
                  local_file_hash, file_size, local_file_mtime, local_file_size,
                  synced_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -892,7 +896,7 @@ class LocalStore:
                 local_file_size = excluded.local_file_size,
                 synced_at = excluded.synced_at
         """, (
-            spectra_id, object_id, grating, fits_path,
+            spectra_id, target_id, grating, fits_path,
             local_path, file_hash, file_size, local_file_mtime,
             local_file_size, now,
         ))
@@ -906,11 +910,11 @@ class LocalStore:
         copy is outdated.
         """
         rows = self._conn.execute("""
-            SELECT s.spectra_id, s.object_id, s.grating, s.fits_path,
+            SELECT s.spectra_id, s.target_id, s.grating, s.fits_path,
                    s.local_path, s.file_hash AS server_hash,
                    s.local_file_hash, o.observation
             FROM spectra s
-            JOIN objects o ON s.object_id = o.object_id
+            JOIN targets o ON s.target_id = o.target_id
             WHERE s.local_path IS NOT NULL
               AND s.file_hash IS NOT NULL
               AND s.local_file_hash IS NOT NULL
@@ -952,7 +956,7 @@ class LocalStore:
         purged_spectra = cursor_s.rowcount
 
         cursor_o = self._conn.execute(
-            "DELETE FROM objects WHERE _synced_at < ?",
+            "DELETE FROM targets WHERE _synced_at < ?",
             (sync_timestamp,),
         )
         purged_objects = cursor_o.rowcount
@@ -1012,11 +1016,11 @@ class LocalStore:
         where_sql = " AND ".join(where)
 
         rows = self._conn.execute(f"""
-            SELECT s.spectra_id, s.object_id, s.grating, s.fits_path,
+            SELECT s.spectra_id, s.target_id, s.grating, s.fits_path,
                    s.file_hash, s.file_size, s.local_file_hash,
                    o.observation
             FROM spectra s
-            JOIN objects o ON s.object_id = o.object_id
+            JOIN targets o ON s.target_id = o.target_id
             WHERE {where_sql}
             ORDER BY o.observation, s.spectra_id
         """, params).fetchall()
@@ -1032,11 +1036,11 @@ class LocalStore:
 
     def remove_observation(self, observation: str) -> int:
         """Remove sync state for an observation (nullify local_path)."""
-        # For spectra linked to objects in this observation
+        # For spectra linked to targets in this observation
         cursor = self._conn.execute("""
             UPDATE spectra SET local_path = NULL, synced_at = NULL
-            WHERE object_id IN (
-                SELECT object_id FROM objects WHERE observation = ?
+            WHERE target_id IN (
+                SELECT target_id FROM targets WHERE observation = ?
             )
         """, (observation,))
         count = cursor.rowcount
@@ -1048,9 +1052,9 @@ class LocalStore:
         """, (f"{observation}/%",))
         count += cursor2.rowcount
 
-        # Remove the objects themselves
+        # Remove the targets themselves
         self._conn.execute(
-            "DELETE FROM objects WHERE observation = ?", (observation,)
+            "DELETE FROM targets WHERE observation = ?", (observation,)
         )
         self._conn.commit()
         return count
@@ -1064,7 +1068,7 @@ class LocalStore:
             FROM spectra s
             WHERE s.local_path IS NOT NULL
             AND (
-                s.object_id IN (SELECT object_id FROM objects WHERE observation = ?)
+                s.target_id IN (SELECT target_id FROM targets WHERE observation = ?)
                 OR s.local_path LIKE ?
             )
         """, (observation, f"{observation}/%")).fetchone()
@@ -1102,15 +1106,15 @@ class LocalStore:
         ))
         self._conn.commit()
 
-    def find_local_path(self, object_id: str, grating: str) -> Optional[str]:
-        """Check if a FITS file exists locally for an object + grating.
+    def find_local_path(self, target_id: str, grating: str) -> Optional[str]:
+        """Check if a FITS file exists locally for a target + grating.
 
         Returns the relative local_path if downloaded, None otherwise.
         """
         row = self._conn.execute("""
             SELECT local_path FROM spectra
-            WHERE object_id = ? AND grating = ? AND local_path IS NOT NULL
-        """, (object_id, grating)).fetchone()
+            WHERE target_id = ? AND grating = ? AND local_path IS NOT NULL
+        """, (target_id, grating)).fetchone()
         return row["local_path"] if row else None
 
     # -------------------------------------------------------------------------

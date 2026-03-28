@@ -200,7 +200,7 @@ def select_objects(supabase, objects_per_program: int) -> list[dict]:
     - 1 with quality 1 (impossible) if available
     """
     # Get all distinct program_ids from production
-    programs_resp = supabase.table('objects').select('program_id').execute()
+    programs_resp = supabase.table('targets').select('program_id').execute()
     program_ids = sorted(set(row['program_id'] for row in programs_resp.data))
 
     print(f"Found {len(program_ids)} programs in production: {program_ids}")
@@ -212,65 +212,65 @@ def select_objects(supabase, objects_per_program: int) -> list[dict]:
         program_objects = []
 
         # Quality 4 (secure) - prefer objects with flags set
-        q4 = supabase.table('objects').select('*') \
+        q4 = supabase.table('targets').select('*') \
             .eq('program_id', pid) \
             .eq('redshift_quality', 4) \
             .gt('spectral_features', 0) \
             .limit(2) \
             .execute()
         for obj in q4.data:
-            if obj['object_id'] not in seen_ids:
+            if obj['target_id'] not in seen_ids:
                 program_objects.append(obj)
-                seen_ids.add(obj['object_id'])
+                seen_ids.add(obj['target_id'])
 
         # If we didn't get 2 quality-4, get more without flag requirement
         if len([o for o in program_objects if o['redshift_quality'] == 4]) < 2:
-            q4b = supabase.table('objects').select('*') \
+            q4b = supabase.table('targets').select('*') \
                 .eq('program_id', pid) \
                 .eq('redshift_quality', 4) \
                 .limit(2) \
                 .execute()
             for obj in q4b.data:
-                if obj['object_id'] not in seen_ids:
+                if obj['target_id'] not in seen_ids:
                     program_objects.append(obj)
-                    seen_ids.add(obj['object_id'])
+                    seen_ids.add(obj['target_id'])
                     if len(program_objects) >= 2:
                         break
 
         # Quality 2-3 (tentative/probable)
         for q in [3, 2]:
-            qn = supabase.table('objects').select('*') \
+            qn = supabase.table('targets').select('*') \
                 .eq('program_id', pid) \
                 .eq('redshift_quality', q) \
                 .limit(1) \
                 .execute()
             for obj in qn.data:
-                if obj['object_id'] not in seen_ids:
+                if obj['target_id'] not in seen_ids:
                     program_objects.append(obj)
-                    seen_ids.add(obj['object_id'])
+                    seen_ids.add(obj['target_id'])
                     break
 
         # Quality 0 (uninspected)
-        q0 = supabase.table('objects').select('*') \
+        q0 = supabase.table('targets').select('*') \
             .eq('program_id', pid) \
             .eq('redshift_quality', 0) \
             .limit(1) \
             .execute()
         for obj in q0.data:
-            if obj['object_id'] not in seen_ids:
+            if obj['target_id'] not in seen_ids:
                 program_objects.append(obj)
-                seen_ids.add(obj['object_id'])
+                seen_ids.add(obj['target_id'])
 
         # Quality 1 (impossible)
-        q1 = supabase.table('objects').select('*') \
+        q1 = supabase.table('targets').select('*') \
             .eq('program_id', pid) \
             .eq('redshift_quality', 1) \
             .limit(1) \
             .execute()
         for obj in q1.data:
-            if obj['object_id'] not in seen_ids:
+            if obj['target_id'] not in seen_ids:
                 program_objects.append(obj)
-                seen_ids.add(obj['object_id'])
+                seen_ids.add(obj['target_id'])
 
         # Cap at objects_per_program
         program_objects = program_objects[:objects_per_program]
@@ -307,47 +307,47 @@ def build_observations_from_objects(objects: list[dict]) -> list[dict]:
     return observations
 
 
-def fetch_spectra(supabase, object_ids: list[str]) -> list[dict]:
-    """Fetch all spectra for the given object_ids."""
-    if not object_ids:
+def fetch_spectra(supabase, target_ids: list[str]) -> list[dict]:
+    """Fetch all spectra for the given target_ids."""
+    if not target_ids:
         return []
 
     all_spectra = []
     # Batch to avoid URL length limits
     batch_size = 50
-    for i in range(0, len(object_ids), batch_size):
-        batch = object_ids[i:i + batch_size]
-        resp = supabase.table('spectra').select('*').in_('object_id', batch).execute()
+    for i in range(0, len(target_ids), batch_size):
+        batch = target_ids[i:i + batch_size]
+        resp = supabase.table('spectra').select('*').in_('target_id', batch).execute()
         all_spectra.extend(resp.data)
 
     return all_spectra
 
 
-def fetch_comments(supabase, object_int_ids: list[int]) -> list[dict]:
-    """Fetch comments for the given object integer IDs."""
-    if not object_int_ids:
+def fetch_comments(supabase, target_int_ids: list[int]) -> list[dict]:
+    """Fetch comments for the given target integer IDs."""
+    if not target_int_ids:
         return []
 
     all_comments = []
     batch_size = 50
-    for i in range(0, len(object_int_ids), batch_size):
-        batch = object_int_ids[i:i + batch_size]
-        resp = supabase.table('comments').select('*').in_('object_id', batch).execute()
+    for i in range(0, len(target_int_ids), batch_size):
+        batch = target_int_ids[i:i + batch_size]
+        resp = supabase.table('comments').select('*').in_('target_id', batch).execute()
         all_comments.extend(resp.data)
 
     return all_comments
 
 
-def fetch_flag_audit_log(supabase, object_int_ids: list[int]) -> list[dict]:
-    """Fetch flag audit log entries for the given object integer IDs."""
-    if not object_int_ids:
+def fetch_flag_audit_log(supabase, target_int_ids: list[int]) -> list[dict]:
+    """Fetch flag audit log entries for the given target integer IDs."""
+    if not target_int_ids:
         return []
 
     all_entries = []
     batch_size = 50
-    for i in range(0, len(object_int_ids), batch_size):
-        batch = object_int_ids[i:i + batch_size]
-        resp = supabase.table('flag_audit_log').select('*').in_('object_id', batch).execute()
+    for i in range(0, len(target_int_ids), batch_size):
+        batch = target_int_ids[i:i + batch_size]
+        resp = supabase.table('flag_audit_log').select('*').in_('target_id', batch).execute()
         all_entries.extend(resp.data)
 
     return all_entries
@@ -466,9 +466,9 @@ VALUES ({sql_escape(user['id'])}, {sql_escape(user['full_name'])}, {sql_escape(u
 
 
 def generate_objects_sql(objects: list[dict]) -> str:
-    """Generate INSERT statements for objects (skipping generated columns: redshift, max_snr)."""
+    """Generate INSERT statements for targets (skipping generated columns: redshift, max_snr)."""
     lines = ['-- ============================================']
-    lines.append('-- 5. Objects (from production)')
+    lines.append('-- 5. Targets (from production)')
     lines.append('-- ============================================')
     lines.append('')
 
@@ -484,8 +484,8 @@ def generate_objects_sql(objects: list[dict]) -> str:
         else:
             redshift_inspected_sql = 'NULL'
 
-        lines.append(f"""INSERT INTO public.objects (id, object_id, program_slug, observation, field, ra, dec, redshift_auto, redshift_inspected, redshift_quality, spectral_features, object_flags, dq_flags, last_inspected_at, last_inspected_by, has_sed_plot)
-VALUES ({obj['id']}, {sql_escape(obj['object_id'])}, {sql_escape(obj['program_slug'])}, {sql_escape(obj.get('observation', ''))}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {obj.get('spectral_features', 0)}, {obj.get('object_flags', 0)}, {obj.get('dq_flags', 0)}, {inspected_at}, {inspected_by}, {sql_escape(obj.get('has_sed_plot', False))});""")
+        lines.append(f"""INSERT INTO public.targets (id, target_id, program_slug, observation, field, ra, dec, redshift_auto, redshift_inspected, redshift_quality, spectral_features, object_flags, dq_flags, last_inspected_at, last_inspected_by, has_sed_plot)
+VALUES ({obj['id']}, {sql_escape(obj['target_id'])}, {sql_escape(obj['program_slug'])}, {sql_escape(obj.get('observation', ''))}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {obj.get('spectral_features', 0)}, {obj.get('object_flags', 0)}, {obj.get('dq_flags', 0)}, {inspected_at}, {inspected_by}, {sql_escape(obj.get('has_sed_plot', False))});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -499,8 +499,8 @@ def generate_spectra_sql(spectra: list[dict]) -> str:
     lines.append('')
 
     for spec in spectra:
-        lines.append(f"""INSERT INTO public.spectra (id, object_id, grating, fits_path, reduction_version, signal_to_noise, thumbnail_svg_fnu, thumbnail_svg_flambda)
-VALUES ({spec['id']}, {sql_escape(spec['object_id'])}, {sql_escape(spec['grating'])}, {sql_escape(spec['fits_path'])}, {sql_escape(spec.get('reduction_version', 'v0.1'))}, {sql_escape(spec.get('signal_to_noise'))}, {sql_escape(spec.get('thumbnail_svg_fnu'))}, {sql_escape(spec.get('thumbnail_svg_flambda'))});""")
+        lines.append(f"""INSERT INTO public.spectra (id, target_id, grating, fits_path, reduction_version, signal_to_noise, thumbnail_svg_fnu, thumbnail_svg_flambda)
+VALUES ({spec['id']}, {sql_escape(spec.get('target_id') or spec.get('object_id'))}, {sql_escape(spec['grating'])}, {sql_escape(spec['fits_path'])}, {sql_escape(spec.get('reduction_version', 'v0.1'))}, {sql_escape(spec.get('signal_to_noise'))}, {sql_escape(spec.get('thumbnail_svg_fnu'))}, {sql_escape(spec.get('thumbnail_svg_flambda'))});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -543,11 +543,11 @@ def generate_comments_sql(comments: list[dict], object_id_map: dict[int, int]) -
 
     for comment in comments:
         # Remap object_id (integer) and user_id to test users
-        obj_int_id = comment['object_id']
+        obj_int_id = comment['target_id']
         if obj_int_id not in object_id_map:
             continue
 
-        lines.append(f"""INSERT INTO public.comments (id, object_id, user_id, content, created_at, is_deleted)
+        lines.append(f"""INSERT INTO public.comments (id, target_id, user_id, content, created_at, is_deleted)
 VALUES ({comment['id']}, {obj_int_id}, {sql_escape(ADMIN_UUID)}, {sql_escape(comment['content'])}, {sql_escape(comment.get('created_at', 'now()'))}, {sql_escape(comment.get('is_deleted', False))});""")
 
     # Add a sample comment if none exist
@@ -567,11 +567,11 @@ def generate_flag_audit_log_sql(entries: list[dict], object_id_map: dict[int, in
     lines.append('')
 
     for entry in entries:
-        obj_int_id = entry['object_id']
+        obj_int_id = entry['target_id']
         if obj_int_id not in object_id_map:
             continue
 
-        lines.append(f"""INSERT INTO public.flag_audit_log (id, object_id, user_id, field_name, old_value, new_value, changed_at)
+        lines.append(f"""INSERT INTO public.flag_audit_log (id, target_id, user_id, field_name, old_value, new_value, changed_at)
 VALUES ({entry['id']}, {obj_int_id}, {sql_escape(ADMIN_UUID)}, {sql_escape(entry['field_name'])}, {sql_escape(entry.get('old_value'))}, {sql_escape(entry.get('new_value'))}, {sql_escape(entry.get('changed_at', 'now()'))});""")
 
     if not entries:
@@ -612,9 +612,9 @@ def generate_sequence_resets(objects: list[dict], spectra: list[dict],
     lines.append('-- ============================================')
     lines.append('')
 
-    # Objects
+    # Targets
     max_obj_id = max((o['id'] for o in objects), default=0)
-    lines.append(f"SELECT setval('public.objects_id_seq', {max_obj_id + 1}, false);")
+    lines.append(f"SELECT setval('public.targets_id_seq', {max_obj_id + 1}, false);")
 
     # Spectra
     max_spec_id = max((s['id'] for s in spectra), default=0)
@@ -680,7 +680,7 @@ def main():
         for i, sid in enumerate([90001, 90002, 90003]):
             synth = {
                 'id': max_id + i,
-                'object_id': f'gto_wide_egs_p1_{sid}',
+                'target_id': f'gto_wide_egs_p1_{sid}',
                 'program_id': 1213,
                 'program_slug': 'gto_wide',
                 'field': 'egs',
@@ -703,7 +703,7 @@ def main():
         print(f"    Added 3 synthetic objects (gto_wide_egs_p1)")
 
     # Build maps
-    object_ids = [o['object_id'] for o in objects]
+    object_ids = [o['target_id'] for o in objects]
     object_int_ids = [o['id'] for o in objects]
     object_id_map = {o['id']: o['id'] for o in objects}  # identity map (keep original IDs)
 

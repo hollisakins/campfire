@@ -47,7 +47,7 @@ export const ProfileStats: React.FC<ProfileStatsProps> = ({ stats }) => {
       </div>
 
       <div className="flex gap-3">
-        <Badge value={stats.objects_inspected} label="INSPECTED" compact />
+        <Badge value={stats.targets_inspected} label="INSPECTED" compact />
         <Badge value={stats.comments_posted} label="COMMENTS" compact />
         <Badge value={formatRelativeTime(stats.last_activity)} label="LAST ACTIVE" compact />
       </div>

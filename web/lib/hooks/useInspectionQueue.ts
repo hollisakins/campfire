@@ -5,22 +5,22 @@ import { getInspectionQueueIds, type FilterOptions } from '@/lib/actions/spectra
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 
 interface UseInspectionQueueOptions {
-  initialObjectId: string;
+  initialTargetId: string;
   filters: Partial<FilterOptions>;
   sortColumn: SortColumn;
   sortDirection: SortDirection;
 }
 
 interface InspectionQueueState {
-  /** Ordered list of object IDs in the queue */
+  /** Ordered list of target IDs in the queue */
   ids: string[];
   /** Current index in the queue (-1 if not found) */
   index: number;
-  /** Total number of objects in the queue */
+  /** Total number of targets in the queue */
   total: number;
-  /** Previous object ID, or null if at start */
+  /** Previous target ID, or null if at start */
   prev: string | null;
-  /** Next object ID, or null if at end */
+  /** Next target ID, or null if at end */
   next: string | null;
   /** Whether the queue is still loading */
   loading: boolean;
@@ -28,17 +28,17 @@ interface InspectionQueueState {
   isEmpty: boolean;
   /** Error message, if any */
   error: string | null;
-  /** Whether the initial object was not in the queue (already inspected) */
+  /** Whether the initial target was not in the queue (already inspected) */
   redirected: boolean;
 }
 
 export function useInspectionQueue(options: UseInspectionQueueOptions): InspectionQueueState & {
-  /** Update the current position to a specific object ID */
-  goTo: (objectId: string) => void;
-  /** Get the first object ID in the queue (for redirect) */
+  /** Update the current position to a specific target ID */
+  goTo: (targetId: string) => void;
+  /** Get the first target ID in the queue (for redirect) */
   firstId: string | null;
 } {
-  const { initialObjectId, filters, sortColumn, sortDirection } = options;
+  const { initialTargetId, filters, sortColumn, sortDirection } = options;
 
   const [ids, setIds] = useState<string[]>([]);
   const [index, setIndex] = useState(-1);
@@ -71,12 +71,12 @@ export function useInspectionQueue(options: UseInspectionQueueOptions): Inspecti
           return;
         }
 
-        // Find the initial object in the queue
-        const initialIndex = queueIds.indexOf(initialObjectId);
+        // Find the initial target in the queue
+        const initialIndex = queueIds.indexOf(initialTargetId);
         if (initialIndex >= 0) {
           setIndex(initialIndex);
         } else {
-          // Object not in queue (already inspected) — start at first item
+          // Target not in queue (already inspected) — start at first item
           setIndex(0);
           setRedirected(true);
         }
@@ -95,8 +95,8 @@ export function useInspectionQueue(options: UseInspectionQueueOptions): Inspecti
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // Intentionally empty deps: fetch once on mount with initial values
 
-  const goTo = useCallback((objectId: string) => {
-    const newIndex = ids.indexOf(objectId);
+  const goTo = useCallback((targetId: string) => {
+    const newIndex = ids.indexOf(targetId);
     if (newIndex >= 0) {
       setIndex(newIndex);
     }

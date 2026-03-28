@@ -58,7 +58,7 @@ const DEFAULT_FILTERS: FilterState = {
 };
 
 const ALL_COLUMNS = [
-  { id: 'object_id', label: 'Object ID', alwaysVisible: true },
+  { id: 'target_id', label: 'Target ID', alwaysVisible: true },
   { id: 'field', label: 'Field', defaultVisible: true },
   { id: 'observation', label: 'Observation', defaultVisible: false },
   { id: 'gratings', label: 'Gratings', defaultVisible: true },
@@ -794,8 +794,8 @@ export default function OverflowPanelPage() {
                     >
                       {visibleColumns.map(col => (
                         <td key={col.id} className="px-4 py-2.5 whitespace-nowrap">
-                          {col.id === 'object_id' && (
-                            <span className="font-mono text-sm text-primary">{row.object_id}</span>
+                          {col.id === 'target_id' && (
+                            <span className="font-mono text-sm text-primary">{row.target_id}</span>
                           )}
                           {col.id === 'field' && (
                             <span className="text-text-primary dark:text-slate-200">{row.field}</span>
@@ -805,7 +805,7 @@ export default function OverflowPanelPage() {
                           )}
                           {col.id === 'gratings' && (
                             <div className="flex gap-1">
-                              {row.spectra.map(s => (
+                              {row.spectra.map((s: { grating: string }) => (
                                 <span key={s.grating} className="px-1.5 py-0.5 text-xs rounded bg-slate-100 dark:bg-slate-700 text-text-secondary dark:text-slate-300">
                                   {s.grating}
                                 </span>

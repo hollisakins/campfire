@@ -4,17 +4,17 @@ import { createClient } from '@/lib/supabase/server';
 /**
  * GET /api/objects/[id]
  *
- * Fetch a single object with inspection details.
+ * Fetch a single target with inspection details.
  */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const objectId = parseInt(id, 10);
+  const targetId = parseInt(id, 10);
 
-  if (isNaN(objectId)) {
-    return NextResponse.json({ error: 'Invalid object ID' }, { status: 400 });
+  if (isNaN(targetId)) {
+    return NextResponse.json({ error: 'Invalid target ID' }, { status: 400 });
   }
 
   const supabase = await createClient();
@@ -26,45 +26,45 @@ export async function GET(
   }
 
   try {
-    // Fetch the object
-    const { data: object, error } = await supabase
-      .from('objects')
+    // Fetch the target
+    const { data: target, error } = await supabase
+      .from('targets')
       .select('*')
-      .eq('id', objectId)
+      .eq('id', targetId)
       .single();
 
     if (error) {
-      console.error('Error fetching object:', error);
-      return NextResponse.json({ error: 'Object not found' }, { status: 404 });
+      console.error('Error fetching target:', error);
+      return NextResponse.json({ error: 'Target not found' }, { status: 404 });
     }
 
     // Fetch last inspector's name if exists
     let lastInspectorName = null;
-    if (object.last_inspected_by) {
+    if (target.last_inspected_by) {
       const { data: profile } = await supabase
         .from('user_profiles')
         .select('full_name')
-        .eq('user_id', object.last_inspected_by)
+        .eq('user_id', target.last_inspected_by)
         .single();
       lastInspectorName = profile?.full_name || null;
     }
 
     return NextResponse.json({
       object: {
-        ...object,
+        ...target,
         last_inspector_name: lastInspectorName,
       },
     });
   } catch (error) {
     console.error('Error:', error);
-    return NextResponse.json({ error: 'Failed to fetch object' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to fetch target' }, { status: 500 });
   }
 }
 
 /**
  * PATCH /api/objects/[id]
  *
- * Update inspection fields on an object.
+ * Update inspection fields on a target.
  * Requires can_comment permission.
  * Creates audit log entries for all changes.
  */
@@ -73,10 +73,10 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const objectId = parseInt(id, 10);
+  const targetId = parseInt(id, 10);
 
-  if (isNaN(objectId)) {
-    return NextResponse.json({ error: 'Invalid object ID' }, { status: 400 });
+  if (isNaN(targetId)) {
+    return NextResponse.json({ error: 'Invalid target ID' }, { status: 400 });
   }
 
   const supabase = await createClient();
@@ -108,16 +108,16 @@ export async function PATCH(
       dq_flags,
     } = body;
 
-    // Fetch current object state for audit logging
-    const { data: currentObject, error: fetchError } = await supabase
-      .from('objects')
+    // Fetch current target state for audit logging
+    const { data: currentTarget, error: fetchError } = await supabase
+      .from('targets')
       .select('redshift_inspected, redshift_quality, spectral_features, object_flags, dq_flags')
-      .eq('id', objectId)
+      .eq('id', targetId)
       .single();
 
     if (fetchError) {
-      console.error('Error fetching current object:', fetchError);
-      return NextResponse.json({ error: 'Object not found' }, { status: 404 });
+      console.error('Error fetching current target:', fetchError);
+      return NextResponse.json({ error: 'Target not found' }, { status: 404 });
     }
 
     // Build updates object
@@ -128,7 +128,7 @@ export async function PATCH(
 
     // Track changes for audit log
     const auditEntries: Array<{
-      object_id: number;
+      target_id: number;
       user_id: string;
       field_name: string;
       old_value: number | null;
@@ -141,13 +141,13 @@ export async function PATCH(
         ? null
         : parseFloat(redshift_inspected);
 
-      if (newValue !== currentObject.redshift_inspected) {
+      if (newValue !== currentTarget.redshift_inspected) {
         updates.redshift_inspected = newValue;
         auditEntries.push({
-          object_id: objectId,
+          target_id: targetId,
           user_id: user.id,
           field_name: 'redshift_inspected',
-          old_value: currentObject.redshift_inspected,
+          old_value: currentTarget.redshift_inspected,
           new_value: newValue,
         });
       }
@@ -156,13 +156,13 @@ export async function PATCH(
     // Handle redshift_quality
     if (redshift_quality !== undefined) {
       const newValue = parseInt(redshift_quality, 10);
-      if (!isNaN(newValue) && newValue !== currentObject.redshift_quality) {
+      if (!isNaN(newValue) && newValue !== currentTarget.redshift_quality) {
         updates.redshift_quality = newValue;
         auditEntries.push({
-          object_id: objectId,
+          target_id: targetId,
           user_id: user.id,
           field_name: 'redshift_quality',
-          old_value: currentObject.redshift_quality,
+          old_value: currentTarget.redshift_quality,
           new_value: newValue,
         });
       }
@@ -171,13 +171,13 @@ export async function PATCH(
     // Handle spectral_features
     if (spectral_features !== undefined) {
       const newValue = parseInt(spectral_features, 10);
-      if (!isNaN(newValue) && newValue !== currentObject.spectral_features) {
+      if (!isNaN(newValue) && newValue !== currentTarget.spectral_features) {
         updates.spectral_features = newValue;
         auditEntries.push({
-          object_id: objectId,
+          target_id: targetId,
           user_id: user.id,
           field_name: 'spectral_features',
-          old_value: currentObject.spectral_features,
+          old_value: currentTarget.spectral_features,
           new_value: newValue,
         });
       }
@@ -186,13 +186,13 @@ export async function PATCH(
     // Handle object_flags
     if (object_flags !== undefined) {
       const newValue = parseInt(object_flags, 10);
-      if (!isNaN(newValue) && newValue !== currentObject.object_flags) {
+      if (!isNaN(newValue) && newValue !== currentTarget.object_flags) {
         updates.object_flags = newValue;
         auditEntries.push({
-          object_id: objectId,
+          target_id: targetId,
           user_id: user.id,
           field_name: 'object_flags',
-          old_value: currentObject.object_flags,
+          old_value: currentTarget.object_flags,
           new_value: newValue,
         });
       }
@@ -201,13 +201,13 @@ export async function PATCH(
     // Handle dq_flags
     if (dq_flags !== undefined) {
       const newValue = parseInt(dq_flags, 10);
-      if (!isNaN(newValue) && newValue !== currentObject.dq_flags) {
+      if (!isNaN(newValue) && newValue !== currentTarget.dq_flags) {
         updates.dq_flags = newValue;
         auditEntries.push({
-          object_id: objectId,
+          target_id: targetId,
           user_id: user.id,
           field_name: 'dq_flags',
-          old_value: currentObject.dq_flags,
+          old_value: currentTarget.dq_flags,
           new_value: newValue,
         });
       }
@@ -218,17 +218,17 @@ export async function PATCH(
       return NextResponse.json({ message: 'No changes detected' });
     }
 
-    // Update the object — RLS enforces program access + can_comment
+    // Update the target — RLS enforces program access + can_comment
     const { data: updatedRows, error: updateError } = await supabase
-      .from('objects')
+      .from('targets')
       .update(updates)
-      .eq('id', objectId)
+      .eq('id', targetId)
       .select();
 
     if (updateError) {
-      console.error('Error updating object:', updateError);
+      console.error('Error updating target:', updateError);
       return NextResponse.json({
-        error: 'Failed to update object',
+        error: 'Failed to update target',
         details: updateError.message,
         code: updateError.code,
       }, { status: 500 });
@@ -237,11 +237,11 @@ export async function PATCH(
     if (!updatedRows || updatedRows.length === 0) {
       return NextResponse.json({
         error: 'Update blocked by access policy',
-        details: 'You do not have permission to modify this object.',
+        details: 'You do not have permission to modify this target.',
       }, { status: 403 });
     }
 
-    const updatedObject = updatedRows[0];
+    const updatedTarget = updatedRows[0];
 
     // Insert audit log entries — RLS enforces program access
     if (auditEntries.length > 0) {
@@ -255,12 +255,12 @@ export async function PATCH(
       }
     }
 
-    // Propagate to cross-matched objects when quality is set to Secure
+    // Propagate to cross-matched targets when quality is set to Secure
     let propagatedCount = 0;
     if (updates.redshift_quality === 4) {
       try {
         const { data: propResult } = await supabase.rpc('propagate_crossmatch_inspection', {
-          p_object_id: objectId,
+          p_target_id: targetId,
         });
         propagatedCount = propResult ?? 0;
       } catch (e) {
@@ -270,12 +270,12 @@ export async function PATCH(
     }
 
     return NextResponse.json({
-      object: updatedObject,
+      object: updatedTarget,
       changes: auditEntries.length,
       propagated: propagatedCount,
     });
   } catch (error) {
     console.error('Error:', error);
-    return NextResponse.json({ error: 'Failed to update object' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to update target' }, { status: 500 });
   }
 }

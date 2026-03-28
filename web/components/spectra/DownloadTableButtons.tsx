@@ -20,7 +20,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
   filters,
   sortColumn,
   sortDirection,
-  viewMode = 'objects',
+  viewMode = 'targets',
   loading = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -192,7 +192,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
               Download Results
             </div>
             <div className="text-xs text-text-secondary dark:text-slate-400 mt-0.5">
-              {loading ? 'Loading...' : `${totalCount.toLocaleString()} ${viewMode === 'spectra' ? 'spectra' : (totalCount === 1 ? 'object' : 'objects')}`}
+              {loading ? 'Loading...' : `${totalCount.toLocaleString()} ${viewMode === 'spectra' ? 'spectra' : (totalCount === 1 ? 'target' : 'targets')}`}
             </div>
           </div>
 

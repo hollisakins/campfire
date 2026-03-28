@@ -156,9 +156,9 @@ export function InlineMultiFilter({
       {/* Mode description (hidden when mode selector is hidden) */}
       {!hideModeSelector && (
         <p className={`mt-2 text-xs text-text-secondary dark:text-slate-500 h-4 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-0'}`}>
-          {mode === 'any' && 'Show objects with any of the selected'}
-          {mode === 'all' && 'Show objects with all of the selected'}
-          {mode === 'none' && 'Exclude objects with any of the selected'}
+          {mode === 'any' && 'Show targets with any of the selected'}
+          {mode === 'all' && 'Show targets with all of the selected'}
+          {mode === 'none' && 'Exclude targets with any of the selected'}
           {!hasSelection && '\u00A0'}
         </p>
       )}

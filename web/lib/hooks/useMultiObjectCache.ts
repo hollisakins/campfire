@@ -1,10 +1,10 @@
 'use client';
 
 import { useCallback } from 'react';
-import type { SpectrumObject, Spectrum } from '@/lib/types';
+import type { SpectrumTarget, Spectrum } from '@/lib/types';
 
 export interface NavigationData {
-  spectrum: SpectrumObject;
+  spectrum: SpectrumTarget;
   rgbImageUrl: string | null;
   nav: {
     prev: string | null;
@@ -15,7 +15,7 @@ export interface NavigationData {
 }
 
 interface CachedObjectData {
-  spectrum: SpectrumObject;
+  spectrum: SpectrumTarget;
   rgbImageUrl: string | null;
   nav: {
     prev: string | null;
@@ -36,29 +36,29 @@ export function useMultiObjectCache() {
    * Get cached object data with TTL check
    * Returns undefined if not in cache or expired
    */
-  const getCached = useCallback((objectId: string): CachedObjectData | undefined => {
-    const cached = objectCache.get(objectId);
+  const getCached = useCallback((targetId: string): CachedObjectData | undefined => {
+    const cached = objectCache.get(targetId);
 
     if (!cached) {
-      console.log(`[ObjectCache] MISS: ${objectId}`);
+      console.log(`[ObjectCache] MISS: ${targetId}`);
       return undefined;
     }
 
     // Check if expired
     if (Date.now() - cached.timestamp > CACHE_TTL) {
-      console.log(`[ObjectCache] EXPIRED: ${objectId}`);
-      objectCache.delete(objectId);
+      console.log(`[ObjectCache] EXPIRED: ${targetId}`);
+      objectCache.delete(targetId);
       return undefined;
     }
 
-    console.log(`[ObjectCache] HIT: ${objectId}`);
+    console.log(`[ObjectCache] HIT: ${targetId}`);
     return cached;
   }, []);
 
   /**
    * Store object data in cache with LRU eviction
    */
-  const setCached = useCallback((objectId: string, data: NavigationData): void => {
+  const setCached = useCallback((targetId: string, data: NavigationData): void => {
     // LRU eviction: remove oldest entry if at max size
     if (objectCache.size >= MAX_CACHE_SIZE) {
       const oldestKey = objectCache.keys().next().value;
@@ -68,14 +68,14 @@ export function useMultiObjectCache() {
       }
     }
 
-    objectCache.set(objectId, {
+    objectCache.set(targetId, {
       spectrum: data.spectrum,
       rgbImageUrl: data.rgbImageUrl,
       nav: data.nav,
       timestamp: Date.now(),
     });
 
-    console.log(`[ObjectCache] SET: ${objectId} (cache size: ${objectCache.size})`);
+    console.log(`[ObjectCache] SET: ${targetId} (cache size: ${objectCache.size})`);
   }, []);
 
   /**
@@ -136,10 +136,10 @@ export function useMultiObjectCache() {
   /**
    * Delete a single entry from the cache (e.g. after saving inspection data)
    */
-  const deleteCached = useCallback((objectId: string): void => {
-    if (objectCache.has(objectId)) {
-      objectCache.delete(objectId);
-      console.log(`[ObjectCache] INVALIDATED: ${objectId} (cache size: ${objectCache.size})`);
+  const deleteCached = useCallback((targetId: string): void => {
+    if (objectCache.has(targetId)) {
+      objectCache.delete(targetId);
+      console.log(`[ObjectCache] INVALIDATED: ${targetId} (cache size: ${objectCache.size})`);
     }
   }, []);
 

@@ -16,17 +16,27 @@ def get_supabase_client(config: dict) -> Client:
     )
 
 
-def check_existing_objects(client: Client, object_ids: list[str]) -> set[str]:
-    """Return the subset of object_ids that already exist in the database."""
-    if not object_ids:
-        return set()
+REDSHIFT_DRIFT_THRESHOLD = 0.03
 
-    existing = set()
+
+def check_existing_objects(client: Client, target_ids: list[str]) -> dict[str, dict]:
+    """
+    Return existing targets as a dict keyed by target_id.
+
+    Each value contains inspection-relevant fields needed for the
+    redshift drift check during upsert.
+    """
+    if not target_ids:
+        return {}
+
+    fields = 'target_id, redshift_auto, redshift_inspected, redshift_quality'
+    existing = {}
     batch_size = 500
-    for i in range(0, len(object_ids), batch_size):
-        batch = object_ids[i:i + batch_size]
-        resp = client.table('objects').select('object_id').in_('object_id', batch).execute()
-        existing.update(row['object_id'] for row in resp.data)
+    for i in range(0, len(target_ids), batch_size):
+        batch = target_ids[i:i + batch_size]
+        resp = client.table('targets').select(fields).in_('target_id', batch).execute()
+        for row in resp.data:
+            existing[row['target_id']] = row
     return existing
 
 
@@ -98,11 +108,12 @@ def batch_upsert_objects(
     if objects_with_sed is None:
         objects_with_sed = set()
 
-    object_ids = [o['object_id'] for o in objects]
-    existing = check_existing_objects(client, object_ids)
+    target_ids = [o['object_id'] for o in objects]
+    existing = check_existing_objects(client, target_ids)
 
     new_records = []
     update_records = []
+    n_quality_reset = 0
 
     for obj in objects:
         oid = obj['object_id']
@@ -112,7 +123,7 @@ def batch_upsert_objects(
         if is_existing and not force_overwrite:
             # Update pipeline fields only
             data = {
-                'object_id': oid,
+                'target_id': oid,
                 'program_slug': obj['program_slug'],
                 'observation': obj['observation'],
                 'field': field,
@@ -121,11 +132,28 @@ def batch_upsert_objects(
                 'redshift_auto': obj['redshift_best'],
                 'has_sed_plot': has_sed,
             }
+
+            # Reset Secure quality if redshift_auto drifted and there's
+            # no manual override anchoring the redshift
+            old = existing[oid]
+            if (
+                old['redshift_quality'] == 4
+                and old['redshift_inspected'] is None
+                and old['redshift_auto'] is not None
+                and obj['redshift_best'] is not None
+                and abs(float(old['redshift_auto']) - float(obj['redshift_best'])) > REDSHIFT_DRIFT_THRESHOLD
+            ):
+                data['redshift_quality'] = 0
+                data['last_inspected_at'] = None
+                data['last_inspected_by'] = None
+                n_quality_reset += 1
+                print(f"    quality reset: {oid} z_auto {old['redshift_auto']:.4f} → {obj['redshift_best']:.4f}")
+
             update_records.append(data)
         elif is_existing and force_overwrite:
             # Reset everything
             data = {
-                'object_id': oid,
+                'target_id': oid,
                 'program_slug': obj['program_slug'],
                 'observation': obj['observation'],
                 'field': field,
@@ -143,9 +171,9 @@ def batch_upsert_objects(
             }
             update_records.append(data)
         else:
-            # New object
+            # New target
             data = {
-                'object_id': oid,
+                'target_id': oid,
                 'program_slug': obj['program_slug'],
                 'observation': obj['observation'],
                 'field': field,
@@ -166,15 +194,15 @@ def batch_upsert_objects(
     # Batch insert new records
     for i in range(0, len(new_records), batch_size):
         batch = new_records[i:i + batch_size]
-        client.table('objects').insert(batch).execute()
+        client.table('targets').insert(batch).execute()
 
     # Batch upsert updates
     for i in range(0, len(update_records), batch_size):
         batch = update_records[i:i + batch_size]
-        client.table('objects').upsert(batch, on_conflict='object_id').execute()
+        client.table('targets').upsert(batch, on_conflict='target_id').execute()
 
-    new_ids = [r['object_id'] for r in new_records]
-    return len(objects), new_ids
+    new_ids = [r['target_id'] for r in new_records]
+    return len(objects), new_ids, n_quality_reset
 
 
 def batch_upsert_spectra(
@@ -197,20 +225,20 @@ def batch_upsert_spectra(
         return 0
 
     # Fetch existing spectra to split insert vs update
-    object_ids = list(set(r['object_id'] for r in spectra))
-    existing_map = {}  # (object_id, grating) -> id
+    target_ids = list(set(r['target_id'] for r in spectra))
+    existing_map = {}  # (target_id, grating) -> id
 
-    for i in range(0, len(object_ids), batch_size):
-        batch_ids = object_ids[i:i + batch_size]
-        resp = client.table('spectra').select('id,object_id,grating').in_('object_id', batch_ids).execute()
+    for i in range(0, len(target_ids), batch_size):
+        batch_ids = target_ids[i:i + batch_size]
+        resp = client.table('spectra').select('id,target_id,grating').in_('target_id', batch_ids).execute()
         for row in resp.data:
-            existing_map[(row['object_id'], row['grating'])] = row['id']
+            existing_map[(row['target_id'], row['grating'])] = row['id']
 
     new_records = []
     update_records = []
 
     for record in spectra:
-        key = (record['object_id'], record['grating'])
+        key = (record['target_id'], record['grating'])
         if key in existing_map:
             update_records.append({**record, 'id': existing_map[key]})
         else:
@@ -229,42 +257,42 @@ def batch_upsert_spectra(
 
 def propagate_crossmatches(
     client: Client,
-    object_ids: list[str],
+    target_ids: list[str],
     batch_size: int = 500,
 ) -> int:
     """
-    Check new objects against existing inspected cross-matches.
+    Check new targets against existing inspected cross-matches.
 
-    For each new object (quality=0), calls the DB function to check if
-    a nearby Secure (quality=4) object with matching redshift exists.
-    If so, the new object is automatically marked Secure.
+    For each new target (quality=0), calls the DB function to check if
+    a nearby Secure (quality=4) target with matching redshift exists.
+    If so, the new target is automatically marked Secure.
 
     Args:
-        object_ids: String object_ids of newly inserted objects
+        target_ids: String target_ids of newly inserted targets
         batch_size: Records per batch for ID lookups
 
     Returns:
-        Number of objects auto-secured
+        Number of targets auto-secured
     """
-    if not object_ids:
+    if not target_ids:
         return 0
 
-    # Batch-fetch integer IDs for the new objects
+    # Batch-fetch integer IDs for the new targets
     id_map: dict[str, int] = {}
-    for i in range(0, len(object_ids), batch_size):
-        batch = object_ids[i:i + batch_size]
-        resp = client.table('objects').select('id, object_id').in_('object_id', batch).execute()
+    for i in range(0, len(target_ids), batch_size):
+        batch = target_ids[i:i + batch_size]
+        resp = client.table('targets').select('id, target_id').in_('target_id', batch).execute()
         for row in resp.data:
-            id_map[row['object_id']] = row['id']
+            id_map[row['target_id']] = row['id']
 
     total = 0
-    for oid in object_ids:
+    for oid in target_ids:
         db_id = id_map.get(oid)
         if db_id is None:
             continue
         try:
             result = client.rpc('propagate_crossmatch_inspection', {
-                'p_object_id': db_id,
+                'p_target_id': db_id,
             }).execute()
             total += result.data or 0
         except Exception as e:
@@ -275,17 +303,17 @@ def propagate_crossmatches(
 
 def update_has_sed_plot(
     client: Client,
-    object_ids: set[str],
+    target_ids: set[str],
     batch_size: int = 500,
 ) -> int:
-    """Set has_sed_plot = true for the given object IDs."""
-    if not object_ids:
+    """Set has_sed_plot = true for the given target IDs."""
+    if not target_ids:
         return 0
 
-    id_list = list(object_ids)
+    id_list = list(target_ids)
     for i in range(0, len(id_list), batch_size):
         batch = id_list[i:i + batch_size]
-        client.table('objects').update({'has_sed_plot': True}).in_('object_id', batch).execute()
+        client.table('targets').update({'has_sed_plot': True}).in_('target_id', batch).execute()
 
     return len(id_list)
 

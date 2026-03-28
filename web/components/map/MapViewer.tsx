@@ -140,7 +140,7 @@ interface MapViewerProps {
   initialFilter?: string;
   initialCenter?: { ra: number; dec: number };
   initialZoom?: number;
-  highlightObjectId?: string;
+  highlightTargetId?: string;
   markerFilter?: (marker: MapMarker) => boolean;
   filteredIdSet?: Set<string> | null;
   onOpenFilters?: () => void;
@@ -154,7 +154,7 @@ export function MapViewer({
   initialFilter,
   initialCenter,
   initialZoom,
-  highlightObjectId,
+  highlightTargetId,
   markerFilter,
   filteredIdSet,
   onOpenFilters,
@@ -392,7 +392,7 @@ export function MapViewer({
           markers={markers}
           wcs={activeLayer.wcs_params}
           visible={showMarkers}
-          highlightObjectId={highlightObjectId}
+          highlightTargetId={highlightTargetId}
           markerFilter={markerFilter}
           onMarkerClick={(marker, latLng) => setPopupState({ marker, latLng })}
         />
@@ -408,11 +408,11 @@ export function MapViewer({
               <div className="text-sm min-w-[180px]">
                 <div className="font-mono font-bold mb-1">
                   <Link
-                    href={`/spectra/${encodeURIComponent(popupState.marker.object_id)}`}
+                    href={`/spectra/${encodeURIComponent(popupState.marker.target_id)}`}
                     className="text-blue-600 hover:text-blue-800 underline"
                     onClick={() => sessionStorage.setItem('campfire-map-return-url', window.location.href)}
                   >
-                    {popupState.marker.object_id}
+                    {popupState.marker.target_id}
                   </Link>
                 </div>
                 <div className="space-y-0.5 text-xs">

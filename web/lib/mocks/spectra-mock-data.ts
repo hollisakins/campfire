@@ -3,7 +3,7 @@
  * Provides diverse test data without requiring database access
  */
 
-import type { SpectrumObject, Spectrum, Program } from '@/lib/types';
+import type { SpectrumTarget, Spectrum, Program } from '@/lib/types';
 
 // Mock Programs
 export const MOCK_PROGRAMS: Program[] = [
@@ -29,7 +29,7 @@ const GRATINGS = ['PRISM', 'G140M', 'G235M', 'G395M'] as const;
 function generateSpectra(objectId: string, gratingSet: string[], baseSNR: number): Spectrum[] {
   return gratingSet.map((grating) => ({
     id: Math.floor(Math.random() * 100000),
-    object_id: objectId,
+    target_id: objectId,
     grating,
     fits_path: `s3://campfire-data/${objectId}/${grating.toLowerCase()}.fits`,
     reduction_version: 'v0.3',
@@ -40,8 +40,8 @@ function generateSpectra(objectId: string, gratingSet: string[], baseSNR: number
 }
 
 // Generate 75 mock objects with realistic distributions
-function generateMockSpectra(): SpectrumObject[] {
-  const objects: SpectrumObject[] = [];
+function generateMockSpectra(): SpectrumTarget[] {
+  const objects: SpectrumTarget[] = [];
   let id = 1;
 
   // High-z objects (z > 7) with various configurations
@@ -140,7 +140,7 @@ function generateMockSpectra(): SpectrumObject[] {
 
     objects.push({
       id: id++,
-      object_id: objectId,
+      target_id: objectId,
       program_slug: config.program.slug,
       program_name: config.program.program_name || undefined,
       field: config.field,
@@ -163,13 +163,13 @@ function generateMockSpectra(): SpectrumObject[] {
       num_gratings: config.gratings.length,
       // Extended field for future column testing
       total_exptime: totalExptime,
-    } as SpectrumObject & { total_exptime: number });
+    } as SpectrumTarget & { total_exptime: number });
   }
 
   return objects;
 }
 
-export const MOCK_SPECTRA: (SpectrumObject & { total_exptime?: number })[] = generateMockSpectra();
+export const MOCK_SPECTRA: (SpectrumTarget & { total_exptime?: number })[] = generateMockSpectra();
 
 // Helper function to apply filters to mock data (client-side filtering for prototypes)
 export type FilterMode = 'any' | 'all' | 'none';
@@ -198,9 +198,9 @@ export interface MockFilterOptions {
 }
 
 export function applyFiltersToMockData(
-  data: SpectrumObject[],
+  data: SpectrumTarget[],
   filters: MockFilterOptions
-): SpectrumObject[] {
+): SpectrumTarget[] {
   return data.filter(obj => {
     // Program filter
     if (filters.programs && filters.programs.length > 0) {
@@ -314,7 +314,7 @@ export function applyFiltersToMockData(
 
     // Text search
     if (filters.search && filters.search.length > 0) {
-      if (!obj.object_id.toLowerCase().includes(filters.search.toLowerCase())) return false;
+      if (!obj.target_id.toLowerCase().includes(filters.search.toLowerCase())) return false;
     }
 
     return true;

@@ -33,7 +33,7 @@ interface DownloadStats {
 interface RecentDownload {
   id: string;
   download_type: string;
-  object_count: number | null;
+  target_count: number | null;
   file_count: number | null;
   requested_at: string;
   email: string | null;
@@ -41,7 +41,7 @@ interface RecentDownload {
 }
 
 interface MostDownloaded {
-  object_id: string;
+  target_id: string;
   download_count: number;
 }
 
@@ -333,8 +333,8 @@ export default function AdminDownloadsPage() {
                         </p>
                         <p className="text-xs text-text-secondary dark:text-slate-400">
                           {DOWNLOAD_TYPE_LABELS[download.download_type] || download.download_type}
-                          {download.object_count && download.object_count > 1 && (
-                            <span className="ml-1">({download.object_count} objects)</span>
+                          {download.target_count && download.target_count > 1 && (
+                            <span className="ml-1">({download.target_count} targets)</span>
                           )}
                         </p>
                       </div>
@@ -361,17 +361,17 @@ export default function AdminDownloadsPage() {
           ) : (
             <div className="divide-y divide-border dark:divide-slate-700 max-h-96 overflow-y-auto">
               {stats.most_downloaded_objects.map((item, index) => (
-                <div key={item.object_id} className="px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-700">
+                <div key={item.target_id} className="px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-700">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <span className="w-6 h-6 flex items-center justify-center text-xs font-medium text-text-secondary dark:text-slate-400 bg-gray-100 dark:bg-slate-800 rounded">
                         {index + 1}
                       </span>
                       <Link
-                        href={`/spectra/${item.object_id}`}
+                        href={`/spectra/${item.target_id}`}
                         className="text-sm font-mono text-primary hover:underline"
                       >
-                        {item.object_id}
+                        {item.target_id}
                       </Link>
                     </div>
                     <span className="text-sm text-text-secondary dark:text-slate-400">

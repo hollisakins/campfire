@@ -5,7 +5,7 @@ import { Eye, EyeOff } from 'lucide-react';
 import { TileThumbnail } from './TileThumbnail';
 
 interface TileThumbnailWithToggleProps {
-  objectId: string;
+  targetId: string;
   size?: number;
   displaySize?: number;
   fov?: number;
@@ -24,7 +24,7 @@ interface TileThumbnailWithToggleProps {
  * Toggle is instant (CSS visibility) — no image refetch needed.
  */
 export const TileThumbnailWithToggle: React.FC<TileThumbnailWithToggleProps> = ({
-  objectId,
+  targetId,
   size = 600,
   displaySize = 300,
   fov = 3.2,
@@ -38,7 +38,7 @@ export const TileThumbnailWithToggle: React.FC<TileThumbnailWithToggleProps> = (
   return (
     <div className="space-y-2">
       <TileThumbnail
-        objectId={objectId}
+        targetId={targetId}
         size={size}
         displaySize={displaySize}
         fov={fov}

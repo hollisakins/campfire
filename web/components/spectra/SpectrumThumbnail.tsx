@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 
 interface SpectrumThumbnailProps {
-  objectId: string;
+  targetId: string;
   width?: number;
   height?: number;
 }
@@ -15,7 +15,7 @@ interface SpectrumThumbnailProps {
  * Uses user's accent color and flux unit preference.
  */
 export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
-  objectId,
+  targetId,
   width = 120,
   height = 32,
 }) => {
@@ -26,7 +26,7 @@ export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
   // Build URL with flux unit preference and accent color
   // Encode color without the # prefix to avoid URL issues
   const colorParam = encodeURIComponent(accentColorHex);
-  const thumbnailUrl = `/api/spectrum-thumbnail?object_id=${encodeURIComponent(objectId)}&flux_unit=${spectrumPreferences.fluxUnit}&color=${colorParam}`;
+  const thumbnailUrl = `/api/spectrum-thumbnail?target_id=${encodeURIComponent(targetId)}&flux_unit=${spectrumPreferences.fluxUnit}&color=${colorParam}`;
 
   // Placeholder for loading/error states
   if (hasError) {
@@ -54,7 +54,7 @@ export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={thumbnailUrl}
-        alt={`Spectrum for ${objectId}`}
+        alt={`Spectrum for ${targetId}`}
         width={width}
         height={height}
         loading="lazy"

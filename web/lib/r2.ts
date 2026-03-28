@@ -57,15 +57,15 @@ export async function generateMultipleDownloadUrls(
 }
 
 /**
- * Extract observation name from object_id
+ * Extract observation name from target_id
  * Pattern: {observation}_{number} -> {observation}
  * Example: ember_uds_p4_1018 -> ember_uds_p4
- * @param objectId - Full object ID
+ * @param targetId - Full target ID
  * @returns Observation name (everything before the last underscore and number)
  */
-export function extractObservationName(objectId: string): string {
+export function extractObservationName(targetId: string): string {
   // Split by underscore and find the last part
-  const parts = objectId.split('_');
+  const parts = targetId.split('_');
 
   // Check if the last part is a number
   const lastPart = parts[parts.length - 1];
@@ -74,33 +74,33 @@ export function extractObservationName(objectId: string): string {
     return parts.slice(0, -1).join('_');
   }
 
-  // If not a number pattern, return the full object_id as observation name
-  return objectId;
+  // If not a number pattern, return the full target_id as observation name
+  return targetId;
 }
 
 /**
  * Generate RGB image path in R2 for an object
  * Pattern: rgb/{observation}/{object_id}_rgb.png
  * Example: rgb/ember_uds_p4/ember_uds_p4_1018_rgb.png
- * @param objectId - Full object ID
+ * @param targetId - Full target ID
  * @returns R2 path to RGB image
  */
-export function generateRGBImagePath(objectId: string): string {
-  const observation = extractObservationName(objectId);
-  return `rgb/${observation}/${objectId}_rgb.png`;
+export function generateRGBImagePath(targetId: string): string {
+  const observation = extractObservationName(targetId);
+  return `rgb/${observation}/${targetId}_rgb.png`;
 }
 
 /**
  * Generate a signed URL for an RGB image from R2
- * @param objectId - Full object ID
+ * @param targetId - Full target ID
  * @param expiresIn - URL expiration time in seconds (default: 1 hour)
  * @returns Signed URL for the RGB image
  */
 export async function generateRGBImageUrl(
-  objectId: string,
+  targetId: string,
   expiresIn: number = 3600
 ): Promise<string> {
-  const rgbPath = generateRGBImagePath(objectId);
+  const rgbPath = generateRGBImagePath(targetId);
   return generateDownloadUrl(rgbPath, expiresIn);
 }
 
@@ -108,11 +108,11 @@ export async function generateRGBImageUrl(
  * Generate SED plot path in R2 for an object
  * Pattern: sed/{observation}/{object_id}_sed.pdf
  * Example: sed/ember_uds_p4/ember_uds_p4_1018_sed.pdf
- * @param objectId - Full object ID
+ * @param targetId - Full target ID
  * @returns R2 path to SED plot PDF
  */
-export function generateSEDPlotPath(objectId: string): string {
-  const observation = extractObservationName(objectId);
-  return `sed/${observation}/${objectId}_sed.pdf`;
+export function generateSEDPlotPath(targetId: string): string {
+  const observation = extractObservationName(targetId);
+  return `sed/${observation}/${targetId}_sed.pdf`;
 }
 

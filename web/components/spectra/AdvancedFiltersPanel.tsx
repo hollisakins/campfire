@@ -13,6 +13,7 @@ import {
 } from '@/lib/flags';
 import type { AdvancedFilterOptions } from './SpectraFilterBar';
 import { GRATINGS, type Program } from '@/lib/types';
+import type { ViewMode } from '@/lib/actions/spectra-types';
 import { OBSERVATION_COLORS } from '@/components/map/observation-colors';
 
 interface FilterOption {
@@ -33,6 +34,8 @@ interface AdvancedFiltersPanelProps {
   availablePrograms?: Program[];
   /** Available observations for the observation filter (required when showBasicFilters is true) */
   availableObservations?: string[];
+  /** Current view mode — controls filter labels and behavior */
+  viewMode?: ViewMode;
 }
 
 export function AdvancedFiltersPanel({
@@ -43,6 +46,7 @@ export function AdvancedFiltersPanel({
   showBasicFilters = false,
   availablePrograms = [],
   availableObservations = [],
+  viewMode = 'targets',
 }: AdvancedFiltersPanelProps) {
   // Local state for coordinate search form
   const [coordInput, setCoordInput] = useState('');
@@ -486,22 +490,31 @@ export function AdvancedFiltersPanel({
               onChange={(s) => onFiltersChange({ ...filters, gratings: s as string[] })}
               mode={filters.gratings_mode}
               onModeChange={(m) => onFiltersChange({ ...filters, gratings_mode: m })}
+              hideModeSelector={viewMode === 'spectra'}
             />
+            {viewMode === 'spectra' && (filters.gratings?.length ?? 0) > 0 && (
+              <p className="mt-2 text-xs text-text-secondary dark:text-slate-500">
+                Showing only rows with these gratings
+              </p>
+            )}
           </div>
 
-          {/* Spectra-Specific Section */}
+          {/* S/N and Exposure Time Section */}
           <div className="p-4 border-b border-border dark:border-slate-700">
             <div className="flex items-start gap-2 mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
               <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
               <div className="text-xs text-amber-700 dark:text-amber-300">
-                <strong>Spectra-specific values:</strong> These apply per-spectrum, not per-object.
-                Currently filters to objects where <em>any</em> spectrum matches.
+                {viewMode === 'spectra' ? (
+                  <>These filter by each spectrum&apos;s individual values.</>
+                ) : (
+                  <>These filter by the target&apos;s best value across all gratings.</>
+                )}
               </div>
             </div>
 
             <InlineRange
-              label="Max S/N"
-              description="Signal-to-noise ratio of the best spectrum"
+              label={viewMode === 'spectra' ? 'S/N' : 'Max S/N'}
+              description={viewMode === 'spectra' ? 'Signal-to-noise ratio' : 'Highest signal-to-noise ratio across all gratings'}
               min={filters.max_snr_min ?? null}
               max={filters.max_snr_max ?? null}
               onChange={(min, max) => onFiltersChange({ ...filters, max_snr_min: min, max_snr_max: max })}
@@ -513,8 +526,8 @@ export function AdvancedFiltersPanel({
 
             <div className="mt-4">
               <InlineRange
-                label="Max Exp. Time"
-                description="Maximum exposure time across all gratings (seconds)"
+                label={viewMode === 'spectra' ? 'Exp. Time' : 'Max Exp. Time'}
+                description={viewMode === 'spectra' ? 'Exposure time (seconds)' : 'Longest exposure time across all gratings (seconds)'}
                 min={filters.max_exposure_time_min ?? null}
                 max={filters.max_exposure_time_max ?? null}
                 onChange={(min, max) => onFiltersChange({ ...filters, max_exposure_time_min: min, max_exposure_time_max: max })}

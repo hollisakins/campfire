@@ -26,7 +26,7 @@ interface DownloadPayload {
 }
 
 interface CsvRow {
-  object_id: string;
+  target_id: string;
   field: string;
   ra: number;
   dec: number;
@@ -46,7 +46,7 @@ interface CsvRow {
 }
 
 interface SpectraCsvRow {
-  object_id: string;
+  target_id: string;
   grating: string;
   field: string;
   ra: number;
@@ -74,9 +74,9 @@ interface SpectraCsvRow {
  */
 export async function generateCSV(
   filters: FilterOptions,
-  sortColumn: SortColumn = 'object_id',
+  sortColumn: SortColumn = 'target_id',
   sortDirection: SortDirection = 'asc',
-  viewMode: ViewMode = 'objects'
+  viewMode: ViewMode = 'targets'
 ): Promise<{ csv: string | null; error: string | null }> {
   try {
     const supabase = await createClient();
@@ -115,7 +115,7 @@ export async function generateCSV(
     const includeDistance = filters.coordinate_search !== null;
 
     if (viewMode === 'spectra') {
-      // Spectra mode: one row per (object_id, grating)
+      // Spectra mode: one row per (target_id, grating)
       const { data: rows, error: rpcError } = await paginateRpc<SpectraCsvRow>(
         supabase, 'get_csv_export_spectra', rpcParams,
       );
@@ -126,12 +126,12 @@ export async function generateCSV(
       }
       const csv = spectraRowsToCsv(rows, includeDistance);
 
-      const objectIds = [...new Set(rows.map(r => r.object_id))];
+      const targetIds = [...new Set(rows.map(r => r.target_id))];
       trackDownload({
         userId: user.id,
         downloadType: 'csv',
-        objectIds,
-        objectCount: objectIds.length,
+        targetIds,
+        targetCount: targetIds.length,
         fileCount: 1,
         filterSnapshot: filters as unknown as Record<string, unknown>,
       });
@@ -151,12 +151,12 @@ export async function generateCSV(
     const csv = rowsToCsv(rows, includeDistance);
 
     // Track CSV download (fire-and-forget)
-    const objectIds = rows.map(r => r.object_id);
+    const targetIds = rows.map(r => r.target_id);
     trackDownload({
       userId: user.id,
       downloadType: 'csv',
-      objectIds,
-      objectCount: objectIds.length,
+      targetIds,
+      targetCount: targetIds.length,
       fileCount: 1,
       filterSnapshot: filters as unknown as Record<string, unknown>,
     });
@@ -180,7 +180,7 @@ function expandBitmask(bitmask: number, flags: FlagDef[]): number[] {
  */
 function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
   const columns = [
-    'object_id',
+    'target_id',
     'field',
     'ra',
     'dec',
@@ -206,7 +206,7 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
 
   for (const row of rows) {
     const values: (string | number)[] = [
-      escapeCsvValue(row.object_id),
+      escapeCsvValue(row.target_id),
       escapeCsvValue(row.field),
       row.ra.toFixed(8),
       row.dec.toFixed(8),
@@ -242,7 +242,7 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
  */
 function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): string {
   const columns = [
-    'object_id',
+    'target_id',
     'grating',
     'field',
     'ra',
@@ -269,7 +269,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
 
   for (const row of rows) {
     const values: (string | number)[] = [
-      escapeCsvValue(row.object_id),
+      escapeCsvValue(row.target_id),
       escapeCsvValue(row.grating),
       escapeCsvValue(row.field),
       row.ra.toFixed(8),
@@ -338,7 +338,7 @@ export async function generateCsvFilename(): Promise<string> {
  */
 export async function generateFitsDownloadUrl(
   filters: FilterOptions,
-  sortColumn: SortColumn = 'object_id',
+  sortColumn: SortColumn = 'target_id',
   sortDirection: SortDirection = 'asc'
 ): Promise<{
   files: DownloadFile[] | null;
@@ -401,12 +401,12 @@ export async function generateFitsDownloadUrl(
 
     // Track ZIP download (fire-and-forget)
     if (user) {
-      const objectIds = result.spectra.map(s => s.object_id);
+      const targetIds = result.spectra.map(s => s.target_id);
       trackDownload({
         userId: user.id,
         downloadType: 'fits_zip',
-        objectIds,
-        objectCount: objectIds.length,
+        targetIds,
+        targetCount: targetIds.length,
         fileCount: files.length,
         filterSnapshot: filters as unknown as Record<string, unknown>,
       });

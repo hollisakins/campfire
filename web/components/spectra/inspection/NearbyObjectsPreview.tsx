@@ -3,30 +3,30 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { getSpectra } from '@/lib/actions/spectra';
-import { SpectrumObject, QUALITY_LABELS } from '@/lib/types';
+import { SpectrumTarget, QUALITY_LABELS } from '@/lib/types';
 import { formatDistance } from '@/lib/utils/coordinate-parser';
 
 interface NearbyObjectsPreviewProps {
   ra: number;
   dec: number;
-  currentObjectId: string;
+  currentTargetId: string;
   queueIds: string[];
-  onNavigate: (objectId: string) => void;
+  onNavigate: (targetId: string) => void;
 }
 
 export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
   ra,
   dec,
-  currentObjectId,
+  currentTargetId,
   queueIds,
   onNavigate,
 }) => {
   const [loading, setLoading] = useState(true);
-  const [nearbyObjects, setNearbyObjects] = useState<SpectrumObject[]>([]);
-  const currentIdRef = useRef(currentObjectId);
+  const [nearbyObjects, setNearbyObjects] = useState<SpectrumTarget[]>([]);
+  const currentIdRef = useRef(currentTargetId);
 
   useEffect(() => {
-    currentIdRef.current = currentObjectId;
+    currentIdRef.current = currentTargetId;
 
     const fetchNearby = async () => {
       setLoading(true);
@@ -43,34 +43,34 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
           },
           1,
           6,
-          'object_id',
+          'target_id',
           'asc'
         );
 
         // Discard stale results
-        if (currentIdRef.current !== currentObjectId) return;
+        if (currentIdRef.current !== currentTargetId) return;
 
         if (!result.error) {
           const filtered = result.spectra.filter(
-            (obj) => obj.object_id !== currentObjectId
+            (obj) => obj.target_id !== currentTargetId
           );
           setNearbyObjects(filtered);
         } else {
           setNearbyObjects([]);
         }
       } catch {
-        if (currentIdRef.current === currentObjectId) {
+        if (currentIdRef.current === currentTargetId) {
           setNearbyObjects([]);
         }
       } finally {
-        if (currentIdRef.current === currentObjectId) {
+        if (currentIdRef.current === currentTargetId) {
           setLoading(false);
         }
       }
     };
 
     fetchNearby();
-  }, [ra, dec, currentObjectId]);
+  }, [ra, dec, currentTargetId]);
 
   const getQualityIcon = (quality: number) => {
     return QUALITY_LABELS.find((q) => q.value === quality)?.icon || '';
@@ -101,7 +101,7 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
       </h3>
       <div className="space-y-0.5">
         {nearbyObjects.map((obj) => {
-          const inQueue = queueIdSet.has(obj.object_id);
+          const inQueue = queueIdSet.has(obj.target_id);
           const gratings = obj.spectra.map((s) => s.grating);
 
           return (
@@ -109,10 +109,10 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
               key={obj.id}
               onClick={() => {
                 if (inQueue) {
-                  onNavigate(obj.object_id);
+                  onNavigate(obj.target_id);
                 } else {
                   window.open(
-                    `/spectra/${encodeURIComponent(obj.object_id)}`,
+                    `/spectra/${encodeURIComponent(obj.target_id)}`,
                     '_blank'
                   );
                 }
@@ -122,7 +122,7 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
               <div className="flex items-center gap-1.5 text-xs">
                 <span className="flex-shrink-0">{getQualityIcon(obj.redshift_quality)}</span>
                 <span className="font-mono text-text-primary dark:text-slate-200 truncate flex-1">
-                  {obj.object_id}
+                  {obj.target_id}
                 </span>
                 <span className="font-mono text-text-secondary dark:text-slate-500 flex-shrink-0">
                   {obj.distance != null ? formatDistance(obj.distance) : ''}

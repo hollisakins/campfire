@@ -7,7 +7,7 @@ import {
 } from '@/lib/utils/tile-compositing';
 
 /**
- * GET /api/tile-thumbnail?object_id=<id>&size=<px>&fov=<arcsec>
+ * GET /api/tile-thumbnail?target_id=<id>&size=<px>&fov=<arcsec>
  *
  * Composites map tiles into a thumbnail PNG centered on the object.
  * Returns a clean RGB cutout without shutter overlays.
@@ -26,8 +26,8 @@ export async function GET(request: NextRequest) {
 
   // Parse params
   const params = request.nextUrl.searchParams;
-  const objectId = params.get('object_id');
-  if (!objectId) {
+  const targetId = params.get('target_id');
+  if (!targetId) {
     return new Response(TRANSPARENT_GIF, {
       status: 400,
       headers: { 'Content-Type': 'image/gif' },
@@ -38,11 +38,11 @@ export async function GET(request: NextRequest) {
   const fov = Math.min(30, Math.max(1, parseFloat(params.get('fov') || '5')));
 
   try {
-    // Look up object coordinates
+    // Look up target coordinates
     const { data: obj, error: objErr } = await supabase
-      .from('objects')
+      .from('targets')
       .select('ra, dec, field')
-      .eq('object_id', objectId)
+      .eq('target_id', targetId)
       .single();
 
     if (objErr || !obj) {

@@ -59,8 +59,8 @@ export async function GET(request: NextRequest) {
       .from('spectra')
       .select(`
         id,
-        object_id,
-        objects!inner (
+        target_id,
+        targets!inner (
           program_slug
         )
       `)
@@ -75,8 +75,8 @@ export async function GET(request: NextRequest) {
     }
 
     // Check if user has access to this program
-    const objects = spectrum.objects as { program_slug: string } | { program_slug: string }[];
-    const programSlug = Array.isArray(objects) ? objects[0].program_slug : objects.program_slug;
+    const targets = spectrum.targets as { program_slug: string } | { program_slug: string }[];
+    const programSlug = Array.isArray(targets) ? targets[0].program_slug : targets.program_slug;
     if (!accessibleProgramSlugs.includes(programSlug)) {
       return NextResponse.json(
         { error: 'Access denied to this file' },

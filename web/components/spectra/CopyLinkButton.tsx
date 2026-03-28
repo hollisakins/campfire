@@ -4,15 +4,15 @@ import React, { useState } from 'react';
 import { Link, Check } from 'lucide-react';
 
 interface CopyLinkButtonProps {
-  objectId: string;
+  targetId: string;
 }
 
-export const CopyLinkButton: React.FC<CopyLinkButtonProps> = ({ objectId }) => {
+export const CopyLinkButton: React.FC<CopyLinkButtonProps> = ({ targetId }) => {
   const [copied, setCopied] = useState(false);
 
   const copyToClipboard = async () => {
     try {
-      const url = `${window.location.origin}/spectra/${encodeURIComponent(objectId)}`;
+      const url = `${window.location.origin}/spectra/${encodeURIComponent(targetId)}`;
       await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);

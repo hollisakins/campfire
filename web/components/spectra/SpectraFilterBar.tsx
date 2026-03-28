@@ -12,6 +12,7 @@ import type { Program } from '@/lib/types';
 import { OBSERVATION_COLORS } from '@/components/map/observation-colors';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
 import type { FilterOptions, FilterMode, SearchScope } from '@/lib/actions/filter-params';
+import type { ViewMode } from '@/lib/actions/spectra-types';
 
 // Re-export canonical types for backwards compatibility
 export type { FilterOptions, FilterMode, SearchScope };
@@ -20,7 +21,7 @@ export { DEFAULT_FILTERS };
 
 // Search scope options with labels and placeholders
 const SEARCH_SCOPE_OPTIONS: { value: SearchScope; label: string; placeholder: string }[] = [
-  { value: 'object_id', label: 'Object ID', placeholder: 'Search by Object ID...' },
+  { value: 'target_id', label: 'Target ID', placeholder: 'Search by Target ID...' },
   { value: 'my_comments', label: 'My Comments', placeholder: 'Search my comments...' },
   { value: 'all_comments', label: 'All Comments', placeholder: 'Search all comments...' },
 ];
@@ -33,6 +34,7 @@ interface SpectraFilterBarProps {
   availableObservations: string[];
   className?: string;
   isSearchDebouncing?: boolean;
+  viewMode?: ViewMode;
 }
 
 // Shortcut for "All inspected" quality values (everything except "Not Inspected")
@@ -45,6 +47,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   availableFields,
   availableObservations,
   className = '',
+  viewMode,
 }) => {
   const router = useRouter();
   // Local state for search input to keep it responsive during typing
@@ -373,6 +376,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         onClose={() => setPanelOpen(false)}
         filters={filters}
         onFiltersChange={onFiltersChange}
+        viewMode={viewMode}
       />
     </div>
   );

@@ -91,7 +91,7 @@ export async function GET(
     const spectraWithUrls = spectraList.map(
       (s: {
         spectra_id: number;
-        object_id: string;
+        target_id: string;
         grating: string;
         fits_path: string;
         file_hash: string | null;
@@ -100,7 +100,7 @@ export async function GET(
         reduction_version: string;
       }, i: number) => ({
         spectra_id: s.spectra_id,
-        object_id: s.object_id,
+        target_id: s.target_id,
         grating: s.grating,
         fits_path: s.fits_path,
         file_hash: s.file_hash,
@@ -112,14 +112,14 @@ export async function GET(
     );
 
     // Track download (fire-and-forget)
-    const objectIds = [...new Set(spectraList.map((s: { object_id: string }) => s.object_id))];
+    const targetIds = [...new Set(spectraList.map((s: { target_id: string }) => s.target_id))];
     supabase
       .from('download_log')
       .insert({
         user_id: userId,
         download_type: 'fits_sync',
-        object_ids: objectIds,
-        object_count: objectIds.length,
+        target_ids: targetIds,
+        target_count: targetIds.length,
         file_count: spectraList.length,
         filter_snapshot: { observation: obs_name },
         ip_address: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
@@ -137,7 +137,7 @@ export async function GET(
       program_slug: obsInfo.program_slug,
       program_name: obsInfo.program_name,
       field: obsInfo.field,
-      object_count: obsInfo.object_count,
+      target_count: obsInfo.target_count,
       spectrum_count: obsInfo.spectrum_count,
       total_size_bytes: obsInfo.total_size_bytes,
       url_expires_at: urlExpiresAt,

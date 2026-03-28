@@ -18,16 +18,16 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const objectId = decodeURIComponent(id);
+  const targetId = decodeURIComponent(id);
 
   try {
     const supabase = createServiceClient();
 
-    // Look up object coordinates
+    // Look up target coordinates
     const { data: obj, error: objErr } = await supabase
-      .from('objects')
+      .from('targets')
       .select('ra, dec, field')
-      .eq('object_id', objectId)
+      .eq('target_id', targetId)
       .single();
 
     if (objErr || !obj) {

@@ -115,7 +115,7 @@ function parseUrlToFilters(
     dq_flags_mode: dq.mode,
     inspected_only: inspectedOnly,
     search: searchParams.get('search') || '',
-    search_scope: (searchParams.get('search_scope') as 'object_id' | 'my_comments' | 'all_comments') || 'object_id',
+    search_scope: (searchParams.get('search_scope') as 'target_id' | 'my_comments' | 'all_comments') || 'target_id',
     coordinate_search: coordinateSearch,
   };
 }
@@ -148,14 +148,14 @@ function parseUrlToFilters(
  * (same pattern for object_flags and dq_flags)
  *
  * - inspected_only: "true" to filter to inspected objects only
- * - search: text search on object_id
- * - search_scope: search scope (object_id, my_comments, all_comments; default: object_id)
+ * - search: text search on target_id
+ * - search_scope: search scope (target_id, my_comments, all_comments; default: target_id)
  * - ra: right ascension for cone search (degrees)
  * - dec: declination for cone search (degrees)
  * - radius: search radius (arcsec)
  * - limit: maximum number of results (default: 1000)
  * - offset: pagination offset (default: 0)
- * - sort: sort column (object_id, ra, dec, redshift, redshift_quality, field, observation, max_snr, max_exposure_time, distance)
+ * - sort: sort column (target_id, ra, dec, redshift, redshift_quality, field, observation, max_snr, max_exposure_time, distance)
  * - sort_dir: sort direction (asc, desc)
  */
 export async function GET(request: NextRequest) {
@@ -196,10 +196,10 @@ export async function GET(request: NextRequest) {
     const page = Math.floor(offset / limit) + 1;
 
     // Sorting (validate column)
-    const sortColumn = searchParams.get('sort') || 'object_id';
+    const sortColumn = searchParams.get('sort') || 'target_id';
     const sortDirection = searchParams.get('sort_dir') || 'asc';
-    const validSortColumns = ['object_id', 'ra', 'dec', 'redshift', 'redshift_quality', 'field', 'observation', 'max_snr', 'max_exposure_time', 'distance'];
-    const finalSortColumn = validSortColumns.includes(sortColumn) ? sortColumn : 'object_id';
+    const validSortColumns = ['target_id', 'ra', 'dec', 'redshift', 'redshift_quality', 'field', 'observation', 'max_snr', 'max_exposure_time', 'distance'];
+    const finalSortColumn = validSortColumns.includes(sortColumn) ? sortColumn : 'target_id';
 
     // Incremental sync filter (ISO 8601 timestamp)
     const updatedSince = searchParams.get('updated_since') || null;

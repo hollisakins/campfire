@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { generateDownloadUrl } from '@/lib/r2';
-import { trackDownload, extractObjectIdFromFitsPath } from '@/lib/actions/download-tracking';
+import { trackDownload, extractTargetIdFromFitsPath } from '@/lib/actions/download-tracking';
 
 /**
  * GET /api/download?path=<fits_path>
@@ -40,8 +40,8 @@ export async function GET(request: NextRequest) {
       .from('spectra')
       .select(`
         id,
-        object_id,
-        objects!inner (
+        target_id,
+        targets!inner (
           program_slug
         )
       `)
@@ -67,12 +67,12 @@ export async function GET(request: NextRequest) {
     }
 
     // Track download (fire-and-forget)
-    const objectId = await extractObjectIdFromFitsPath(fitsPath);
+    const targetId = await extractTargetIdFromFitsPath(fitsPath);
     trackDownload({
       userId: user.id,
       downloadType: 'fits_single',
-      objectIds: objectId ? [objectId] : undefined,
-      objectCount: 1,
+      targetIds: targetId ? [targetId] : undefined,
+      targetCount: 1,
       fileCount: 1,
     });
 
@@ -165,17 +165,17 @@ export async function POST(request: NextRequest) {
     }
 
     // Track batch download (fire-and-forget)
-    const objectIdPromises = paths.map(extractObjectIdFromFitsPath);
-    const objectIds = (await Promise.all(objectIdPromises))
+    const targetIdPromises = paths.map(extractTargetIdFromFitsPath);
+    const targetIds = (await Promise.all(targetIdPromises))
       .filter((id): id is string => id !== null);
-    const uniqueObjectIds = [...new Set(objectIds)];
+    const uniqueTargetIds = [...new Set(targetIds)];
     // Use 'fits_object' for single object downloads from detail page
     const downloadType = context === 'object_detail' ? 'fits_object' : 'fits_batch';
     trackDownload({
       userId: user.id,
       downloadType,
-      objectIds: uniqueObjectIds,
-      objectCount: uniqueObjectIds.length,
+      targetIds: uniqueTargetIds,
+      targetCount: uniqueTargetIds.length,
       fileCount: paths.length,
     });
 

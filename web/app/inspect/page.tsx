@@ -7,7 +7,7 @@ import { InspectionModeOverlay } from '@/components/spectra/inspection/Inspectio
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { getSpectrumById } from '@/lib/actions/spectra';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
-import type { SpectrumObject } from '@/lib/types';
+import type { SpectrumTarget } from '@/lib/types';
 
 function InspectPageInner() {
   const searchParams = useSearchParams();
@@ -24,7 +24,7 @@ function InspectPageInner() {
   const { sortColumn, sortDirection } = parseSortingFromURL(urlParams);
 
   // Data state
-  const [spectrum, setSpectrum] = useState<SpectrumObject | null>(null);
+  const [spectrum, setSpectrum] = useState<SpectrumTarget | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fetchedRef = useRef(false);

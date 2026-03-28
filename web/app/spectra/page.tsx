@@ -146,7 +146,7 @@ function SpectraPageContent() {
       setPage(1);
       // Reset sort column if invalid for the new mode
       if (!isValidSortColumn(sortColumn, newMode)) {
-        setSortColumn('object_id');
+        setSortColumn('target_id');
         setSortDirection('asc');
       }
     });
@@ -234,6 +234,7 @@ function SpectraPageContent() {
           availableFields={availableFields}
           availableObservations={availableObservations}
           isSearchDebouncing={isDebouncing}
+          viewMode={viewMode}
         />
       </div>
 

@@ -2,10 +2,10 @@
 
 import React from 'react';
 import { Info } from 'lucide-react';
-import type { SpectrumObject, Spectrum } from '@/lib/types';
+import type { SpectrumTarget, Spectrum } from '@/lib/types';
 
 interface MetadataSectionProps {
-  spectrum: SpectrumObject;
+  spectrum: SpectrumTarget;
   activeSpec: Spectrum;
 }
 

@@ -8,13 +8,13 @@ import {
 } from '@/lib/utils/shutter-overlay';
 
 /**
- * GET /api/v1/shutters?object_id=<id>&fov=<arcsec>
+ * GET /api/v1/shutters?target_id=<id>&fov=<arcsec>
  *
  * Returns nearby NIRSpec shutter geometry as JSON for client-side rendering.
- * Looks up the object's position and field, then queries for nearby shutters.
+ * Looks up the target's position and field, then queries for nearby shutters.
  *
  * Query parameters:
- * - object_id (required): Object identifier
+ * - target_id (required): Target identifier
  * - fov (optional, default 5): Search radius in arcseconds, clamped to 1–30
  */
 export async function GET(request: NextRequest) {
@@ -42,11 +42,11 @@ export async function GET(request: NextRequest) {
     }
 
     const params = request.nextUrl.searchParams;
-    const objectId = params.get('object_id');
+    const targetId = params.get('target_id');
 
-    if (!objectId) {
+    if (!targetId) {
       return NextResponse.json(
-        { error: 'Missing required parameter: object_id' },
+        { error: 'Missing required parameter: target_id' },
         { status: 400 }
       );
     }
@@ -60,11 +60,11 @@ export async function GET(request: NextRequest) {
     }
     const radiusArcsec = Math.min(30, Math.max(1, parsedFov));
 
-    // Look up object
+    // Look up target
     const { data: obj, error: objErr } = await supabase
-      .from('objects')
+      .from('targets')
       .select('ra, dec, field, program_slug')
-      .eq('object_id', objectId)
+      .eq('target_id', targetId)
       .single();
 
     if (objErr || !obj) {

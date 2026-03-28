@@ -21,7 +21,7 @@ def sample_objects():
     return [
         {
             "id": 1,
-            "object_id": "ember_uds_p4_100",
+            "target_id": "ember_uds_p4_100",
             "program_slug": "ember-uds",
             "program_name": "EMBER-UDS",
             "field": "UDS",
@@ -43,7 +43,7 @@ def sample_objects():
             "spectra": [
                 {
                     "id": 10,
-                    "object_id": "ember_uds_p4_100",
+                    "target_id": "ember_uds_p4_100",
                     "grating": "PRISM",
                     "fits_path": "spectra/ember_uds_p4/ember_uds_p4_PRISM_100_spec.fits",
                     "signal_to_noise": 15.5,
@@ -51,7 +51,7 @@ def sample_objects():
                 },
                 {
                     "id": 11,
-                    "object_id": "ember_uds_p4_100",
+                    "target_id": "ember_uds_p4_100",
                     "grating": "G395M",
                     "fits_path": "spectra/ember_uds_p4/ember_uds_p4_G395M_100_spec.fits",
                     "signal_to_noise": 8.2,
@@ -61,7 +61,7 @@ def sample_objects():
         },
         {
             "id": 2,
-            "object_id": "ember_uds_p4_200",
+            "target_id": "ember_uds_p4_200",
             "program_slug": "ember-uds",
             "program_name": "EMBER-UDS",
             "field": "UDS",
@@ -80,7 +80,7 @@ def sample_objects():
             "spectra": [
                 {
                     "id": 20,
-                    "object_id": "ember_uds_p4_200",
+                    "target_id": "ember_uds_p4_200",
                     "grating": "PRISM",
                     "fits_path": "spectra/ember_uds_p4/ember_uds_p4_PRISM_200_spec.fits",
                     "signal_to_noise": 5.0,
@@ -223,7 +223,7 @@ class TestQueryObjects:
         store.upsert_objects(sample_objects)
         results = store.query_objects(redshift_range=(2.0, 3.0))
         assert len(results) == 1
-        assert results[0]["object_id"] == "ember_uds_p4_100"
+        assert results[0]["target_id"] == "ember_uds_p4_100"
 
     def test_query_by_redshift_quality(self, store, sample_objects):
         """query_objects filters by redshift quality."""
@@ -245,7 +245,7 @@ class TestQueryObjects:
             object_flags={"include_any": 1}  # LRD
         )
         assert len(results) == 1
-        assert results[0]["object_id"] == "ember_uds_p4_100"
+        assert results[0]["target_id"] == "ember_uds_p4_100"
 
     def test_query_exclude_dq_flags(self, store, sample_objects):
         """query_objects excludes by dq_flags."""
@@ -254,10 +254,10 @@ class TestQueryObjects:
             dq_flags={"exclude": 2}  # CONTAMINATION
         )
         assert len(results) == 1
-        assert results[0]["object_id"] == "ember_uds_p4_100"
+        assert results[0]["target_id"] == "ember_uds_p4_100"
 
     def test_query_by_search(self, store, sample_objects):
-        """query_objects does text search on object_id."""
+        """query_objects does text search on target_id."""
         store.upsert_objects(sample_objects)
         results = store.query_objects(search="100")
         assert len(results) == 1
@@ -265,11 +265,11 @@ class TestQueryObjects:
     def test_query_with_limit_offset(self, store, sample_objects):
         """query_objects respects limit and offset."""
         store.upsert_objects(sample_objects)
-        results = store.query_objects(limit=1, sort="object_id")
+        results = store.query_objects(limit=1, sort="target_id")
         assert len(results) == 1
-        results2 = store.query_objects(limit=1, offset=1, sort="object_id")
+        results2 = store.query_objects(limit=1, offset=1, sort="target_id")
         assert len(results2) == 1
-        assert results[0]["object_id"] != results2[0]["object_id"]
+        assert results[0]["target_id"] != results2[0]["target_id"]
 
     def test_query_with_sorting(self, store, sample_objects):
         """query_objects sorts results."""
@@ -281,7 +281,7 @@ class TestQueryObjects:
         """query_objects attaches spectra to each object."""
         store.upsert_objects(sample_objects)
         results = store.query_objects()
-        obj1 = next(r for r in results if r["object_id"] == "ember_uds_p4_100")
+        obj1 = next(r for r in results if r["target_id"] == "ember_uds_p4_100")
         assert len(obj1["spectra"]) == 2
 
 
@@ -437,9 +437,9 @@ class TestV3Migration:
             CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);
             INSERT INTO _meta VALUES ('schema_version', '2');
 
-            CREATE TABLE objects (
+            CREATE TABLE targets (
                 id INTEGER PRIMARY KEY,
-                object_id TEXT UNIQUE NOT NULL,
+                target_id TEXT UNIQUE NOT NULL,
                 program_slug TEXT, program_name TEXT,
                 field TEXT, observation TEXT,
                 ra REAL, dec REAL,
@@ -455,7 +455,7 @@ class TestV3Migration:
 
             CREATE TABLE spectra (
                 spectra_id INTEGER PRIMARY KEY,
-                object_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
                 grating TEXT NOT NULL,
                 fits_path TEXT, file_hash TEXT, file_size INTEGER,
                 signal_to_noise REAL, exposure_time REAL,
@@ -464,8 +464,8 @@ class TestV3Migration:
             );
 
             -- Simulate a downloaded file (v2 style: file_hash = download hash)
-            INSERT INTO objects (id, object_id, observation) VALUES (1, 'obj1', 'obs1');
-            INSERT INTO spectra (spectra_id, object_id, grating, fits_path,
+            INSERT INTO targets (id, target_id, observation) VALUES (1, 'obj1', 'obs1');
+            INSERT INTO spectra (spectra_id, target_id, grating, fits_path,
                                  file_hash, local_path, synced_at)
             VALUES (10, 'obj1', 'PRISM', 'spectra/obs1/file.fits',
                     'sha256:downloadhash', 'obs1/file.fits', '2026-01-01');
@@ -512,8 +512,8 @@ class TestV5Migration:
             CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);
             INSERT INTO _meta (key, value) VALUES ('schema_version', '4');
 
-            CREATE TABLE objects (
-                id INTEGER PRIMARY KEY, object_id TEXT UNIQUE NOT NULL,
+            CREATE TABLE targets (
+                id INTEGER PRIMARY KEY, target_id TEXT UNIQUE NOT NULL,
                 program_slug TEXT, program_name TEXT, field TEXT, observation TEXT,
                 ra REAL, dec REAL, redshift REAL, redshift_auto REAL,
                 redshift_inspected REAL, redshift_quality INTEGER DEFAULT 0,
@@ -524,14 +524,14 @@ class TestV5Migration:
             );
 
             CREATE TABLE spectra (
-                spectra_id INTEGER PRIMARY KEY, object_id TEXT NOT NULL,
+                spectra_id INTEGER PRIMARY KEY, target_id TEXT NOT NULL,
                 grating TEXT NOT NULL, fits_path TEXT, file_hash TEXT,
                 file_size INTEGER, signal_to_noise REAL, exposure_time REAL,
                 reduction_version TEXT, local_path TEXT, local_file_hash TEXT,
                 synced_at TEXT, _synced_at TEXT
             );
 
-            INSERT INTO spectra (spectra_id, object_id, grating, fits_path,
+            INSERT INTO spectra (spectra_id, target_id, grating, fits_path,
                     file_hash, local_file_hash, local_path, synced_at)
             VALUES (10, 'obj1', 'PRISM', 'spectra/obs1/file.fits',
                     'sha256:server', 'sha256:local', 'obs1/file.fits', '2026-01-01');
@@ -679,10 +679,10 @@ class TestPurgeStaleRows:
 
         # Simulate a full sync that only returns one of the two objects
         store._conn.execute(
-            "UPDATE objects SET _synced_at = '2026-01-02T00:00:00Z' WHERE object_id = 'ember_uds_p4_100'"
+            "UPDATE targets SET _synced_at = '2026-01-02T00:00:00Z' WHERE target_id = 'ember_uds_p4_100'"
         )
         store._conn.execute(
-            "UPDATE objects SET _synced_at = '2026-01-01T00:00:00Z' WHERE object_id = 'ember_uds_p4_200'"
+            "UPDATE targets SET _synced_at = '2026-01-01T00:00:00Z' WHERE target_id = 'ember_uds_p4_200'"
         )
         store._conn.execute(
             "UPDATE spectra SET _synced_at = '2026-01-02T00:00:00Z' WHERE spectra_id IN (10, 11)"
@@ -697,9 +697,9 @@ class TestPurgeStaleRows:
         assert result["purged_spectra"] == 1
 
         # Only the first object should remain
-        rows = store._conn.execute("SELECT object_id FROM objects").fetchall()
+        rows = store._conn.execute("SELECT target_id FROM targets").fetchall()
         assert len(rows) == 1
-        assert rows[0]["object_id"] == "ember_uds_p4_100"
+        assert rows[0]["target_id"] == "ember_uds_p4_100"
 
     def test_reports_orphaned_files(self, store, sample_objects):
         store.upsert_objects(sample_objects)
@@ -711,10 +711,10 @@ class TestPurgeStaleRows:
 
         # Set timestamps so object 200's spectrum gets purged
         store._conn.execute(
-            "UPDATE objects SET _synced_at = '2026-01-02T00:00:00Z' WHERE object_id = 'ember_uds_p4_100'"
+            "UPDATE targets SET _synced_at = '2026-01-02T00:00:00Z' WHERE target_id = 'ember_uds_p4_100'"
         )
         store._conn.execute(
-            "UPDATE objects SET _synced_at = '2026-01-01T00:00:00Z' WHERE object_id = 'ember_uds_p4_200'"
+            "UPDATE targets SET _synced_at = '2026-01-01T00:00:00Z' WHERE target_id = 'ember_uds_p4_200'"
         )
         store._conn.execute("UPDATE spectra SET _synced_at = '2026-01-02T00:00:00Z' WHERE spectra_id IN (10, 11)")
         store._conn.execute("UPDATE spectra SET _synced_at = '2026-01-01T00:00:00Z' WHERE spectra_id = 20")
@@ -786,15 +786,15 @@ class TestPendingDownloads:
         """get_pending_downloads filters by observation."""
         objects = [
             {
-                "id": 1, "object_id": "obs1_100", "program_slug": "prog",
+                "id": 1, "target_id": "obs1_100", "program_slug": "prog",
                 "field": "F", "observation": "obs1",
-                "spectra": [{"id": 10, "object_id": "obs1_100", "grating": "PRISM",
+                "spectra": [{"id": 10, "target_id": "obs1_100", "grating": "PRISM",
                              "fits_path": "spectra/obs1/f.fits"}],
             },
             {
-                "id": 2, "object_id": "obs2_200", "program_slug": "prog",
+                "id": 2, "target_id": "obs2_200", "program_slug": "prog",
                 "field": "F", "observation": "obs2",
-                "spectra": [{"id": 20, "object_id": "obs2_200", "grating": "PRISM",
+                "spectra": [{"id": 20, "target_id": "obs2_200", "grating": "PRISM",
                              "fits_path": "spectra/obs2/f.fits"}],
             },
         ]

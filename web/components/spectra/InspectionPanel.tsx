@@ -25,13 +25,13 @@ import {
 } from 'lucide-react';
 
 interface InspectionPanelProps {
-  objectDbId: number;
-  objectId: string;
+  targetDbId: number;
+  targetId: string;
   initialData: InspectionInitialData;
 }
 
 export const InspectionPanel: React.FC<InspectionPanelProps> = ({
-  objectDbId,
+  targetDbId,
   initialData,
 }) => {
   const { user, userProfile } = useAuth();
@@ -39,7 +39,7 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
   const canEdit = user && userProfile?.can_comment;
 
   // Use shared inspection state hook
-  const inspection = useInspectionState(objectDbId, initialData);
+  const inspection = useInspectionState(targetDbId, initialData);
 
   // Last inspector info
   const [lastInspectorName, setLastInspectorName] = useState<string | null>(null);
@@ -79,7 +79,7 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
       const { data: commentsData, error } = await supabase
         .from('comments')
         .select('*')
-        .eq('object_id', objectDbId)
+        .eq('target_id', targetDbId)
         .eq('is_deleted', false)
         .order('created_at', { ascending: true });
 
@@ -108,7 +108,7 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
     } finally {
       setCommentsLoading(false);
     }
-  }, [objectDbId, user, supabase]);
+  }, [targetDbId, user, supabase]);
 
   useEffect(() => {
     fetchComments();
@@ -126,7 +126,7 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
       const { error } = await supabase
         .from('comments')
         .insert({
-          object_id: objectDbId,
+          target_id: targetDbId,
           user_id: user.id,
           content: newComment.trim(),
         });

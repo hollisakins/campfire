@@ -58,7 +58,7 @@ def export_catalogs(store: LocalStore, output_dir: Path) -> Tuple[int, int]:
 
             spectra_rows.append(spec_row)
 
-    _atomic_csv_write(output_dir / "objects.csv", OBJECT_EXPORT_COLUMNS, object_rows)
+    _atomic_csv_write(output_dir / "targets.csv", OBJECT_EXPORT_COLUMNS, object_rows)
     _atomic_csv_write(output_dir / "spectra.csv", SPECTRA_EXPORT_COLUMNS, spectra_rows)
 
     return len(object_rows), len(spectra_rows)

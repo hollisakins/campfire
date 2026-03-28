@@ -20,7 +20,7 @@ import { TileThumbnailWithToggle } from '@/components/spectra/TileThumbnailWithT
 import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
 import { EnterInspectionModeButton } from '@/components/spectra/inspection/EnterInspectionModeButton';
-import { getSpectrumById, getObjectMetadata } from '@/lib/actions/spectra';
+import { getSpectrumById, getTargetMetadata } from '@/lib/actions/spectra';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
 
 interface SpectrumDetailPageProps {
@@ -30,10 +30,10 @@ interface SpectrumDetailPageProps {
 
 export async function generateMetadata({ params }: SpectrumDetailPageProps): Promise<Metadata> {
   const { id } = await params;
-  const objectId = decodeURIComponent(id);
+  const targetId = decodeURIComponent(id);
 
   // Use lightweight metadata fetch (no auth required) for OG tags
-  const metadata = await getObjectMetadata(objectId);
+  const metadata = await getTargetMetadata(targetId);
 
   if (!metadata) {
     return { title: 'Object Not Found - CAMPFIRE' };
@@ -43,24 +43,24 @@ export async function generateMetadata({ params }: SpectrumDetailPageProps): Pro
     ? `z = ${metadata.redshift.toFixed(4)}`
     : 'z = unknown';
 
-  const description = `${objectId} | ${redshiftText}`;
+  const description = `${targetId} | ${redshiftText}`;
 
   return {
-    title: `${objectId} - CAMPFIRE`,
+    title: `${targetId} - CAMPFIRE`,
     description,
     openGraph: {
-      title: objectId,
+      title: targetId,
       description: `${redshiftText} | ${metadata.program_name || metadata.field}`,
       images: [{
-        url: `/api/og-image/${encodeURIComponent(objectId)}`,
+        url: `/api/og-image/${encodeURIComponent(targetId)}`,
         width: 300,
         height: 300,
-        alt: `RGB thumbnail for ${objectId}`,
+        alt: `RGB thumbnail for ${targetId}`,
       }],
     },
     twitter: {
       card: 'summary',
-      title: objectId,
+      title: targetId,
       description: `${redshiftText} | ${metadata.program_name || metadata.field}`,
     },
   };
@@ -69,8 +69,8 @@ export async function generateMetadata({ params }: SpectrumDetailPageProps): Pro
 export default async function SpectrumDetailPage({ params, searchParams }: SpectrumDetailPageProps) {
   const { id } = await params;
 
-  // The id is the object_id string (e.g., "cosmos_ddt_66964")
-  const objectId = decodeURIComponent(id);
+  // The id is the target_id string (e.g., "cosmos_ddt_66964")
+  const targetId = decodeURIComponent(id);
 
   // Parse filter and sort params from URL
   const searchParamsObj = await searchParams;
@@ -82,7 +82,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
   });
 
   // Fetch spectrum data first (need field for subsequent queries)
-  const spectrumResult = await getSpectrumById(objectId);
+  const spectrumResult = await getSpectrumById(targetId);
   const { spectrum, isAuthenticated } = spectrumResult;
 
   // Show login prompt if not authenticated
@@ -93,7 +93,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
           items={[
             { label: 'CAMPFIRE', href: '/' },
             { label: 'NIRSpec', href: '/spectra' },
-            { label: objectId },
+            { label: targetId },
           ]}
           className="mb-6"
         />
@@ -140,7 +140,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
             items={[
               { label: 'CAMPFIRE', href: '/' },
               { label: 'NIRSpec', href: '/spectra' },
-              { label: spectrum.object_id },
+              { label: spectrum.target_id },
             ]}
           />
           {filterStr && (
@@ -156,7 +156,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
 
         {/* Navigation */}
         <ObjectNavigation
-          objectId={objectId}
+          targetId={targetId}
           filters={filters}
           sortColumn={sortColumn}
           sortDirection={sortDirection}
@@ -177,7 +177,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
             {/* Header */}
             <div className="mb-4">
               <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100 mb-2">
-                {spectrum.object_id}
+                {spectrum.target_id}
               </h1>
               <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
                 <span>Program:</span>
@@ -210,7 +210,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               </div>
               <div className="flex items-center gap-4">
                 <CoordinateDisplay ra={spectrum.ra} dec={spectrum.dec} />
-                <ShowOnMapLink ra={spectrum.ra} dec={spectrum.dec} field={spectrum.field} objectId={spectrum.object_id} />
+                <ShowOnMapLink ra={spectrum.ra} dec={spectrum.dec} field={spectrum.field} targetId={spectrum.target_id} />
               </div>
             </div>
 
@@ -226,8 +226,8 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
 
             {/* Action Buttons */}
             <div className="flex gap-4 mb-6">
-              <DownloadButtons spectra={spectrum.spectra} objectId={spectrum.object_id} />
-              <CopyLinkButton objectId={spectrum.object_id} />
+              <DownloadButtons spectra={spectrum.spectra} targetId={spectrum.target_id} />
+              <CopyLinkButton targetId={spectrum.target_id} />
             </div>
 
             {/* Tab Navigation */}
@@ -252,7 +252,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
           {/* Right Column: Tile Cutout with Shutters */}
           <div className="flex-shrink-0" style={{ width: '300px' }}>
             <TileThumbnailWithToggle
-              objectId={spectrum.object_id}
+              targetId={spectrum.target_id}
               size={600}
               displaySize={300}
               fov={3.2}
@@ -327,16 +327,16 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
           {/* Photometry Tab */}
           {spectrum.hasSedPlot && (
             <TabsContent value="photometry">
-              <SEDPlotViewer objectId={spectrum.object_id} />
+              <SEDPlotViewer targetId={spectrum.target_id} />
             </TabsContent>
           )}
 
           {/* Inspect Tab */}
           <TabsContent value="inspect">
-            <EnterInspectionModeButton objectId={objectId} filterStr={filterStr} />
+            <EnterInspectionModeButton targetId={targetId} filterStr={filterStr} />
             <InspectionPanel
-              objectDbId={spectrum.id}
-              objectId={spectrum.object_id}
+              targetDbId={spectrum.id}
+              targetId={spectrum.target_id}
               initialData={{
                 redshift_auto: spectrum.redshift_auto,
                 redshift_inspected: spectrum.redshift_inspected,
@@ -355,7 +355,7 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
             <NearbyObjects
               ra={spectrum.ra}
               dec={spectrum.dec}
-              currentObjectId={spectrum.object_id}
+              currentTargetId={spectrum.target_id}
             />
           </TabsContent>
         </div>

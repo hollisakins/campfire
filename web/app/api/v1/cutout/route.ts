@@ -9,14 +9,14 @@ import {
 import type { WCSParams } from '@/lib/utils/wcs';
 
 /**
- * GET /api/v1/cutout?object_id=<id>&size=<px>&fov=<arcsec>
+ * GET /api/v1/cutout?target_id=<id>&size=<px>&fov=<arcsec>
  *
- * Returns a PNG cutout image centered on the object, composited from
+ * Returns a PNG cutout image centered on the target, composited from
  * pre-generated RGB map tiles. No shutter overlays — clients render
  * those as vectors (SVG in browser, matplotlib patches in Python).
  *
  * Query parameters:
- * - object_id (required): Object identifier
+ * - target_id (required): Target identifier
  * - size (optional): Output size in pixels. Defaults to native resolution
  *   for the requested FOV. Clamped to 16–2048.
  * - fov (optional, default 5): Field of view in arcseconds, clamped to 1–30.
@@ -47,10 +47,10 @@ export async function GET(request: NextRequest) {
 
     // Parse params
     const params = request.nextUrl.searchParams;
-    const objectId = params.get('object_id');
-    if (!objectId) {
+    const targetId = params.get('target_id');
+    if (!targetId) {
       return NextResponse.json(
-        { error: 'Missing required parameter: object_id' },
+        { error: 'Missing required parameter: target_id' },
         { status: 400 }
       );
     }
@@ -64,11 +64,11 @@ export async function GET(request: NextRequest) {
     }
     const fov = Math.min(30, Math.max(1, parsedFov));
 
-    // Look up object
+    // Look up target
     const { data: obj, error: objErr } = await supabase
-      .from('objects')
+      .from('targets')
       .select('ra, dec, field, program_slug')
-      .eq('object_id', objectId)
+      .eq('target_id', targetId)
       .single();
 
     if (objErr || !obj) {

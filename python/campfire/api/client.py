@@ -38,7 +38,7 @@ def _build_query_params(
     cone_search: Optional[Tuple[float, float, float]] = None,
     limit: int = 1000,
     offset: int = 0,
-    sort: str = "object_id",
+    sort: str = "target_id",
     sort_dir: str = "asc",
 ) -> dict:
     """Build query parameters dict from filter arguments."""
@@ -129,7 +129,7 @@ class APIClient:
             (objects_list, pagination_dict)
         """
         params = _build_query_params(**filters)
-        response = self._session.get("/objects", params=params)
+        response = self._session.get("/targets", params=params)
         _handle_response_error(response)
 
         data = response.json()

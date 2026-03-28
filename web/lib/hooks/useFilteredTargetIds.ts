@@ -1,16 +1,16 @@
 'use client';
 
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { getFilteredObjectIds } from '@/lib/actions/map';
+import { getFilteredTargetIds } from '@/lib/actions/map';
 import type { FilterOptions } from '@/lib/actions/filter-params';
 
-export function useFilteredObjectIds(
+export function useFilteredTargetIds(
   filters: FilterOptions,
   hasActiveFilters: boolean
 ) {
   return useQuery({
-    queryKey: ['filteredObjectIds', filters],
-    queryFn: () => getFilteredObjectIds(filters),
+    queryKey: ['filteredTargetIds', filters],
+    queryFn: () => getFilteredTargetIds(filters),
     enabled: hasActiveFilters,
     placeholderData: keepPreviousData,
     staleTime: 30 * 1000, // 30 seconds

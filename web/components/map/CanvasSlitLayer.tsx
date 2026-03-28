@@ -26,7 +26,7 @@ export interface CanvasSlitLayerProps {
   slits: (SlitRegion | Shutter)[];
   wcs: WCSParams;
   visible: boolean;
-  highlightObjectId?: string;
+  highlightTargetId?: string;
   slitFilter?: (slit: SlitRegion | Shutter) => boolean;
 }
 

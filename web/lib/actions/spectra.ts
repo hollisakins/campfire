@@ -2,20 +2,20 @@
 
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { paginateRpc } from '@/lib/supabase/paginate';
-import type { SpectrumObject, Program, Spectrum } from '@/lib/types';
+import type { SpectrumTarget, Program, Spectrum } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
 
 export interface SpectraResult {
-  spectra: SpectrumObject[];
+  spectra: SpectrumTarget[];
   total: number;
   error?: string;
   isAuthenticated: boolean;
 }
 
 export interface PaginatedSpectraResult {
-  spectra: SpectrumObject[];
+  spectra: SpectrumTarget[];
   total: number;
   page: number;
   pageSize: number;
@@ -51,9 +51,9 @@ export async function getSpectra(
   filters?: Partial<FilterOptions>,
   page: number = 1,
   pageSize: number = 50,
-  sortColumn: SortColumn = 'object_id',
+  sortColumn: SortColumn = 'target_id',
   sortDirection: SortDirection = 'asc',
-  viewMode: ViewMode = 'objects'
+  viewMode: ViewMode = 'targets'
 ): Promise<PaginatedSpectraResult> {
   const supabase = await createClient();
 
@@ -109,7 +109,7 @@ export async function getSpectra(
     // Choose RPC based on view mode
     const rpcName = viewMode === 'spectra'
       ? 'get_filtered_spectra_paginated'
-      : 'get_filtered_objects_paginated';
+      : 'get_filtered_targets_paginated';
 
     // Call the RPC function for server-side filtering, sorting, and pagination
     const { data, error } = await supabase.rpc(rpcName, {
@@ -135,19 +135,19 @@ export async function getSpectra(
       };
     }
 
-    // The RPC returns a single row with objects array and total_count
-    const result = data?.[0] || { objects: [], total_count: 0 };
-    const objects = result.objects || [];
+    // The RPC returns a single row with targets array and total_count
+    const result = data?.[0] || { targets: [], total_count: 0 };
+    const targets = result.targets || [];
     const totalCount = Number(result.total_count) || 0;
 
-    // Transform the JSONB objects to SpectrumObject format
+    // Transform the JSONB targets to SpectrumTarget format
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const spectraObjects: SpectrumObject[] = objects.map((obj: any) => {
+    const spectraTargets: SpectrumTarget[] = targets.map((obj: any) => {
       const spectra: Spectrum[] = obj.spectra || [];
 
       return {
         id: obj.id,
-        object_id: obj.object_id,
+        target_id: obj.target_id,
         program_slug: obj.program_slug,
         program_name: obj.program_name || null,
         field: obj.field,
@@ -170,14 +170,14 @@ export async function getSpectra(
         max_snr: obj.max_snr ?? undefined,
         max_exposure_time: obj.max_exposure_time ?? undefined,
         num_gratings: spectra.length,
-      } as SpectrumObject;
+      } as SpectrumTarget;
     });
 
     // Determine if we have the complete dataset (all matching rows fit in one page)
     const isComplete = totalCount <= pageSize;
 
     return {
-      spectra: spectraObjects,
+      spectra: spectraTargets,
       total: totalCount,
       page,
       pageSize,
@@ -201,11 +201,11 @@ export async function getSpectra(
 }
 
 /**
- * Fetch a single spectrum object by object_id.
+ * Fetch a single target by target_id.
  * Checks that user has access (public program or explicit access).
  */
-export async function getSpectrumById(objectId: string): Promise<{
-  spectrum: SpectrumObject | null;
+export async function getSpectrumById(targetId: string): Promise<{
+  spectrum: SpectrumTarget | null;
   error?: string;
   isAuthenticated: boolean;
 }> {
@@ -242,13 +242,13 @@ export async function getSpectrumById(objectId: string): Promise<{
     const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
     const { data, error } = await supabase
-      .from('objects')
+      .from('targets')
       .select(`
         *,
         programs:program_slug (program_name, pi_name, description, cycle),
         spectra (*)
       `)
-      .eq('object_id', objectId)
+      .eq('target_id', targetId)
       .in('program_slug', accessibleProgramSlugs)
       .single();
 
@@ -277,9 +277,9 @@ export async function getSpectrumById(objectId: string): Promise<{
     // Use has_sed_plot from database (populated during deployment)
     const hasSedPlot = data.has_sed_plot ?? false;
 
-    const spectrumObject: SpectrumObject = {
+    const spectrumTarget: SpectrumTarget = {
       id: data.id,
-      object_id: data.object_id,
+      target_id: data.target_id,
       program_slug: data.program_slug,
       program_name: data.programs?.program_name || null,
       field: data.field,
@@ -304,7 +304,7 @@ export async function getSpectrumById(objectId: string): Promise<{
     };
 
     return {
-      spectrum: spectrumObject,
+      spectrum: spectrumTarget,
       isAuthenticated: true,
     };
   } catch (err) {
@@ -318,13 +318,13 @@ export async function getSpectrumById(objectId: string): Promise<{
 }
 
 /**
- * Fetch minimal object metadata for Open Graph tags (no auth required).
+ * Fetch minimal target metadata for Open Graph tags (no auth required).
  * Uses service role to bypass RLS since this is called by social media crawlers.
- * This is safe because it only returns basic info (object_id, redshift, program_name, field),
+ * This is safe because it only returns basic info (target_id, redshift, program_name, field),
  * not the actual spectrum data or FITS files.
  */
-export async function getObjectMetadata(objectId: string): Promise<{
-  object_id: string;
+export async function getTargetMetadata(targetId: string): Promise<{
+  target_id: string;
   redshift: number | null;
   program_name: string | null;
   field: string;
@@ -334,14 +334,14 @@ export async function getObjectMetadata(objectId: string): Promise<{
     const supabase = createServiceClient();
 
     const { data, error } = await supabase
-      .from('objects')
+      .from('targets')
       .select(`
-        object_id,
+        target_id,
         redshift,
         field,
         programs:program_slug (program_name)
       `)
-      .eq('object_id', objectId)
+      .eq('target_id', targetId)
       .single();
 
     if (error || !data) {
@@ -353,7 +353,7 @@ export async function getObjectMetadata(objectId: string): Promise<{
     const programData = data.programs as any;
 
     return {
-      object_id: data.object_id,
+      target_id: data.target_id,
       redshift: data.redshift,
       program_name: programData?.program_name || null,
       field: data.field,
@@ -479,12 +479,12 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
 
 /**
  * Fetch all matching object IDs for the inspection queue.
- * Returns a stable snapshot of IDs that won't change as objects are inspected.
+ * Returns a stable snapshot of IDs that won't change as targets are inspected.
  * If no redshift_quality filter is set, implicitly filters to quality=0 (uninspected).
  */
 export async function getInspectionQueueIds(
   filters?: Partial<FilterOptions>,
-  sortColumn: SortColumn = 'object_id',
+  sortColumn: SortColumn = 'target_id',
   sortDirection: SortDirection = 'asc'
 ): Promise<{ ids: string[]; error?: string }> {
   const supabase = await createClient();
@@ -524,9 +524,9 @@ export async function getInspectionQueueIds(
 
     // Call lightweight RPC that returns only object IDs (no JSONB, no spectra joins).
     // Paginate to avoid PostgREST max-rows truncation (5000).
-    const { data: allRows, error: rpcError } = await paginateRpc<{ object_id: string }>(
+    const { data: allRows, error: rpcError } = await paginateRpc<{ target_id: string }>(
       supabase,
-      'get_filtered_object_ids',
+      'get_filtered_target_ids',
       {
         ...rpcParams,
         p_redshift_quality: qualityFilter, // Override: implicit quality=0 for inspection
@@ -540,7 +540,7 @@ export async function getInspectionQueueIds(
       return { ids: [], error: rpcError.message };
     }
 
-    const ids = allRows.map(row => row.object_id);
+    const ids = allRows.map(row => row.target_id);
 
     return { ids };
   } catch (err) {
@@ -550,13 +550,13 @@ export async function getInspectionQueueIds(
 }
 
 /**
- * Get adjacent object IDs for navigation on detail page.
+ * Get adjacent target IDs for navigation on detail page.
  * Uses a lightweight server query optimized for finding just prev/next.
  */
-export async function getAdjacentObjectIds(
-  currentObjectId: string,
+export async function getAdjacentTargetIds(
+  currentTargetId: string,
   filters?: Partial<FilterOptions>,
-  sortColumn: SortColumn = 'object_id',
+  sortColumn: SortColumn = 'target_id',
   sortDirection: SortDirection = 'asc'
 ): Promise<{
   prev: string | null;
@@ -599,8 +599,8 @@ export async function getAdjacentObjectIds(
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     // Call the lightweight RPC function
-    const { data, error } = await supabase.rpc('get_adjacent_objects', {
-      p_current_object_id: currentObjectId,
+    const { data, error } = await supabase.rpc('get_adjacent_targets', {
+      p_current_target_id: currentTargetId,
       ...rpcParams,
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,
@@ -618,13 +618,13 @@ export async function getAdjacentObjectIds(
     }
 
     return {
-      prev: result.prev_object_id || null,
-      next: result.next_object_id || null,
+      prev: result.prev_target_id || null,
+      next: result.next_target_id || null,
       currentIndex: Number(result.current_index) || 0,
       total: Number(result.total_count) || 0,
     };
   } catch (err) {
-    console.error('Error in getAdjacentObjectIds:', err);
+    console.error('Error in getAdjacentTargetIds:', err);
     return { prev: null, next: null, currentIndex: 0, total: 0 };
   }
 }

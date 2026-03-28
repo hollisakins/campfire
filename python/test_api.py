@@ -22,7 +22,7 @@ try:
     print(f"Success! Found {len(results)} objects")
     if len(results) > 0:
         print("\nFirst object:")
-        print(f"  ID: {results[0]['object_id']}")
+        print(f"  ID: {results[0]['target_id']}")
         print(f"  RA: {results[0]['ra']}")
         print(f"  Dec: {results[0]['dec']}")
 except Exception as e:

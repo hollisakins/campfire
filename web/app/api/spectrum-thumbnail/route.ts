@@ -131,7 +131,7 @@ function generateSVG(flux: number[], color: string, hasData: boolean = true): st
 }
 
 /**
- * GET /api/spectrum-thumbnail?object_id=<object_id>&flux_unit=<fnu|flambda>&color=<hex>
+ * GET /api/spectrum-thumbnail?target_id=<target_id>&flux_unit=<fnu|flambda>&color=<hex>
  *
  * Generates an SVG sparkline thumbnail of the spectrum for the given object.
  * Selects grating by priority: PRISM > G395M > G235M > G140M
@@ -143,7 +143,7 @@ export async function GET(request: NextRequest) {
 
   // Get query parameters
   const searchParams = request.nextUrl.searchParams;
-  const objectId = searchParams.get('object_id');
+  const targetId = searchParams.get('target_id');
   const fluxUnit = searchParams.get('flux_unit') || 'fnu';
   const color = searchParams.get('color') || '#3b82f6'; // Default to blue
 
@@ -159,7 +159,7 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  if (!objectId) {
+  if (!targetId) {
     return new Response(generateSVG([], color, false), {
       status: 400,
       headers: {
@@ -173,7 +173,7 @@ export async function GET(request: NextRequest) {
     const { data: spectra, error: spectraError } = await supabase
       .from('spectra')
       .select('grating, fits_path, thumbnail_svg_fnu, thumbnail_svg_flambda')
-      .eq('object_id', objectId);
+      .eq('target_id', targetId);
 
     if (spectraError || !spectra || spectra.length === 0) {
       return new Response(generateSVG([], color, false), {

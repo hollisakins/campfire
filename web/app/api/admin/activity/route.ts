@@ -79,12 +79,12 @@ export async function GET(request: NextRequest) {
             .from('comments')
             .select(`
               id,
-              object_id,
+              target_id,
               user_id,
               content,
               created_at,
               edited_at,
-              objects!inner(object_id)
+              targets!inner(target_id)
             `)
             .eq('is_deleted', false)
             .order('created_at', { ascending: false })
@@ -100,12 +100,12 @@ export async function GET(request: NextRequest) {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       commentActivities = comments.map((c: any) => {
-        const objectData = Array.isArray(c.objects) ? c.objects[0] : c.objects;
+        const targetData = Array.isArray(c.targets) ? c.targets[0] : c.targets;
         return {
           id: `comment-${c.id}`,
           type: 'comment' as const,
-          object_db_id: c.object_id,
-          object_display_id: objectData?.object_id || '',
+          target_db_id: c.target_id,
+          target_display_id: targetData?.target_id || '',
           user_id: c.user_id,
           timestamp: c.created_at,
           content: c.content,
@@ -122,13 +122,13 @@ export async function GET(request: NextRequest) {
             .from('flag_audit_log')
             .select(`
               id,
-              object_id,
+              target_id,
               user_id,
               field_name,
               old_value,
               new_value,
               changed_at,
-              objects!inner(object_id)
+              targets!inner(target_id)
             `)
             .order('changed_at', { ascending: false })
             .order('id', { ascending: false });
@@ -146,12 +146,12 @@ export async function GET(request: NextRequest) {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       inspectionActivities = auditLogs.map((a: any) => {
-        const objectData = Array.isArray(a.objects) ? a.objects[0] : a.objects;
+        const targetData = Array.isArray(a.targets) ? a.targets[0] : a.targets;
         return {
           id: `audit-${a.id}`,
           type: 'inspection' as const,
-          object_db_id: a.object_id,
-          object_display_id: objectData?.object_id || '',
+          target_db_id: a.target_id,
+          target_display_id: targetData?.target_id || '',
           user_id: a.user_id,
           timestamp: a.changed_at,
           field_name: a.field_name,

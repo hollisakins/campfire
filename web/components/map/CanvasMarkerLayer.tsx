@@ -45,7 +45,7 @@ export interface CanvasMarkerLayerProps {
   markers: MapMarker[];
   wcs: WCSParams;
   visible: boolean;
-  highlightObjectId?: string;
+  highlightTargetId?: string;
   markerFilter?: (marker: MapMarker) => boolean;
   onMarkerClick: (marker: MapMarker, latLng: L.LatLng) => void;
 }
@@ -66,7 +66,7 @@ export function CanvasMarkerLayer({
   markers,
   wcs,
   visible,
-  highlightObjectId,
+  highlightTargetId,
   markerFilter,
   onMarkerClick,
 }: CanvasMarkerLayerProps) {
@@ -81,10 +81,10 @@ export function CanvasMarkerLayer({
         marker: m,
         latLng: L.latLng(y, x), // Leaflet: lat=y, lng=x
         color: QUALITY_COLORS[m.redshift_quality] || QUALITY_COLORS[0],
-        isHighlighted: m.object_id === highlightObjectId,
+        isHighlighted: m.target_id === highlightTargetId,
       };
     });
-  }, [markers, wcs, markerFilter, highlightObjectId]);
+  }, [markers, wcs, markerFilter, highlightTargetId]);
 
   // Stable refs for event handlers (avoid re-binding on every render)
   const preparedRef = useRef(prepared);

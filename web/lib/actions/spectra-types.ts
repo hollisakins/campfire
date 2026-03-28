@@ -4,23 +4,23 @@
 export type SortDirection = 'asc' | 'desc';
 
 // View mode for the spectra list page
-export type ViewMode = 'objects' | 'spectra';
+export type ViewMode = 'targets' | 'spectra';
 
-// Object-mode sort columns (must match get_filtered_object_ids whitelist)
-export const OBJECT_SORT_COLUMNS = ['object_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'max_snr', 'max_exposure_time', 'distance'] as const;
+// Target-mode sort columns (must match get_filtered_target_ids whitelist)
+export const TARGET_SORT_COLUMNS = ['target_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'max_snr', 'max_exposure_time', 'distance'] as const;
 
 // Spectra-mode sort columns (must match get_filtered_spectra_paginated whitelist)
-export const SPECTRA_SORT_COLUMNS = ['object_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'signal_to_noise', 'exposure_time', 'grating', 'distance'] as const;
+export const SPECTRA_SORT_COLUMNS = ['target_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'signal_to_noise', 'exposure_time', 'grating', 'distance'] as const;
 
 // Union of all valid sort columns (both modes)
 export const VALID_SORT_COLUMNS = [
-  'object_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality',
+  'target_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality',
   'max_snr', 'max_exposure_time', 'signal_to_noise', 'exposure_time', 'grating', 'distance'
 ] as const;
 export type SortColumn = typeof VALID_SORT_COLUMNS[number];
 
 /** Check if a sort column is valid for the given view mode */
 export function isValidSortColumn(column: string, viewMode: ViewMode): boolean {
-  const valid = viewMode === 'spectra' ? SPECTRA_SORT_COLUMNS : OBJECT_SORT_COLUMNS;
+  const valid = viewMode === 'spectra' ? SPECTRA_SORT_COLUMNS : TARGET_SORT_COLUMNS;
   return (valid as readonly string[]).includes(column);
 }
