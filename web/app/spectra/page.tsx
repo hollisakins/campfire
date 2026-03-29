@@ -7,7 +7,7 @@ import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { SpectraTable } from '@/components/spectra/SpectraTable';
 import { SpectraFilterBar, AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
-import { isValidSortColumn } from '@/lib/actions/spectra-types';
+import { isValidSortColumn, defaultSortColumn } from '@/lib/actions/spectra-types';
 import { LogIn, Loader2, Info, KeyRound } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import {
@@ -146,7 +146,7 @@ function SpectraPageContent() {
       setPage(1);
       // Reset sort column if invalid for the new mode
       if (!isValidSortColumn(sortColumn, newMode)) {
-        setSortColumn('target_id');
+        setSortColumn(defaultSortColumn(newMode));
         setSortDirection('asc');
       }
     });

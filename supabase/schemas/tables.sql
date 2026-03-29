@@ -355,7 +355,8 @@ END) STORED,
     "has_sed_plot" boolean DEFAULT false NOT NULL,
     "max_exposure_time" double precision,
     "program_slug" "text" NOT NULL,
-    "observation" "text" NOT NULL
+    "observation" "text" NOT NULL,
+    "object_id" integer
 );
 
 
@@ -367,6 +368,31 @@ COMMENT ON COLUMN "public"."targets"."redshift" IS 'Generated column: NULL when 
 
 
 COMMENT ON COLUMN "public"."targets"."has_sed_plot" IS 'Indicates whether an SED plot PDF exists in R2. Set during deployment to avoid runtime R2 HeadObject calls.';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."objects" (
+    "id" integer NOT NULL,
+    "object_id" "text" NOT NULL,
+    "field" "text" NOT NULL,
+    "ra" double precision NOT NULL,
+    "dec" double precision NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "n_targets" integer NOT NULL DEFAULT 0,
+    "n_spectra" integer NOT NULL DEFAULT 0,
+    "programs" "text"[] NOT NULL DEFAULT '{}'::"text"[],
+    "gratings" "text"[] NOT NULL DEFAULT '{}'::"text"[],
+    "max_snr" double precision,
+    "max_exposure_time" double precision,
+    "best_redshift" double precision,
+    "best_redshift_quality" integer DEFAULT 0
+);
+
+
+ALTER TABLE "public"."objects" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."objects" IS 'Unique sky positions cross-matched across programs. One object groups one or more targets observed within ~0.2 arcsec. Static properties recomputed at deploy time; best_redshift/quality maintained by trigger.';
 
 
 
@@ -612,6 +638,22 @@ ALTER SEQUENCE "public"."targets_id_seq" OWNED BY "public"."targets"."id";
 
 
 
+CREATE SEQUENCE IF NOT EXISTS "public"."objects_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."objects_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."objects_id_seq" OWNED BY "public"."objects"."id";
+
+
+
 CREATE TABLE IF NOT EXISTS "public"."user_profiles" (
     "user_id" "uuid" NOT NULL,
     "full_name" "text" NOT NULL,
@@ -682,6 +724,10 @@ ALTER TABLE ONLY "public"."spectra" ALTER COLUMN "id" SET DEFAULT "nextval"('"pu
 
 
 ALTER TABLE ONLY "public"."targets" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."targets_id_seq"'::"regclass");
+
+
+
+ALTER TABLE ONLY "public"."objects" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."objects_id_seq"'::"regclass");
 
 
 
@@ -849,6 +895,16 @@ ALTER TABLE ONLY "public"."targets"
 
 
 
+ALTER TABLE ONLY "public"."objects"
+    ADD CONSTRAINT "objects_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."objects"
+    ADD CONSTRAINT "objects_object_id_key" UNIQUE ("object_id");
+
+
+
 ALTER TABLE ONLY "public"."user_profiles"
     ADD CONSTRAINT "user_profiles_pkey" PRIMARY KEY ("user_id");
 
@@ -925,6 +981,11 @@ ALTER TABLE ONLY "public"."targets"
 
 ALTER TABLE ONLY "public"."targets"
     ADD CONSTRAINT "fk_targets_program" FOREIGN KEY ("program_slug") REFERENCES "public"."programs"("slug");
+
+
+
+ALTER TABLE ONLY "public"."targets"
+    ADD CONSTRAINT "fk_targets_object" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id");
 
 
 
@@ -1086,6 +1147,12 @@ GRANT ALL ON TABLE "public"."targets" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."objects" TO "anon";
+GRANT ALL ON TABLE "public"."objects" TO "authenticated";
+GRANT ALL ON TABLE "public"."objects" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."observations" TO "anon";
 GRANT ALL ON TABLE "public"."observations" TO "authenticated";
 GRANT ALL ON TABLE "public"."observations" TO "service_role";
@@ -1207,6 +1274,12 @@ GRANT ALL ON SEQUENCE "public"."spectra_id_seq" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."targets_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."targets_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."targets_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "service_role";
 
 
 

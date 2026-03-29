@@ -109,17 +109,47 @@ export async function getSpectra(
     // Choose RPC based on view mode
     const rpcName = viewMode === 'spectra'
       ? 'get_filtered_spectra_paginated'
-      : 'get_filtered_targets_paginated';
+      : viewMode === 'objects'
+        ? 'get_filtered_objects_paginated'
+        : 'get_filtered_targets_paginated';
+
+    // Build final params for the chosen RPC
+    // Objects RPC has a smaller parameter set (no bitmask flags, observations, comments, thumbnails)
+    const callParams = viewMode === 'objects'
+      ? {
+          p_program_slugs: rpcParams.p_program_slugs,
+          p_filter_programs: rpcParams.p_filter_programs,
+          p_fields: rpcParams.p_fields,
+          p_gratings: rpcParams.p_gratings,
+          p_gratings_mode: rpcParams.p_gratings_mode,
+          p_redshift_quality: rpcParams.p_redshift_quality,
+          p_redshift_min: rpcParams.p_redshift_min,
+          p_redshift_max: rpcParams.p_redshift_max,
+          p_max_snr_min: rpcParams.p_max_snr_min,
+          p_max_snr_max: rpcParams.p_max_snr_max,
+          p_max_exposure_time_min: rpcParams.p_max_exposure_time_min,
+          p_max_exposure_time_max: rpcParams.p_max_exposure_time_max,
+          p_search: rpcParams.p_search,
+          p_inspected_only: rpcParams.p_inspected_only,
+          p_coord_ra: rpcParams.p_coord_ra,
+          p_coord_dec: rpcParams.p_coord_dec,
+          p_radius_degrees: rpcParams.p_radius_degrees,
+          p_sort_column: sortColumn,
+          p_sort_direction: sortDirection,
+          p_page: page,
+          p_page_size: pageSize,
+        }
+      : {
+          ...rpcParams,
+          p_sort_column: sortColumn,
+          p_sort_direction: sortDirection,
+          p_page: page,
+          p_page_size: pageSize,
+          p_include_thumbnails: true,
+        };
 
     // Call the RPC function for server-side filtering, sorting, and pagination
-    const { data, error } = await supabase.rpc(rpcName, {
-      ...rpcParams,
-      p_sort_column: sortColumn,
-      p_sort_direction: sortDirection,
-      p_page: page,
-      p_page_size: pageSize,
-      p_include_thumbnails: true,
-    });
+    const { data, error } = await supabase.rpc(rpcName, callParams);
 
     if (error) {
       console.error('Error fetching spectra:', error);
@@ -143,6 +173,43 @@ export async function getSpectra(
     // Transform the JSONB targets to SpectrumTarget format
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const spectraTargets: SpectrumTarget[] = targets.map((obj: any) => {
+      if (viewMode === 'objects') {
+        // Objects mode: map object fields into SpectrumTarget shape
+        return {
+          id: obj.id,
+          target_id: obj.object_id, // display object_id in the ID column
+          field: obj.field,
+          ra: obj.ra,
+          dec: obj.dec,
+          redshift: obj.best_redshift,
+          redshift_quality: obj.best_redshift_quality ?? 0,
+          distance: obj.distance ?? null,
+          max_snr: obj.max_snr ?? undefined,
+          max_exposure_time: obj.max_exposure_time ?? undefined,
+          created_at: obj.created_at,
+          spectra: [],
+          // Objects-specific fields
+          n_targets: obj.n_targets,
+          n_spectra: obj.n_spectra,
+          programs: obj.programs,
+          gratings: obj.gratings,
+          member_targets: obj.member_targets,
+          num_gratings: obj.gratings?.length ?? 0,
+          // Fields not applicable in objects mode
+          program_slug: obj.programs?.[0] ?? '',
+          program_name: undefined,
+          observation: '',
+          redshift_auto: null,
+          redshift_inspected: null,
+          spectral_features: 0,
+          object_flags: 0,
+          dq_flags: 0,
+          last_inspected_at: null,
+          last_inspected_by: null,
+          updated_at: '',
+        } as unknown as SpectrumTarget;
+      }
+
       const spectra: Spectrum[] = obj.spectra || [];
 
       return {

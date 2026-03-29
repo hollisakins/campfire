@@ -239,6 +239,12 @@ export interface SpectrumTarget extends DbTarget {
   num_gratings?: number;
   comments?: CommentWithUser[];
   hasSedPlot?: boolean;
+  // Objects mode fields (populated when viewing objects)
+  n_targets?: number;
+  n_spectra?: number;
+  programs?: string[];
+  gratings?: string[];
+  member_targets?: { target_id: string; program_slug: string; observation: string; redshift: number | null; redshift_quality: number }[];
 }
 
 // Comment with user profile info

@@ -153,6 +153,23 @@ CREATE POLICY "update_targets_by_access"
 
 
 -- =============================================================================
+-- objects
+-- =============================================================================
+
+ALTER TABLE objects ENABLE ROW LEVEL SECURITY;
+
+-- Objects visible if any of their member programs are accessible.
+-- Uses the programs[] array column (populated at deploy time) to avoid
+-- a JOIN to targets on every read.
+DROP POLICY IF EXISTS "select_objects_by_access" ON objects;
+CREATE POLICY "select_objects_by_access"
+  ON objects FOR SELECT
+  USING (
+    programs && public.accessible_program_slugs()
+  );
+
+
+-- =============================================================================
 -- spectra
 -- =============================================================================
 
