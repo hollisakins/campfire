@@ -56,13 +56,39 @@ Requires `.env.local` with Supabase + R2 credentials (see `web/README.md`).
 
 ### Database (Supabase)
 
-Core tables: `objects` (object catalog), `spectra` (unique spectra, joinable to objects), `programs` (JWST program metadata), `user_profiles` (auth + access, linked to Supabase `auth.users`).
+Core tables: `targets` (target catalog), `spectra` (unique spectra, joinable to targets), `programs` (JWST program metadata), `user_profiles` (auth + access, linked to Supabase `auth.users`).
 
-Main RPC function: `get_filtered_object_ids` — server-side filtering, sorting, pagination with Haversine coordinate search.
+Main RPC function: `get_filtered_target_ids` — server-side filtering, sorting, pagination with Haversine coordinate search.
 
-Migrations tracked in `supabase/migrations/`. Test locally with `supabase db reset`, push with `supabase db push`.
+#### Declarative Schemas (`supabase/schemas/`)
 
-**Naming migrations**: Always check existing files in `supabase/migrations/` before naming a new one. Timestamps must sort after the latest existing migration to avoid conflicts with already-applied remote migrations. Use the pattern `YYYYMMDDHHMMSS_description.sql` and pick a timestamp greater than the last file's.
+The database uses Supabase's native declarative schema system. **`supabase/schemas/` is the single source of truth** for the entire database schema — tables, functions, triggers, views, indexes, and policies are all defined here. Never read migration files to understand current definitions; read the schema files instead.
+
+`supabase db diff` works by building two databases: one from migrations (the "current" state) and one from schema files (the "desired" state), then generating a migration to reconcile any differences. This means schema files must define the complete database.
+
+Files (applied in this order via `schema_paths` in `config.toml`):
+- `tables.sql` — extensions, tables, sequences, constraints, table grants, default privileges
+- `functions.sql` — all RPC and helper functions
+- `triggers.sql` — trigger functions and triggers
+- `views.sql` — views and materialized views
+- `indexes.sql` — all indexes
+- `policies.sql` — RLS policies
+
+**Workflow for schema changes:**
+1. Edit the relevant file in `supabase/schemas/`
+2. Apply locally: `supabase db reset` (rebuilds from migrations + schema files + seed)
+3. Generate migration: `supabase db diff -f <description>`
+4. Review the generated migration SQL
+5. Commit both the schema file change and the generated migration
+6. Push to remote: `supabase db push --linked`
+
+**Caveats (migra limitations):** Materialized views, comments, and partitions are not tracked by the diff engine. Changes to these require manual migration authoring after editing the schema file.
+
+#### Migrations (`supabase/migrations/`)
+
+Migrations are the deployment mechanism, not the source of truth. They are applied sequentially by `supabase db reset` and `supabase db push`. Never edit existing migrations. New migrations are auto-generated via `supabase db diff`.
+
+The migration history was squashed on 2026-03-28 into a single baseline (`20260328200000`) + normalization (`20260328204719`). Pre-squash migrations are archived in `supabase/migrations_archive/` for reference.
 
 ### Local Supabase
 
@@ -109,4 +135,4 @@ Credentials via env vars (`CAMPFIRE_SUPABASE_URL`, `CAMPFIRE_R2_*`) or gitignore
 - Pipeline code is local-only, never deployed
 - Large files (FITS, raw data) are gitignored and stored in R2
 - Secrets are never committed — use Vercel env vars or gitignored config files
-- Database schema is tracked in `supabase/migrations/`
+- Database schema definitions live in `supabase/schemas/` (source of truth); migrations in `supabase/migrations/` (deployment)

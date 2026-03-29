@@ -1,0 +1,524 @@
+-- =============================================================================
+-- CAMPFIRE Supabase Schema: RLS Policies
+-- =============================================================================
+-- Canonical source of truth for all Row Level Security policies.
+-- Do NOT read migration files to understand current signatures or behavior.
+--
+-- Workflow: edit here → run apply.sh → supabase db diff → commit migration
+-- =============================================================================
+
+
+-- NOTE: RLS helper functions (is_admin, can_comment, accessible_program_slugs)
+-- are defined in functions.sql, which is applied before this file.
+
+
+-- =============================================================================
+-- user_profiles
+-- =============================================================================
+
+ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
+
+-- All authenticated users can read all profiles (needed for comment author
+-- names, inspection tracking "last inspected by", admin user list).
+DROP POLICY IF EXISTS "authenticated_select_profiles" ON user_profiles;
+CREATE POLICY "authenticated_select_profiles"
+  ON user_profiles FOR SELECT TO authenticated
+  USING (true);
+
+-- Users can update their own profile (name, preferences).
+DROP POLICY IF EXISTS "self_update_profile" ON user_profiles;
+CREATE POLICY "self_update_profile"
+  ON user_profiles FOR UPDATE TO authenticated
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+-- Admins can update any profile (is_admin, can_comment toggles).
+DROP POLICY IF EXISTS "admin_update_profile" ON user_profiles;
+CREATE POLICY "admin_update_profile"
+  ON user_profiles FOR UPDATE TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- Admins can delete profiles (user management).
+DROP POLICY IF EXISTS "admin_delete_profile" ON user_profiles;
+CREATE POLICY "admin_delete_profile"
+  ON user_profiles FOR DELETE TO authenticated
+  USING (public.is_admin());
+
+-- Admins can insert profiles (manual user creation).
+DROP POLICY IF EXISTS "admin_insert_profile" ON user_profiles;
+CREATE POLICY "admin_insert_profile"
+  ON user_profiles FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+
+-- =============================================================================
+-- user_program_access
+-- =============================================================================
+
+ALTER TABLE user_program_access ENABLE ROW LEVEL SECURITY;
+
+-- Users can see their own access grants.
+DROP POLICY IF EXISTS "self_select_access" ON user_program_access;
+CREATE POLICY "self_select_access"
+  ON user_program_access FOR SELECT TO authenticated
+  USING (user_id = auth.uid());
+
+-- Admins can see all access grants (user management panel).
+DROP POLICY IF EXISTS "admin_select_access" ON user_program_access;
+CREATE POLICY "admin_select_access"
+  ON user_program_access FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+-- Admins can grant program access.
+DROP POLICY IF EXISTS "admin_insert_access" ON user_program_access;
+CREATE POLICY "admin_insert_access"
+  ON user_program_access FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Admins can revoke program access.
+DROP POLICY IF EXISTS "admin_delete_access" ON user_program_access;
+CREATE POLICY "admin_delete_access"
+  ON user_program_access FOR DELETE TO authenticated
+  USING (public.is_admin());
+
+
+-- =============================================================================
+-- programs
+-- =============================================================================
+
+ALTER TABLE programs ENABLE ROW LEVEL SECURITY;
+
+-- Public programs visible to all authenticated users.
+-- Private programs visible only to users with explicit access.
+DROP POLICY IF EXISTS "accessible_programs_select" ON programs;
+CREATE POLICY "accessible_programs_select"
+  ON programs FOR SELECT TO authenticated
+  USING (
+    is_public = true
+    OR slug IN (SELECT program_slug FROM user_program_access WHERE user_id = auth.uid())
+  );
+
+-- Admins can see all programs (including private ones without access).
+DROP POLICY IF EXISTS "admin_programs_select" ON programs;
+CREATE POLICY "admin_programs_select"
+  ON programs FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+-- Admins can update programs (toggle is_public, edit metadata).
+DROP POLICY IF EXISTS "admin_programs_update" ON programs;
+CREATE POLICY "admin_programs_update"
+  ON programs FOR UPDATE TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+
+-- =============================================================================
+-- observations
+-- =============================================================================
+
+ALTER TABLE observations ENABLE ROW LEVEL SECURITY;
+
+-- Observations visible if the parent program is accessible.
+DROP POLICY IF EXISTS "accessible_observations_select" ON observations;
+CREATE POLICY "accessible_observations_select"
+  ON observations FOR SELECT TO authenticated
+  USING (
+    program_slug = ANY(public.accessible_program_slugs())
+  );
+
+
+-- =============================================================================
+-- targets (renamed from objects)
+-- =============================================================================
+
+ALTER TABLE targets ENABLE ROW LEVEL SECURITY;
+
+-- Targets visible if their program is accessible.
+DROP POLICY IF EXISTS "select_targets_by_access" ON targets;
+CREATE POLICY "select_targets_by_access"
+  ON targets FOR SELECT
+  USING (
+    program_slug = ANY(public.accessible_program_slugs())
+  );
+
+-- Users with can_comment permission can update targets in accessible programs.
+DROP POLICY IF EXISTS "update_targets_by_access" ON targets;
+CREATE POLICY "update_targets_by_access"
+  ON targets FOR UPDATE
+  USING (
+    program_slug = ANY(public.accessible_program_slugs())
+    AND public.can_comment()
+  );
+
+
+-- =============================================================================
+-- spectra
+-- =============================================================================
+
+ALTER TABLE spectra ENABLE ROW LEVEL SECURITY;
+
+-- Spectra visible if their parent target is in an accessible program.
+DROP POLICY IF EXISTS "select_spectra_by_access" ON spectra;
+CREATE POLICY "select_spectra_by_access"
+  ON spectra FOR SELECT
+  USING (
+    target_id IN (
+      SELECT t.target_id FROM targets t
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    )
+  );
+
+
+-- =============================================================================
+-- comments
+-- =============================================================================
+
+ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
+
+-- Comments visible if their parent target is in an accessible program.
+DROP POLICY IF EXISTS "select_comments_by_access" ON comments;
+CREATE POLICY "select_comments_by_access"
+  ON comments FOR SELECT
+  USING (
+    target_id IN (
+      SELECT t.id FROM targets t
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    )
+  );
+
+-- Users with can_comment permission can insert comments on accessible targets.
+DROP POLICY IF EXISTS "insert_comments_by_access" ON comments;
+CREATE POLICY "insert_comments_by_access"
+  ON comments FOR INSERT
+  WITH CHECK (
+    target_id IN (
+      SELECT t.id FROM targets t
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    )
+    AND public.can_comment()
+  );
+
+
+-- =============================================================================
+-- flag_audit_log
+-- =============================================================================
+
+ALTER TABLE flag_audit_log ENABLE ROW LEVEL SECURITY;
+
+-- Audit log visible if the parent target is in an accessible program.
+DROP POLICY IF EXISTS "select_audit_by_access" ON flag_audit_log;
+CREATE POLICY "select_audit_by_access"
+  ON flag_audit_log FOR SELECT
+  USING (
+    target_id IN (
+      SELECT t.id FROM targets t
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    )
+  );
+
+-- Authenticated users can insert audit entries for targets in accessible programs.
+DROP POLICY IF EXISTS "insert_audit_by_access" ON flag_audit_log;
+CREATE POLICY "insert_audit_by_access"
+  ON flag_audit_log FOR INSERT TO authenticated
+  WITH CHECK (
+    target_id IN (
+      SELECT t.id FROM targets t
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    )
+  );
+
+
+-- =============================================================================
+-- nircam_images
+-- =============================================================================
+
+ALTER TABLE nircam_images ENABLE ROW LEVEL SECURITY;
+
+-- All authenticated users can read (reference data, no program association).
+DROP POLICY IF EXISTS "authenticated_select_nircam" ON nircam_images;
+CREATE POLICY "authenticated_select_nircam"
+  ON nircam_images FOR SELECT TO authenticated
+  USING (true);
+
+
+-- =============================================================================
+-- flag_definitions
+-- =============================================================================
+
+ALTER TABLE flag_definitions ENABLE ROW LEVEL SECURITY;
+
+-- All authenticated users can read (reference data for flag display).
+DROP POLICY IF EXISTS "authenticated_select_flags" ON flag_definitions;
+CREATE POLICY "authenticated_select_flags"
+  ON flag_definitions FOR SELECT TO authenticated
+  USING (true);
+
+
+-- =============================================================================
+-- map_layers
+-- =============================================================================
+
+ALTER TABLE map_layers ENABLE ROW LEVEL SECURITY;
+
+-- All authenticated users can read map layers.
+DROP POLICY IF EXISTS "Authenticated users can read map layers" ON map_layers;
+CREATE POLICY "Authenticated users can read map layers"
+  ON map_layers FOR SELECT TO authenticated
+  USING (true);
+
+-- Service role has full access to map layers (deploy CLI).
+DROP POLICY IF EXISTS "Service role has full access to map layers" ON map_layers;
+CREATE POLICY "Service role has full access to map layers"
+  ON map_layers FOR ALL TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+
+-- =============================================================================
+-- slit_regions
+-- =============================================================================
+
+ALTER TABLE slit_regions ENABLE ROW LEVEL SECURITY;
+
+-- All authenticated users can read slit regions.
+DROP POLICY IF EXISTS "Authenticated users can view slit regions" ON slit_regions;
+CREATE POLICY "Authenticated users can view slit regions"
+  ON slit_regions FOR SELECT TO authenticated
+  USING (true);
+
+
+-- =============================================================================
+-- shutters
+-- =============================================================================
+
+ALTER TABLE shutters ENABLE ROW LEVEL SECURITY;
+
+-- All authenticated users can read shutters.
+DROP POLICY IF EXISTS "Authenticated users can view shutters" ON shutters;
+CREATE POLICY "Authenticated users can view shutters"
+  ON shutters FOR SELECT TO authenticated
+  USING (true);
+
+
+-- =============================================================================
+-- pending_invites
+-- =============================================================================
+
+ALTER TABLE pending_invites ENABLE ROW LEVEL SECURITY;
+
+-- Admins can view invites.
+DROP POLICY IF EXISTS "admin_select_invites" ON pending_invites;
+CREATE POLICY "admin_select_invites"
+  ON pending_invites FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+-- Users can read own invite by email.
+DROP POLICY IF EXISTS "Users can read own invite by email" ON pending_invites;
+CREATE POLICY "Users can read own invite by email"
+  ON pending_invites FOR SELECT TO authenticated
+  USING (email = (SELECT users.email FROM auth.users WHERE users.id = auth.uid())::text);
+
+-- Admins can create invites.
+DROP POLICY IF EXISTS "admin_insert_invites" ON pending_invites;
+CREATE POLICY "admin_insert_invites"
+  ON pending_invites FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Admins can update invites.
+DROP POLICY IF EXISTS "admin_update_invites" ON pending_invites;
+CREATE POLICY "admin_update_invites"
+  ON pending_invites FOR UPDATE TO authenticated
+  USING (public.is_admin());
+
+-- Admins can delete invites.
+DROP POLICY IF EXISTS "admin_delete_invites" ON pending_invites;
+CREATE POLICY "admin_delete_invites"
+  ON pending_invites FOR DELETE TO authenticated
+  USING (public.is_admin());
+
+
+-- =============================================================================
+-- access_codes
+-- =============================================================================
+
+ALTER TABLE access_codes ENABLE ROW LEVEL SECURITY;
+
+-- Admins can manage all access codes (all operations).
+DROP POLICY IF EXISTS "admin_manage_codes" ON access_codes;
+CREATE POLICY "admin_manage_codes"
+  ON access_codes
+  USING (public.is_admin());
+
+-- Anyone can read active codes (for code redemption flow).
+DROP POLICY IF EXISTS "Anyone can read active codes" ON access_codes;
+CREATE POLICY "Anyone can read active codes"
+  ON access_codes FOR SELECT
+  USING (is_active = true);
+
+
+-- =============================================================================
+-- code_redemptions
+-- =============================================================================
+
+ALTER TABLE code_redemptions ENABLE ROW LEVEL SECURITY;
+
+-- Admins can see all redemptions.
+DROP POLICY IF EXISTS "admin_select_redemptions" ON code_redemptions;
+CREATE POLICY "admin_select_redemptions"
+  ON code_redemptions FOR SELECT
+  USING (public.is_admin());
+
+-- Users can see own redemptions.
+DROP POLICY IF EXISTS "Users can see own redemptions" ON code_redemptions;
+CREATE POLICY "Users can see own redemptions"
+  ON code_redemptions FOR SELECT
+  USING (user_id = auth.uid());
+
+-- Users can redeem codes.
+DROP POLICY IF EXISTS "Users can redeem codes" ON code_redemptions;
+CREATE POLICY "Users can redeem codes"
+  ON code_redemptions FOR INSERT
+  WITH CHECK (user_id = auth.uid());
+
+
+-- =============================================================================
+-- account_requests
+-- =============================================================================
+
+ALTER TABLE account_requests ENABLE ROW LEVEL SECURITY;
+
+-- Admins can view requests.
+DROP POLICY IF EXISTS "admin_select_requests" ON account_requests;
+CREATE POLICY "admin_select_requests"
+  ON account_requests FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+-- Admins can update requests.
+DROP POLICY IF EXISTS "admin_update_requests" ON account_requests;
+CREATE POLICY "admin_update_requests"
+  ON account_requests FOR UPDATE TO authenticated
+  USING (public.is_admin());
+
+-- Anyone can submit requests (including anonymous users).
+DROP POLICY IF EXISTS "Anyone can submit requests" ON account_requests;
+CREATE POLICY "Anyone can submit requests"
+  ON account_requests FOR INSERT TO authenticated, anon
+  WITH CHECK (true);
+
+-- Anyone can check own request status.
+DROP POLICY IF EXISTS "Users can check own request status" ON account_requests;
+CREATE POLICY "Users can check own request status"
+  ON account_requests FOR SELECT TO authenticated, anon
+  USING (true);
+
+
+-- =============================================================================
+-- download_log
+-- =============================================================================
+
+ALTER TABLE download_log ENABLE ROW LEVEL SECURITY;
+
+-- Admins can view all downloads.
+DROP POLICY IF EXISTS "admin_select_downloads" ON download_log;
+CREATE POLICY "admin_select_downloads"
+  ON download_log FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+-- Users can view own downloads.
+DROP POLICY IF EXISTS "Users can view own downloads" ON download_log;
+CREATE POLICY "Users can view own downloads"
+  ON download_log FOR SELECT TO authenticated
+  USING (auth.uid() = user_id);
+
+
+-- =============================================================================
+-- password_reset_log
+-- =============================================================================
+
+ALTER TABLE password_reset_log ENABLE ROW LEVEL SECURITY;
+
+-- Admins can view all reset logs.
+DROP POLICY IF EXISTS "admin_select_reset_logs" ON password_reset_log;
+CREATE POLICY "admin_select_reset_logs"
+  ON password_reset_log FOR SELECT
+  USING (public.is_admin());
+
+-- Users can view own reset logs.
+DROP POLICY IF EXISTS "Users can view own reset logs" ON password_reset_log;
+CREATE POLICY "Users can view own reset logs"
+  ON password_reset_log FOR SELECT
+  USING (user_id = auth.uid());
+
+
+-- =============================================================================
+-- device_codes
+-- =============================================================================
+
+ALTER TABLE device_codes ENABLE ROW LEVEL SECURITY;
+
+-- Service role has full access (device auth flow managed server-side).
+DROP POLICY IF EXISTS "Service role full access" ON device_codes;
+CREATE POLICY "Service role full access"
+  ON device_codes TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+
+-- =============================================================================
+-- refresh_tokens
+-- =============================================================================
+
+ALTER TABLE refresh_tokens ENABLE ROW LEVEL SECURITY;
+
+-- Service role has full access (token management server-side).
+DROP POLICY IF EXISTS "Service role full access" ON refresh_tokens;
+CREATE POLICY "Service role full access"
+  ON refresh_tokens TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+-- Users can view own tokens.
+DROP POLICY IF EXISTS "Users can view own tokens" ON refresh_tokens;
+CREATE POLICY "Users can view own tokens"
+  ON refresh_tokens FOR SELECT TO authenticated
+  USING (auth.uid() = user_id);
+
+-- Users can update own tokens.
+DROP POLICY IF EXISTS "Users can update own tokens" ON refresh_tokens;
+CREATE POLICY "Users can update own tokens"
+  ON refresh_tokens FOR UPDATE TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+
+-- =============================================================================
+-- api_keys
+-- =============================================================================
+
+ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
+
+-- Users can view own API keys.
+DROP POLICY IF EXISTS "Users can view own API keys" ON api_keys;
+CREATE POLICY "Users can view own API keys"
+  ON api_keys FOR SELECT TO authenticated
+  USING (auth.uid() = user_id);
+
+-- Users can create own API keys.
+DROP POLICY IF EXISTS "Users can create own API keys" ON api_keys;
+CREATE POLICY "Users can create own API keys"
+  ON api_keys FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+-- Users can update own API keys.
+DROP POLICY IF EXISTS "Users can update own API keys" ON api_keys;
+CREATE POLICY "Users can update own API keys"
+  ON api_keys FOR UPDATE TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- Users can delete own API keys.
+DROP POLICY IF EXISTS "Users can delete own API keys" ON api_keys;
+CREATE POLICY "Users can delete own API keys"
+  ON api_keys FOR DELETE TO authenticated
+  USING (auth.uid() = user_id);

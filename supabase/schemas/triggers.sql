@@ -1,0 +1,117 @@
+-- =============================================================================
+-- CAMPFIRE Supabase Schema: Triggers
+-- =============================================================================
+-- Canonical source of truth for all trigger functions and triggers.
+-- Do NOT read migration files to understand current signatures or behavior.
+--
+-- Workflow: edit here → run apply.sh → supabase db diff → commit migration
+-- =============================================================================
+
+
+-- ============================================================
+-- TRIGGER FUNCTIONS
+-- ============================================================
+
+-- 1. log_flag_changes
+--    Logs changes to redshift_quality, spectral_features, object_flags, dq_flags
+--    into the flag_audit_log table and bumps updated_at.
+DROP FUNCTION IF EXISTS public.log_flag_changes CASCADE;
+
+CREATE OR REPLACE FUNCTION public.log_flag_changes() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+BEGIN
+    IF OLD.redshift_quality IS DISTINCT FROM NEW.redshift_quality THEN
+        INSERT INTO flag_audit_log (target_id, user_id, field_name, old_value, new_value)
+        VALUES (NEW.id, auth.uid(), 'redshift_quality', OLD.redshift_quality, NEW.redshift_quality);
+    END IF;
+    IF OLD.spectral_features IS DISTINCT FROM NEW.spectral_features THEN
+        INSERT INTO flag_audit_log (target_id, user_id, field_name, old_value, new_value)
+        VALUES (NEW.id, auth.uid(), 'spectral_features', OLD.spectral_features, NEW.spectral_features);
+    END IF;
+    IF OLD.object_flags IS DISTINCT FROM NEW.object_flags THEN
+        INSERT INTO flag_audit_log (target_id, user_id, field_name, old_value, new_value)
+        VALUES (NEW.id, auth.uid(), 'object_flags', OLD.object_flags, NEW.object_flags);
+    END IF;
+    IF OLD.dq_flags IS DISTINCT FROM NEW.dq_flags THEN
+        INSERT INTO flag_audit_log (target_id, user_id, field_name, old_value, new_value)
+        VALUES (NEW.id, auth.uid(), 'dq_flags', OLD.dq_flags, NEW.dq_flags);
+    END IF;
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
+-- 2. update_target_max_snr
+--    Recomputes targets.max_snr from spectra.signal_to_noise after any
+--    INSERT, DELETE, or UPDATE on spectra.
+DROP FUNCTION IF EXISTS public.update_target_max_snr CASCADE;
+
+CREATE OR REPLACE FUNCTION public.update_target_max_snr() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_target_id TEXT;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    v_target_id := OLD.target_id;
+  ELSE
+    v_target_id := NEW.target_id;
+  END IF;
+  UPDATE targets
+  SET max_snr = (
+    SELECT MAX(signal_to_noise)
+    FROM spectra
+    WHERE spectra.target_id = v_target_id
+  )
+  WHERE targets.target_id = v_target_id;
+  RETURN NEW;
+END;
+$$;
+
+-- 3. update_target_max_exposure_time
+--    Recomputes targets.max_exposure_time from spectra.exposure_time after any
+--    INSERT, DELETE, or UPDATE on spectra.
+DROP FUNCTION IF EXISTS public.update_target_max_exposure_time CASCADE;
+
+CREATE OR REPLACE FUNCTION public.update_target_max_exposure_time() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_target_id TEXT;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    v_target_id := OLD.target_id;
+  ELSE
+    v_target_id := NEW.target_id;
+  END IF;
+  UPDATE targets
+  SET max_exposure_time = (
+    SELECT MAX(exposure_time)
+    FROM spectra
+    WHERE spectra.target_id = v_target_id
+  )
+  WHERE targets.target_id = v_target_id;
+  RETURN NEW;
+END;
+$$;
+
+
+-- ============================================================
+-- TRIGGERS
+-- ============================================================
+
+DROP TRIGGER IF EXISTS track_flag_changes ON public.targets;
+CREATE TRIGGER track_flag_changes
+  BEFORE UPDATE ON public.targets
+  FOR EACH ROW EXECUTE FUNCTION public.log_flag_changes();
+
+DROP TRIGGER IF EXISTS update_max_snr_trigger ON public.spectra;
+CREATE TRIGGER update_max_snr_trigger
+  AFTER INSERT OR DELETE OR UPDATE ON public.spectra
+  FOR EACH ROW EXECUTE FUNCTION public.update_target_max_snr();
+
+DROP TRIGGER IF EXISTS update_max_exposure_time_trigger ON public.spectra;
+CREATE TRIGGER update_max_exposure_time_trigger
+  AFTER INSERT OR DELETE OR UPDATE ON public.spectra
+  FOR EACH ROW EXECUTE FUNCTION public.update_target_max_exposure_time();

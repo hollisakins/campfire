@@ -53,7 +53,17 @@ max_client_conn = 100
 enabled = true
 # Specifies an ordered list of schema files that describe your database.
 # Supports glob patterns relative to supabase directory: "./schemas/*.sql"
-schema_paths = []
+# Order matters: functions must come before policies (which reference helper functions).
+# NOTE: materialized views are NOT tracked by migra (the diff engine) —
+# changes to views.sql must be applied via manual migrations.
+schema_paths = [
+  "./schemas/tables.sql",
+  "./schemas/functions.sql",
+  "./schemas/triggers.sql",
+  "./schemas/views.sql",
+  "./schemas/indexes.sql",
+  "./schemas/policies.sql",
+]
 
 [db.seed]
 # If enabled, seeds the database after migrations during a db reset.
