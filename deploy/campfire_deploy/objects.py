@@ -10,6 +10,7 @@ pair-finding and a Union-Find structure for connected components.
 """
 
 from collections import defaultdict
+from datetime import datetime, timezone
 
 from astropy.coordinates import SkyCoord, search_around_sky
 import astropy.units as u
@@ -313,6 +314,7 @@ def _insert_objects(
 ) -> dict[str, int]:
     """Batch-insert objects, return mapping of object_id -> db id."""
     object_id_to_db_id: dict[str, int] = {}
+    now = datetime.now(timezone.utc).isoformat()
 
     for i in range(0, len(objects), BATCH_SIZE):
         batch = objects[i:i + BATCH_SIZE]
@@ -330,6 +332,7 @@ def _insert_objects(
                 'max_exposure_time': obj['max_exposure_time'],
                 'best_redshift': obj['best_redshift'],
                 'best_redshift_quality': obj['best_redshift_quality'],
+                'updated_at': now,
             }
             for obj in batch
         ]
@@ -356,7 +359,8 @@ def _set_target_fks(
         for i in range(0, len(member_ids), BATCH_SIZE):
             batch = member_ids[i:i + BATCH_SIZE]
             client.table('targets').update(
-                {'object_id': db_id},
+                {'object_id': db_id,
+                 'updated_at': datetime.now(timezone.utc).isoformat()},
             ).in_('id', batch).execute()
             total += len(batch)
 

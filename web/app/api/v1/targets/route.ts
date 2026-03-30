@@ -121,9 +121,9 @@ function parseUrlToFilters(
 }
 
 /**
- * GET /api/v1/objects
+ * GET /api/v1/targets
  *
- * Query objects with filters for the Python API.
+ * Query targets with filters for the Python API.
  * Requires API key authentication via Authorization header.
  *
  * Query parameters:
@@ -210,7 +210,7 @@ export async function GET(request: NextRequest) {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Call the RPC function
-    const { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
+    const { data, error } = await supabase.rpc('get_filtered_targets_paginated', {
       ...rpcParams,
       p_sort_column: finalSortColumn,
       p_sort_direction: sortDirection,
@@ -220,18 +220,18 @@ export async function GET(request: NextRequest) {
     });
 
     if (error) {
-      console.error('Error fetching objects:', error);
+      console.error('Error fetching targets:', error);
       return NextResponse.json(
-        { error: 'Failed to fetch objects', details: error.message },
+        { error: 'Failed to fetch targets', details: error.message },
         { status: 500 }
       );
     }
 
-    const result = data?.[0] || { objects: [], total_count: 0 };
+    const result = data?.[0] || { targets: [], total_count: 0 };
 
     // Return API response
     return NextResponse.json({
-      data: result.objects || [],
+      data: result.targets || [],
       pagination: {
         total: result.total_count || 0,
         limit,
@@ -239,7 +239,7 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('Error in API /v1/objects:', error);
+    console.error('Error in API /v1/targets:', error);
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

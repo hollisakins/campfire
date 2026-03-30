@@ -1,6 +1,6 @@
 """CSV catalog export from SQLite database.
 
-Generates objects.csv and spectra.csv as human-readable export artifacts
+Generates targets.csv and spectra.csv as human-readable export artifacts
 from the LocalStore. These files are written atomically so they're always
 in a consistent state.
 """

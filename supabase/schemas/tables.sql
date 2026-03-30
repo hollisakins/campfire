@@ -385,7 +385,8 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "max_snr" double precision,
     "max_exposure_time" double precision,
     "best_redshift" double precision,
-    "best_redshift_quality" integer DEFAULT 0
+    "best_redshift_quality" integer DEFAULT 0,
+    "updated_at" timestamp with time zone DEFAULT "now"()
 );
 
 

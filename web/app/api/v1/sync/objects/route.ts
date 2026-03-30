@@ -4,14 +4,12 @@ import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms } from '@/lib/api-helpers';
 
 /**
- * GET /api/v1/sync/catalog
+ * GET /api/v1/sync/objects
  *
- * Lightweight endpoint for Python client catalog sync.
- * Returns objects with nested spectra, paginated, with optional
- * incremental filtering via updated_since.
- *
- * Much faster than /api/v1/targets because it uses a simple RPC
- * without complex sorting, distance computation, or window functions.
+ * Lightweight endpoint for Python client objects catalog sync.
+ * Returns objects (cross-program grouped sky positions) with member
+ * target IDs, paginated, with optional incremental filtering via
+ * updated_since.
  *
  * Query parameters:
  * - updated_since: ISO 8601 timestamp (only return objects updated after this)
@@ -47,7 +45,7 @@ export async function GET(request: NextRequest) {
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data, error } = await supabase.rpc('get_targets_for_sync', {
+    const { data, error } = await supabase.rpc('get_objects_for_sync', {
       p_program_slugs: accessibleProgramSlugs,
       p_updated_since: updatedSince,
       p_limit: limit,
@@ -55,17 +53,17 @@ export async function GET(request: NextRequest) {
     });
 
     if (error) {
-      console.error('Error in sync catalog:', error);
+      console.error('Error in sync objects:', error);
       return NextResponse.json(
-        { error: 'Failed to fetch catalog', details: error.message },
+        { error: 'Failed to fetch objects', details: error.message },
         { status: 500 }
       );
     }
 
-    const result = data?.[0] || { targets: [], total_count: 0, total_accessible_count: 0 };
+    const result = data?.[0] || { objects: [], total_count: 0, total_accessible_count: 0 };
 
     return NextResponse.json({
-      data: result.targets || [],
+      data: result.objects || [],
       pagination: {
         total: result.total_count || 0,
         limit,
@@ -74,7 +72,7 @@ export async function GET(request: NextRequest) {
       total_accessible_count: result.total_accessible_count || 0,
     });
   } catch (error) {
-    console.error('Error in API /v1/sync/catalog:', error);
+    console.error('Error in API /v1/sync/objects:', error);
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

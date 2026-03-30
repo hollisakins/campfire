@@ -1,7 +1,7 @@
 """SQLite-based local store for CAMPFIRE metadata and sync state.
 
 Replaces the old ``SyncState`` class and absorbs catalog storage. The database
-stores full object and spectra metadata (populated during sync) and tracks
+stores full target and spectra metadata (populated during sync) and tracks
 which FITS files have been downloaded locally.
 """
 
@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 
 # Schema version — bump when tables change
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Column lists used by both store and export
 OBJECT_COLUMNS = [
@@ -152,21 +152,21 @@ class LocalStore:
 
     def _init_schema(self) -> None:
         """Create tables if they don't exist, and migrate if needed."""
-        # Check if this is a legacy database (has synced_files but no objects)
-        cursor = self._conn.execute(
+        # Detect existing database state
+        has_synced_files = self._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='synced_files'"
-        )
-        has_old_schema = cursor.fetchone() is not None
-
-        cursor = self._conn.execute(
+        ).fetchone() is not None
+        has_targets = self._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='targets'"
-        )
-        has_new_schema = cursor.fetchone() is not None
+        ).fetchone() is not None
+        has_objects = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='objects'"
+        ).fetchone() is not None
 
-        if has_old_schema and not has_new_schema:
-            # Migrate from v1 (sync-only) to v3 (full catalog + hash split)
+        if has_synced_files and not has_targets and not has_objects:
+            # Migrate from v1 (sync-only) to full catalog schema
             self._migrate_from_v1()
-        elif not has_new_schema:
+        elif not has_targets and not has_objects:
             # Fresh install
             self._conn.executescript(_SCHEMA_SQL)
             self._conn.execute(
@@ -175,14 +175,17 @@ class LocalStore:
             )
             self._conn.commit()
         else:
-            # Existing schema — check if migration needed
+            # Existing schema — run any pending migrations
             version = self._get_schema_version()
-            if version < 3:
-                self._migrate_from_v2()
-            if version < 4:
-                self._migrate_from_v3()
-            if version < 5:
-                self._migrate_from_v4()
+            if version < SCHEMA_VERSION:
+                if version < 3:
+                    self._migrate_from_v2()
+                if version < 4:
+                    self._migrate_from_v3()
+                if version < 5:
+                    self._migrate_from_v4()
+                if version < 6:
+                    self._migrate_from_v5()
 
     def _get_schema_version(self) -> int:
         """Get current schema version from _meta table."""
@@ -244,10 +247,18 @@ class LocalStore:
         self._conn.commit()
 
     def _migrate_from_v3(self) -> None:
-        """Migrate from v3 to v4: add last_inspected_by column to objects."""
+        """Migrate from v3 to v4: add last_inspected_by column.
+
+        At v3 the table is still called 'objects' (renamed in v5→v6).
+        """
+        table = "objects"
+        if not self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='objects'"
+        ).fetchone():
+            table = "targets"
         try:
             self._conn.execute(
-                "ALTER TABLE objects ADD COLUMN last_inspected_by TEXT"
+                f"ALTER TABLE {table} ADD COLUMN last_inspected_by TEXT"
             )
         except sqlite3.OperationalError:
             pass  # Column already exists
@@ -277,22 +288,94 @@ class LocalStore:
         )
         self._conn.commit()
 
+    def _migrate_from_v5(self) -> None:
+        """Migrate from v5 to v6: rename objects → targets, object_id → target_id."""
+        has_objects = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='objects'"
+        ).fetchone()
+
+        if has_objects:
+            # If targets table also exists (e.g. from _SCHEMA_SQL), drop the empty one
+            has_targets = self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='targets'"
+            ).fetchone()
+            if has_targets:
+                self._conn.execute("DROP TABLE targets")
+
+            # Rename table and primary column
+            self._conn.execute("ALTER TABLE objects RENAME TO targets")
+            self._conn.execute(
+                "ALTER TABLE targets RENAME COLUMN object_id TO target_id"
+            )
+
+            # Recreate indexes with new names
+            for idx in ['idx_objects_object_id', 'idx_objects_observation',
+                        'idx_objects_field', 'idx_objects_redshift',
+                        'idx_objects_object_flags']:
+                self._conn.execute(f"DROP INDEX IF EXISTS {idx}")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_targets_target_id ON targets(target_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_targets_observation ON targets(observation)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_targets_field ON targets(field)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_targets_redshift ON targets(redshift)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_targets_object_flags ON targets(object_flags)"
+            )
+
+        # Rename spectra.object_id → target_id if the old column exists
+        has_object_id_col = self._conn.execute(
+            "SELECT 1 FROM pragma_table_info('spectra') WHERE name = 'object_id'"
+        ).fetchone()
+        if has_object_id_col:
+            self._conn.execute(
+                "ALTER TABLE spectra RENAME COLUMN object_id TO target_id"
+            )
+            self._conn.execute("DROP INDEX IF EXISTS idx_spectra_object_id")
+            self._conn.execute("DROP INDEX IF EXISTS idx_spectra_object_grating")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_spectra_target_id ON spectra(target_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_spectra_target_grating ON spectra(target_id, grating)"
+            )
+
+        # Safety net: ensure last_inspected_by exists on targets
+        try:
+            self._conn.execute(
+                "ALTER TABLE targets ADD COLUMN last_inspected_by TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass  # Already exists
+
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
+        self._conn.commit()
+
     # -------------------------------------------------------------------------
     # Catalog operations
     # -------------------------------------------------------------------------
 
     def upsert_objects(self, objects_data: List[dict]) -> Tuple[int, int]:
-        """Insert or update objects and their spectra from API response dicts.
+        """Insert or update targets and their spectra from API response dicts.
 
         Parameters
         ----------
         objects_data : list of dict
-            Objects from the /api/v1/objects endpoint, each with nested
+            Targets from the /api/v1/targets endpoint, each with nested
             'spectra' list.
 
         Returns
         -------
-        tuple of (object_count, spectra_count)
+        tuple of (target_count, spectra_count)
         """
         now = datetime.now(timezone.utc).isoformat()
         obj_count = 0
