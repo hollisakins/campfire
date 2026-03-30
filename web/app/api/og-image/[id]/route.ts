@@ -23,14 +23,27 @@ export async function GET(
   try {
     const supabase = createServiceClient();
 
-    // Look up target coordinates
-    const { data: obj, error: objErr } = await supabase
+    // Look up coordinates — try targets first, fall back to objects
+    let obj: { ra: number; dec: number; field: string } | null = null;
+
+    const { data: target } = await supabase
       .from('targets')
       .select('ra, dec, field')
       .eq('target_id', targetId)
       .single();
 
-    if (objErr || !obj) {
+    if (target) {
+      obj = target;
+    } else {
+      const { data: object } = await supabase
+        .from('objects')
+        .select('ra, dec, field')
+        .eq('object_id', targetId)
+        .single();
+      obj = object;
+    }
+
+    if (!obj) {
       return new Response('Image not found', { status: 404 });
     }
 

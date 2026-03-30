@@ -239,12 +239,48 @@ export interface SpectrumTarget extends DbTarget {
   num_gratings?: number;
   comments?: CommentWithUser[];
   hasSedPlot?: boolean;
+  parent_object_id?: string;
   // Objects mode fields (populated when viewing objects)
   n_targets?: number;
   n_spectra?: number;
   programs?: string[];
   gratings?: string[];
   member_targets?: { target_id: string; program_slug: string; observation: string; redshift: number | null; redshift_quality: number }[];
+}
+
+// Member target with full spectra for object detail page
+export interface ObjectMemberTarget {
+  id: number;
+  target_id: string;
+  program_slug: string;
+  program_name: string;
+  observation: string;
+  ra: number;
+  dec: number;
+  redshift: number | null;
+  redshift_quality: number;
+  max_snr: number | null;
+  max_exposure_time: number | null;
+  spectra: Spectrum[];
+}
+
+// Full object detail for object detail page
+export interface ObjectDetail {
+  id: number;
+  object_id: string;
+  field: string;
+  ra: number;
+  dec: number;
+  n_targets: number;
+  n_spectra: number;
+  programs: string[];
+  gratings: string[];
+  max_snr: number | null;
+  max_exposure_time: number | null;
+  best_redshift: number | null;
+  best_redshift_quality: number;
+  created_at: string;
+  member_targets: ObjectMemberTarget[];
 }
 
 // Comment with user profile info
@@ -298,6 +334,12 @@ export const QUALITY_LABELS: FlagDefinition[] = [
 ];
 
 export const GRATINGS = ['PRISM', 'G140H', 'G140M', 'G235H', 'G235M', 'G395H', 'G395M'] as const;
+
+// D3 category10 palette for coloring member targets in object detail views
+export const MEMBER_COLORS = [
+  '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+  '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+];
 export type Grating = typeof GRATINGS[number];
 
 // Helper to get flag definition by category and value

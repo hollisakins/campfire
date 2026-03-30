@@ -2,7 +2,7 @@
 
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { paginateRpc } from '@/lib/supabase/paginate';
-import type { SpectrumTarget, Program, Spectrum } from '@/lib/types';
+import type { SpectrumTarget, Program, Spectrum, ObjectDetail, ObjectMemberTarget } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
@@ -313,7 +313,8 @@ export async function getSpectrumById(targetId: string): Promise<{
       .select(`
         *,
         programs:program_slug (program_name, pi_name, description, cycle),
-        spectra (*)
+        spectra (*),
+        parent_object:object_id (object_id)
       `)
       .eq('target_id', targetId)
       .in('program_slug', accessibleProgramSlugs)
@@ -368,6 +369,7 @@ export async function getSpectrumById(targetId: string): Promise<{
       max_snr: maxSnr ?? undefined,
       num_gratings: spectra.length,
       hasSedPlot,
+      parent_object_id: data.parent_object?.object_id ?? undefined,
     };
 
     return {
@@ -423,6 +425,153 @@ export async function getTargetMetadata(targetId: string): Promise<{
       target_id: data.target_id,
       redshift: data.redshift,
       program_name: programData?.program_name || null,
+      field: data.field,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch a single object by object_id with full member targets and their spectra.
+ * Checks that user has access (at least one member program is accessible).
+ */
+export async function getObjectById(objectId: string): Promise<{
+  object: ObjectDetail | null;
+  error?: string;
+  isAuthenticated: boolean;
+}> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { object: null, isAuthenticated: false };
+  }
+
+  try {
+    // Fetch access data, public programs, and object row in parallel
+    const [{ data: accessData }, { data: publicPrograms }, { data: obj, error: objError }] = await Promise.all([
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+      supabase.from('programs').select('slug').eq('is_public', true),
+      supabase.from('objects').select('*').eq('object_id', objectId).single(),
+    ]);
+
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
+    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
+    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+
+    if (objError || !obj) {
+      return {
+        object: null,
+        error: objError?.code === 'PGRST116' ? 'Object not found' : objError?.message,
+        isAuthenticated: true,
+      };
+    }
+
+    // Check access: object programs must overlap with accessible programs
+    const objPrograms: string[] = obj.programs || [];
+    const hasAccess = objPrograms.some(p => accessibleProgramSlugs.includes(p));
+    if (!hasAccess) {
+      return {
+        object: null,
+        error: 'Object not found or access denied',
+        isAuthenticated: true,
+      };
+    }
+
+    // Fetch member targets with their spectra, filtered to accessible programs
+    const { data: members, error: membersError } = await supabase
+      .from('targets')
+      .select(`
+        *,
+        programs:program_slug (program_name),
+        spectra (*)
+      `)
+      .eq('object_id', obj.id)
+      .in('program_slug', accessibleProgramSlugs);
+
+    if (membersError) {
+      return {
+        object: null,
+        error: membersError.message,
+        isAuthenticated: true,
+      };
+    }
+
+    // Transform member targets, sorted by max_snr desc
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const memberTargets: ObjectMemberTarget[] = (members || []).map((m: any) => ({
+      id: m.id,
+      target_id: m.target_id,
+      program_slug: m.program_slug,
+      program_name: m.programs?.program_name || m.program_slug,
+      observation: m.observation,
+      ra: m.ra,
+      dec: m.dec,
+      redshift: m.redshift,
+      redshift_quality: m.redshift_quality,
+      max_snr: m.max_snr,
+      max_exposure_time: m.max_exposure_time,
+      spectra: m.spectra || [],
+    })).sort((a: ObjectMemberTarget, b: ObjectMemberTarget) =>
+      (b.max_snr || 0) - (a.max_snr || 0)
+    );
+
+    const objectDetail: ObjectDetail = {
+      id: obj.id,
+      object_id: obj.object_id,
+      field: obj.field,
+      ra: obj.ra,
+      dec: obj.dec,
+      n_targets: obj.n_targets,
+      n_spectra: obj.n_spectra,
+      programs: obj.programs,
+      gratings: obj.gratings,
+      max_snr: obj.max_snr,
+      max_exposure_time: obj.max_exposure_time,
+      best_redshift: obj.best_redshift,
+      best_redshift_quality: obj.best_redshift_quality,
+      created_at: obj.created_at,
+      member_targets: memberTargets,
+    };
+
+    return { object: objectDetail, isAuthenticated: true };
+  } catch (err) {
+    console.error('Unexpected error fetching object:', err);
+    return {
+      object: null,
+      error: 'An unexpected error occurred',
+      isAuthenticated: true,
+    };
+  }
+}
+
+/**
+ * Fetch minimal object metadata for Open Graph tags (no auth required).
+ * Uses service role to bypass RLS.
+ */
+export async function getObjectMetadata(objectId: string): Promise<{
+  object_id: string;
+  best_redshift: number | null;
+  field: string;
+} | null> {
+  try {
+    const supabase = createServiceClient();
+
+    const { data, error } = await supabase
+      .from('objects')
+      .select('object_id, best_redshift, field')
+      .eq('object_id', objectId)
+      .single();
+
+    if (error || !data) {
+      return null;
+    }
+
+    return {
+      object_id: data.object_id,
+      best_redshift: data.best_redshift,
       field: data.field,
     };
   } catch {

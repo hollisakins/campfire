@@ -378,12 +378,15 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>{isObjectsMode ? 'Object ID' : 'Target ID'}</SortableHeader>
         ),
         cell: ({ row, table }) => {
-          // In objects mode, display the object_id as plain text (no detail page yet)
+          // In objects mode, link to object detail page
           if (isObjectsMode) {
             return (
-              <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+              <Link
+                href={`/spectra/objects/${encodeURIComponent(row.original.target_id)}`}
+                className="text-sm font-mono text-accent hover:text-accent-hover transition-colors"
+              >
                 {row.original.target_id}
-              </span>
+              </Link>
             );
           }
 

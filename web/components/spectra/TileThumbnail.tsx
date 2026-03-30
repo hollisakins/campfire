@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { getNearbyShutters } from '@/lib/actions/map';
 import { computeShutterRects, type ShutterGeometry } from '@/lib/utils/shutter-overlay';
@@ -21,6 +21,8 @@ interface TileThumbnailProps {
     ra: number;
     dec: number;
   };
+  /** Map of target_id → hex color for multi-target shutter coloring (object detail page) */
+  memberColors?: Record<string, string>;
   className?: string;
 }
 
@@ -39,37 +41,41 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   dec,
   field,
   linkToMap,
+  memberColors,
   className,
 }) => {
   const cssSize = displaySize ?? size;
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
-  const [shutterRects, setShutterRects] = useState<ReturnType<typeof computeShutterRects>>([]);
+  const [rawShutters, setRawShutters] = useState<ShutterGeometry[]>([]);
 
   // Cutout image URL (never includes shutters — always a clean RGB crop)
   const src = `/api/tile-thumbnail?target_id=${encodeURIComponent(targetId)}&size=${size}&fov=${fov}`;
 
-  // Fetch shutter geometry when coordinates are provided (independent of visibility toggle).
-  // This way toggling shutters on/off is instant CSS — no refetch needed.
+  // Fetch shutter geometry when coordinates change (not on color/visibility changes)
   const hasCoordinates = ra !== undefined && dec !== undefined && field !== undefined;
   useEffect(() => {
     if (!hasCoordinates) {
-      setShutterRects([]);
+      setRawShutters([]);
       return;
     }
 
     let cancelled = false;
     getNearbyShutters(ra, dec, field, fov).then(({ shutters: shutterData }) => {
       if (cancelled) return;
-      const rects = computeShutterRects(
-        shutterData as ShutterGeometry[],
-        ra, dec, fov, cssSize, targetId,
-      );
-      setShutterRects(rects);
+      setRawShutters(shutterData as ShutterGeometry[]);
     });
 
     return () => { cancelled = true; };
-  }, [ra, dec, field, fov, cssSize, targetId, hasCoordinates]);
+  }, [ra, dec, field, fov, hasCoordinates]);
+
+  // Recompute colored rects when geometry OR colors change (no refetch)
+  const shutterRects = useMemo(
+    () => rawShutters.length > 0 && ra != null && dec != null
+      ? computeShutterRects(rawShutters, ra, dec, fov, cssSize, targetId, memberColors)
+      : [],
+    [rawShutters, ra, dec, fov, cssSize, targetId, memberColors],
+  );
 
   if (hasError) {
     const placeholder = (

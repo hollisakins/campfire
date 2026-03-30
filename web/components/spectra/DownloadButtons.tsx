@@ -13,6 +13,7 @@ interface DownloadButtonsProps {
 export const DownloadButtons: React.FC<DownloadButtonsProps> = ({ spectra, targetId }) => {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [batchProgress, setBatchProgress] = useState<string | null>(null);
 
   const handleDownloadAll = async () => {
     if (spectra.length === 0) return;
@@ -21,32 +22,46 @@ export const DownloadButtons: React.FC<DownloadButtonsProps> = ({ spectra, targe
     setError(null);
 
     try {
-      const paths = spectra.map(s => s.fits_path);
+      const allPaths = spectra.map(s => s.fits_path);
 
-      const response = await fetch('/api/download', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths, context: 'object_detail' }),
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to generate download URLs');
+      // Batch into chunks of 10 (API limit)
+      const BATCH_SIZE = 10;
+      const batches: string[][] = [];
+      for (let i = 0; i < allPaths.length; i += BATCH_SIZE) {
+        batches.push(allPaths.slice(i, i + BATCH_SIZE));
       }
 
-      const { urls } = await response.json();
+      for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+        if (batches.length > 1) {
+          setError(null); // Clear between batches
+          setBatchProgress(`Batch ${batchIdx + 1}/${batches.length}`);
+        }
 
-      // Download each file
-      for (const [path, url] of Object.entries(urls)) {
-        const filename = path.split('/').pop() || `${targetId}.fits`;
-        await downloadFile(url as string, filename);
-        // Small delay between downloads to prevent browser blocking
-        await new Promise(resolve => setTimeout(resolve, 300));
+        const response = await fetch('/api/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths: batches[batchIdx], context: 'object_detail' }),
+        });
+
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || 'Failed to generate download URLs');
+        }
+
+        const { urls } = await response.json();
+
+        // Download each file
+        for (const [path, url] of Object.entries(urls)) {
+          const filename = path.split('/').pop() || `${targetId}.fits`;
+          await downloadFile(url as string, filename);
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Download failed');
     } finally {
       setDownloading(false);
+      setBatchProgress(null);
     }
   };
 
@@ -60,7 +75,7 @@ export const DownloadButtons: React.FC<DownloadButtonsProps> = ({ spectra, targe
         {downloading ? (
           <>
             <Loader2 className="w-4 h-4 animate-spin mr-2" />
-            Downloading...
+            Downloading{batchProgress ? ` (${batchProgress})` : ''}...
           </>
         ) : (
           <>
