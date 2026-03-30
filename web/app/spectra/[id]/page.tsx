@@ -210,7 +210,9 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               </div>
               <div className="flex items-center gap-4">
                 <CoordinateDisplay ra={spectrum.ra} dec={spectrum.dec} />
-                <ShowOnMapLink ra={spectrum.ra} dec={spectrum.dec} field={spectrum.field} targetId={spectrum.target_id} />
+                {spectrum.parent_object_id && (
+                  <ShowOnMapLink ra={spectrum.ra} dec={spectrum.dec} field={spectrum.field} objectId={spectrum.parent_object_id} />
+                )}
               </div>
             </div>
 

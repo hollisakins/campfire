@@ -3,7 +3,7 @@
 import { useEffect, useRef, useMemo } from 'react';
 import L from 'leaflet';
 import { useMap } from 'react-leaflet';
-import type { MapMarker } from '@/lib/actions/map';
+import type { MapObjectMarker } from '@/lib/actions/map';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { skyToPixel } from '@/lib/utils/wcs';
 
@@ -27,14 +27,14 @@ const QUALITY_DRAW_ORDER = [0, 1, 2, 3, 4];
 // ============================================
 
 interface PreparedMarker {
-  marker: MapMarker;
+  marker: MapObjectMarker;
   latLng: L.LatLng;
   color: string;
   isHighlighted: boolean;
 }
 
 interface CachedPoint {
-  marker: MapMarker;
+  marker: MapObjectMarker;
   latLng: L.LatLng;
   x: number;
   y: number;
@@ -42,12 +42,12 @@ interface CachedPoint {
 }
 
 export interface CanvasMarkerLayerProps {
-  markers: MapMarker[];
+  markers: MapObjectMarker[];
   wcs: WCSParams;
   visible: boolean;
-  highlightTargetId?: string;
-  markerFilter?: (marker: MapMarker) => boolean;
-  onMarkerClick: (marker: MapMarker, latLng: L.LatLng) => void;
+  highlightObjectId?: string;
+  markerFilter?: (marker: MapObjectMarker) => boolean;
+  onMarkerClick: (marker: MapObjectMarker, latLng: L.LatLng) => void;
 }
 
 // ============================================
@@ -66,7 +66,7 @@ export function CanvasMarkerLayer({
   markers,
   wcs,
   visible,
-  highlightTargetId,
+  highlightObjectId,
   markerFilter,
   onMarkerClick,
 }: CanvasMarkerLayerProps) {
@@ -80,11 +80,11 @@ export function CanvasMarkerLayer({
       return {
         marker: m,
         latLng: L.latLng(y, x), // Leaflet: lat=y, lng=x
-        color: QUALITY_COLORS[m.redshift_quality] || QUALITY_COLORS[0],
-        isHighlighted: m.target_id === highlightTargetId,
+        color: QUALITY_COLORS[m.best_redshift_quality] || QUALITY_COLORS[0],
+        isHighlighted: m.object_id === highlightObjectId,
       };
     });
-  }, [markers, wcs, markerFilter, highlightTargetId]);
+  }, [markers, wcs, markerFilter, highlightObjectId]);
 
   // Stable refs for event handlers (avoid re-binding on every render)
   const preparedRef = useRef(prepared);
@@ -206,7 +206,7 @@ export function CanvasMarkerLayer({
           continue; // Draw highlighted marker last, on top
         }
 
-        const q = item.marker.redshift_quality;
+        const q = item.marker.best_redshift_quality;
         let group = groups.get(q);
         if (!group) {
           group = [];

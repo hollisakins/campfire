@@ -10,8 +10,8 @@ import {
   useMapEvents,
 } from 'react-leaflet';
 import Link from 'next/link';
-import type { MapLayer, MapMarker } from '@/lib/actions/map';
-import { useFieldMarkers } from '@/lib/hooks/useFieldMarkers';
+import type { MapLayer, MapObjectMarker } from '@/lib/actions/map';
+import { useFieldObjectMarkers } from '@/lib/hooks/useFieldObjectMarkers';
 import { useFieldSlits } from '@/lib/hooks/useFieldSlits';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { leafletToSky, skyToLeaflet } from '@/lib/utils/wcs';
@@ -140,12 +140,12 @@ interface MapViewerProps {
   initialFilter?: string;
   initialCenter?: { ra: number; dec: number };
   initialZoom?: number;
-  highlightTargetId?: string;
-  markerFilter?: (marker: MapMarker) => boolean;
+  highlightObjectId?: string;
+  markerFilter?: (marker: MapObjectMarker) => boolean;
   filteredIdSet?: Set<string> | null;
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
-  onFieldChange?: (field: string, observations: string[]) => void;
+  onFieldChange?: (field: string) => void;
 }
 
 export function MapViewer({
@@ -154,7 +154,7 @@ export function MapViewer({
   initialFilter,
   initialCenter,
   initialZoom,
-  highlightTargetId,
+  highlightObjectId,
   markerFilter,
   filteredIdSet,
   onOpenFilters,
@@ -191,10 +191,10 @@ export function MapViewer({
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
 
   // Fetch markers and slits via React Query (cached per field)
-  const { data: markers = [], isLoading: isLoadingMarkers } = useFieldMarkers(selectedField);
+  const { data: markers = [], isLoading: isLoadingMarkers } = useFieldObjectMarkers(selectedField);
   const { data: slits = [], isLoading: isLoadingSlits } = useFieldSlits(selectedField);
   const [popupState, setPopupState] = useState<{
-    marker: MapMarker; latLng: L.LatLng;
+    marker: MapObjectMarker; latLng: L.LatLng;
   } | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     coords: { ra: number; dec: number };
@@ -202,14 +202,11 @@ export function MapViewer({
   } | null>(null);
   const mapWrapperRef = useRef<HTMLDivElement>(null);
 
-  // Notify parent when markers load (includes field + derived observations)
+  // Notify parent when field changes
   useEffect(() => {
-    if (!selectedField || markers.length === 0) return;
-    const observations = [...new Set(
-      markers.map(m => m.observation).filter((o): o is string => o !== null)
-    )].sort();
-    onFieldChangeProp?.(selectedField, observations);
-  }, [selectedField, markers, onFieldChangeProp]);
+    if (!selectedField) return;
+    onFieldChangeProp?.(selectedField);
+  }, [selectedField, onFieldChangeProp]);
 
   // Compute filtered marker count from field-specific markers + filter
   const filteredMarkerCount = useMemo(() => {
@@ -217,11 +214,25 @@ export function MapViewer({
     return markers.filter(markerFilter).length;
   }, [markers, markerFilter]);
 
-  // Build slit filter from filteredIdSet (reuses same ID set as marker filter)
+  // Bridge: map target_ids (used in shutters.object_id) → object_ids
+  const targetIdToObjectId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const m of markers) {
+      for (const tid of m.member_target_ids) {
+        map.set(tid, m.object_id);
+      }
+    }
+    return map;
+  }, [markers]);
+
+  // Build slit filter from filteredIdSet via target→object bridge
   const slitFilter = useMemo(() => {
     if (!filteredIdSet) return undefined;
-    return (slit: SlitRegion | Shutter) => filteredIdSet.has(slit.object_id);
-  }, [filteredIdSet]);
+    return (slit: SlitRegion | Shutter) => {
+      const objectId = targetIdToObjectId.get(slit.object_id);
+      return objectId ? filteredIdSet.has(objectId) : false;
+    };
+  }, [filteredIdSet, targetIdToObjectId]);
 
   // Compute filtered slit count for LayerControl display
   const filteredSlitCount = useMemo(() => {
@@ -392,35 +403,38 @@ export function MapViewer({
           markers={markers}
           wcs={activeLayer.wcs_params}
           visible={showMarkers}
-          highlightTargetId={highlightTargetId}
+          highlightObjectId={highlightObjectId}
           markerFilter={markerFilter}
           onMarkerClick={(marker, latLng) => setPopupState({ marker, latLng })}
         />
 
         {/* Popup for clicked marker (standalone, rendered by React) */}
         {popupState && (() => {
-          const qualityLabel = QUALITY_LABELS.find(q => q.value === popupState.marker.redshift_quality);
+          const qualityLabel = QUALITY_LABELS.find(q => q.value === popupState.marker.best_redshift_quality);
           return (
             <Popup
               position={popupState.latLng}
               eventHandlers={{ remove: () => setPopupState(null) }}
             >
-              <div className="text-sm min-w-[180px]">
+              <div className="text-sm min-w-[200px]">
                 <div className="font-mono font-bold mb-1">
                   <Link
-                    href={`/spectra/${encodeURIComponent(popupState.marker.target_id)}`}
+                    href={`/spectra/objects/${encodeURIComponent(popupState.marker.object_id)}`}
                     className="text-blue-600 hover:text-blue-800 underline"
                     onClick={() => sessionStorage.setItem('campfire-map-return-url', window.location.href)}
                   >
-                    {popupState.marker.target_id}
+                    {popupState.marker.object_id}
                   </Link>
                 </div>
                 <div className="space-y-0.5 text-xs">
-                  {popupState.marker.redshift !== null && (
-                    <div>z = {popupState.marker.redshift.toFixed(4)}</div>
+                  {popupState.marker.best_redshift !== null && (
+                    <div>z = {popupState.marker.best_redshift.toFixed(4)}</div>
                   )}
                   <div>
                     Quality: {qualityLabel?.icon} {qualityLabel?.label || 'Unknown'}
+                  </div>
+                  <div className="text-gray-500">
+                    {popupState.marker.n_targets} target{popupState.marker.n_targets !== 1 ? 's' : ''}, {popupState.marker.n_spectra} spectr{popupState.marker.n_spectra !== 1 ? 'a' : 'um'}
                   </div>
                   <div className="text-gray-500">
                     RA: {popupState.marker.ra.toFixed(5)}, Dec: {popupState.marker.dec.toFixed(5)}

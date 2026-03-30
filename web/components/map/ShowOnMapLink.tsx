@@ -8,11 +8,11 @@ interface ShowOnMapLinkProps {
   ra: number;
   dec: number;
   field: string;
-  targetId: string;
+  objectId: string;
 }
 
-export function ShowOnMapLink({ ra, dec, field, targetId }: ShowOnMapLinkProps) {
-  const mapUrl = `/map?field=${encodeURIComponent(field)}&ra=${ra}&dec=${dec}&z=8&highlight=${encodeURIComponent(targetId)}`;
+export function ShowOnMapLink({ ra, dec, field, objectId }: ShowOnMapLinkProps) {
+  const mapUrl = `/map?field=${encodeURIComponent(field)}&ra=${ra}&dec=${dec}&z=8&highlight=${encodeURIComponent(objectId)}`;
 
   return (
     <Link
