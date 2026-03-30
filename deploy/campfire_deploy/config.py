@@ -108,7 +108,15 @@ def _find_toml(config_path: str | None = None) -> dict | None:
     return None
 
 
-def load_config(config_path: str | None = None) -> dict:
+_LOCAL_SUPABASE_URL = 'http://127.0.0.1:54321'
+_LOCAL_SUPABASE_SERVICE_ROLE_KEY = (
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.'
+    'eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.'
+    'EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU'
+)
+
+
+def load_config(config_path: str | None = None, *, local: bool = False) -> dict:
     """
     Load deployment credentials (Supabase + R2).
 
@@ -117,9 +125,21 @@ def load_config(config_path: str | None = None) -> dict:
       2. Explicit --config path
       3. $CAMPFIRE_ROOT/config/deploy.toml
 
+    If local=True, Supabase credentials are overridden to point to the
+    local instance (127.0.0.1:54321) regardless of other config sources.
+
     Environment variables take priority for core sections. Extra TOML
     sections (e.g. r2_tiles) are merged in when not covered by env vars.
     """
+    # --local: use local Supabase, still need R2 config for uploads
+    if local:
+        config = _config_from_env() or _find_toml(config_path) or {}
+        config.setdefault('supabase', {})
+        config['supabase']['url'] = _LOCAL_SUPABASE_URL
+        config['supabase']['service_role_key'] = _LOCAL_SUPABASE_SERVICE_ROLE_KEY
+        print(f"  Using local Supabase at {_LOCAL_SUPABASE_URL}")
+        return config
+
     # Try env vars first
     env_config = _config_from_env()
     if env_config:
