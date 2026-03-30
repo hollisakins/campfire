@@ -1,7 +1,8 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import Link from 'next/link';
+import { GripVertical } from 'lucide-react';
 import type { ObjectMemberTarget } from '@/lib/types';
 import { QUALITY_LABELS, GRATINGS } from '@/lib/types';
 
@@ -12,6 +13,7 @@ interface MemberTargetsTableProps {
   colors: Record<string, string>;
   onVisibilityChange: (targetId: string, visible: boolean) => void;
   onToggleAll: (visible: boolean) => void;
+  onReorder?: (orderedIds: string[]) => void;
 }
 
 export const MemberTargetsTable: React.FC<MemberTargetsTableProps> = ({
@@ -21,15 +23,77 @@ export const MemberTargetsTable: React.FC<MemberTargetsTableProps> = ({
   colors,
   onVisibilityChange,
   onToggleAll,
+  onReorder,
 }) => {
   const allChecked = members.every(m => visibility[m.target_id]);
   const noneChecked = members.every(m => !visibility[m.target_id]);
+
+  // Drag state
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [dropPosition, setDropPosition] = useState<'above' | 'below'>('below');
+  const dragCounterRef = useRef(0);
+
+  const handleDragStart = useCallback((e: React.DragEvent, targetId: string) => {
+    setDraggedId(targetId);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', targetId);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (targetId === draggedId) return;
+
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    setDropTargetId(targetId);
+    setDropPosition(e.clientY < midY ? 'above' : 'below');
+  }, [draggedId]);
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current++;
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setDropTargetId(null);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    if (!draggedId || !dropTargetId || draggedId === dropTargetId || !onReorder) return;
+
+    const ids = members.map(m => m.target_id);
+    const fromIndex = ids.indexOf(draggedId);
+    if (fromIndex === -1) return;
+
+    // Remove dragged item
+    ids.splice(fromIndex, 1);
+    // Insert at drop position
+    let toIndex = ids.indexOf(dropTargetId);
+    if (toIndex === -1) return;
+    if (dropPosition === 'below') toIndex++;
+    ids.splice(toIndex, 0, draggedId);
+
+    onReorder(ids);
+  }, [draggedId, dropTargetId, dropPosition, members, onReorder]);
+
+  const handleDragEnd = useCallback(() => {
+    setDraggedId(null);
+    setDropTargetId(null);
+    dragCounterRef.current = 0;
+  }, []);
 
   return (
     <div className="border border-border dark:border-slate-700 rounded-lg overflow-hidden">
       <table className="w-full text-sm">
         <thead>
           <tr className="bg-gray-50 dark:bg-slate-800/50 border-b border-border dark:border-slate-700">
+            {onReorder && <th className="w-8 px-1 py-2" />}
             <th className="w-10 px-3 py-2">
               <input
                 type="checkbox"
@@ -54,14 +118,34 @@ export const MemberTargetsTable: React.FC<MemberTargetsTableProps> = ({
             const qualityDef = QUALITY_LABELS.find(q => q.value === member.redshift_quality);
             const memberGratings = [...new Set(member.spectra.map(s => s.grating))];
             const sortedGratings = GRATINGS.filter(g => memberGratings.includes(g));
+            const isDragged = draggedId === member.target_id;
+            const isDropTarget = dropTargetId === member.target_id && draggedId !== member.target_id;
 
             return (
               <tr
                 key={member.target_id}
+                draggable={!!onReorder}
+                onDragStart={(e) => handleDragStart(e, member.target_id)}
+                onDragOver={(e) => handleDragOver(e, member.target_id)}
+                onDragEnter={handleDragEnter}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onDragEnd={handleDragEnd}
                 className={`border-b border-border/50 dark:border-slate-700/50 transition-opacity ${
                   !hasGrating ? 'opacity-40' : ''
+                } ${isDragged ? 'opacity-30' : ''} ${
+                  isDropTarget && dropPosition === 'above' ? 'border-t-2 border-t-accent' : ''
+                } ${
+                  isDropTarget && dropPosition === 'below' ? 'border-b-2 border-b-accent' : ''
                 }`}
               >
+                {onReorder && (
+                  <td className="px-1 py-2 text-center">
+                    <GripVertical className={`w-4 h-4 text-text-secondary/50 dark:text-slate-600 ${
+                      isDragged ? 'cursor-grabbing' : 'cursor-grab'
+                    }`} />
+                  </td>
+                )}
                 <td className="px-3 py-2 text-center">
                   <input
                     type="checkbox"
@@ -80,7 +164,7 @@ export const MemberTargetsTable: React.FC<MemberTargetsTableProps> = ({
                 <td className="px-3 py-2">
                   <Link
                     href={`/spectra/${encodeURIComponent(member.target_id)}`}
-                    className="font-mono text-accent hover:text-accent-hover transition-colors"
+                    className="font-mono text-primary hover:underline"
                   >
                     {member.target_id}
                   </Link>

@@ -139,9 +139,20 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const allTraces: any[] = [];
 
-    // Collect all flux values for y-range computation
+    // Collect flux values from ALL loaded sources (not just visible) for stable y-range
     const allFlux: number[] = [];
     const allFluxErr: (number | null)[] = [];
+    for (const source of sources) {
+      const data = loadedData.get(source.fitsPath);
+      if (!data) continue;
+      for (let i = 0; i < data.wave.length; i++) {
+        const v = data.fnu[i];
+        if (v == null || !isFinite(v)) continue;
+        allFlux.push(fluxUnit === 'flambda' ? convertToFlambda(v, data.wave[i]) : v);
+        const e = data.fnu_err[i];
+        allFluxErr.push(e == null ? null : (fluxUnit === 'flambda' ? convertToFlambda(e, data.wave[i]) : e));
+      }
+    }
 
     for (const source of visibleSources) {
       const data = loadedData.get(source.fitsPath);
@@ -159,45 +170,37 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         return fluxUnit === 'flambda' ? convertToFlambda(e, w) : e;
       });
 
-      // Collect for y-range
-      for (const v of flux) {
-        if (v != null && isFinite(v)) allFlux.push(v);
+      // Error band: split into contiguous non-null segments, each a toself polygon.
+      // This avoids cross-grating fill (tonexty) and null-gap artifacts (toself with nulls).
+      type Segment = { wave: number[]; upper: number[]; lower: number[] };
+      const segments: Segment[] = [];
+      let seg: Segment | null = null;
+      for (let i = 0; i < wave.length; i++) {
+        if (flux[i] != null && fluxErr[i] != null) {
+          if (!seg) seg = { wave: [], upper: [], lower: [] };
+          seg.wave.push(wave[i]);
+          seg.upper.push(flux[i]! + fluxErr[i]!);
+          seg.lower.push(flux[i]! - fluxErr[i]!);
+        } else if (seg) {
+          segments.push(seg);
+          seg = null;
+        }
       }
-      for (const e of fluxErr) {
-        allFluxErr.push(e);
+      if (seg) segments.push(seg);
+
+      for (const s of segments) {
+        allTraces.push({
+          x: [...s.wave, ...s.wave.slice().reverse()],
+          y: [...s.upper, ...s.lower.slice().reverse()],
+          type: 'scatter',
+          mode: 'lines',
+          line: { color: 'transparent', width: 0, shape: 'hvh' },
+          fill: 'toself',
+          fillcolor: source.color + '26', // 15% opacity
+          showlegend: false,
+          hoverinfo: 'skip',
+        });
       }
-
-      // Error band (fill between upper and lower)
-      const upper = flux.map((f, i) => {
-        if (f == null || fluxErr[i] == null) return null;
-        return f + fluxErr[i]!;
-      });
-      const lower = flux.map((f, i) => {
-        if (f == null || fluxErr[i] == null) return null;
-        return f - fluxErr[i]!;
-      });
-
-      allTraces.push({
-        x: wave,
-        y: upper,
-        type: 'scatter',
-        mode: 'lines',
-        line: { color: 'transparent', width: 0, shape: 'hvh' },
-        showlegend: false,
-        hoverinfo: 'skip',
-      });
-
-      allTraces.push({
-        x: wave,
-        y: lower,
-        type: 'scatter',
-        mode: 'lines',
-        line: { color: 'transparent', width: 0, shape: 'hvh' },
-        fill: 'tonexty',
-        fillcolor: source.color + '26', // 15% opacity
-        showlegend: false,
-        hoverinfo: 'skip',
-      });
 
       // Main flux trace
       allTraces.push({

@@ -248,7 +248,7 @@ const ViewModeTooltip: React.FC = () => {
       <div
         className="ml-2 text-xs text-text-secondary dark:text-slate-400 whitespace-nowrap transition-all duration-300 ease-out"
         style={{
-          maxWidth: open ? '600px' : '0px',
+          maxWidth: open ? '800px' : '0px',
           opacity: open ? 1 : 0,
         }}
       >

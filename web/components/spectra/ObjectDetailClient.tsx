@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
-import type { ObjectDetail } from '@/lib/types';
+import React, { useState, useMemo, useCallback } from 'react';
+import type { ObjectDetail, ObjectMemberTarget } from '@/lib/types';
 import { GRATINGS, MEMBER_COLORS } from '@/lib/types';
 import { MemberTargetsTable } from './MemberTargetsTable';
 import { MultiSpectrumViewer, type SpectrumSource } from './MultiSpectrumViewer';
@@ -29,6 +29,11 @@ export const ObjectDetailClient: React.FC<ObjectDetailClientProps> = ({
   // Program filter: null = show all, string = filter to one program
   const [selectedProgram, setSelectedProgram] = useState<string | null>(null);
 
+  // User-controlled row order (controls z-order in plot)
+  const [memberOrder, setMemberOrder] = useState<string[]>(
+    () => object.member_targets.map(m => m.target_id)
+  );
+
   const [visibility, setVisibility] = useState<Record<string, boolean>>(() => {
     const vis: Record<string, boolean> = {};
     object.member_targets.forEach((m) => {
@@ -50,13 +55,26 @@ export const ObjectDetailClient: React.FC<ObjectDetailClientProps> = ({
     setVisibility(prev => ({ ...prev, [targetId]: visible }));
   };
 
-  // Filter members by selected program
+  // Order members by user-controlled memberOrder, then filter by program
+  const orderedMembers = useMemo(() => {
+    const memberMap = new Map<string, ObjectMemberTarget>(
+      object.member_targets.map(m => [m.target_id, m])
+    );
+    return memberOrder
+      .map(id => memberMap.get(id))
+      .filter((m): m is ObjectMemberTarget => m != null);
+  }, [object.member_targets, memberOrder]);
+
   const filteredMembers = useMemo(() =>
     selectedProgram
-      ? object.member_targets.filter(m => m.program_slug === selectedProgram)
-      : object.member_targets,
-    [object.member_targets, selectedProgram]
+      ? orderedMembers.filter(m => m.program_slug === selectedProgram)
+      : orderedMembers,
+    [orderedMembers, selectedProgram]
   );
+
+  const handleReorder = useCallback((newOrder: string[]) => {
+    setMemberOrder(newOrder);
+  }, []);
 
   const handleToggleAll = (visible: boolean) => {
     setVisibility(prev => {
@@ -69,8 +87,10 @@ export const ObjectDetailClient: React.FC<ObjectDetailClientProps> = ({
   };
 
   // Derive sources for the MultiSpectrumViewer
+  // Reversed so top table row = last trace = topmost in Plotly
   const sources: SpectrumSource[] = useMemo(() =>
-    filteredMembers
+    [...filteredMembers]
+      .reverse()
       .filter(m => visibility[m.target_id])
       .flatMap(m =>
         m.spectra
@@ -192,6 +212,7 @@ export const ObjectDetailClient: React.FC<ObjectDetailClientProps> = ({
           colors={colors}
           onVisibilityChange={handleVisibilityChange}
           onToggleAll={handleToggleAll}
+          onReorder={handleReorder}
         />
 
         <div>
