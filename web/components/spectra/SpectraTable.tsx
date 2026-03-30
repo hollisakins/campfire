@@ -12,7 +12,7 @@ import {
   ColumnDef,
   VisibilityState,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ArrowUp, ArrowDown, ScanEye } from 'lucide-react';
+import { ArrowUpDown, ArrowUp, ArrowDown, ScanEye, HelpCircle } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { SpectrumTarget, QUALITY_LABELS } from '@/lib/types';
 import { TileThumbnail } from './TileThumbnail';
@@ -219,6 +219,47 @@ const TableSkeleton: React.FC<{ rows: number; columns: ColumnDef<SpectrumTarget>
   </>
 );
 
+// Inline click-to-expand tooltip for the view mode toggle
+const ViewModeTooltip: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="flex items-center overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors flex-shrink-0"
+        aria-label="View mode help"
+      >
+        <HelpCircle
+          className="w-3.5 h-3.5 transition-transform duration-300 ease-out"
+          style={{ transform: open ? 'rotate(360deg)' : 'rotate(0deg)' }}
+        />
+      </button>
+      <div
+        className="ml-2 text-xs text-text-secondary dark:text-slate-400 whitespace-nowrap transition-all duration-300 ease-out"
+        style={{
+          maxWidth: open ? '600px' : '0px',
+          opacity: open ? 1 : 0,
+        }}
+      >
+        <span className="font-medium text-text-primary dark:text-slate-200">Objects</span>{' '}= unique sources across programs{' · '}
+        <span className="font-medium text-text-primary dark:text-slate-200">Targets</span>{' '}= per-program observations{' · '}
+        <span className="font-medium text-text-primary dark:text-slate-200">Spectra</span>{' '}= individual grating exposures
+      </div>
+    </div>
+  );
+};
+
 export const SpectraTable: React.FC<SpectraTableProps> = ({
   spectra,
   total,
@@ -380,10 +421,11 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         cell: ({ row, table }) => {
           // In objects mode, link to object detail page
           if (isObjectsMode) {
+            const filterStr = currentFilterParams?.toString() || '';
             return (
               <Link
-                href={`/spectra/objects/${encodeURIComponent(row.original.target_id)}`}
-                className="text-sm font-mono text-accent hover:text-accent-hover transition-colors"
+                href={`/spectra/objects/${encodeURIComponent(row.original.target_id)}${filterStr ? `?${filterStr}` : ''}`}
+                className="text-sm font-mono text-primary hover:underline"
               >
                 {row.original.target_id}
               </Link>
@@ -784,25 +826,28 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       <div className="flex items-center justify-between px-4 py-2 bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
         <div className="flex items-center gap-3">
           <span className="text-sm text-text-secondary dark:text-slate-400">
-            {loading ? 'Loading...' : `${total.toLocaleString()} ${isObjectsMode ? 'objects' : isSpectraMode ? 'spectra' : 'targets'}`}
+            {loading ? 'Loading...' : `${total.toLocaleString()} ${isObjectsMode ? 'unique objects' : isSpectraMode ? 'spectra' : 'targets'}`}
           </span>
           {/* View mode toggle */}
           {onViewModeChange && (
-            <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">
-              {(['objects', 'targets', 'spectra'] as const).map((mode) => (
-                <button
-                  key={mode}
-                  onClick={() => onViewModeChange(mode)}
-                  className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
-                    viewMode === mode
-                      ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
-                      : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
-                  }`}
-                >
-                  {mode.charAt(0).toUpperCase() + mode.slice(1)}
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">
+                {(['objects', 'targets', 'spectra'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => onViewModeChange(mode)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                      viewMode === mode
+                        ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
+                        : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                    }`}
+                  >
+                    {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                  </button>
+                ))}
+              </div>
+              <ViewModeTooltip />
+            </>
           )}
         </div>
         <div className="flex items-center gap-1">

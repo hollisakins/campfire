@@ -15,6 +15,7 @@ import type { Spectrum } from '@/lib/types';
 
 interface ObjectDetailPageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 export async function generateMetadata({ params }: ObjectDetailPageProps): Promise<Metadata> {
@@ -52,9 +53,20 @@ export async function generateMetadata({ params }: ObjectDetailPageProps): Promi
   };
 }
 
-export default async function ObjectDetailPage({ params }: ObjectDetailPageProps) {
+export default async function ObjectDetailPage({ params, searchParams }: ObjectDetailPageProps) {
   const { id } = await params;
   const objectId = decodeURIComponent(id);
+
+  // Preserve filter/sort params for back navigation
+  const searchParamsObj = await searchParams;
+  const backParams = new URLSearchParams();
+  backParams.set('view', 'objects');
+  Object.entries(searchParamsObj).forEach(([key, value]) => {
+    if (value && key !== 'view') {
+      backParams.set(key, Array.isArray(value) ? value.join(',') : value);
+    }
+  });
+  const backHref = `/spectra?${backParams.toString()}`;
 
   const { object, isAuthenticated } = await getObjectById(objectId);
 
@@ -64,7 +76,7 @@ export default async function ObjectDetailPage({ params }: ObjectDetailPageProps
         <Breadcrumbs
           items={[
             { label: 'CAMPFIRE', href: '/' },
-            { label: 'Objects', href: '/spectra?view=objects' },
+            { label: 'Objects', href: backHref },
             { label: objectId },
           ]}
           className="mb-6"
@@ -106,12 +118,12 @@ export default async function ObjectDetailPage({ params }: ObjectDetailPageProps
         <Breadcrumbs
           items={[
             { label: 'CAMPFIRE', href: '/' },
-            { label: 'Objects', href: '/spectra?view=objects' },
+            { label: 'Objects', href: backHref },
             { label: object.object_id },
           ]}
         />
         <Link
-          href="/spectra?view=objects"
+          href={backHref}
           className="text-sm text-primary hover:text-primary-hover flex items-center gap-1"
         >
           ← Back to Objects List
