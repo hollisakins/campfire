@@ -419,7 +419,7 @@ export function MapViewer({
               <div className="text-sm min-w-[200px]">
                 <div className="font-mono font-bold mb-1">
                   <Link
-                    href={`/spectra/objects/${encodeURIComponent(popupState.marker.object_id)}`}
+                    href={`/nirspec/objects/${encodeURIComponent(popupState.marker.object_id)}`}
                     className="text-blue-600 hover:text-blue-800 underline"
                     onClick={() => sessionStorage.setItem('campfire-map-return-url', window.location.href)}
                   >

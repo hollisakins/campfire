@@ -41,7 +41,7 @@ export default function PrototypeLayout({
             {/* Left: Back to main app */}
             <div className="flex items-center gap-4">
               <Link
-                href="/spectra"
+                href="/nirspec"
                 className="flex items-center gap-2 text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
               >
                 <ArrowLeft className="w-4 h-4" />

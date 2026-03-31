@@ -14,7 +14,7 @@ export default function SpectrumDetailLoading() {
           <Breadcrumbs
             items={[
               { label: 'CAMPFIRE', href: '/' },
-              { label: 'NIRSpec', href: '/spectra' },
+              { label: 'NIRSpec', href: '/nirspec' },
               { label: '...' },
             ]}
           />

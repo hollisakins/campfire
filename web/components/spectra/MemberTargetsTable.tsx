@@ -163,7 +163,7 @@ export const MemberTargetsTable: React.FC<MemberTargetsTableProps> = ({
                 </td>
                 <td className="px-3 py-2">
                   <Link
-                    href={`/spectra/${encodeURIComponent(member.target_id)}`}
+                    href={`/nirspec/targets/${encodeURIComponent(member.target_id)}`}
                     className="font-mono text-primary hover:underline"
                   >
                     {member.target_id}

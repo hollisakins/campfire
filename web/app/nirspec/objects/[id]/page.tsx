@@ -66,7 +66,7 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
       backParams.set(key, Array.isArray(value) ? value.join(',') : value);
     }
   });
-  const backHref = `/spectra?${backParams.toString()}`;
+  const backHref = `/nirspec?${backParams.toString()}`;
 
   const { object, isAuthenticated } = await getObjectById(objectId);
 
@@ -141,7 +141,7 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
             <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
               <span>Field:</span>
               <Link
-                href={`/spectra?view=objects&fields=${object.field}`}
+                href={`/nirspec?view=objects&fields=${object.field}`}
                 className="inline-flex items-center hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors text-text-primary dark:text-slate-100"
               >
                 {object.field}
@@ -169,7 +169,7 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
               <DownloadButtons spectra={allSpectra} targetId={object.object_id} />
               <CopyLinkButton
                 targetId={object.object_id}
-                url={`/spectra/objects/${encodeURIComponent(object.object_id)}`}
+                url={`/nirspec/objects/${encodeURIComponent(object.object_id)}`}
               />
             </div>
           </>

@@ -15,7 +15,7 @@ export const CopyLinkButton: React.FC<CopyLinkButtonProps> = ({ targetId, url: u
     try {
       const url = urlOverride
         ? `${window.location.origin}${urlOverride}`
-        : `${window.location.origin}/spectra/${encodeURIComponent(targetId)}`;
+        : `${window.location.origin}/nirspec/targets/${encodeURIComponent(targetId)}`;
       await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);

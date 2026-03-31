@@ -32,7 +32,7 @@ function InspectPageInner() {
   // Redirect if no start param
   useEffect(() => {
     if (!startId) {
-      router.replace('/spectra');
+      router.replace('/nirspec');
     }
   }, [startId, router]);
 
@@ -82,7 +82,7 @@ function InspectPageInner() {
         <div className="text-center">
           <p className="text-lg text-red-500 mb-4">{error}</p>
           <button
-            onClick={() => router.push('/spectra')}
+            onClick={() => router.push('/nirspec')}
             className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
           >
             Back to Spectra

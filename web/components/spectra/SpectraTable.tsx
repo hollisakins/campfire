@@ -424,7 +424,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
             const filterStr = currentFilterParams?.toString() || '';
             return (
               <Link
-                href={`/spectra/objects/${encodeURIComponent(row.original.target_id)}${filterStr ? `?${filterStr}` : ''}`}
+                href={`/nirspec/objects/${encodeURIComponent(row.original.target_id)}${filterStr ? `?${filterStr}` : ''}`}
                 className="text-sm font-mono text-primary hover:underline"
               >
                 {row.original.target_id}
@@ -464,7 +464,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
 
           return (
             <Link
-              href={`/spectra/${encodeURIComponent(row.original.target_id)}${linkParams ? `?${linkParams}` : ''}`}
+              href={`/nirspec/targets/${encodeURIComponent(row.original.target_id)}${linkParams ? `?${linkParams}` : ''}`}
               onClick={handleClick}
               className="text-sm font-mono text-primary hover:underline"
             >

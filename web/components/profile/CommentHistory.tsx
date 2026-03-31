@@ -88,7 +88,7 @@ export const CommentHistory: React.FC<CommentHistoryProps> = ({
           {comments.map(comment => (
             <Link
               key={comment.id}
-              href={`/spectra/${comment.target_display_id}`}
+              href={`/nirspec/targets/${comment.target_display_id}`}
               className="block p-3 rounded-lg border border-border dark:border-slate-700
                          hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
             >

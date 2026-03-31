@@ -153,7 +153,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
                   >
                     <td className="py-3 px-4">
                       <Link
-                        href={`/spectra/${encodeURIComponent(obj.target_id)}`}
+                        href={`/nirspec/targets/${encodeURIComponent(obj.target_id)}`}
                         className="text-sm font-mono text-primary hover:underline"
                       >
                         {obj.target_id}

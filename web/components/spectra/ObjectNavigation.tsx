@@ -128,11 +128,11 @@ export function ObjectNavigation({
 
   // Build navigation URLs
   const prevHref = nav.prev
-    ? `/spectra/${encodeURIComponent(nav.prev)}${filterStr ? `?${filterStr}` : ''}`
+    ? `/nirspec/targets/${encodeURIComponent(nav.prev)}${filterStr ? `?${filterStr}` : ''}`
     : undefined;
 
   const nextHref = nav.next
-    ? `/spectra/${encodeURIComponent(nav.next)}${filterStr ? `?${filterStr}` : ''}`
+    ? `/nirspec/targets/${encodeURIComponent(nav.next)}${filterStr ? `?${filterStr}` : ''}`
     : undefined;
 
   return (

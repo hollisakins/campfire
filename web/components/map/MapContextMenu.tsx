@@ -85,7 +85,7 @@ export function MapContextMenu({ coords, position, onClose }: MapContextMenuProp
       coord_radius: '30',
       coord_unit: 'arcsec',
     });
-    router.push(`/spectra?${params.toString()}`);
+    router.push(`/nirspec?${params.toString()}`);
     onClose();
   }, [coords, router, onClose]);
 
