@@ -31,10 +31,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'deploy'))
 from campfire_deploy.config import load_config
 from campfire_deploy.supabase import (
     get_supabase_client,
-    check_existing_objects,
+    check_existing_targets,
     REDSHIFT_DRIFT_THRESHOLD,
 )
-from campfire_deploy.summary import load_summary, get_unique_objects
+from campfire_deploy.summary import load_summary, get_unique_targets
 
 CAMPFIRE_ROOT = Path(os.environ.get('CAMPFIRE_ROOT', '/Users/hba423/simmons/campfire-data'))
 PRODUCTS = CAMPFIRE_ROOT / 'products'
@@ -120,11 +120,11 @@ def preview_resets(client, obs_name):
     except SystemExit:
         return []
 
-    objects = get_unique_objects(summary)
+    objects = get_unique_targets(summary)
     if not objects:
         return []
 
-    existing = check_existing_objects(client, [o['object_id'] for o in objects])
+    existing = check_existing_targets(client, [o['object_id'] for o in objects])
 
     resets = []
     for obj in objects:

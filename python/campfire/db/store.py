@@ -408,7 +408,7 @@ class LocalStore:
 
         self._conn.execute(
             "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
+            ("6",),
         )
         self._conn.commit()
 
