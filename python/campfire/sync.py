@@ -26,15 +26,99 @@ def compute_file_hash(path: Path) -> str:
     return f"sha256:{hasher.hexdigest()}"
 
 
+def _make_progress(show, unit, desc):
+    """Create a tqdm progress bar and page-complete callback."""
+    if not show:
+        return None, None
+    pbar = tqdm(unit=unit, desc=desc)
+
+    def callback(fetched, total):
+        pbar.total = total
+        pbar.n = fetched
+        pbar.refresh()
+
+    return pbar, callback
+
+
+def _sync_targets(api, store, full, show_progress):
+    """Sync targets + spectra from the server.
+
+    Returns (target_count, spectra_count, server_total, incremental,
+    needs_full_sync, purge_result, obs_set, sync_timestamp).
+    """
+    updated_since = None
+    if not full:
+        updated_since = store.get_max_updated_at()
+    incremental = updated_since is not None
+
+    sync_timestamp = datetime.now(timezone.utc).isoformat()
+
+    pbar, callback = _make_progress(show_progress, "target", "Targets")
+
+    all_targets, server_total = api.fetch_all_targets(
+        updated_since=updated_since,
+        on_page_complete=callback,
+    )
+    if pbar:
+        pbar.close()
+
+    target_count, spec_count = store.upsert_targets(all_targets)
+
+    needs_full_sync = False
+    if incremental and server_total > 0:
+        local_total = store._conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
+        if local_total != server_total:
+            needs_full_sync = True
+
+    purge_result = None
+    if not incremental:
+        purge_result = store.purge_stale_rows(sync_timestamp)
+
+    obs_set = set(o.get("observation") for o in all_targets if o.get("observation"))
+
+    return (target_count, spec_count, server_total, incremental,
+            needs_full_sync, purge_result, obs_set, sync_timestamp)
+
+
+def _sync_objects(api, store, full, show_progress):
+    """Sync sky-objects from the server.
+
+    Returns (object_count, purged_count).
+    """
+    updated_since = None
+    if not full:
+        updated_since = store.get_max_objects_updated_at()
+
+    sync_timestamp = datetime.now(timezone.utc).isoformat()
+
+    pbar, callback = _make_progress(show_progress, "obj", "Objects")
+
+    all_objects, server_total = api.fetch_all_sky_objects(
+        updated_since=updated_since,
+        on_page_complete=callback,
+    )
+    if pbar:
+        pbar.close()
+
+    obj_count = store.upsert_sky_objects(all_objects)
+
+    purged = 0
+    if updated_since is None:
+        # Full sync — purge objects not seen
+        purged = store.purge_stale_objects(sync_timestamp)
+
+    return obj_count, purged
+
+
 def sync_metadata(
     api, store, meta_dir: Path,
     show_progress: bool = False,
     full: bool = False,
 ) -> dict:
-    """Sync the object/spectra catalog from the server.
+    """Sync the target/spectra/objects catalog from the server.
 
     On first sync (or ``full=True``), fetches the entire catalog.
-    On subsequent syncs, only fetches objects modified since the last
+    On subsequent syncs, only fetches records modified since the last
     sync (incremental), using the server-side ``updated_at`` timestamp.
 
     Parameters
@@ -53,69 +137,32 @@ def sync_metadata(
     Returns
     -------
     dict
-        Summary with keys: observations, objects, spectra, stale_count,
-        stale_files, incremental.
+        Summary with keys: observations, targets, spectra, sky_objects,
+        stale_count, stale_files, incremental.
     """
     from .db.export import export_catalogs
 
-    # 1. Determine if incremental sync is possible
-    updated_since = None
-    if not full:
-        updated_since = store.get_max_updated_at()
-
-    incremental = updated_since is not None
-
-    # Record sync start time before upsert (used for purge)
-    sync_timestamp = datetime.now(timezone.utc).isoformat()
-
-    # 2. Fetch object metadata via lightweight sync endpoint
-    pbar = None
-    callback = None
-    if show_progress:
-        pbar = tqdm(unit="obj", desc="Fetching")
-
-        def callback(fetched, total):
-            pbar.total = total
-            pbar.n = fetched
-            pbar.refresh()
-
-    all_objects, server_total = api.fetch_all_objects(
-        updated_since=updated_since,
-        on_page_complete=callback,
+    # 1. Sync targets + spectra
+    (target_count, spec_count, server_total, incremental,
+     needs_full_sync, purge_result, obs_set, sync_timestamp) = (
+        _sync_targets(api, store, full, show_progress)
     )
 
-    if pbar:
-        pbar.close()
+    # 2. Sync sky-objects
+    obj_count, obj_purged = _sync_objects(api, store, full, show_progress)
 
-    # 3. Upsert into SQLite
-    obj_count, spec_count = store.upsert_objects(all_objects)
-
-    # 3a. Check if local count matches server total (detect deletions)
-    # If incremental and counts diverge, escalate to full sync
-    needs_full_sync = False
-    if incremental and server_total > 0:
-        local_total = store._conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
-        if local_total != server_total:
-            needs_full_sync = True
-
-    # 3b. Purge rows deleted on server (full sync only)
-    purge_result = None
-    if not incremental:
-        purge_result = store.purge_stale_rows(sync_timestamp)
-
-    # 4. Export CSVs (always full export from SQLite)
+    # 3. Export CSVs (always full export from SQLite)
     export_catalogs(store, meta_dir)
 
-    # 5. Detect stale local files
+    # 4. Detect stale local files
     stale = store.get_stale_files()
-
-    # Count distinct observations from fetched objects
-    obs_set = set(o.get("observation") for o in all_objects if o.get("observation"))
 
     result = {
         "observations": len(obs_set),
-        "objects": obj_count,
+        "targets": target_count,
         "spectra": spec_count,
+        "sky_objects": obj_count,
+        "sky_objects_purged": obj_purged,
         "stale_count": len(stale),
         "stale_files": stale,
         "incremental": incremental,

@@ -434,14 +434,18 @@ def sync_cmd(full: bool, base_url: Optional[str]):
 
         if result.get("incremental"):
             click.echo(f"✓ Incremental sync complete: {result['observations']} observations, "
-                        f"{result['objects']} objects, {result['spectra']} spectra updated.")
+                        f"{result['targets']} targets, {result['spectra']} spectra, "
+                        f"{result['sky_objects']} sky objects updated.")
         else:
             click.echo(f"✓ Full sync complete: {result['observations']} observations, "
-                        f"{result['objects']} objects, {result['spectra']} spectra.")
+                        f"{result['targets']} targets, {result['spectra']} spectra, "
+                        f"{result['sky_objects']} sky objects.")
 
         if result.get("purged_objects") or result.get("purged_spectra"):
-            click.echo(f"  Removed {result['purged_objects']} objects and "
+            click.echo(f"  Removed {result['purged_objects']} targets and "
                         f"{result['purged_spectra']} spectra deleted from server.")
+        if result.get("sky_objects_purged"):
+            click.echo(f"  Removed {result['sky_objects_purged']} sky objects deleted from server.")
 
         if result["stale_count"] > 0:
             click.echo(f"\n⚠ {result['stale_count']} local file(s) have been updated on the server.")
@@ -521,8 +525,8 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             result = sync_metadata(api, store, _meta_dir(), show_progress=True, full=True)
 
         parts = []
-        if result["objects"]:
-            parts.append(f"{result['objects']} objects updated")
+        if result["targets"]:
+            parts.append(f"{result['targets']} targets updated")
         if result.get("purged_objects"):
             parts.append(f"{result['purged_objects']} removed")
         if parts:
@@ -607,7 +611,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             for prog in program_filter:
                 matching = store.get_distinct_values("observation")
                 # Query store for observations matching this program
-                results = store.query_objects(programs=[prog], limit=999999)
+                results = store.query_targets(programs=[prog], limit=999999)
                 obs_for_prog = set(r["observation"] for r in results)
                 if not obs_for_prog:
                     click.echo(f"✗ No observations found for program '{prog}'", err=True)
@@ -617,7 +621,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
 
         if field_filter:
             for fld in field_filter:
-                results = store.query_objects(fields=[fld], limit=999999)
+                results = store.query_targets(fields=[fld], limit=999999)
                 obs_for_field = set(r["observation"] for r in results)
                 if not obs_for_field:
                     click.echo(f"✗ No observations found for field '{fld}'", err=True)

@@ -13,10 +13,10 @@ from typing import Dict, List, Optional, Tuple, Union
 
 
 # Schema version — bump when tables change
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Column lists used by both store and export
-OBJECT_COLUMNS = [
+TARGET_COLUMNS = [
     "id", "target_id", "program_slug", "program_name", "field", "observation",
     "ra", "dec", "redshift", "redshift_auto", "redshift_inspected",
     "redshift_quality", "spectral_features", "object_flags", "dq_flags",
@@ -31,7 +31,7 @@ SPECTRA_COLUMNS = [
 ]
 
 # Columns exported to targets.csv (subset, user-friendly order)
-OBJECT_EXPORT_COLUMNS = [
+TARGET_EXPORT_COLUMNS = [
     "target_id", "program_slug", "program_name", "field", "observation",
     "ra", "dec", "redshift", "redshift_auto", "redshift_inspected",
     "redshift_quality", "spectral_features", "object_flags", "dq_flags",
@@ -43,6 +43,26 @@ SPECTRA_EXPORT_COLUMNS = [
     "spectra_id", "target_id", "grating", "fits_path", "file_hash",
     "file_size", "signal_to_noise", "exposure_time", "reduction_version",
     "local_path",
+]
+
+# Columns for the sky-objects table (cross-program groupings)
+OBJECT_COLUMNS = [
+    "id", "object_id", "field", "ra", "dec",
+    "n_targets", "n_spectra",
+    "programs", "gratings",
+    "max_snr", "max_exposure_time",
+    "best_redshift", "best_redshift_quality",
+    "member_target_ids",
+    "created_at", "updated_at",
+]
+
+OBJECT_EXPORT_COLUMNS = [
+    "object_id", "field", "ra", "dec",
+    "best_redshift", "best_redshift_quality",
+    "n_targets", "n_spectra",
+    "programs", "gratings",
+    "max_snr", "max_exposure_time",
+    "member_target_ids",
 ]
 
 
@@ -82,6 +102,29 @@ CREATE INDEX IF NOT EXISTS idx_targets_observation ON targets(observation);
 CREATE INDEX IF NOT EXISTS idx_targets_field ON targets(field);
 CREATE INDEX IF NOT EXISTS idx_targets_redshift ON targets(redshift);
 CREATE INDEX IF NOT EXISTS idx_targets_object_flags ON targets(object_flags);
+
+CREATE TABLE IF NOT EXISTS objects (
+    id INTEGER PRIMARY KEY,
+    object_id TEXT UNIQUE NOT NULL,
+    field TEXT,
+    ra REAL,
+    dec REAL,
+    n_targets INTEGER DEFAULT 0,
+    n_spectra INTEGER DEFAULT 0,
+    programs TEXT,
+    gratings TEXT,
+    max_snr REAL,
+    max_exposure_time REAL,
+    best_redshift REAL,
+    best_redshift_quality INTEGER DEFAULT 0,
+    member_target_ids TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    _synced_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_objects_object_id ON objects(object_id);
+CREATE INDEX IF NOT EXISTS idx_objects_field ON objects(field);
 
 CREATE TABLE IF NOT EXISTS spectra (
     spectra_id INTEGER PRIMARY KEY,
@@ -141,6 +184,13 @@ class LocalStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=OFF")
+
+        # Register math functions once for cone-search distance calculations
+        self._conn.create_function("COS", 1, math.cos)
+        self._conn.create_function("SQRT", 1, math.sqrt)
+        self._conn.create_function("RADIANS", 1, math.radians)
+        self._conn.create_function("POWER", 2, math.pow)
+
         self._init_schema()
 
     def _maybe_migrate_from_old_db(self) -> None:
@@ -186,6 +236,8 @@ class LocalStore:
                     self._migrate_from_v4()
                 if version < 6:
                     self._migrate_from_v5()
+                if version < 7:
+                    self._migrate_from_v6()
 
     def _get_schema_version(self) -> int:
         """Get current schema version from _meta table."""
@@ -360,11 +412,48 @@ class LocalStore:
         )
         self._conn.commit()
 
+    def _migrate_from_v6(self) -> None:
+        """Migrate from v6 to v7: add objects table for sky-position groupings."""
+        # Create objects table
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS objects (
+                id INTEGER PRIMARY KEY,
+                object_id TEXT UNIQUE NOT NULL,
+                field TEXT,
+                ra REAL,
+                dec REAL,
+                n_targets INTEGER DEFAULT 0,
+                n_spectra INTEGER DEFAULT 0,
+                programs TEXT,
+                gratings TEXT,
+                max_snr REAL,
+                max_exposure_time REAL,
+                best_redshift REAL,
+                best_redshift_quality INTEGER DEFAULT 0,
+                member_target_ids TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                _synced_at TEXT
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_objects_object_id ON objects(object_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_objects_field ON objects(field)"
+        )
+
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
+        self._conn.commit()
+
     # -------------------------------------------------------------------------
     # Catalog operations
     # -------------------------------------------------------------------------
 
-    def upsert_objects(self, objects_data: List[dict]) -> Tuple[int, int]:
+    def upsert_targets(self, objects_data: List[dict]) -> Tuple[int, int]:
         """Insert or update targets and their spectra from API response dicts.
 
         Parameters
@@ -484,7 +573,7 @@ class LocalStore:
         self._conn.commit()
         return obj_count, spec_count
 
-    def query_objects(
+    def query_targets(
         self,
         programs: Optional[List[str]] = None,
         fields: Optional[List[str]] = None,
@@ -504,7 +593,7 @@ class LocalStore:
         offset: int = 0,
         **kwargs,
     ) -> List[dict]:
-        """Query objects from local SQLite store.
+        """Query targets from local SQLite store.
 
         Supports the same filter parameters as the remote API.
 
@@ -521,7 +610,7 @@ class LocalStore:
             Flag filter dicts with keys 'include_any', 'include_all', 'exclude'.
         inspected_only : bool, optional
         search : str, optional
-            Text search on object_id (LIKE match).
+            Text search on target_id (LIKE match).
         cone_search : tuple of (ra, dec, radius_arcsec), optional
         sort : str
             Column to sort by.
@@ -532,7 +621,7 @@ class LocalStore:
         Returns
         -------
         list of dict
-            Object records matching the filters.
+            Target records matching the filters.
         """
         where_clauses = []
         params = []
@@ -652,12 +741,6 @@ class LocalStore:
         else:
             distance_expr = "NULL AS distance"
 
-        # Register math functions for SQLite
-        self._conn.create_function("COS", 1, math.cos)
-        self._conn.create_function("SQRT", 1, math.sqrt)
-        self._conn.create_function("RADIANS", 1, math.radians)
-        self._conn.create_function("POWER", 2, math.pow)
-
         sql = f"""
             SELECT o.*, {distance_expr}
             FROM targets o
@@ -674,19 +757,15 @@ class LocalStore:
         rows = self._conn.execute(sql, params).fetchall()
 
         # Convert to list of dicts and attach spectra
+        cone_radius_deg = cone_search[2] / 3600.0 if cone_search else None
         results = []
         for row in rows:
             obj = dict(row)
-            # Remove internal columns
             obj.pop("_synced_at", None)
-            # If distance is None and not a cone search, remove it
             if not cone_search:
                 obj.pop("distance", None)
-            elif cone_search and obj.get("distance") is not None:
-                # Filter by actual radius
-                radius_deg = cone_search[2] / 3600.0
-                if obj["distance"] > radius_deg:
-                    continue
+            elif obj.get("distance") is not None and obj["distance"] > cone_radius_deg:
+                continue
 
             # Fetch associated spectra
             spectra_rows = self._conn.execute(
@@ -701,11 +780,9 @@ class LocalStore:
 
         return results
 
-    def count_objects(self, **filters) -> int:
-        """Count objects matching filters (same params as query_objects)."""
-        # Simple implementation: query and count
-        # For performance, could build a COUNT query, but this is fine for now
-        results = self.query_objects(**filters)
+    def count_targets(self, **filters) -> int:
+        """Count targets matching filters (same params as query_targets)."""
+        results = self.query_targets(**filters)
         return len(results)
 
     def get_object(self, target_id: str) -> Optional[dict]:
@@ -1199,6 +1276,265 @@ class LocalStore:
             WHERE target_id = ? AND grating = ? AND local_path IS NOT NULL
         """, (target_id, grating)).fetchone()
         return row["local_path"] if row else None
+
+    # -------------------------------------------------------------------------
+    # Sky-objects catalog operations (cross-program groupings)
+    # -------------------------------------------------------------------------
+
+    def upsert_sky_objects(self, objects_data: List[dict]) -> int:
+        """Insert or update sky-objects from the /sync/objects endpoint.
+
+        Serializes list fields (programs, gratings, member_target_ids) as
+        semicolon-separated strings for SQLite storage.
+
+        Parameters
+        ----------
+        objects_data : list of dict
+            Objects from the sync endpoint, each with list-typed fields.
+
+        Returns
+        -------
+        int
+            Number of objects upserted.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        count = 0
+
+        for obj in objects_data:
+            programs = ";".join(obj.get("programs") or [])
+            gratings = ";".join(obj.get("gratings") or [])
+            member_ids = ";".join(str(m) for m in (obj.get("member_target_ids") or []))
+
+            self._conn.execute("""
+                INSERT INTO objects
+                    (id, object_id, field, ra, dec,
+                     n_targets, n_spectra, programs, gratings,
+                     max_snr, max_exposure_time,
+                     best_redshift, best_redshift_quality,
+                     member_target_ids,
+                     created_at, updated_at, _synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(object_id) DO UPDATE SET
+                    field=excluded.field,
+                    ra=excluded.ra, dec=excluded.dec,
+                    n_targets=excluded.n_targets,
+                    n_spectra=excluded.n_spectra,
+                    programs=excluded.programs,
+                    gratings=excluded.gratings,
+                    max_snr=excluded.max_snr,
+                    max_exposure_time=excluded.max_exposure_time,
+                    best_redshift=excluded.best_redshift,
+                    best_redshift_quality=excluded.best_redshift_quality,
+                    member_target_ids=excluded.member_target_ids,
+                    updated_at=excluded.updated_at,
+                    _synced_at=excluded._synced_at
+            """, (
+                obj.get("id"),
+                obj.get("object_id"),
+                obj.get("field"),
+                obj.get("ra"),
+                obj.get("dec"),
+                obj.get("n_targets", 0),
+                obj.get("n_spectra", 0),
+                programs,
+                gratings,
+                obj.get("max_snr"),
+                obj.get("max_exposure_time"),
+                obj.get("best_redshift"),
+                obj.get("best_redshift_quality", 0),
+                member_ids,
+                obj.get("created_at"),
+                obj.get("updated_at"),
+                now,
+            ))
+            count += 1
+
+        self._conn.commit()
+        return count
+
+    def query_sky_objects(
+        self,
+        fields: Optional[List[str]] = None,
+        programs: Optional[List[str]] = None,
+        redshift_range: Optional[Tuple[float, float]] = None,
+        redshift_quality: Optional[List[int]] = None,
+        max_snr_range: Optional[Tuple[float, float]] = None,
+        search: Optional[str] = None,
+        cone_search: Optional[Tuple[float, float, float]] = None,
+        sort: str = "object_id",
+        sort_dir: str = "asc",
+        limit: Optional[int] = None,
+        offset: int = 0,
+        **kwargs,
+    ) -> List[dict]:
+        """Query sky-objects from local SQLite store.
+
+        Parameters
+        ----------
+        fields : list of str, optional
+            Filter by field name.
+        programs : list of str, optional
+            Filter by program slug (semicolon-separated column).
+        redshift_range : tuple of (min, max), optional
+        redshift_quality : list of int, optional
+        max_snr_range : tuple of (min, max), optional
+        search : str, optional
+            Text search on object_id (LIKE match).
+        cone_search : tuple of (ra, dec, radius_arcsec), optional
+        sort : str
+            Column to sort by.
+        sort_dir : str
+            'asc' or 'desc'.
+        limit, offset : int
+
+        Returns
+        -------
+        list of dict
+            Object records with list fields deserialized.
+        """
+        where_clauses = []
+        params = []
+
+        if fields:
+            placeholders = ",".join("?" * len(fields))
+            where_clauses.append(f"o.field IN ({placeholders})")
+            params.extend(fields)
+
+        if programs:
+            # Programs stored as semicolon-separated; match any
+            prog_clauses = []
+            for prog in programs:
+                prog_clauses.append("o.programs LIKE ?")
+                params.append(f"%{prog}%")
+            where_clauses.append(f"({' OR '.join(prog_clauses)})")
+
+        if redshift_range:
+            where_clauses.append("o.best_redshift >= ? AND o.best_redshift <= ?")
+            params.extend(redshift_range)
+
+        if redshift_quality:
+            placeholders = ",".join("?" * len(redshift_quality))
+            where_clauses.append(f"o.best_redshift_quality IN ({placeholders})")
+            params.extend(redshift_quality)
+
+        if max_snr_range:
+            where_clauses.append("o.max_snr >= ? AND o.max_snr <= ?")
+            params.extend(max_snr_range)
+
+        if search:
+            where_clauses.append("o.object_id LIKE ?")
+            params.append(f"%{search}%")
+
+        # Cone search
+        order_by_distance = False
+        if cone_search:
+            ra, dec, radius_arcsec = cone_search
+            radius_deg = radius_arcsec / 3600.0
+            cos_dec = math.cos(math.radians(dec))
+            ra_margin = radius_deg / max(cos_dec, 0.01)
+            where_clauses.append("o.ra BETWEEN ? AND ?")
+            params.extend([ra - ra_margin, ra + ra_margin])
+            where_clauses.append("o.dec BETWEEN ? AND ?")
+            params.extend([dec - radius_deg, dec + radius_deg])
+            order_by_distance = True
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        allowed_sorts = {
+            "object_id", "field", "ra", "dec", "best_redshift",
+            "best_redshift_quality", "n_targets", "n_spectra",
+            "max_snr", "max_exposure_time",
+        }
+        if sort not in allowed_sorts:
+            sort = "object_id"
+        if sort_dir not in ("asc", "desc"):
+            sort_dir = "asc"
+
+        order_clause = f"o.{sort} {sort_dir}"
+        if order_by_distance and sort == "object_id":
+            order_clause = "distance ASC"
+
+        if cone_search:
+            ra, dec, _ = cone_search
+            distance_expr = f"""
+                SQRT(
+                    POWER((o.ra - {ra}) * COS(RADIANS({dec})), 2) +
+                    POWER(o.dec - {dec}, 2)
+                ) AS distance
+            """
+        else:
+            distance_expr = "NULL AS distance"
+
+        sql = f"""
+            SELECT o.*, {distance_expr}
+            FROM objects o
+            WHERE {where_sql}
+            ORDER BY {order_clause}
+        """
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        elif offset:
+            sql += " LIMIT -1 OFFSET ?"
+            params.append(offset)
+
+        rows = self._conn.execute(sql, params).fetchall()
+
+        cone_radius_deg = cone_search[2] / 3600.0 if cone_search else None
+        results = []
+        for row in rows:
+            obj = dict(row)
+            obj.pop("_synced_at", None)
+
+            if not cone_search:
+                obj.pop("distance", None)
+            elif obj.get("distance") is not None and obj["distance"] > cone_radius_deg:
+                continue
+
+            # Deserialize semicolon-separated fields to lists
+            for col in ("programs", "gratings", "member_target_ids"):
+                val = obj.get(col)
+                obj[col] = val.split(";") if val else []
+
+            results.append(obj)
+
+        return results
+
+    def get_max_objects_updated_at(self) -> Optional[str]:
+        """Get the most recent server-side updated_at for sky-objects.
+
+        Used for incremental sync of the objects table.
+        """
+        row = self._conn.execute(
+            "SELECT MAX(updated_at) FROM objects"
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def purge_stale_objects(self, sync_timestamp: str) -> int:
+        """Delete sky-objects not seen in the latest full sync.
+
+        Parameters
+        ----------
+        sync_timestamp : str
+            ISO 8601 timestamp from the start of the sync.
+
+        Returns
+        -------
+        int
+            Number of objects purged.
+        """
+        cursor = self._conn.execute(
+            "DELETE FROM objects WHERE _synced_at < ?",
+            (sync_timestamp,),
+        )
+        purged = cursor.rowcount
+        self._conn.commit()
+        return purged
+
+    # Deprecated aliases (old names → new names)
+    upsert_objects = upsert_targets
+    query_objects = query_targets
+    count_objects = count_targets
 
     # -------------------------------------------------------------------------
     # Lifecycle

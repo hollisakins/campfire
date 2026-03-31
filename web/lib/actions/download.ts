@@ -25,6 +25,23 @@ interface DownloadPayload {
   zipFilename: string;
 }
 
+interface ObjectsCsvRow {
+  object_id: string;
+  field: string;
+  ra: number;
+  dec: number;
+  best_redshift: number | null;
+  best_redshift_quality: number;
+  n_targets: number;
+  n_spectra: number;
+  programs: string;            // semicolon-separated
+  gratings: string;            // semicolon-separated
+  max_snr: number | null;
+  max_exposure_time: number | null;
+  member_target_ids: string;   // semicolon-separated
+  distance: number | null;
+}
+
 interface CsvRow {
   target_id: string;
   field: string;
@@ -114,6 +131,41 @@ export async function generateCSV(
 
     const includeDistance = filters.coordinate_search !== null;
 
+    if (viewMode === 'objects') {
+      // Objects mode: one row per sky-object (cross-program grouped position)
+      // Strip target-only params that the objects RPC doesn't accept
+      const {
+        p_observations: _obs,
+        p_spectral_features_include_any: _sf1, p_spectral_features_include_all: _sf2, p_spectral_features_exclude: _sf3,
+        p_object_flags_include_any: _of1, p_object_flags_include_all: _of2, p_object_flags_exclude: _of3,
+        p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
+        p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
+        ...objectsParams
+      } = { ...rpcParams, p_sort_column: sortColumn, p_sort_direction: sortDirection };
+
+      const { data: rows, error: rpcError } = await paginateRpc<ObjectsCsvRow>(
+        supabase, 'get_csv_export_objects', objectsParams,
+      );
+
+      if (rpcError) {
+        console.error('Error fetching objects CSV data:', rpcError);
+        return { csv: null, error: rpcError.message };
+      }
+      const csv = objectsRowsToCsv(rows, includeDistance);
+
+      const objectIds = rows.map(r => r.object_id);
+      trackDownload({
+        userId: user.id,
+        downloadType: 'csv',
+        targetIds: objectIds,
+        targetCount: objectIds.length,
+        fileCount: 1,
+        filterSnapshot: filters as unknown as Record<string, unknown>,
+      });
+
+      return { csv, error: null };
+    }
+
     if (viewMode === 'spectra') {
       // Spectra mode: one row per (target_id, grating)
       const { data: rows, error: rpcError } = await paginateRpc<SpectraCsvRow>(
@@ -139,7 +191,7 @@ export async function generateCSV(
       return { csv, error: null };
     }
 
-    // Objects mode: one row per object (existing behavior)
+    // Targets mode: one row per target
     const { data: rows, error: rpcError } = await paginateRpc<CsvRow>(
       supabase, 'get_csv_export', rpcParams,
     );
@@ -293,6 +345,62 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
       ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
       ...expandBitmask(row.object_flags, OBJECT_FLAGS),
       ...expandBitmask(row.dq_flags, DQ_FLAGS),
+    );
+
+    csvRows.push(values.join(','));
+  }
+
+  return csvRows.join('\n');
+}
+
+/**
+ * Convert objects-mode CSV export rows to CSV string
+ */
+function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): string {
+  const columns = [
+    'object_id',
+    'field',
+    'ra',
+    'dec',
+    'best_redshift',
+    'best_redshift_quality',
+    'n_targets',
+    'n_spectra',
+    'programs',
+    'gratings',
+    'max_snr',
+    'max_exposure_time',
+    'member_target_ids',
+  ];
+
+  if (includeDistance) {
+    columns.splice(4, 0, 'distance_degrees');
+  }
+
+  const csvRows: string[] = [columns.join(',')];
+
+  for (const row of rows) {
+    const values: (string | number)[] = [
+      escapeCsvValue(row.object_id),
+      escapeCsvValue(row.field),
+      row.ra.toFixed(8),
+      row.dec.toFixed(8),
+    ];
+
+    if (includeDistance) {
+      values.push(row.distance != null ? row.distance.toFixed(8) : '');
+    }
+
+    values.push(
+      row.best_redshift != null ? row.best_redshift.toFixed(6) : '',
+      row.best_redshift_quality,
+      row.n_targets,
+      row.n_spectra,
+      escapeCsvValue(row.programs || ''),
+      escapeCsvValue(row.gratings || ''),
+      row.max_snr != null ? row.max_snr.toFixed(2) : '',
+      row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
+      escapeCsvValue(row.member_target_ids || ''),
     );
 
     csvRows.push(values.join(','));

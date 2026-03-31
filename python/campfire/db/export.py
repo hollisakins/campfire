@@ -1,19 +1,24 @@
 """CSV catalog export from SQLite database.
 
-Generates targets.csv and spectra.csv as human-readable export artifacts
-from the LocalStore. These files are written atomically so they're always
-in a consistent state.
+Generates targets.csv, spectra.csv, and objects.csv as human-readable export
+artifacts from the LocalStore. These files are written atomically so they're
+always in a consistent state.
 """
 
 import csv
 from pathlib import Path
 from typing import Tuple
 
-from .store import LocalStore, OBJECT_EXPORT_COLUMNS, SPECTRA_EXPORT_COLUMNS
+from .store import (
+    LocalStore,
+    TARGET_EXPORT_COLUMNS,
+    SPECTRA_EXPORT_COLUMNS,
+    OBJECT_EXPORT_COLUMNS,
+)
 
 
-def export_catalogs(store: LocalStore, output_dir: Path) -> Tuple[int, int]:
-    """Export objects.csv and spectra.csv from the local SQLite database.
+def export_catalogs(store: LocalStore, output_dir: Path) -> Tuple[int, int, int]:
+    """Export targets.csv, spectra.csv, and objects.csv from the local database.
 
     Parameters
     ----------
@@ -24,20 +29,20 @@ def export_catalogs(store: LocalStore, output_dir: Path) -> Tuple[int, int]:
 
     Returns
     -------
-    tuple of (object_count, spectra_count)
+    tuple of (target_count, spectra_count, object_count)
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Query all objects
-    objects = store.query_objects()
+    # Query all targets
+    targets = store.query_targets()
 
-    object_rows = []
+    target_rows = []
     spectra_rows = []
 
-    for obj in objects:
-        # Build object row
-        obj_row = {col: obj.get(col) for col in OBJECT_EXPORT_COLUMNS}
-        object_rows.append(obj_row)
+    for obj in targets:
+        # Build target row
+        obj_row = {col: obj.get(col) for col in TARGET_EXPORT_COLUMNS}
+        target_rows.append(obj_row)
 
         # Build spectra rows
         for spec in obj.get("spectra", []):
@@ -58,10 +63,26 @@ def export_catalogs(store: LocalStore, output_dir: Path) -> Tuple[int, int]:
 
             spectra_rows.append(spec_row)
 
-    _atomic_csv_write(output_dir / "targets.csv", OBJECT_EXPORT_COLUMNS, object_rows)
+    _atomic_csv_write(output_dir / "targets.csv", TARGET_EXPORT_COLUMNS, target_rows)
     _atomic_csv_write(output_dir / "spectra.csv", SPECTRA_EXPORT_COLUMNS, spectra_rows)
 
-    return len(object_rows), len(spectra_rows)
+    # Export sky-objects
+    sky_objects = store.query_sky_objects()
+    object_rows = []
+    for obj in sky_objects:
+        row = {}
+        for col in OBJECT_EXPORT_COLUMNS:
+            val = obj.get(col)
+            # List fields are already deserialized by query_sky_objects;
+            # serialize back to semicolons for CSV
+            if isinstance(val, list):
+                val = ";".join(str(v) for v in val)
+            row[col] = val
+        object_rows.append(row)
+
+    _atomic_csv_write(output_dir / "objects.csv", OBJECT_EXPORT_COLUMNS, object_rows)
+
+    return len(target_rows), len(spectra_rows), len(object_rows)
 
 
 def _atomic_csv_write(path: Path, columns: list, rows: list) -> None:
