@@ -1,7 +1,7 @@
 """
 Supabase database operations.
 
-Handles upserts for programs, objects, and spectra tables, plus
+Handles upserts for programs, targets, and spectra tables, plus
 slit geometry deployment and filter cache refresh.
 """
 
@@ -19,7 +19,7 @@ def get_supabase_client(config: dict) -> Client:
 REDSHIFT_DRIFT_THRESHOLD = 0.03
 
 
-def check_existing_objects(client: Client, target_ids: list[str]) -> dict[str, dict]:
+def check_existing_targets(client: Client, target_ids: list[str]) -> dict[str, dict]:
     """
     Return existing targets as a dict keyed by target_id.
 
@@ -77,7 +77,7 @@ def upsert_observation(
     client.table('observations').upsert(data, on_conflict='name').execute()
 
 
-def batch_upsert_objects(
+def batch_upsert_targets(
     client: Client,
     objects: list[dict],
     field: str,
@@ -86,22 +86,22 @@ def batch_upsert_objects(
     batch_size: int = 500,
 ) -> int:
     """
-    Upsert objects in batches.
+    Upsert targets in batches.
 
     Three branches:
-      - New objects: full insert with defaults
+      - New targets: full insert with defaults
       - Existing (normal): update pipeline fields only, preserve inspection data
       - Existing (force_overwrite): reset all fields including inspection data
 
     Args:
-        objects: List of dicts from summary.get_unique_objects()
+        objects: List of dicts from summary.get_unique_targets()
         field: Field name
         force_overwrite: Whether to reset inspection data
-        objects_with_sed: Set of object_ids that have SED plots
+        objects_with_sed: Set of target_ids that have SED plots
         batch_size: Records per batch
 
     Returns:
-        Tuple of (number of objects upserted, list of new object_ids)
+        Tuple of (n_upserted, new_target_ids, n_quality_reset)
     """
     if not objects:
         return 0, []
@@ -109,7 +109,7 @@ def batch_upsert_objects(
         objects_with_sed = set()
 
     target_ids = [o['object_id'] for o in objects]
-    existing = check_existing_objects(client, target_ids)
+    existing = check_existing_targets(client, target_ids)
 
     new_records = []
     update_records = []
@@ -211,7 +211,7 @@ def batch_upsert_spectra(
     batch_size: int = 500,
 ) -> int:
     """
-    Upsert spectra in batches, keyed on (object_id, grating).
+    Upsert spectra in batches, keyed on (target_id, grating).
 
     Args:
         spectra: List of dicts from summary.get_spectra_records(), optionally

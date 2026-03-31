@@ -430,14 +430,14 @@ function escapeCsvValue(value: string | null | undefined): string {
 /**
  * Generate filename for CSV download
  */
-export async function generateCsvFilename(): Promise<string> {
+export async function generateCsvFilename(viewMode: string = 'targets'): Promise<string> {
   const now = new Date();
   const timestamp = now
     .toISOString()
     .replace(/[-:]/g, '')
     .replace('T', '_')
     .substring(0, 15); // YYYYMMDD_HHMMSS
-  return `campfire_spectra_${timestamp}.csv`;
+  return `campfire_${viewMode}_${timestamp}.csv`;
 }
 
 /**

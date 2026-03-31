@@ -85,7 +85,7 @@ function InspectPageInner() {
             onClick={() => router.push('/nirspec')}
             className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
           >
-            Back to Spectra
+            Back to NIRSpec
           </button>
         </div>
       </div>

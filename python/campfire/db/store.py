@@ -1039,7 +1039,7 @@ class LocalStore:
 
         The ``file_hash`` parameter is stored as ``local_file_hash`` — the
         hash of the downloaded file on disk. The server-authoritative
-        ``file_hash`` column is only set by ``upsert_objects()``.
+        ``file_hash`` column is only set by ``upsert_targets()``.
         """
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute("""

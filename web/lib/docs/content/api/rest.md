@@ -94,7 +94,7 @@ Get spectrum JSON data for plotting.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `object_id` | string | Object ID |
+| `target_id` | string | Target ID |
 | `grating` | string | Grating type |
 
 **Response:**
@@ -119,7 +119,7 @@ Get redshift fitting results.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `object_id` | string | Object ID |
+| `target_id` | string | Target ID |
 | `grating` | string | Grating type |
 
 **Response:**

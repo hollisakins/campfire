@@ -63,7 +63,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = await generateCsvFilename();
+      link.download = await generateCsvFilename(viewMode);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);

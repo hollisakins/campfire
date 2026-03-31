@@ -33,9 +33,9 @@ from campfire_deploy.generate import (
 from campfire_deploy.r2 import UploadTask, get_r2_client, upload_files_parallel
 from campfire_deploy.supabase import (
     REDSHIFT_DRIFT_THRESHOLD,
-    batch_upsert_objects,
+    batch_upsert_targets,
     batch_upsert_spectra,
-    check_existing_objects,
+    check_existing_targets,
     deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
     get_supabase_client,
@@ -52,7 +52,7 @@ from campfire_deploy.summary import (
     get_program_slug,
     get_spec_paths,
     get_spectra_records,
-    get_unique_objects,
+    get_unique_targets,
     get_zfit_paths,
     load_summary,
 )
@@ -83,7 +83,7 @@ def deploy_observation(
 
     field = get_field(summary)
     program_slug = get_program_slug(summary)
-    objects = get_unique_objects(summary)
+    objects = get_unique_targets(summary)
     spectra = get_spectra_records(summary, obs_name)
     spec_paths = get_spec_paths(summary, obs_dir)
     zfit_paths = get_zfit_paths(summary, obs_dir)
@@ -94,7 +94,7 @@ def deploy_observation(
     print(f"Observation: {obs_name}")
     print(f"  Field: {field}")
     print(f"  Program: {program_slug}")
-    print(f"  Objects: {len(objects)}")
+    print(f"  Targets: {len(objects)}")
     print(f"  Spectra: {len(spectra)}")
     print(f"  Zfit files: {len(zfit_paths)}")
 
@@ -147,7 +147,7 @@ def deploy_observation(
                 print(f"  {len(sed_files)} SED plots")
         print(f"Would upsert to Supabase:")
         print(f"  Program: {program_slug}")
-        print(f"  {len(objects)} object(s)")
+        print(f"  {len(objects)} target(s)")
         print(f"  {len(spectra)} spectrum record(s)")
         if include_shutters:
             ecsv_path = discover_shutters_ecsv(obs_dir, obs_name)
@@ -159,9 +159,9 @@ def deploy_observation(
         else:
             print("  Shutters: skipped (--no-shutters)")
         if not force_overwrite:
-            print("  (existing objects: pipeline fields only, inspection data preserved)")
+            print("  (existing targets: pipeline fields only, inspection data preserved)")
         print()
-        print("Sample object IDs:")
+        print("Sample target IDs:")
         for obj in objects[:5]:
             print(f"  - {obj['object_id']}")
         if len(objects) > 5:
@@ -174,9 +174,9 @@ def deploy_observation(
 
     # Check for existing targets and confirm
     target_ids = [o['object_id'] for o in objects]
-    existing = check_existing_objects(sb, target_ids)
+    existing = check_existing_targets(sb, target_ids)
     if existing:
-        print(f"Found {len(existing)} existing objects")
+        print(f"Found {len(existing)} existing targets")
         if force_overwrite:
             print("  FORCE OVERWRITE: inspection data will be RESET!")
             if not auto_approve:
@@ -264,11 +264,11 @@ def deploy_observation(
                 rec.update(thumb_map[fits_name])
 
         # Supabase upserts
-        print("Upserting objects...")
-        n_obj, new_object_ids, n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
-        print(f"  {n_obj} objects")
+        print("Upserting targets...")
+        n_obj, new_object_ids, n_quality_reset = batch_upsert_targets(sb, objects, field, force_overwrite, objects_with_sed)
+        print(f"  {n_obj} targets")
         if n_quality_reset:
-            print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift > {REDSHIFT_DRIFT_THRESHOLD}, no manual override)")
+            print(f"  Reset {n_quality_reset} Secure targets (redshift_auto drift > {REDSHIFT_DRIFT_THRESHOLD}, no manual override)")
 
         print("Upserting spectra...")
         n_spec = batch_upsert_spectra(sb, spectra)
@@ -279,7 +279,7 @@ def deploy_observation(
             print("Checking cross-matches...")
             n_propagated = propagate_crossmatches(sb, new_object_ids)
             if n_propagated:
-                print(f"  Auto-secured {n_propagated} objects via cross-match")
+                print(f"  Auto-secured {n_propagated} targets via cross-match")
             else:
                 print("  No cross-matches found")
 
@@ -428,7 +428,7 @@ def deploy_sed(
         return
 
     objects_with_sed = extract_object_ids_from_files(sed_files, '_sed.pdf')
-    print(f"Found {len(sed_files)} SED plots ({len(objects_with_sed)} objects)")
+    print(f"Found {len(sed_files)} SED plots ({len(objects_with_sed)} targets)")
 
     if dry_run:
         print("=== DRY RUN ===")
@@ -436,7 +436,7 @@ def deploy_sed(
             print(f"  {path.name} -> sed/{obs_name}/{path.name}")
         if len(sed_files) > 5:
             print(f"  ... and {len(sed_files) - 5} more")
-        print(f"Would set has_sed_plot=true for {len(objects_with_sed)} objects")
+        print(f"Would set has_sed_plot=true for {len(objects_with_sed)} targets")
         return
 
     r2_client = get_r2_client(config)
@@ -455,7 +455,7 @@ def deploy_sed(
     # Update database
     sb = get_supabase_client(config)
     n = update_has_sed_plot(sb, objects_with_sed)
-    print(f"Updated has_sed_plot for {n} objects")
+    print(f"Updated has_sed_plot for {n} targets")
 
 
 def deploy_json(
@@ -532,10 +532,10 @@ def deploy_zfit(
         summary = filter_by_source_ids(summary, source_ids)
 
     zfit_paths = get_zfit_paths(summary, obs_dir)
-    objects = get_unique_objects(summary)
+    objects = get_unique_targets(summary)
     field = get_field(summary)
 
-    print(f"Found {len(zfit_paths)} zfit files for {len(objects)} objects")
+    print(f"Found {len(zfit_paths)} zfit files for {len(objects)} targets")
 
     if not zfit_paths:
         print("No zfit files to deploy.")
@@ -546,7 +546,7 @@ def deploy_zfit(
         if force_overwrite:
             print("!! FORCE OVERWRITE: inspection data will be reset")
         print(f"Would upload {len(zfit_paths)} zfit JSON files")
-        print(f"Would update redshift_auto for {len(objects)} objects")
+        print(f"Would update redshift_auto for {len(objects)} targets")
         return
 
     # Upload zfit JSONs
@@ -580,23 +580,23 @@ def deploy_zfit(
     sb = get_supabase_client(config)
 
     if force_overwrite:
-        existing = check_existing_objects(sb, [o['object_id'] for o in objects])
+        existing = check_existing_targets(sb, [o['object_id'] for o in objects])
         if existing and not auto_approve:
-            print(f"  {len(existing)} objects exist. FORCE OVERWRITE will reset inspection data!")
+            print(f"  {len(existing)} targets exist. FORCE OVERWRITE will reset inspection data!")
             resp = input("  Are you sure? [y/N]: ")
             if resp.lower() != 'y':
                 print("Aborted.")
                 return
 
-    print("Updating objects...")
-    n, _, n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite)
-    print(f"  Updated {n} objects")
+    print("Updating targets...")
+    n, _, n_quality_reset = batch_upsert_targets(sb, objects, field, force_overwrite)
+    print(f"  Updated {n} targets")
     if n_quality_reset:
-        print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift)")
+        print(f"  Reset {n_quality_reset} Secure targets (redshift_auto drift)")
 
     refresh_filter_options(sb)
     refresh_programs_overview(sb)
-    print(f"Deployed {len(zfit_paths)} zfit files, updated {n} objects")
+    print(f"Deployed {len(zfit_paths)} zfit files, updated {n} targets")
 
 
 def deploy_thumbnails(

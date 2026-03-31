@@ -36,7 +36,7 @@ export async function generateMetadata({ params }: SpectrumDetailPageProps): Pro
   const metadata = await getTargetMetadata(targetId);
 
   if (!metadata) {
-    return { title: 'Object Not Found - CAMPFIRE' };
+    return { title: 'Target Not Found - CAMPFIRE' };
   }
 
   const redshiftText = metadata.redshift !== null

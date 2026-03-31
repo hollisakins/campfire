@@ -851,7 +851,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           )}
         </div>
         <div className="flex items-center gap-1">
-          {canInspect && spectra.length > 0 && (
+          {canInspect && spectra.length > 0 && viewMode !== 'objects' && (
             <Link
               href={`/inspect?start=${encodeURIComponent(spectra[0].target_id)}&${currentFilterParams?.toString() || ''}`}
               onClick={() => {
