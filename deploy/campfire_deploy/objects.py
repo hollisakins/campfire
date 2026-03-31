@@ -348,21 +348,30 @@ def _set_target_fks(
     objects: list[dict],
     object_id_to_db_id: dict[str, int],
 ) -> int:
-    """Set object_id FK on targets, grouped by object for efficiency."""
-    total = 0
+    """Set object_id FK on targets via a server-side RPC for bulk efficiency.
 
+    Sends all (target_db_id, object_db_id) pairs to a Postgres function
+    that performs the UPDATE in a single transaction, avoiding per-object
+    HTTP round-trips.
+    """
+    pairs = []
     for obj in objects:
         db_id = object_id_to_db_id[obj['object_id']]
-        member_ids = obj['_member_db_ids']
+        for tid in obj['_member_db_ids']:
+            pairs.append({'target_id': tid, 'object_id': db_id})
 
-        # Batch the .in_() call if there are many members
-        for i in range(0, len(member_ids), BATCH_SIZE):
-            batch = member_ids[i:i + BATCH_SIZE]
-            client.table('targets').update(
-                {'object_id': db_id,
-                 'updated_at': datetime.now(timezone.utc).isoformat()},
-            ).in_('id', batch).execute()
-            total += len(batch)
+    if not pairs:
+        return 0
+
+    now = datetime.now(timezone.utc).isoformat()
+    total = 0
+    for i in range(0, len(pairs), BATCH_SIZE):
+        batch = pairs[i:i + BATCH_SIZE]
+        client.rpc('bulk_set_target_object_fks', {
+            'p_pairs': batch,
+            'p_updated_at': now,
+        }).execute()
+        total += len(batch)
 
     return total
 

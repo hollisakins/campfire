@@ -2857,3 +2857,28 @@ $$;
 GRANT ALL ON FUNCTION public.validate_refresh_token(text) TO anon;
 GRANT ALL ON FUNCTION public.validate_refresh_token(text) TO authenticated;
 GRANT ALL ON FUNCTION public.validate_refresh_token(text) TO service_role;
+
+
+-- =============================================================================
+-- Bulk set target object FK references
+-- =============================================================================
+-- Used by cfdeploy objects rebuild to set targets.object_id in bulk,
+-- avoiding per-object HTTP round-trips through PostgREST.
+
+CREATE OR REPLACE FUNCTION public.bulk_set_target_object_fks(
+  p_pairs JSONB,
+  p_updated_at TIMESTAMPTZ DEFAULT now()
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE targets t SET
+    object_id = (pair->>'object_id')::integer,
+    updated_at = p_updated_at
+  FROM jsonb_array_elements(p_pairs) AS pair
+  WHERE t.id = (pair->>'target_id')::integer;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.bulk_set_target_object_fks(JSONB, TIMESTAMPTZ) TO service_role;
