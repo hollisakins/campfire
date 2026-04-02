@@ -33,12 +33,18 @@ See the README in each subdirectory for more detail.
 
 ## Quick Start
 
+### Installation
+
+```bash
+conda env create -f environment.yml
+conda activate campfire
+```
+
+This installs the pipeline dependencies via conda and both Python packages (`campfire-pipeline`, `campfire-deploy`) in editable mode via pip.
+
 ### Pipeline
 
 ```bash
-cd pipeline
-pip install -e .
-
 # Set up your data directory (raw data, config, and outputs live here, not in the repo)
 export CAMPFIRE_ROOT=/path/to/your/data
 

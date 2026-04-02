@@ -1,0 +1,11 @@
+name: campfire
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - jwst>=1.20,<1.21
+  - numba>=0.59
+  - pip
+  - pip:
+    - -e ./pipeline
+    - -e ./deploy

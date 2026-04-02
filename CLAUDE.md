@@ -33,7 +33,7 @@ Observations defined in `$CAMPFIRE_ROOT/config/observations.toml`, fields in `fi
 
 ### Python Environment
 
-Always use the `jwst` conda environment when testing code: `conda run -n jwst python ...`
+Always use the `campfire` conda environment when testing code: `conda run -n campfire python ...`
 
 ## Web Portal
 
