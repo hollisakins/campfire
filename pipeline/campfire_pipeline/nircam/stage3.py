@@ -6,7 +6,6 @@ Ported from nircamx/stage3.py with config/path/logging refactored to use
 the campfire_pipeline common infrastructure.
 """
 
-import sys
 import os
 import glob
 import shutil
@@ -141,8 +140,8 @@ def jhat_step(cal_file, field, stage_config, filtname=None, overwrite=False):
     ixs_all = align_batch.getindices()
 
     if len(ixs_all) == 0:
-        log('JHAT: No images found! exiting...')
-        sys.exit(0)
+        log(f'JHAT: No images found for {cal_file_name}, skipping')
+        return
 
     # get the output filenames
     ixs_exists, ixs_notexists = align_batch.get_output_filenames(
@@ -267,27 +266,20 @@ def stack_dq_by_detector(filtname, field, stage_config, overwrite=False):
         b3 = np.zeros((2048, 2048))
         b4 = np.zeros((2048, 2048))
 
+        det_arrays = {
+            'nrca1': a1, 'nrca2': a2, 'nrca3': a3, 'nrca4': a4,
+            'nrcb1': b1, 'nrcb2': b2, 'nrcb3': b3, 'nrcb4': b4,
+        }
         with tqdm.tqdm(total=len(cal_files)) as pbar:
             for cal_file in cal_files:
                 flag = fits.getdata(cal_file, extname='DQ')
                 flag[flag >= 1] = 1
+                basename = os.path.basename(cal_file)
 
-                if 'nrca1' in cal_file:
-                    a1 += flag
-                if 'nrca2' in cal_file:
-                    a2 += flag
-                if 'nrca3' in cal_file:
-                    a3 += flag
-                if 'nrca4' in cal_file:
-                    a4 += flag
-                if 'nrcb1' in cal_file:
-                    b1 += flag
-                if 'nrcb2' in cal_file:
-                    b2 += flag
-                if 'nrcb3' in cal_file:
-                    b3 += flag
-                if 'nrcb4' in cal_file:
-                    b4 += flag
+                for det_name, arr in det_arrays.items():
+                    if f'_{det_name}_' in basename:
+                        arr += flag
+                        break
 
                 pbar.update(1)
 
@@ -300,32 +292,12 @@ def stack_dq_by_detector(filtname, field, stage_config, overwrite=False):
         fits.writeto(os.path.join(field.bad_pixel_dir, f'stack_dq_{filtname}_nrcb3.fits'), b3, overwrite=True)
         fits.writeto(os.path.join(field.bad_pixel_dir, f'stack_dq_{filtname}_nrcb4.fits'), b4, overwrite=True)
 
-        a1 = a1 / np.max(a1)
-        a2 = a2 / np.max(a2)
-        a3 = a3 / np.max(a3)
-        a4 = a4 / np.max(a4)
-        b1 = b1 / np.max(b1)
-        b2 = b2 / np.max(b2)
-        b3 = b3 / np.max(b3)
-        b4 = b4 / np.max(b4)
-
-        a1[a1 > threshold] = 1
-        a2[a2 > threshold] = 1
-        a3[a3 > threshold] = 1
-        a4[a4 > threshold] = 1
-        b1[b1 > threshold] = 1
-        b2[b2 > threshold] = 1
-        b3[b3 > threshold] = 1
-        b4[b4 > threshold] = 1
-
-        a1[a1 <= threshold] = 0
-        a2[a2 <= threshold] = 0
-        a3[a3 <= threshold] = 0
-        a4[a4 <= threshold] = 0
-        b1[b1 <= threshold] = 0
-        b2[b2 <= threshold] = 0
-        b3[b3 <= threshold] = 0
-        b4[b4 <= threshold] = 0
+        for arr in [a1, a2, a3, a4, b1, b2, b3, b4]:
+            mx = np.max(arr)
+            if mx > 0:
+                arr /= mx
+                arr[arr > threshold] = 1
+                arr[arr <= threshold] = 0
 
         fits.writeto(os.path.join(field.bad_pixel_dir, f'fl_pixels_{filtname}_nrca1.fits'), a1, overwrite=True)
         fits.writeto(os.path.join(field.bad_pixel_dir, f'fl_pixels_{filtname}_nrca2.fits'), a2, overwrite=True)
@@ -340,29 +312,29 @@ def stack_dq_by_detector(filtname, field, stage_config, overwrite=False):
         a = np.zeros((2048, 2048))
         b = np.zeros((2048, 2048))
 
+        det_arrays = {'nrcalong': a, 'nrcblong': b}
         with tqdm.tqdm(total=len(cal_files)) as pbar:
             for cal_file in cal_files:
                 flag = fits.getdata(cal_file, extname='DQ')
                 flag[flag >= 1] = 1
+                basename = os.path.basename(cal_file)
 
-                if 'nrcalong' in cal_file:
-                    a += flag
-                if 'nrcblong' in cal_file:
-                    b += flag
+                for det_name, arr in det_arrays.items():
+                    if f'_{det_name}_' in basename:
+                        arr += flag
+                        break
 
                 pbar.update(1)
 
         fits.writeto(os.path.join(field.bad_pixel_dir, f'stack_dq_{filtname}_nrcalong.fits'), a, overwrite=True)
         fits.writeto(os.path.join(field.bad_pixel_dir, f'stack_dq_{filtname}_nrcblong.fits'), b, overwrite=True)
 
-        a = a / np.max(a)
-        b = b / np.max(b)
-
-        a[a > threshold] = 1
-        b[b > threshold] = 1
-
-        a[a <= threshold] = 0
-        b[b <= threshold] = 0
+        for arr in [a, b]:
+            mx = np.max(arr)
+            if mx > 0:
+                arr /= mx
+                arr[arr > threshold] = 1
+                arr[arr <= threshold] = 0
 
         fits.writeto(os.path.join(field.bad_pixel_dir, f'fl_pixels_{filtname}_nrcalong.fits'), a, overwrite=True)
         fits.writeto(os.path.join(field.bad_pixel_dir, f'fl_pixels_{filtname}_nrcblong.fits'), b, overwrite=True)
@@ -395,11 +367,13 @@ def remove_bad_pixels(jhat_file, field, stage_config, filtname=None):
     log(f'Updating DQ mask given bad pixel mask for {os.path.basename(jhat_file)}...')
 
     detector = None
-    for det_name in ['nrca1', 'nrca2', 'nrca3', 'nrca4',
-                     'nrcb1', 'nrcb2', 'nrcb3', 'nrcb4',
-                     'nrcalong', 'nrcblong']:
-        if det_name in jhat_file:
+    basename = os.path.basename(jhat_file)
+    for det_name in ['nrcalong', 'nrcblong',
+                     'nrca1', 'nrca2', 'nrca3', 'nrca4',
+                     'nrcb1', 'nrcb2', 'nrcb3', 'nrcb4']:
+        if f'_{det_name}_' in basename:
             detector = det_name
+            break
 
     fl_file = os.path.join(field.bad_pixel_dir, f'fl_pixels_{filtname}_{detector}.fits')
     fl = fits.getdata(fl_file).astype(bool)
@@ -530,7 +504,7 @@ def outlier_step_prep(visit, jhat_files, jhat_sregions, field, stage_config, fil
     """
     from jwst.associations.lib.rules_level3_base import DMS_Level3_Base
     from jwst.associations import asn_from_list
-    from campfire_pipeline.nircam.manifest import compute_file_hash, load_manifest, write_manifest
+    from campfire_pipeline.nircam.manifest import compute_file_hash, load_manifest
 
     base_dir = os.path.join(field.stage3_dir, filtname)
 
@@ -639,21 +613,6 @@ def outlier_step_prep(visit, jhat_files, jhat_sregions, field, stage_config, fil
         name, serialized = asn.dump(format='json')
         outfile.write(serialized)
 
-    # --- Write manifest with input hashes ---
-    manifest_data = {
-        'visit': visit,
-        'field': field.name,
-        'filter': filtname,
-        'inputs': [
-            {
-                'filename': os.path.basename(f),
-                'file_hash': compute_file_hash(f),
-            }
-            for f in sorted(all_input_files)
-        ],
-    }
-    write_manifest(manifest_data, manifest_path)
-
     return asn_file
 
 
@@ -721,6 +680,31 @@ def outlier_step(asn_file, field, stage_config, filtname):
     # moved up to the main directory)
     if os.path.exists(visit_path):
         shutil.rmtree(visit_path)
+
+    # Write manifest recording input hashes *after* successful execution,
+    # so a failed run doesn't leave a manifest that causes skipping next time.
+    from jwst.associations import load_asn
+    from campfire_pipeline.nircam.manifest import compute_file_hash, write_manifest
+
+    with open(asn_file) as fp:
+        asn_data = load_asn(fp)
+    input_files = sorted(d['expname'] for d in asn_data['products'][0]['members'])
+
+    base_dir = os.path.dirname(asn_file)
+    manifest_path = os.path.join(base_dir, f'outlier_detection_{visit}_manifest.json')
+    manifest_data = {
+        'visit': visit,
+        'field': field.name,
+        'filter': filtname,
+        'inputs': [
+            {
+                'filename': os.path.basename(f),
+                'file_hash': compute_file_hash(f),
+            }
+            for f in input_files
+        ],
+    }
+    write_manifest(manifest_data, manifest_path)
 
 
 # ---------------------------------------------------------------------------
@@ -931,7 +915,7 @@ def resample_step(filtname, field, stage_config, overwrite=False):
                 else:
                     log(f'Skipping background subtraction for {os.path.basename(mosaic_file)}')
 
-            if resample_cfg.get('split_extensions', True):
+            if needs_rebuild and resample_cfg.get('split_extensions', True):
                 log('Splitting extensions')
 
                 sci = fits.getdata(mosaic_file, extname='SCI')
