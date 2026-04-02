@@ -821,6 +821,12 @@ def run_stage2(field, stage_config, filters=None, n_processes=1, overwrite=False
 
     files_to_skip = stage_config.get('files_to_skip', [])
 
+    # Auto-read exclusions from exposures contract file if present
+    excluded = field.get_excluded_exposures()
+    if excluded:
+        files_to_skip = list(set(files_to_skip + excluded))
+        log(f"Auto-excluding {len(excluded)} exposure(s) from contract file")
+
     log(f"Stage 2 for field '{field.name}': filters={filters}, "
         f"n_processes={n_processes}, overwrite={overwrite}")
 

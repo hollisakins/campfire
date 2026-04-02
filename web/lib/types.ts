@@ -276,6 +276,26 @@ export interface NircamImage {
   file_size?: number; // in bytes, if available
 }
 
+export interface NircamExposure {
+  id: number;
+  field: string;
+  filter: string;
+  detector: string;
+  filename: string;
+  visit: string | null;
+  date_obs: string | null;
+  ra_center: number | null;
+  dec_center: number | null;
+  stage: 'uncal' | 'rate' | 'cal' | 'jhat' | 'crf';
+  review_status: 'pending' | 'approved' | 'excluded';
+  masking: 'none' | 'needed' | 'done';
+  correction: 'none' | 'needed' | 'done';
+  png_path: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ============================================
 // Frontend-specific Types
 // ============================================

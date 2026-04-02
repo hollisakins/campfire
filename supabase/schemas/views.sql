@@ -123,3 +123,27 @@ LEFT JOIN public.flag_definitions rq ON (rq.category = 'redshift_quality' AND rq
 GRANT ALL ON TABLE public.targets_with_flags TO anon;
 GRANT ALL ON TABLE public.targets_with_flags TO authenticated;
 GRANT ALL ON TABLE public.targets_with_flags TO service_role;
+
+
+-- 5. nircam_reduction_progress
+--    Aggregated reduction progress per field/filter for the admin dashboard.
+DROP VIEW IF EXISTS public.nircam_reduction_progress;
+CREATE VIEW public.nircam_reduction_progress AS
+SELECT
+    field,
+    filter,
+    count(*) AS total,
+    count(*) FILTER (WHERE stage = 'uncal') AS at_uncal,
+    count(*) FILTER (WHERE stage = 'rate') AS at_rate,
+    count(*) FILTER (WHERE stage = 'cal') AS at_cal,
+    count(*) FILTER (WHERE stage = 'jhat') AS at_jhat,
+    count(*) FILTER (WHERE stage = 'crf') AS at_crf,
+    count(*) FILTER (WHERE review_status = 'pending') AS pending_review,
+    count(*) FILTER (WHERE review_status = 'approved') AS approved,
+    count(*) FILTER (WHERE review_status = 'excluded') AS excluded,
+    count(*) FILTER (WHERE masking = 'needed') AS needs_masking,
+    count(*) FILTER (WHERE correction = 'needed') AS needs_correction
+FROM public.nircam_exposures
+GROUP BY field, filter;
+
+GRANT SELECT ON public.nircam_reduction_progress TO authenticated;

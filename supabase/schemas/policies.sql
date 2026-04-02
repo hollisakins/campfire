@@ -535,6 +535,32 @@ CREATE POLICY "authenticated_select_nircam"
 
 
 -- =============================================================================
+-- nircam_exposures (admin-only)
+-- =============================================================================
+
+ALTER TABLE nircam_exposures ENABLE ROW LEVEL SECURITY;
+
+-- Admins can read all exposures.
+DROP POLICY IF EXISTS "admin_select_exposures" ON nircam_exposures;
+CREATE POLICY "admin_select_exposures"
+  ON nircam_exposures FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+-- Admins can insert exposures.
+DROP POLICY IF EXISTS "admin_insert_exposures" ON nircam_exposures;
+CREATE POLICY "admin_insert_exposures"
+  ON nircam_exposures FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Admins can update exposures.
+DROP POLICY IF EXISTS "admin_update_exposures" ON nircam_exposures;
+CREATE POLICY "admin_update_exposures"
+  ON nircam_exposures FOR UPDATE TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+
+-- =============================================================================
 -- flag_definitions
 -- =============================================================================
 

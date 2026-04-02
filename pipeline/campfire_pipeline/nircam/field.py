@@ -265,6 +265,31 @@ class Field:
             )
         return self.tiles[tile_name]['corners']
 
+    def get_excluded_exposures(self):
+        """Read excluded exposure names from the contract file if present.
+
+        The contract file is written by ``cfdeploy nircam pull`` and lives at
+        ``$CAMPFIRE_ROOT/reference/nircam/{field}/exposures.json``.
+
+        Returns
+        -------
+        list of str
+            Exposure basenames to skip (empty list if no contract file).
+        """
+        import json
+        contract_path = os.path.join(self.reference_dir, 'exposures.json')
+        if not os.path.exists(contract_path):
+            return []
+        try:
+            with open(contract_path) as f:
+                contract = json.load(f)
+            return [
+                name for name, info in contract.get('exposures', {}).items()
+                if info.get('review_status') == 'excluded'
+            ]
+        except (json.JSONDecodeError, KeyError):
+            return []
+
     def is_sw_filter(self, filter_name):
         """Check if a filter is short-wavelength."""
         return filter_name.lower() in SW_FILTERS
