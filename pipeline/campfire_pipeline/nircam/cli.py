@@ -125,6 +125,44 @@ def stage3(config, field, filters, processes, overwrite):
 
 
 # ---------------------------------------------------------------------------
+# Check command
+# ---------------------------------------------------------------------------
+
+@main.command()
+@common_options
+@click.option('--filters', multiple=True, default=None,
+              help='Filters to check (default: all from field).')
+def check(config, field, filters):
+    """Check which mosaic tiles are stale and need re-mosaicking."""
+    from campfire_pipeline.nircam.manifest import get_stale_tiles
+
+    cfg, field_obj = _setup(config, field)
+    stage_config = get_nircam_stage_config('stage3', cfg, field_obj)
+    filter_list = _resolve_filters(filters, field_obj)
+
+    any_stale = False
+    for filtname in filter_list:
+        results = get_stale_tiles(field_obj, filtname, stage_config)
+        if not results:
+            log(f'{filtname}: no tiles configured')
+            continue
+
+        stale = [r for r in results if r['stale']]
+        fresh = [r for r in results if not r['stale']]
+
+        if stale:
+            any_stale = True
+            for r in stale:
+                reasons = '; '.join(r['reasons'])
+                log(f'{filtname}/{r["tile"]}: STALE ({r["n_inputs"]} inputs) — {reasons}')
+        for r in fresh:
+            log(f'{filtname}/{r["tile"]}: up to date ({r["n_inputs"]} inputs)')
+
+    if not any_stale:
+        log('All tiles are up to date.')
+
+
+# ---------------------------------------------------------------------------
 # Compound command
 # ---------------------------------------------------------------------------
 

@@ -813,8 +813,12 @@ def outlier_step(asn_file, field, stage_config, filtname):
 # Drizzle resampling
 # ---------------------------------------------------------------------------
 
-def resample_step(filtname, field, stage_config):
+def resample_step(filtname, field, stage_config, overwrite=False):
     """Drizzle-combine CRF files into mosaic tiles.
+
+    By default, uses manifest-based change detection to skip tiles whose
+    inputs and config have not changed since the last run.  When *overwrite*
+    is True every tile is rebuilt unconditionally.
 
     Parameters
     ----------
@@ -824,6 +828,8 @@ def resample_step(filtname, field, stage_config):
         NIRCam field dataclass.
     stage_config : dict
         Stage-3 configuration dict.
+    overwrite : bool
+        If True, rebuild all tiles regardless of manifest state.
     """
     from jwst.associations.lib.rules_level3_base import DMS_Level3_Base
     from jwst.associations import asn_from_list
@@ -856,6 +862,11 @@ def resample_step(filtname, field, stage_config):
         if isinstance(tiles, str):
             tiles = [tiles]
 
+        from campfire_pipeline.nircam.manifest import (
+            check_config_changed, check_inputs_changed,
+            create_manifest, write_manifest,
+        )
+
         for tile in tiles:
             log(f'Running resample_step for tile {tile}, {filtname}, {pixel_scale_str}')
 
@@ -870,37 +881,56 @@ def resample_step(filtname, field, stage_config):
             mosaic_name = mosaic_name.replace('[tile]', tile)
             mosaic_outdir = os.path.join(field.mosaic_dir, filtname)
             mosaic_file = os.path.join(mosaic_outdir, f'{mosaic_name}_i2d.fits')
+            manifest_dir = os.path.join(mosaic_outdir, 'manifests')
+            manifest_path = os.path.join(manifest_dir, f'{mosaic_name}_manifest.json')
 
             log(f'Output will go to {mosaic_file}')
 
-            if not os.path.exists(mosaic_file):
-                ### select the files that overlap the tile we want to drizzle
-                tile_polygon = Polygon(field.get_tile_corners(tile))
+            # Select overlapping files for this tile
+            tile_polygon = Polygon(field.get_tile_corners(tile))
 
-                selected_files = []
-                for file in imgfile_list:
-                    coords_rect = np.zeros((4, 2))
-                    hdulist = fits.open(file, ignore_missing_simple=True)
-                    with warnings.catch_warnings():
-                        warnings.simplefilter('ignore')
-                        wcs = WCS(hdulist[1].header, naxis=2)
-                    pixcoords = np.array([[0., 0.], [2048., 0.], [2048., 2048.], [0., 2048.]])
-                    worldcoords = wcs.wcs_pix2world(pixcoords, 0)
-                    aa = 0
-                    for coords in worldcoords:
-                        coords_rect[aa, 0] = coords[0]
-                        coords_rect[aa, 1] = coords[1]
-                        aa += 1
+            selected_files = []
+            for file in imgfile_list:
+                coords_rect = np.zeros((4, 2))
+                hdulist = fits.open(file, ignore_missing_simple=True)
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    wcs = WCS(hdulist[1].header, naxis=2)
+                pixcoords = np.array([[0., 0.], [2048., 0.], [2048., 2048.], [0., 2048.]])
+                worldcoords = wcs.wcs_pix2world(pixcoords, 0)
+                aa = 0
+                for coords in worldcoords:
+                    coords_rect[aa, 0] = coords[0]
+                    coords_rect[aa, 1] = coords[1]
+                    aa += 1
 
-                    file_polygon = Polygon(coords_rect)
+                file_polygon = Polygon(coords_rect)
 
-                    if tile_polygon.intersects(file_polygon):
-                        selected_files.append(file)
+                if tile_polygon.intersects(file_polygon):
+                    selected_files.append(file)
 
-                if len(selected_files) == 0:
-                    log(f'No files found for tile {tile}, skipping...')
-                    continue
+            if len(selected_files) == 0:
+                log(f'No files found for tile {tile}, skipping...')
+                continue
 
+            # Decide whether to rebuild this tile
+            needs_rebuild = overwrite
+            if not needs_rebuild and not os.path.exists(mosaic_file):
+                needs_rebuild = True
+                log(f'Mosaic does not exist yet, building...')
+            if not needs_rebuild:
+                inputs_changed, reasons = check_inputs_changed(manifest_path, selected_files)
+                config_changed = check_config_changed(manifest_path, stage_config, pixel_scale_str)
+                if inputs_changed or config_changed:
+                    needs_rebuild = True
+                    all_reasons = reasons if inputs_changed else []
+                    if config_changed:
+                        all_reasons.append('processing config changed')
+                    log(f'Tile {tile} is stale: {"; ".join(all_reasons)}')
+                else:
+                    log(f'Tile {tile} is up to date ({len(selected_files)} inputs unchanged), skipping')
+
+            if needs_rebuild:
                 log(f'Preparing to drizzle+combine {len(selected_files)} images')
 
                 asn_file = os.path.join(field.stage3_dir, filtname, f'{mosaic_name}_asn.json')
@@ -940,13 +970,22 @@ def resample_step(filtname, field, stage_config):
                     steps=params,
                     save_results=True,
                 )
-            else:
-                log(f'Skipping resample_step for {os.path.basename(mosaic_file)}')
+
+                # Write manifest recording inputs and config
+                manifest = create_manifest(
+                    mosaic_name, field, filtname, tile, pixel_scale_str,
+                    version, selected_files, stage_config,
+                )
+                write_manifest(manifest, manifest_dir)
 
             if resample_cfg.get('background_subtract', True):
                 from campfire_pipeline.nircam.bkgsub import SubtractBackground
 
-                if not os.path.exists(mosaic_file.replace('_i2d.fits', '_i2d_before_bkgsub.fits')):
+                bkgsub_done = os.path.exists(mosaic_file.replace('_i2d.fits', '_i2d_before_bkgsub.fits'))
+                if needs_rebuild or not bkgsub_done:
+                    # Remove stale pre-bkgsub file if we rebuilt the mosaic
+                    if needs_rebuild and bkgsub_done:
+                        os.remove(mosaic_file.replace('_i2d.fits', '_i2d_before_bkgsub.fits'))
 
                     bkg = SubtractBackground(
                         ring_radius_in=resample_cfg.get('ring_radius_in', 80),
@@ -1023,6 +1062,28 @@ def resample_step(filtname, field, stage_config):
                         os.path.join(ext_outdir, os.path.basename(mosaic_file).replace('_i2d.fits', '_srcmask.fits')),
                         overwrite=True,
                     )
+
+            # Create/update "latest" symlink pointing to the versioned mosaic
+            latest_name = mosaic_name.replace(f'_{version}_', '_latest_')
+            latest_link = os.path.join(mosaic_outdir, f'{latest_name}_i2d.fits')
+            target = os.path.basename(mosaic_file)
+            if os.path.islink(latest_link):
+                os.remove(latest_link)
+            elif os.path.exists(latest_link):
+                os.remove(latest_link)
+            os.symlink(target, latest_link)
+            log(f'Symlinked {os.path.basename(latest_link)} -> {target}')
+
+            # Also symlink extensions if they exist
+            if resample_cfg.get('split_extensions', True):
+                ext_outdir = os.path.join(mosaic_outdir, 'extensions')
+                for ext_suffix in ['_sci.fits', '_err.fits', '_wht.fits', '_srcmask.fits']:
+                    versioned_ext = os.path.join(ext_outdir, os.path.basename(mosaic_file).replace('_i2d.fits', ext_suffix))
+                    if os.path.exists(versioned_ext):
+                        latest_ext = os.path.join(ext_outdir, f'{latest_name}{ext_suffix}')
+                        if os.path.islink(latest_ext) or os.path.exists(latest_ext):
+                            os.remove(latest_ext)
+                        os.symlink(os.path.basename(versioned_ext), latest_ext)
 
     else:
         raise Exception('only mode=tile supported atm')
@@ -1146,6 +1207,6 @@ def run_stage3(field, stage_config, filters=None, n_processes=1, overwrite=False
 
         # ----- Drizzle resampling -----
         log(f'Running resample step for {filtname}...')
-        resample_step(filtname, field, stage_config)
+        resample_step(filtname, field, stage_config, overwrite=overwrite)
 
     log(f"Stage 3 complete for field '{field.name}'")
