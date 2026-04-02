@@ -136,18 +136,24 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
     }
 
 
-def write_manifest(manifest, manifest_dir):
+def write_manifest(manifest, manifest_dir_or_path):
     """Write a manifest dict to JSON.
 
     Parameters
     ----------
     manifest : dict
-        Manifest dictionary (from :func:`create_manifest`).
-    manifest_dir : str
-        Directory to write into (created if needed).
+        Manifest dictionary.
+    manifest_dir_or_path : str
+        If this ends with ``.json``, treated as the full output path.
+        Otherwise treated as a directory and the filename is derived from
+        ``manifest["mosaic_name"]``.
     """
-    os.makedirs(manifest_dir, exist_ok=True)
-    path = os.path.join(manifest_dir, f'{manifest["mosaic_name"]}_manifest.json')
+    if manifest_dir_or_path.endswith('.json'):
+        path = manifest_dir_or_path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    else:
+        os.makedirs(manifest_dir_or_path, exist_ok=True)
+        path = os.path.join(manifest_dir_or_path, f'{manifest["mosaic_name"]}_manifest.json')
     with open(path, 'w') as fp:
         json.dump(manifest, fp, indent=2)
     log(f'Wrote manifest: {os.path.basename(path)}')

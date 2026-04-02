@@ -502,16 +502,18 @@ def outlier_step_prep(visit, jhat_files, jhat_sregions, field, stage_config, fil
     """Identify groups of overlapping visits for outlier detection.
 
     Generates an association file that includes the target visit plus all
-    spatially overlapping exposures.
+    spatially overlapping exposures.  Uses a manifest file to track input
+    file hashes so that re-processing is triggered when upstream products
+    change (e.g. after re-running stage2 with new masks).
 
     Parameters
     ----------
     visit : str
-        Visit identifier.
+        Visit identifier (e.g. ``'jw01727028001'``).
     jhat_files : list of str
         All JHAT file paths for this filter.
     jhat_sregions : list of str
-        S_REGION strings for each file.
+        S_REGION strings for each file (parallel to *jhat_files*).
     field : Field
         NIRCam field dataclass.
     stage_config : dict
@@ -528,217 +530,129 @@ def outlier_step_prep(visit, jhat_files, jhat_sregions, field, stage_config, fil
     """
     from jwst.associations.lib.rules_level3_base import DMS_Level3_Base
     from jwst.associations import asn_from_list
-    from jwst.associations import load_asn
+    from campfire_pipeline.nircam.manifest import compute_file_hash, load_manifest, write_manifest
 
-    outlier_cfg = stage_config['outlier']
-    max_radius = outlier_cfg.get('max_radius', 20)
+    base_dir = os.path.join(field.stage3_dir, filtname)
 
-    visit_imgfile_list = [f for f in jhat_files if visit in f]
-    visit_sregion_list = [s for s, f in zip(jhat_sregions, jhat_files) if visit in f]
-    base_dir = os.path.dirname(visit_imgfile_list[0])
+    # Select files belonging to this visit (prefix match on basename)
+    visit_imgfile_list = [f for f in jhat_files
+                          if os.path.basename(f).startswith(visit)]
+    visit_sregion_list = [s for s, f in zip(jhat_sregions, jhat_files)
+                          if os.path.basename(f).startswith(visit)]
+
+    if not visit_imgfile_list:
+        log(f'No JHAT files found for visit {visit}, skipping')
+        return None
+
     asn_file = os.path.join(base_dir, f'outlier_detection_{visit}_asn.json')
+    manifest_path = os.path.join(base_dir, f'outlier_detection_{visit}_manifest.json')
 
     log(f'Generating outlier asn file {os.path.basename(asn_file)}...')
 
-    # Find additional files to include
-    # these may not be in the same visit, but have some overlap on-sky
+    # --- Find spatially overlapping files from other visits ---
+    # If any corner of exposure A lies inside exposure B's footprint
+    # (or vice versa), include B in the outlier detection group.
     addnl_visit_imgfile_list = []
-
-    # Algorithm to find overlapping visits
-    # > Comparing visit A (already included) and visit B (checking whether to include)
-    # > If any corner of A is contained within visit B,
-    # > or any corner of visit B is contained within visit A,
-    # > then visit B gets included
 
     from matplotlib.path import Path
     for visit_A, region_A in zip(visit_imgfile_list, visit_sregion_list):
-        # compute corner coordinates for visit A
         ra = [float(s) for s in region_A.split()[2::2]]
         dec = [float(s) for s in region_A.split()[3::2]]
         polygon_A = Path(np.array([ra, dec]).T, closed=True)
 
         for visit_B, region_B in zip(jhat_files, jhat_sregions):
-            if visit_B in visit_imgfile_list:
+            if visit_B in visit_imgfile_list or visit_B in addnl_visit_imgfile_list:
                 continue
 
-            # compute corner coordinates for visit B
             ra = [float(s) for s in region_B.split()[2::2]]
             dec = [float(s) for s in region_B.split()[3::2]]
             polygon_B = Path(np.array([ra, dec]).T, closed=True)
 
             overlap = False
             for p in polygon_A.vertices:
-                if overlap:
-                    break
                 if polygon_B.contains_point(p):
                     overlap = True
-
-            for p in polygon_B.vertices:
-                if overlap:
                     break
-                if polygon_A.contains_point(p):
-                    overlap = True
+            if not overlap:
+                for p in polygon_B.vertices:
+                    if polygon_A.contains_point(p):
+                        overlap = True
+                        break
 
             if overlap:
                 addnl_visit_imgfile_list.append(visit_B)
 
-    visit_imgfile_list += addnl_visit_imgfile_list
-    log(f'Including {len(visit_imgfile_list)} files for visit {visit}')
+    all_input_files = visit_imgfile_list + addnl_visit_imgfile_list
+    log(f'Including {len(all_input_files)} files for visit {visit}')
 
-    asn = asn_from_list.asn_from_list(
-        visit_imgfile_list, rule=DMS_Level3_Base, product_name='outlier_files'
-    )
+    # --- Decide whether to skip ---
+    if not overwrite:
+        # Check 1: do all expected CRF files for this visit exist?
+        visit_jhat = [f for f in jhat_files
+                      if os.path.basename(f).startswith(visit)]
+        all_crf_exist = all(
+            os.path.exists(f.replace('_jhat.fits', '_crf.fits'))
+            for f in visit_jhat
+        )
 
-    # Handle existing asn files and *crf files.
-    if os.path.exists(asn_file):
-        jf = glob.glob(os.path.join(field.stage3_dir, filtname, f'{visit}*_jhat.fits'))
-        cf = glob.glob(os.path.join(field.stage3_dir, filtname, f'{visit}*_crf.fits'))
-        all_crf_files_exist = len(jf) == len(cf)
+        if all_crf_exist:
+            # Check 2: has the set of input files changed?
+            new_basenames = sorted(os.path.basename(f) for f in all_input_files)
+            manifest = load_manifest(manifest_path)
+            if manifest is not None:
+                old_basenames = sorted(inp['filename'] for inp in manifest['inputs'])
+                set_unchanged = new_basenames == old_basenames
 
-        with open(asn_file) as fp:
-            asn_old = load_asn(fp)
-        old_visit_imgfile_list = sorted([d['expname'] for d in asn_old['products'][0]['members']])
-        visit_imgfile_list = sorted(visit_imgfile_list)
-        asn_file_unchanged = visit_imgfile_list == old_visit_imgfile_list
+                if set_unchanged:
+                    # Check 3: have any input file contents changed?
+                    old_hashes = {inp['filename']: inp['file_hash']
+                                  for inp in manifest['inputs']}
+                    content_changed = []
+                    for f in all_input_files:
+                        bn = os.path.basename(f)
+                        if bn in old_hashes:
+                            current_hash = compute_file_hash(f)
+                            if current_hash != old_hashes[bn]:
+                                content_changed.append(bn)
 
-        if all_crf_files_exist and asn_file_unchanged and not overwrite:
-            log(f'Skipping outlier detection for visit {visit}; all *.crf files exist, and asn file is unchanged from previous')
-            return None
-
-        elif overwrite:
-            log(f'Will overwrite *.crf files for visit {visit}; overwrite=True')
-
-        elif all_crf_files_exist:
-            log(f'Will overwrite *.crf files for visit {visit}; asn file has changed.')
-
-        elif asn_file_unchanged:
-            log(f'Will overwrite *.crf files for visit {visit}; asn file unchanged, but missing crf files.')
-
+                    if not content_changed:
+                        log(f'Skipping outlier detection for visit {visit}; '
+                            f'all CRF files exist, inputs unchanged')
+                        return None
+                    else:
+                        log(f'Input content changed for visit {visit}: '
+                            f'{", ".join(content_changed)}')
+                else:
+                    log(f'Input file set changed for visit {visit}')
+            else:
+                log(f'No manifest found for visit {visit}, will run outlier detection')
+        else:
+            log(f'Missing CRF files for visit {visit}, will run outlier detection')
     else:
-        log(f"Outlier step for visit {visit} will be run for the first time")
+        log(f'Will overwrite CRF files for visit {visit}; overwrite=True')
 
-    # Export the asn file
+    # --- Write ASN file ---
+    asn = asn_from_list.asn_from_list(
+        all_input_files, rule=DMS_Level3_Base, product_name='outlier_files'
+    )
     with open(asn_file, 'w') as outfile:
         name, serialized = asn.dump(format='json')
         outfile.write(serialized)
 
-    return asn_file
-
-
-def outlier_step_prep_by_file(jhat_file, jhat_files, jhat_sregions, field, stage_config, filtname, overwrite=False):
-    """Per-file variant of outlier_step_prep.
-
-    Identifies spatially overlapping exposures for a single JHAT file and
-    generates an association file for outlier detection.
-
-    Parameters
-    ----------
-    jhat_file : str
-        Path to the target JHAT file.
-    jhat_files : list of str
-        All JHAT file paths for this filter.
-    jhat_sregions : list of str
-        S_REGION strings for each file.
-    field : Field
-        NIRCam field dataclass.
-    stage_config : dict
-        Stage-3 configuration dict.
-    filtname : str
-        Filter name.
-    overwrite : bool
-        Overwrite existing products.
-
-    Returns
-    -------
-    str or None
-        Path to the generated ASN file, or None if processing can be skipped.
-    """
-    from jwst.associations.lib.rules_level3_base import DMS_Level3_Base
-    from jwst.associations import asn_from_list
-    from jwst.associations import load_asn
-
-    outlier_cfg = stage_config['outlier']
-
-    with fits.open(jhat_file) as f:
-        jhat_sregion = f[1].header['S_REGION']
-    base_dir = os.path.dirname(jhat_file)
-    filename = os.path.basename(jhat_file).rstrip("_jhat.fits")
-    asn_file = os.path.join(base_dir, f'outlier_detection_{filename}_asn.json')
-
-    log(f'Generating outlier asn file {os.path.basename(asn_file)}...')
-
-    # Find additional files to include
-    addnl_visit_imgfile_list = []
-
-    from matplotlib.path import Path
-    # compute corner coordinates for the target file
-    ra = [float(s) for s in jhat_sregion.split()[2::2]]
-    dec = [float(s) for s in jhat_sregion.split()[3::2]]
-    polygon_A = Path(np.array([ra, dec]).T, closed=True)
-
-    for visit_B, region_B in zip(jhat_files, jhat_sregions):
-        if visit_B == jhat_file:
-            continue
-
-        # compute corner coordinates for visit B
-        ra = [float(s) for s in region_B.split()[2::2]]
-        dec = [float(s) for s in region_B.split()[3::2]]
-        polygon_B = Path(np.array([ra, dec]).T, closed=True)
-
-        overlap = False
-        for p in polygon_A.vertices:
-            if overlap:
-                break
-            if polygon_B.contains_point(p):
-                overlap = True
-
-        for p in polygon_B.vertices:
-            if overlap:
-                break
-            if polygon_A.contains_point(p):
-                overlap = True
-
-        if overlap:
-            addnl_visit_imgfile_list.append(visit_B)
-
-    visit_imgfile_list = [jhat_file] + addnl_visit_imgfile_list
-
-    asn = asn_from_list.asn_from_list(
-        visit_imgfile_list, rule=DMS_Level3_Base, product_name='outlier_files'
-    )
-
-    # Handle existing asn files and *crf files.
-    if os.path.exists(asn_file):
-        jf = glob.glob(os.path.join(field.stage3_dir, filtname, f'{filename}*_jhat.fits'))
-        cf = glob.glob(os.path.join(field.stage3_dir, filtname, f'{filename}*_crf.fits'))
-        all_crf_files_exist = len(jf) == len(cf)
-
-        with open(asn_file) as fp:
-            asn_old = load_asn(fp)
-        old_visit_imgfile_list = sorted([d['expname'] for d in asn_old['products'][0]['members']])
-        visit_imgfile_list = sorted(visit_imgfile_list)
-        asn_file_unchanged = visit_imgfile_list == old_visit_imgfile_list
-
-        if all_crf_files_exist and asn_file_unchanged and not overwrite:
-            log(f'Skipping outlier detection for file {filename}; all *.crf files exist, and asn file is unchanged from previous')
-            return None
-
-        elif overwrite:
-            log(f'Will overwrite *.crf files for file {filename}; overwrite=True')
-
-        elif all_crf_files_exist:
-            log(f'Will overwrite *.crf files for file {filename}; asn file has changed.')
-
-        elif asn_file_unchanged:
-            log(f'Will overwrite *.crf files for file {filename}; asn file unchanged, but missing crf files.')
-
-    else:
-        log(f"Outlier step for file {filename} will be run for the first time")
-
-    # Export the asn file
-    with open(asn_file, 'w') as outfile:
-        name, serialized = asn.dump(format='json')
-        outfile.write(serialized)
+    # --- Write manifest with input hashes ---
+    manifest_data = {
+        'visit': visit,
+        'field': field.name,
+        'filter': filtname,
+        'inputs': [
+            {
+                'filename': os.path.basename(f),
+                'file_hash': compute_file_hash(f),
+            }
+            for f in sorted(all_input_files)
+        ],
+    }
+    write_manifest(manifest_data, manifest_path)
 
     return asn_file
 
@@ -759,7 +673,7 @@ def outlier_step(asn_file, field, stage_config, filtname):
     """
     outlier_cfg = stage_config['outlier']
 
-    visit = os.path.basename(asn_file).lstrip('outlier_detection_').rstrip('_asn.json')
+    visit = os.path.basename(asn_file).removeprefix('outlier_detection_').removesuffix('_asn.json')
 
     visit_path = os.path.join(field.stage3_dir, filtname, visit)
     os.makedirs(visit_path, exist_ok=True)
