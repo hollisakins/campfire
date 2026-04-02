@@ -99,7 +99,17 @@ def jhat_step(cal_file, field, stage_config, filtname=None, overwrite=False):
     """
     assert filtname is not None
 
-    jhat_cfg = stage_config['jhat']
+    jhat_cfg = stage_config.get('jhat', {})
+    if 'refcat_dict' not in jhat_cfg:
+        raise ValueError(
+            "stage3 config missing 'jhat.refcat_dict'. "
+            "Define [field.stage3.jhat.refcat_dict] in fields.toml mapping filter names to reference catalog filenames."
+        )
+    if filtname not in jhat_cfg['refcat_dict']:
+        raise ValueError(
+            f"jhat.refcat_dict has no entry for filter '{filtname}'. "
+            f"Available filters: {list(jhat_cfg['refcat_dict'].keys())}"
+        )
 
     verbose = jhat_cfg.get('verbose', True)
     debug = jhat_cfg.get('debug', True)
@@ -752,12 +762,10 @@ def outlier_step(asn_file, field, stage_config, filtname):
     visit = os.path.basename(asn_file).lstrip('outlier_detection_').rstrip('_asn.json')
 
     visit_path = os.path.join(field.stage3_dir, filtname, visit)
-    if not os.path.exists(visit_path):
-        os.mkdir(visit_path)
+    os.makedirs(visit_path, exist_ok=True)
 
     outlier_path = os.path.join(field.stage3_dir, filtname, visit, 'outliers')
-    if not os.path.exists(outlier_path):
-        os.mkdir(outlier_path)
+    os.makedirs(outlier_path, exist_ok=True)
 
     params = {
         'assign_mtwcs':      {'skip': True},
@@ -903,7 +911,7 @@ def resample_step(filtname, field, stage_config):
                     name, serialized = asn.dump(format='json')
                     outfile.write(serialized)
 
-                crpix, crval, shape, rotation = field.get_tile_wcs(tile, ps=pixel_scale_str)
+                crpix, crval, shape, rotation = field.get_tile_wcs(tile, pixel_scale=pixel_scale_str)
 
                 params = {
                     'assign_mtwcs':    {'skip': True},
@@ -979,8 +987,7 @@ def resample_step(filtname, field, stage_config):
                 wht = fits.getdata(mosaic_file, extname='WHT')
 
                 ext_outdir = os.path.join(mosaic_outdir, 'extensions')
-                if not os.path.exists(ext_outdir):
-                    os.mkdir(ext_outdir)
+                os.makedirs(ext_outdir, exist_ok=True)
 
                 hdu = fits.PrimaryHDU(data=sci, header=hdr)
                 hdu.writeto(

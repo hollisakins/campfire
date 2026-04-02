@@ -233,7 +233,7 @@ def remove_edge(cal_file, field, stage_config):
         for ii in range(size):
             if index_beg == 0:
                 if np.abs(np.mean(model.data[ii, :])) > np.std(mean_h):
-                    model.dq[:, ii] = 0
+                    model.dq[ii, :] = 1
                 else:
                     index_beg = 1
 
@@ -241,7 +241,7 @@ def remove_edge(cal_file, field, stage_config):
         for ii in range(size):
             if index_end == 0:
                 if np.abs(np.mean(model.data[size - 1 - ii, :])) > np.std(mean_h):
-                    model.dq[size - 1 - ii, :] = 0
+                    model.dq[size - 1 - ii, :] = 1
                 else:
                     index_end = 1
 
@@ -295,7 +295,8 @@ def apply_masks(cal_file, field, stage_config):
             mask = mask.to_image(shape)
             try:
                 mask = mask.astype(bool)
-            except:
+            except (ValueError, TypeError) as e:
+                log(f"Warning: skipping region in {reg_file}, could not convert mask to bool: {e}")
                 continue
 
             if set_to_nan:
@@ -890,6 +891,18 @@ def run_stage2(field, stage_config, filters=None, n_processes=1, overwrite=False
             log(f"Running apply_masks on {len(cal_files)} files")
             dispatch(
                 apply_masks,
+                cal_files,
+                n_processes=n_processes,
+                field=field,
+                stage_config=stage_config,
+            )
+
+        # Step 5: Generate quick-look PNGs
+        cal_files = field.get_cal_files(filtname, skip=files_to_skip)
+        if cal_files:
+            log(f"Running plot_cal_rate on {len(cal_files)} files")
+            dispatch(
+                plot_cal_rate,
                 cal_files,
                 n_processes=n_processes,
                 field=field,

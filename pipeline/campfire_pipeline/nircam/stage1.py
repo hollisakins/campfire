@@ -283,21 +283,22 @@ def detector1_step(uncal_file, stage_config, field, overwrite=False):
         }
     }
 
-    working_dir = os.path.dirname(uncal_file)
+    raw_dir = os.path.dirname(uncal_file)
 
     calwebb_detector1.Detector1Pipeline.call(uncal_file, **kwargs)
 
-    # Move persistence-related files from working directory to stage1 output
-    persistence_file1 = os.path.join(working_dir, rate_file_name.replace('_rate.fits', '_persistence.fits'))
-    persistence_file2 = os.path.join(working_dir, rate_file_name.replace('_rate.fits', '_trapsfilled.fits'))
-    persistence_file3 = os.path.join(working_dir, rate_file_name.replace('_rate.fits', '_output_pers.fits'))
-
-    if os.path.exists(persistence_file1):
-        shutil.move(persistence_file1, os.path.join(output_dir, os.path.basename(persistence_file1)))
-    if os.path.exists(persistence_file2):
-        shutil.move(persistence_file2, os.path.join(output_dir, os.path.basename(persistence_file2)))
-    if os.path.exists(persistence_file3):
-        shutil.move(persistence_file3, os.path.join(output_dir, os.path.basename(persistence_file3)))
+    # Move persistence-related files to stage1 output if they were written
+    # to the raw directory (some JWST pipeline versions ignore output_dir
+    # for these auxiliary products).
+    pers_suffixes = ['_persistence.fits', '_trapsfilled.fits', '_output_pers.fits']
+    for suffix in pers_suffixes:
+        pers_name = rate_file_name.replace('_rate.fits', suffix)
+        # Check raw dir first (where the pipeline may have written them)
+        raw_path = os.path.join(raw_dir, pers_name)
+        dest_path = os.path.join(output_dir, pers_name)
+        if os.path.exists(raw_path) and raw_path != dest_path:
+            shutil.move(raw_path, dest_path)
+        # If already in output_dir (newer JWST versions), nothing to do
 
 
 # ---------------------------------------------------------------------------
