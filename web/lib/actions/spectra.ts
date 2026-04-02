@@ -844,3 +844,87 @@ export async function getAdjacentTargetIds(
     return { prev: null, next: null, currentIndex: 0, total: 0 };
   }
 }
+
+/**
+ * Get adjacent object IDs for navigation on object detail page.
+ * Objects-mode equivalent of getAdjacentTargetIds.
+ */
+export async function getAdjacentObjectIds(
+  currentObjectId: string,
+  filters?: Partial<FilterOptions>,
+  sortColumn: SortColumn = 'object_id',
+  sortDirection: SortDirection = 'asc'
+): Promise<{
+  prev: string | null;
+  next: string | null;
+  currentIndex: number;
+  total: number;
+}> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { prev: null, next: null, currentIndex: 0, total: 0 };
+  }
+
+  try {
+    const { data: accessData } = await supabase
+      .from('user_program_access')
+      .select('program_slug')
+      .eq('user_id', user.id);
+
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
+
+    const { data: publicPrograms } = await supabase
+      .from('programs')
+      .select('slug')
+      .eq('is_public', true);
+
+    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
+    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+
+    if (accessibleProgramSlugs.length === 0) {
+      return { prev: null, next: null, currentIndex: 0, total: 0 };
+    }
+
+    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
+
+    // Strip target-only params that the objects RPC doesn't accept
+    const {
+      p_observations: _obs,
+      p_spectral_features_include_any: _sf1, p_spectral_features_include_all: _sf2, p_spectral_features_exclude: _sf3,
+      p_object_flags_include_any: _of1, p_object_flags_include_all: _of2, p_object_flags_exclude: _of3,
+      p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
+      p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
+      ...objectsParams
+    } = rpcParams;
+
+    const { data, error } = await supabase.rpc('get_adjacent_objects', {
+      p_current_object_id: currentObjectId,
+      ...objectsParams,
+      p_sort_column: sortColumn,
+      p_sort_direction: sortDirection,
+    });
+
+    if (error) {
+      console.error('Error fetching adjacent objects:', error);
+      return { prev: null, next: null, currentIndex: 0, total: 0 };
+    }
+
+    const result = data?.[0];
+    if (!result) {
+      return { prev: null, next: null, currentIndex: 0, total: 0 };
+    }
+
+    return {
+      prev: result.prev_object_id || null,
+      next: result.next_object_id || null,
+      currentIndex: Number(result.current_index) || 0,
+      total: Number(result.total_count) || 0,
+    };
+  } catch (err) {
+    console.error('Error in getAdjacentObjectIds:', err);
+    return { prev: null, next: null, currentIndex: 0, total: 0 };
+  }
+}

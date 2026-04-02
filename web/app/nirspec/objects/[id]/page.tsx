@@ -8,9 +8,10 @@ import { DownloadButtons } from '@/components/spectra/DownloadButtons';
 import { CopyLinkButton } from '@/components/spectra/CopyLinkButton';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
-import { NearbyObjects } from '@/components/spectra/NearbyObjects';
 import { ObjectDetailClient } from '@/components/spectra/ObjectDetailClient';
+import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
 import { getObjectById, getObjectMetadata } from '@/lib/actions/spectra';
+import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
 import type { Spectrum } from '@/lib/types';
 
 interface ObjectDetailPageProps {
@@ -59,14 +60,19 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
 
   // Preserve filter/sort params for back navigation
   const searchParamsObj = await searchParams;
-  const backParams = new URLSearchParams();
-  backParams.set('view', 'objects');
+  const urlParams = new URLSearchParams();
+  urlParams.set('view', 'objects');
   Object.entries(searchParamsObj).forEach(([key, value]) => {
     if (value && key !== 'view') {
-      backParams.set(key, Array.isArray(value) ? value.join(',') : value);
+      urlParams.set(key, Array.isArray(value) ? value.join(',') : value);
     }
   });
-  const backHref = `/nirspec?${backParams.toString()}`;
+  const backHref = `/nirspec?${urlParams.toString()}`;
+
+  // Parse filters and sorting from URL for navigation
+  const filters = parseFiltersFromURL(urlParams);
+  const { sortColumn, sortDirection } = parseSortingFromURL(urlParams, 'objects');
+  const filterStr = urlParams.toString();
 
   const { object, isAuthenticated } = await getObjectById(objectId);
 
@@ -113,21 +119,31 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
 
   return (
     <div className="container mx-auto px-4 py-8">
-      {/* Breadcrumbs */}
-      <div className="flex items-center gap-4 mb-6">
-        <Breadcrumbs
-          items={[
-            { label: 'CAMPFIRE', href: '/' },
-            { label: 'Objects', href: backHref },
-            { label: object.object_id },
-          ]}
+      {/* Breadcrumbs + Navigation */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-4">
+          <Breadcrumbs
+            items={[
+              { label: 'CAMPFIRE', href: '/' },
+              { label: 'Objects', href: backHref },
+              { label: object.object_id },
+            ]}
+          />
+          <Link
+            href={backHref}
+            className="text-sm text-primary hover:text-primary-hover flex items-center gap-1"
+          >
+            ← Back to Objects List
+          </Link>
+        </div>
+        <ObjectNavigation
+          targetId={objectId}
+          filters={filters}
+          sortColumn={sortColumn}
+          sortDirection={sortDirection}
+          filterStr={filterStr}
+          viewMode="objects"
         />
-        <Link
-          href={backHref}
-          className="text-sm text-primary hover:text-primary-hover flex items-center gap-1"
-        >
-          ← Back to Objects List
-        </Link>
       </div>
 
       {/* Header + Selectors + Table + Viewer */}
@@ -176,18 +192,6 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
         }
       />
 
-      {/* Nearby objects */}
-      <div className="mt-8">
-        <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100 mb-3">
-          Nearby Objects
-        </h2>
-        <NearbyObjects
-          ra={object.ra}
-          dec={object.dec}
-          currentTargetId={object.object_id}
-          excludeTargetIds={object.member_targets.map(m => m.target_id)}
-        />
-      </div>
     </div>
   );
 }

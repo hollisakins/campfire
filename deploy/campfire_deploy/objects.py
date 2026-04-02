@@ -138,27 +138,9 @@ def fetch_spectra_metadata(
 
 
 def fetch_distinct_fields(client: Client) -> list[str]:
-    """Fetch all distinct field values from targets table."""
-    # Use a lightweight query — select field, deduplicate in Python
-    all_fields = set()
-    page_size = 1000
-    offset = 0
-
-    while True:
-        resp = (
-            client.table('targets')
-            .select('field')
-            .order('id')
-            .range(offset, offset + page_size - 1)
-            .execute()
-        )
-        for row in resp.data:
-            all_fields.add(row['field'])
-        if len(resp.data) < page_size:
-            break
-        offset += page_size
-
-    return sorted(all_fields)
+    """Fetch all distinct field values from the materialized filter options."""
+    resp = client.table('mv_filter_options').select('fields').single().execute()
+    return sorted(resp.data['fields'])
 
 
 # ---------------------------------------------------------------------------

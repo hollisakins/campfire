@@ -78,6 +78,12 @@ CREATE INDEX IF NOT EXISTS idx_objects_programs
 CREATE INDEX IF NOT EXISTS idx_objects_gratings
     ON public.objects USING gin (gratings);
 
+CREATE INDEX IF NOT EXISTS idx_objects_object_id_trgm
+    ON public.objects USING gin (object_id public.gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_objects_max_exposure_time
+    ON public.objects USING btree (max_exposure_time) WHERE (max_exposure_time IS NOT NULL);
+
 
 -- =============================================================================
 -- spectra

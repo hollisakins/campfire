@@ -447,7 +447,8 @@ export async function generateCsvFilename(viewMode: string = 'targets'): Promise
 export async function generateFitsDownloadUrl(
   filters: FilterOptions,
   sortColumn: SortColumn = 'target_id',
-  sortDirection: SortDirection = 'asc'
+  sortDirection: SortDirection = 'asc',
+  viewMode: ViewMode = 'targets'
 ): Promise<{
   files: DownloadFile[] | null;
   token: string | null;
@@ -464,20 +465,24 @@ export async function generateFitsDownloadUrl(
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    // Fetch filtered results (limit to 200 objects)
+    // Fetch filtered results (limit to 200 items)
+    // For objects mode, fetch as targets to get actual FITS paths —
+    // objects are metadata aggregations, FITS files live on spectra.
+    const fetchMode = viewMode === 'objects' ? 'targets' : viewMode;
     const result = await getSpectra(
       filters,
       1, // page
-      200, // pageSize - limit to 200 objects
-      sortColumn,
-      sortDirection
+      200, // pageSize - limit to 200 targets
+      sortColumn === 'object_id' ? 'target_id' : sortColumn,
+      sortDirection,
+      fetchMode
     );
 
     if (result.error) {
       return { files: null, token: null, workerUrl: null, zipFilename: null, error: result.error };
     }
 
-    // Extract all FITS file paths
+    // Extract all FITS file paths from spectra on each target
     const files: DownloadFile[] = [];
     for (const obj of result.spectra) {
       for (const spec of obj.spectra) {

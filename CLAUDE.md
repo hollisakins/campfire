@@ -33,7 +33,7 @@ Observations defined in `$CAMPFIRE_ROOT/config/observations.toml`, fields in `fi
 
 ### Python Environment
 
-Always use the `jwst` conda environment when testing code: `conda run -n jwst python ...`
+Always use the `campfire` conda environment when testing code: `conda run -n campfire python ...`
 
 ## Web Portal
 
@@ -98,6 +98,7 @@ The migration history was squashed on 2026-03-28 into a single baseline (`202603
 python scripts/generate_seed.py          # stratified sample (~100 targets)
 python scripts/generate_seed.py --full   # full production replica (all targets + spectra)
 supabase db reset                        # applies migrations + seed
+cfdeploy objects --all --local           # rebuild objects table (not included in seed)
 ```
 
 Test users: `admin@campfire.dev`, `user@campfire.dev`, `viewer@campfire.dev` (password: `password123`)

@@ -4,8 +4,8 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { lookupInCache, isAtCacheBoundary } from '@/lib/navigation-cache';
-import { getAdjacentTargetIds, type FilterOptions } from '@/lib/actions/spectra';
-import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
+import { getAdjacentTargetIds, getAdjacentObjectIds, type FilterOptions } from '@/lib/actions/spectra';
+import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
 
 interface ObjectNavigationProps {
   targetId: string;
@@ -13,6 +13,7 @@ interface ObjectNavigationProps {
   sortColumn: SortColumn;
   sortDirection: SortDirection;
   filterStr: string; // URL params string for navigation links
+  viewMode?: ViewMode;
   className?: string;
 }
 
@@ -26,9 +27,10 @@ interface NavState {
 }
 
 /**
- * Client component for object detail page navigation.
+ * Client component for detail page navigation.
  * Uses hybrid approach: sessionStorage cache for instant lookup,
  * falls back to server query when cache misses.
+ * Supports both targets and objects view modes.
  */
 export function ObjectNavigation({
   targetId,
@@ -36,6 +38,7 @@ export function ObjectNavigation({
   sortColumn,
   sortDirection,
   filterStr,
+  viewMode = 'targets',
   className = '',
 }: ObjectNavigationProps) {
   const [nav, setNav] = useState<NavState>({
@@ -46,6 +49,9 @@ export function ObjectNavigation({
     loading: true,
     source: 'none',
   });
+
+  const isObjectsMode = viewMode === 'objects';
+  const basePath = isObjectsMode ? '/nirspec/objects' : '/nirspec/targets';
 
   useEffect(() => {
     let cancelled = false;
@@ -89,12 +95,9 @@ export function ObjectNavigation({
 
       // Fall back to server query
       try {
-        const result = await getAdjacentTargetIds(
-          targetId,
-          filters,
-          sortColumn,
-          sortDirection
-        );
+        const result = isObjectsMode
+          ? await getAdjacentObjectIds(targetId, filters, sortColumn, sortDirection)
+          : await getAdjacentTargetIds(targetId, filters, sortColumn, sortDirection);
 
         if (!cancelled) {
           setNav({
@@ -107,7 +110,7 @@ export function ObjectNavigation({
           });
         }
       } catch (error) {
-        console.error('Failed to fetch adjacent objects:', error);
+        console.error('Failed to fetch adjacent items:', error);
         if (!cancelled) {
           // Keep cached data if available, otherwise show unknown state
           setNav(prev => ({
@@ -124,15 +127,15 @@ export function ObjectNavigation({
     return () => {
       cancelled = true;
     };
-  }, [targetId, filters, sortColumn, sortDirection, filterStr]);
+  }, [targetId, filters, sortColumn, sortDirection, filterStr, isObjectsMode]);
 
   // Build navigation URLs
   const prevHref = nav.prev
-    ? `/nirspec/targets/${encodeURIComponent(nav.prev)}${filterStr ? `?${filterStr}` : ''}`
+    ? `${basePath}/${encodeURIComponent(nav.prev)}${filterStr ? `?${filterStr}` : ''}`
     : undefined;
 
   const nextHref = nav.next
-    ? `/nirspec/targets/${encodeURIComponent(nav.next)}${filterStr ? `?${filterStr}` : ''}`
+    ? `${basePath}/${encodeURIComponent(nav.next)}${filterStr ? `?${filterStr}` : ''}`
     : undefined;
 
   return (

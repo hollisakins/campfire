@@ -82,7 +82,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
     setError(null);
 
     try {
-      const result = await generateFitsDownloadUrl(filters, sortColumn, sortDirection);
+      const result = await generateFitsDownloadUrl(filters, sortColumn, sortDirection, viewMode);
 
       if (result.error || !result.files || !result.token || !result.workerUrl) {
         setError(result.error || 'Failed to generate download URL');

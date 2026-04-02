@@ -426,6 +426,19 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
               <Link
                 href={`/nirspec/objects/${encodeURIComponent(row.original.target_id)}${filterStr ? `?${filterStr}` : ''}`}
                 className="text-sm font-mono text-primary hover:underline"
+                onClick={() => {
+                  const rows = table.getRowModel().rows;
+                  const visibleIds = rows.map(r => r.original.target_id);
+                  const pageIndex = table.getState().pagination.pageIndex;
+                  const ps = table.getState().pagination.pageSize;
+                  setNavCache({
+                    ids: visibleIds,
+                    filters: filterStr,
+                    sort: `${sortColumn}_${sortDirection}`,
+                    pageStart: pageIndex * ps,
+                    total,
+                  });
+                }}
               >
                 {row.original.target_id}
               </Link>

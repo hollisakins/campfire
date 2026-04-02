@@ -104,7 +104,7 @@ $$;
 DROP FUNCTION IF EXISTS public.update_object_best_redshift CASCADE;
 
 CREATE OR REPLACE FUNCTION public.update_object_best_redshift() RETURNS trigger
-LANGUAGE plpgsql
+LANGUAGE plpgsql SECURITY DEFINER
 AS $$
 BEGIN
     IF NEW.object_id IS NULL THEN RETURN NEW; END IF;

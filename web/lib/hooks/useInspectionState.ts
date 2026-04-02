@@ -172,7 +172,7 @@ export function useInspectionState(
     const id = objectDbIdRef.current;
 
     try {
-      const response = await fetch(`/api/objects/${id}`, {
+      const response = await fetch(`/api/targets/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
