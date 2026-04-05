@@ -304,7 +304,9 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         tickfont: { color: plotColors.textSecondary, size: 10 },
         showgrid: false,
         zeroline: false,
+        fixedrange: true,
         range: oRange,
+        uirevision: `${oRange[0]}-${oRange[1]}-z${redshift}`,
       };
       // Add an invisible trace to activate xaxis2
       allTraces.push({

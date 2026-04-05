@@ -497,15 +497,16 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         zerolinecolor: 'transparent',
         domain: [0, 0.90],
         anchor: 'y' as const,
+        fixedrange: true, // Prevent independent dragging — this is a relabeling overlay
         // Range must match primary axis exactly for tick alignment
         // When zoomed: explicit range from state; when full: autorange from invisible trace
         ...(obsRange
           ? { range: obsRange, autorange: false }
           : { autorange: true }
         ),
-        // Change uirevision on each zoom so Plotly applies new ticks/range
+        // Change uirevision on zoom or redshift change so Plotly applies new ticks/range
         // (xaxis keeps 'constant' to preserve user zoom; xaxis3 resets to accept layout updates)
-        uirevision: obsRange ? `${obsRange[0]}-${obsRange[1]}` : 'default',
+        uirevision: obsRange ? `${obsRange[0]}-${obsRange[1]}-z${redshift}` : `default-z${redshift}`,
       },
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
