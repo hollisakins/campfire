@@ -159,6 +159,7 @@ export async function POST(request: NextRequest) {
           token_type: tokens.tokenType,
           expires_in: tokens.expiresIn,
           refresh_token: tokens.refreshToken,
+          supabase_token: tokens.supabaseToken,
         });
 
       default:

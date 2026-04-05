@@ -36,6 +36,7 @@ class TokenResponse:
     refresh_token: str
     expires_in: int
     token_type: str
+    supabase_token: Optional[str] = None
 
 
 def get_device_name() -> str:
@@ -193,6 +194,7 @@ class DeviceFlowAuth:
                         refresh_token=data["refresh_token"],
                         expires_in=data["expires_in"],
                         token_type=data.get("token_type", "Bearer"),
+                        supabase_token=data.get("supabase_token"),
                     )
 
                 # Handle error responses

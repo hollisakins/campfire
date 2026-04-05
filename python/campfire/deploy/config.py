@@ -129,12 +129,20 @@ def load_config(config_path: str | None = None) -> dict:
             for key, val in toml_config.items():
                 if key not in env_config:
                     env_config[key] = val
-        return env_config
+        return _inject_user_credentials(env_config)
 
     # Fall back to TOML file
     toml_config = _find_toml(config_path)
     if toml_config:
-        return toml_config
+        return _inject_user_credentials(toml_config)
+
+    # Try user credentials alone (no env vars or TOML needed if logged in)
+    # The user still needs CAMPFIRE_SUPABASE_URL and CAMPFIRE_SUPABASE_ANON_KEY
+    url = os.environ.get('CAMPFIRE_SUPABASE_URL')
+    anon_key = os.environ.get('CAMPFIRE_SUPABASE_ANON_KEY')
+    if url and anon_key:
+        config: dict = {'supabase': {'url': url, 'anon_key': anon_key}}
+        return _inject_user_credentials(config)
 
     # Nothing found — show helpful error
     candidates = []
@@ -150,17 +158,54 @@ def load_config(config_path: str | None = None) -> dict:
 
     print("Error: No deploy credentials found.")
     print()
-    print("Option 1 — Set environment variables:")
+    print("Option 1 — Log in with your CAMPFIRE account:")
+    print("  campfire login")
+    print("  export CAMPFIRE_SUPABASE_URL=...")
+    print("  export CAMPFIRE_SUPABASE_ANON_KEY=...")
+    print()
+    print("Option 2 — Set environment variables (service role):")
     for name in env_names:
         print(f"  export {name}=...")
     print()
-    print("Option 2 — Create a TOML config file:")
+    print("Option 3 — Create a TOML config file:")
     if candidates:
         print(f"  Searched: {searched}")
     else:
         print("  Set $CAMPFIRE_ROOT and create $CAMPFIRE_ROOT/config/deploy.toml")
         print("  Or use --config <path>")
     sys.exit(1)
+
+
+def _inject_user_credentials(config: dict) -> dict:
+    """
+    Enrich deploy config with the user's Supabase token from stored OAuth credentials.
+
+    If the user has logged in via ``campfire login``, their supabase_token is
+    injected into ``config['supabase']``. This allows ``get_supabase_client()``
+    to use the user JWT path instead of requiring a service_role_key.
+    """
+    try:
+        from campfire.api.session import resolve_base_url
+        from campfire.auth.tokens import TokenManager
+
+        base_url = resolve_base_url()
+        tm = TokenManager(base_url=base_url)
+        if tm.is_oauth():
+            sb_token = tm.get_supabase_token(auto_refresh=True)
+            if sb_token:
+                config.setdefault('supabase', {})
+                config['supabase']['supabase_token'] = sb_token
+
+                # Also inject anon_key from env if available
+                anon_key = os.environ.get('CAMPFIRE_SUPABASE_ANON_KEY')
+                if anon_key:
+                    config['supabase']['anon_key'] = anon_key
+    except Exception:
+        # Auth not available or not configured — that's fine,
+        # fall back to service_role_key in get_supabase_client()
+        pass
+
+    return config
 
 
 def load_programs() -> dict[str, dict]:

@@ -61,11 +61,8 @@ def _require_r2_tiles(config: dict) -> None:
 # ============================================
 
 def _get_supabase_client(config: dict):
-    from supabase import create_client
-    return create_client(
-        config['supabase']['url'],
-        config['supabase']['service_role_key'],
-    )
+    from campfire.deploy.supabase import get_supabase_client
+    return get_supabase_client(config)
 
 
 # ============================================

@@ -26,6 +26,7 @@ class StoredCredentials:
     # OAuth fields
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
+    supabase_token: Optional[str] = None
     expires_at: Optional[str] = None  # ISO format datetime string
     user_email: Optional[str] = None
 
@@ -122,6 +123,7 @@ class CredentialManager:
         refresh_token: str,
         expires_in: int,
         user_email: Optional[str] = None,
+        supabase_token: Optional[str] = None,
     ) -> None:
         """
         Save OAuth credentials.
@@ -136,6 +138,8 @@ class CredentialManager:
             Access token lifetime in seconds.
         user_email : str, optional
             User's email address for display purposes.
+        supabase_token : str, optional
+            Supabase-compatible JWT for direct database access.
         """
         expires_at = datetime.utcnow().isoformat() + "Z"
         if expires_in > 0:
@@ -147,6 +151,7 @@ class CredentialManager:
             type="oauth",
             access_token=access_token,
             refresh_token=refresh_token,
+            supabase_token=supabase_token,
             expires_at=expires_at,
             user_email=user_email,
         )
@@ -205,6 +210,7 @@ class CredentialManager:
         access_token: str,
         refresh_token: str,
         expires_in: int,
+        supabase_token: Optional[str] = None,
     ) -> None:
         """
         Update OAuth tokens after a refresh.
@@ -219,10 +225,12 @@ class CredentialManager:
             New refresh token.
         expires_in : int
             Token lifetime in seconds.
+        supabase_token : str, optional
+            New Supabase-compatible JWT.
         """
         existing = self.load()
         user_email = existing.user_email if existing else None
-        self.save_oauth(access_token, refresh_token, expires_in, user_email)
+        self.save_oauth(access_token, refresh_token, expires_in, user_email, supabase_token)
 
     def exists(self) -> bool:
         """Check if credentials file exists."""

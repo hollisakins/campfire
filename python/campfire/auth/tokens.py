@@ -143,10 +143,11 @@ class TokenManager:
             access_token = data["access_token"]
             refresh_token = data["refresh_token"]
             expires_in = data["expires_in"]
+            supabase_token = data.get("supabase_token")
 
             # Update stored credentials
             self.creds_manager.update_oauth_tokens(
-                access_token, refresh_token, expires_in
+                access_token, refresh_token, expires_in, supabase_token
             )
 
             # Reload cached credentials
@@ -199,6 +200,26 @@ class TokenManager:
             return self._cached_creds.access_token
 
         raise AuthenticationError("Unknown credential type")
+
+    def get_supabase_token(self, auto_refresh: bool = True) -> Optional[str]:
+        """
+        Get a valid Supabase-compatible JWT.
+
+        The supabase_token shares the same expiry as the access token,
+        so refreshing one refreshes both.
+
+        Returns
+        -------
+        str or None
+            Supabase JWT, or None if not available (e.g. API key auth).
+        """
+        if not self.has_credentials() or not self.is_oauth():
+            return None
+
+        if auto_refresh and self.needs_refresh():
+            self.refresh_tokens()
+
+        return self._cached_creds.supabase_token if self._cached_creds else None
 
     def get_user_email(self) -> Optional[str]:
         """Get the user's email if available."""

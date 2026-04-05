@@ -9,11 +9,43 @@ from supabase import create_client, Client
 
 
 def get_supabase_client(config: dict) -> Client:
-    """Create a Supabase client from deploy config."""
-    return create_client(
-        config['supabase']['url'],
-        config['supabase']['service_role_key'],
-    )
+    """Create a Supabase client from deploy config.
+
+    Supports two authentication modes:
+
+    1. **User JWT** (preferred): Uses the caller's Supabase-compatible JWT
+       from the OAuth device flow, plus the anon key. Database operations
+       go through RLS policies (admin role required).
+
+    2. **Service role key** (legacy/fallback): Uses the service_role_key
+       directly, bypassing RLS. Used when no user JWT is available.
+
+    The config dict should contain::
+
+        config['supabase']['url']                  # always required
+        config['supabase']['anon_key']             # for user JWT mode
+        config['supabase']['supabase_token']       # for user JWT mode
+        config['supabase']['service_role_key']     # for legacy mode
+    """
+    url = config['supabase']['url']
+    supabase_token = config['supabase'].get('supabase_token')
+    anon_key = config['supabase'].get('anon_key')
+
+    if supabase_token and anon_key:
+        # User JWT mode: create client with anon key, then override
+        # the auth header with the user's Supabase-compatible JWT
+        client = create_client(url, anon_key)
+        client.postgrest.auth(supabase_token)
+        return client
+
+    # Legacy mode: service role key
+    service_role_key = config['supabase'].get('service_role_key')
+    if not service_role_key:
+        raise ValueError(
+            "No Supabase credentials available. "
+            "Run 'campfire login' to authenticate, or provide service_role_key in deploy config."
+        )
+    return create_client(url, service_role_key)
 
 
 REDSHIFT_DRIFT_THRESHOLD = 0.03

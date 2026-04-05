@@ -71,6 +71,7 @@ export async function POST(request: NextRequest) {
       token_type: 'Bearer',
       expires_in: result.expiresIn,
       refresh_token: result.refreshToken,
+      supabase_token: result.supabaseToken,
     });
   } catch (error) {
     console.error('Error in POST /api/v1/auth/refresh:', error);
