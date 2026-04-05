@@ -144,10 +144,13 @@ class TokenManager:
             refresh_token = data["refresh_token"]
             expires_in = data["expires_in"]
             supabase_token = data.get("supabase_token")
+            supabase_url = data.get("supabase_url")
+            supabase_anon_key = data.get("supabase_anon_key")
 
             # Update stored credentials
             self.creds_manager.update_oauth_tokens(
-                access_token, refresh_token, expires_in, supabase_token
+                access_token, refresh_token, expires_in,
+                supabase_token, supabase_url, supabase_anon_key,
             )
 
             # Reload cached credentials

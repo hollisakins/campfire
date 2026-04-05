@@ -72,6 +72,8 @@ export async function POST(request: NextRequest) {
       expires_in: result.expiresIn,
       refresh_token: result.refreshToken,
       supabase_token: result.supabaseToken,
+      supabase_url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+      supabase_anon_key: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     });
   } catch (error) {
     console.error('Error in POST /api/v1/auth/refresh:', error);

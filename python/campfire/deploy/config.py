@@ -137,12 +137,12 @@ def load_config(config_path: str | None = None) -> dict:
         return _inject_user_credentials(toml_config)
 
     # Try user credentials alone (no env vars or TOML needed if logged in)
-    # The user still needs CAMPFIRE_SUPABASE_URL and CAMPFIRE_SUPABASE_ANON_KEY
-    url = os.environ.get('CAMPFIRE_SUPABASE_URL')
-    anon_key = os.environ.get('CAMPFIRE_SUPABASE_ANON_KEY')
-    if url and anon_key:
-        config: dict = {'supabase': {'url': url, 'anon_key': anon_key}}
-        return _inject_user_credentials(config)
+    # supabase_url and supabase_anon_key are stored at login time
+    user_config = _inject_user_credentials({})
+    if user_config.get('supabase', {}).get('supabase_token') and \
+       user_config.get('supabase', {}).get('url') and \
+       user_config.get('supabase', {}).get('anon_key'):
+        return user_config
 
     # Nothing found — show helpful error
     candidates = []
@@ -160,8 +160,6 @@ def load_config(config_path: str | None = None) -> dict:
     print()
     print("Option 1 — Log in with your CAMPFIRE account:")
     print("  campfire login")
-    print("  export CAMPFIRE_SUPABASE_URL=...")
-    print("  export CAMPFIRE_SUPABASE_ANON_KEY=...")
     print()
     print("Option 2 — Set environment variables (service role):")
     for name in env_names:
@@ -178,11 +176,12 @@ def load_config(config_path: str | None = None) -> dict:
 
 def _inject_user_credentials(config: dict) -> dict:
     """
-    Enrich deploy config with the user's Supabase token from stored OAuth credentials.
+    Enrich deploy config with the user's Supabase credentials from stored OAuth.
 
-    If the user has logged in via ``campfire login``, their supabase_token is
-    injected into ``config['supabase']``. This allows ``get_supabase_client()``
-    to use the user JWT path instead of requiring a service_role_key.
+    If the user has logged in via ``campfire login``, their supabase_token,
+    supabase_url, and supabase_anon_key are injected into ``config['supabase']``.
+    This allows ``get_supabase_client()`` to use the user JWT path instead of
+    requiring a service_role_key — no env vars needed beyond ``campfire login``.
     """
     try:
         from campfire.api.session import resolve_base_url
@@ -192,14 +191,16 @@ def _inject_user_credentials(config: dict) -> dict:
         tm = TokenManager(base_url=base_url)
         if tm.is_oauth():
             sb_token = tm.get_supabase_token(auto_refresh=True)
-            if sb_token:
+            creds = tm._cached_creds
+            if sb_token and creds:
                 config.setdefault('supabase', {})
                 config['supabase']['supabase_token'] = sb_token
 
-                # Also inject anon_key from env if available
-                anon_key = os.environ.get('CAMPFIRE_SUPABASE_ANON_KEY')
-                if anon_key:
-                    config['supabase']['anon_key'] = anon_key
+                # Use stored Supabase connection info from login
+                if creds.supabase_url:
+                    config['supabase'].setdefault('url', creds.supabase_url)
+                if creds.supabase_anon_key:
+                    config['supabase'].setdefault('anon_key', creds.supabase_anon_key)
     except Exception:
         # Auth not available or not configured — that's fine,
         # fall back to service_role_key in get_supabase_client()

@@ -158,6 +158,8 @@ def _browser_login(base_url: str, creds: CredentialManager):
             tokens.expires_in,
             user_email,
             supabase_token=tokens.supabase_token,
+            supabase_url=tokens.supabase_url,
+            supabase_anon_key=tokens.supabase_anon_key,
         )
 
         click.echo(f"\n✓ Logged in successfully!")
