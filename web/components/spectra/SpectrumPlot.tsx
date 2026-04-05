@@ -490,6 +490,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         overlaying: 'x' as const,
         side: 'top' as const,
         matches: 'x' as const, // Force range to always match primary axis
+        autorange: false, // Prevent overlay from influencing primary axis range
         tickmode: 'array' as const,
         tickvals: restTicks.map(å => å / restFrameFactor),
         ticktext: restTicks.map(å => `${parseFloat(å.toFixed(1))} Å`),

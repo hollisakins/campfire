@@ -302,6 +302,7 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         overlaying: 'x',
         side: 'top',
         matches: 'x',
+        autorange: false, // Prevent overlay from influencing primary axis range
         tickmode: 'array',
         tickvals: restTicks.map(t => t / factor),
         ticktext: restTickTexts,
