@@ -6,7 +6,6 @@ the pipeline and the deploy script.  Deploy reads the ECSV instead of
 re-scanning individual FITS files.
 """
 
-import json
 import os
 from collections import defaultdict
 from datetime import datetime
@@ -288,8 +287,7 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
                                   reduction_version: str = 'unknown',
                                   field: str = '',
                                   program_slug: str = '',
-                                  consensus_config: dict | None = None,
-                                  pipeline_config: dict | None = None) -> Table:
+                                  consensus_config: dict | None = None) -> Table:
     """
     Discover all spec/zfit files for an observation, read their metadata,
     apply chi2-informed redshift consensus, and return an astropy Table.
@@ -309,9 +307,6 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
     consensus_config : dict, optional
         Redshift consensus parameters (delta_chi2_peak, dv_tolerance).
         Uses defaults if not provided.
-    pipeline_config : dict, optional
-        Full effective pipeline config, stored as JSON in ECSV metadata
-        for provenance tracking.
 
     Returns
     -------
@@ -444,10 +439,56 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
         summary.meta['jwst_version'] = 'unknown'
     summary.meta['crds_context'] = os.environ.get('CRDS_CONTEXT', 'unknown')
 
-    if pipeline_config is not None:
-        summary.meta['config_snapshot'] = json.dumps(pipeline_config)
-
     return summary
+
+
+def write_effective_config(config: dict, obs_dir: Path, obs_name: str) -> Path:
+    """
+    Write the effective pipeline config to a TOML file in the products directory.
+
+    This captures the fully-resolved config (package defaults + user overrides
+    + per-observation overrides) used for this specific reduction, for
+    reproducibility and provenance tracking. The deploy process reads this
+    file and stores it as JSONB in the deployments table.
+
+    Parameters
+    ----------
+    config : dict
+        Effective pipeline configuration dictionary
+    obs_dir : Path
+        Observation products directory
+    obs_name : str
+        Observation name (used in filename)
+
+    Returns
+    -------
+    output_path : Path
+        Path to the written TOML file
+    """
+    import toml
+
+    output_path = Path(obs_dir) / f"{obs_name}_config.toml"
+
+    # Add provenance header
+    provenance = {
+        'generated_at': datetime.utcnow().isoformat(),
+        'obs_name': obs_name,
+    }
+    import campfire_pipeline
+    provenance['cfpipe_version'] = campfire_pipeline.__version__
+    try:
+        import jwst
+        provenance['jwst_version'] = jwst.__version__
+    except ImportError:
+        provenance['jwst_version'] = 'unknown'
+    provenance['crds_context'] = os.environ.get('CRDS_CONTEXT', 'unknown')
+
+    output = {**config, '_provenance': provenance}
+    with open(output_path, 'w') as f:
+        toml.dump(output, f)
+
+    log(f"Wrote effective config: {output_path}")
+    return output_path
 
 
 def write_summary_ecsv(summary: Table, obs_dir: Path, obs_name: str) -> Path:

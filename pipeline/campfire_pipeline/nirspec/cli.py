@@ -314,6 +314,7 @@ def _run_summary(cfg, obs_obj):
     from pathlib import Path
     from campfire_pipeline.metadata.summary import (
         generate_observation_summary,
+        write_effective_config,
         write_summary_ecsv,
     )
     from campfire_pipeline.metadata.shutters import (
@@ -328,12 +329,14 @@ def _run_summary(cfg, obs_obj):
                                                   reduction_version=version,
                                                   field=obs_obj.field,
                                                   program_slug=obs_obj.program,
-                                                  consensus_config=consensus_config,
-                                                  pipeline_config=cfg)
+                                                  consensus_config=consensus_config)
     if len(summary_table) > 0:
         write_summary_ecsv(summary_table, obs_dir, obs_obj.name)
     else:
         log(f"No spectra found for {obs_obj.name}, skipping summary")
+
+    # Write effective config for provenance tracking
+    write_effective_config(cfg, obs_dir, obs_obj.name)
 
     # Generate shutters ECSV
     shutters_table = generate_shutters_table(obs_obj.name, obs_dir, obs_obj.field)

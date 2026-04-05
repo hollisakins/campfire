@@ -406,10 +406,7 @@ CREATE TABLE IF NOT EXISTS "public"."observations" (
     "jwst_program_id" integer NOT NULL,
     "field" "text" NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"(),
-    "last_deployed_at" timestamp with time zone,
-    "last_deployed_by" "uuid",
-    "n_targets" integer,
-    "n_spectra" integer
+    "latest_deployment_id" integer
 );
 
 
@@ -1070,7 +1067,7 @@ ALTER TABLE ONLY "public"."observations"
 
 
 ALTER TABLE ONLY "public"."observations"
-    ADD CONSTRAINT "observations_last_deployed_by_fkey" FOREIGN KEY ("last_deployed_by") REFERENCES "public"."user_profiles"("user_id");
+    ADD CONSTRAINT "observations_latest_deployment_fkey" FOREIGN KEY ("latest_deployment_id") REFERENCES "public"."deployments"("id");
 
 
 
