@@ -9,6 +9,7 @@ import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
 import { getPlotColors, getVisibleEmissionLines, computeYRange, computeNiceRestTicks } from './plotting-utils';
+import { RedshiftSliderControl } from './PlottingControls';
 
 // Dynamic import of Plotly to avoid SSR issues
 const Plot = dynamic(() => import('react-plotly.js'), {
@@ -111,7 +112,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   const [colorscale, setColorscale] = useState<Colorscale2D>(spectrumPreferences.colorscale2D);
   const [showEmissionLines, setShowEmissionLines] = useState(inspectionMode);
   const [redshift, setRedshift] = useState(initialRedshift ?? 0);
-  const [redshiftInput, setRedshiftInput] = useState((initialRedshift ?? 0).toFixed(4));
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
   const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);
 
@@ -134,7 +134,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   useEffect(() => {
     if (initialRedshift !== null && initialRedshift !== undefined) {
       setRedshift(initialRedshift);
-      setRedshiftInput(initialRedshift.toFixed(4));
     }
   }, [initialRedshift]);
 
@@ -726,44 +725,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
         {/* Redshift slider (only shown when emission lines are enabled) */}
         {showEmissionLines && (
-          <div className="flex items-center gap-2 flex-1 max-w-md">
-            <span className="text-sm text-text-secondary dark:text-slate-400">z =</span>
-            <input
-              type="text"
-              value={redshiftInput}
-              onChange={(e) => setRedshiftInput(e.target.value)}
-              onBlur={() => {
-                const parsed = parseFloat(redshiftInput);
-                if (!isNaN(parsed) && parsed >= 0 && parsed <= 15) {
-                  setRedshift(parsed);
-                  setRedshiftInput(parsed.toFixed(4));
-                  onRedshiftChange?.(parsed);
-                } else {
-                  setRedshiftInput(redshift.toFixed(4));
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.currentTarget.blur();
-                }
-              }}
-              className="w-20 px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-            <input
-              type="range"
-              value={redshift}
-              onChange={(e) => {
-                const newValue = parseFloat(e.target.value);
-                setRedshift(newValue);
-                setRedshiftInput(newValue.toFixed(4));
-                onRedshiftChange?.(newValue);
-              }}
-              min={0}
-              max={15}
-              step={0.01}
-              className="flex-1 h-2 bg-gray-200 dark:bg-slate-600 rounded-lg appearance-none cursor-pointer accent-primary"
-            />
-          </div>
+          <RedshiftSliderControl
+            redshift={redshift}
+            onChange={(z) => {
+              setRedshift(z);
+              onRedshiftChange?.(z);
+            }}
+          />
         )}
       </div>
 

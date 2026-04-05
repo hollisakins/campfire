@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import type { FluxUnit } from './plotting-utils';
 
 interface FluxUnitToggleProps {
@@ -109,9 +110,36 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
     setInputValue(newValue.toFixed(4));
   };
 
+  const nudge = (delta: number) => {
+    const newValue = Math.min(max, Math.max(min, parseFloat((redshift + delta).toFixed(4))));
+    onChange(newValue);
+    setInputValue(newValue.toFixed(4));
+  };
+
+  const stepBtnClass =
+    'p-0.5 rounded text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-600 hover:text-text-primary dark:hover:text-slate-200 transition-colors disabled:opacity-30 disabled:pointer-events-none';
+
   return (
     <div className="flex items-center gap-2 flex-1 max-w-md">
       <span className="text-sm text-text-secondary dark:text-slate-400">z =</span>
+      <div className="flex items-center gap-0.5">
+        <button
+          onClick={() => nudge(-0.01)}
+          disabled={redshift <= min}
+          className={stepBtnClass}
+          title="-0.01"
+        >
+          <ChevronsLeft size={14} />
+        </button>
+        <button
+          onClick={() => nudge(-0.001)}
+          disabled={redshift <= min}
+          className={stepBtnClass}
+          title="-0.001"
+        >
+          <ChevronLeft size={14} />
+        </button>
+      </div>
       <input
         type="text"
         value={inputValue}
@@ -120,6 +148,24 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
         onKeyDown={handleInputKeyDown}
         className="w-20 px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
       />
+      <div className="flex items-center gap-0.5">
+        <button
+          onClick={() => nudge(0.001)}
+          disabled={redshift >= max}
+          className={stepBtnClass}
+          title="+0.001"
+        >
+          <ChevronRight size={14} />
+        </button>
+        <button
+          onClick={() => nudge(0.01)}
+          disabled={redshift >= max}
+          className={stepBtnClass}
+          title="+0.01"
+        >
+          <ChevronsRight size={14} />
+        </button>
+      </div>
       <input
         type="range"
         value={redshift}
