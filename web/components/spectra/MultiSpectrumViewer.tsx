@@ -266,13 +266,14 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
       plot_bgcolor: plotColors.bg,
       font: { color: plotColors.text, size: 12 },
       hovermode: 'x unified',
-      uirevision: 'constant',
+      legend: { uirevision: 'constant' },
       xaxis: {
         title: { text: 'Observed Wavelength (μm)', standoff: 10 },
         gridcolor: plotColors.grid,
         zerolinecolor: plotColors.grid,
         tickcolor: plotColors.text,
         tickfont: { color: plotColors.text },
+        uirevision: 'constant',
       },
       yaxis: {
         title: { text: getFluxLabel(fluxUnit), standoff: 5 },
@@ -281,6 +282,7 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         tickcolor: plotColors.text,
         tickfont: { color: plotColors.text },
         range: yRange,
+        uirevision: 'constant',
       },
       // Emission line overlay axis (hidden, fixed 0-1)
       yaxis2: {
@@ -289,6 +291,7 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         showticklabels: false,
         showgrid: false,
         zeroline: false,
+        uirevision: 'constant',
       },
     };
 
@@ -298,13 +301,15 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
       plotLayout.xaxis2 = {
         overlaying: 'x',
         side: 'top',
+        matches: 'x',
+        tickmode: 'array',
         tickvals: restTicks.map(t => t / factor),
         ticktext: restTickTexts,
         title: { text: 'Rest Wavelength (Å)', standoff: 8, font: { size: 11, color: plotColors.textSecondary } },
         tickfont: { color: plotColors.textSecondary, size: 10 },
         showgrid: false,
         zeroline: false,
-        range: oRange,
+        fixedrange: true,
       };
       // Add an invisible trace to activate xaxis2
       allTraces.push({
