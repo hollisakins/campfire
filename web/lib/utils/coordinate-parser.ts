@@ -96,7 +96,7 @@ export function parseCoordinates(coordStr: string): ParsedCoordinates | null {
   // Try parsing second part as Dec
   if (parts[1].includes('d') || parts[1].includes('°') ||
       parts[1].includes("'") || parts[1].includes('"') ||
-      (parts[1].includes(':') && (parts[1].includes('+') || parts[1].includes('-')))) {
+      parts[1].includes(':')) {
     // Sexagesimal Dec
     dec = parseSexagesimalDec(parts[1]);
   } else {
