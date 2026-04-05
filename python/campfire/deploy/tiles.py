@@ -10,27 +10,18 @@ import json
 import logging
 import sys
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import NamedTuple
 
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
 
-class UploadTask(NamedTuple):
-    local_path: Path
-    r2_key: str
-    content_type: str
+from campfire.deploy.r2 import UploadTask, upload_files_parallel
 
-
-# ============================================
-# R2 Client (tiles bucket)
-# ============================================
 
 def get_r2_tiles_client(config: dict):
-    """Create boto3 S3 client for the tiles R2 bucket."""
+    """Create boto3 S3 client for the tiles R2 bucket (for delete operations)."""
     import boto3
     from botocore.config import Config as BotoConfig
 
@@ -49,9 +40,10 @@ def get_r2_tiles_client(config: dict):
 
 
 def _require_r2_tiles(config: dict) -> None:
-    """Exit with helpful error if r2_tiles config is missing."""
+    """Exit with helpful error if r2_tiles config is missing (needed for delete ops)."""
     if 'r2_tiles' not in config:
         print("Error: [r2_tiles] section not found in deploy config.")
+        print("Direct R2 credentials are required for tile deletion.")
         print("Set CAMPFIRE_R2_TILES_* env vars or add [r2_tiles] to deploy.toml")
         sys.exit(1)
 
@@ -83,58 +75,6 @@ def delete_r2_prefix(r2_client, bucket: str, prefix: str) -> int:
     return deleted
 
 
-def _upload_files_parallel(
-    r2_client,
-    bucket: str,
-    tasks: list[UploadTask],
-    max_workers: int = 12,
-    desc: str = "Uploading",
-) -> tuple[int, int, list[str]]:
-    """Upload multiple files in parallel. Returns (success, failed, errors)."""
-    if not tasks:
-        return 0, 0, []
-
-    success = 0
-    failed = 0
-    errors = []
-
-    def upload_one(task):
-        try:
-            extra_args = {'CacheControl': 'public, max-age=31536000, immutable'}
-            if task.content_type:
-                extra_args['ContentType'] = task.content_type
-            r2_client.upload_file(
-                str(task.local_path),
-                bucket,
-                task.r2_key,
-                ExtraArgs=extra_args,
-            )
-            return True, None
-        except Exception as e:
-            return False, f"{task.r2_key}: {e}"
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(upload_one, t): t for t in tasks}
-        for future in tqdm(
-            as_completed(futures),
-            total=len(futures),
-            desc=desc,
-            unit="tile",
-        ):
-            ok, err = future.result()
-            if ok:
-                success += 1
-            else:
-                failed += 1
-                errors.append(err)
-
-    return success, failed, errors
-
-
-# ============================================
-# Upload
-# ============================================
-
 def upload_tiles(
     config: dict,
     tile_dir: Path,
@@ -145,10 +85,6 @@ def upload_tiles(
     dry_run: bool = False,
 ) -> None:
     """Upload generated tiles to R2 public bucket."""
-    _require_r2_tiles(config)
-    r2_config = config['r2_tiles']
-    bucket = r2_config['bucket_name']
-    r2_client = get_r2_tiles_client(config)
 
     # Discover tiles to upload
     if filter_name:
@@ -194,16 +130,17 @@ def upload_tiles(
             continue
 
         print(f"\nUploading {len(tasks)} tiles for {field}/{fname}...")
-        success, failed, errors = _upload_files_parallel(
-            r2_client, bucket, tasks, max_workers=max_workers,
+        success, failed, errors = upload_files_parallel(
+            config, tasks, bucket_id='tiles', max_workers=max_workers,
             desc=f"{field}/{fname}",
+            cache_control='public, max-age=31536000, immutable',
         )
 
         if failed:
             print(f"  Warning: {failed} uploads failed:")
             for err in errors[:5]:
                 print(f"    {err}")
-        print(f"  Uploaded {success}/{len(tasks)} tiles to {bucket}/{field}/{fname}/")
+        print(f"  Uploaded {success}/{len(tasks)} tiles for {field}/{fname}/")
 
         # Bump tile_version in Supabase to bust edge cache
         try:

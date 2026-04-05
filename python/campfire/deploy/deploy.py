@@ -30,7 +30,7 @@ from campfire.deploy.generate import (
     generate_thumbnails_from_fits,
     generate_zfit_json,
 )
-from campfire.deploy.r2 import UploadTask, get_r2_client, upload_files_parallel
+from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     REDSHIFT_DRIFT_THRESHOLD,
     batch_upsert_objects,
@@ -220,9 +220,6 @@ def deploy_observation(
         r2_prefix = f"spectra/{obs_name}"
 
         if not supabase_only:
-            r2_client = get_r2_client(config)
-            bucket = config['r2']['bucket_name']
-
             print("Generating content...")
             for spec_path in tqdm(spec_paths, desc="Processing", unit="file"):
                 # FITS file
@@ -246,7 +243,7 @@ def deploy_observation(
                 upload_tasks.append(UploadTask(sed_path, f"sed/{obs_name}/{sed_path.name}", 'application/pdf'))
 
             print(f"Uploading {len(upload_tasks)} files...")
-            success, failed, failed_msgs = upload_files_parallel(r2_client, bucket, upload_tasks, desc="R2 uploads")
+            success, failed, failed_msgs = upload_files_parallel(config, upload_tasks, desc="R2 uploads")
 
             if failed_msgs:
                 print(f"\n  {failed} uploads failed:")
@@ -386,11 +383,8 @@ def deploy_rgb(
             print(f"  ... and {len(rgb_files) - 5} more")
         return
 
-    r2_client = get_r2_client(config)
-    bucket = config['r2']['bucket_name']
-
     tasks = [UploadTask(p, f"rgb/{obs_name}/{p.name}", 'image/png') for p in rgb_files]
-    success, failed, failed_msgs = upload_files_parallel(r2_client, bucket, tasks, desc="RGB images")
+    success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="RGB images")
 
     if failed_msgs:
         print(f"\n  {failed} failed:")
@@ -442,11 +436,8 @@ def deploy_sed(
         print(f"Would set has_sed_plot=true for {len(objects_with_sed)} objects")
         return
 
-    r2_client = get_r2_client(config)
-    bucket = config['r2']['bucket_name']
-
     tasks = [UploadTask(p, f"sed/{obs_name}/{p.name}", 'application/pdf') for p in sed_files]
-    success, failed, failed_msgs = upload_files_parallel(r2_client, bucket, tasks, desc="SED plots")
+    success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="SED plots")
 
     if failed_msgs:
         print(f"\n  {failed} failed:")
@@ -491,9 +482,6 @@ def deploy_json(
             print(f"  ... and {len(spec_paths) - 5} more")
         return
 
-    r2_client = get_r2_client(config)
-    bucket = config['r2']['bucket_name']
-
     temp_dir = obs_dir / '.deploy_temp'
     temp_dir.mkdir(exist_ok=True)
 
@@ -505,7 +493,7 @@ def deploy_json(
             tasks.append(UploadTask(json_path, f"spectra/{obs_name}/{json_path.name}", 'application/json'))
 
         print("Uploading...")
-        success, failed, failed_msgs = upload_files_parallel(r2_client, bucket, tasks, desc="JSON files")
+        success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="JSON files")
 
         if failed_msgs:
             print(f"\n  {failed} failed:")
@@ -553,9 +541,6 @@ def deploy_zfit(
         return
 
     # Upload zfit JSONs
-    r2_client = get_r2_client(config)
-    bucket = config['r2']['bucket_name']
-
     temp_dir = obs_dir / '.deploy_temp'
     temp_dir.mkdir(exist_ok=True)
 
@@ -567,7 +552,7 @@ def deploy_zfit(
             tasks.append(UploadTask(json_path, f"spectra/{obs_name}/{json_path.name}", 'application/json'))
 
         print("Uploading...")
-        success, failed, failed_msgs = upload_files_parallel(r2_client, bucket, tasks, desc="Zfit JSON")
+        success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="Zfit JSON")
 
         if failed_msgs:
             print(f"\n  {failed} failed:")
