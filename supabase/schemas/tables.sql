@@ -303,7 +303,10 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "thumbnail_svg_flambda" "text",
     "file_hash" "text",
     "file_size" bigint,
-    "exposure_time" double precision
+    "exposure_time" double precision,
+    "crds_context" "text",
+    "jwst_version" "text",
+    "cfpipe_version" "text"
 );
 
 
@@ -402,11 +405,52 @@ CREATE TABLE IF NOT EXISTS "public"."observations" (
     "program_slug" "text" NOT NULL,
     "jwst_program_id" integer NOT NULL,
     "field" "text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"()
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "last_deployed_at" timestamp with time zone,
+    "last_deployed_by" "uuid",
+    "n_targets" integer,
+    "n_spectra" integer
 );
 
 
 ALTER TABLE "public"."observations" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."deployments" (
+    "id" integer NOT NULL,
+    "observation" "text" NOT NULL,
+    "deployed_by" "uuid" NOT NULL,
+    "deployed_at" timestamp with time zone DEFAULT "now"(),
+    "cfpipe_version" "text",
+    "jwst_version" "text",
+    "crds_context" "text",
+    "reduction_version" "text",
+    "config_snapshot" "jsonb",
+    "n_targets" integer,
+    "n_spectra" integer,
+    "n_new_targets" integer,
+    "force_overwrite" boolean DEFAULT false,
+    "source_ids_filter" integer[],
+    "supabase_only" boolean DEFAULT false
+);
+
+
+ALTER TABLE "public"."deployments" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."deployments_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."deployments_id_seq" OWNED BY "public"."deployments"."id";
+
+
+ALTER TABLE ONLY "public"."deployments" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."deployments_id_seq"'::"regclass");
 
 
 CREATE TABLE IF NOT EXISTS "public"."programs" (
@@ -881,6 +925,11 @@ ALTER TABLE ONLY "public"."slit_regions"
 
 
 
+ALTER TABLE ONLY "public"."deployments"
+    ADD CONSTRAINT "deployments_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."spectra"
     ADD CONSTRAINT "spectra_pkey" PRIMARY KEY ("id");
 
@@ -960,6 +1009,16 @@ ALTER TABLE ONLY "public"."device_codes"
 
 
 
+ALTER TABLE ONLY "public"."deployments"
+    ADD CONSTRAINT "deployments_observation_fkey" FOREIGN KEY ("observation") REFERENCES "public"."observations"("name");
+
+
+
+ALTER TABLE ONLY "public"."deployments"
+    ADD CONSTRAINT "deployments_deployed_by_fkey" FOREIGN KEY ("deployed_by") REFERENCES "public"."user_profiles"("user_id");
+
+
+
 ALTER TABLE ONLY "public"."download_log"
     ADD CONSTRAINT "download_log_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
 
@@ -1007,6 +1066,11 @@ ALTER TABLE ONLY "public"."flag_audit_log"
 
 ALTER TABLE ONLY "public"."observations"
     ADD CONSTRAINT "observations_program_slug_fkey" FOREIGN KEY ("program_slug") REFERENCES "public"."programs"("slug");
+
+
+
+ALTER TABLE ONLY "public"."observations"
+    ADD CONSTRAINT "observations_last_deployed_by_fkey" FOREIGN KEY ("last_deployed_by") REFERENCES "public"."user_profiles"("user_id");
 
 
 
@@ -1109,6 +1173,12 @@ GRANT ALL ON TABLE "public"."comments" TO "service_role";
 GRANT ALL ON TABLE "public"."device_codes" TO "anon";
 GRANT ALL ON TABLE "public"."device_codes" TO "authenticated";
 GRANT ALL ON TABLE "public"."device_codes" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."deployments" TO "anon";
+GRANT ALL ON TABLE "public"."deployments" TO "authenticated";
+GRANT ALL ON TABLE "public"."deployments" TO "service_role";
 
 
 
@@ -1227,6 +1297,12 @@ GRANT ALL ON SEQUENCE "public"."account_requests_id_seq" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."comments_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."comments_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."comments_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON SEQUENCE "public"."deployments_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."deployments_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."deployments_id_seq" TO "service_role";
 
 
 

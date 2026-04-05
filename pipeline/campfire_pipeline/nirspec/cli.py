@@ -328,7 +328,8 @@ def _run_summary(cfg, obs_obj):
                                                   reduction_version=version,
                                                   field=obs_obj.field,
                                                   program_slug=obs_obj.program,
-                                                  consensus_config=consensus_config)
+                                                  consensus_config=consensus_config,
+                                                  pipeline_config=cfg)
     if len(summary_table) > 0:
         write_summary_ecsv(summary_table, obs_dir, obs_obj.name)
     else:

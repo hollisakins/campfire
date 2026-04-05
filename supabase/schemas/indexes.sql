@@ -95,7 +95,7 @@ CREATE INDEX IF NOT EXISTS idx_objects_max_exposure_time
 CREATE INDEX IF NOT EXISTS idx_spectra_target_id
     ON public.spectra USING btree (target_id) INCLUDE (grating, fits_path);
 
-CREATE INDEX IF NOT EXISTS idx_spectra_target_grating
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_target_grating
     ON public.spectra USING btree (target_id, grating);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_fits_path
@@ -106,6 +106,20 @@ CREATE INDEX IF NOT EXISTS idx_spectra_file_hash
 
 CREATE INDEX IF NOT EXISTS idx_spectra_grating
     ON public.spectra USING btree (grating);
+
+
+-- =============================================================================
+-- deployments
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_deployments_observation
+    ON public.deployments USING btree (observation);
+
+CREATE INDEX IF NOT EXISTS idx_deployments_deployed_by
+    ON public.deployments USING btree (deployed_by);
+
+CREATE INDEX IF NOT EXISTS idx_deployments_deployed_at
+    ON public.deployments USING btree (deployed_at DESC);
 
 
 -- =============================================================================

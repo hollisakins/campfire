@@ -108,7 +108,8 @@ class ReductionEngine:
         obs_dir = Path(obs.workspace_dir)
         summary = generate_observation_summary(obs.name, obs_dir,
                                                 reduction_version=version,
-                                                consensus_config=consensus_config)
+                                                consensus_config=consensus_config,
+                                                pipeline_config=self.config)
         if len(summary) > 0:
             write_summary_ecsv(summary, obs_dir, obs.name)
         else:
