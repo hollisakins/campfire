@@ -501,7 +501,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         zerolinecolor: 'transparent',
         domain: [0, 0.90],
         anchor: 'y' as const,
-        fixedrange: true, // Prevent independent dragging — this is a relabeling overlay
       },
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
