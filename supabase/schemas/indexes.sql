@@ -49,6 +49,42 @@ CREATE INDEX IF NOT EXISTS idx_targets_updated_at
     ON public.targets USING btree (updated_at);
 
 
+CREATE INDEX IF NOT EXISTS idx_targets_object_id
+    ON public.targets USING btree (object_id);
+
+
+-- =============================================================================
+-- objects
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_objects_coords
+    ON public.objects USING btree (ra, dec);
+
+CREATE INDEX IF NOT EXISTS idx_objects_field
+    ON public.objects USING btree (field);
+
+CREATE INDEX IF NOT EXISTS idx_objects_best_redshift
+    ON public.objects USING btree (best_redshift) WHERE (best_redshift IS NOT NULL);
+
+CREATE INDEX IF NOT EXISTS idx_objects_best_redshift_quality
+    ON public.objects USING btree (best_redshift_quality);
+
+CREATE INDEX IF NOT EXISTS idx_objects_max_snr
+    ON public.objects USING btree (max_snr) WHERE (max_snr IS NOT NULL);
+
+CREATE INDEX IF NOT EXISTS idx_objects_programs
+    ON public.objects USING gin (programs);
+
+CREATE INDEX IF NOT EXISTS idx_objects_gratings
+    ON public.objects USING gin (gratings);
+
+CREATE INDEX IF NOT EXISTS idx_objects_object_id_trgm
+    ON public.objects USING gin (object_id public.gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_objects_max_exposure_time
+    ON public.objects USING btree (max_exposure_time) WHERE (max_exposure_time IS NOT NULL);
+
+
 -- =============================================================================
 -- spectra
 -- =============================================================================

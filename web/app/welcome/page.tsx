@@ -64,7 +64,7 @@ export default function WelcomePage() {
 
         if (response.status === 404) {
           // No pending invite - might already have profile, redirect to spectra
-          router.push('/spectra');
+          router.push('/nirspec');
           return;
         }
 
@@ -134,7 +134,7 @@ export default function WelcomePage() {
       }
 
       // Success - redirect to main app
-      router.push('/spectra');
+      router.push('/nirspec');
     } catch (err) {
       console.error('Error completing setup:', err);
       setError(err instanceof Error ? err.message : 'Failed to complete setup');

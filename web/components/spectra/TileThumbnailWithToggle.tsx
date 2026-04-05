@@ -17,6 +17,8 @@ interface TileThumbnailWithToggleProps {
     ra: number;
     dec: number;
   };
+  /** Map of target_id → hex color for multi-target shutter coloring */
+  memberColors?: Record<string, string>;
 }
 
 /**
@@ -32,6 +34,7 @@ export const TileThumbnailWithToggle: React.FC<TileThumbnailWithToggleProps> = (
   dec,
   field,
   linkToMap,
+  memberColors,
 }) => {
   const [showShutters, setShowShutters] = useState(true);
 
@@ -47,6 +50,7 @@ export const TileThumbnailWithToggle: React.FC<TileThumbnailWithToggleProps> = (
         dec={dec}
         field={field}
         linkToMap={linkToMap}
+        memberColors={memberColors}
       />
       <button
         onClick={() => setShowShutters((prev) => !prev)}

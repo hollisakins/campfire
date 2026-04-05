@@ -72,7 +72,7 @@ export default function Home() {
                   Explore reduced spectroscopy data with interactive tools and quality assessments.
                 </p>
                 {isLoggedIn ? (
-                  <Link href="/spectra">
+                  <Link href="/nirspec">
                     <Button variant="primary" className="w-full">
                       Browse NIRSpec Spectra
                     </Button>

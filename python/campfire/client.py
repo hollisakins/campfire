@@ -268,11 +268,11 @@ class Campfire:
                 target_obs.update(observations)
             if programs:
                 for prog in programs:
-                    results = self._local.query_objects(programs=[prog], limit=999999)
+                    results = self._local.query_targets(programs=[prog], limit=999999)
                     target_obs.update(r["observation"] for r in results)
             if fields:
                 for fld in fields:
-                    results = self._local.query_objects(fields=[fld], limit=999999)
+                    results = self._local.query_targets(fields=[fld], limit=999999)
                     target_obs.update(r["observation"] for r in results)
 
             if not target_obs:
@@ -315,7 +315,7 @@ class Campfire:
             "exclude": query.exclude,
         }
 
-    def query_objects(
+    def query_targets(
         self,
         programs: Optional[List[Union[int, str]]] = None,
         fields: Optional[List[str]] = None,
@@ -438,7 +438,7 @@ class Campfire:
             of_dict = self._flag_to_dict(object_flags, ObjectFlags)
             dq_dict = self._flag_to_dict(dq_flags, DQFlags)
 
-            objects = self._local.query_objects(
+            objects = self._local.query_targets(
                 programs=programs,
                 fields=fields,
                 observations=observations,
@@ -459,7 +459,7 @@ class Campfire:
         else:
             # Remote queries need a concrete limit for pagination
             remote_limit = limit if limit is not None else 1000
-            objects, pagination = self._api.query_objects(
+            objects, pagination = self._api.query_targets(
                 programs=programs,
                 fields=fields,
                 gratings=gratings,
@@ -772,7 +772,7 @@ class Campfire:
                 return spec
 
         # Fall back to API query
-        objects, _ = self._api.query_objects(
+        objects, _ = self._api.query_targets(
             search=object_id, limit=1
         )
         if not objects:
@@ -786,29 +786,29 @@ class Campfire:
 
         raise NotFoundError(f"No {grating} spectrum found for {object_id}")
 
-    def iter_objects(self, **filters) -> Iterator[dict]:
+    def iter_targets(self, **filters) -> Iterator[dict]:
         """
-        Iterate over all matching objects with automatic pagination.
+        Iterate over all matching targets with automatic pagination.
 
-        Yields individual object dicts. When local data is available and
+        Yields individual target dicts. When local data is available and
         covers the requested observations, iterates from SQLite. Otherwise,
         auto-paginates through the remote API.
 
         Parameters
         ----------
         **filters
-            Same filters as ``query_objects()``. ``limit`` controls page
+            Same filters as ``query_targets()``. ``limit`` controls page
             size for remote queries (default 1000).
 
         Yields
         ------
         dict
-            Individual object records.
+            Individual target records.
 
         Examples
         --------
         >>> cf = Campfire()
-        >>> for obj in cf.iter_objects(redshift_range=(2.0, 4.0)):
+        >>> for obj in cf.iter_targets(redshift_range=(2.0, 4.0)):
         ...     print(obj['target_id'], obj['redshift'])
         """
         remote = filters.pop("remote", False)
@@ -828,11 +828,105 @@ class Campfire:
                     )
             # Local query — no pagination needed, SQLite handles it
             filters["limit"] = filters.get("limit", 999999)
-            yield from self._local.query_objects(**filters)
+            yield from self._local.query_targets(**filters)
             return
 
         # Remote auto-pagination
-        yield from self._api.iter_objects(**filters)
+        yield from self._api.iter_targets(**filters)
+
+    def query_objects(
+        self,
+        fields: Optional[List[str]] = None,
+        programs: Optional[List[Union[int, str]]] = None,
+        redshift_range: Optional[Tuple[float, float]] = None,
+        redshift_quality: Optional[List[Union[int, str]]] = None,
+        max_snr_range: Optional[Tuple[float, float]] = None,
+        search: Optional[str] = None,
+        cone_search: Optional[Tuple[float, float, float]] = None,
+        sort: str = "object_id",
+        sort_dir: str = "asc",
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> Table:
+        """
+        Query sky-objects (cross-program grouped positions).
+
+        Requires a local sync (``cf.sync()``). Sky-objects group targets
+        at the same sky position across programs, providing aggregate
+        properties like best redshift and total spectra count.
+
+        Parameters
+        ----------
+        fields : list of str, optional
+            Field names to filter by.
+        programs : list of str, optional
+            Program slugs to filter by.
+        redshift_range : tuple of (float, float), optional
+            (min, max) best redshift range.
+        redshift_quality : list of int or str, optional
+            Quality codes to include.
+        max_snr_range : tuple of (float, float), optional
+            (min, max) maximum SNR range.
+        search : str, optional
+            Text search on object_id.
+        cone_search : tuple of (ra, dec, radius), optional
+            (ra_deg, dec_deg, radius_arcsec) for cone search.
+        sort : str, optional
+            Sort column (default: 'object_id').
+        sort_dir : str, optional
+            Sort direction: 'asc' or 'desc'.
+        limit : int, optional
+            Maximum number of results.
+        offset : int, optional
+            Pagination offset.
+
+        Returns
+        -------
+        astropy.table.Table
+            Table of matching sky-objects.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> cf.sync()
+        >>> objects = cf.query_objects(redshift_range=(2.0, 6.0))
+        >>> print(objects['object_id', 'best_redshift', 'n_targets'])
+        """
+        if self._local is None:
+            raise ValidationError(
+                "No local catalog. Run cf.sync() first to query sky-objects."
+            )
+
+        self._log_local_use()
+
+        if fields:
+            fields = [f.lower() for f in fields]
+        if programs:
+            programs = [str(p) for p in programs]
+        if redshift_quality:
+            redshift_quality = [
+                int(RedshiftQuality(q)) if isinstance(q, str) else q
+                for q in redshift_quality
+            ]
+
+        objects = self._local.query_sky_objects(
+            fields=fields,
+            programs=programs,
+            redshift_range=redshift_range,
+            redshift_quality=redshift_quality,
+            max_snr_range=max_snr_range,
+            search=search,
+            cone_search=cone_search,
+            sort=sort,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+
+        if len(objects) == 0:
+            return Table()
+
+        return Table(rows=objects)
 
     # -------------------------------------------------------------------------
     # Imaging Methods (cutouts + shutters)

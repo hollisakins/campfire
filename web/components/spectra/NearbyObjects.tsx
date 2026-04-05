@@ -11,12 +11,15 @@ interface NearbyObjectsProps {
   ra: number;
   dec: number;
   currentTargetId: string;
+  /** Additional target IDs to exclude (e.g., member targets of an object) */
+  excludeTargetIds?: string[];
 }
 
 export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
   ra,
   dec,
   currentTargetId,
+  excludeTargetIds,
 }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -46,9 +49,10 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
         if (result.error) {
           setError(result.error);
         } else {
-          // Filter out the current object
+          // Filter out the current object and any excluded targets
+          const excludeSet = new Set([currentTargetId, ...(excludeTargetIds || [])]);
           const filtered = result.spectra.filter(
-            (obj) => obj.target_id !== currentTargetId
+            (obj) => !excludeSet.has(obj.target_id)
           );
           setNearbyObjects(filtered);
         }
@@ -149,7 +153,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
                   >
                     <td className="py-3 px-4">
                       <Link
-                        href={`/spectra/${encodeURIComponent(obj.target_id)}`}
+                        href={`/nirspec/targets/${encodeURIComponent(obj.target_id)}`}
                         className="text-sm font-mono text-primary hover:underline"
                       >
                         {obj.target_id}

@@ -9,20 +9,20 @@ All requests require an `Authorization` header:
 ```bash
 # Using API key
 curl -H "Authorization: Bearer sk_your_api_key" \
-  https://campfire.hollisakins.com/api/v1/objects
+  https://campfire.hollisakins.com/api/v1/targets
 
 # Using JWT access token (from device flow)
 curl -H "Authorization: Bearer eyJ..." \
-  https://campfire.hollisakins.com/api/v1/objects
+  https://campfire.hollisakins.com/api/v1/targets
 ```
 
 ---
 
 ## Data Endpoints
 
-### GET /objects
+### GET /targets
 
-Query objects with filters.
+Query targets with filters.
 
 **Query Parameters:**
 
@@ -46,8 +46,8 @@ Query objects with filters.
 | `dq_flags_include_any` | int | Same pattern |
 | `dq_flags_include_all` | int | |
 | `dq_flags_exclude` | int | |
-| `inspected_only` | boolean | Filter to inspected objects |
-| `search` | string | Text search on object_id |
+| `inspected_only` | boolean | Filter to inspected targets |
+| `search` | string | Text search on target_id |
 | `ra` | float | RA for cone search (degrees) |
 | `dec` | float | Dec for cone search (degrees) |
 | `radius` | float | Search radius (arcsec) |
@@ -62,12 +62,13 @@ Query objects with filters.
 {
   "data": [
     {
-      "object_id": "ember_uds_p4_123456",
+      "target_id": "ember_uds_p4_123456",
       "ra": 34.1234,
       "dec": -5.4567,
       "redshift": 2.345,
       "redshift_quality": 3,
       "field": "UDS",
+      "observation": "ember_uds_p4",
       "spectra": [
         {"grating": "PRISM", "fits_path": "spectra/ember_uds_p4/..."}
       ]
@@ -93,7 +94,7 @@ Get spectrum JSON data for plotting.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `object_id` | string | Object ID |
+| `target_id` | string | Target ID |
 | `grating` | string | Grating type |
 
 **Response:**
@@ -118,7 +119,7 @@ Get redshift fitting results.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `object_id` | string | Object ID |
+| `target_id` | string | Target ID |
 | `grating` | string | Grating type |
 
 **Response:**

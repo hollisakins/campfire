@@ -63,7 +63,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = await generateCsvFilename();
+      link.download = await generateCsvFilename(viewMode);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -82,7 +82,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
     setError(null);
 
     try {
-      const result = await generateFitsDownloadUrl(filters, sortColumn, sortDirection);
+      const result = await generateFitsDownloadUrl(filters, sortColumn, sortDirection, viewMode);
 
       if (result.error || !result.files || !result.token || !result.workerUrl) {
         setError(result.error || 'Failed to generate download URL');
@@ -192,7 +192,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
               Download Results
             </div>
             <div className="text-xs text-text-secondary dark:text-slate-400 mt-0.5">
-              {loading ? 'Loading...' : `${totalCount.toLocaleString()} ${viewMode === 'spectra' ? 'spectra' : (totalCount === 1 ? 'target' : 'targets')}`}
+              {loading ? 'Loading...' : `${totalCount.toLocaleString()} ${viewMode === 'spectra' ? 'spectra' : viewMode === 'objects' ? (totalCount === 1 ? 'object' : 'objects') : (totalCount === 1 ? 'target' : 'targets')}`}
             </div>
           </div>
 

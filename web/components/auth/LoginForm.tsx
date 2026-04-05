@@ -80,7 +80,7 @@ export const LoginForm: React.FC = () => {
             }
 
             // Profile exists - redirect to main app
-            router.push('/spectra');
+            router.push('/nirspec');
             return;
           }
 
@@ -113,7 +113,7 @@ export const LoginForm: React.FC = () => {
         router.push('/welcome');
       } else {
         // User is fully set up, redirect to main app
-        router.push('/spectra');
+        router.push('/nirspec');
       }
     }
   }, [authLoading, processingCallback, user, needsProfileSetup, router]);

@@ -118,15 +118,15 @@ class APIClient:
     def __init__(self, session: APISession):
         self._session = session
 
-    def query_objects(self, **filters) -> Tuple[List[dict], dict]:
-        """Query objects with filters.
+    def query_targets(self, **filters) -> Tuple[List[dict], dict]:
+        """Query targets with filters.
 
-        Parameters match those of ``Campfire.query_objects()``.
+        Parameters match those of ``Campfire.query_targets()``.
 
         Returns
         -------
         tuple of (list[dict], dict)
-            (objects_list, pagination_dict)
+            (targets_list, pagination_dict)
         """
         params = _build_query_params(**filters)
         response = self._session.get("/targets", params=params)
@@ -135,17 +135,17 @@ class APIClient:
         data = response.json()
         return data.get("data", []), data.get("pagination", {})
 
-    def iter_objects(self, **filters) -> Iterator[dict]:
-        """Auto-paginating iterator over all matching objects.
+    def iter_targets(self, **filters) -> Iterator[dict]:
+        """Auto-paginating iterator over all matching targets.
 
-        Yields individual object dicts. Handles pagination automatically.
-        Accepts the same filter parameters as ``query_objects()``, except
+        Yields individual target dicts. Handles pagination automatically.
+        Accepts the same filter parameters as ``query_targets()``, except
         ``offset`` is managed internally.
 
         Parameters
         ----------
         **filters
-            Same filters as ``query_objects()``. ``limit`` controls page
+            Same filters as ``query_targets()``. ``limit`` controls page
             size (default 1000). ``offset`` is ignored.
         """
         filters.pop("offset", None)
@@ -155,7 +155,7 @@ class APIClient:
         while True:
             filters["offset"] = offset
             filters["limit"] = limit
-            objects, pagination = self.query_objects(**filters)
+            objects, pagination = self.query_targets(**filters)
 
             yield from objects
 
@@ -207,13 +207,45 @@ class APIClient:
         _handle_response_error(response)
         return response.json()
 
-    def fetch_all_objects(
+    def _paginate_sync_endpoint(
+        self,
+        path: str,
+        updated_since: Optional[str] = None,
+        on_page_complete: Optional[Callable[[int, int], None]] = None,
+    ) -> Tuple[List[dict], int]:
+        """Paginate through a /sync/* endpoint.
+
+        Returns (items, total_accessible_count).
+        """
+        all_items: List[dict] = []
+        total_accessible_count = 0
+        offset = 0
+        while True:
+            self._session._ensure_valid_token()
+            params: dict = {"limit": 1000, "offset": offset}
+            if updated_since:
+                params["updated_since"] = updated_since
+            response = self._session.get(path, params=params, timeout=60)
+            _handle_response_error(response, f"fetching {path}")
+            data = response.json()
+            items = data.get("data", [])
+            all_items.extend(items)
+            total = data.get("pagination", {}).get("total", 0)
+            total_accessible_count = data.get("total_accessible_count", 0)
+            offset += len(items)
+            if on_page_complete:
+                on_page_complete(offset, total)
+            if offset >= total or not items:
+                break
+        return all_items, total_accessible_count
+
+    def fetch_all_targets(
         self,
         observations: Optional[List[str]] = None,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
     ) -> Tuple[List[dict], int]:
-        """Fetch all objects via the lightweight sync endpoint.
+        """Fetch all targets via the lightweight sync endpoint.
 
         Uses ``/sync/catalog`` which is optimized for bulk fetches
         (no complex sorting or window functions).
@@ -222,44 +254,21 @@ class APIClient:
         ----------
         observations : list of str, optional
             Not used directly (the sync endpoint returns all accessible
-            objects). Kept for API compatibility.
+            targets). Kept for API compatibility.
         updated_since : str, optional
-            ISO 8601 timestamp. Only fetch objects updated after this time.
+            ISO 8601 timestamp. Only fetch targets updated after this time.
         on_page_complete : callable, optional
             Callback ``(fetched_so_far, total)`` called after each page.
 
         Returns
         -------
-        (objects, total_accessible_count)
-            The fetched objects and the total number of accessible objects
+        (targets, total_accessible_count)
+            The fetched targets and the total number of accessible targets
             on the server (regardless of ``updated_since`` filter).
         """
-        all_objects = []
-        total_accessible_count = 0
-        offset = 0
-        while True:
-            self._session._ensure_valid_token()
-            params: dict = {"limit": 1000, "offset": offset}
-            if updated_since:
-                params["updated_since"] = updated_since
-            response = self._session.get(
-                "/sync/catalog",
-                params=params,
-                timeout=60,
-            )
-            _handle_response_error(response, "fetching catalog")
-            data = response.json()
-            objects = data.get("data", [])
-            all_objects.extend(objects)
-            pagination = data.get("pagination", {})
-            total = pagination.get("total", 0)
-            total_accessible_count = data.get("total_accessible_count", 0)
-            offset += len(objects)
-            if on_page_complete:
-                on_page_complete(offset, total)
-            if offset >= total or not objects:
-                break
-        return all_objects, total_accessible_count
+        return self._paginate_sync_endpoint(
+            "/sync/catalog", updated_since, on_page_complete,
+        )
 
     def get_spectrum_data(self, object_id: str, grating: str) -> dict:
         """Fetch spectrum JSON data for plotting.
@@ -344,6 +353,35 @@ class APIClient:
         response = self._session.get("/cutout", params=params, timeout=30)
         _handle_response_error(response, f"Cutout for {object_id}")
         return response.content
+
+    def fetch_all_sky_objects(
+        self,
+        updated_since: Optional[str] = None,
+        on_page_complete: Optional[Callable[[int, int], None]] = None,
+    ) -> Tuple[List[dict], int]:
+        """Fetch all sky-objects via the /sync/objects endpoint.
+
+        Parameters
+        ----------
+        updated_since : str, optional
+            ISO 8601 timestamp. Only fetch objects updated after this time.
+        on_page_complete : callable, optional
+            Callback ``(fetched_so_far, total)`` called after each page.
+
+        Returns
+        -------
+        (objects, total_accessible_count)
+            The fetched sky-objects and the total number accessible on the
+            server (regardless of ``updated_since`` filter).
+        """
+        return self._paginate_sync_endpoint(
+            "/sync/objects", updated_since, on_page_complete,
+        )
+
+    # Deprecated aliases (old names → new names)
+    query_objects = query_targets
+    iter_objects = iter_targets
+    fetch_all_objects = fetch_all_targets
 
     def get_shutters(
         self,

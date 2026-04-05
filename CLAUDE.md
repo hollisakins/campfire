@@ -92,7 +92,14 @@ The migration history was squashed on 2026-03-28 into a single baseline (`202603
 
 ### Local Supabase
 
-Seed generator: `python scripts/generate_seed.py` → `supabase/seed.sql` → `supabase db reset`
+`supabase/seed.sql` is gitignored — generate it from production before first use:
+
+```bash
+python scripts/generate_seed.py          # stratified sample (~100 targets)
+python scripts/generate_seed.py --full   # full production replica (all targets + spectra)
+supabase db reset                        # applies migrations + seed
+cfdeploy objects --all --local           # rebuild objects table (not included in seed)
+```
 
 Test users: `admin@campfire.dev`, `user@campfire.dev`, `viewer@campfire.dev` (password: `password123`)
 

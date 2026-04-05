@@ -51,7 +51,8 @@ export interface ShutterRect {
  * @param centerDec - Dec of the cutout center (degrees)
  * @param fovArcsec - Field of view of the cutout (arcseconds)
  * @param displaySize - CSS display size of the image (pixels)
- * @param objectId - Current object ID (highlighted in green)
+ * @param objectId - Current object/target ID (highlighted in green when no memberColors)
+ * @param memberColors - Optional map of target_id → hex color for multi-target coloring
  */
 export function computeShutterRects(
   shutters: ShutterGeometry[],
@@ -60,6 +61,7 @@ export function computeShutterRects(
   fovArcsec: number,
   displaySize: number,
   objectId: string,
+  memberColors?: Record<string, string>,
 ): ShutterRect[] {
   const pxPerArcsec = displaySize / fovArcsec;
   const cosDecFactor = Math.cos(centerDec * Math.PI / 180);
@@ -86,8 +88,12 @@ export function computeShutterRects(
     const pad = 20;
     if (x < -pad || x > displaySize + pad || y < -pad || y > displaySize + pad) continue;
 
-    const isCurrentObject = shutter.object_id === objectId;
     const isStuck = shutter.shutter_state === 'stuck_closed';
+    const memberColor = memberColors?.[shutter.object_id];
+    const isCurrentObject = !memberColors && shutter.object_id === objectId;
+
+    // When memberColors is provided, skip shutters that don't belong to a listed member
+    if (memberColors && !memberColor && !isStuck) continue;
 
     let rect: ShutterRect;
 
@@ -98,6 +104,14 @@ export function computeShutterRects(
         fill: 'none', fillOpacity: 0,
         stroke: '#ef4444', strokeOpacity: 1, strokeWidth: 1.5,
         strokeDasharray: '3,2',
+      };
+    } else if (memberColor) {
+      // Multi-target coloring: use assigned member color
+      rect = {
+        x, y, width: wPx, height: hPx,
+        rotation: -shutter.position_angle,
+        fill: memberColor, fillOpacity: 0.25,
+        stroke: memberColor, strokeOpacity: 1, strokeWidth: 1,
       };
     } else if (isCurrentObject) {
       rect = {

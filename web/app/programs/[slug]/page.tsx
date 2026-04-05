@@ -238,7 +238,7 @@ export default function ProgramDetailPage() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <Link
-                          href={`/spectra?programs=${program.slug}&observations=${obs.observation}`}
+                          href={`/nirspec?programs=${program.slug}&observations=${obs.observation}`}
                           className="text-primary hover:text-primary-hover transition-colors"
                           title="View spectra"
                         >
@@ -257,7 +257,7 @@ export default function ProgramDetailPage() {
       {/* View All Link */}
       <div className="text-center">
         <Link
-          href={`/spectra?programs=${program.slug}`}
+          href={`/nirspec?programs=${program.slug}`}
           className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
         >
           View all spectra from this program

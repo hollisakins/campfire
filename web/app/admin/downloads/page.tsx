@@ -368,7 +368,7 @@ export default function AdminDownloadsPage() {
                         {index + 1}
                       </span>
                       <Link
-                        href={`/spectra/${item.target_id}`}
+                        href={`/nirspec/targets/${item.target_id}`}
                         className="text-sm font-mono text-primary hover:underline"
                       >
                         {item.target_id}

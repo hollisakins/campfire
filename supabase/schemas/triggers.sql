@@ -97,6 +97,47 @@ END;
 $$;
 
 
+-- 4. update_object_best_redshift
+--    Recomputes objects.best_redshift and best_redshift_quality from the
+--    highest-quality, highest-SNR member target when redshift-related
+--    columns change on a target.
+DROP FUNCTION IF EXISTS public.update_object_best_redshift CASCADE;
+
+CREATE OR REPLACE FUNCTION public.update_object_best_redshift() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+BEGIN
+    IF NEW.object_id IS NULL THEN RETURN NEW; END IF;
+
+    UPDATE objects SET
+        best_redshift = sub.redshift,
+        best_redshift_quality = sub.redshift_quality
+    FROM (
+        SELECT redshift::double precision, redshift_quality
+        FROM targets
+        WHERE object_id = NEW.object_id
+          AND redshift IS NOT NULL
+        ORDER BY redshift_quality DESC NULLS LAST,
+                 max_snr DESC NULLS LAST
+        LIMIT 1
+    ) sub
+    WHERE objects.id = NEW.object_id;
+
+    -- Handle case where no member has a redshift (all Impossible)
+    IF NOT FOUND THEN
+        UPDATE objects SET
+            best_redshift = NULL,
+            best_redshift_quality = (
+                SELECT MAX(redshift_quality) FROM targets WHERE object_id = NEW.object_id
+            )
+        WHERE objects.id = NEW.object_id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
 -- ============================================================
 -- TRIGGERS
 -- ============================================================
@@ -115,3 +156,10 @@ DROP TRIGGER IF EXISTS update_max_exposure_time_trigger ON public.spectra;
 CREATE TRIGGER update_max_exposure_time_trigger
   AFTER INSERT OR DELETE OR UPDATE ON public.spectra
   FOR EACH ROW EXECUTE FUNCTION public.update_target_max_exposure_time();
+
+DROP TRIGGER IF EXISTS update_object_best_redshift_trigger ON public.targets;
+CREATE TRIGGER update_object_best_redshift_trigger
+  AFTER UPDATE OF redshift_quality, redshift_inspected ON public.targets
+  FOR EACH ROW
+  WHEN (NEW.object_id IS NOT NULL)
+  EXECUTE FUNCTION public.update_object_best_redshift();

@@ -111,6 +111,7 @@ export function parsePaginationFromURL(searchParams: URLSearchParams): { page: n
 export function parseViewModeFromURL(searchParams: URLSearchParams): ViewMode {
   const view = searchParams.get('view');
   if (view === 'spectra') return 'spectra';
+  if (view === 'objects') return 'objects';
   return 'targets';
 }
 

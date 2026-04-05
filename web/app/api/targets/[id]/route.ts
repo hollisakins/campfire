@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 
 /**
- * GET /api/objects/[id]
+ * GET /api/targets/[id]
  *
  * Fetch a single target with inspection details.
  */
@@ -62,7 +62,7 @@ export async function GET(
 }
 
 /**
- * PATCH /api/objects/[id]
+ * PATCH /api/targets/[id]
  *
  * Update inspection fields on a target.
  * Requires can_comment permission.

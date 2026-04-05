@@ -48,7 +48,7 @@ def get_obs_name(summary: Table) -> str:
     return summary.meta.get('obs_name', '')
 
 
-def get_unique_objects(summary: Table) -> list[dict]:
+def get_unique_targets(summary: Table) -> list[dict]:
     """
     Deduplicate by object_id and return one record per unique target.
 

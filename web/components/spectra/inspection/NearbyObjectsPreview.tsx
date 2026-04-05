@@ -112,7 +112,7 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
                   onNavigate(obj.target_id);
                 } else {
                   window.open(
-                    `/spectra/${encodeURIComponent(obj.target_id)}`,
+                    `/nirspec/targets/${encodeURIComponent(obj.target_id)}`,
                     '_blank'
                   );
                 }

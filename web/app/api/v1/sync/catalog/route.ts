@@ -10,7 +10,7 @@ import { getAccessiblePrograms } from '@/lib/api-helpers';
  * Returns objects with nested spectra, paginated, with optional
  * incremental filtering via updated_since.
  *
- * Much faster than /api/v1/objects because it uses a simple RPC
+ * Much faster than /api/v1/targets because it uses a simple RPC
  * without complex sorting, distance computation, or window functions.
  *
  * Query parameters:
@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data, error } = await supabase.rpc('get_objects_for_sync', {
+    const { data, error } = await supabase.rpc('get_targets_for_sync', {
       p_program_slugs: accessibleProgramSlugs,
       p_updated_since: updatedSince,
       p_limit: limit,
@@ -62,10 +62,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const result = data?.[0] || { objects: [], total_count: 0, total_accessible_count: 0 };
+    const result = data?.[0] || { targets: [], total_count: 0, total_accessible_count: 0 };
 
     return NextResponse.json({
-      data: result.objects || [],
+      data: result.targets || [],
       pagination: {
         total: result.total_count || 0,
         limit,

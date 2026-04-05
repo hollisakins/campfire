@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import os
+import subprocess
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -321,6 +322,7 @@ def fetch_spectra(supabase, target_ids: list[str]) -> list[dict]:
         all_spectra.extend(resp.data)
 
     return all_spectra
+
 
 
 def fetch_comments(supabase, target_int_ids: list[int]) -> list[dict]:
@@ -644,10 +646,111 @@ def main():
         '--objects-per-program', type=int, default=5,
         help='Maximum objects to select per program (default: 5)'
     )
+    parser.add_argument(
+        '--full', action='store_true',
+        help='Full production replica via pg_dump (all tables, all rows)'
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).parent.parent
-    output_path = project_root / 'supabase' / 'seed.sql'
+    supabase_dir = project_root / 'supabase'
+    output_path = supabase_dir / 'seed.sql'
+
+    if args.full:
+        generate_full_seed(project_root, supabase_dir, output_path)
+    else:
+        generate_sample_seed(args, project_root, supabase_dir, output_path)
+
+
+def generate_full_seed(project_root: Path, supabase_dir: Path, output_path: Path):
+    """
+    Generate a full production replica using supabase db dump.
+
+    Combines:
+    1. Test auth users + profiles + access codes (Python-generated)
+    2. Full data dump via `supabase db dump --data-only` (pg_dump)
+    3. Materialized view refreshes
+    """
+    print("=== Full production seed ===\n")
+
+    programs = load_programs()
+
+    # Step 1: dump production data via supabase CLI
+    print("Running supabase db dump --data-only --linked ...")
+    dump_result = subprocess.run(
+        ['supabase', 'db', 'dump', '--data-only', '--linked'],
+        capture_output=True,
+        text=True,
+        cwd=supabase_dir,
+    )
+    if dump_result.returncode != 0:
+        print(f"Error: supabase db dump failed:\n{dump_result.stderr}")
+        sys.exit(1)
+
+    dump_sql = dump_result.stdout
+    print(f"  Dump size: {len(dump_sql):,} bytes")
+
+    # Step 2: assemble seed
+    sql_parts = []
+
+    sql_parts.append(f"""-- ============================================
+-- CAMPFIRE Seed Data (FULL production replica)
+-- Generated: {datetime.now().isoformat()}
+--
+-- Test Users:
+--   admin@campfire.dev / password123 (admin, all programs)
+--   user@campfire.dev  / password123 (regular, public programs)
+--   viewer@campfire.dev / password123 (read-only, public programs)
+-- ============================================
+
+-- Migration sets search_path to empty; restore it for seed
+SET search_path TO public, auth, extensions;
+
+""")
+
+    # Auth users must come before the dump (dump may reference user IDs in
+    # comments/audit log, but we remap those to test users anyway — the dump
+    # has the real UUIDs which won't exist locally. We insert test users first,
+    # then the dump's FKs to auth.users will fail for non-test users.
+    # Solution: disable FK checks during dump load.)
+    sql_parts.append("-- Disable FK checks for dump load (production user UUIDs don't exist locally)")
+    sql_parts.append("SET session_replication_role = 'replica';\n")
+
+    sql_parts.append(generate_auth_users_sql())
+    sql_parts.append(generate_user_profiles_sql())
+    sql_parts.append(generate_user_program_access_sql(programs))
+
+    # The dump includes all public schema data
+    sql_parts.append('-- ============================================')
+    sql_parts.append('-- Production data dump (pg_dump --data-only)')
+    sql_parts.append('-- ============================================\n')
+    sql_parts.append(dump_sql)
+
+    # Re-enable FK checks
+    sql_parts.append("\n-- Re-enable FK checks")
+    sql_parts.append("SET session_replication_role = 'origin';\n")
+
+    # Refresh materialized views
+    sql_parts.append('-- ============================================')
+    sql_parts.append('-- Materialized View Refresh')
+    sql_parts.append('-- ============================================\n')
+    sql_parts.append('REFRESH MATERIALIZED VIEW public.mv_filter_options;')
+    sql_parts.append('REFRESH MATERIALIZED VIEW public.mv_programs_overview;\n')
+
+    # Write output
+    full_sql = '\n'.join(sql_parts)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, 'w') as f:
+        f.write(full_sql)
+
+    print(f"\nSeed file written to: {output_path}")
+    print(f"  Size: {len(full_sql):,} bytes")
+    print(f"\nTo apply: supabase db reset")
+
+
+def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_path: Path):
+    """Generate a small stratified sample seed via Python API queries."""
+    print("=== Sample seed ===\n")
 
     # Load configuration
     print("Loading configuration...")
@@ -676,7 +779,6 @@ def main():
     gto_wide_cosmos = [o for o in objects if o.get('program_id') == 1214]
     if gto_wide_cosmos and not any(o.get('program_id') == 1213 for o in objects):
         print("\n  Injecting synthetic GTO WIDE EGS objects (PID 1213)...")
-        template = gto_wide_cosmos[0]
         for i, sid in enumerate([90001, 90002, 90003]):
             synth = {
                 'id': max_id + i,
@@ -730,7 +832,7 @@ def main():
 
     # Header
     sql_parts.append(f"""-- ============================================
--- CAMPFIRE Seed Data
+-- CAMPFIRE Seed Data (sample)
 -- Generated: {datetime.now().isoformat()}
 -- Objects: {len(objects)} | Observations: {len(observations)} | Spectra: {len(spectra)}
 -- Comments: {len(comments)} | Audit Entries: {len(flag_entries)}
@@ -767,7 +869,7 @@ SET search_path TO public, auth, extensions;
 
     print(f"\nSeed file written to: {output_path}")
     print(f"  Size: {len(full_sql):,} bytes")
-    print(f"\nTo apply: cd supabase && supabase db reset")
+    print(f"\nTo apply: supabase db reset")
 
 
 if __name__ == '__main__':

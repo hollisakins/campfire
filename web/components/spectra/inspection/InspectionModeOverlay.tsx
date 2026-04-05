@@ -261,7 +261,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     clearObjectCache();
 
     const qs = filterStr;
-    router.push(`/spectra/${encodeURIComponent(currentSpectrum.target_id)}${qs ? `?${qs}` : ''}`);
+    router.push(`/nirspec/targets/${encodeURIComponent(currentSpectrum.target_id)}${qs ? `?${qs}` : ''}`);
   }, [router, currentSpectrum.target_id, filterStr, clearGratingCache, clearObjectCache, inspectionState]);
 
   const handleCycleGrating = useCallback(() => {

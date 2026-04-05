@@ -596,6 +596,174 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_targets_paginated TO service_role;
 
 
 -- =============================================================================
+-- get_targets_for_sync
+-- (lightweight bulk fetch for Python client catalog sync)
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.get_targets_for_sync(
+  p_program_slugs TEXT[],
+  p_updated_since TIMESTAMP WITHOUT TIME ZONE DEFAULT NULL,
+  p_limit INTEGER DEFAULT 1000,
+  p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE(targets JSONB, total_count BIGINT, total_accessible_count BIGINT)
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH matched AS (
+    SELECT t.id, t.target_id, t.program_slug, t.field, t.observation,
+           t.ra, t.dec, t.redshift, t.redshift_auto, t.redshift_inspected,
+           t.redshift_quality, t.spectral_features, t.object_flags, t.dq_flags,
+           t.max_snr, t.max_exposure_time,
+           t.last_inspected_at, t.last_inspected_by, t.created_at, t.updated_at
+    FROM targets t
+    WHERE t.program_slug = ANY(p_program_slugs)
+      AND (p_updated_since IS NULL OR t.updated_at > p_updated_since)
+    ORDER BY t.target_id
+    LIMIT p_limit OFFSET p_offset
+  ),
+  total AS (
+    SELECT COUNT(*) AS cnt
+    FROM targets t
+    WHERE t.program_slug = ANY(p_program_slugs)
+      AND (p_updated_since IS NULL OR t.updated_at > p_updated_since)
+  ),
+  accessible AS (
+    SELECT COUNT(*) AS cnt
+    FROM targets t
+    WHERE t.program_slug = ANY(p_program_slugs)
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', m.id,
+        'target_id', m.target_id,
+        'program_slug', m.program_slug,
+        'program_name', pr.program_name,
+        'field', m.field,
+        'observation', m.observation,
+        'ra', m.ra,
+        'dec', m.dec,
+        'redshift', m.redshift,
+        'redshift_auto', m.redshift_auto,
+        'redshift_inspected', m.redshift_inspected,
+        'redshift_quality', m.redshift_quality,
+        'spectral_features', m.spectral_features,
+        'object_flags', m.object_flags,
+        'dq_flags', m.dq_flags,
+        'max_snr', m.max_snr,
+        'max_exposure_time', m.max_exposure_time,
+        'last_inspected_at', m.last_inspected_at,
+        'last_inspected_by', m.last_inspected_by,
+        'created_at', m.created_at,
+        'updated_at', m.updated_at,
+        'spectra', COALESCE(
+          (SELECT jsonb_agg(jsonb_build_object(
+            'id', s.id,
+            'target_id', s.target_id,
+            'grating', s.grating,
+            'fits_path', s.fits_path,
+            'file_hash', s.file_hash,
+            'file_size', s.file_size,
+            'signal_to_noise', s.signal_to_noise,
+            'exposure_time', s.exposure_time,
+            'reduction_version', s.reduction_version
+          )) FROM spectra s WHERE s.target_id = m.target_id),
+          '[]'::jsonb
+        )
+      )
+    ), '[]'::jsonb),
+    COALESCE((SELECT cnt FROM total), 0)::BIGINT,
+    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
+  FROM matched m
+  LEFT JOIN programs pr ON m.program_slug = pr.slug;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_targets_for_sync TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_targets_for_sync TO service_role;
+
+
+-- =============================================================================
+-- get_objects_for_sync
+-- (lightweight bulk fetch for Python client objects catalog sync)
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
+  p_program_slugs TEXT[],
+  p_updated_since TIMESTAMPTZ DEFAULT NULL,
+  p_limit INTEGER DEFAULT 1000,
+  p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH matched AS (
+    SELECT o.id, o.object_id, o.field, o.ra, o.dec,
+           o.n_targets, o.n_spectra, o.programs, o.gratings,
+           o.max_snr, o.max_exposure_time,
+           o.best_redshift, o.best_redshift_quality,
+           o.created_at, o.updated_at
+    FROM objects o
+    WHERE o.programs && p_program_slugs
+      AND (p_updated_since IS NULL OR o.updated_at > p_updated_since)
+    ORDER BY o.object_id
+    LIMIT p_limit OFFSET p_offset
+  ),
+  total AS (
+    SELECT COUNT(*) AS cnt
+    FROM objects o
+    WHERE o.programs && p_program_slugs
+      AND (p_updated_since IS NULL OR o.updated_at > p_updated_since)
+  ),
+  accessible AS (
+    SELECT COUNT(*) AS cnt
+    FROM objects o
+    WHERE o.programs && p_program_slugs
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', m.id,
+        'object_id', m.object_id,
+        'field', m.field,
+        'ra', m.ra,
+        'dec', m.dec,
+        'n_targets', m.n_targets,
+        'n_spectra', m.n_spectra,
+        'programs', m.programs,
+        'gratings', m.gratings,
+        'max_snr', m.max_snr,
+        'max_exposure_time', m.max_exposure_time,
+        'best_redshift', m.best_redshift,
+        'best_redshift_quality', m.best_redshift_quality,
+        'created_at', m.created_at,
+        'updated_at', m.updated_at,
+        'member_target_ids', COALESCE(
+          (SELECT jsonb_agg(t.target_id ORDER BY t.target_id)
+           FROM targets t
+           WHERE t.object_id = m.id
+             AND t.program_slug = ANY(p_program_slugs)),
+          '[]'::jsonb
+        )
+      )
+    ), '[]'::jsonb),
+    COALESCE((SELECT cnt FROM total), 0)::BIGINT,
+    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
+  FROM matched m;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync TO service_role;
+
+
+-- =============================================================================
 -- get_filtered_spectra_paginated
 -- (final version: per-spectrum S/N and exposure_time filtering)
 -- =============================================================================
@@ -934,6 +1102,377 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_spectra_paginated TO service_role;
 
 
 -- =============================================================================
+-- get_filtered_objects_paginated
+-- (one row per unique sky position, cross-matched across programs)
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
+  p_program_slugs TEXT[],
+  p_filter_programs TEXT[] DEFAULT NULL,
+  p_fields TEXT[] DEFAULT NULL,
+  p_gratings TEXT[] DEFAULT NULL,
+  p_gratings_mode TEXT DEFAULT 'any',
+  p_redshift_quality INTEGER[] DEFAULT NULL,
+  p_redshift_min DOUBLE PRECISION DEFAULT NULL,
+  p_redshift_max DOUBLE PRECISION DEFAULT NULL,
+  p_max_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_max_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_max_exposure_time_min DOUBLE PRECISION DEFAULT NULL,
+  p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
+  p_search TEXT DEFAULT NULL,
+  p_inspected_only BOOLEAN DEFAULT NULL,
+  p_coord_ra DOUBLE PRECISION DEFAULT NULL,
+  p_coord_dec DOUBLE PRECISION DEFAULT NULL,
+  p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
+  p_sort_column TEXT DEFAULT 'object_id',
+  p_sort_direction TEXT DEFAULT 'asc',
+  p_page INTEGER DEFAULT 1,
+  p_page_size INTEGER DEFAULT 50
+)
+RETURNS TABLE(targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER)
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+DECLARE
+  v_filtered_program_slugs TEXT[];
+  v_coord_search_active BOOLEAN;
+  v_grating_filter_active BOOLEAN;
+  v_gratings_mode TEXT;
+  v_offset INTEGER;
+  v_total_count BIGINT;
+BEGIN
+  v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
+  v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
+  v_gratings_mode := COALESCE(p_gratings_mode, 'any');
+  IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
+    v_gratings_mode := 'any';
+  END IF;
+
+  IF p_sort_direction NOT IN ('asc', 'desc') THEN
+    p_sort_direction := 'asc';
+  END IF;
+
+  IF NOT (p_sort_column IN (
+    'object_id', 'field', 'ra', 'dec', 'best_redshift', 'best_redshift_quality',
+    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time'
+  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
+    p_sort_column := 'object_id';
+  END IF;
+
+  IF v_coord_search_active AND p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN
+    p_sort_column := 'distance';
+  END IF;
+
+  v_offset := (COALESCE(p_page, 1) - 1) * COALESCE(p_page_size, 50);
+
+  -- Intersect user-accessible programs with filter selection
+  IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
+    SELECT ARRAY(
+      SELECT unnest(p_program_slugs)
+      INTERSECT
+      SELECT unnest(p_filter_programs)
+    ) INTO v_filtered_program_slugs;
+  ELSE
+    v_filtered_program_slugs := p_program_slugs;
+  END IF;
+
+  IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN
+    RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size;
+    RETURN;
+  END IF;
+
+  -- Step 1: count
+  SELECT COUNT(*) INTO v_total_count
+  FROM objects o
+  WHERE
+    -- Access control: object must have at least one accessible program
+    o.programs && v_filtered_program_slugs
+    AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
+    AND (
+      NOT v_grating_filter_active
+      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
+      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
+      OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+    )
+    AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.best_redshift_quality = ANY(p_redshift_quality))
+    AND (p_redshift_min IS NULL OR o.best_redshift >= p_redshift_min)
+    AND (p_redshift_max IS NULL OR o.best_redshift <= p_redshift_max)
+    AND (p_max_snr_min IS NULL OR o.max_snr >= p_max_snr_min)
+    AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
+    AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
+    AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+    AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
+      OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
+    AND (
+      p_inspected_only IS NULL
+      OR (p_inspected_only = TRUE AND o.best_redshift_quality > 0)
+      OR (p_inspected_only = FALSE AND o.best_redshift_quality = 0)
+    )
+    AND (
+      NOT v_coord_search_active
+      OR (
+        o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
+        AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
+        AND 2 * DEGREES(ASIN(SQRT(
+          POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+          COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+          POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+        ))) <= p_radius_degrees
+      )
+    );
+
+  -- Step 2: fetch page
+  RETURN QUERY
+  WITH filtered_objects AS (
+    SELECT
+      o.id,
+      o.object_id,
+      o.field,
+      o.ra,
+      o.dec,
+      o.n_targets,
+      o.n_spectra,
+      o.programs,
+      o.gratings,
+      o.max_snr,
+      o.max_exposure_time,
+      o.best_redshift,
+      o.best_redshift_quality,
+      o.created_at,
+      CASE
+        WHEN v_coord_search_active THEN
+          2 * DEGREES(ASIN(SQRT(
+            POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+            COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+            POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+          )))
+        ELSE NULL
+      END AS distance
+    FROM objects o
+    WHERE
+      o.programs && v_filtered_program_slugs
+      AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
+      AND (
+        NOT v_grating_filter_active
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
+        OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+      )
+      AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.best_redshift_quality = ANY(p_redshift_quality))
+      AND (p_redshift_min IS NULL OR o.best_redshift >= p_redshift_min)
+      AND (p_redshift_max IS NULL OR o.best_redshift <= p_redshift_max)
+      AND (p_max_snr_min IS NULL OR o.max_snr >= p_max_snr_min)
+      AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
+      AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
+      AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+      AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
+      OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
+      AND (
+        p_inspected_only IS NULL
+        OR (p_inspected_only = TRUE AND o.best_redshift_quality > 0)
+        OR (p_inspected_only = FALSE AND o.best_redshift_quality = 0)
+      )
+      AND (
+        NOT v_coord_search_active
+        OR (
+          o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
+          AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
+          AND 2 * DEGREES(ASIN(SQRT(
+            POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+            COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+            POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+          ))) <= p_radius_degrees
+        )
+      )
+    ORDER BY
+      CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'asc' THEN
+        2 * DEGREES(ASIN(SQRT(
+          POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+          COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+          POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+        ))) END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'desc' THEN
+        2 * DEGREES(ASIN(SQRT(
+          POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+          COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+          POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+        ))) END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN o.object_id END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'object_id' AND p_sort_direction = 'desc' THEN o.object_id END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc' THEN o.field END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN o.field END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN o.ra END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN o.ra END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN o.dec END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'desc' THEN o.dec END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'best_redshift' AND p_sort_direction = 'asc' THEN o.best_redshift END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'best_redshift' AND p_sort_direction = 'desc' THEN o.best_redshift END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'best_redshift_quality' AND p_sort_direction = 'asc' THEN o.best_redshift_quality END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'best_redshift_quality' AND p_sort_direction = 'desc' THEN o.best_redshift_quality END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'n_targets' AND p_sort_direction = 'asc' THEN o.n_targets END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'n_targets' AND p_sort_direction = 'desc' THEN o.n_targets END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'n_spectra' AND p_sort_direction = 'asc' THEN o.n_spectra END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'n_spectra' AND p_sort_direction = 'desc' THEN o.n_spectra END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'asc' THEN o.max_snr END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN o.max_snr END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN o.max_exposure_time END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN o.max_exposure_time END DESC NULLS LAST,
+      o.object_id ASC
+    LIMIT p_page_size OFFSET v_offset
+  ),
+  with_members AS (
+    SELECT
+      jsonb_build_object(
+        'id', fo.id,
+        'object_id', fo.object_id,
+        'field', fo.field,
+        'ra', fo.ra,
+        'dec', fo.dec,
+        'n_targets', fo.n_targets,
+        'n_spectra', fo.n_spectra,
+        'programs', fo.programs,
+        'gratings', fo.gratings,
+        'max_snr', fo.max_snr,
+        'max_exposure_time', fo.max_exposure_time,
+        'best_redshift', fo.best_redshift,
+        'best_redshift_quality', fo.best_redshift_quality,
+        'created_at', fo.created_at,
+        'distance', fo.distance,
+        'member_targets', COALESCE(
+          (SELECT jsonb_agg(
+            jsonb_build_object(
+              'target_id', t.target_id,
+              'program_slug', t.program_slug,
+              'observation', t.observation,
+              'redshift', t.redshift,
+              'redshift_quality', t.redshift_quality
+            )
+          )
+          FROM targets t
+          WHERE t.object_id = fo.id
+            AND t.program_slug = ANY(v_filtered_program_slugs)
+          ),
+          '[]'::jsonb
+        )
+      ) AS obj_json
+    FROM filtered_objects fo
+  )
+  SELECT
+    COALESCE(jsonb_agg(wm.obj_json), '[]'::jsonb),
+    v_total_count,
+    p_page,
+    p_page_size
+  FROM with_members wm;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_filtered_objects_paginated TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_filtered_objects_paginated TO service_role;
+
+
+-- =============================================================================
+-- get_filtered_object_ids
+-- (lightweight: returns only object_id strings for map marker filtering)
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
+  p_program_slugs TEXT[],
+  p_filter_programs TEXT[] DEFAULT NULL,
+  p_fields TEXT[] DEFAULT NULL,
+  p_gratings TEXT[] DEFAULT NULL,
+  p_gratings_mode TEXT DEFAULT 'any',
+  p_redshift_quality INTEGER[] DEFAULT NULL,
+  p_redshift_min DOUBLE PRECISION DEFAULT NULL,
+  p_redshift_max DOUBLE PRECISION DEFAULT NULL,
+  p_max_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_max_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_max_exposure_time_min DOUBLE PRECISION DEFAULT NULL,
+  p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
+  p_search TEXT DEFAULT NULL,
+  p_inspected_only BOOLEAN DEFAULT NULL,
+  p_coord_ra DOUBLE PRECISION DEFAULT NULL,
+  p_coord_dec DOUBLE PRECISION DEFAULT NULL,
+  p_radius_degrees DOUBLE PRECISION DEFAULT NULL
+)
+RETURNS TABLE(object_id TEXT)
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+DECLARE
+  v_filtered_program_slugs TEXT[];
+  v_coord_search_active BOOLEAN;
+  v_grating_filter_active BOOLEAN;
+  v_gratings_mode TEXT;
+BEGIN
+  v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
+  v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
+  v_gratings_mode := COALESCE(p_gratings_mode, 'any');
+  IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
+    v_gratings_mode := 'any';
+  END IF;
+
+  -- Intersect user-accessible programs with filter selection
+  IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
+    SELECT ARRAY(
+      SELECT unnest(p_program_slugs)
+      INTERSECT
+      SELECT unnest(p_filter_programs)
+    ) INTO v_filtered_program_slugs;
+  ELSE
+    v_filtered_program_slugs := p_program_slugs;
+  END IF;
+
+  IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN
+    RETURN;
+  END IF;
+
+  RETURN QUERY
+  SELECT o.object_id
+  FROM objects o
+  WHERE
+    o.programs && v_filtered_program_slugs
+    AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
+    AND (
+      NOT v_grating_filter_active
+      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
+      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
+      OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+    )
+    AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.best_redshift_quality = ANY(p_redshift_quality))
+    AND (p_redshift_min IS NULL OR o.best_redshift >= p_redshift_min)
+    AND (p_redshift_max IS NULL OR o.best_redshift <= p_redshift_max)
+    AND (p_max_snr_min IS NULL OR o.max_snr >= p_max_snr_min)
+    AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
+    AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
+    AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+    AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
+      OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
+    AND (
+      p_inspected_only IS NULL
+      OR (p_inspected_only = TRUE AND o.best_redshift_quality > 0)
+      OR (p_inspected_only = FALSE AND o.best_redshift_quality = 0)
+    )
+    AND (
+      NOT v_coord_search_active
+      OR (
+        o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
+        AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
+        AND 2 * DEGREES(ASIN(SQRT(
+          POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+          COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+          POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+        ))) <= p_radius_degrees
+      )
+    )
+  ORDER BY o.object_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_filtered_object_ids TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_filtered_object_ids TO service_role;
+
+
+-- =============================================================================
 -- get_adjacent_targets
 -- =============================================================================
 
@@ -1158,6 +1697,190 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_adjacent_targets TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_adjacent_targets TO service_role;
+
+
+-- =============================================================================
+-- get_adjacent_objects
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
+  p_current_object_id TEXT,
+  p_program_slugs TEXT[],
+  p_filter_programs TEXT[] DEFAULT NULL,
+  p_fields TEXT[] DEFAULT NULL,
+  p_gratings TEXT[] DEFAULT NULL,
+  p_gratings_mode TEXT DEFAULT 'any',
+  p_redshift_quality INTEGER[] DEFAULT NULL,
+  p_redshift_min DOUBLE PRECISION DEFAULT NULL,
+  p_redshift_max DOUBLE PRECISION DEFAULT NULL,
+  p_max_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_max_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_max_exposure_time_min DOUBLE PRECISION DEFAULT NULL,
+  p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
+  p_search TEXT DEFAULT NULL,
+  p_inspected_only BOOLEAN DEFAULT NULL,
+  p_coord_ra DOUBLE PRECISION DEFAULT NULL,
+  p_coord_dec DOUBLE PRECISION DEFAULT NULL,
+  p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
+  p_sort_column TEXT DEFAULT 'object_id',
+  p_sort_direction TEXT DEFAULT 'asc'
+)
+RETURNS TABLE(prev_object_id TEXT, next_object_id TEXT, current_index BIGINT, total_count BIGINT)
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+DECLARE
+  v_filtered_program_slugs TEXT[];
+  v_coord_search_active BOOLEAN;
+  v_grating_filter_active BOOLEAN;
+  v_gratings_mode TEXT;
+  v_sort_is_text BOOLEAN;
+BEGIN
+  v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
+  v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
+  v_gratings_mode := COALESCE(p_gratings_mode, 'any');
+  IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN v_gratings_mode := 'any'; END IF;
+  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
+  IF NOT (p_sort_column IN (
+    'object_id', 'field', 'ra', 'dec', 'best_redshift', 'best_redshift_quality',
+    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time'
+  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
+    p_sort_column := 'object_id';
+  END IF;
+  IF v_coord_search_active AND p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN
+    p_sort_column := 'distance';
+    p_sort_direction := 'asc';
+  END IF;
+  v_sort_is_text := p_sort_column IN ('object_id', 'field');
+
+  IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
+    SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs))
+    INTO v_filtered_program_slugs;
+  ELSE
+    v_filtered_program_slugs := p_program_slugs;
+  END IF;
+  IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN
+    RETURN QUERY SELECT NULL::TEXT, NULL::TEXT, 0::BIGINT, 0::BIGINT;
+    RETURN;
+  END IF;
+
+  RETURN QUERY
+  WITH filtered_objects AS MATERIALIZED (
+    SELECT
+      o.object_id,
+      CASE WHEN v_coord_search_active THEN
+        2 * DEGREES(ASIN(SQRT(
+          POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+          COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+          POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+        )))
+      ELSE NULL END AS distance,
+      o.field, o.ra, o.dec, o.best_redshift, o.best_redshift_quality,
+      o.n_targets, o.n_spectra, o.max_snr, o.max_exposure_time
+    FROM objects o
+    WHERE
+      o.programs && v_filtered_program_slugs
+      AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
+      AND (
+        NOT v_grating_filter_active
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
+        OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+      )
+      AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.best_redshift_quality = ANY(p_redshift_quality))
+      AND (p_redshift_min IS NULL OR o.best_redshift >= p_redshift_min)
+      AND (p_redshift_max IS NULL OR o.best_redshift <= p_redshift_max)
+      AND (p_max_snr_min IS NULL OR o.max_snr >= p_max_snr_min)
+      AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
+      AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
+      AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+      AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
+        OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
+      AND (p_inspected_only IS NULL
+        OR (p_inspected_only = TRUE AND o.best_redshift_quality > 0)
+        OR (p_inspected_only = FALSE AND o.best_redshift_quality = 0))
+      AND (NOT v_coord_search_active OR (
+        o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
+        AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
+      ))
+  ),
+  distance_filtered AS MATERIALIZED (
+    SELECT
+      fo.*,
+      CASE p_sort_column
+        WHEN 'object_id' THEN fo.object_id WHEN 'field' THEN fo.field ELSE NULL
+      END AS sort_text,
+      CASE p_sort_column
+        WHEN 'ra' THEN fo.ra WHEN 'dec' THEN fo.dec
+        WHEN 'best_redshift' THEN fo.best_redshift
+        WHEN 'best_redshift_quality' THEN fo.best_redshift_quality::DOUBLE PRECISION
+        WHEN 'n_targets' THEN fo.n_targets::DOUBLE PRECISION
+        WHEN 'n_spectra' THEN fo.n_spectra::DOUBLE PRECISION
+        WHEN 'max_snr' THEN fo.max_snr WHEN 'max_exposure_time' THEN fo.max_exposure_time
+        WHEN 'distance' THEN fo.distance ELSE NULL
+      END AS sort_num
+    FROM filtered_objects fo
+    WHERE NOT v_coord_search_active OR fo.distance <= p_radius_degrees
+  ),
+  current_obj AS (
+    SELECT df.sort_text, df.sort_num, df.object_id FROM distance_filtered df WHERE df.object_id = p_current_object_id
+  )
+  SELECT
+    (SELECT df.object_id FROM distance_filtered df, current_obj c
+     WHERE CASE WHEN v_sort_is_text THEN
+       (CASE WHEN p_sort_direction = 'asc' THEN df.sort_text < c.sort_text ELSE df.sort_text > c.sort_text END)
+       OR (df.sort_text IS NOT DISTINCT FROM c.sort_text AND df.object_id < c.object_id)
+       OR (df.sort_text IS NOT NULL AND c.sort_text IS NULL)
+     ELSE
+       (CASE WHEN p_sort_direction = 'asc' THEN df.sort_num < c.sort_num ELSE df.sort_num > c.sort_num END)
+       OR (df.sort_num IS NOT DISTINCT FROM c.sort_num AND df.object_id < c.object_id)
+       OR (df.sort_num IS NOT NULL AND c.sort_num IS NULL)
+     END
+     ORDER BY
+       CASE WHEN v_sort_is_text AND p_sort_direction = 'asc' THEN df.sort_text END DESC NULLS FIRST,
+       CASE WHEN v_sort_is_text AND p_sort_direction = 'desc' THEN df.sort_text END ASC NULLS FIRST,
+       CASE WHEN NOT v_sort_is_text AND p_sort_direction = 'asc' THEN df.sort_num END DESC NULLS FIRST,
+       CASE WHEN NOT v_sort_is_text AND p_sort_direction = 'desc' THEN df.sort_num END ASC NULLS FIRST,
+       df.object_id DESC
+     LIMIT 1
+    ) AS prev_object_id,
+    (SELECT df.object_id FROM distance_filtered df, current_obj c
+     WHERE CASE WHEN v_sort_is_text THEN
+       (CASE WHEN p_sort_direction = 'asc' THEN df.sort_text > c.sort_text ELSE df.sort_text < c.sort_text END)
+       OR (df.sort_text IS NOT DISTINCT FROM c.sort_text AND df.object_id > c.object_id)
+       OR (c.sort_text IS NOT NULL AND df.sort_text IS NULL)
+     ELSE
+       (CASE WHEN p_sort_direction = 'asc' THEN df.sort_num > c.sort_num ELSE df.sort_num < c.sort_num END)
+       OR (df.sort_num IS NOT DISTINCT FROM c.sort_num AND df.object_id > c.object_id)
+       OR (c.sort_num IS NOT NULL AND df.sort_num IS NULL)
+     END
+     ORDER BY
+       CASE WHEN v_sort_is_text AND p_sort_direction = 'asc' THEN df.sort_text END ASC NULLS LAST,
+       CASE WHEN v_sort_is_text AND p_sort_direction = 'desc' THEN df.sort_text END DESC NULLS LAST,
+       CASE WHEN NOT v_sort_is_text AND p_sort_direction = 'asc' THEN df.sort_num END ASC NULLS LAST,
+       CASE WHEN NOT v_sort_is_text AND p_sort_direction = 'desc' THEN df.sort_num END DESC NULLS LAST,
+       df.object_id ASC
+     LIMIT 1
+    ) AS next_object_id,
+    CASE WHEN EXISTS (SELECT 1 FROM current_obj) THEN (
+      SELECT COUNT(*) + 1
+      FROM distance_filtered df, current_obj c
+      WHERE CASE WHEN v_sort_is_text THEN
+        (CASE WHEN p_sort_direction = 'asc' THEN df.sort_text < c.sort_text ELSE df.sort_text > c.sort_text END)
+        OR (df.sort_text IS NOT DISTINCT FROM c.sort_text AND df.object_id < c.object_id)
+        OR (df.sort_text IS NOT NULL AND c.sort_text IS NULL)
+      ELSE
+        (CASE WHEN p_sort_direction = 'asc' THEN df.sort_num < c.sort_num ELSE df.sort_num > c.sort_num END)
+        OR (df.sort_num IS NOT DISTINCT FROM c.sort_num AND df.object_id < c.object_id)
+        OR (df.sort_num IS NOT NULL AND c.sort_num IS NULL)
+      END
+    )::BIGINT ELSE 0::BIGINT END AS current_index,
+    (SELECT COUNT(*) FROM distance_filtered)::BIGINT AS total_count;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_adjacent_objects TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_adjacent_objects TO service_role;
 
 
 -- =============================================================================
@@ -1422,6 +2145,134 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_csv_export_spectra TO authenticated;
+
+
+-- =============================================================================
+-- get_csv_export_objects
+-- (one row per sky-object for CSV download in objects view mode)
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
+  p_program_slugs TEXT[], p_filter_programs TEXT[] DEFAULT NULL,
+  p_fields TEXT[] DEFAULT NULL, p_gratings TEXT[] DEFAULT NULL,
+  p_gratings_mode TEXT DEFAULT 'any',
+  p_redshift_quality INTEGER[] DEFAULT NULL,
+  p_redshift_min DOUBLE PRECISION DEFAULT NULL, p_redshift_max DOUBLE PRECISION DEFAULT NULL,
+  p_max_snr_min DOUBLE PRECISION DEFAULT NULL, p_max_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_max_exposure_time_min DOUBLE PRECISION DEFAULT NULL, p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
+  p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
+  p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
+  p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
+  p_sort_column TEXT DEFAULT 'object_id', p_sort_direction TEXT DEFAULT 'asc'
+)
+RETURNS TABLE(
+  object_id TEXT, field TEXT, ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
+  best_redshift DOUBLE PRECISION, best_redshift_quality INTEGER,
+  n_targets INTEGER, n_spectra INTEGER,
+  programs TEXT, gratings TEXT,
+  max_snr DOUBLE PRECISION, max_exposure_time DOUBLE PRECISION,
+  member_target_ids TEXT, distance DOUBLE PRECISION
+)
+LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
+AS $$
+DECLARE
+  v_filtered_program_slugs TEXT[];
+  v_coord_search_active BOOLEAN;
+  v_grating_filter_active BOOLEAN;
+  v_gratings_mode TEXT;
+BEGIN
+  v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
+  v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
+  v_gratings_mode := COALESCE(p_gratings_mode, 'any');
+  IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN v_gratings_mode := 'any'; END IF;
+  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
+  IF NOT (p_sort_column IN (
+    'object_id', 'field', 'ra', 'dec', 'best_redshift', 'best_redshift_quality',
+    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time'
+  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
+    p_sort_column := 'object_id';
+  END IF;
+
+  IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
+    SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
+  ELSE v_filtered_program_slugs := p_program_slugs; END IF;
+  IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN RETURN; END IF;
+
+  RETURN QUERY
+  WITH filtered_objects AS (
+    SELECT o.object_id, o.field, o.ra, o.dec,
+      o.best_redshift, o.best_redshift_quality,
+      o.n_targets, o.n_spectra,
+      array_to_string(o.programs, ';') AS programs,
+      array_to_string(o.gratings, ';') AS gratings,
+      o.max_snr, o.max_exposure_time,
+      (SELECT array_to_string(ARRAY(
+        SELECT t.target_id FROM targets t
+        WHERE t.object_id = o.id AND t.program_slug = ANY(v_filtered_program_slugs)
+        ORDER BY t.target_id
+      ), ';')) AS member_target_ids,
+      CASE WHEN v_coord_search_active THEN
+        2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) * POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2))))
+      ELSE NULL END AS distance
+    FROM objects o
+    WHERE o.programs && v_filtered_program_slugs
+      AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
+      AND (
+        NOT v_grating_filter_active
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
+        OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+      )
+      AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.best_redshift_quality = ANY(p_redshift_quality))
+      AND (p_redshift_min IS NULL OR o.best_redshift >= p_redshift_min)
+      AND (p_redshift_max IS NULL OR o.best_redshift <= p_redshift_max)
+      AND (p_max_snr_min IS NULL OR o.max_snr >= p_max_snr_min)
+      AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
+      AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
+      AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+      AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
+      OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
+      AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.best_redshift_quality > 0) OR (p_inspected_only = FALSE AND o.best_redshift_quality = 0))
+      AND (NOT v_coord_search_active OR (
+        o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
+        AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
+      ))
+  ),
+  distance_filtered AS (SELECT fo.* FROM filtered_objects fo WHERE NOT v_coord_search_active OR fo.distance <= p_radius_degrees)
+  SELECT df.object_id, df.field, df.ra, df.dec,
+    df.best_redshift, df.best_redshift_quality,
+    df.n_targets, df.n_spectra,
+    df.programs, df.gratings,
+    df.max_snr, df.max_exposure_time,
+    df.member_target_ids, df.distance
+  FROM distance_filtered df
+  ORDER BY
+    CASE WHEN v_coord_search_active THEN df.distance END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN df.object_id END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'object_id' AND p_sort_direction = 'desc' THEN df.object_id END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'asc' THEN df.field END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'desc' THEN df.field END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN df.ra END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN df.ra END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN df.dec END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'dec' AND p_sort_direction = 'desc' THEN df.dec END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'best_redshift' AND p_sort_direction = 'asc' THEN df.best_redshift END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'best_redshift' AND p_sort_direction = 'desc' THEN df.best_redshift END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'best_redshift_quality' AND p_sort_direction = 'asc' THEN df.best_redshift_quality END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'best_redshift_quality' AND p_sort_direction = 'desc' THEN df.best_redshift_quality END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_targets' AND p_sort_direction = 'asc' THEN df.n_targets END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_targets' AND p_sort_direction = 'desc' THEN df.n_targets END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_spectra' AND p_sort_direction = 'asc' THEN df.n_spectra END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_spectra' AND p_sort_direction = 'desc' THEN df.n_spectra END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_snr' AND p_sort_direction = 'asc' THEN df.max_snr END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN df.max_snr END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN df.max_exposure_time END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN df.max_exposure_time END DESC NULLS LAST,
+    df.object_id ASC;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_csv_export_objects TO authenticated;
 
 
 -- =============================================================================
@@ -1972,7 +2823,7 @@ GRANT ALL ON FUNCTION public.consume_device_code(text) TO anon;
 GRANT ALL ON FUNCTION public.consume_device_code(text) TO authenticated;
 GRANT ALL ON FUNCTION public.consume_device_code(text) TO service_role;
 
-CREATE OR REPLACE FUNCTION public.count_distinct_inspected_objects(p_user_id uuid)
+CREATE OR REPLACE FUNCTION public.count_distinct_inspected_targets(p_user_id uuid)
 RETURNS integer
 LANGUAGE sql STABLE SECURITY DEFINER
 AS $$
@@ -1981,12 +2832,12 @@ AS $$
   WHERE user_id = p_user_id;
 $$;
 
-COMMENT ON FUNCTION public.count_distinct_inspected_objects(uuid) IS
-  'Returns the count of distinct objects a user has inspected (made flag changes to)';
+COMMENT ON FUNCTION public.count_distinct_inspected_targets(uuid) IS
+  'Returns the count of distinct targets a user has inspected (made flag changes to)';
 
-GRANT ALL ON FUNCTION public.count_distinct_inspected_objects(uuid) TO anon;
-GRANT ALL ON FUNCTION public.count_distinct_inspected_objects(uuid) TO authenticated;
-GRANT ALL ON FUNCTION public.count_distinct_inspected_objects(uuid) TO service_role;
+GRANT ALL ON FUNCTION public.count_distinct_inspected_targets(uuid) TO anon;
+GRANT ALL ON FUNCTION public.count_distinct_inspected_targets(uuid) TO authenticated;
+GRANT ALL ON FUNCTION public.count_distinct_inspected_targets(uuid) TO service_role;
 
 CREATE OR REPLACE FUNCTION public.deny_device_code(p_user_code text)
 RETURNS boolean
@@ -2194,3 +3045,28 @@ $$;
 GRANT ALL ON FUNCTION public.validate_refresh_token(text) TO anon;
 GRANT ALL ON FUNCTION public.validate_refresh_token(text) TO authenticated;
 GRANT ALL ON FUNCTION public.validate_refresh_token(text) TO service_role;
+
+
+-- =============================================================================
+-- Bulk set target object FK references
+-- =============================================================================
+-- Used by cfdeploy objects rebuild to set targets.object_id in bulk,
+-- avoiding per-object HTTP round-trips through PostgREST.
+
+CREATE OR REPLACE FUNCTION public.bulk_set_target_object_fks(
+  p_pairs JSONB,
+  p_updated_at TIMESTAMPTZ DEFAULT now()
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE targets t SET
+    object_id = (pair->>'object_id')::integer,
+    updated_at = p_updated_at
+  FROM jsonb_array_elements(p_pairs) AS pair
+  WHERE t.id = (pair->>'target_id')::integer;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.bulk_set_target_object_fks(JSONB, TIMESTAMPTZ) TO service_role;

@@ -43,6 +43,19 @@ export interface MapMarker {
   observation: string | null;
 }
 
+export interface MapObjectMarker {
+  object_id: string;
+  ra: number;
+  dec: number;
+  best_redshift: number | null;
+  best_redshift_quality: number;
+  field: string;
+  n_targets: number;
+  n_spectra: number;
+  programs: string[];
+  member_target_ids: string[];
+}
+
 export interface MapLayersResult {
   layers: MapLayer[];
   error?: string;
@@ -51,6 +64,11 @@ export interface MapLayersResult {
 
 export interface MapMarkersResult {
   markers: MapMarker[];
+  error?: string;
+}
+
+export interface MapObjectMarkersResult {
+  markers: MapObjectMarker[];
   error?: string;
 }
 
@@ -143,6 +161,128 @@ export async function getFieldMarkers(
   }
 
   return { markers: data };
+}
+
+/**
+ * Fetch all objects for a field with member target IDs (for slit filter bridge).
+ */
+export async function getFieldObjectMarkers(
+  field: string
+): Promise<MapObjectMarkersResult> {
+  const supabase = await createClient();
+
+  // Supabase embedded resources: objects → targets via FK
+  const { data, error } = await paginateQuery<{
+    object_id: string;
+    ra: number;
+    dec: number;
+    best_redshift: number | null;
+    best_redshift_quality: number;
+    field: string;
+    n_targets: number;
+    n_spectra: number;
+    programs: string[];
+    targets: { target_id: string }[];
+  }>(
+    () => supabase
+      .from('objects')
+      .select('object_id, ra, dec, best_redshift, best_redshift_quality, field, n_targets, n_spectra, programs, targets(target_id)')
+      .eq('field', field)
+      .order('object_id'),
+    1000,
+  );
+
+  if (error) {
+    return { markers: [], error: error.message };
+  }
+
+  const markers: MapObjectMarker[] = data.map(row => ({
+    object_id: row.object_id,
+    ra: row.ra,
+    dec: row.dec,
+    best_redshift: row.best_redshift,
+    best_redshift_quality: row.best_redshift_quality,
+    field: row.field,
+    n_targets: row.n_targets,
+    n_spectra: row.n_spectra,
+    programs: row.programs,
+    member_target_ids: row.targets.map(t => t.target_id),
+  }));
+
+  return { markers };
+}
+
+/**
+ * Fetch object IDs matching the given filters (for map marker filtering).
+ * Object-level counterpart of getFilteredTargetIds.
+ */
+export async function getFilteredObjectIds(
+  filters: FilterOptions
+): Promise<{ objectIds: string[]; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { objectIds: [], error: 'Not authenticated' };
+  }
+
+  try {
+    const { data: accessData } = await supabase
+      .from('user_program_access')
+      .select('program_slug')
+      .eq('user_id', user.id);
+
+    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
+
+    const { data: publicPrograms } = await supabase
+      .from('programs')
+      .select('slug')
+      .eq('is_public', true);
+
+    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
+    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+
+    if (accessibleProgramSlugs.length === 0) {
+      return { objectIds: [] };
+    }
+
+    // Build the subset of filter params applicable to objects
+    const baseParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
+
+    const rpcParams = {
+      p_program_slugs: baseParams.p_program_slugs,
+      p_filter_programs: baseParams.p_filter_programs,
+      p_fields: baseParams.p_fields,
+      p_gratings: baseParams.p_gratings,
+      p_gratings_mode: baseParams.p_gratings_mode,
+      p_redshift_quality: baseParams.p_redshift_quality,
+      p_redshift_min: baseParams.p_redshift_min,
+      p_redshift_max: baseParams.p_redshift_max,
+      p_max_snr_min: baseParams.p_max_snr_min,
+      p_max_snr_max: baseParams.p_max_snr_max,
+      p_max_exposure_time_min: baseParams.p_max_exposure_time_min,
+      p_max_exposure_time_max: baseParams.p_max_exposure_time_max,
+      p_search: baseParams.p_search,
+      p_inspected_only: baseParams.p_inspected_only,
+      p_coord_ra: baseParams.p_coord_ra,
+      p_coord_dec: baseParams.p_coord_dec,
+      p_radius_degrees: baseParams.p_radius_degrees,
+    };
+
+    const { data: allRows, error: rpcError } = await paginateRpc<{ object_id: string }>(
+      supabase, 'get_filtered_object_ids', rpcParams,
+    );
+
+    if (rpcError) {
+      console.error('Error fetching filtered object IDs:', rpcError);
+      return { objectIds: [], error: rpcError.message };
+    }
+
+    return { objectIds: allRows.map(row => row.object_id) };
+  } catch (err) {
+    console.error('Unexpected error fetching filtered object IDs:', err);
+    return { objectIds: [], error: 'An unexpected error occurred' };
+  }
 }
 
 /**

@@ -2,14 +2,14 @@
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useSearchParams, usePathname } from 'next/navigation';
-import type { MapLayer, MapMarker } from '@/lib/actions/map';
+import type { MapLayer, MapObjectMarker } from '@/lib/actions/map';
 import { MapViewerWrapper } from '@/components/map/MapViewerWrapper';
 import { AdvancedFiltersPanel } from '@/components/spectra/AdvancedFiltersPanel';
 import type { FilterOptions } from '@/lib/actions/filter-params';
 import { parseFiltersFromURL, filtersToURLParams } from '@/lib/utils/url-params';
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
-import { useFilteredTargetIds } from '@/lib/hooks/useFilteredTargetIds';
+import { useFilteredObjectIds } from '@/lib/hooks/useFilteredObjectIds';
 
 interface MapPageContentProps {
   layers: MapLayer[];
@@ -38,7 +38,6 @@ export function MapPageContent({
   const [filters, setFilters] = useState<FilterOptions>(initialFilters);
   const [panelOpen, setPanelOpen] = useState(false);
   const [currentField, setCurrentField] = useState<string | undefined>(initialField);
-  const [fieldObservations, setFieldObservations] = useState<string[]>([]);
 
   // Debounce filters for queries
   const { debouncedValue: debouncedFilters } = useDebouncedValue(filters, 300);
@@ -76,18 +75,18 @@ export function MapPageContent({
     return { ...debouncedFilters, fields: [currentField] };
   }, [debouncedFilters, currentField]);
 
-  // Fetch filtered target IDs when filters are active
-  const { data: filteredResult } = useFilteredTargetIds(queryFilters, hasActiveFilters);
+  // Fetch filtered object IDs when filters are active
+  const { data: filteredResult } = useFilteredObjectIds(queryFilters, hasActiveFilters);
 
   // Build the ID set and marker filter function
   const filteredIdSet = useMemo(() => {
-    if (!hasActiveFilters || !filteredResult?.targetIds) return null;
-    return new Set(filteredResult.targetIds);
+    if (!hasActiveFilters || !filteredResult?.objectIds) return null;
+    return new Set(filteredResult.objectIds);
   }, [hasActiveFilters, filteredResult]);
 
   const markerFilter = useMemo(() => {
     if (!filteredIdSet) return undefined;
-    return (marker: MapMarker) => filteredIdSet.has(marker.target_id);
+    return (marker: MapObjectMarker) => filteredIdSet.has(marker.object_id);
   }, [filteredIdSet]);
 
   // Handle filter changes
@@ -95,10 +94,9 @@ export function MapPageContent({
     setFilters(newFilters);
   }, []);
 
-  // Track selected field and its observations (derived from loaded markers)
-  const handleFieldChange = useCallback((field: string, observations: string[]) => {
+  // Track selected field
+  const handleFieldChange = useCallback((field: string) => {
     setCurrentField(field);
-    setFieldObservations(observations);
   }, []);
 
   // Sync filter state to URL (preserving map-specific params).
@@ -160,7 +158,7 @@ export function MapPageContent({
         onFiltersChange={handleFilterChange}
         showBasicFilters={true}
         availablePrograms={availablePrograms}
-        availableObservations={fieldObservations}
+        availableObservations={[]}
       />
     </div>
   );

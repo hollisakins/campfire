@@ -4,10 +4,17 @@ MetaFile dataclass: MSA metadata (shutter tables, source tables, MSAMETFL header
 
 import os
 import numpy as np
+from collections import defaultdict
 from copy import copy, deepcopy
 from dataclasses import dataclass
 from astropy.io import fits
 from astropy.table import Table
+
+
+# Two catalog entries within this separation sharing a slitlet are the
+# same physical source.  The gap between the largest known duplicate
+# (0.095") and the smallest real multi-object pair (0.158") is wide.
+DUPLICATE_SEPARATION_ARCSEC = 0.1
 
 
 def _prune_detached_shutters(shutter_table, source_id):
@@ -88,6 +95,61 @@ class MetaFile:
         if self.source_table is None:
             self.source_table = Table(self.hdul[3].data)
 
+    def _duplicate_source_ids(self):
+        """Identify duplicate source IDs that share a slitlet with a
+        positionally coincident partner (< DUPLICATE_SEPARATION_ARCSEC).
+
+        Scans ALL msa_metadata_id values (grating configs) and returns the
+        union of higher-valued source IDs from each duplicate pair, ensuring
+        the same ID is dropped regardless of which config is processed.
+
+        The result is cached on the instance.
+        """
+        if hasattr(self, '_cached_dup_ids'):
+            return self._cached_dup_ids
+
+        # Build source_id -> (ra, dec) lookup from SOURCE_INFO table
+        src_pos = {}
+        for row in self.source_table:
+            sid = int(row['source_id'])
+            if sid > 0:
+                src_pos[sid] = (float(row['ra']), float(row['dec']))
+
+        drop_ids = set()
+        threshold = DUPLICATE_SEPARATION_ARCSEC
+
+        for meta_id in np.unique(self.shutter_table['msa_metadata_id']):
+            meta_rows = self.shutter_table[
+                self.shutter_table['msa_metadata_id'] == meta_id
+            ]
+
+            # Group source_ids by slitlet
+            slitlet_sources = defaultdict(set)
+            for row in meta_rows:
+                sid = int(row['source_id'])
+                if sid > 0:
+                    slitlet_sources[int(row['slitlet_id'])].add(sid)
+
+            for sids in slitlet_sources.values():
+                if len(sids) < 2:
+                    continue
+                sids_sorted = sorted(sids)
+                for i in range(len(sids_sorted)):
+                    for j in range(i + 1, len(sids_sorted)):
+                        s1, s2 = sids_sorted[i], sids_sorted[j]
+                        if s1 not in src_pos or s2 not in src_pos:
+                            continue
+                        ra1, dec1 = src_pos[s1]
+                        ra2, dec2 = src_pos[s2]
+                        cos_dec = np.cos(np.deg2rad((dec1 + dec2) / 2))
+                        dra = (ra1 - ra2) * cos_dec * 3600
+                        ddec = (dec1 - dec2) * 3600
+                        if np.sqrt(dra**2 + ddec**2) < threshold:
+                            drop_ids.add(s2)  # keep lowest ID
+
+        self._cached_dup_ids = drop_ids
+        return self._cached_dup_ids
+
     @classmethod
     def load_for_rate_file(cls, rate_file):
 
@@ -103,7 +165,19 @@ class MetaFile:
     @property
     def unique_source_ids(self):
         ids = np.unique(self.shutter_table['source_id'][self.shutter_table['msa_metadata_id'] == self.msametid])
-        return ids[ids > 0]
+        ids = ids[ids > 0]
+
+        drop = self._duplicate_source_ids()
+        if drop:
+            mask = ~np.isin(ids, list(drop))
+            if mask.sum() < len(ids):
+                from campfire_pipeline.common.io import log
+                skipped = sorted(int(s) for s in ids[~mask])
+                log(f'Skipping {len(skipped)} duplicate source(s) '
+                    f'for msametid={self.msametid}: {skipped}')
+                ids = ids[mask]
+
+        return ids
 
     def filter_by_source_id(self,
             source_id,

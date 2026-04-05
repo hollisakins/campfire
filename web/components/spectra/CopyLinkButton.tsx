@@ -5,14 +5,17 @@ import { Link, Check } from 'lucide-react';
 
 interface CopyLinkButtonProps {
   targetId: string;
+  url?: string;  // Override the generated URL path
 }
 
-export const CopyLinkButton: React.FC<CopyLinkButtonProps> = ({ targetId }) => {
+export const CopyLinkButton: React.FC<CopyLinkButtonProps> = ({ targetId, url: urlOverride }) => {
   const [copied, setCopied] = useState(false);
 
   const copyToClipboard = async () => {
     try {
-      const url = `${window.location.origin}/spectra/${encodeURIComponent(targetId)}`;
+      const url = urlOverride
+        ? `${window.location.origin}${urlOverride}`
+        : `${window.location.origin}/nirspec/targets/${encodeURIComponent(targetId)}`;
       await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);

@@ -20,11 +20,14 @@ export type AdvancedFilterOptions = FilterOptions;
 export { DEFAULT_FILTERS };
 
 // Search scope options with labels and placeholders
-const SEARCH_SCOPE_OPTIONS: { value: SearchScope; label: string; placeholder: string }[] = [
-  { value: 'target_id', label: 'Target ID', placeholder: 'Search by Target ID...' },
-  { value: 'my_comments', label: 'My Comments', placeholder: 'Search my comments...' },
-  { value: 'all_comments', label: 'All Comments', placeholder: 'Search all comments...' },
-];
+function getSearchScopeOptions(viewMode?: ViewMode): { value: SearchScope; label: string; placeholder: string }[] {
+  const idLabel = viewMode === 'objects' ? 'Object ID' : 'Target ID';
+  return [
+    { value: 'target_id', label: idLabel, placeholder: `Search by ${idLabel}...` },
+    { value: 'my_comments', label: 'My Comments', placeholder: 'Search my comments...' },
+    { value: 'all_comments', label: 'All Comments', placeholder: 'Search all comments...' },
+  ];
+}
 
 interface SpectraFilterBarProps {
   filters: AdvancedFilterOptions;
@@ -99,7 +102,8 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   }, []);
 
   // Get current scope option
-  const currentScope = SEARCH_SCOPE_OPTIONS.find(s => s.value === filters.search_scope) || SEARCH_SCOPE_OPTIONS[0];
+  const searchScopeOptions = getSearchScopeOptions(viewMode);
+  const currentScope = searchScopeOptions.find(s => s.value === filters.search_scope) || searchScopeOptions[0];
 
   // Handle scope change
   const handleScopeChange = (scope: SearchScope) => {
@@ -210,7 +214,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           {/* Dropdown menu */}
           {scopeDropdownOpen && (
             <div className="absolute top-full left-0 mt-1 w-40 bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg z-50 py-1">
-              {SEARCH_SCOPE_OPTIONS.map((option) => (
+              {searchScopeOptions.map((option) => (
                 <button
                   key={option.value}
                   onClick={() => handleScopeChange(option.value)}

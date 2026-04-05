@@ -39,9 +39,9 @@ export const MetadataSection: React.FC<MetadataSectionProps> = ({ spectrum, acti
         />
         {spectrum.redshift && (
           <MetadataRow
-            label="z_phot"
+            label="z_auto"
             value={spectrum.redshift.toFixed(3)}
-            tooltip="Photometric redshift"
+            tooltip="Pipeline redshift (pre-inspection)"
           />
         )}
       </div>
