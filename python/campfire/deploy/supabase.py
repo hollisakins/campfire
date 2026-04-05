@@ -66,6 +66,9 @@ def upsert_observation(
     program_slug: str,
     jwst_program_id: int,
     field: str,
+    file_globs: list[str] | None = None,
+    gratings: list[str] | None = None,
+    data_subdir: str | None = None,
 ) -> None:
     """Upsert an observation record."""
     data = {
@@ -74,6 +77,12 @@ def upsert_observation(
         'jwst_program_id': jwst_program_id,
         'field': field,
     }
+    if file_globs is not None:
+        data['file_globs'] = file_globs
+    if gratings is not None:
+        data['gratings'] = gratings
+    if data_subdir is not None:
+        data['data_subdir'] = data_subdir
     client.table('observations').upsert(data, on_conflict='name').execute()
 
 

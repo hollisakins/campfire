@@ -406,7 +406,10 @@ CREATE TABLE IF NOT EXISTS "public"."observations" (
     "jwst_program_id" integer NOT NULL,
     "field" "text" NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"(),
-    "latest_deployment_id" integer
+    "latest_deployment_id" integer,
+    "file_globs" "text"[] NOT NULL DEFAULT '{}',
+    "gratings" "text"[] NOT NULL DEFAULT '{}',
+    "data_subdir" "text"
 );
 
 

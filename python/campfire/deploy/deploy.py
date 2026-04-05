@@ -14,7 +14,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from campfire.deploy.config import load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir
+from campfire.deploy.config import load_observations, load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir
 from campfire.deploy.discover import (
     discover_rgb_images,
     discover_sed_plots,
@@ -197,8 +197,18 @@ def deploy_observation(
     print("Upserting program...")
     upsert_programs(sb, [program_slug], programs_config)
 
-    # Upsert observation record
-    upsert_observation(sb, obs_name, program_slug, jwst_program_id, field)
+    # Upsert observation record with definition from observations.toml
+    obs_config = load_observations().get(obs_name, {})
+    file_globs_raw = obs_config.get('files', [])
+    file_globs = [file_globs_raw] if isinstance(file_globs_raw, str) else list(file_globs_raw)
+    obs_gratings = obs_config.get('gratings', [])
+    obs_data_subdir = obs_config.get('data_subdir')
+    upsert_observation(
+        sb, obs_name, program_slug, jwst_program_id, field,
+        file_globs=file_globs if file_globs else None,
+        gratings=obs_gratings if obs_gratings else None,
+        data_subdir=obs_data_subdir,
+    )
     print()
 
     # Generate content and upload
