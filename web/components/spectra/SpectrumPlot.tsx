@@ -271,9 +271,10 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       return err !== null ? f - err : f;
     });
 
-    // Get wavelength range for filtering emission lines
-    const waveMin = Math.min(...wave);
-    const waveMax = Math.max(...wave);
+    // Get wavelength range from non-NaN values
+    const finiteWave = wave.filter(w => isFinite(w));
+    const waveMin = Math.min(...finiteWave);
+    const waveMax = Math.max(...finiteWave);
 
     // Rest-frame wavelength conversion factor: μm → Å in rest frame
     const restFrameFactor = 10000 / (1 + redshift);
@@ -480,6 +481,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         gridcolor: plotColors.grid,
         zerolinecolor: plotColors.grid,
         domain: [0, 0.90],
+        range: [waveMin, waveMax],
         uirevision: 'constant', // Preserve user zoom across re-renders
       },
       // X-axis: Rest-frame wavelength (Å), overlays primary axis
@@ -490,7 +492,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         overlaying: 'x' as const,
         side: 'top' as const,
         matches: 'x' as const, // Force range to always match primary axis
-        autorange: false, // Prevent overlay from influencing primary axis range
         tickmode: 'array' as const,
         tickvals: restTicks.map(å => å / restFrameFactor),
         ticktext: restTicks.map(å => `${parseFloat(å.toFixed(1))} Å`),
