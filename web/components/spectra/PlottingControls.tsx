@@ -122,6 +122,14 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
   return (
     <div className="flex items-center gap-2 flex-1 max-w-md">
       <span className="text-sm text-text-secondary dark:text-slate-400">z =</span>
+      <input
+        type="text"
+        value={inputValue}
+        onChange={(e) => setInputValue(e.target.value)}
+        onBlur={handleInputBlur}
+        onKeyDown={handleInputKeyDown}
+        className="w-20 px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+      />
       <div className="flex items-center gap-0.5">
         <button
           onClick={() => nudge(-0.01)}
@@ -141,12 +149,13 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
         </button>
       </div>
       <input
-        type="text"
-        value={inputValue}
-        onChange={(e) => setInputValue(e.target.value)}
-        onBlur={handleInputBlur}
-        onKeyDown={handleInputKeyDown}
-        className="w-20 px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+        type="range"
+        value={redshift}
+        onChange={handleSliderChange}
+        min={min}
+        max={max}
+        step={step}
+        className="flex-1 h-2 bg-gray-200 dark:bg-slate-600 rounded-lg appearance-none cursor-pointer accent-primary"
       />
       <div className="flex items-center gap-0.5">
         <button
@@ -166,15 +175,6 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
           <ChevronsRight size={14} />
         </button>
       </div>
-      <input
-        type="range"
-        value={redshift}
-        onChange={handleSliderChange}
-        min={min}
-        max={max}
-        step={step}
-        className="flex-1 h-2 bg-gray-200 dark:bg-slate-600 rounded-lg appearance-none cursor-pointer accent-primary"
-      />
     </div>
   );
 };

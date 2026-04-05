@@ -215,6 +215,15 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
       });
     }
 
+    // Compute x-axis range from all loaded sources (non-NaN wave values)
+    const allWave = sources.flatMap(s => {
+      const d = loadedData.get(s.fitsPath);
+      return d ? d.wave.filter(w => isFinite(w)) : [];
+    });
+    const xRange: [number, number] | undefined = allWave.length > 0
+      ? [Math.min(...allWave), Math.max(...allWave)]
+      : undefined;
+
     // Emission lines
     if (showEmissionLines && redshift > 0 && allFlux.length > 0) {
       const waveMin = Math.min(...visibleSources.flatMap(s => {
@@ -273,6 +282,7 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         zerolinecolor: plotColors.grid,
         tickcolor: plotColors.text,
         tickfont: { color: plotColors.text },
+        ...(xRange && { range: xRange }),
         uirevision: 'constant',
       },
       yaxis: {
@@ -309,7 +319,6 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         tickfont: { color: plotColors.textSecondary, size: 10 },
         showgrid: false,
         zeroline: false,
-        fixedrange: true,
       };
       // Add an invisible trace to activate xaxis2
       allTraces.push({
