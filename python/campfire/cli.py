@@ -73,10 +73,23 @@ def _check_client_version(base_url: str) -> None:
 
 
 @click.group()
-@click.version_option(version="0.2.0", prog_name="campfire")
+@click.version_option(version="0.3.0", prog_name="campfire")
 def cli():
-    """CAMPFIRE - query, download, and sync NIRSpec spectroscopic data."""
+    """CAMPFIRE — Python client and deployment tools for NIRSpec spectroscopic data."""
     pass
+
+
+def _register_deploy_group():
+    """Register deploy subgroup. Imported lazily to avoid loading deploy deps for non-deploy commands."""
+    try:
+        from campfire.deploy.cli import deploy_group
+        cli.add_command(deploy_group, name='deploy')
+    except ImportError:
+        @cli.command('deploy', hidden=False)
+        def deploy_stub():
+            """Deploy CAMPFIRE pipeline products to Supabase + R2. (Requires: pip install campfire[deploy])"""
+            click.echo("Deploy dependencies not installed. Run: pip install campfire[deploy]")
+            sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +743,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
 
 def main():
     """Entry point for the CLI."""
+    _register_deploy_group()
     cli()
 
 
