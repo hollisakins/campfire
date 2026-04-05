@@ -90,10 +90,15 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
         target_id, grating, fits_path (R2 key), reduction_version,
         signal_to_noise, exposure_time, file_hash, file_size
     """
+    # Provenance from ECSV metadata (written by pipeline)
+    cfpipe_version = summary.meta.get('cfpipe_version')
+    jwst_version = summary.meta.get('jwst_version')
+    crds_context = summary.meta.get('crds_context')
+
     records = []
     for row in summary:
         r2_key = f"spectra/{obs_name}/{row['fits_filename']}"
-        records.append({
+        rec = {
             'target_id': row['object_id'],
             'grating': row['grating'],
             'fits_path': r2_key,
@@ -102,7 +107,14 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
             'exposure_time': float(row['exposure_time']) if row['exposure_time'] is not None else None,
             'file_hash': row['file_hash'],
             'file_size': int(row['file_size']) if row['file_size'] is not None else None,
-        })
+        }
+        if cfpipe_version:
+            rec['cfpipe_version'] = cfpipe_version
+        if jwst_version:
+            rec['jwst_version'] = jwst_version
+        if crds_context:
+            rec['crds_context'] = crds_context
+        records.append(rec)
     return records
 
 

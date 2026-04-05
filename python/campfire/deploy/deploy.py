@@ -39,10 +39,13 @@ from campfire.deploy.supabase import (
     deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
     get_supabase_client,
+    get_user_id_from_token,
+    insert_deployment,
     propagate_crossmatches,
     refresh_filter_options,
     refresh_programs_overview,
     update_has_sed_plot,
+    update_latest_deployment,
     upsert_observation,
     upsert_programs,
 )
@@ -56,6 +59,19 @@ from campfire.deploy.summary import (
     get_zfit_paths,
     load_summary,
 )
+
+
+def _load_config_snapshot(obs_dir: Path, obs_name: str) -> dict | None:
+    """Load the effective config TOML written by the pipeline, if it exists."""
+    config_path = obs_dir / f"{obs_name}_config.toml"
+    if not config_path.exists():
+        return None
+    try:
+        import tomllib
+        with open(config_path, 'rb') as f:
+            return tomllib.load(f)
+    except Exception:
+        return None
 
 
 def deploy_observation(
@@ -321,6 +337,30 @@ def deploy_observation(
                 print(f"  Deployed {n_shutters} shutter records")
             else:
                 print(f"\nNo shutters ECSV found for {obs_name}, skipping shutter deployment")
+
+        # Record deployment provenance
+        config_snapshot = _load_config_snapshot(obs_dir, obs_name)
+        user_id = get_user_id_from_token(config)
+
+        deployment_id = insert_deployment(
+            sb,
+            observation=obs_name,
+            deployed_by=user_id,
+            cfpipe_version=summary.meta.get('cfpipe_version'),
+            jwst_version=summary.meta.get('jwst_version'),
+            crds_context=summary.meta.get('crds_context'),
+            reduction_version=spectra[0].get('reduction_version') if spectra else None,
+            config_snapshot=config_snapshot,
+            n_targets=len(objects),
+            n_spectra=len(spectra),
+            n_new_targets=len(new_object_ids),
+            force_overwrite=force_overwrite,
+            source_ids_filter=source_ids,
+            supabase_only=supabase_only,
+        )
+        if deployment_id:
+            update_latest_deployment(sb, obs_name, deployment_id)
+            print(f"\nDeployment #{deployment_id} recorded")
 
         print()
         msg = f"Deployed {len(spectra)} spectra from {len(objects)} objects"

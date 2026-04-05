@@ -51,6 +51,94 @@ def get_supabase_client(config: dict) -> Client:
 REDSHIFT_DRIFT_THRESHOLD = 0.03
 
 
+def get_user_id_from_token(config: dict) -> str | None:
+    """Extract user_id (sub claim) from the stored Supabase token."""
+    token = config.get('supabase', {}).get('supabase_token')
+    if not token:
+        return None
+    try:
+        import json
+        import base64
+        # Decode JWT payload (second segment) without verification
+        payload_b64 = token.split('.')[1]
+        # Add padding
+        payload_b64 += '=' * (4 - len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        return payload.get('sub')
+    except Exception:
+        return None
+
+
+def insert_deployment(
+    client: Client,
+    observation: str,
+    deployed_by: str | None,
+    *,
+    cfpipe_version: str | None = None,
+    jwst_version: str | None = None,
+    crds_context: str | None = None,
+    reduction_version: str | None = None,
+    config_snapshot: dict | None = None,
+    n_targets: int | None = None,
+    n_spectra: int | None = None,
+    n_new_targets: int | None = None,
+    force_overwrite: bool = False,
+    source_ids_filter: list[int] | None = None,
+    supabase_only: bool = False,
+) -> int | None:
+    """
+    Insert a deployment record and return its ID.
+
+    Returns None if the insert fails (e.g. deployed_by is not set).
+    """
+    if not deployed_by:
+        print("  Warning: No user_id available, skipping deployment record")
+        return None
+
+    import json as json_mod
+
+    data = {
+        'observation': observation,
+        'deployed_by': deployed_by,
+        'force_overwrite': force_overwrite,
+        'supabase_only': supabase_only,
+    }
+    if cfpipe_version:
+        data['cfpipe_version'] = cfpipe_version
+    if jwst_version:
+        data['jwst_version'] = jwst_version
+    if crds_context:
+        data['crds_context'] = crds_context
+    if reduction_version:
+        data['reduction_version'] = reduction_version
+    if config_snapshot is not None:
+        data['config_snapshot'] = config_snapshot
+    if n_targets is not None:
+        data['n_targets'] = n_targets
+    if n_spectra is not None:
+        data['n_spectra'] = n_spectra
+    if n_new_targets is not None:
+        data['n_new_targets'] = n_new_targets
+    if source_ids_filter:
+        data['source_ids_filter'] = source_ids_filter
+
+    resp = client.table('deployments').insert(data).execute()
+    if resp.data and len(resp.data) > 0:
+        return resp.data[0]['id']
+    return None
+
+
+def update_latest_deployment(
+    client: Client,
+    observation: str,
+    deployment_id: int,
+) -> None:
+    """Update observations.latest_deployment_id after a successful deploy."""
+    client.table('observations').update(
+        {'latest_deployment_id': deployment_id}
+    ).eq('name', observation).execute()
+
+
 def check_existing_objects(client: Client, target_ids: list[str]) -> dict[str, dict]:
     """
     Return existing targets as a dict keyed by target_id.
@@ -252,7 +340,10 @@ def batch_upsert_spectra(
     batch_size: int = 500,
 ) -> int:
     """
-    Upsert spectra in batches, keyed on (object_id, grating).
+    Upsert spectra in batches, keyed on the UNIQUE constraint (target_id, grating).
+
+    Uses PostgreSQL ON CONFLICT (target_id, grating) for a single-pass upsert,
+    eliminating the need to pre-fetch existing records.
 
     Args:
         spectra: List of dicts from summary.get_spectra_records(), optionally
@@ -265,33 +356,11 @@ def batch_upsert_spectra(
     if not spectra:
         return 0
 
-    # Fetch existing spectra to split insert vs update
-    target_ids = list(set(r['target_id'] for r in spectra))
-    existing_map = {}  # (target_id, grating) -> id
-
-    for i in range(0, len(target_ids), batch_size):
-        batch_ids = target_ids[i:i + batch_size]
-        resp = client.table('spectra').select('id,target_id,grating').in_('target_id', batch_ids).execute()
-        for row in resp.data:
-            existing_map[(row['target_id'], row['grating'])] = row['id']
-
-    new_records = []
-    update_records = []
-
-    for record in spectra:
-        key = (record['target_id'], record['grating'])
-        if key in existing_map:
-            update_records.append({**record, 'id': existing_map[key]})
-        else:
-            new_records.append(record)
-
-    for i in range(0, len(new_records), batch_size):
-        batch = new_records[i:i + batch_size]
-        client.table('spectra').insert(batch).execute()
-
-    for i in range(0, len(update_records), batch_size):
-        batch = update_records[i:i + batch_size]
-        client.table('spectra').upsert(batch, on_conflict='id').execute()
+    for i in range(0, len(spectra), batch_size):
+        batch = spectra[i:i + batch_size]
+        client.table('spectra').upsert(
+            batch, on_conflict='target_id,grating'
+        ).execute()
 
     return len(spectra)
 
