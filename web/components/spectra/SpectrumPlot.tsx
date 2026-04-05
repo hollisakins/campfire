@@ -467,7 +467,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     // Layout configuration with profile panel
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout: any = {
-      uirevision: 'constant', // Preserve zoom/pan state across updates
+      // Per-axis uirevision instead of top-level — xaxis3 (rest-frame overlay)
+      // must NOT inherit a constant uirevision, otherwise Plotly.react() caches
+      // stale tickvals when redshift changes.
       font: { family: 'Roboto, sans-serif', color: plotColors.text },
       title: {
         text: `${grating} Spectrum`,
@@ -482,10 +484,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         uirevision: 'constant', // Preserve user zoom across re-renders
       },
       // X-axis: Rest-frame wavelength (Å), overlays primary axis
-      // Shares μm coordinate system with xaxis; tickvals/ticktext relabel to Å
+      // Shares μm coordinate system with xaxis; tickvals/ticktext relabel to Å.
+      // No uirevision — Plotly resets this axis on every react() call so new
+      // tickvals are always applied when redshift changes.
       xaxis3: {
         overlaying: 'x' as const,
         side: 'top' as const,
+        matches: 'x' as const, // Force range to always match primary axis
         tickmode: 'array' as const,
         tickvals: restTicks.map(å => å / restFrameFactor),
         ticktext: restTicks.map(å => `${parseFloat(å.toFixed(1))} Å`),
@@ -498,15 +503,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         domain: [0, 0.90],
         anchor: 'y' as const,
         fixedrange: true, // Prevent independent dragging — this is a relabeling overlay
-        // Range must match primary axis exactly for tick alignment
-        // When zoomed: explicit range from state; when full: autorange from invisible trace
-        ...(obsRange
-          ? { range: obsRange, autorange: false }
-          : { autorange: true }
-        ),
-        // Change uirevision on zoom or redshift change so Plotly applies new ticks/range
-        // (xaxis keeps 'constant' to preserve user zoom; xaxis3 resets to accept layout updates)
-        uirevision: obsRange ? `${obsRange[0]}-${obsRange[1]}-z${redshift}` : `default-z${redshift}`,
       },
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
@@ -517,6 +513,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         showticklabels: false,
         range: [-0.3, 1.2],
         fixedrange: true,
+        uirevision: 'constant',
       },
       // Y-axis for 1D spectrum (bottom)
       yaxis: {
@@ -526,6 +523,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         exponentformat: 'e' as const,
         domain: [0, 0.7],
         anchor: 'x' as const,
+        uirevision: 'constant',
         ...(yAxisRange && { range: yAxisRange }),
       },
       // Y-axis for 2D heatmap (top-left)
@@ -535,6 +533,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         domain: [0.78, 1],
         anchor: 'x' as const,
         range: [-10, 10],
+        uirevision: 'constant',
       },
       // Y-axis for profile panel (top-right, matches yaxis2)
       yaxis3: {
@@ -543,6 +542,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         anchor: 'x2' as const,
         matches: 'y2' as const, // Link range to yaxis2
         showticklabels: false,
+        uirevision: 'constant',
       },
       // Y-axis for emission lines — hidden overlay on yaxis, fixed [0,1] range
       // so emission line traces never affect auto-scaling or double-click reset
@@ -554,6 +554,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         showgrid: false,
         showticklabels: false,
         visible: false,
+        uirevision: 'constant',
       },
       margin: { l: 80, r: 20, t: 50, b: 50 },
       paper_bgcolor: plotColors.paper,
@@ -570,6 +571,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         borderwidth: 1,
         font: { size: 10 },
         tracegroupgap: 2,
+        uirevision: 'constant',
       },
     };
 
