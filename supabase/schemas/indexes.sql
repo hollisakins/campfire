@@ -45,6 +45,9 @@ CREATE INDEX IF NOT EXISTS idx_targets_program_slug_quality
 CREATE INDEX IF NOT EXISTS idx_targets_observation
     ON public.targets USING btree (observation);
 
+CREATE INDEX IF NOT EXISTS idx_targets_program_slug_observation
+    ON public.targets USING btree (program_slug, observation);
+
 CREATE INDEX IF NOT EXISTS idx_targets_updated_at
     ON public.targets USING btree (updated_at);
 

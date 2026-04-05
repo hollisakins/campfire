@@ -816,7 +816,6 @@ DECLARE
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
   v_offset INTEGER;
-  v_total_count BIGINT;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
 
@@ -865,65 +864,8 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Step 1: compute total count separately (avoids window function on full result set)
-  SELECT COUNT(*) INTO v_total_count
-  FROM targets t
-  JOIN spectra s ON s.target_id = t.target_id
-  WHERE
-    t.program_slug = ANY(v_filtered_program_slugs)
-    AND (NOT v_grating_filter_active OR s.grating = ANY(p_gratings))
-    AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR t.field = ANY(p_fields))
-    AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR t.observation = ANY(p_observations))
-    AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR t.redshift_quality = ANY(p_redshift_quality))
-    AND (p_redshift_min IS NULL OR t.redshift >= p_redshift_min)
-    AND (p_redshift_max IS NULL OR t.redshift <= p_redshift_max)
-    -- Per-spectrum filtering (not target-level max)
-    AND (p_max_snr_min IS NULL OR s.signal_to_noise >= p_max_snr_min)
-    AND (p_max_snr_max IS NULL OR s.signal_to_noise <= p_max_snr_max)
-    AND (p_max_exposure_time_min IS NULL OR s.exposure_time >= p_max_exposure_time_min)
-    AND (p_max_exposure_time_max IS NULL OR s.exposure_time <= p_max_exposure_time_max)
-    AND (p_spectral_features_include_any IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_any) != 0)
-    AND (p_spectral_features_include_all IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_all) = p_spectral_features_include_all)
-    AND (p_spectral_features_exclude IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_exclude) = 0)
-    AND (p_object_flags_include_any IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_any) != 0)
-    AND (p_object_flags_include_all IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_all) = p_object_flags_include_all)
-    AND (p_object_flags_exclude IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_exclude) = 0)
-    AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
-    AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
-    AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
-    AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
-    AND (
-      p_inspected_only IS NULL
-      OR (p_inspected_only = TRUE AND t.redshift_quality > 0)
-      OR (p_inspected_only = FALSE AND t.redshift_quality = 0)
-    )
-    AND (
-      NOT v_comment_search_active
-      OR EXISTS (
-        SELECT 1 FROM comments c
-        WHERE c.target_id = t.id
-          AND c.is_deleted = false
-          AND c.content ILIKE '%' || p_comment_search || '%'
-          AND (
-            p_comment_search_scope = 'everyone'
-            OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
-          )
-      )
-    )
-    AND (
-      NOT v_coord_search_active
-      OR (
-        t.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
-        AND t.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
-        AND 2 * DEGREES(ASIN(SQRT(
-          POWER(SIN(RADIANS(t.dec - p_coord_dec) / 2), 2) +
-          COS(RADIANS(p_coord_dec)) * COS(RADIANS(t.dec)) *
-          POWER(SIN(RADIANS(t.ra - p_coord_ra) / 2), 2)
-        ))) <= p_radius_degrees
-      )
-    );
-
-  -- Step 2: fetch just the page rows (sort + LIMIT without window function overhead)
+  -- Single-pass CTE: filtered_spectra is referenced by both distance_filtered
+  -- and the count subquery, so PostgreSQL materializes it once.
   RETURN QUERY
   WITH filtered_spectra AS (
     SELECT
@@ -975,7 +917,6 @@ BEGIN
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR t.redshift_quality = ANY(p_redshift_quality))
       AND (p_redshift_min IS NULL OR t.redshift >= p_redshift_min)
       AND (p_redshift_max IS NULL OR t.redshift <= p_redshift_max)
-      -- Per-spectrum filtering (not target-level max)
       AND (p_max_snr_min IS NULL OR s.signal_to_noise >= p_max_snr_min)
       AND (p_max_snr_max IS NULL OR s.signal_to_noise <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR s.exposure_time >= p_max_exposure_time_min)
@@ -1089,7 +1030,7 @@ BEGIN
         'thumbnail_svg_flambda', CASE WHEN p_include_thumbnails THEN r.thumbnail_svg_flambda ELSE NULL END
       ))
     ) ORDER BY r.row_num), '[]'::jsonb),
-    v_total_count,
+    (SELECT COUNT(*) FROM distance_filtered),
     p_page,
     p_page_size
   FROM page_rows r
