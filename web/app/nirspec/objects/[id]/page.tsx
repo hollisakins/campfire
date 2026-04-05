@@ -8,6 +8,7 @@ import { DownloadButtons } from '@/components/spectra/DownloadButtons';
 import { CopyLinkButton } from '@/components/spectra/CopyLinkButton';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
+import { ReturnToMapButton } from '@/components/map/ReturnToMapButton';
 import { ObjectDetailClient } from '@/components/spectra/ObjectDetailClient';
 import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
 import { getObjectById, getObjectMetadata } from '@/lib/actions/spectra';
@@ -133,8 +134,9 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
             href={backHref}
             className="text-sm text-primary hover:text-primary-hover flex items-center gap-1"
           >
-            ← Back to Objects List
+            ← Back to List
           </Link>
+          <ReturnToMapButton />
         </div>
         <ObjectNavigation
           targetId={objectId}

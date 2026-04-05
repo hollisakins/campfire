@@ -74,9 +74,10 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
 
   // Parse filter and sort params from URL
   const searchParamsObj = await searchParams;
+  const fromObject = typeof searchParamsObj.from_object === 'string' ? searchParamsObj.from_object : null;
   const urlParams = new URLSearchParams();
   Object.entries(searchParamsObj).forEach(([key, value]) => {
-    if (value) {
+    if (value && key !== 'from_object') {
       urlParams.set(key, Array.isArray(value) ? value.join(',') : value);
     }
   });
@@ -143,25 +144,34 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
               { label: spectrum.target_id },
             ]}
           />
-          {filterStr && (
+          {fromObject ? (
             <Link
-              href={`/nirspec?${filterStr}`}
+              href={`/nirspec/objects/${encodeURIComponent(fromObject)}`}
               className="text-sm text-primary hover:text-primary-hover flex items-center gap-1"
             >
-              ← Back to Filtered List
+              ← Back to Object
+            </Link>
+          ) : (
+            <Link
+              href={filterStr ? `/nirspec?${filterStr}` : '/nirspec'}
+              className="text-sm text-primary hover:text-primary-hover flex items-center gap-1"
+            >
+              ← Back to List
             </Link>
           )}
           <ReturnToMapButton />
         </div>
 
-        {/* Navigation */}
-        <ObjectNavigation
-          targetId={targetId}
-          filters={filters}
-          sortColumn={sortColumn}
-          sortDirection={sortDirection}
-          filterStr={filterStr}
-        />
+        {/* Navigation — hide when viewing as member of an object */}
+        {!fromObject && (
+          <ObjectNavigation
+            targetId={targetId}
+            filters={filters}
+            sortColumn={sortColumn}
+            sortDirection={sortDirection}
+            filterStr={filterStr}
+          />
+        )}
       </div>
 
       {/* Main Content with Tabs */}

@@ -207,6 +207,7 @@ export const ObjectDetailClient: React.FC<ObjectDetailClientProps> = ({
       <div className="space-y-4">
         <MemberTargetsTable
           members={filteredMembers}
+          objectId={object.object_id}
           selectedGrating={selectedGrating}
           visibility={visibility}
           colors={colors}
