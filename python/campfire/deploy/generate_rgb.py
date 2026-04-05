@@ -524,7 +524,7 @@ def generate_rgb_images(
         if dra_interp is not None:
             drai = dra_interp(ra, dec) / 3600
             ddeci = ddec_interp(ra, dec) / 3600
-            if drai > 8e-5 or ddeci > 8e-5:
+            if abs(drai) > 8e-5 or abs(ddeci) > 8e-5:
                 drai, ddeci = 0, 0
             ra += drai
             dec += ddeci
