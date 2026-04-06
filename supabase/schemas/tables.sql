@@ -306,7 +306,8 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "exposure_time" double precision,
     "crds_context" "text",
     "jwst_version" "text",
-    "cfpipe_version" "text"
+    "cfpipe_version" "text",
+    "date_obs" "text"
 );
 
 
@@ -431,7 +432,9 @@ CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "n_new_targets" integer,
     "force_overwrite" boolean DEFAULT false,
     "source_ids_filter" integer[],
-    "supabase_only" boolean DEFAULT false
+    "supabase_only" boolean DEFAULT false,
+    "stuck_shutters" "jsonb",
+    "reduced_at" timestamp with time zone
 );
 
 

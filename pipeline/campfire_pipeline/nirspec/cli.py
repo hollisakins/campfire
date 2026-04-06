@@ -336,7 +336,8 @@ def _run_summary(cfg, obs_obj):
         log(f"No spectra found for {obs_obj.name}, skipping summary")
 
     # Write effective config for provenance tracking
-    write_effective_config(cfg, obs_dir, obs_obj.name)
+    write_effective_config(cfg, obs_dir, obs_obj.name,
+                           obs_stage_overrides=obs_obj.stage_overrides)
 
     # Generate shutters ECSV
     shutters_table = generate_shutters_table(obs_obj.name, obs_dir, obs_obj.field)

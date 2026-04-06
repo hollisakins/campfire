@@ -18,6 +18,7 @@ Usage (as subcommand of campfire):
     campfire deploy zfit  --obs ember_uds_p4 --force-overwrite
     campfire deploy thumbnails --obs ember_uds_p4
     campfire deploy slits --obs ember_uds_p4
+    campfire deploy fetch-config --obs ember_uds_p4 --output-dir ./config
 
 Multiple observations are processed serially:
     campfire deploy --obs ember_uds_p4 ember_uds_p5 ember_uds_p6
@@ -268,6 +269,31 @@ def sync_programs(config_path, dry_run):
     refresh_programs_overview(sb)
 
     print("Done.")
+
+
+# ---------------------------------------------------------------------------
+# fetch-config subcommand
+# ---------------------------------------------------------------------------
+
+@deploy_group.command('fetch-config')
+@click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
+@click.option('--obs', required=True, type=str, help='Observation name.')
+@click.option('--output-dir', default=None, type=click.Path(),
+              help='Output directory (default: current directory).')
+def fetch_config_cmd(config_path, obs, output_dir):
+    """Fetch reduction config from the database for reproducibility.
+
+    Retrieves the latest deployment record for the observation and writes:
+    - {obs}_config.toml (effective pipeline config)
+    - _{obs}_stuck_closed_shutters.toml (stuck shutter definitions)
+    - observations.toml (observation definition fragment)
+    """
+    from pathlib import Path
+    from campfire.deploy.deploy import fetch_config
+
+    config = load_config(config_path)
+    out = Path(output_dir) if output_dir else None
+    fetch_config(obs, config, output_dir=out)
 
 
 # ---------------------------------------------------------------------------

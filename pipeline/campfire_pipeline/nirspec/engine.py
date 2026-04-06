@@ -116,7 +116,8 @@ class ReductionEngine:
             log(f"No spectra found for {obs.name}, skipping summary")
 
         # Write effective config for provenance tracking
-        write_effective_config(self.config, obs_dir, obs.name)
+        write_effective_config(self.config, obs_dir, obs.name,
+                               obs_stage_overrides=obs.stage_overrides)
 
     # -- legacy methods kept for backwards compat ------------------------------
 

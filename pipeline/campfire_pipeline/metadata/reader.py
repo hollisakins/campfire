@@ -240,7 +240,8 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
             'pi_name': primary.get('PI_NAME', ''),
             'date_obs': primary.get('DATE-OBS', ''),
             'exposure_time': float(primary.get('EFFEXPTM', 0)),
-            'cal_ver': primary.get('CAL_VER', ''),
+            'jwst_version': primary.get('CAL_VER', ''),
+            'crds_context': primary.get('CRDS_CTX', ''),
             'reduction_version': reduction_version,
 
             'ra': float(sci.get('SRCRA', 0)),

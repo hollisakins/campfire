@@ -11,41 +11,29 @@ from supabase import create_client, Client
 def get_supabase_client(config: dict) -> Client:
     """Create a Supabase client from deploy config.
 
-    Supports two authentication modes:
-
-    1. **User JWT** (preferred): Uses the caller's Supabase-compatible JWT
-       from the OAuth device flow, plus the anon key. Database operations
-       go through RLS policies (admin role required).
-
-    2. **Service role key** (legacy/fallback): Uses the service_role_key
-       directly, bypassing RLS. Used when no user JWT is available.
+    Requires user JWT authentication via ``campfire login``. The caller's
+    Supabase-compatible JWT (from the OAuth device flow) and anon key are
+    used to create a client that operates through RLS policies.
 
     The config dict should contain::
 
         config['supabase']['url']                  # always required
-        config['supabase']['anon_key']             # for user JWT mode
-        config['supabase']['supabase_token']       # for user JWT mode
-        config['supabase']['service_role_key']     # for legacy mode
+        config['supabase']['anon_key']             # from campfire login
+        config['supabase']['supabase_token']       # from campfire login
     """
     url = config['supabase']['url']
     supabase_token = config['supabase'].get('supabase_token')
     anon_key = config['supabase'].get('anon_key')
 
     if supabase_token and anon_key:
-        # User JWT mode: create client with anon key, then override
-        # the auth header with the user's Supabase-compatible JWT
         client = create_client(url, anon_key)
         client.postgrest.auth(supabase_token)
         return client
 
-    # Legacy mode: service role key
-    service_role_key = config['supabase'].get('service_role_key')
-    if not service_role_key:
-        raise ValueError(
-            "No Supabase credentials available. "
-            "Run 'campfire login' to authenticate, or provide service_role_key in deploy config."
-        )
-    return create_client(url, service_role_key)
+    raise ValueError(
+        "No Supabase credentials available. "
+        "Run 'campfire login' to authenticate."
+    )
 
 
 REDSHIFT_DRIFT_THRESHOLD = 0.03
@@ -79,6 +67,8 @@ def insert_deployment(
     crds_context: str | None = None,
     reduction_version: str | None = None,
     config_snapshot: dict | None = None,
+    stuck_shutters: dict | None = None,
+    reduced_at: str | None = None,
     n_targets: int | None = None,
     n_spectra: int | None = None,
     n_new_targets: int | None = None,
@@ -94,8 +84,6 @@ def insert_deployment(
     if not deployed_by:
         print("  Warning: No user_id available, skipping deployment record")
         return None
-
-    import json as json_mod
 
     data = {
         'observation': observation,
@@ -113,6 +101,10 @@ def insert_deployment(
         data['reduction_version'] = reduction_version
     if config_snapshot is not None:
         data['config_snapshot'] = config_snapshot
+    if stuck_shutters is not None:
+        data['stuck_shutters'] = stuck_shutters
+    if reduced_at:
+        data['reduced_at'] = reduced_at
     if n_targets is not None:
         data['n_targets'] = n_targets
     if n_spectra is not None:
@@ -468,6 +460,49 @@ def deploy_shutters(
         total += len(batch)
 
     return total
+
+
+def fetch_deployment_config(client: Client, obs_name: str) -> dict | None:
+    """
+    Fetch observation metadata and latest deployment for config reconstruction.
+
+    Returns a dict with 'observation' and 'deployment' keys, or None if
+    the observation is not found or has no deployment record.
+    """
+    # Query observation
+    obs_resp = client.table('observations').select(
+        'name, program_slug, jwst_program_id, field, '
+        'file_globs, gratings, data_subdir, latest_deployment_id'
+    ).eq('name', obs_name).execute()
+
+    if not obs_resp.data:
+        return None
+
+    obs_row = obs_resp.data[0]
+    dep_id = obs_row.get('latest_deployment_id')
+    if not dep_id:
+        return None
+
+    # Query latest deployment
+    dep_resp = client.table('deployments').select(
+        'id, config_snapshot, stuck_shutters, deployed_at, reduced_at, '
+        'deployed_by, cfpipe_version, jwst_version, crds_context, reduction_version'
+    ).eq('id', dep_id).execute()
+
+    if not dep_resp.data:
+        return None
+
+    return {
+        'observation': {
+            'name': obs_row['name'],
+            'program_slug': obs_row['program_slug'],
+            'field': obs_row['field'],
+            'file_globs': obs_row.get('file_globs', []),
+            'gratings': obs_row.get('gratings', []),
+            'data_subdir': obs_row.get('data_subdir'),
+        },
+        'deployment': dep_resp.data[0],
+    }
 
 
 def refresh_filter_options(client: Client) -> None:

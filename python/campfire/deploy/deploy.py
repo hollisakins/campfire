@@ -38,6 +38,7 @@ from campfire.deploy.supabase import (
     check_existing_objects,
     deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
+    fetch_deployment_config,
     get_supabase_client,
     get_user_id_from_token,
     insert_deployment,
@@ -69,6 +70,19 @@ def _load_config_snapshot(obs_dir: Path, obs_name: str) -> dict | None:
     try:
         import tomllib
         with open(config_path, 'rb') as f:
+            return tomllib.load(f)
+    except Exception:
+        return None
+
+
+def _load_stuck_shutters(obs_dir: Path, obs_name: str) -> dict | None:
+    """Load the stuck closed shutters TOML, if it exists."""
+    shutters_path = obs_dir / f"_{obs_name}_stuck_closed_shutters.toml"
+    if not shutters_path.exists():
+        return None
+    try:
+        import tomllib
+        with open(shutters_path, 'rb') as f:
             return tomllib.load(f)
     except Exception:
         return None
@@ -340,6 +354,7 @@ def deploy_observation(
 
         # Record deployment provenance
         config_snapshot = _load_config_snapshot(obs_dir, obs_name)
+        stuck_shutters = _load_stuck_shutters(obs_dir, obs_name)
         user_id = get_user_id_from_token(config)
 
         deployment_id = insert_deployment(
@@ -351,6 +366,8 @@ def deploy_observation(
             crds_context=summary.meta.get('crds_context'),
             reduction_version=spectra[0].get('reduction_version') if spectra else None,
             config_snapshot=config_snapshot,
+            stuck_shutters=stuck_shutters,
+            reduced_at=summary.meta.get('generated_at'),
             n_targets=len(objects),
             n_spectra=len(spectra),
             n_new_targets=len(new_object_ids),
@@ -771,3 +788,88 @@ def deploy_shutters(
     print("Deploying shutters...")
     n = db_deploy_shutters(sb, obs_name, shutters_data)
     print(f"Deployed {n} shutter records for {obs_name}")
+
+
+def fetch_config(
+    obs_name: str,
+    config: dict,
+    output_dir: Path | None = None,
+) -> None:
+    """
+    Reconstitute reduction config files from the database.
+
+    Fetches the latest deployment for the observation and writes:
+    - {obs}_config.toml from deployments.config_snapshot
+    - _{obs}_stuck_closed_shutters.toml from deployments.stuck_shutters
+    - observations.toml fragment from observations metadata
+
+    Parameters
+    ----------
+    obs_name : str
+        Observation name
+    config : dict
+        Deploy config (for Supabase credentials)
+    output_dir : Path, optional
+        Output directory (default: current directory)
+    """
+    import toml
+
+    sb = get_supabase_client(config)
+    result = fetch_deployment_config(sb, obs_name)
+
+    if result is None:
+        print(f"Error: Observation '{obs_name}' not found or has no deployment record.")
+        return
+
+    obs_data = result['observation']
+    dep_data = result['deployment']
+    out = output_dir or Path('.')
+    out.mkdir(parents=True, exist_ok=True)
+
+    files_written = []
+
+    # 1. Pipeline config snapshot
+    if dep_data.get('config_snapshot'):
+        config_path = out / f"{obs_name}_config.toml"
+        with open(config_path, 'w') as f:
+            toml.dump(dep_data['config_snapshot'], f)
+        files_written.append(config_path)
+
+    # 2. Stuck shutters
+    if dep_data.get('stuck_shutters'):
+        shutters_path = out / f"_{obs_name}_stuck_closed_shutters.toml"
+        with open(shutters_path, 'w') as f:
+            toml.dump(dep_data['stuck_shutters'], f)
+        files_written.append(shutters_path)
+
+    # 3. Observations.toml fragment
+    obs_fragment = {obs_name: {}}
+    if obs_data.get('field'):
+        obs_fragment[obs_name]['field'] = obs_data['field']
+    if obs_data.get('program_slug'):
+        obs_fragment[obs_name]['program'] = obs_data['program_slug']
+    if obs_data.get('data_subdir'):
+        obs_fragment[obs_name]['data_subdir'] = obs_data['data_subdir']
+    if obs_data.get('file_globs'):
+        globs = obs_data['file_globs']
+        obs_fragment[obs_name]['files'] = globs[0] if len(globs) == 1 else globs
+    if obs_data.get('gratings'):
+        obs_fragment[obs_name]['gratings'] = obs_data['gratings']
+
+    obs_path = out / 'observations.toml'
+    with open(obs_path, 'w') as f:
+        toml.dump(obs_fragment, f)
+    files_written.append(obs_path)
+
+    # Summary
+    print(f"Fetched config for '{obs_name}':")
+    for p in files_written:
+        print(f"  {p}")
+
+    print(f"\nDeployment #{dep_data.get('id')}:")
+    print(f"  Deployed by: {dep_data.get('deployed_by', 'unknown')}")
+    print(f"  Deployed at: {dep_data.get('deployed_at', 'unknown')}")
+    print(f"  Reduced at:  {dep_data.get('reduced_at', 'unknown')}")
+    print(f"  cfpipe:      {dep_data.get('cfpipe_version', 'unknown')}")
+    print(f"  jwst:        {dep_data.get('jwst_version', 'unknown')}")
+    print(f"  CRDS:        {dep_data.get('crds_context', 'unknown')}")

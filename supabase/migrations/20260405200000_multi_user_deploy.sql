@@ -8,7 +8,8 @@
 ALTER TABLE "public"."spectra"
   ADD COLUMN IF NOT EXISTS "crds_context" text,
   ADD COLUMN IF NOT EXISTS "jwst_version" text,
-  ADD COLUMN IF NOT EXISTS "cfpipe_version" text;
+  ADD COLUMN IF NOT EXISTS "cfpipe_version" text,
+  ADD COLUMN IF NOT EXISTS "date_obs" text;
 
 
 -- =============================================================================
@@ -30,7 +31,9 @@ CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "n_new_targets" integer,
     "force_overwrite" boolean DEFAULT false,
     "source_ids_filter" integer[],
-    "supabase_only" boolean DEFAULT false
+    "supabase_only" boolean DEFAULT false,
+    "stuck_shutters" jsonb,
+    "reduced_at" timestamptz
 );
 
 ALTER TABLE "public"."deployments" OWNER TO "postgres";

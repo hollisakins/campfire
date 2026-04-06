@@ -88,12 +88,20 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
 
     Returns list of dicts with keys:
         target_id, grating, fits_path (R2 key), reduction_version,
-        signal_to_noise, exposure_time, file_hash, file_size
+        signal_to_noise, exposure_time, file_hash, file_size,
+        date_obs, cfpipe_version, jwst_version, crds_context
     """
-    # Provenance from ECSV metadata (written by pipeline)
+    # cfpipe_version is a package version, same for all rows
     cfpipe_version = summary.meta.get('cfpipe_version')
-    jwst_version = summary.meta.get('jwst_version')
-    crds_context = summary.meta.get('crds_context')
+
+    # Check which per-row provenance columns exist (backward compat with old ECSVs)
+    has_jwst_version = 'jwst_version' in summary.colnames
+    has_crds_context = 'crds_context' in summary.colnames
+    has_date_obs = 'date_obs' in summary.colnames
+
+    # Fallback to metadata for old ECSVs that lack per-row columns
+    meta_jwst_version = summary.meta.get('jwst_version')
+    meta_crds_context = summary.meta.get('crds_context')
 
     records = []
     for row in summary:
@@ -108,12 +116,19 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
             'file_hash': row['file_hash'],
             'file_size': int(row['file_size']) if row['file_size'] is not None else None,
         }
+        # Per-row provenance from FITS headers (preferred), falling back to metadata
+        jwst_version = str(row['jwst_version']) if has_jwst_version and row['jwst_version'] else meta_jwst_version
+        crds_context = str(row['crds_context']) if has_crds_context and row['crds_context'] else meta_crds_context
+        date_obs = str(row['date_obs']) if has_date_obs and row['date_obs'] else None
+
         if cfpipe_version:
             rec['cfpipe_version'] = cfpipe_version
         if jwst_version:
             rec['jwst_version'] = jwst_version
         if crds_context:
             rec['crds_context'] = crds_context
+        if date_obs:
+            rec['date_obs'] = date_obs
         records.append(rec)
     return records
 

@@ -6,7 +6,6 @@ the pipeline and the deploy script.  Deploy reads the ECSV instead of
 re-scanning individual FITS files.
 """
 
-import os
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -409,7 +408,7 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
         'n_pix', 'exposure_time', 'signal_to_noise',
         'program_id', 'pi_name', 'date_obs',
         'spec_file', 'zfit_file',
-        'reduction_version', 'cal_ver',
+        'reduction_version', 'jwst_version', 'crds_context',
         'fits_filename', 'file_size', 'file_hash',
     ]
 
@@ -429,20 +428,26 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
     summary.meta['n_sources'] = len(set(summary['source_id']))
     summary.meta['n_spectra'] = len(summary)
 
-    # Provenance: capture package versions and environment for reproducibility
+    # Provenance: capture package versions for reproducibility
     import campfire_pipeline
     summary.meta['cfpipe_version'] = campfire_pipeline.__version__
-    try:
-        import jwst
-        summary.meta['jwst_version'] = jwst.__version__
-    except ImportError:
+    # jwst_version and crds_context come from FITS headers (authoritative)
+    if len(summary) > 0:
+        summary.meta['jwst_version'] = summary['jwst_version'][0] or 'unknown'
+        summary.meta['crds_context'] = summary['crds_context'][0] or 'unknown'
+    else:
         summary.meta['jwst_version'] = 'unknown'
-    summary.meta['crds_context'] = os.environ.get('CRDS_CONTEXT', 'unknown')
+        summary.meta['crds_context'] = 'unknown'
 
     return summary
 
 
-def write_effective_config(config: dict, obs_dir: Path, obs_name: str) -> Path:
+def write_effective_config(
+    config: dict,
+    obs_dir: Path,
+    obs_name: str,
+    obs_stage_overrides: dict | None = None,
+) -> Path:
     """
     Write the effective pipeline config to a TOML file in the products directory.
 
@@ -454,36 +459,44 @@ def write_effective_config(config: dict, obs_dir: Path, obs_name: str) -> Path:
     Parameters
     ----------
     config : dict
-        Effective pipeline configuration dictionary
+        Base pipeline configuration dictionary (defaults + user overrides)
     obs_dir : Path
         Observation products directory
     obs_name : str
         Observation name (used in filename)
+    obs_stage_overrides : dict, optional
+        Per-observation stage overrides from observations.toml, e.g.
+        ``{'stage2': {'background_method': 'local'}}``. These are merged
+        under ``config['nirspec']`` to produce the effective config.
 
     Returns
     -------
     output_path : Path
         Path to the written TOML file
     """
+    import copy
     import toml
+
+    from campfire_pipeline.config import deep_merge
 
     output_path = Path(obs_dir) / f"{obs_name}_config.toml"
 
+    # Merge per-observation stage overrides into a copy of the config
+    effective = copy.deepcopy(config)
+    if obs_stage_overrides:
+        nirspec = effective.setdefault('nirspec', {})
+        for stage_name, overrides in obs_stage_overrides.items():
+            nirspec[stage_name] = deep_merge(nirspec.get(stage_name, {}), overrides)
+
     # Add provenance header
+    import campfire_pipeline
     provenance = {
         'generated_at': datetime.utcnow().isoformat(),
         'obs_name': obs_name,
+        'cfpipe_version': campfire_pipeline.__version__,
     }
-    import campfire_pipeline
-    provenance['cfpipe_version'] = campfire_pipeline.__version__
-    try:
-        import jwst
-        provenance['jwst_version'] = jwst.__version__
-    except ImportError:
-        provenance['jwst_version'] = 'unknown'
-    provenance['crds_context'] = os.environ.get('CRDS_CONTEXT', 'unknown')
 
-    output = {**config, '_provenance': provenance}
+    output = {**effective, '_provenance': provenance}
     with open(output_path, 'w') as f:
         toml.dump(output, f)
 
