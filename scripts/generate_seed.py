@@ -489,8 +489,8 @@ def generate_objects_sql(objects: list[dict]) -> str:
         else:
             redshift_inspected_sql = 'NULL'
 
-        lines.append(f"""INSERT INTO public.targets (id, target_id, program_slug, observation, field, ra, dec, redshift_auto, redshift_inspected, redshift_quality, spectral_features, object_flags, dq_flags, last_inspected_at, last_inspected_by, has_sed_plot)
-VALUES ({obj['id']}, {sql_escape(obj['target_id'])}, {sql_escape(obj['program_slug'])}, {sql_escape(obj.get('observation', ''))}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {obj.get('spectral_features', 0)}, {obj.get('object_flags', 0)}, {obj.get('dq_flags', 0)}, {inspected_at}, {inspected_by}, {sql_escape(obj.get('has_sed_plot', False))});""")
+        lines.append(f"""INSERT INTO public.targets (id, target_id, program_slug, observation, field, ra, dec, redshift_auto, redshift_inspected, redshift_quality, spectral_features, dq_flags, last_inspected_at, last_inspected_by, has_sed_plot)
+VALUES ({obj['id']}, {sql_escape(obj['target_id'])}, {sql_escape(obj['program_slug'])}, {sql_escape(obj.get('observation', ''))}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {obj.get('spectral_features', 0)}, {obj.get('dq_flags', 0)}, {inspected_at}, {inspected_by}, {sql_escape(obj.get('has_sed_plot', False))});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -796,7 +796,6 @@ def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_pa
                 'redshift_inspected': None,
                 'redshift_quality': [4, 2, 0][i],
                 'spectral_features': 0,
-                'object_flags': 0,
                 'dq_flags': 0,
                 'last_inspected_at': None,
                 'last_inspected_by': None,
