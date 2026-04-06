@@ -46,7 +46,7 @@ export async function GET(request: NextRequest) {
     // Get user profile for additional info
     const { data: profile } = await supabase
       .from('user_profiles')
-      .select('full_name, created_at')
+      .select('full_name, is_admin, created_at')
       .eq('user_id', userId)
       .single();
 
@@ -54,6 +54,7 @@ export async function GET(request: NextRequest) {
       user_id: userId,
       email: userData.user.email,
       full_name: profile?.full_name || null,
+      is_admin: profile?.is_admin || false,
       created_at: profile?.created_at || userData.user.created_at,
     });
   } catch (error) {
