@@ -41,31 +41,7 @@ export async function GET(
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     );
 
-    // Get observation metadata (program, field, counts)
-    const { data: obsStats, error: obsError } = await supabase.rpc('get_observation_stats', {
-      p_program_slugs: accessibleProgramSlugs,
-    });
-
-    if (obsError) {
-      console.error('Error fetching observation stats:', obsError);
-      return NextResponse.json(
-        { error: 'Failed to fetch observation data' },
-        { status: 500 }
-      );
-    }
-
-    const obsInfo = (obsStats || []).find(
-      (o: { observation: string }) => o.observation === obs_name
-    );
-
-    if (!obsInfo) {
-      return NextResponse.json(
-        { error: 'Observation not found or access denied' },
-        { status: 404 }
-      );
-    }
-
-    // Get all spectra for this observation
+    // Get all spectra for this observation (the main payload)
     const { data: spectra, error: spectraError } = await supabase.rpc('get_observation_manifest', {
       p_obs_name: obs_name,
       p_program_slugs: accessibleProgramSlugs,
@@ -80,6 +56,26 @@ export async function GET(
     }
 
     const spectraList = spectra || [];
+
+    if (spectraList.length === 0) {
+      return NextResponse.json(
+        { error: 'Observation not found or access denied' },
+        { status: 404 }
+      );
+    }
+
+    // Derive observation metadata from manifest results (avoids expensive all-obs aggregation)
+    const targetIds = [...new Set(spectraList.map((s: { target_id: string }) => s.target_id))];
+    const totalSizeBytes = spectraList.reduce((sum: number, s: { file_size: number | null }) => sum + (s.file_size || 0), 0);
+
+    // Lightweight query for program/field info (single row, indexed)
+    const { data: obsMeta } = await supabase
+      .from('targets')
+      .select('program_slug, field, programs(program_name)')
+      .eq('observation', obs_name)
+      .in('program_slug', accessibleProgramSlugs)
+      .limit(1)
+      .single();
 
     // Generate signed URLs (6-hour expiry = 21600 seconds)
     const urlExpiresAt = new Date(Date.now() + 21600 * 1000).toISOString();
@@ -112,7 +108,6 @@ export async function GET(
     );
 
     // Track download (fire-and-forget)
-    const targetIds = [...new Set(spectraList.map((s: { target_id: string }) => s.target_id))];
     supabase
       .from('download_log')
       .insert({
@@ -132,14 +127,16 @@ export async function GET(
         (err) => console.error('Failed to track sync download:', err)
       );
 
+    const program = obsMeta?.programs as unknown as { program_name: string } | null;
+
     return NextResponse.json({
-      observation: obsInfo.observation,
-      program_slug: obsInfo.program_slug,
-      program_name: obsInfo.program_name,
-      field: obsInfo.field,
-      target_count: obsInfo.target_count,
-      spectrum_count: obsInfo.spectrum_count,
-      total_size_bytes: obsInfo.total_size_bytes,
+      observation: obs_name,
+      program_slug: obsMeta?.program_slug || null,
+      program_name: program?.program_name || null,
+      field: obsMeta?.field || null,
+      target_count: targetIds.length,
+      spectrum_count: spectraList.length,
+      total_size_bytes: totalSizeBytes,
       url_expires_at: urlExpiresAt,
       spectra: spectraWithUrls,
     });
