@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 
-from campfire.db.store import LocalStore, SCHEMA_VERSION
+from campfire.db.store import LocalStore, SchemaMismatchError, SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -106,61 +106,22 @@ class TestLocalStoreInit:
         with LocalStore(db_path) as store:
             assert db_path.exists()
 
-    def test_migrates_from_old_db(self, tmp_path):
-        """Store migrates from sync_state.db if it exists."""
+    def test_rejects_old_schema(self, tmp_path):
+        """Store raises on incompatible schema version."""
         import sqlite3
 
-        meta_dir = tmp_path / "meta"
-        meta_dir.mkdir()
-        old_path = meta_dir / "sync_state.db"
-        new_path = meta_dir / "campfire.db"
+        db_path = tmp_path / "meta" / "campfire.db"
+        db_path.parent.mkdir(parents=True)
 
-        # Create old-format database
-        conn = sqlite3.connect(str(old_path))
-        conn.executescript("""
-            CREATE TABLE synced_files (
-                spectra_id INTEGER PRIMARY KEY,
-                object_id TEXT NOT NULL,
-                observation TEXT NOT NULL,
-                grating TEXT NOT NULL,
-                fits_path TEXT NOT NULL,
-                local_path TEXT NOT NULL,
-                file_hash TEXT,
-                file_size INTEGER,
-                synced_at TEXT NOT NULL
-            );
-            INSERT INTO synced_files VALUES (
-                10, 'obj_100', 'obs1', 'PRISM',
-                'spectra/obs1/file.fits', 'obs1/file.fits',
-                'sha256:abc123', 1000, '2026-01-01T00:00:00Z'
-            );
-            CREATE TABLE sync_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                observation TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                completed_at TEXT,
-                files_downloaded INTEGER DEFAULT 0,
-                files_skipped INTEGER DEFAULT 0,
-                bytes_downloaded INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'in_progress'
-            );
-        """)
+        # Create a database with an old schema version
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT INTO _meta VALUES ('schema_version', '7')")
+        conn.commit()
         conn.close()
 
-        # Open with LocalStore — should migrate
-        store = LocalStore(new_path)
-
-        # Old file should have been renamed
-        assert not old_path.exists()
-        assert new_path.exists()
-
-        # Migrated data should be in new spectra table
-        spectra = store.get_spectra_for_object("obj_100")
-        assert len(spectra) == 1
-        assert spectra[0]["local_path"] == "obs1/file.fits"
-        assert spectra[0]["file_hash"] == "sha256:abc123"
-
-        store.close()
+        with pytest.raises(SchemaMismatchError):
+            LocalStore(db_path)
 
 
 class TestUpsertObjects:
@@ -422,143 +383,6 @@ class TestStaleness:
         assert row["local_file_hash"] == "sha256:local"
 
 
-class TestV3Migration:
-    """Test schema v2 to v3 migration."""
-
-    def test_migrates_v2_to_v3(self, tmp_path):
-        """V2 database gets local_file_hash column added."""
-        import sqlite3
-
-        db_path = tmp_path / "campfire.db"
-
-        # Create a v2 database (no local_file_hash column)
-        conn = sqlite3.connect(str(db_path))
-        conn.executescript("""
-            CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);
-            INSERT INTO _meta VALUES ('schema_version', '2');
-
-            CREATE TABLE targets (
-                id INTEGER PRIMARY KEY,
-                target_id TEXT UNIQUE NOT NULL,
-                program_slug TEXT, program_name TEXT,
-                field TEXT, observation TEXT,
-                ra REAL, dec REAL,
-                redshift REAL, redshift_auto REAL, redshift_inspected REAL,
-                redshift_quality INTEGER DEFAULT 0,
-                spectral_features INTEGER DEFAULT 0,
-                object_flags INTEGER DEFAULT 0,
-                dq_flags INTEGER DEFAULT 0,
-                max_snr REAL, max_exposure_time REAL,
-                last_inspected_at TEXT, created_at TEXT, updated_at TEXT,
-                _synced_at TEXT
-            );
-
-            CREATE TABLE spectra (
-                spectra_id INTEGER PRIMARY KEY,
-                target_id TEXT NOT NULL,
-                grating TEXT NOT NULL,
-                fits_path TEXT, file_hash TEXT, file_size INTEGER,
-                signal_to_noise REAL, exposure_time REAL,
-                reduction_version TEXT,
-                local_path TEXT, synced_at TEXT, _synced_at TEXT
-            );
-
-            -- Simulate a downloaded file (v2 style: file_hash = download hash)
-            INSERT INTO targets (id, target_id, observation) VALUES (1, 'obj1', 'obs1');
-            INSERT INTO spectra (spectra_id, target_id, grating, fits_path,
-                                 file_hash, local_path, synced_at)
-            VALUES (10, 'obj1', 'PRISM', 'spectra/obs1/file.fits',
-                    'sha256:downloadhash', 'obs1/file.fits', '2026-01-01');
-
-            CREATE TABLE sync_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                observation TEXT NOT NULL, started_at TEXT NOT NULL,
-                completed_at TEXT, files_downloaded INTEGER DEFAULT 0,
-                files_skipped INTEGER DEFAULT 0, bytes_downloaded INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'in_progress'
-            );
-        """)
-        conn.close()
-
-        # Open with LocalStore — should auto-migrate
-        store = LocalStore(db_path)
-
-        # Verify local_file_hash was populated from old file_hash
-        row = store._conn.execute(
-            "SELECT file_hash, local_file_hash FROM spectra WHERE spectra_id = 10"
-        ).fetchone()
-        assert row["local_file_hash"] == "sha256:downloadhash"
-
-        # Verify schema version is current (cascading migration)
-        version = store._get_schema_version()
-        assert version == SCHEMA_VERSION
-
-        store.close()
-
-
-class TestV5Migration:
-    """Test schema v4 → v5 migration (local_file_mtime/local_file_size columns)."""
-
-    def test_migrates_v4_to_v5(self, tmp_path):
-        import sqlite3
-
-        db_path = tmp_path / "meta" / "campfire.db"
-        db_path.parent.mkdir(parents=True)
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-
-        # Create a v4-like schema (without the new columns)
-        conn.executescript("""
-            CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);
-            INSERT INTO _meta (key, value) VALUES ('schema_version', '4');
-
-            CREATE TABLE targets (
-                id INTEGER PRIMARY KEY, target_id TEXT UNIQUE NOT NULL,
-                program_slug TEXT, program_name TEXT, field TEXT, observation TEXT,
-                ra REAL, dec REAL, redshift REAL, redshift_auto REAL,
-                redshift_inspected REAL, redshift_quality INTEGER DEFAULT 0,
-                spectral_features INTEGER DEFAULT 0, object_flags INTEGER DEFAULT 0,
-                dq_flags INTEGER DEFAULT 0, max_snr REAL, max_exposure_time REAL,
-                last_inspected_at TEXT, last_inspected_by TEXT,
-                created_at TEXT, updated_at TEXT, _synced_at TEXT
-            );
-
-            CREATE TABLE spectra (
-                spectra_id INTEGER PRIMARY KEY, target_id TEXT NOT NULL,
-                grating TEXT NOT NULL, fits_path TEXT, file_hash TEXT,
-                file_size INTEGER, signal_to_noise REAL, exposure_time REAL,
-                reduction_version TEXT, local_path TEXT, local_file_hash TEXT,
-                synced_at TEXT, _synced_at TEXT
-            );
-
-            INSERT INTO spectra (spectra_id, target_id, grating, fits_path,
-                    file_hash, local_file_hash, local_path, synced_at)
-            VALUES (10, 'obj1', 'PRISM', 'spectra/obs1/file.fits',
-                    'sha256:server', 'sha256:local', 'obs1/file.fits', '2026-01-01');
-
-            CREATE TABLE sync_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                observation TEXT NOT NULL, started_at TEXT NOT NULL,
-                completed_at TEXT, files_downloaded INTEGER DEFAULT 0,
-                files_skipped INTEGER DEFAULT 0, bytes_downloaded INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'in_progress'
-            );
-        """)
-        conn.close()
-
-        store = LocalStore(db_path)
-
-        # Verify new columns exist
-        row = store._conn.execute(
-            "SELECT local_file_mtime, local_file_size FROM spectra WHERE spectra_id = 10"
-        ).fetchone()
-        assert row["local_file_mtime"] is None
-        assert row["local_file_size"] is None
-
-        # Verify schema version
-        assert store._get_schema_version() == SCHEMA_VERSION
-
-        store.close()
 
 
 class TestVerifyLocalFiles:

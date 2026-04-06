@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
 
-# Schema version — bump when tables change
-SCHEMA_VERSION = 7
+# Schema version — bump when tables change.
+# Squashed to v1 on 2026-04-06; existing databases must be deleted and re-synced.
+SCHEMA_VERSION = 1
 
 # Column lists used by both store and export
 TARGET_COLUMNS = [
@@ -161,6 +162,19 @@ CREATE TABLE IF NOT EXISTS sync_log (
 """
 
 
+class SchemaMismatchError(Exception):
+    """Raised when the on-disk schema version doesn't match the code."""
+
+    def __init__(self, db_path: Path, found_version: int, expected_version: int):
+        self.db_path = db_path
+        self.found_version = found_version
+        self.expected_version = expected_version
+        super().__init__(
+            f"Local database schema version {found_version} does not match "
+            f"expected version {expected_version}."
+        )
+
+
 class LocalStore:
     """SQLite database manager for local CAMPFIRE metadata and sync state.
 
@@ -177,9 +191,6 @@ class LocalStore:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Check for old sync_state.db to migrate from
-        self._maybe_migrate_from_old_db()
-
         self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -193,30 +204,13 @@ class LocalStore:
 
         self._init_schema()
 
-    def _maybe_migrate_from_old_db(self) -> None:
-        """If sync_state.db exists but campfire.db doesn't, migrate."""
-        old_path = self.db_path.parent / "sync_state.db"
-        if old_path.exists() and not self.db_path.exists():
-            # Rename the old database
-            old_path.rename(self.db_path)
-
     def _init_schema(self) -> None:
-        """Create tables if they don't exist, and migrate if needed."""
-        # Detect existing database state
-        has_synced_files = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='synced_files'"
-        ).fetchone() is not None
-        has_targets = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='targets'"
-        ).fetchone() is not None
-        has_objects = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='objects'"
+        """Create tables if needed, or verify schema version matches."""
+        has_meta = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='_meta'"
         ).fetchone() is not None
 
-        if has_synced_files and not has_targets and not has_objects:
-            # Migrate from v1 (sync-only) to full catalog schema
-            self._migrate_from_v1()
-        elif not has_targets and not has_objects:
+        if not has_meta:
             # Fresh install
             self._conn.executescript(_SCHEMA_SQL)
             self._conn.execute(
@@ -225,19 +219,10 @@ class LocalStore:
             )
             self._conn.commit()
         else:
-            # Existing schema — run any pending migrations
             version = self._get_schema_version()
-            if version < SCHEMA_VERSION:
-                if version < 3:
-                    self._migrate_from_v2()
-                if version < 4:
-                    self._migrate_from_v3()
-                if version < 5:
-                    self._migrate_from_v4()
-                if version < 6:
-                    self._migrate_from_v5()
-                if version < 7:
-                    self._migrate_from_v6()
+            if version != SCHEMA_VERSION:
+                self._conn.close()
+                raise SchemaMismatchError(self.db_path, version, SCHEMA_VERSION)
 
     def _get_schema_version(self) -> int:
         """Get current schema version from _meta table."""
@@ -245,209 +230,9 @@ class LocalStore:
             row = self._conn.execute(
                 "SELECT value FROM _meta WHERE key = 'schema_version'"
             ).fetchone()
-            return int(row[0]) if row else 1
+            return int(row[0]) if row else 0
         except Exception:
-            return 1
-
-    def _migrate_from_v1(self) -> None:
-        """Migrate from old synced_files-only schema to full catalog schema."""
-        # Create the new tables
-        self._conn.executescript(_SCHEMA_SQL)
-
-        # Copy synced_files data into the new spectra table
-        self._conn.execute("""
-            INSERT OR IGNORE INTO spectra
-                (spectra_id, target_id, grating, fits_path, file_hash, file_size,
-                 local_path, synced_at)
-            SELECT
-                spectra_id, object_id, grating, fits_path, file_hash, file_size,
-                local_path, synced_at
-            FROM synced_files
-        """)
-
-        # Drop the old table
-        self._conn.execute("DROP TABLE IF EXISTS synced_files")
-
-        # Mark schema version
-        self._conn.execute(
-            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
-        self._conn.commit()
-
-    def _migrate_from_v2(self) -> None:
-        """Migrate from v2 to v3: add local_file_hash column."""
-        # Add the new column
-        try:
-            self._conn.execute(
-                "ALTER TABLE spectra ADD COLUMN local_file_hash TEXT"
-            )
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-
-        # Copy file_hash to local_file_hash for already-downloaded files
-        # (in v2, mark_synced wrote the download hash into file_hash)
-        self._conn.execute("""
-            UPDATE spectra SET local_file_hash = file_hash
-            WHERE local_path IS NOT NULL AND file_hash IS NOT NULL
-        """)
-
-        self._conn.execute(
-            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
-        self._conn.commit()
-
-    def _migrate_from_v3(self) -> None:
-        """Migrate from v3 to v4: add last_inspected_by column.
-
-        At v3 the table is still called 'objects' (renamed in v5→v6).
-        """
-        table = "objects"
-        if not self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='objects'"
-        ).fetchone():
-            table = "targets"
-        try:
-            self._conn.execute(
-                f"ALTER TABLE {table} ADD COLUMN last_inspected_by TEXT"
-            )
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-
-        self._conn.execute(
-            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
-        self._conn.commit()
-
-    def _migrate_from_v4(self) -> None:
-        """Migrate from v4 to v5: add local_file_mtime and local_file_size to spectra."""
-        for col, col_type in [
-            ("local_file_mtime", "REAL"),
-            ("local_file_size", "INTEGER"),
-        ]:
-            try:
-                self._conn.execute(
-                    f"ALTER TABLE spectra ADD COLUMN {col} {col_type}"
-                )
-            except sqlite3.OperationalError:
-                pass  # Column already exists
-
-        self._conn.execute(
-            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
-        self._conn.commit()
-
-    def _migrate_from_v5(self) -> None:
-        """Migrate from v5 to v6: rename objects → targets, object_id → target_id."""
-        has_objects = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='objects'"
-        ).fetchone()
-
-        if has_objects:
-            # If targets table also exists (e.g. from _SCHEMA_SQL), drop the empty one
-            has_targets = self._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='targets'"
-            ).fetchone()
-            if has_targets:
-                self._conn.execute("DROP TABLE targets")
-
-            # Rename table and primary column
-            self._conn.execute("ALTER TABLE objects RENAME TO targets")
-            self._conn.execute(
-                "ALTER TABLE targets RENAME COLUMN object_id TO target_id"
-            )
-
-            # Recreate indexes with new names
-            for idx in ['idx_objects_object_id', 'idx_objects_observation',
-                        'idx_objects_field', 'idx_objects_redshift',
-                        'idx_objects_object_flags']:
-                self._conn.execute(f"DROP INDEX IF EXISTS {idx}")
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_targets_target_id ON targets(target_id)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_targets_observation ON targets(observation)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_targets_field ON targets(field)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_targets_redshift ON targets(redshift)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_targets_object_flags ON targets(object_flags)"
-            )
-
-        # Rename spectra.object_id → target_id if the old column exists
-        has_object_id_col = self._conn.execute(
-            "SELECT 1 FROM pragma_table_info('spectra') WHERE name = 'object_id'"
-        ).fetchone()
-        if has_object_id_col:
-            self._conn.execute(
-                "ALTER TABLE spectra RENAME COLUMN object_id TO target_id"
-            )
-            self._conn.execute("DROP INDEX IF EXISTS idx_spectra_object_id")
-            self._conn.execute("DROP INDEX IF EXISTS idx_spectra_object_grating")
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_spectra_target_id ON spectra(target_id)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_spectra_target_grating ON spectra(target_id, grating)"
-            )
-
-        # Safety net: ensure last_inspected_by exists on targets
-        try:
-            self._conn.execute(
-                "ALTER TABLE targets ADD COLUMN last_inspected_by TEXT"
-            )
-        except sqlite3.OperationalError:
-            pass  # Already exists
-
-        self._conn.execute(
-            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
-            ("6",),
-        )
-        self._conn.commit()
-
-    def _migrate_from_v6(self) -> None:
-        """Migrate from v6 to v7: add objects table for sky-position groupings."""
-        # Create objects table
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS objects (
-                id INTEGER PRIMARY KEY,
-                object_id TEXT UNIQUE NOT NULL,
-                field TEXT,
-                ra REAL,
-                dec REAL,
-                n_targets INTEGER DEFAULT 0,
-                n_spectra INTEGER DEFAULT 0,
-                programs TEXT,
-                gratings TEXT,
-                max_snr REAL,
-                max_exposure_time REAL,
-                best_redshift REAL,
-                best_redshift_quality INTEGER DEFAULT 0,
-                member_target_ids TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                _synced_at TEXT
-            )
-        """)
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_objects_object_id ON objects(object_id)"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_objects_field ON objects(field)"
-        )
-
-        self._conn.execute(
-            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
-        self._conn.commit()
+            return 0
 
     # -------------------------------------------------------------------------
     # Catalog operations

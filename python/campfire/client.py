@@ -103,10 +103,15 @@ class Campfire:
             meta_dir = resolved_dir / "meta"
             db_path = meta_dir / "campfire.db"
             if db_path.exists():
-                from .db.store import LocalStore
-                self._local = LocalStore(db_path)
-                self._products_dir = resolved_dir / "products"
-                self._meta_dir = meta_dir
+                from .db.store import LocalStore, SchemaMismatchError
+                try:
+                    self._local = LocalStore(db_path)
+                except SchemaMismatchError:
+                    # Stale schema — will be recreated on next sync()
+                    self._local = None
+                else:
+                    self._products_dir = resolved_dir / "products"
+                    self._meta_dir = meta_dir
 
     @staticmethod
     def _resolve_data_dir(data_dir: Optional[Union[str, Path]]) -> Optional[Path]:
@@ -200,11 +205,17 @@ class Campfire:
             self._products_dir = resolved / "products"
             self._meta_dir = resolved / "meta"
 
-        # Open store (create if needed)
+        # Open store (create if needed, delete stale schema automatically)
         if self._local is None:
-            from .db.store import LocalStore
+            from .db.store import LocalStore, SchemaMismatchError
             db_path = self._meta_dir / "campfire.db"
-            self._local = LocalStore(db_path)
+            try:
+                self._local = LocalStore(db_path)
+            except SchemaMismatchError:
+                db_path.unlink(missing_ok=True)
+                db_path.with_suffix(".db-wal").unlink(missing_ok=True)
+                db_path.with_suffix(".db-shm").unlink(missing_ok=True)
+                self._local = LocalStore(db_path)
 
         result = sync_metadata(
             self._api, self._local, self._meta_dir,

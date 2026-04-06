@@ -38,13 +38,31 @@ def _require_auth(base_url: str) -> APISession:
 
 
 def _open_store():
-    """Open the LocalStore, creating it if needed. Returns store."""
-    from .db.store import LocalStore
+    """Open the LocalStore, creating it if needed.
+
+    If the on-disk schema is outdated, prompts the user to delete and
+    recreate the database.
+    """
+    from .db.store import LocalStore, SchemaMismatchError
     from .config import ensure_data_dir, meta_dir
 
     ensure_data_dir()
     db_path = meta_dir() / "campfire.db"
-    return LocalStore(db_path)
+    try:
+        return LocalStore(db_path)
+    except SchemaMismatchError as e:
+        click.echo(f"⚠  {e}")
+        click.echo("   The database must be recreated to match the current client version.")
+        if click.confirm("   Delete and rebuild on next sync?", default=True):
+            db_path.unlink(missing_ok=True)
+            # Also remove WAL/SHM files left by SQLite
+            db_path.with_suffix(".db-wal").unlink(missing_ok=True)
+            db_path.with_suffix(".db-shm").unlink(missing_ok=True)
+            click.echo("   Deleted. Creating fresh database…")
+            return LocalStore(db_path)
+        else:
+            click.echo("   Aborting.")
+            sys.exit(1)
 
 
 def _check_client_version(base_url: str) -> None:
@@ -356,9 +374,13 @@ def status(base_url: Optional[str]):
         click.echo("\nNo local catalog. Run: campfire sync")
         return
 
-    from .db.store import LocalStore
+    from .db.store import LocalStore, SchemaMismatchError
 
-    store = LocalStore(db_path)
+    try:
+        store = LocalStore(db_path)
+    except SchemaMismatchError:
+        click.echo("\n⚠  Local catalog has an outdated schema. Run: campfire sync")
+        return
 
     # Catalog stats
     obs_list = store.get_synced_observations()
