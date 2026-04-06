@@ -28,6 +28,7 @@ Multiple observations are processed serially:
 import sys
 
 import click
+import requests
 
 from campfire.deploy.config import load_config, load_programs, resolve_imaging_config, resolve_tiles_dir
 
@@ -62,6 +63,38 @@ from campfire.deploy.deploy import (
     deploy_zfit,
 )
 from campfire.deploy.supabase import get_supabase_client, upsert_programs, refresh_programs_overview
+
+
+def _check_admin() -> None:
+    """Verify the logged-in user has admin privileges. Exits on failure."""
+    from campfire.api.session import resolve_base_url
+    from campfire.auth.tokens import TokenManager
+
+    base_url = resolve_base_url()
+    try:
+        tm = TokenManager(base_url=base_url)
+        token = tm.get_valid_token(auto_refresh=True)
+    except Exception:
+        print("Error: Not logged in. Run: campfire login")
+        sys.exit(1)
+
+    try:
+        resp = requests.get(
+            f"{base_url}/auth/whoami",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"Error: Failed to verify admin status: {e}")
+        sys.exit(1)
+
+    if not data.get("is_admin"):
+        print(f"Error: Deploy requires admin privileges.")
+        print(f"  Logged in as: {data.get('email', 'unknown')}")
+        print(f"  Contact an administrator to request access.")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +144,7 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                  skip_astrometry):
     """Deploy CAMPFIRE pipeline products to Supabase + R2."""
     ctx.ensure_object(dict)
+    _check_admin()
 
     # When invoked without a subcommand, --obs is required
     if ctx.invoked_subcommand is None:
