@@ -101,6 +101,7 @@ class ReductionEngine:
     def run_summarize(self, obs):
         from campfire_pipeline.metadata.summary import (
             generate_observation_summary,
+            write_effective_config,
             write_summary_ecsv,
         )
         version = self.config.get('pipeline', {}).get('version', 'unknown')
@@ -113,6 +114,10 @@ class ReductionEngine:
             write_summary_ecsv(summary, obs_dir, obs.name)
         else:
             log(f"No spectra found for {obs.name}, skipping summary")
+
+        # Write effective config for provenance tracking
+        write_effective_config(self.config, obs_dir, obs.name,
+                               obs_stage_overrides=obs.stage_overrides)
 
     # -- legacy methods kept for backwards compat ------------------------------
 

@@ -26,6 +26,9 @@ class StoredCredentials:
     # OAuth fields
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
+    supabase_token: Optional[str] = None
+    supabase_url: Optional[str] = None
+    supabase_anon_key: Optional[str] = None
     expires_at: Optional[str] = None  # ISO format datetime string
     user_email: Optional[str] = None
 
@@ -122,6 +125,9 @@ class CredentialManager:
         refresh_token: str,
         expires_in: int,
         user_email: Optional[str] = None,
+        supabase_token: Optional[str] = None,
+        supabase_url: Optional[str] = None,
+        supabase_anon_key: Optional[str] = None,
     ) -> None:
         """
         Save OAuth credentials.
@@ -136,6 +142,12 @@ class CredentialManager:
             Access token lifetime in seconds.
         user_email : str, optional
             User's email address for display purposes.
+        supabase_token : str, optional
+            Supabase-compatible JWT for direct database access.
+        supabase_url : str, optional
+            Supabase project URL (returned by server at login).
+        supabase_anon_key : str, optional
+            Supabase anon key (returned by server at login).
         """
         expires_at = datetime.utcnow().isoformat() + "Z"
         if expires_in > 0:
@@ -147,6 +159,9 @@ class CredentialManager:
             type="oauth",
             access_token=access_token,
             refresh_token=refresh_token,
+            supabase_token=supabase_token,
+            supabase_url=supabase_url,
+            supabase_anon_key=supabase_anon_key,
             expires_at=expires_at,
             user_email=user_email,
         )
@@ -205,11 +220,15 @@ class CredentialManager:
         access_token: str,
         refresh_token: str,
         expires_in: int,
+        supabase_token: Optional[str] = None,
+        supabase_url: Optional[str] = None,
+        supabase_anon_key: Optional[str] = None,
     ) -> None:
         """
         Update OAuth tokens after a refresh.
 
-        Preserves existing user_email if present.
+        Preserves existing user_email, supabase_url, and supabase_anon_key
+        from stored credentials when new values are not provided.
 
         Parameters
         ----------
@@ -219,10 +238,24 @@ class CredentialManager:
             New refresh token.
         expires_in : int
             Token lifetime in seconds.
+        supabase_token : str, optional
+            New Supabase-compatible JWT.
+        supabase_url : str, optional
+            Supabase project URL (preserved from existing if not provided).
+        supabase_anon_key : str, optional
+            Supabase anon key (preserved from existing if not provided).
         """
         existing = self.load()
         user_email = existing.user_email if existing else None
-        self.save_oauth(access_token, refresh_token, expires_in, user_email)
+        # Preserve Supabase connection info across refreshes
+        if not supabase_url and existing:
+            supabase_url = existing.supabase_url
+        if not supabase_anon_key and existing:
+            supabase_anon_key = existing.supabase_anon_key
+        self.save_oauth(
+            access_token, refresh_token, expires_in, user_email,
+            supabase_token, supabase_url, supabase_anon_key,
+        )
 
     def exists(self) -> bool:
         """Check if credentials file exists."""

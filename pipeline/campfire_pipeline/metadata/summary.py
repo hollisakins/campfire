@@ -408,7 +408,7 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
         'n_pix', 'exposure_time', 'signal_to_noise',
         'program_id', 'pi_name', 'date_obs',
         'spec_file', 'zfit_file',
-        'reduction_version', 'cal_ver',
+        'reduction_version', 'jwst_version', 'crds_context',
         'fits_filename', 'file_size', 'file_hash',
     ]
 
@@ -428,7 +428,80 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
     summary.meta['n_sources'] = len(set(summary['source_id']))
     summary.meta['n_spectra'] = len(summary)
 
+    # Provenance: capture package versions for reproducibility
+    import campfire_pipeline
+    summary.meta['cfpipe_version'] = campfire_pipeline.__version__
+    # jwst_version and crds_context come from FITS headers (authoritative)
+    if len(summary) > 0:
+        summary.meta['jwst_version'] = summary['jwst_version'][0] or 'unknown'
+        summary.meta['crds_context'] = summary['crds_context'][0] or 'unknown'
+    else:
+        summary.meta['jwst_version'] = 'unknown'
+        summary.meta['crds_context'] = 'unknown'
+
     return summary
+
+
+def write_effective_config(
+    config: dict,
+    obs_dir: Path,
+    obs_name: str,
+    obs_stage_overrides: dict | None = None,
+) -> Path:
+    """
+    Write the effective pipeline config to a TOML file in the products directory.
+
+    This captures the fully-resolved config (package defaults + user overrides
+    + per-observation overrides) used for this specific reduction, for
+    reproducibility and provenance tracking. The deploy process reads this
+    file and stores it as JSONB in the deployments table.
+
+    Parameters
+    ----------
+    config : dict
+        Base pipeline configuration dictionary (defaults + user overrides)
+    obs_dir : Path
+        Observation products directory
+    obs_name : str
+        Observation name (used in filename)
+    obs_stage_overrides : dict, optional
+        Per-observation stage overrides from observations.toml, e.g.
+        ``{'stage2': {'background_method': 'local'}}``. These are merged
+        under ``config['nirspec']`` to produce the effective config.
+
+    Returns
+    -------
+    output_path : Path
+        Path to the written TOML file
+    """
+    import copy
+    import toml
+
+    from campfire_pipeline.config import deep_merge
+
+    output_path = Path(obs_dir) / f"{obs_name}_config.toml"
+
+    # Merge per-observation stage overrides into a copy of the config
+    effective = copy.deepcopy(config)
+    if obs_stage_overrides:
+        nirspec = effective.setdefault('nirspec', {})
+        for stage_name, overrides in obs_stage_overrides.items():
+            nirspec[stage_name] = deep_merge(nirspec.get(stage_name, {}), overrides)
+
+    # Add provenance header
+    import campfire_pipeline
+    provenance = {
+        'generated_at': datetime.utcnow().isoformat(),
+        'obs_name': obs_name,
+        'cfpipe_version': campfire_pipeline.__version__,
+    }
+
+    output = {**effective, '_provenance': provenance}
+    with open(output_path, 'w') as f:
+        toml.dump(output, f)
+
+    log(f"Wrote effective config: {output_path}")
+    return output_path
 
 
 def write_summary_ecsv(summary: Table, obs_dir: Path, obs_name: str) -> Path:

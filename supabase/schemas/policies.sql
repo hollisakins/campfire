@@ -105,6 +105,12 @@ CREATE POLICY "admin_programs_select"
   ON programs FOR SELECT TO authenticated
   USING (public.is_admin());
 
+-- Admins can insert programs (deploy CLI: sync-programs).
+DROP POLICY IF EXISTS "admin_programs_insert" ON programs;
+CREATE POLICY "admin_programs_insert"
+  ON programs FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
 -- Admins can update programs (toggle is_public, edit metadata).
 DROP POLICY IF EXISTS "admin_programs_update" ON programs;
 CREATE POLICY "admin_programs_update"
@@ -126,6 +132,19 @@ CREATE POLICY "accessible_observations_select"
   USING (
     program_slug = ANY(public.accessible_program_slugs())
   );
+
+-- Admins can insert observations (deploy CLI).
+DROP POLICY IF EXISTS "admin_observations_insert" ON observations;
+CREATE POLICY "admin_observations_insert"
+  ON observations FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Admins can update observations (deploy CLI: last_deployed_at, counts).
+DROP POLICY IF EXISTS "admin_observations_update" ON observations;
+CREATE POLICY "admin_observations_update"
+  ON observations FOR UPDATE TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
 
 
 -- =============================================================================
@@ -150,6 +169,19 @@ CREATE POLICY "update_targets_by_access"
     program_slug = ANY(public.accessible_program_slugs())
     AND public.can_comment()
   );
+
+-- Admins can insert targets (deploy CLI).
+DROP POLICY IF EXISTS "admin_targets_insert" ON targets;
+CREATE POLICY "admin_targets_insert"
+  ON targets FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Admins can update all target fields (deploy CLI: pipeline fields, redshift drift reset).
+DROP POLICY IF EXISTS "admin_targets_update" ON targets;
+CREATE POLICY "admin_targets_update"
+  ON targets FOR UPDATE TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
 
 
 -- =============================================================================
@@ -185,6 +217,19 @@ CREATE POLICY "select_spectra_by_access"
       WHERE t.program_slug = ANY(public.accessible_program_slugs())
     )
   );
+
+-- Admins can insert spectra (deploy CLI).
+DROP POLICY IF EXISTS "admin_spectra_insert" ON spectra;
+CREATE POLICY "admin_spectra_insert"
+  ON spectra FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Admins can update spectra (deploy CLI: thumbnails, provenance).
+DROP POLICY IF EXISTS "admin_spectra_update" ON spectra;
+CREATE POLICY "admin_spectra_update"
+  ON spectra FOR UPDATE TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
 
 
 -- =============================================================================
@@ -284,7 +329,14 @@ CREATE POLICY "Authenticated users can read map layers"
   ON map_layers FOR SELECT TO authenticated
   USING (true);
 
--- Service role has full access to map layers (deploy CLI).
+-- Admins have full access to map layers (deploy CLI: tile registration).
+DROP POLICY IF EXISTS "admin_map_layers_all" ON map_layers;
+CREATE POLICY "admin_map_layers_all"
+  ON map_layers FOR ALL TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- Service role has full access to map layers (backward compat).
 DROP POLICY IF EXISTS "Service role has full access to map layers" ON map_layers;
 CREATE POLICY "Service role has full access to map layers"
   ON map_layers FOR ALL TO service_role
@@ -304,6 +356,18 @@ CREATE POLICY "Authenticated users can view slit regions"
   ON slit_regions FOR SELECT TO authenticated
   USING (true);
 
+-- Admins can insert slit regions (deploy CLI).
+DROP POLICY IF EXISTS "admin_slit_regions_insert" ON slit_regions;
+CREATE POLICY "admin_slit_regions_insert"
+  ON slit_regions FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Admins can delete slit regions (deploy CLI: delete-then-insert pattern).
+DROP POLICY IF EXISTS "admin_slit_regions_delete" ON slit_regions;
+CREATE POLICY "admin_slit_regions_delete"
+  ON slit_regions FOR DELETE TO authenticated
+  USING (public.is_admin());
+
 
 -- =============================================================================
 -- shutters
@@ -316,6 +380,37 @@ DROP POLICY IF EXISTS "Authenticated users can view shutters" ON shutters;
 CREATE POLICY "Authenticated users can view shutters"
   ON shutters FOR SELECT TO authenticated
   USING (true);
+
+-- Admins can insert shutters (deploy CLI).
+DROP POLICY IF EXISTS "admin_shutters_insert" ON shutters;
+CREATE POLICY "admin_shutters_insert"
+  ON shutters FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Admins can delete shutters (deploy CLI: delete-then-insert pattern).
+DROP POLICY IF EXISTS "admin_shutters_delete" ON shutters;
+CREATE POLICY "admin_shutters_delete"
+  ON shutters FOR DELETE TO authenticated
+  USING (public.is_admin());
+
+
+-- =============================================================================
+-- deployments
+-- =============================================================================
+
+ALTER TABLE deployments ENABLE ROW LEVEL SECURITY;
+
+-- All authenticated users can read the deployment log (transparency).
+DROP POLICY IF EXISTS "authenticated_select_deployments" ON deployments;
+CREATE POLICY "authenticated_select_deployments"
+  ON deployments FOR SELECT TO authenticated
+  USING (true);
+
+-- Admins can insert deployment log entries (deploy CLI).
+DROP POLICY IF EXISTS "admin_deployments_insert" ON deployments;
+CREATE POLICY "admin_deployments_insert"
+  ON deployments FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
 
 
 -- =============================================================================

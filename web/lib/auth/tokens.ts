@@ -15,6 +15,15 @@ function getJwtSecret(): Uint8Array {
   return new TextEncoder().encode(secret);
 }
 
+// Supabase JWT secret - for minting Supabase-compatible tokens
+function getSupabaseJwtSecret(): Uint8Array {
+  const secret = process.env.SUPABASE_JWT_SECRET;
+  if (!secret) {
+    throw new Error('SUPABASE_JWT_SECRET environment variable is not set');
+  }
+  return new TextEncoder().encode(secret);
+}
+
 /**
  * Hash a refresh token using SHA-256
  */
@@ -61,6 +70,36 @@ export async function generateAccessToken(
     .sign(secret);
 
   return { token, expiresIn, expiresAt };
+}
+
+/**
+ * Generate a Supabase-compatible JWT for CLI deploy operations.
+ *
+ * This token is signed with SUPABASE_JWT_SECRET so Supabase RLS policies
+ * can authenticate the user directly, eliminating the need to distribute
+ * the service_role_key.
+ */
+export async function generateSupabaseToken(
+  userId: string,
+  email?: string
+): Promise<{ token: string; expiresIn: number }> {
+  const secret = getSupabaseJwtSecret();
+  const expiresIn = ACCESS_TOKEN_EXPIRY_HOURS * 60 * 60;
+  const expiresAt = new Date(Date.now() + expiresIn * 1000);
+
+  const token = await new SignJWT({
+    sub: userId,
+    email,
+    role: 'authenticated',
+  })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime(expiresAt)
+    .setIssuer('supabase')
+    .setAudience('authenticated')
+    .sign(secret);
+
+  return { token, expiresIn };
 }
 
 /**
@@ -167,6 +206,7 @@ export async function rotateRefreshToken(
 ): Promise<{
   accessToken: string;
   refreshToken: string;
+  supabaseToken: string;
   expiresIn: number;
   userId: string;
 } | null> {
@@ -198,13 +238,18 @@ export async function rotateRefreshToken(
     return null;
   }
 
-  // Generate new access token
-  const { token: accessToken, expiresIn } = await generateAccessToken(result.user_id);
+  // Generate new access token and supabase token
+  const email = await getUserEmail(result.user_id);
+  const [accessResult, supabaseResult] = await Promise.all([
+    generateAccessToken(result.user_id, email || undefined),
+    generateSupabaseToken(result.user_id, email || undefined),
+  ]);
 
   return {
-    accessToken,
+    accessToken: accessResult.token,
     refreshToken: newToken,
-    expiresIn,
+    supabaseToken: supabaseResult.token,
+    expiresIn: accessResult.expiresIn,
     userId: result.user_id,
   };
 }
@@ -282,19 +327,22 @@ export async function issueTokens(
 ): Promise<{
   accessToken: string;
   refreshToken: string;
+  supabaseToken: string;
   expiresIn: number;
   tokenType: string;
 }> {
   const email = await getUserEmail(userId);
 
-  const [accessTokenResult, refreshTokenResult] = await Promise.all([
+  const [accessTokenResult, refreshTokenResult, supabaseTokenResult] = await Promise.all([
     generateAccessToken(userId, email || undefined),
     createRefreshToken(userId, deviceName, clientIp, userAgent),
+    generateSupabaseToken(userId, email || undefined),
   ]);
 
   return {
     accessToken: accessTokenResult.token,
     refreshToken: refreshTokenResult.token,
+    supabaseToken: supabaseTokenResult.token,
     expiresIn: accessTokenResult.expiresIn,
     tokenType: 'Bearer',
   };

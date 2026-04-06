@@ -159,6 +159,9 @@ export async function POST(request: NextRequest) {
           token_type: tokens.tokenType,
           expires_in: tokens.expiresIn,
           refresh_token: tokens.refreshToken,
+          supabase_token: tokens.supabaseToken,
+          supabase_url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+          supabase_anon_key: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
         });
 
       default:

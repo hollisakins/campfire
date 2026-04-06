@@ -7,8 +7,8 @@ Guidance for Claude Code when working in this repository.
 Monorepo with several main components — see each directory's README for details:
 - **`pipeline/`** — JWST data reduction (NIRSpec + NIRCam). Local-only, no cloud dependencies.
 - **`web/`** — Next.js web portal. Deployed on Vercel.
-- **`deploy/`** — CLI for uploading pipeline products to Supabase + Cloudflare R2.
-- **`python/`** — under construction Python API Client and CLI interface
+- **`python/`** — Unified Python package: API client, CLI, and deployment tools. Install with `pip install -e ".[deploy]"` for full functionality.
+- **`deploy/`** — (deprecated) Standalone deploy CLI, now merged into `python/campfire/deploy/`.
 
 Supporting: `supabase/` (migrations), `scripts/` (one-off utilities)
 
@@ -126,13 +126,15 @@ cd web && npm run build && cd ..
 
 ### Deploy CLI
 
+Deploy commands are part of the unified `campfire` CLI (install from `python/`):
+
 ```bash
-cd deploy && pip install -e .
-cfdeploy --obs <obs_name>                         # full deploy
-cfdeploy --obs <obs_name> --dry-run               # validate only
-cfdeploy rgb --obs <obs_name>                     # RGB cutouts only
-cfdeploy tiles --field cosmos --filter f444w      # map tiles
-cfdeploy sync-programs                            # upsert from programs.toml
+cd python && pip install -e ".[deploy]"
+campfire deploy --obs <obs_name>                         # full deploy
+campfire deploy --obs <obs_name> --dry-run               # validate only
+campfire deploy rgb --obs <obs_name>                     # RGB cutouts only
+campfire deploy tiles --field cosmos --filter f444w      # map tiles
+campfire deploy sync-programs                            # upsert from programs.toml
 ```
 
 Credentials via env vars (`CAMPFIRE_SUPABASE_URL`, `CAMPFIRE_R2_*`) or gitignored `$CAMPFIRE_ROOT/config/deploy.toml`.
