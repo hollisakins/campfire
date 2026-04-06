@@ -264,6 +264,7 @@ export async function getFilteredObjectIds(
       p_max_exposure_time_max: baseParams.p_max_exposure_time_max,
       p_search: baseParams.p_search,
       p_inspected_only: baseParams.p_inspected_only,
+      p_list_ids: baseParams.p_list_ids,
       p_coord_ra: baseParams.p_coord_ra,
       p_coord_dec: baseParams.p_coord_dec,
       p_radius_degrees: baseParams.p_radius_degrees,

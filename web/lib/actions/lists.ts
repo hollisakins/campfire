@@ -1,7 +1,13 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
-import type { ObjectList, ObjectListMember, ObjectListWithMembership } from '@/lib/types';
+import type {
+  ObjectList,
+  ObjectListMember,
+  ObjectListWithMembership,
+  ObjectListOverview,
+  ObjectListMemberWithObject,
+} from '@/lib/types';
 
 /**
  * Get all lists that an object belongs to, plus available lists for the add dropdown.
@@ -49,26 +55,15 @@ export async function getAvailableLists(): Promise<{
 
 /**
  * Get lists with membership status for a given object.
- * Used for the object detail page to show which lists the object is in.
  */
 export async function getListsWithMembership(objectId: number): Promise<{
   lists: ObjectListWithMembership[];
   error?: string;
 }> {
+  const { lists: allLists, error: listsError } = await getAvailableLists();
+  if (listsError) return { lists: [], error: listsError };
+
   const supabase = await createClient();
-
-  // Get all visible lists
-  const { data: allLists, error: listsError } = await supabase
-    .from('object_lists')
-    .select('*')
-    .order('is_system', { ascending: false })
-    .order('name');
-
-  if (listsError) {
-    return { lists: [], error: listsError.message };
-  }
-
-  // Get memberships for this object
   const { data: members, error: membersError } = await supabase
     .from('object_list_members')
     .select('list_id')
@@ -80,7 +75,7 @@ export async function getListsWithMembership(objectId: number): Promise<{
 
   const memberListIds = new Set((members ?? []).map(m => m.list_id));
 
-  const lists: ObjectListWithMembership[] = (allLists ?? []).map(list => ({
+  const lists: ObjectListWithMembership[] = allLists.map(list => ({
     ...list,
     is_member: memberListIds.has(list.id),
   }));
@@ -89,7 +84,8 @@ export async function getListsWithMembership(objectId: number): Promise<{
 }
 
 /**
- * Add an object to a list. Uses the object's coordinates as the durable key.
+ * Add an object to a list. Uses upsert with (list_id, ra, dec) as the conflict key
+ * to handle the case where a coordinate-only entry already exists (e.g., from migration).
  */
 export async function addObjectToList(
   listId: number,
@@ -101,14 +97,13 @@ export async function addObjectToList(
 
   const { error } = await supabase
     .from('object_list_members')
-    .insert({
-      list_id: listId,
-      object_id: objectId,
-      ra,
-      dec,
-    });
+    .upsert(
+      { list_id: listId, object_id: objectId, ra, dec },
+      { onConflict: 'list_id,ra,dec' }
+    );
 
   if (error) {
+    console.error('addObjectToList error:', error);
     return { error: error.message };
   }
 
@@ -211,4 +206,156 @@ export async function updateList(
   }
 
   return {};
+}
+
+/**
+ * Helper: batch-fetch creator names from user_profiles for a set of user IDs.
+ */
+async function fetchCreatorNames(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userIds: string[],
+): Promise<Map<string, string>> {
+  if (userIds.length === 0) return new Map();
+
+  const { data } = await supabase
+    .from('user_profiles')
+    .select('user_id, full_name')
+    .in('user_id', userIds);
+
+  const map = new Map<string, string>();
+  for (const row of data ?? []) {
+    map.set(row.user_id, row.full_name);
+  }
+  return map;
+}
+
+/**
+ * Get all visible lists with member counts (for /lists browse page).
+ * Returns system lists + public lists + user's own private lists.
+ */
+export async function getListsOverview(): Promise<{
+  lists: ObjectListOverview[];
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from('object_lists')
+    .select('*, object_list_members(count)')
+    .order('is_system', { ascending: false })
+    .order('name');
+
+  if (error) {
+    return { lists: [], error: error.message };
+  }
+
+  const creatorIds = [...new Set((data ?? []).map(l => l.created_by).filter(Boolean))] as string[];
+  const nameMap = await fetchCreatorNames(supabase, creatorIds);
+
+  const lists: ObjectListOverview[] = (data ?? []).map(row => {
+    const { object_list_members, ...list } = row;
+    return {
+      ...list,
+      member_count: object_list_members?.[0]?.count ?? 0,
+      creator_name: list.created_by ? nameMap.get(list.created_by) ?? null : null,
+    };
+  });
+
+  return { lists };
+}
+
+/**
+ * Get a single list by slug with paginated members (for /lists/[slug] detail page).
+ */
+export async function getListBySlug(
+  slug: string,
+  page: number = 1,
+  pageSize: number = 50,
+): Promise<{
+  list: ObjectListOverview | null;
+  members: ObjectListMemberWithObject[];
+  totalMembers: number;
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  // Fetch the list
+  const { data: listData, error: listError } = await supabase
+    .from('object_lists')
+    .select('*, object_list_members(count)')
+    .eq('slug', slug)
+    .single();
+
+  if (listError) {
+    return { list: null, members: [], totalMembers: 0, error: listError.message };
+  }
+
+  // Creator name
+  const nameMap = listData.created_by
+    ? await fetchCreatorNames(supabase, [listData.created_by])
+    : new Map<string, string>();
+
+  const { object_list_members: countArr, ...listFields } = listData;
+  const totalMembers = countArr?.[0]?.count ?? 0;
+  const list: ObjectListOverview = {
+    ...listFields,
+    member_count: totalMembers,
+    creator_name: listFields.created_by ? nameMap.get(listFields.created_by) ?? null : null,
+  };
+
+  // Fetch paginated members with joined object data
+  const offset = (page - 1) * pageSize;
+  const { data: membersData, error: membersError } = await supabase
+    .from('object_list_members')
+    .select('*, object:objects(id, object_id, field, ra, dec, best_redshift, best_redshift_quality, n_spectra, max_snr)')
+    .eq('list_id', list.id)
+    .order('added_at', { ascending: false })
+    .range(offset, offset + pageSize - 1);
+
+  if (membersError) {
+    return { list, members: [], totalMembers, error: membersError.message };
+  }
+
+  return {
+    list,
+    members: (membersData ?? []) as ObjectListMemberWithObject[],
+    totalMembers,
+  };
+}
+
+/**
+ * Get lists created by the current user with member counts (for /profile/lists).
+ */
+export async function getMyLists(): Promise<{
+  lists: ObjectListOverview[];
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return { lists: [], error: 'Not authenticated' };
+  }
+
+  const { data, error } = await supabase
+    .from('object_lists')
+    .select('*, object_list_members(count)')
+    .eq('created_by', user.id)
+    .eq('is_system', false)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    return { lists: [], error: error.message };
+  }
+
+  const lists: ObjectListOverview[] = (data ?? []).map(row => {
+    const { object_list_members, ...list } = row;
+    return {
+      ...list,
+      member_count: object_list_members?.[0]?.count ?? 0,
+      creator_name: null, // Own lists, no need to show creator name
+    };
+  });
+
+  return { lists };
 }

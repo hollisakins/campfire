@@ -36,12 +36,16 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
     startTransition(async () => {
       if (list.is_member) {
         const { error } = await removeObjectFromList(list.id, objectId);
-        if (!error) {
+        if (error) {
+          console.error('Failed to remove from list:', error);
+        } else {
           setLists(prev => prev.map(l => l.id === list.id ? { ...l, is_member: false } : l));
         }
       } else {
         const { error } = await addObjectToList(list.id, objectId, ra, dec);
-        if (!error) {
+        if (error) {
+          console.error('Failed to add to list:', error);
+        } else {
           setLists(prev => prev.map(l => l.id === list.id ? { ...l, is_member: true } : l));
           setShowDropdown(false);
         }

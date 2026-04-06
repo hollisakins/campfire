@@ -14,6 +14,7 @@ import type { AdvancedFilterOptions } from './SpectraFilterBar';
 import { GRATINGS, type Program } from '@/lib/types';
 import type { ViewMode } from '@/lib/actions/spectra-types';
 import { OBSERVATION_COLORS } from '@/components/map/observation-colors';
+import { getAvailableLists } from '@/lib/actions/lists';
 
 interface FilterOption {
   value: string | number;
@@ -35,8 +36,6 @@ interface AdvancedFiltersPanelProps {
   availableObservations?: string[];
   /** Current view mode — controls filter labels and behavior */
   viewMode?: ViewMode;
-  /** Available object lists for the list filter */
-  listOptions?: FilterOption[];
 }
 
 export function AdvancedFiltersPanel({
@@ -48,8 +47,21 @@ export function AdvancedFiltersPanel({
   availablePrograms = [],
   availableObservations = [],
   viewMode = 'targets',
-  listOptions = [],
 }: AdvancedFiltersPanelProps) {
+  // Fetch available lists for the list filter
+  const [listOptions, setListOptions] = useState<FilterOption[]>([]);
+  useEffect(() => {
+    if (!isOpen) return;
+    getAvailableLists().then(({ lists }) => {
+      setListOptions(lists.map(l => ({
+        value: l.id,
+        label: l.name,
+        color: l.color ?? undefined,
+        icon: l.icon ?? undefined,
+      })));
+    });
+  }, [isOpen]);
+
   // Local state for coordinate search form
   const [coordInput, setCoordInput] = useState('');
   const [radiusInput, setRadiusInput] = useState('1');

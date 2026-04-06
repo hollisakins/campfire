@@ -12,7 +12,6 @@ Usage:
 
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -177,138 +176,113 @@ FLAG_DEFINITIONS = [
 ]
 
 
-# === PID → slug mapping (production still uses program_id) ===
-
-PID_TO_SLUG = {
-    6368: 'capers', 7076: 'ember', 7417: 'zenith', 6585: 'cosmos_ddt',
-    5224: 'mom', 4233: 'rubies', 1345: 'ceers', 2750: 'ceers_ddt',
-    9214: 'spurs', 2561: 'uncover', 1214: 'gto_wide', 1213: 'gto_wide',
-    8018: 'diver', 8410: 'oceans', 5997: 'oasis', 3543: 'excels',
-    4287: 'egs_bubbles', 3215: 'jades', 1433: 'macs0647jd_coe',
-}
-
-
 # === Query Production Data ===
 
-def select_objects(supabase, objects_per_program: int) -> list[dict]:
+def select_targets(supabase, targets_per_program: int) -> list[dict]:
     """
-    Select a representative subset of objects from production.
+    Select a representative subset of targets from production.
 
-    Production still uses program_id (integer). We query by program_id
-    and map to program_slug locally for the new schema.
-
-    For each program, picks objects with variety across quality levels:
+    For each program, picks targets with variety across quality levels:
     - 1-2 with quality 4 (secure) with flags set
     - 1 with quality 2-3 (tentative/probable)
     - 1 with quality 0 (uninspected)
     - 1 with quality 1 (impossible) if available
     """
-    # Get all distinct program_ids from production
-    programs_resp = supabase.table('targets').select('program_id').execute()
-    program_ids = sorted(set(row['program_id'] for row in programs_resp.data))
+    # Get all distinct program_slugs from production
+    programs_resp = supabase.table('targets').select('program_slug').execute()
+    slugs = sorted(set(row['program_slug'] for row in programs_resp.data))
 
-    print(f"Found {len(program_ids)} programs in production: {program_ids}")
+    print(f"Found {len(slugs)} programs in production: {slugs}")
 
-    all_objects = []
+    all_targets = []
     seen_ids = set()
 
-    for pid in program_ids:
-        program_objects = []
+    for slug in slugs:
+        program_targets = []
 
-        # Quality 4 (secure) - prefer objects with flags set
+        # Quality 4 (secure) - prefer targets with flags set
         q4 = supabase.table('targets').select('*') \
-            .eq('program_id', pid) \
+            .eq('program_slug', slug) \
             .eq('redshift_quality', 4) \
             .gt('spectral_features', 0) \
             .limit(2) \
             .execute()
-        for obj in q4.data:
-            if obj['target_id'] not in seen_ids:
-                program_objects.append(obj)
-                seen_ids.add(obj['target_id'])
+        for t in q4.data:
+            if t['target_id'] not in seen_ids:
+                program_targets.append(t)
+                seen_ids.add(t['target_id'])
 
         # If we didn't get 2 quality-4, get more without flag requirement
-        if len([o for o in program_objects if o['redshift_quality'] == 4]) < 2:
+        if len([t for t in program_targets if t['redshift_quality'] == 4]) < 2:
             q4b = supabase.table('targets').select('*') \
-                .eq('program_id', pid) \
+                .eq('program_slug', slug) \
                 .eq('redshift_quality', 4) \
                 .limit(2) \
                 .execute()
-            for obj in q4b.data:
-                if obj['target_id'] not in seen_ids:
-                    program_objects.append(obj)
-                    seen_ids.add(obj['target_id'])
-                    if len(program_objects) >= 2:
+            for t in q4b.data:
+                if t['target_id'] not in seen_ids:
+                    program_targets.append(t)
+                    seen_ids.add(t['target_id'])
+                    if len(program_targets) >= 2:
                         break
 
         # Quality 2-3 (tentative/probable)
         for q in [3, 2]:
             qn = supabase.table('targets').select('*') \
-                .eq('program_id', pid) \
+                .eq('program_slug', slug) \
                 .eq('redshift_quality', q) \
                 .limit(1) \
                 .execute()
-            for obj in qn.data:
-                if obj['target_id'] not in seen_ids:
-                    program_objects.append(obj)
-                    seen_ids.add(obj['target_id'])
+            for t in qn.data:
+                if t['target_id'] not in seen_ids:
+                    program_targets.append(t)
+                    seen_ids.add(t['target_id'])
                     break
 
         # Quality 0 (uninspected)
         q0 = supabase.table('targets').select('*') \
-            .eq('program_id', pid) \
+            .eq('program_slug', slug) \
             .eq('redshift_quality', 0) \
             .limit(1) \
             .execute()
-        for obj in q0.data:
-            if obj['target_id'] not in seen_ids:
-                program_objects.append(obj)
-                seen_ids.add(obj['target_id'])
+        for t in q0.data:
+            if t['target_id'] not in seen_ids:
+                program_targets.append(t)
+                seen_ids.add(t['target_id'])
 
         # Quality 1 (impossible)
         q1 = supabase.table('targets').select('*') \
-            .eq('program_id', pid) \
+            .eq('program_slug', slug) \
             .eq('redshift_quality', 1) \
             .limit(1) \
             .execute()
-        for obj in q1.data:
-            if obj['target_id'] not in seen_ids:
-                program_objects.append(obj)
-                seen_ids.add(obj['target_id'])
+        for t in q1.data:
+            if t['target_id'] not in seen_ids:
+                program_targets.append(t)
+                seen_ids.add(t['target_id'])
 
-        # Cap at objects_per_program
-        program_objects = program_objects[:objects_per_program]
+        # Cap at targets_per_program
+        program_targets = program_targets[:targets_per_program]
 
-        slug = PID_TO_SLUG.get(pid, f'unknown_{pid}')
-        print(f"  Program {pid} ({slug}): selected {len(program_objects)} objects "
-              f"(qualities: {[o['redshift_quality'] for o in program_objects]})")
-        all_objects.extend(program_objects)
+        print(f"  Program {slug}: selected {len(program_targets)} targets "
+              f"(qualities: {[t['redshift_quality'] for t in program_targets]})")
+        all_targets.extend(program_targets)
 
-    # Map production fields to new schema fields
-    for obj in all_objects:
-        pid = obj['program_id']
-        obj['program_slug'] = PID_TO_SLUG.get(pid, f'unknown_{pid}')
-        # observation is a generated column in production — keep it as-is
-
-    return all_objects
+    return all_targets
 
 
-def build_observations_from_objects(objects: list[dict]) -> list[dict]:
-    """Build observations records from selected objects (production has no observations table)."""
-    seen = set()
-    observations = []
-    for obj in objects:
-        obs_name = obj.get('observation', '')
-        if not obs_name or obs_name in seen:
-            continue
-        seen.add(obs_name)
-        observations.append({
-            'name': obs_name,
-            'program_slug': obj['program_slug'],
-            'jwst_program_id': obj['program_id'],
-            'field': obj['field'],
-        })
-    return observations
+def fetch_observations(supabase, obs_names: list[str]) -> list[dict]:
+    """Fetch observations for the given observation names."""
+    if not obs_names:
+        return []
+
+    all_obs = []
+    batch_size = 50
+    for i in range(0, len(obs_names), batch_size):
+        batch = obs_names[i:i + batch_size]
+        resp = supabase.table('observations').select('*').in_('name', batch).execute()
+        all_obs.extend(resp.data)
+    return all_obs
 
 
 def fetch_spectra(supabase, target_ids: list[str]) -> list[dict]:
@@ -586,6 +560,54 @@ VALUES ({entry['id']}, {obj_int_id}, {sql_escape(ADMIN_UUID)}, {sql_escape(entry
     return '\n'.join(lines)
 
 
+# Mapping from object_flags bitmask bits to system list slugs
+# (matches the 9 system lists seeded by the object_lists migration)
+OBJECT_FLAG_TO_LIST_SLUG = [
+    (1, 'lrd'),
+    (2, 'broad-line'),
+    (4, 'lya-emitter'),
+    (8, 'balmer-break-galaxy'),
+    (16, 'oiii-emitter'),
+    (32, 'ha-emitter'),
+    (64, 'passive'),
+    (128, 'dusty'),
+    (256, 'star'),
+]
+
+
+def generate_object_list_members_sql(objects: list[dict]) -> str:
+    """Generate INSERT statements for object_list_members from production object_flags."""
+    lines = ['-- ============================================']
+    lines.append('-- 9b. Object List Members (from object_flags)')
+    lines.append('-- ============================================')
+    lines.append('-- System lists are created by the migration. This maps')
+    lines.append('-- production object_flags bitmask values to list memberships.')
+    lines.append('')
+
+    count = 0
+    for obj in objects:
+        flags = obj.get('object_flags', 0) or 0
+        if flags == 0:
+            continue
+        for bit_value, slug in OBJECT_FLAG_TO_LIST_SLUG:
+            if flags & bit_value:
+                lines.append(
+                    f"INSERT INTO public.object_list_members (list_id, ra, dec) "
+                    f"SELECT id, {obj['ra']}, {obj['dec']} FROM public.object_lists "
+                    f"WHERE slug = {sql_escape(slug)} "
+                    f"ON CONFLICT (list_id, ra, dec) DO NOTHING;"
+                )
+                count += 1
+
+    if count == 0:
+        lines.append("-- No object_flags set on selected targets")
+    else:
+        lines.append(f'\n-- {count} list memberships from object_flags')
+
+    lines.append('')
+    return '\n'.join(lines)
+
+
 def generate_access_codes_sql() -> str:
     """Generate INSERT statements for access_codes."""
     lines = ['-- ============================================']
@@ -649,106 +671,13 @@ def main():
         '--objects-per-program', type=int, default=5,
         help='Maximum objects to select per program (default: 5)'
     )
-    parser.add_argument(
-        '--full', action='store_true',
-        help='Full production replica via pg_dump (all tables, all rows)'
-    )
     args = parser.parse_args()
 
     project_root = Path(__file__).parent.parent
     supabase_dir = project_root / 'supabase'
     output_path = supabase_dir / 'seed.sql'
 
-    if args.full:
-        generate_full_seed(project_root, supabase_dir, output_path)
-    else:
-        generate_sample_seed(args, project_root, supabase_dir, output_path)
-
-
-def generate_full_seed(project_root: Path, supabase_dir: Path, output_path: Path):
-    """
-    Generate a full production replica using supabase db dump.
-
-    Combines:
-    1. Test auth users + profiles + access codes (Python-generated)
-    2. Full data dump via `supabase db dump --data-only` (pg_dump)
-    3. Materialized view refreshes
-    """
-    print("=== Full production seed ===\n")
-
-    programs = load_programs()
-
-    # Step 1: dump production data via supabase CLI
-    print("Running supabase db dump --data-only --linked ...")
-    dump_result = subprocess.run(
-        ['supabase', 'db', 'dump', '--data-only', '--linked'],
-        capture_output=True,
-        text=True,
-        cwd=supabase_dir,
-    )
-    if dump_result.returncode != 0:
-        print(f"Error: supabase db dump failed:\n{dump_result.stderr}")
-        sys.exit(1)
-
-    dump_sql = dump_result.stdout
-    print(f"  Dump size: {len(dump_sql):,} bytes")
-
-    # Step 2: assemble seed
-    sql_parts = []
-
-    sql_parts.append(f"""-- ============================================
--- CAMPFIRE Seed Data (FULL production replica)
--- Generated: {datetime.now().isoformat()}
---
--- Test Users:
---   admin@campfire.dev / password123 (admin, all programs)
---   user@campfire.dev  / password123 (regular, public programs)
---   viewer@campfire.dev / password123 (read-only, public programs)
--- ============================================
-
--- Migration sets search_path to empty; restore it for seed
-SET search_path TO public, auth, extensions;
-
-""")
-
-    # Auth users must come before the dump (dump may reference user IDs in
-    # comments/audit log, but we remap those to test users anyway — the dump
-    # has the real UUIDs which won't exist locally. We insert test users first,
-    # then the dump's FKs to auth.users will fail for non-test users.
-    # Solution: disable FK checks during dump load.)
-    sql_parts.append("-- Disable FK checks for dump load (production user UUIDs don't exist locally)")
-    sql_parts.append("SET session_replication_role = 'replica';\n")
-
-    sql_parts.append(generate_auth_users_sql())
-    sql_parts.append(generate_user_profiles_sql())
-    sql_parts.append(generate_user_program_access_sql(programs))
-
-    # The dump includes all public schema data
-    sql_parts.append('-- ============================================')
-    sql_parts.append('-- Production data dump (pg_dump --data-only)')
-    sql_parts.append('-- ============================================\n')
-    sql_parts.append(dump_sql)
-
-    # Re-enable FK checks
-    sql_parts.append("\n-- Re-enable FK checks")
-    sql_parts.append("SET session_replication_role = 'origin';\n")
-
-    # Refresh materialized views
-    sql_parts.append('-- ============================================')
-    sql_parts.append('-- Materialized View Refresh')
-    sql_parts.append('-- ============================================\n')
-    sql_parts.append('REFRESH MATERIALIZED VIEW public.mv_filter_options;')
-    sql_parts.append('REFRESH MATERIALIZED VIEW public.mv_programs_overview;\n')
-
-    # Write output
-    full_sql = '\n'.join(sql_parts)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, 'w') as f:
-        f.write(full_sql)
-
-    print(f"\nSeed file written to: {output_path}")
-    print(f"  Size: {len(full_sql):,} bytes")
-    print(f"\nTo apply: supabase db reset")
+    generate_sample_seed(args, project_root, supabase_dir, output_path)
 
 
 def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_path: Path):
@@ -767,64 +696,36 @@ def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_pa
         config['supabase']['service_role_key']
     )
 
-    # Select representative objects
-    print(f"\nSelecting up to {args.objects_per_program} objects per program...")
-    objects = select_objects(supabase, args.objects_per_program)
-    print(f"\nTotal objects selected: {len(objects)}")
+    # Select representative targets
+    print(f"\nSelecting up to {args.objects_per_program} targets per program...")
+    targets = select_targets(supabase, args.objects_per_program)
+    print(f"\nTotal targets selected: {len(targets)}")
 
-    if not objects:
-        print("Error: No objects found in production database!")
+    if not targets:
+        print("Error: No targets found in production database!")
         sys.exit(1)
 
-    # Inject synthetic GTO WIDE EGS objects (PID 1213 has no production data yet)
-    # so we can test the multi-PID merge: gto_wide = {1213 (egs), 1214 (cosmos)}
-    max_id = max(o['id'] for o in objects) + 1000
-    gto_wide_cosmos = [o for o in objects if o.get('program_id') == 1214]
-    if gto_wide_cosmos and not any(o.get('program_id') == 1213 for o in objects):
-        print("\n  Injecting synthetic GTO WIDE EGS objects (PID 1213)...")
-        for i, sid in enumerate([90001, 90002, 90003]):
-            synth = {
-                'id': max_id + i,
-                'target_id': f'gto_wide_egs_p1_{sid}',
-                'program_id': 1213,
-                'program_slug': 'gto_wide',
-                'field': 'egs',
-                'observation': 'gto_wide_egs_p1',
-                'ra': 214.8 + i * 0.01,
-                'dec': 52.8 + i * 0.01,
-                'redshift_auto': 2.0 + i * 0.5,
-                'redshift_inspected': None,
-                'redshift_quality': [4, 2, 0][i],
-                'spectral_features': 0,
-                'dq_flags': 0,
-                'last_inspected_at': None,
-                'last_inspected_by': None,
-                'has_sed_plot': False,
-                'max_snr': None,
-                'max_exposure_time': None,
-            }
-            objects.append(synth)
-        print(f"    Added 3 synthetic objects (gto_wide_egs_p1)")
-
     # Build maps
-    object_ids = [o['target_id'] for o in objects]
-    object_int_ids = [o['id'] for o in objects]
-    object_id_map = {o['id']: o['id'] for o in objects}  # identity map (keep original IDs)
+    target_ids = [t['target_id'] for t in targets]
+    target_int_ids = [t['id'] for t in targets]
+    target_id_map = {t['id']: t['id'] for t in targets}  # identity map (keep original IDs)
 
-    # Build observations from objects (production has no observations table yet)
-    observations = build_observations_from_objects(objects)
-    print(f"  Built {len(observations)} observation records")
+    # Fetch observations for selected targets
+    obs_names = sorted(set(t['observation'] for t in targets if t.get('observation')))
+    print(f"Fetching observations for {len(obs_names)} observation names...")
+    observations = fetch_observations(supabase, obs_names)
+    print(f"  Found {len(observations)} observations")
 
     print("Fetching spectra...")
-    spectra = fetch_spectra(supabase, object_ids)
+    spectra = fetch_spectra(supabase, target_ids)
     print(f"  Found {len(spectra)} spectra")
 
     print("Fetching comments...")
-    comments = fetch_comments(supabase, object_int_ids)
+    comments = fetch_comments(supabase, target_int_ids)
     print(f"  Found {len(comments)} comments")
 
     print("Fetching flag audit log...")
-    flag_entries = fetch_flag_audit_log(supabase, object_int_ids)
+    flag_entries = fetch_flag_audit_log(supabase, target_int_ids)
     print(f"  Found {len(flag_entries)} audit entries")
 
     # Generate SQL
@@ -836,7 +737,7 @@ def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_pa
     sql_parts.append(f"""-- ============================================
 -- CAMPFIRE Seed Data (sample)
 -- Generated: {datetime.now().isoformat()}
--- Objects: {len(objects)} | Observations: {len(observations)} | Spectra: {len(spectra)}
+-- Targets: {len(targets)} | Observations: {len(observations)} | Spectra: {len(spectra)}
 -- Comments: {len(comments)} | Audit Entries: {len(flag_entries)}
 --
 -- Test Users:
@@ -855,13 +756,14 @@ SET search_path TO public, auth, extensions;
     sql_parts.append(generate_observations_sql(observations))
     sql_parts.append(generate_flag_definitions_sql())
     sql_parts.append(generate_user_profiles_sql())
-    sql_parts.append(generate_objects_sql(objects))
+    sql_parts.append(generate_objects_sql(targets))
     sql_parts.append(generate_spectra_sql(spectra))
     sql_parts.append(generate_user_program_access_sql(programs))
-    sql_parts.append(generate_comments_sql(comments, object_id_map))
-    sql_parts.append(generate_flag_audit_log_sql(flag_entries, object_id_map))
+    sql_parts.append(generate_comments_sql(comments, target_id_map))
+    sql_parts.append(generate_flag_audit_log_sql(flag_entries, target_id_map))
+    sql_parts.append(generate_object_list_members_sql(targets))
     sql_parts.append(generate_access_codes_sql())
-    sql_parts.append(generate_sequence_resets(objects, spectra, comments, flag_entries))
+    sql_parts.append(generate_sequence_resets(targets, spectra, comments, flag_entries))
 
     # Write output
     full_sql = '\n'.join(sql_parts)

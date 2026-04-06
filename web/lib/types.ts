@@ -223,6 +223,25 @@ export interface ObjectListWithMembership extends ObjectList {
   is_member: boolean;
 }
 
+export interface ObjectListOverview extends ObjectList {
+  member_count: number;
+  creator_name: string | null;
+}
+
+export interface ObjectListMemberWithObject extends ObjectListMember {
+  object: {
+    id: number;
+    object_id: string;
+    field: string;
+    ra: number;
+    dec: number;
+    best_redshift: number | null;
+    best_redshift_quality: number;
+    n_spectra: number;
+    max_snr: number | null;
+  } | null;
+}
+
 export interface FlagAuditLog {
   id: number;
   target_id: number;

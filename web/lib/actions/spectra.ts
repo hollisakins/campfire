@@ -131,6 +131,7 @@ export async function getSpectra(
           p_max_exposure_time_max: rpcParams.p_max_exposure_time_max,
           p_search: rpcParams.p_search,
           p_inspected_only: rpcParams.p_inspected_only,
+          p_list_ids: rpcParams.p_list_ids,
           p_coord_ra: rpcParams.p_coord_ra,
           p_coord_dec: rpcParams.p_coord_dec,
           p_radius_degrees: rpcParams.p_radius_degrees,

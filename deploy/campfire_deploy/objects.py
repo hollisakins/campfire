@@ -281,8 +281,13 @@ def build_objects(
 # ---------------------------------------------------------------------------
 
 def _clear_field_objects(client: Client, field: str) -> None:
-    """Null target FKs and delete objects for a field."""
-    # Must null FKs first (FK constraint has no ON DELETE SET NULL)
+    """Null target FKs and delete objects for a field.
+
+    object_list_members.object_id has ON DELETE SET NULL, so deleting
+    objects automatically nulls those FKs. They get re-linked after
+    new objects are inserted.
+    """
+    # Must null target FKs first (no ON DELETE SET NULL on targets)
     client.table('targets').update(
         {'object_id': None},
     ).eq('field', field).not_.is_('object_id', 'null').execute()
@@ -356,6 +361,19 @@ def _set_target_fks(
         total += len(batch)
 
     return total
+
+
+def _relink_list_members(client: Client, field: str) -> int:
+    """Re-link object_list_members.object_id after object rebuild.
+
+    List members are keyed by (ra, dec) which survive rebuilds. This
+    updates the object_id FK by joining on coordinates against the
+    newly created objects in a single SQL statement.
+    """
+    resp = client.rpc('relink_list_members_for_field', {
+        'p_field': field,
+    }).execute()
+    return resp.data if isinstance(resp.data, int) else 0
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +470,11 @@ def rebuild_field_objects(
     print(f"  Setting target FK references...")
     n_fks = _set_target_fks(client, objects, object_id_to_db_id)
     print(f"    Updated {n_fks} targets")
+
+    print(f"  Re-linking list member FKs...")
+    n_list_fks = _relink_list_members(client, field)
+    if n_list_fks:
+        print(f"    Re-linked {n_list_fks} list members")
 
     print_rebuild_summary(objects, targets)
 

@@ -132,6 +132,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_target_ids(
   p_dq_flags_include_any INTEGER DEFAULT NULL,
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
+  p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
@@ -241,6 +242,9 @@ BEGIN
         AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
         AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
         AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
+        AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
+            SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
         AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
         AND (
           p_inspected_only IS NULL
@@ -365,6 +369,9 @@ BEGIN
         AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
         AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
         AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
+        AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
+            SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
         AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
         AND (
           p_inspected_only IS NULL
@@ -453,6 +460,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_targets_paginated(
   p_dq_flags_include_any INTEGER DEFAULT NULL,
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
+  p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
@@ -502,6 +510,7 @@ BEGIN
       p_max_snr_min, p_max_snr_max, p_max_exposure_time_min, p_max_exposure_time_max,
       v_sf_include_any, v_sf_include_all, v_sf_exclude,
       v_dq_include_any, v_dq_include_all, v_dq_exclude,
+      p_list_ids,
       p_search, p_inspected_only, p_comment_search, p_comment_search_scope, p_comment_user_id,
       p_coord_ra, p_coord_dec, p_radius_degrees,
       p_sort_column, p_sort_direction,
@@ -766,6 +775,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_dq_flags_include_any INTEGER DEFAULT NULL,
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
+  p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
@@ -901,6 +911,9 @@ BEGIN
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
+      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
+          SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
       AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
       AND (
         p_inspected_only IS NULL
@@ -1424,6 +1437,7 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_targets(
   p_dq_flags_include_any INTEGER DEFAULT NULL,
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
+  p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
@@ -1521,6 +1535,9 @@ BEGIN
       AND (v_dq_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & v_dq_include_any) != 0)
       AND (v_dq_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & v_dq_include_all) = v_dq_include_all)
       AND (v_dq_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & v_dq_exclude) = 0)
+      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
+          SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
       AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND t.redshift_quality > 0)
@@ -1816,6 +1833,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export(
   p_spectral_features_exclude INTEGER DEFAULT NULL,
   p_dq_flags_include_any INTEGER DEFAULT NULL, p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
+  p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -1884,6 +1902,9 @@ BEGIN
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
+      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
+          SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
       AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND t.redshift_quality > 0) OR (p_inspected_only = FALSE AND t.redshift_quality = 0))
       AND (NOT v_comment_search_active OR EXISTS (
@@ -1945,6 +1966,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_spectral_features_exclude INTEGER DEFAULT NULL,
   p_dq_flags_include_any INTEGER DEFAULT NULL, p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
+  p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -2005,6 +2027,9 @@ BEGIN
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
+      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
+          SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
       AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND t.redshift_quality > 0) OR (p_inspected_only = FALSE AND t.redshift_quality = 0))
       AND (NOT v_comment_search_active OR EXISTS (
@@ -3019,3 +3044,27 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_role;
+
+-- Re-link object_list_members.object_id after object rebuild for a field.
+-- Matches list members to objects by (ra, dec) coordinates.
+CREATE OR REPLACE FUNCTION public.relink_list_members_for_field(p_field TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  n_updated INTEGER;
+BEGIN
+  UPDATE object_list_members olm
+  SET object_id = o.id
+  FROM objects o
+  WHERE o.field = p_field
+    AND olm.ra = o.ra
+    AND olm.dec = o.dec
+    AND olm.object_id IS NULL;
+  GET DIAGNOSTICS n_updated = ROW_COUNT;
+  RETURN n_updated;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.relink_list_members_for_field(TEXT) TO service_role;
