@@ -162,6 +162,19 @@ CREATE TABLE IF NOT EXISTS sync_log (
 """
 
 
+class SchemaMismatchError(Exception):
+    """Raised when the on-disk schema version doesn't match the code."""
+
+    def __init__(self, db_path: Path, found_version: int, expected_version: int):
+        self.db_path = db_path
+        self.found_version = found_version
+        self.expected_version = expected_version
+        super().__init__(
+            f"Local database schema version {found_version} does not match "
+            f"expected version {expected_version}."
+        )
+
+
 class LocalStore:
     """SQLite database manager for local CAMPFIRE metadata and sync state.
 
@@ -208,11 +221,8 @@ class LocalStore:
         else:
             version = self._get_schema_version()
             if version != SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"Local database schema version {version} does not match "
-                    f"expected version {SCHEMA_VERSION}. "
-                    f"Delete {self.db_path} and re-sync with 'campfire sync'."
-                )
+                self._conn.close()
+                raise SchemaMismatchError(self.db_path, version, SCHEMA_VERSION)
 
     def _get_schema_version(self) -> int:
         """Get current schema version from _meta table."""

@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 
-from campfire.db.store import LocalStore, SCHEMA_VERSION
+from campfire.db.store import LocalStore, SchemaMismatchError, SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -120,7 +120,7 @@ class TestLocalStoreInit:
         conn.commit()
         conn.close()
 
-        with pytest.raises(RuntimeError, match="does not match"):
+        with pytest.raises(SchemaMismatchError):
             LocalStore(db_path)
 
 
