@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { SPECTRAL_FEATURES, OBJECT_FLAGS, DQ_FLAGS, getContrastColor, type FlagDef } from '@/lib/flags';
+import { SPECTRAL_FEATURES, DQ_FLAGS, getContrastColor, type FlagDef } from '@/lib/flags';
 import type { InspectionState } from '@/lib/hooks/useInspectionState';
 
 interface FlagsSectionProps {
@@ -59,24 +59,6 @@ export const FlagsSection: React.FC<FlagsSectionProps> = ({ state, canEdit }) =>
                 active={state.spectralFeatures.includes(f.value)}
                 disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('spectralFeatures', f.value)}
-              />
-            ))}
-          </div>
-        </div>
-
-        {/* Object Type */}
-        <div>
-          <p className="text-xs text-text-secondary dark:text-slate-400 mb-1.5">
-            Type:
-          </p>
-          <div className="flex flex-wrap gap-1">
-            {OBJECT_FLAGS.map((f) => (
-              <FlagPill
-                key={f.key}
-                flag={f}
-                active={state.objectFlags.includes(f.value)}
-                disabled={!canEdit || state.redshiftQuality === 0}
-                onClick={() => state.toggleFlag('objectFlags', f.value)}
               />
             ))}
           </div>

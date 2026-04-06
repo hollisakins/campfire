@@ -343,7 +343,6 @@ CREATE TABLE IF NOT EXISTS "public"."targets" (
     "redshift_auto" double precision,
     "redshift_quality" integer DEFAULT 0,
     "spectral_features" integer DEFAULT 0,
-    "object_flags" integer DEFAULT 0,
     "dq_flags" integer DEFAULT 0,
     "created_at" timestamp without time zone DEFAULT "now"(),
     "updated_at" timestamp without time zone DEFAULT "now"(),
@@ -398,6 +397,65 @@ ALTER TABLE "public"."objects" OWNER TO "postgres";
 
 
 COMMENT ON TABLE "public"."objects" IS 'Unique sky positions cross-matched across programs. One object groups one or more targets observed within ~0.2 arcsec. Static properties recomputed at deploy time; best_redshift/quality maintained by trigger.';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."object_lists" (
+    "id" integer NOT NULL,
+    "name" "text" NOT NULL,
+    "slug" "text" NOT NULL,
+    "description" "text",
+    "visibility" "text" DEFAULT 'private'::"text" NOT NULL,
+    "is_system" boolean DEFAULT false NOT NULL,
+    "color" "text",
+    "icon" "text",
+    "created_by" "uuid",
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "updated_at" timestamp with time zone DEFAULT "now"(),
+    CONSTRAINT "object_lists_visibility_check" CHECK (("visibility" = ANY (ARRAY['private'::"text", 'public_read'::"text", 'public_edit'::"text"])))
+);
+
+
+ALTER TABLE "public"."object_lists" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."object_lists" IS 'User-created or system-seeded lists of objects. Visibility controls who can see and edit the list. System lists (is_system=true) are seeded at migration time and cannot be deleted by users.';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."object_list_members" (
+    "id" integer NOT NULL,
+    "list_id" integer NOT NULL,
+    "object_id" integer,
+    "ra" double precision NOT NULL,
+    "dec" double precision NOT NULL,
+    "notes" "text",
+    "added_by" "uuid",
+    "added_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."object_list_members" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."object_list_members" IS 'Members of object lists. Coordinates (ra, dec) are the durable positional key; object_id is a fast query key that gets refreshed after each objects rebuild via coordinate cross-matching.';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."list_audit_log" (
+    "id" integer NOT NULL,
+    "list_id" integer NOT NULL,
+    "object_id" integer,
+    "user_id" "uuid",
+    "action" "text" NOT NULL,
+    "ra" double precision,
+    "dec" double precision,
+    "changed_at" timestamp with time zone DEFAULT "now"(),
+    CONSTRAINT "list_audit_log_action_check" CHECK (("action" = ANY (ARRAY['add'::"text", 'remove'::"text"])))
+);
+
+
+ALTER TABLE "public"."list_audit_log" OWNER TO "postgres";
 
 
 
@@ -702,6 +760,54 @@ ALTER SEQUENCE "public"."objects_id_seq" OWNED BY "public"."objects"."id";
 
 
 
+CREATE SEQUENCE IF NOT EXISTS "public"."object_lists_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."object_lists_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."object_lists_id_seq" OWNED BY "public"."object_lists"."id";
+
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."object_list_members_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."object_list_members_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."object_list_members_id_seq" OWNED BY "public"."object_list_members"."id";
+
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."list_audit_log_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."list_audit_log_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."list_audit_log_id_seq" OWNED BY "public"."list_audit_log"."id";
+
+
+
 CREATE TABLE IF NOT EXISTS "public"."user_profiles" (
     "user_id" "uuid" NOT NULL,
     "username" "text" NOT NULL,
@@ -778,6 +884,18 @@ ALTER TABLE ONLY "public"."targets" ALTER COLUMN "id" SET DEFAULT "nextval"('"pu
 
 
 ALTER TABLE ONLY "public"."objects" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."objects_id_seq"'::"regclass");
+
+
+
+ALTER TABLE ONLY "public"."object_lists" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."object_lists_id_seq"'::"regclass");
+
+
+
+ALTER TABLE ONLY "public"."object_list_members" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."object_list_members_id_seq"'::"regclass");
+
+
+
+ALTER TABLE ONLY "public"."list_audit_log" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."list_audit_log_id_seq"'::"regclass");
 
 
 
@@ -960,6 +1078,31 @@ ALTER TABLE ONLY "public"."objects"
 
 
 
+ALTER TABLE ONLY "public"."object_lists"
+    ADD CONSTRAINT "object_lists_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."object_lists"
+    ADD CONSTRAINT "object_lists_slug_key" UNIQUE ("slug");
+
+
+
+ALTER TABLE ONLY "public"."object_list_members"
+    ADD CONSTRAINT "object_list_members_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."object_list_members"
+    ADD CONSTRAINT "object_list_members_list_id_ra_dec_key" UNIQUE ("list_id", "ra", "dec");
+
+
+
+ALTER TABLE ONLY "public"."list_audit_log"
+    ADD CONSTRAINT "list_audit_log_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."user_profiles"
     ADD CONSTRAINT "user_profiles_pkey" PRIMARY KEY ("user_id");
 
@@ -1061,6 +1204,36 @@ ALTER TABLE ONLY "public"."targets"
 
 ALTER TABLE ONLY "public"."user_program_access"
     ADD CONSTRAINT "fk_upa_program" FOREIGN KEY ("program_slug") REFERENCES "public"."programs"("slug");
+
+
+
+ALTER TABLE ONLY "public"."object_lists"
+    ADD CONSTRAINT "object_lists_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "auth"."users"("id");
+
+
+
+ALTER TABLE ONLY "public"."object_list_members"
+    ADD CONSTRAINT "object_list_members_list_id_fkey" FOREIGN KEY ("list_id") REFERENCES "public"."object_lists"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."object_list_members"
+    ADD CONSTRAINT "object_list_members_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "public"."object_list_members"
+    ADD CONSTRAINT "object_list_members_added_by_fkey" FOREIGN KEY ("added_by") REFERENCES "auth"."users"("id");
+
+
+
+ALTER TABLE ONLY "public"."list_audit_log"
+    ADD CONSTRAINT "list_audit_log_list_id_fkey" FOREIGN KEY ("list_id") REFERENCES "public"."object_lists"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."list_audit_log"
+    ADD CONSTRAINT "list_audit_log_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id");
 
 
 
@@ -1234,6 +1407,24 @@ GRANT ALL ON TABLE "public"."objects" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."object_lists" TO "anon";
+GRANT ALL ON TABLE "public"."object_lists" TO "authenticated";
+GRANT ALL ON TABLE "public"."object_lists" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."object_list_members" TO "anon";
+GRANT ALL ON TABLE "public"."object_list_members" TO "authenticated";
+GRANT ALL ON TABLE "public"."object_list_members" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."list_audit_log" TO "anon";
+GRANT ALL ON TABLE "public"."list_audit_log" TO "authenticated";
+GRANT ALL ON TABLE "public"."list_audit_log" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."observations" TO "anon";
 GRANT ALL ON TABLE "public"."observations" TO "authenticated";
 GRANT ALL ON TABLE "public"."observations" TO "service_role";
@@ -1367,6 +1558,24 @@ GRANT ALL ON SEQUENCE "public"."targets_id_seq" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON SEQUENCE "public"."object_lists_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."object_lists_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."object_lists_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "service_role";
 
 
 

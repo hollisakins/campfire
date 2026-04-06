@@ -5,7 +5,6 @@ import { Save, ArrowRight, Loader2, AlertCircle, CheckCircle } from 'lucide-reac
 import {
   REDSHIFT_QUALITY,
   SPECTRAL_FEATURES,
-  OBJECT_FLAGS,
   DQ_FLAGS,
   getContrastColor,
   type FlagDef,
@@ -169,20 +168,6 @@ export const InspectionControls = forwardRef<HTMLInputElement, InspectionControl
                 active={state.spectralFeatures.includes(f.value)}
                 disabled={!canEdit || state.redshiftQuality === 0}
                 onClick={() => state.toggleFlag('spectralFeatures', f.value)}
-              />
-            ))}
-          </div>
-
-          {/* Object Type */}
-          <div className="flex items-center gap-1 flex-wrap">
-            <span className="text-[10px] uppercase text-text-secondary dark:text-slate-500 mr-0.5">Type:</span>
-            {OBJECT_FLAGS.map((f) => (
-              <FlagPill
-                key={f.key}
-                flag={f}
-                active={state.objectFlags.includes(f.value)}
-                disabled={!canEdit || state.redshiftQuality === 0}
-                onClick={() => state.toggleFlag('objectFlags', f.value)}
               />
             ))}
           </div>

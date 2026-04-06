@@ -20,7 +20,6 @@ const FIELD_OPTIONS: FilterOption[] = [
   { value: 'redshift_quality', label: 'Redshift Quality' },
   { value: 'redshift_inspected', label: 'Redshift (Manual)' },
   { value: 'spectral_features', label: 'Spectral Features' },
-  { value: 'object_flags', label: 'Object Flags' },
   { value: 'dq_flags', label: 'DQ Flags' },
 ];
 

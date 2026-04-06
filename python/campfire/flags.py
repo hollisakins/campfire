@@ -246,8 +246,11 @@ class ObjectFlags(QueryableFlag):
     """
     Object properties and classifications.
 
-    These flags indicate notable properties or classifications
-    assigned during visual inspection.
+    .. deprecated::
+        The ``object_flags`` bitmask column on ``targets`` has been replaced
+        by the ``object_lists`` / ``object_list_members`` system. This enum
+        is retained for backward compatibility but will be removed in a
+        future release. Use the lists API instead.
     """
 
     LRD = 1

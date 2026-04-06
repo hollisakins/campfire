@@ -321,7 +321,7 @@ def batch_upsert_objects(
                 'redshift_inspected': None,
                 'redshift_quality': 0,
                 'spectral_features': 0,
-                'object_flags': 0,
+
                 'dq_flags': 0,
                 'last_inspected_at': None,
                 'last_inspected_by': None,
@@ -341,7 +341,7 @@ def batch_upsert_objects(
                 'redshift_inspected': None,
                 'redshift_quality': 0,
                 'spectral_features': 0,
-                'object_flags': 0,
+
                 'dq_flags': 0,
                 'last_inspected_at': None,
                 'last_inspected_by': None,

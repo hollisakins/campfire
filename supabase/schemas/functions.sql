@@ -129,9 +129,6 @@ CREATE OR REPLACE FUNCTION public.get_filtered_target_ids(
   p_spectral_features_include_any INTEGER DEFAULT NULL,
   p_spectral_features_include_all INTEGER DEFAULT NULL,
   p_spectral_features_exclude INTEGER DEFAULT NULL,
-  p_object_flags_include_any INTEGER DEFAULT NULL,
-  p_object_flags_include_all INTEGER DEFAULT NULL,
-  p_object_flags_exclude INTEGER DEFAULT NULL,
   p_dq_flags_include_any INTEGER DEFAULT NULL,
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
@@ -241,9 +238,6 @@ BEGIN
         AND (p_spectral_features_include_any IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_any) != 0)
         AND (p_spectral_features_include_all IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_all) = p_spectral_features_include_all)
         AND (p_spectral_features_exclude IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_exclude) = 0)
-        AND (p_object_flags_include_any IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_any) != 0)
-        AND (p_object_flags_include_all IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_all) = p_object_flags_include_all)
-        AND (p_object_flags_exclude IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_exclude) = 0)
         AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
         AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
         AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
@@ -368,9 +362,6 @@ BEGIN
         AND (p_spectral_features_include_any IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_any) != 0)
         AND (p_spectral_features_include_all IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_all) = p_spectral_features_include_all)
         AND (p_spectral_features_exclude IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_exclude) = 0)
-        AND (p_object_flags_include_any IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_any) != 0)
-        AND (p_object_flags_include_all IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_all) = p_object_flags_include_all)
-        AND (p_object_flags_exclude IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_exclude) = 0)
         AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
         AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
         AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
@@ -455,14 +446,10 @@ CREATE OR REPLACE FUNCTION public.get_filtered_targets_paginated(
   p_max_exposure_time_min DOUBLE PRECISION DEFAULT NULL,
   p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_spectral_features INTEGER DEFAULT NULL,
-  p_object_flags INTEGER DEFAULT NULL,
   p_dq_flags INTEGER DEFAULT NULL,
   p_spectral_features_include_any INTEGER DEFAULT NULL,
   p_spectral_features_include_all INTEGER DEFAULT NULL,
   p_spectral_features_exclude INTEGER DEFAULT NULL,
-  p_object_flags_include_any INTEGER DEFAULT NULL,
-  p_object_flags_include_all INTEGER DEFAULT NULL,
-  p_object_flags_exclude INTEGER DEFAULT NULL,
   p_dq_flags_include_any INTEGER DEFAULT NULL,
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
@@ -489,9 +476,6 @@ DECLARE
   v_sf_include_any INTEGER;
   v_sf_include_all INTEGER;
   v_sf_exclude INTEGER;
-  v_of_include_any INTEGER;
-  v_of_include_all INTEGER;
-  v_of_exclude INTEGER;
   v_dq_include_any INTEGER;
   v_dq_include_all INTEGER;
   v_dq_exclude INTEGER;
@@ -502,9 +486,6 @@ BEGIN
   v_sf_include_any := COALESCE(p_spectral_features_include_any, p_spectral_features);
   v_sf_include_all := p_spectral_features_include_all;
   v_sf_exclude := p_spectral_features_exclude;
-  v_of_include_any := COALESCE(p_object_flags_include_any, p_object_flags);
-  v_of_include_all := p_object_flags_include_all;
-  v_of_exclude := p_object_flags_exclude;
   v_dq_include_any := COALESCE(p_dq_flags_include_any, p_dq_flags);
   v_dq_include_all := p_dq_flags_include_all;
   v_dq_exclude := p_dq_flags_exclude;
@@ -520,7 +501,6 @@ BEGIN
       p_observations, p_redshift_quality, p_redshift_min, p_redshift_max,
       p_max_snr_min, p_max_snr_max, p_max_exposure_time_min, p_max_exposure_time_max,
       v_sf_include_any, v_sf_include_all, v_sf_exclude,
-      v_of_include_any, v_of_include_all, v_of_exclude,
       v_dq_include_any, v_dq_include_all, v_dq_exclude,
       p_search, p_inspected_only, p_comment_search, p_comment_search_scope, p_comment_user_id,
       p_coord_ra, p_coord_dec, p_radius_degrees,
@@ -545,7 +525,6 @@ BEGIN
         'redshift_inspected', t.redshift_inspected,
         'redshift_quality', t.redshift_quality,
         'spectral_features', t.spectral_features,
-        'object_flags', t.object_flags,
         'dq_flags', t.dq_flags,
         'max_snr', t.max_snr,
         'max_exposure_time', t.max_exposure_time,
@@ -615,7 +594,7 @@ BEGIN
   WITH matched AS (
     SELECT t.id, t.target_id, t.program_slug, t.field, t.observation,
            t.ra, t.dec, t.redshift, t.redshift_auto, t.redshift_inspected,
-           t.redshift_quality, t.spectral_features, t.object_flags, t.dq_flags,
+           t.redshift_quality, t.spectral_features, t.dq_flags,
            t.max_snr, t.max_exposure_time,
            t.last_inspected_at, t.last_inspected_by, t.created_at, t.updated_at
     FROM targets t
@@ -651,7 +630,6 @@ BEGIN
         'redshift_inspected', m.redshift_inspected,
         'redshift_quality', m.redshift_quality,
         'spectral_features', m.spectral_features,
-        'object_flags', m.object_flags,
         'dq_flags', m.dq_flags,
         'max_snr', m.max_snr,
         'max_exposure_time', m.max_exposure_time,
@@ -785,9 +763,6 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_spectral_features_include_any INTEGER DEFAULT NULL,
   p_spectral_features_include_all INTEGER DEFAULT NULL,
   p_spectral_features_exclude INTEGER DEFAULT NULL,
-  p_object_flags_include_any INTEGER DEFAULT NULL,
-  p_object_flags_include_all INTEGER DEFAULT NULL,
-  p_object_flags_exclude INTEGER DEFAULT NULL,
   p_dq_flags_include_any INTEGER DEFAULT NULL,
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
@@ -881,7 +856,6 @@ BEGIN
       t.redshift_inspected,
       t.redshift_quality,
       COALESCE(t.spectral_features, 0) AS spectral_features,
-      COALESCE(t.object_flags, 0) AS object_flags,
       COALESCE(t.dq_flags, 0) AS dq_flags,
       t.max_snr,
       t.max_exposure_time,
@@ -924,9 +898,6 @@ BEGIN
       AND (p_spectral_features_include_any IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_any) != 0)
       AND (p_spectral_features_include_all IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_all) = p_spectral_features_include_all)
       AND (p_spectral_features_exclude IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_exclude) = 0)
-      AND (p_object_flags_include_any IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_any) != 0)
-      AND (p_object_flags_include_all IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_all) = p_object_flags_include_all)
-      AND (p_object_flags_exclude IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_exclude) = 0)
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
@@ -1008,7 +979,6 @@ BEGIN
       'redshift_inspected', r.redshift_inspected,
       'redshift_quality', r.redshift_quality,
       'spectral_features', r.spectral_features,
-      'object_flags', r.object_flags,
       'dq_flags', r.dq_flags,
       'max_snr', r.max_snr,
       'max_exposure_time', r.max_exposure_time,
@@ -1062,6 +1032,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_list_ids INTEGER[] DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
@@ -1160,7 +1131,11 @@ BEGIN
           POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
         ))) <= p_radius_degrees
       )
-    );
+    )
+    AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
+        SELECT olm.object_id FROM object_list_members olm
+        WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+    ));
 
   -- Step 2: fetch page
   RETURN QUERY
@@ -1225,6 +1200,10 @@ BEGIN
           ))) <= p_radius_degrees
         )
       )
+      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
     ORDER BY
       CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'asc' THEN
         2 * DEGREES(ASIN(SQRT(
@@ -1331,6 +1310,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_list_ids INTEGER[] DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL
@@ -1405,6 +1385,10 @@ BEGIN
         ))) <= p_radius_degrees
       )
     )
+    AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
+        SELECT olm.object_id FROM object_list_members olm
+        WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+    ))
   ORDER BY o.object_id;
 END;
 $$;
@@ -1433,14 +1417,10 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_targets(
   p_max_exposure_time_min DOUBLE PRECISION DEFAULT NULL,
   p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_spectral_features INTEGER DEFAULT NULL,
-  p_object_flags INTEGER DEFAULT NULL,
   p_dq_flags INTEGER DEFAULT NULL,
   p_spectral_features_include_any INTEGER DEFAULT NULL,
   p_spectral_features_include_all INTEGER DEFAULT NULL,
   p_spectral_features_exclude INTEGER DEFAULT NULL,
-  p_object_flags_include_any INTEGER DEFAULT NULL,
-  p_object_flags_include_all INTEGER DEFAULT NULL,
-  p_object_flags_exclude INTEGER DEFAULT NULL,
   p_dq_flags_include_any INTEGER DEFAULT NULL,
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
@@ -1469,9 +1449,6 @@ DECLARE
   v_sf_include_any INTEGER;
   v_sf_include_all INTEGER;
   v_sf_exclude INTEGER;
-  v_of_include_any INTEGER;
-  v_of_include_all INTEGER;
-  v_of_exclude INTEGER;
   v_dq_include_any INTEGER;
   v_dq_include_all INTEGER;
   v_dq_exclude INTEGER;
@@ -1494,9 +1471,6 @@ BEGIN
   v_sf_include_any := COALESCE(p_spectral_features_include_any, p_spectral_features);
   v_sf_include_all := p_spectral_features_include_all;
   v_sf_exclude := p_spectral_features_exclude;
-  v_of_include_any := COALESCE(p_object_flags_include_any, p_object_flags);
-  v_of_include_all := p_object_flags_include_all;
-  v_of_exclude := p_object_flags_exclude;
   v_dq_include_any := COALESCE(p_dq_flags_include_any, p_dq_flags);
   v_dq_include_all := p_dq_flags_include_all;
   v_dq_exclude := p_dq_flags_exclude;
@@ -1544,9 +1518,6 @@ BEGIN
       AND (v_sf_include_any IS NULL OR (COALESCE(t.spectral_features, 0) & v_sf_include_any) != 0)
       AND (v_sf_include_all IS NULL OR (COALESCE(t.spectral_features, 0) & v_sf_include_all) = v_sf_include_all)
       AND (v_sf_exclude IS NULL OR (COALESCE(t.spectral_features, 0) & v_sf_exclude) = 0)
-      AND (v_of_include_any IS NULL OR (COALESCE(t.object_flags, 0) & v_of_include_any) != 0)
-      AND (v_of_include_all IS NULL OR (COALESCE(t.object_flags, 0) & v_of_include_all) = v_of_include_all)
-      AND (v_of_exclude IS NULL OR (COALESCE(t.object_flags, 0) & v_of_exclude) = 0)
       AND (v_dq_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & v_dq_include_any) != 0)
       AND (v_dq_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & v_dq_include_all) = v_dq_include_all)
       AND (v_dq_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & v_dq_exclude) = 0)
@@ -1660,6 +1631,7 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_list_ids INTEGER[] DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
@@ -1743,6 +1715,10 @@ BEGIN
       AND (NOT v_coord_search_active OR (
         o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
         AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
+      ))
+      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
   ),
   distance_filtered AS MATERIALIZED (
@@ -1838,8 +1814,6 @@ CREATE OR REPLACE FUNCTION public.get_csv_export(
   p_max_exposure_time_min DOUBLE PRECISION DEFAULT NULL, p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_spectral_features_include_any INTEGER DEFAULT NULL, p_spectral_features_include_all INTEGER DEFAULT NULL,
   p_spectral_features_exclude INTEGER DEFAULT NULL,
-  p_object_flags_include_any INTEGER DEFAULT NULL, p_object_flags_include_all INTEGER DEFAULT NULL,
-  p_object_flags_exclude INTEGER DEFAULT NULL,
   p_dq_flags_include_any INTEGER DEFAULT NULL, p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
@@ -1855,7 +1829,7 @@ RETURNS TABLE(
   max_exposure_time DOUBLE PRECISION, num_gratings INTEGER,
   program_slug TEXT, program_name TEXT, last_inspected_at TIMESTAMPTZ,
   last_inspected_by TEXT, distance DOUBLE PRECISION,
-  spectral_features INTEGER, object_flags INTEGER, dq_flags INTEGER
+  spectral_features INTEGER, dq_flags INTEGER
 )
 LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
 AS $$
@@ -1891,7 +1865,6 @@ BEGIN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(t.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(t.dec)) * POWER(SIN(RADIANS(t.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
       COALESCE(t.spectral_features, 0) AS spectral_features,
-      COALESCE(t.object_flags, 0) AS object_flags,
       COALESCE(t.dq_flags, 0) AS dq_flags
     FROM targets t
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
@@ -1908,9 +1881,6 @@ BEGIN
       AND (p_spectral_features_include_any IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_any) != 0)
       AND (p_spectral_features_include_all IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_all) = p_spectral_features_include_all)
       AND (p_spectral_features_exclude IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_exclude) = 0)
-      AND (p_object_flags_include_any IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_any) != 0)
-      AND (p_object_flags_include_all IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_all) = p_object_flags_include_all)
-      AND (p_object_flags_exclude IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_exclude) = 0)
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
@@ -1928,7 +1898,7 @@ BEGIN
   SELECT df.target_id, df.field, df.ra, df.dec, df.redshift, df.redshift_quality,
     df.max_snr, df.max_exposure_time, df.num_gratings, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
-    df.distance, df.spectral_features, df.object_flags, df.dq_flags
+    df.distance, df.spectral_features, df.dq_flags
   FROM distance_filtered df
   LEFT JOIN programs pr ON pr.slug = df.program_slug
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
@@ -1973,8 +1943,6 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_max_exposure_time_min DOUBLE PRECISION DEFAULT NULL, p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_spectral_features_include_any INTEGER DEFAULT NULL, p_spectral_features_include_all INTEGER DEFAULT NULL,
   p_spectral_features_exclude INTEGER DEFAULT NULL,
-  p_object_flags_include_any INTEGER DEFAULT NULL, p_object_flags_include_all INTEGER DEFAULT NULL,
-  p_object_flags_exclude INTEGER DEFAULT NULL,
   p_dq_flags_include_any INTEGER DEFAULT NULL, p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
@@ -1989,7 +1957,7 @@ RETURNS TABLE(
   redshift NUMERIC, redshift_quality INTEGER, signal_to_noise DOUBLE PRECISION,
   exposure_time DOUBLE PRECISION, fits_path TEXT, program_slug TEXT, program_name TEXT,
   last_inspected_at TIMESTAMPTZ, last_inspected_by TEXT, distance DOUBLE PRECISION,
-  spectral_features INTEGER, object_flags INTEGER, dq_flags INTEGER
+  spectral_features INTEGER, dq_flags INTEGER
 )
 LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
 AS $$
@@ -2021,7 +1989,6 @@ BEGIN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(t.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(t.dec)) * POWER(SIN(RADIANS(t.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
       COALESCE(t.spectral_features, 0) AS spectral_features,
-      COALESCE(t.object_flags, 0) AS object_flags,
       COALESCE(t.dq_flags, 0) AS dq_flags
     FROM targets t JOIN spectra s ON s.target_id = t.target_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
@@ -2035,9 +2002,6 @@ BEGIN
       AND (p_spectral_features_include_any IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_any) != 0)
       AND (p_spectral_features_include_all IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_include_all) = p_spectral_features_include_all)
       AND (p_spectral_features_exclude IS NULL OR (COALESCE(t.spectral_features, 0) & p_spectral_features_exclude) = 0)
-      AND (p_object_flags_include_any IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_any) != 0)
-      AND (p_object_flags_include_all IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_include_all) = p_object_flags_include_all)
-      AND (p_object_flags_exclude IS NULL OR (COALESCE(t.object_flags, 0) & p_object_flags_exclude) = 0)
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(t.dq_flags, 0) & p_dq_flags_exclude) = 0)
@@ -2055,7 +2019,7 @@ BEGIN
   SELECT df.target_id, df.grating, df.field, df.ra, df.dec, df.redshift, df.redshift_quality,
     df.signal_to_noise, df.exposure_time, df.fits_path, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
-    df.distance, df.spectral_features, df.object_flags, df.dq_flags
+    df.distance, df.spectral_features, df.dq_flags
   FROM distance_filtered df
   LEFT JOIN programs pr ON pr.slug = df.program_slug
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
@@ -2102,6 +2066,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_max_snr_min DOUBLE PRECISION DEFAULT NULL, p_max_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_max_exposure_time_min DOUBLE PRECISION DEFAULT NULL, p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
+  p_list_ids INTEGER[] DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
   p_sort_column TEXT DEFAULT 'object_id', p_sort_direction TEXT DEFAULT 'asc'
@@ -2177,6 +2142,10 @@ BEGIN
       AND (NOT v_coord_search_active OR (
         o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
         AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
+      ))
+      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
   ),
   distance_filtered AS (SELECT fo.* FROM filtered_objects fo WHERE NOT v_coord_search_active OR fo.distance <= p_radius_degrees)
@@ -2342,7 +2311,7 @@ BEGIN
   WITH matched AS (
     SELECT t.id, t.target_id, t.program_slug, t.field, t.observation,
            t.ra, t.dec, t.redshift, t.redshift_auto, t.redshift_inspected,
-           t.redshift_quality, t.spectral_features, t.object_flags, t.dq_flags,
+           t.redshift_quality, t.spectral_features, t.dq_flags,
            t.max_snr, t.max_exposure_time, t.last_inspected_at, t.created_at, t.updated_at
     FROM targets t
     WHERE t.program_slug = ANY(p_program_slugs)
@@ -2358,7 +2327,7 @@ BEGIN
       'ra', m.ra, 'dec', m.dec, 'redshift', m.redshift,
       'redshift_auto', m.redshift_auto, 'redshift_inspected', m.redshift_inspected,
       'redshift_quality', m.redshift_quality, 'spectral_features', m.spectral_features,
-      'object_flags', m.object_flags, 'dq_flags', m.dq_flags,
+      'dq_flags', m.dq_flags,
       'max_snr', m.max_snr, 'max_exposure_time', m.max_exposure_time,
       'last_inspected_at', m.last_inspected_at, 'created_at', m.created_at, 'updated_at', m.updated_at,
       'spectra', COALESCE(

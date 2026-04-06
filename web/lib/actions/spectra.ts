@@ -202,7 +202,6 @@ export async function getSpectra(
           redshift_auto: null,
           redshift_inspected: null,
           spectral_features: 0,
-          object_flags: 0,
           dq_flags: 0,
           last_inspected_at: null,
           last_inspected_by: null,
@@ -226,7 +225,6 @@ export async function getSpectra(
         redshift_inspected: obj.redshift_inspected,
         redshift_quality: obj.redshift_quality,
         spectral_features: obj.spectral_features,
-        object_flags: obj.object_flags,
         dq_flags: obj.dq_flags,
         last_inspected_at: obj.last_inspected_at,
         last_inspected_by: obj.last_inspected_by,
@@ -359,7 +357,6 @@ export async function getSpectrumById(targetId: string): Promise<{
       redshift_inspected: data.redshift_inspected,
       redshift_quality: data.redshift_quality,
       spectral_features: data.spectral_features,
-      object_flags: data.object_flags,
       dq_flags: data.dq_flags,
       last_inspected_at: data.last_inspected_at,
       last_inspected_by: data.last_inspected_by,
@@ -894,7 +891,6 @@ export async function getAdjacentObjectIds(
     const {
       p_observations: _obs,
       p_spectral_features_include_any: _sf1, p_spectral_features_include_all: _sf2, p_spectral_features_exclude: _sf3,
-      p_object_flags_include_any: _of1, p_object_flags_include_all: _of2, p_object_flags_exclude: _of3,
       p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
       p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
       ...objectsParams

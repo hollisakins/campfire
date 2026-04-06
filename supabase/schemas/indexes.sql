@@ -89,6 +89,45 @@ CREATE INDEX IF NOT EXISTS idx_objects_max_exposure_time
 
 
 -- =============================================================================
+-- object_lists
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_object_lists_created_by
+    ON public.object_lists USING btree (created_by);
+
+CREATE INDEX IF NOT EXISTS idx_object_lists_visibility
+    ON public.object_lists USING btree (visibility);
+
+
+-- =============================================================================
+-- object_list_members
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_list_members_object_id
+    ON public.object_list_members USING btree (object_id) WHERE (object_id IS NOT NULL);
+
+CREATE INDEX IF NOT EXISTS idx_list_members_list_id
+    ON public.object_list_members USING btree (list_id);
+
+CREATE INDEX IF NOT EXISTS idx_list_members_coords
+    ON public.object_list_members USING btree (ra, dec);
+
+
+-- =============================================================================
+-- list_audit_log
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_list_audit_list_id
+    ON public.list_audit_log USING btree (list_id);
+
+CREATE INDEX IF NOT EXISTS idx_list_audit_changed_at
+    ON public.list_audit_log USING btree (changed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_list_audit_user_id
+    ON public.list_audit_log USING btree (user_id);
+
+
+-- =============================================================================
 -- spectra
 -- =============================================================================
 

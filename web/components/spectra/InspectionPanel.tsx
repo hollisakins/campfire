@@ -10,7 +10,6 @@ import { CommentWithUser } from '@/lib/types';
 import {
   REDSHIFT_QUALITY,
   SPECTRAL_FEATURES,
-  OBJECT_FLAGS,
   DQ_FLAGS,
   getQualityDef,
 } from '@/lib/flags';
@@ -151,13 +150,6 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
     color: f.color,
   }));
 
-  const objectFlagOptions: FilterOption[] = OBJECT_FLAGS.map(f => ({
-    value: f.value,
-    label: f.label,
-    icon: f.icon,
-    color: f.color,
-  }));
-
   const dqFlagOptions: FilterOption[] = DQ_FLAGS.map(f => ({
     value: f.value,
     label: f.label,
@@ -281,13 +273,6 @@ export const InspectionPanel: React.FC<InspectionPanelProps> = ({
               options={spectralFeatureOptions}
               selected={inspection.spectralFeatures}
               onChange={inspection.setSpectralFeatures}
-              disabled={!canEdit}
-            />
-            <FilterChip
-              label="Object Type"
-              options={objectFlagOptions}
-              selected={inspection.objectFlags}
-              onChange={inspection.setObjectFlags}
               disabled={!canEdit}
             />
             <FilterChip

@@ -221,6 +221,138 @@ CREATE POLICY "admin_objects_delete"
 
 
 -- =============================================================================
+-- object_lists
+-- =============================================================================
+
+ALTER TABLE object_lists ENABLE ROW LEVEL SECURITY;
+
+-- Users can see: their own lists + public lists + public_edit lists.
+DROP POLICY IF EXISTS "select_lists" ON object_lists;
+CREATE POLICY "select_lists"
+  ON object_lists FOR SELECT TO authenticated
+  USING (
+    created_by = auth.uid()
+    OR visibility IN ('public_read', 'public_edit')
+  );
+
+-- Users can create lists (owned by them, non-system only).
+DROP POLICY IF EXISTS "insert_lists" ON object_lists;
+CREATE POLICY "insert_lists"
+  ON object_lists FOR INSERT TO authenticated
+  WITH CHECK (
+    created_by = auth.uid()
+    AND is_system = false
+  );
+
+-- Owners can update their own lists (but not system lists).
+DROP POLICY IF EXISTS "update_own_lists" ON object_lists;
+CREATE POLICY "update_own_lists"
+  ON object_lists FOR UPDATE TO authenticated
+  USING (created_by = auth.uid() AND is_system = false)
+  WITH CHECK (created_by = auth.uid() AND is_system = false);
+
+-- Owners can delete their own lists (but not system lists).
+DROP POLICY IF EXISTS "delete_own_lists" ON object_lists;
+CREATE POLICY "delete_own_lists"
+  ON object_lists FOR DELETE TO authenticated
+  USING (created_by = auth.uid() AND is_system = false);
+
+-- Admins can manage all lists including system lists.
+DROP POLICY IF EXISTS "admin_manage_lists" ON object_lists;
+CREATE POLICY "admin_manage_lists"
+  ON object_lists
+  USING (public.is_admin());
+
+
+-- =============================================================================
+-- object_list_members
+-- =============================================================================
+
+ALTER TABLE object_list_members ENABLE ROW LEVEL SECURITY;
+
+-- Members visible if:
+--   1. The list is visible to the user, AND
+--   2. The matched object (if any) has at least one accessible program
+-- Members with NULL object_id (orphaned) are visible to the list owner only.
+DROP POLICY IF EXISTS "select_list_members" ON object_list_members;
+CREATE POLICY "select_list_members"
+  ON object_list_members FOR SELECT TO authenticated
+  USING (
+    list_id IN (
+      SELECT id FROM object_lists
+      WHERE created_by = auth.uid()
+         OR visibility IN ('public_read', 'public_edit')
+    )
+    AND (
+      (object_id IS NULL AND list_id IN (
+        SELECT id FROM object_lists WHERE created_by = auth.uid()
+      ))
+      OR object_id IN (
+        SELECT o.id FROM objects o
+        WHERE o.programs && public.accessible_program_slugs()
+      )
+    )
+  );
+
+-- can_comment users can add members to own lists + public_edit lists.
+DROP POLICY IF EXISTS "insert_list_members" ON object_list_members;
+CREATE POLICY "insert_list_members"
+  ON object_list_members FOR INSERT TO authenticated
+  WITH CHECK (
+    public.can_comment()
+    AND list_id IN (
+      SELECT id FROM object_lists
+      WHERE created_by = auth.uid()
+         OR visibility = 'public_edit'
+    )
+  );
+
+-- can_comment users can remove members from own lists + public_edit lists.
+DROP POLICY IF EXISTS "delete_list_members" ON object_list_members;
+CREATE POLICY "delete_list_members"
+  ON object_list_members FOR DELETE TO authenticated
+  USING (
+    public.can_comment()
+    AND list_id IN (
+      SELECT id FROM object_lists
+      WHERE created_by = auth.uid()
+         OR visibility = 'public_edit'
+    )
+  );
+
+-- Admins can manage all list members.
+DROP POLICY IF EXISTS "admin_manage_list_members" ON object_list_members;
+CREATE POLICY "admin_manage_list_members"
+  ON object_list_members
+  USING (public.is_admin());
+
+
+-- =============================================================================
+-- list_audit_log
+-- =============================================================================
+
+ALTER TABLE list_audit_log ENABLE ROW LEVEL SECURITY;
+
+-- Audit log visible if the parent list is visible.
+DROP POLICY IF EXISTS "select_list_audit" ON list_audit_log;
+CREATE POLICY "select_list_audit"
+  ON list_audit_log FOR SELECT TO authenticated
+  USING (
+    list_id IN (
+      SELECT id FROM object_lists
+      WHERE created_by = auth.uid()
+         OR visibility IN ('public_read', 'public_edit')
+    )
+  );
+
+-- Admins can see all list audit entries.
+DROP POLICY IF EXISTS "admin_select_list_audit" ON list_audit_log;
+CREATE POLICY "admin_select_list_audit"
+  ON list_audit_log FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+
+-- =============================================================================
 -- spectra
 -- =============================================================================
 

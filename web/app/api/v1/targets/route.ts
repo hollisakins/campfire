@@ -85,7 +85,6 @@ function parseUrlToFilters(
 
   // Bitmask filters (legacy + multi-mode support)
   const sf = parseFlagArrays(searchParams, 'spectral_features');
-  const of = parseFlagArrays(searchParams, 'object_flags');
   const dq = parseFlagArrays(searchParams, 'dq_flags');
 
   // Inspected only
@@ -109,8 +108,6 @@ function parseUrlToFilters(
     max_exposure_time_max: searchParams.get('max_exposure_time_max') ? parseFloat(searchParams.get('max_exposure_time_max')!) : null,
     spectral_features: sf.values,
     spectral_features_mode: sf.mode,
-    object_flags: of.values,
-    object_flags_mode: of.mode,
     dq_flags: dq.values,
     dq_flags_mode: dq.mode,
     inspected_only: inspectedOnly,
@@ -145,7 +142,7 @@ function parseUrlToFilters(
  * - spectral_features_include_any: match any of these flags (OR)
  * - spectral_features_include_all: must have all of these flags (AND)
  * - spectral_features_exclude: must NOT have any of these flags (NOT)
- * (same pattern for object_flags and dq_flags)
+ * (same pattern for dq_flags)
  *
  * - inspected_only: "true" to filter to inspected objects only
  * - search: text search on target_id

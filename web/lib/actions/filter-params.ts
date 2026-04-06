@@ -35,14 +35,13 @@ export interface FilterOptions {
   max_exposure_time_min: number | null;
   max_exposure_time_max: number | null;
   spectral_features: number[];
-  object_flags: number[];
+  list_ids: number[];
   dq_flags: number[];
   inspected_only: boolean | null;
   search: string;
   search_scope: SearchScope;
   gratings_mode: FilterMode;
   spectral_features_mode: FilterMode;
-  object_flags_mode: FilterMode;
   dq_flags_mode: FilterMode;
 }
 
@@ -60,14 +59,13 @@ export const DEFAULT_FILTERS: FilterOptions = {
   max_exposure_time_min: null,
   max_exposure_time_max: null,
   spectral_features: [],
-  object_flags: [],
+  list_ids: [],
   dq_flags: [],
   inspected_only: null,
   search: '',
   search_scope: 'target_id',
   gratings_mode: 'any',
   spectral_features_mode: 'any',
-  object_flags_mode: 'any',
   dq_flags_mode: 'any',
 };
 
@@ -95,9 +93,7 @@ export interface FilterRpcParams {
   p_spectral_features_include_any: number | null;
   p_spectral_features_include_all: number | null;
   p_spectral_features_exclude: number | null;
-  p_object_flags_include_any: number | null;
-  p_object_flags_include_all: number | null;
-  p_object_flags_exclude: number | null;
+  p_list_ids: number[] | null;
   p_dq_flags_include_any: number | null;
   p_dq_flags_include_all: number | null;
   p_dq_flags_exclude: number | null;
@@ -128,17 +124,12 @@ export function buildFilterParams(
     ? filters.spectral_features.reduce((acc, val) => acc | val, 0)
     : null;
 
-  const objectFlagsMask = filters?.object_flags && filters.object_flags.length > 0
-    ? filters.object_flags.reduce((acc, val) => acc | val, 0)
-    : null;
-
   const dqFlagsMask = filters?.dq_flags && filters.dq_flags.length > 0
     ? filters.dq_flags.reduce((acc, val) => acc | val, 0)
     : null;
 
   // Route bitmask to include_any / include_all / exclude based on mode
   const sfMode = filters?.spectral_features_mode || 'any';
-  const ofMode = filters?.object_flags_mode || 'any';
   const dqMode = filters?.dq_flags_mode || 'any';
 
   // Coordinate search conversion
@@ -184,9 +175,7 @@ export function buildFilterParams(
     p_spectral_features_include_any: sfMode === 'any' ? spectralFeaturesMask : null,
     p_spectral_features_include_all: sfMode === 'all' ? spectralFeaturesMask : null,
     p_spectral_features_exclude: sfMode === 'none' ? spectralFeaturesMask : null,
-    p_object_flags_include_any: ofMode === 'any' ? objectFlagsMask : null,
-    p_object_flags_include_all: ofMode === 'all' ? objectFlagsMask : null,
-    p_object_flags_exclude: ofMode === 'none' ? objectFlagsMask : null,
+    p_list_ids: filters?.list_ids?.length ? filters.list_ids : null,
     p_dq_flags_include_any: dqMode === 'any' ? dqFlagsMask : null,
     p_dq_flags_include_all: dqMode === 'all' ? dqFlagsMask : null,
     p_dq_flags_exclude: dqMode === 'none' ? dqFlagsMask : null,

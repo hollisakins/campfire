@@ -10,6 +10,7 @@ import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
 import { ReturnToMapButton } from '@/components/map/ReturnToMapButton';
 import { ObjectDetailClient } from '@/components/spectra/ObjectDetailClient';
+import { ObjectListsSection } from '@/components/spectra/ObjectListsSection';
 import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
 import { getObjectById, getObjectMetadata } from '@/lib/actions/spectra';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
@@ -169,9 +170,13 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
               <span>·</span>
               <span>{object.n_spectra} spectra</span>
             </div>
-            <div className="flex items-center gap-4 mb-4">
+            <div className="flex items-center gap-4 mb-3">
               <CoordinateDisplay ra={object.ra} dec={object.dec} />
               <ShowOnMapLink ra={object.ra} dec={object.dec} field={object.field} objectId={object.object_id} />
+            </div>
+
+            <div className="mb-4">
+              <ObjectListsSection objectId={object.id} ra={object.ra} dec={object.dec} />
             </div>
 
             <div className="mb-4">

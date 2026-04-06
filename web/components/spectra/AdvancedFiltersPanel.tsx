@@ -7,7 +7,6 @@ import { InlineRange } from '@/components/ui/InlineRange';
 import { parseCoordinates, convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import {
   SPECTRAL_FEATURES,
-  OBJECT_FLAGS,
   DQ_FLAGS,
   REDSHIFT_QUALITY,
 } from '@/lib/flags';
@@ -36,6 +35,8 @@ interface AdvancedFiltersPanelProps {
   availableObservations?: string[];
   /** Current view mode — controls filter labels and behavior */
   viewMode?: ViewMode;
+  /** Available object lists for the list filter */
+  listOptions?: FilterOption[];
 }
 
 export function AdvancedFiltersPanel({
@@ -47,6 +48,7 @@ export function AdvancedFiltersPanel({
   availablePrograms = [],
   availableObservations = [],
   viewMode = 'targets',
+  listOptions = [],
 }: AdvancedFiltersPanelProps) {
   // Local state for coordinate search form
   const [coordInput, setCoordInput] = useState('');
@@ -167,13 +169,6 @@ export function AdvancedFiltersPanel({
     color: f.color,
   }));
 
-  const objectFlagOptions: FilterOption[] = OBJECT_FLAGS.map(f => ({
-    value: f.value,
-    label: f.label,
-    icon: f.icon,
-    color: f.color,
-  }));
-
   const dqFlagOptions: FilterOption[] = DQ_FLAGS.map(f => ({
     value: f.value,
     label: f.label,
@@ -199,7 +194,7 @@ export function AdvancedFiltersPanel({
     (filters.max_exposure_time_min !== null ? 1 : 0) +
     (filters.max_exposure_time_max !== null ? 1 : 0) +
     (filters.spectral_features?.length ?? 0) +
-    (filters.object_flags?.length ?? 0) +
+    (filters.list_ids?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
   // Collapsible section state for basic filters (collapsed by default, auto-expand if filter active)
@@ -248,8 +243,7 @@ export function AdvancedFiltersPanel({
       max_exposure_time_max: null,
       spectral_features: [],
       spectral_features_mode: 'any',
-      object_flags: [],
-      object_flags_mode: 'any',
+      list_ids: [],
       dq_flags: [],
       dq_flags_mode: 'any',
     });
@@ -539,29 +533,34 @@ export function AdvancedFiltersPanel({
             </div>
           </div>
 
-          {/* Object Flags Section */}
+          {/* Object Lists Section */}
+          {listOptions.length > 0 && (
+            <div className="p-4 border-b border-border dark:border-slate-700">
+              <InlineMultiFilter
+                label="Lists"
+                options={listOptions}
+                selected={filters.list_ids ?? []}
+                onChange={(s) => onFiltersChange({ ...filters, list_ids: s as number[] })}
+                mode="any"
+                onModeChange={() => {}}
+                hideModeSelector
+              />
+            </div>
+          )}
+
+          {/* Spectral Features Section */}
           <div className="p-4 border-b border-border dark:border-slate-700">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 mb-4">
               Object Classification
             </h3>
-            <div className="space-y-5">
-              <InlineMultiFilter
-                label="Object Type"
-                options={objectFlagOptions}
-                selected={filters.object_flags ?? []}
-                onChange={(s) => onFiltersChange({ ...filters, object_flags: s as number[] })}
-                mode={filters.object_flags_mode}
-                onModeChange={(m) => onFiltersChange({ ...filters, object_flags_mode: m })}
-              />
-              <InlineMultiFilter
-                label="Spectral Features"
-                options={spectralFeatureOptions}
-                selected={filters.spectral_features ?? []}
-                onChange={(s) => onFiltersChange({ ...filters, spectral_features: s as number[] })}
-                mode={filters.spectral_features_mode}
-                onModeChange={(m) => onFiltersChange({ ...filters, spectral_features_mode: m })}
-              />
-            </div>
+            <InlineMultiFilter
+              label="Spectral Features"
+              options={spectralFeatureOptions}
+              selected={filters.spectral_features ?? []}
+              onChange={(s) => onFiltersChange({ ...filters, spectral_features: s as number[] })}
+              mode={filters.spectral_features_mode}
+              onModeChange={(m) => onFiltersChange({ ...filters, spectral_features_mode: m })}
+            />
           </div>
 
           {/* Data Quality Section */}

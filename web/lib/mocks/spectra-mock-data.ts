@@ -46,60 +46,60 @@ function generateMockSpectra(): SpectrumTarget[] {
 
   // High-z objects (z > 7) with various configurations
   const highZConfigs = [
-    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 8.5, quality: 4, snr: 25, gratings: ['PRISM', 'G395M'], features: 34, objFlags: 4, dqFlags: 0 },
-    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 9.2, quality: 3, snr: 15, gratings: ['PRISM'], features: 2, objFlags: 0, dqFlags: 32 },
-    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 10.1, quality: 4, snr: 35, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 34, objFlags: 5, dqFlags: 0 },
-    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 7.8, quality: 2, snr: 8, gratings: ['PRISM'], features: 2, objFlags: 0, dqFlags: 48 },
-    { field: 'GOODS-N', obs: 'ember_goodsn_p1', program: MOCK_PROGRAMS[3], z: 11.5, quality: 3, snr: 12, gratings: ['PRISM', 'G395M'], features: 3, objFlags: 4, dqFlags: 0 },
-    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 8.9, quality: 4, snr: 42, gratings: ['PRISM', 'G235M', 'G395M'], features: 34, objFlags: 20, dqFlags: 0 },
-    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 7.3, quality: 4, snr: 55, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 35, objFlags: 52, dqFlags: 0 },
-    { field: 'COSMOS', obs: 'capers_cosmos_p1', program: MOCK_PROGRAMS[2], z: 9.8, quality: 2, snr: 6, gratings: ['PRISM'], features: 2, objFlags: 0, dqFlags: 32 },
+    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 8.5, quality: 4, snr: 25, gratings: ['PRISM', 'G395M'], features: 34, dqFlags: 0 },
+    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 9.2, quality: 3, snr: 15, gratings: ['PRISM'], features: 2, dqFlags: 32 },
+    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 10.1, quality: 4, snr: 35, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 34, dqFlags: 0 },
+    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 7.8, quality: 2, snr: 8, gratings: ['PRISM'], features: 2, dqFlags: 48 },
+    { field: 'GOODS-N', obs: 'ember_goodsn_p1', program: MOCK_PROGRAMS[3], z: 11.5, quality: 3, snr: 12, gratings: ['PRISM', 'G395M'], features: 3, dqFlags: 0 },
+    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 8.9, quality: 4, snr: 42, gratings: ['PRISM', 'G235M', 'G395M'], features: 34, dqFlags: 0 },
+    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 7.3, quality: 4, snr: 55, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 35, dqFlags: 0 },
+    { field: 'COSMOS', obs: 'capers_cosmos_p1', program: MOCK_PROGRAMS[2], z: 9.8, quality: 2, snr: 6, gratings: ['PRISM'], features: 2, dqFlags: 32 },
   ];
 
   // Mid-z objects (3 < z < 7)
   const midZConfigs = [
-    { field: 'COSMOS', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: 5.2, quality: 4, snr: 45, gratings: ['PRISM', 'G235M', 'G395M'], features: 32, objFlags: 16, dqFlags: 0 },
-    { field: 'COSMOS', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: 4.8, quality: 4, snr: 38, gratings: ['PRISM', 'G395M'], features: 36, objFlags: 48, dqFlags: 0 },
-    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 6.1, quality: 3, snr: 22, gratings: ['PRISM', 'G395M'], features: 34, objFlags: 4, dqFlags: 0 },
-    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 5.5, quality: 4, snr: 52, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 33, objFlags: 2, dqFlags: 0 },
-    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 4.2, quality: 4, snr: 68, gratings: ['PRISM', 'G395M'], features: 32, objFlags: 32, dqFlags: 0 },
-    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 3.8, quality: 4, snr: 75, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 40, objFlags: 50, dqFlags: 0 },
-    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 6.5, quality: 3, snr: 18, gratings: ['PRISM', 'G235M'], features: 34, objFlags: 4, dqFlags: 2 },
-    { field: 'GOODS-S', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 4.0, quality: 4, snr: 48, gratings: ['PRISM', 'G395M'], features: 36, objFlags: 16, dqFlags: 0 },
-    { field: 'GOODS-N', obs: 'ember_goodsn_p1', program: MOCK_PROGRAMS[3], z: 5.8, quality: 2, snr: 11, gratings: ['PRISM'], features: 16, objFlags: 0, dqFlags: 32 },
-    { field: 'COSMOS', obs: 'capers_cosmos_p1', program: MOCK_PROGRAMS[2], z: 3.5, quality: 4, snr: 82, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 41, objFlags: 10, dqFlags: 0 },
+    { field: 'COSMOS', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: 5.2, quality: 4, snr: 45, gratings: ['PRISM', 'G235M', 'G395M'], features: 32, dqFlags: 0 },
+    { field: 'COSMOS', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: 4.8, quality: 4, snr: 38, gratings: ['PRISM', 'G395M'], features: 36, dqFlags: 0 },
+    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 6.1, quality: 3, snr: 22, gratings: ['PRISM', 'G395M'], features: 34, dqFlags: 0 },
+    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 5.5, quality: 4, snr: 52, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 33, dqFlags: 0 },
+    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 4.2, quality: 4, snr: 68, gratings: ['PRISM', 'G395M'], features: 32, dqFlags: 0 },
+    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 3.8, quality: 4, snr: 75, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 40, dqFlags: 0 },
+    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 6.5, quality: 3, snr: 18, gratings: ['PRISM', 'G235M'], features: 34, dqFlags: 2 },
+    { field: 'GOODS-S', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 4.0, quality: 4, snr: 48, gratings: ['PRISM', 'G395M'], features: 36, dqFlags: 0 },
+    { field: 'GOODS-N', obs: 'ember_goodsn_p1', program: MOCK_PROGRAMS[3], z: 5.8, quality: 2, snr: 11, gratings: ['PRISM'], features: 16, dqFlags: 32 },
+    { field: 'COSMOS', obs: 'capers_cosmos_p1', program: MOCK_PROGRAMS[2], z: 3.5, quality: 4, snr: 82, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 41, dqFlags: 0 },
   ];
 
   // Low-z objects (z < 3)
   const lowZConfigs = [
-    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 2.1, quality: 4, snr: 95, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 44, objFlags: 42, dqFlags: 0 },
-    { field: 'COSMOS', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: 1.5, quality: 4, snr: 88, gratings: ['PRISM', 'G395M'], features: 12, objFlags: 8, dqFlags: 0 },
-    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 0.8, quality: 4, snr: 120, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 12, objFlags: 64, dqFlags: 0 },
-    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 2.3, quality: 4, snr: 65, gratings: ['PRISM', 'G235M', 'G395M'], features: 40, objFlags: 32, dqFlags: 0 },
-    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 1.2, quality: 4, snr: 105, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 44, objFlags: 42, dqFlags: 0 },
-    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 2.8, quality: 3, snr: 32, gratings: ['PRISM', 'G395M'], features: 36, objFlags: 2, dqFlags: 0 },
-    { field: 'GOODS-S', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: 0.5, quality: 4, snr: 150, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 12, objFlags: 256, dqFlags: 0 },
-    { field: 'COSMOS', obs: 'capers_cosmos_p1', program: MOCK_PROGRAMS[2], z: 1.8, quality: 4, snr: 72, gratings: ['PRISM', 'G235M', 'G395M'], features: 40, objFlags: 128, dqFlags: 0 },
+    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 2.1, quality: 4, snr: 95, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 44, dqFlags: 0 },
+    { field: 'COSMOS', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: 1.5, quality: 4, snr: 88, gratings: ['PRISM', 'G395M'], features: 12, dqFlags: 0 },
+    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 0.8, quality: 4, snr: 120, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 12, dqFlags: 0 },
+    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 2.3, quality: 4, snr: 65, gratings: ['PRISM', 'G235M', 'G395M'], features: 40, dqFlags: 0 },
+    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 1.2, quality: 4, snr: 105, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 44, dqFlags: 0 },
+    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 2.8, quality: 3, snr: 32, gratings: ['PRISM', 'G395M'], features: 36, dqFlags: 0 },
+    { field: 'GOODS-S', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: 0.5, quality: 4, snr: 150, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 12, dqFlags: 0 },
+    { field: 'COSMOS', obs: 'capers_cosmos_p1', program: MOCK_PROGRAMS[2], z: 1.8, quality: 4, snr: 72, gratings: ['PRISM', 'G235M', 'G395M'], features: 40, dqFlags: 0 },
   ];
 
   // Special cases: LRDs, broad-line AGN, problematic data
   const specialConfigs = [
-    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 5.5, quality: 4, snr: 28, gratings: ['PRISM', 'G395M'], features: 48, objFlags: 3, dqFlags: 0 }, // LRD + broad line
-    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 4.2, quality: 4, snr: 35, gratings: ['PRISM', 'G235M', 'G395M'], features: 48, objFlags: 1, dqFlags: 0 }, // LRD
-    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 3.1, quality: 4, snr: 62, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 32, objFlags: 2, dqFlags: 0 }, // Broad line AGN
-    { field: 'COSMOS', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: null, quality: 1, snr: 3, gratings: ['PRISM'], features: 0, objFlags: 0, dqFlags: 16 }, // No detection
-    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: null, quality: 1, snr: 5, gratings: ['PRISM', 'G395M'], features: 0, objFlags: 0, dqFlags: 48 }, // Low SNR + no detection
-    { field: 'GOODS-N', obs: 'ember_goodsn_p1', program: MOCK_PROGRAMS[3], z: 6.8, quality: 2, snr: 14, gratings: ['PRISM'], features: 2, objFlags: 0, dqFlags: 3 }, // Chip gap + contamination
-    { field: 'COSMOS', obs: 'capers_cosmos_p1', program: MOCK_PROGRAMS[2], z: 2.5, quality: 3, snr: 25, gratings: ['PRISM', 'G395M'], features: 32, objFlags: 8, dqFlags: 8 }, // Multiple sources
+    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 5.5, quality: 4, snr: 28, gratings: ['PRISM', 'G395M'], features: 48, dqFlags: 0 }, // LRD + broad line
+    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 4.2, quality: 4, snr: 35, gratings: ['PRISM', 'G235M', 'G395M'], features: 48, dqFlags: 0 }, // LRD
+    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 3.1, quality: 4, snr: 62, gratings: ['PRISM', 'G140M', 'G235M', 'G395M'], features: 32, dqFlags: 0 }, // Broad line AGN
+    { field: 'COSMOS', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: null, quality: 1, snr: 3, gratings: ['PRISM'], features: 0, dqFlags: 16 }, // No detection
+    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: null, quality: 1, snr: 5, gratings: ['PRISM', 'G395M'], features: 0, dqFlags: 48 }, // Low SNR + no detection
+    { field: 'GOODS-N', obs: 'ember_goodsn_p1', program: MOCK_PROGRAMS[3], z: 6.8, quality: 2, snr: 14, gratings: ['PRISM'], features: 2, dqFlags: 3 }, // Chip gap + contamination
+    { field: 'COSMOS', obs: 'capers_cosmos_p1', program: MOCK_PROGRAMS[2], z: 2.5, quality: 3, snr: 25, gratings: ['PRISM', 'G395M'], features: 32, dqFlags: 8 }, // Multiple sources
   ];
 
   // Not inspected objects
   const notInspectedConfigs = [
-    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 4.5, quality: 0, snr: 18, gratings: ['PRISM'], features: 0, objFlags: 0, dqFlags: 0 },
-    { field: 'COSMOS', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: 3.2, quality: 0, snr: 22, gratings: ['PRISM', 'G395M'], features: 0, objFlags: 0, dqFlags: 0 },
-    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 5.8, quality: 0, snr: 12, gratings: ['PRISM'], features: 0, objFlags: 0, dqFlags: 0 },
-    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 2.1, quality: 0, snr: 45, gratings: ['PRISM', 'G235M'], features: 0, objFlags: 0, dqFlags: 0 },
-    { field: 'GOODS-S', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 7.2, quality: 0, snr: 8, gratings: ['PRISM'], features: 0, objFlags: 0, dqFlags: 0 },
+    { field: 'COSMOS', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 4.5, quality: 0, snr: 18, gratings: ['PRISM'], features: 0, dqFlags: 0 },
+    { field: 'COSMOS', obs: 'jades_cosmos_p2', program: MOCK_PROGRAMS[0], z: 3.2, quality: 0, snr: 22, gratings: ['PRISM', 'G395M'], features: 0, dqFlags: 0 },
+    { field: 'UDS', obs: 'ember_uds_p4', program: MOCK_PROGRAMS[3], z: 5.8, quality: 0, snr: 12, gratings: ['PRISM'], features: 0, dqFlags: 0 },
+    { field: 'EGS', obs: 'ceers_egs_p1', program: MOCK_PROGRAMS[1], z: 2.1, quality: 0, snr: 45, gratings: ['PRISM', 'G235M'], features: 0, dqFlags: 0 },
+    { field: 'GOODS-S', obs: 'jades_cosmos_p1', program: MOCK_PROGRAMS[0], z: 7.2, quality: 0, snr: 8, gratings: ['PRISM'], features: 0, dqFlags: 0 },
   ];
 
   // Combine all configs
@@ -125,7 +125,6 @@ function generateMockSpectra(): SpectrumTarget[] {
       snr,
       gratings: [...gratings],
       features: Math.floor(Math.random() * 64),
-      objFlags: Math.floor(Math.random() * 512),
       dqFlags: Math.random() < 0.2 ? Math.floor(Math.random() * 512) : 0,
     });
   }
@@ -152,7 +151,6 @@ function generateMockSpectra(): SpectrumTarget[] {
       redshift_inspected: config.quality > 0 ? config.z : null,
       redshift_quality: config.quality,
       spectral_features: config.features,
-      object_flags: config.objFlags,
       dq_flags: config.dqFlags,
       last_inspected_at: config.quality > 0 ? '2024-10-15T14:30:00Z' : null,
       last_inspected_by: config.quality > 0 ? 'user-123' : null,
@@ -189,8 +187,6 @@ export interface MockFilterOptions {
   max_exposure_time_max?: number | null;
   spectral_features?: number[];
   spectral_features_mode?: FilterMode;
-  object_flags?: number[];
-  object_flags_mode?: FilterMode;
   dq_flags?: number[];
   dq_flags_mode?: FilterMode;
   inspected_only?: boolean | null;
@@ -274,20 +270,6 @@ export function applyFiltersToMockData(
         if ((obj.spectral_features & mask) !== mask) return false;
       } else if (mode === 'none') {
         if ((obj.spectral_features & mask) !== 0) return false;
-      }
-    }
-
-    // Object flags bitmask with mode
-    if (filters.object_flags && filters.object_flags.length > 0) {
-      const mask = filters.object_flags.reduce((acc, v) => acc | v, 0);
-      const mode = filters.object_flags_mode || 'any';
-
-      if (mode === 'any') {
-        if ((obj.object_flags & mask) === 0) return false;
-      } else if (mode === 'all') {
-        if ((obj.object_flags & mask) !== mask) return false;
-      } else if (mode === 'none') {
-        if ((obj.object_flags & mask) !== 0) return false;
       }
     }
 

@@ -87,7 +87,6 @@ SELECT
     t.id,
     t.target_id,
     array_agg(DISTINCT fd.label) FILTER (WHERE fd.category = 'spectral_features' AND (t.spectral_features & fd.value) > 0) AS spectral_features_labels,
-    array_agg(DISTINCT fd.label) FILTER (WHERE fd.category = 'object_flags' AND (t.object_flags & fd.value) > 0) AS object_flags_labels,
     array_agg(DISTINCT fd.label) FILTER (WHERE fd.category = 'dq_flags' AND (t.dq_flags & fd.value) > 0) AS dq_flags_labels
 FROM public.targets t
 CROSS JOIN public.flag_definitions fd
@@ -112,7 +111,6 @@ SELECT
     t.redshift_auto AS redshift,
     t.redshift_quality,
     t.spectral_features,
-    t.object_flags,
     t.dq_flags,
     t.created_at,
     t.updated_at,

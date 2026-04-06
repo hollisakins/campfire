@@ -1,7 +1,7 @@
 # Design: Object Lists & Deploy-Side Objects Rebuild
 
-**Status:** Draft
-**Date:** 2026-03-30
+**Status:** Implemented
+**Date:** 2026-03-30 (design) / 2026-04-06 (implementation)
 **Branch:** `feat/objects-table`
 
 ## Problem

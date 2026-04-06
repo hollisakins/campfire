@@ -63,7 +63,6 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     redshift_inspected: currentSpectrum.redshift_inspected,
     redshift_quality: currentSpectrum.redshift_quality,
     spectral_features: currentSpectrum.spectral_features,
-    object_flags: currentSpectrum.object_flags,
     dq_flags: currentSpectrum.dq_flags,
     last_inspected_at: currentSpectrum.last_inspected_at,
     last_inspected_by: currentSpectrum.last_inspected_by,
