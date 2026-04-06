@@ -675,6 +675,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         return
 
     # Reconcile DB with filesystem before planning
+    click.echo("Searching for and verifying local file(s)...")
     verify = store.verify_local_files(_products_dir())
     if verify["cleared"]:
         click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
