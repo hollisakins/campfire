@@ -61,8 +61,10 @@ export async function GET(request: NextRequest) {
   const includeComments = typeFilters.length === 0 || typeFilters.includes('comment');
   const includeInspections = typeFilters.length === 0 || typeFilters.includes('inspection');
 
-  // Parse user IDs
-  const userIdFilters = userIdParam ? userIdParam.split(',').filter(id => id) : [];
+  // Parse user IDs (special "system" value means null user_id)
+  const userIdFiltersRaw = userIdParam ? userIdParam.split(',').filter(id => id) : [];
+  const includeSystemUser = userIdFiltersRaw.includes('system');
+  const userIdFilters = userIdFiltersRaw.filter(id => id !== 'system');
 
   // Parse field names
   const fieldNameFilters = fieldNameParam ? fieldNameParam.split(',').filter(f => f) : [];
@@ -92,6 +94,10 @@ export async function GET(request: NextRequest) {
 
           if (userIdFilters.length > 0) {
             q = q.in('user_id', userIdFilters);
+          }
+          // If only "system" selected, comments have no null user_ids — skip
+          if (includeSystemUser && userIdFilters.length === 0) {
+            q = q.eq('user_id', 'no-match');
           }
           return q;
         },
@@ -133,8 +139,10 @@ export async function GET(request: NextRequest) {
             .order('changed_at', { ascending: false })
             .order('id', { ascending: false });
 
-          if (userIdFilters.length > 0) {
+          if (userIdFilters.length > 0 && !includeSystemUser) {
             q = q.in('user_id', userIdFilters);
+          } else if (userIdFilters.length === 0 && includeSystemUser) {
+            q = q.is('user_id', null);
           }
           if (fieldNameFilters.length > 0) {
             q = q.in('field_name', fieldNameFilters);
@@ -162,10 +170,17 @@ export async function GET(request: NextRequest) {
     }
 
     // Merge and sort
-    const allActivities: Activity[] = [
+    let allActivities: Activity[] = [
       ...commentActivities,
       ...inspectionActivities,
     ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    // In-memory filter for combined system + real user selections
+    if (includeSystemUser && userIdFilters.length > 0) {
+      allActivities = allActivities.filter(a =>
+        a.user_id === null || userIdFilters.includes(a.user_id)
+      );
+    }
 
     // Apply pagination
     const totalCount = allActivities.length;
@@ -173,8 +188,8 @@ export async function GET(request: NextRequest) {
     const endIndex = startIndex + pageSize;
     const paginatedActivities = allActivities.slice(startIndex, endIndex);
 
-    // Batch fetch user profiles for current page
-    const userIdsOnPage = [...new Set(paginatedActivities.map(a => a.user_id))];
+    // Batch fetch user profiles for current page (filter nulls — system-generated entries)
+    const userIdsOnPage = [...new Set(paginatedActivities.map(a => a.user_id).filter(Boolean))];
     const userProfiles: Record<string, { user_id: string; full_name: string; is_group_account: boolean }> = {};
 
     if (userIdsOnPage.length > 0) {
@@ -188,10 +203,12 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Join user profiles
+    // Join user profiles (null user_id = system propagation)
     const activitiesWithUsers = paginatedActivities.map(activity => ({
       ...activity,
-      user_profile: userProfiles[activity.user_id] || null,
+      user_profile: activity.user_id
+        ? (userProfiles[activity.user_id] || null)
+        : { user_id: null, full_name: 'System', is_group_account: false },
     }));
 
     // Fetch available users for filter dropdown (users who have activity)
@@ -212,10 +229,12 @@ export async function GET(request: NextRequest) {
       ),
     ]);
 
-    const allActiveUserIds = [...new Set([
+    const allActiveUserIdsRaw = [
       ...commentsUsers.data.map(c => c.user_id),
       ...auditUsers.data.map(a => a.user_id),
-    ])];
+    ];
+    const hasSystemActivity = allActiveUserIdsRaw.some(id => id === null);
+    const allActiveUserIds = [...new Set(allActiveUserIdsRaw.filter(Boolean))];
 
     // Fetch profiles for all active users
     let availableUsers: { user_id: string; full_name: string }[] = [];
@@ -230,6 +249,11 @@ export async function GET(request: NextRequest) {
         user_id: p.user_id,
         full_name: p.full_name || 'Unknown User',
       }));
+    }
+
+    // Add "System" entry for null user_id activities (system propagation)
+    if (hasSystemActivity) {
+      availableUsers.unshift({ user_id: 'system', full_name: 'System' });
     }
 
     return NextResponse.json({

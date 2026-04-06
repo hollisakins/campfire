@@ -172,6 +172,9 @@ export default function AdminUsersPage() {
     }
   };
 
+  // Only proprietary (non-public) programs need explicit access grants
+  const proprietaryPrograms = programs.filter(p => !p.is_public);
+
   const toggleInviteProgram = (programSlug: string) => {
     setInviteProgramSlugs(prev =>
       prev.includes(programSlug)
@@ -231,7 +234,7 @@ export default function AdminUsersPage() {
   const grantAllPrograms = async (user: UserWithAccess) => {
     setSavingUser(user.user_id);
     try {
-      const allProgramSlugs = programs.map(p => p.slug);
+      const allProgramSlugs = proprietaryPrograms.map(p => p.slug);
 
       const response = await fetch(`/api/users/${user.user_id}`, {
         method: 'PATCH',
@@ -255,10 +258,12 @@ export default function AdminUsersPage() {
   const revokeAllPrograms = async (user: UserWithAccess) => {
     setSavingUser(user.user_id);
     try {
+      // Keep any public program access, only revoke proprietary
+      const publicAccess = user.program_access.filter(s => !proprietaryPrograms.some(p => p.slug === s));
       const response = await fetch(`/api/users/${user.user_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ program_access: [] }),
+        body: JSON.stringify({ program_access: publicAccess }),
       });
 
       if (!response.ok) {
@@ -375,7 +380,7 @@ export default function AdminUsersPage() {
                 Program Access
               </label>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                {programs.map((program) => {
+                {proprietaryPrograms.map((program) => {
                   const selected = inviteProgramSlugs.includes(program.slug);
                   return (
                     <button
@@ -400,7 +405,7 @@ export default function AdminUsersPage() {
               </div>
               <div className="flex gap-2 mt-2">
                 <button
-                  onClick={() => setInviteProgramSlugs(programs.map(p => p.slug))}
+                  onClick={() => setInviteProgramSlugs(proprietaryPrograms.map(p => p.slug))}
                   className="text-xs text-primary hover:underline"
                 >
                   Select All
@@ -577,7 +582,7 @@ export default function AdminUsersPage() {
                         )}
                         className="flex items-center gap-2 text-sm text-primary hover:underline"
                       >
-                        {user.program_access.length} of {programs.length} programs
+                        {user.program_access.filter(s => proprietaryPrograms.some(p => p.slug === s)).length} of {proprietaryPrograms.length} proprietary
                         {expandedUser === user.user_id ? (
                           <ChevronUp className="w-4 h-4" />
                         ) : (
@@ -650,13 +655,13 @@ export default function AdminUsersPage() {
                             </div>
                           </div>
 
-                          {programs.length === 0 ? (
+                          {proprietaryPrograms.length === 0 ? (
                             <p className="text-sm text-text-secondary dark:text-slate-400">
-                              No programs available in the database.
+                              No proprietary programs to manage access for.
                             </p>
                           ) : (
                             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                              {programs.map((program) => {
+                              {proprietaryPrograms.map((program) => {
                                 const hasAccess = user.program_access.includes(program.slug);
                                 return (
                                   <button

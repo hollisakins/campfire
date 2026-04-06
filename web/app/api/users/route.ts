@@ -55,7 +55,7 @@ export async function GET() {
     // Fetch all programs for reference
     const { data: programs, error: programsError } = await supabase
       .from('programs')
-      .select('slug, program_name');
+      .select('slug, program_name, is_public');
 
     if (programsError) {
       console.error('Error fetching programs:', programsError);

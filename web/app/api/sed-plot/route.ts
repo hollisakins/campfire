@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { generateDownloadUrl } from '@/lib/r2';
-import { trackDownload } from '@/lib/actions/download-tracking';
 
 /**
  * GET /api/sed-plot?target_id=<target_id>
@@ -68,15 +67,6 @@ export async function GET(request: NextRequest) {
         { status: 503 }
       );
     }
-
-    // Track SED plot download (fire-and-forget)
-    trackDownload({
-      userId: user.id,
-      downloadType: 'sed_plot',
-      targetIds: [targetId],
-      targetCount: 1,
-      fileCount: 1,
-    });
 
     return NextResponse.json({
       url: signedUrl,

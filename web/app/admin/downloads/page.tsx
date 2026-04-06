@@ -24,9 +24,9 @@ interface DownloadStats {
   unique_users: number;
   by_type: Record<string, number> | null;
   total_files: number;
-  total_objects: number;
+  total_targets: number;
   recent_downloads: RecentDownload[] | null;
-  most_downloaded_objects: MostDownloaded[] | null;
+  most_downloaded_targets: MostDownloaded[] | null;
   downloads_by_day: DailyDownloads[] | null;
 }
 
@@ -279,9 +279,9 @@ export default function AdminDownloadsPage() {
               <BarChart3 className="w-5 h-5 text-orange-600 dark:text-orange-400" />
             </div>
             <div>
-              <p className="text-sm text-text-secondary dark:text-slate-400">Objects Downloaded</p>
+              <p className="text-sm text-text-secondary dark:text-slate-400">Targets Downloaded</p>
               <p className="text-2xl font-semibold text-text-primary dark:text-slate-100">
-                {stats?.total_objects?.toLocaleString() || 0}
+                {stats?.total_targets?.toLocaleString() || 0}
               </p>
             </div>
           </div>
@@ -352,15 +352,15 @@ export default function AdminDownloadsPage() {
         {/* Most Downloaded Objects */}
         <Card className="overflow-hidden">
           <div className="px-4 py-3 border-b border-border dark:border-slate-700">
-            <h2 className="text-lg font-medium text-text-primary dark:text-slate-100">Most Downloaded Objects</h2>
+            <h2 className="text-lg font-medium text-text-primary dark:text-slate-100">Most Downloaded Targets</h2>
           </div>
-          {!stats?.most_downloaded_objects || stats.most_downloaded_objects.length === 0 ? (
+          {!stats?.most_downloaded_targets || stats.most_downloaded_targets.length === 0 ? (
             <div className="p-8 text-center">
-              <p className="text-text-secondary dark:text-slate-400">No object download data yet</p>
+              <p className="text-text-secondary dark:text-slate-400">No target download data yet</p>
             </div>
           ) : (
             <div className="divide-y divide-border dark:divide-slate-700 max-h-96 overflow-y-auto">
-              {stats.most_downloaded_objects.map((item, index) => (
+              {stats.most_downloaded_targets.map((item, index) => (
                 <div key={item.target_id} className="px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-700">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">

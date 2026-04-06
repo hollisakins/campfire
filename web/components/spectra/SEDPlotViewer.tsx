@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { Download, Loader2, FileX } from 'lucide-react';
+import { trackDownload } from '@/lib/actions/download-tracking';
+import { useAuth } from '@/lib/contexts/AuthContext';
 
 interface SEDPlotViewerProps {
   targetId: string;
@@ -12,6 +14,7 @@ export const SEDPlotViewer: React.FC<SEDPlotViewerProps> = ({
   targetId,
   className = '',
 }) => {
+  const { user } = useAuth();
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -56,6 +59,17 @@ export const SEDPlotViewer: React.FC<SEDPlotViewerProps> = ({
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+
+      // Track download (fire-and-forget)
+      if (user) {
+        trackDownload({
+          userId: user.id,
+          downloadType: 'sed_plot',
+          targetIds: [targetId],
+          targetCount: 1,
+          fileCount: 1,
+        });
+      }
     }
   };
 

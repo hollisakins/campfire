@@ -76,10 +76,10 @@ export async function GET() {
     }
 
     // Build lookup maps from aggregated stats
-    const statsMap = new Map<string, { object_count: number; user_access_count: number }>();
+    const statsMap = new Map<string, { target_count: number; user_access_count: number }>();
     for (const stat of statsResult.data || []) {
       statsMap.set(stat.slug, {
-        object_count: Number(stat.object_count) || 0,
+        target_count: Number(stat.target_count) || 0,
         user_access_count: Number(stat.user_access_count) || 0,
       });
     }
@@ -87,7 +87,7 @@ export async function GET() {
     // Combine data
     const programsWithStats = (programsResult.data || []).map(p => ({
       ...p,
-      object_count: statsMap.get(p.slug)?.object_count || 0,
+      target_count: statsMap.get(p.slug)?.target_count || 0,
       user_access_count: statsMap.get(p.slug)?.user_access_count || 0,
     }));
 

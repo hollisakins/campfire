@@ -14,7 +14,7 @@ import {
 import type { Program } from '@/lib/types';
 
 interface ProgramWithStats extends Program {
-  object_count: number;
+  target_count: number;
   user_access_count: number;
 }
 
@@ -112,7 +112,7 @@ export default function AdminProgramsPage() {
                 PI
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
-                Objects
+                Targets
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
                 Users with Access
@@ -151,7 +151,7 @@ export default function AdminProgramsPage() {
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-1 text-sm text-text-primary dark:text-slate-100">
                       <FileText className="w-4 h-4 text-text-secondary dark:text-slate-400" />
-                      {program.object_count}
+                      {program.target_count}
                     </div>
                   </td>
                   <td className="px-6 py-4">
