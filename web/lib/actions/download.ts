@@ -40,6 +40,7 @@ interface ObjectsCsvRow {
   max_exposure_time: number | null;
   member_target_ids: string;   // semicolon-separated
   distance: number | null;
+  lists: string | null;        // semicolon-separated list slugs
 }
 
 interface CsvRow {
@@ -59,6 +60,7 @@ interface CsvRow {
   distance: number | null;
   spectral_features: number;
   dq_flags: number;
+  lists: string | null;        // semicolon-separated list slugs
 }
 
 interface SpectraCsvRow {
@@ -79,6 +81,7 @@ interface SpectraCsvRow {
   distance: number | null;
   spectral_features: number;
   dq_flags: number;
+  lists: string | null;        // semicolon-separated list slugs
 }
 
 /**
@@ -244,6 +247,7 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
     'last_inspected_by',
     ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
     ...DQ_FLAGS.map(f => `dq_${f.key}`),
+    'lists',
   ];
 
   if (includeDistance) {
@@ -276,6 +280,7 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
       escapeCsvValue(row.last_inspected_by || ''),
       ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
       ...expandBitmask(row.dq_flags, DQ_FLAGS),
+      escapeCsvValue(row.lists || ''),
     );
 
     csvRows.push(values.join(','));
@@ -305,6 +310,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
     'last_inspected_by',
     ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
     ...DQ_FLAGS.map(f => `dq_${f.key}`),
+    'lists',
   ];
 
   if (includeDistance) {
@@ -338,6 +344,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
       escapeCsvValue(row.last_inspected_by || ''),
       ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
       ...expandBitmask(row.dq_flags, DQ_FLAGS),
+      escapeCsvValue(row.lists || ''),
     );
 
     csvRows.push(values.join(','));
@@ -364,6 +371,7 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
     'max_snr',
     'max_exposure_time',
     'member_target_ids',
+    'lists',
   ];
 
   if (includeDistance) {
@@ -394,6 +402,7 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
       row.max_snr != null ? row.max_snr.toFixed(2) : '',
       row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
       escapeCsvValue(row.member_target_ids || ''),
+      escapeCsvValue(row.lists || ''),
     );
 
     csvRows.push(values.join(','));

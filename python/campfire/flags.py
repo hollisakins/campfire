@@ -321,7 +321,6 @@ class DQFlags(QueryableFlag):
 # Registry of flag classes by parameter name
 _FLAG_REGISTRY: Dict[str, Type[QueryableFlag]] = {
     "spectral_features": SpectralFeatures,
-    "object_flags": ObjectFlags,
     "dq_flags": DQFlags,
 }
 
@@ -333,16 +332,15 @@ def list_flags(flag_type: Optional[str] = None) -> None:
     Parameters
     ----------
     flag_type : str, optional
-        One of 'spectral_features', 'object_flags', 'dq_flags'.
+        One of 'spectral_features', 'dq_flags'.
         If None, prints all flag types.
 
     Examples
     --------
-    >>> list_flags('object_flags')
-    ObjectFlags:
-      LRD                    = 1
-      BROAD_LINE             = 2
-      LYA_EMITTER            = 4
+    >>> list_flags('spectral_features')
+    SpectralFeatures:
+      CONTINUUM_BREAK        = 1
+      LYMAN_BREAK            = 2
       ...
     """
     if flag_type is not None:
@@ -374,7 +372,7 @@ def decode_flags(value: int, flag_type: str) -> List[str]:
     value : int
         Bitmask integer value.
     flag_type : str
-        One of 'spectral_features', 'object_flags', 'dq_flags'.
+        One of 'spectral_features', 'dq_flags'.
 
     Returns
     -------
@@ -383,8 +381,8 @@ def decode_flags(value: int, flag_type: str) -> List[str]:
 
     Examples
     --------
-    >>> decode_flags(5, 'object_flags')
-    ['LRD', 'LYA_EMITTER']
+    >>> decode_flags(3, 'spectral_features')
+    ['CONTINUUM_BREAK', 'LYMAN_BREAK']
     """
     if flag_type not in _FLAG_REGISTRY:
         raise ValueError(
@@ -405,7 +403,7 @@ def encode_flags(names: List[str], flag_type: str) -> int:
     names : list of str
         List of flag names (case-insensitive).
     flag_type : str
-        One of 'spectral_features', 'object_flags', 'dq_flags'.
+        One of 'spectral_features', 'dq_flags'.
 
     Returns
     -------

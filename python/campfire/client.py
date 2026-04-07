@@ -22,7 +22,6 @@ from .flags import (
     QueryableFlag,
     RedshiftQuality,
     SpectralFeatures,
-    ObjectFlags,
     DQFlags,
     parse_flag_input,
 )
@@ -338,10 +337,8 @@ class Campfire:
         spectral_features: Optional[
             Union[int, str, List[str], SpectralFeatures, FlagQuery]
         ] = None,
-        object_flags: Optional[
-            Union[int, str, List[str], ObjectFlags, FlagQuery]
-        ] = None,
         dq_flags: Optional[Union[int, str, List[str], DQFlags, FlagQuery]] = None,
+        lists: Optional[List[str]] = None,
         inspected_only: Optional[bool] = None,
         search: Optional[str] = None,
         cone_search: Optional[Tuple[float, float, float]] = None,
@@ -378,10 +375,11 @@ class Campfire:
             - list of str: Multiple flag names (match any)
             - SpectralFeatures: Single flag enum
             - FlagQuery: Complex query with |, &, ~ operators
-        object_flags : int, str, list, ObjectFlags, or FlagQuery, optional
-            Filter by object flags. Same input types as spectral_features.
         dq_flags : int, str, list, DQFlags, or FlagQuery, optional
             Filter by data quality flags. Same input types as spectral_features.
+        lists : list of str, optional
+            Filter by list slugs (e.g., ['lrd', 'broad-line-agn']).
+            Returns targets whose parent object belongs to any of the given lists.
         inspected_only : bool, optional
             If True, only return visually inspected targets.
         search : str, optional
@@ -404,27 +402,21 @@ class Campfire:
 
         Examples
         --------
-        >>> from campfire.flags import ObjectFlags, DQFlags, SpectralFeatures
+        >>> from campfire.flags import DQFlags, SpectralFeatures
         >>> cf = Campfire()
         >>>
         >>> # Query high-z galaxies with good redshift quality
-        >>> results = cf.query_objects(
+        >>> results = cf.query_targets(
         ...     redshift_range=(3.0, 6.0),
         ...     redshift_quality=['probable', 'secure'],  # or [3, 4]
         ...     inspected_only=True
         ... )
         >>>
-        >>> # Filter by flags using numpy-style operators
-        >>> # Has LRD OR LAE, but NOT broad line
-        >>> results = cf.query_objects(
-        ...     object_flags=(ObjectFlags.LRD | ObjectFlags.LYA_EMITTER) & ~ObjectFlags.BROAD_LINE
-        ... )
-        >>>
-        >>> # Simple string-based filtering (like web app)
-        >>> results = cf.query_objects(object_flags=['LRD', 'LYA_EMITTER'])
+        >>> # Filter by list membership (replaces object_flags)
+        >>> results = cf.query_targets(lists=['lrd', 'broad-line-agn'])
         >>>
         >>> # Exclude contaminated objects
-        >>> results = cf.query_objects(dq_flags=~DQFlags.CONTAMINATION)
+        >>> results = cf.query_targets(dq_flags=~DQFlags.CONTAMINATION)
         """
         # Normalize inputs to match DB conventions
         if fields:
@@ -446,7 +438,6 @@ class Campfire:
             self._log_local_use()
             # Convert flag inputs to dicts for local query
             sf_dict = self._flag_to_dict(spectral_features, SpectralFeatures)
-            of_dict = self._flag_to_dict(object_flags, ObjectFlags)
             dq_dict = self._flag_to_dict(dq_flags, DQFlags)
 
             objects = self._local.query_targets(
@@ -457,8 +448,8 @@ class Campfire:
                 redshift_quality=redshift_quality,
                 max_snr_range=max_snr_range,
                 spectral_features=sf_dict,
-                object_flags=of_dict,
                 dq_flags=dq_dict,
+                lists=lists,
                 inspected_only=inspected_only,
                 search=search,
                 cone_search=cone_search,
@@ -479,8 +470,8 @@ class Campfire:
                 redshift_quality=redshift_quality,
                 max_snr_range=max_snr_range,
                 spectral_features=spectral_features,
-                object_flags=object_flags,
                 dq_flags=dq_flags,
+                lists=lists,
                 inspected_only=inspected_only,
                 search=search,
                 cone_search=cone_search,
@@ -830,7 +821,6 @@ class Campfire:
             # Convert flag inputs for local query
             for flag_name, flag_class in [
                 ("spectral_features", SpectralFeatures),
-                ("object_flags", ObjectFlags),
                 ("dq_flags", DQFlags),
             ]:
                 if flag_name in filters:

@@ -618,7 +618,8 @@ BEGIN
            t.ra, t.dec, t.redshift, t.redshift_auto, t.redshift_inspected,
            t.redshift_quality, t.spectral_features, t.dq_flags,
            t.max_snr, t.max_exposure_time,
-           t.last_inspected_at, t.last_inspected_by, t.created_at, t.updated_at
+           t.last_inspected_at, t.last_inspected_by, t.created_at, t.updated_at,
+           t.object_id
     FROM targets t
     WHERE t.program_slug = ANY(p_program_slugs)
       AND (p_updated_since IS NULL OR t.updated_at > p_updated_since)
@@ -671,6 +672,13 @@ BEGIN
             'exposure_time', s.exposure_time,
             'reduction_version', s.reduction_version
           )) FROM spectra s WHERE s.target_id = m.target_id),
+          '[]'::jsonb
+        ),
+        'lists', COALESCE(
+          (SELECT jsonb_agg(ol.slug ORDER BY ol.slug)
+           FROM object_list_members olm
+           JOIN object_lists ol ON ol.id = olm.list_id
+           WHERE olm.object_id = m.object_id),
           '[]'::jsonb
         )
       )
@@ -750,6 +758,13 @@ BEGIN
            WHERE t.object_id = m.id
              AND t.program_slug = ANY(p_program_slugs)),
           '[]'::jsonb
+        ),
+        'lists', COALESCE(
+          (SELECT jsonb_agg(ol.slug ORDER BY ol.slug)
+           FROM object_list_members olm
+           JOIN object_lists ol ON ol.id = olm.list_id
+           WHERE olm.object_id = m.id),
+          '[]'::jsonb
         )
       )
     ), '[]'::jsonb),
@@ -761,6 +776,39 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_objects_for_sync TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_objects_for_sync TO service_role;
+
+
+-- =============================================================================
+-- get_lists_for_sync
+-- (returns all list metadata for Python client sync)
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.get_lists_for_sync()
+RETURNS JSONB
+LANGUAGE plpgsql STABLE
+AS $$
+BEGIN
+  RETURN COALESCE(
+    (SELECT jsonb_agg(jsonb_build_object(
+      'id', ol.id,
+      'slug', ol.slug,
+      'name', ol.name,
+      'description', ol.description,
+      'visibility', ol.visibility,
+      'is_system', ol.is_system,
+      'created_by', ol.created_by,
+      'created_at', ol.created_at,
+      'updated_at', ol.updated_at,
+      'member_count', (SELECT COUNT(*) FROM object_list_members olm WHERE olm.list_id = ol.id)
+    ) ORDER BY ol.is_system DESC, ol.name)
+    FROM object_lists ol),
+    '[]'::jsonb
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_lists_for_sync TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_lists_for_sync TO service_role;
 
 
 -- =============================================================================
@@ -1860,7 +1908,8 @@ RETURNS TABLE(
   max_exposure_time DOUBLE PRECISION, num_gratings INTEGER,
   program_slug TEXT, program_name TEXT, last_inspected_at TIMESTAMPTZ,
   last_inspected_by TEXT, distance DOUBLE PRECISION,
-  spectral_features INTEGER, dq_flags INTEGER
+  spectral_features INTEGER, dq_flags INTEGER,
+  lists TEXT
 )
 LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
 AS $$
@@ -1896,7 +1945,11 @@ BEGIN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(t.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(t.dec)) * POWER(SIN(RADIANS(t.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
       COALESCE(t.spectral_features, 0) AS spectral_features,
-      COALESCE(t.dq_flags, 0) AS dq_flags
+      COALESCE(t.dq_flags, 0) AS dq_flags,
+      (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
+       FROM object_list_members olm
+       JOIN object_lists ol ON ol.id = olm.list_id
+       WHERE olm.object_id = t.object_id) AS lists
     FROM targets t
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (NOT v_grating_filter_active
@@ -1932,7 +1985,7 @@ BEGIN
   SELECT df.target_id, df.field, df.ra, df.dec, df.redshift, df.redshift_quality,
     df.max_snr, df.max_exposure_time, df.num_gratings, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
-    df.distance, df.spectral_features, df.dq_flags
+    df.distance, df.spectral_features, df.dq_flags, df.lists
   FROM distance_filtered df
   LEFT JOIN programs pr ON pr.slug = df.program_slug
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
@@ -1992,7 +2045,8 @@ RETURNS TABLE(
   redshift NUMERIC, redshift_quality INTEGER, signal_to_noise DOUBLE PRECISION,
   exposure_time DOUBLE PRECISION, fits_path TEXT, program_slug TEXT, program_name TEXT,
   last_inspected_at TIMESTAMPTZ, last_inspected_by TEXT, distance DOUBLE PRECISION,
-  spectral_features INTEGER, dq_flags INTEGER
+  spectral_features INTEGER, dq_flags INTEGER,
+  lists TEXT
 )
 LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
 AS $$
@@ -2024,7 +2078,11 @@ BEGIN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(t.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(t.dec)) * POWER(SIN(RADIANS(t.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
       COALESCE(t.spectral_features, 0) AS spectral_features,
-      COALESCE(t.dq_flags, 0) AS dq_flags
+      COALESCE(t.dq_flags, 0) AS dq_flags,
+      (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
+       FROM object_list_members olm
+       JOIN object_lists ol ON ol.id = olm.list_id
+       WHERE olm.object_id = t.object_id) AS lists
     FROM targets t JOIN spectra s ON s.target_id = t.target_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (NOT v_grating_filter_active OR s.grating = ANY(p_gratings))
@@ -2057,7 +2115,7 @@ BEGIN
   SELECT df.target_id, df.grating, df.field, df.ra, df.dec, df.redshift, df.redshift_quality,
     df.signal_to_noise, df.exposure_time, df.fits_path, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
-    df.distance, df.spectral_features, df.dq_flags
+    df.distance, df.spectral_features, df.dq_flags, df.lists
   FROM distance_filtered df
   LEFT JOIN programs pr ON pr.slug = df.program_slug
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
@@ -2115,7 +2173,8 @@ RETURNS TABLE(
   n_targets INTEGER, n_spectra INTEGER,
   programs TEXT, gratings TEXT,
   max_snr DOUBLE PRECISION, max_exposure_time DOUBLE PRECISION,
-  member_target_ids TEXT, distance DOUBLE PRECISION
+  member_target_ids TEXT, distance DOUBLE PRECISION,
+  lists TEXT
 )
 LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
 AS $$
@@ -2157,7 +2216,11 @@ BEGIN
       ), ';')) AS member_target_ids,
       CASE WHEN v_coord_search_active THEN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) * POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2))))
-      ELSE NULL END AS distance
+      ELSE NULL END AS distance,
+      (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
+       FROM object_list_members olm
+       JOIN object_lists ol ON ol.id = olm.list_id
+       WHERE olm.object_id = o.id) AS lists
     FROM objects o
     WHERE o.programs && v_filtered_program_slugs
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
@@ -2192,7 +2255,7 @@ BEGIN
     df.n_targets, df.n_spectra,
     df.programs, df.gratings,
     df.max_snr, df.max_exposure_time,
-    df.member_target_ids, df.distance
+    df.member_target_ids, df.distance, df.lists
   FROM distance_filtered df
   ORDER BY
     CASE WHEN v_coord_search_active THEN df.distance END ASC NULLS LAST,
@@ -2329,62 +2392,6 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_targets_in_viewport TO authenticated;
-
-
--- =============================================================================
--- get_targets_for_sync
--- =============================================================================
-
-CREATE OR REPLACE FUNCTION public.get_targets_for_sync(
-  p_program_slugs TEXT[],
-  p_updated_since TIMESTAMP WITHOUT TIME ZONE DEFAULT NULL,
-  p_limit INTEGER DEFAULT 1000,
-  p_offset INTEGER DEFAULT 0
-)
-RETURNS TABLE(targets JSONB, total_count BIGINT, total_accessible_count BIGINT)
-LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
-AS $$
-BEGIN
-  RETURN QUERY
-  WITH matched AS (
-    SELECT t.id, t.target_id, t.program_slug, t.field, t.observation,
-           t.ra, t.dec, t.redshift, t.redshift_auto, t.redshift_inspected,
-           t.redshift_quality, t.spectral_features, t.dq_flags,
-           t.max_snr, t.max_exposure_time, t.last_inspected_at, t.created_at, t.updated_at
-    FROM targets t
-    WHERE t.program_slug = ANY(p_program_slugs)
-      AND (p_updated_since IS NULL OR t.updated_at > p_updated_since)
-    ORDER BY t.target_id LIMIT p_limit OFFSET p_offset
-  ),
-  total AS (SELECT COUNT(*) AS cnt FROM targets t WHERE t.program_slug = ANY(p_program_slugs) AND (p_updated_since IS NULL OR t.updated_at > p_updated_since)),
-  accessible AS (SELECT COUNT(*) AS cnt FROM targets t WHERE t.program_slug = ANY(p_program_slugs))
-  SELECT
-    COALESCE(jsonb_agg(jsonb_build_object(
-      'id', m.id, 'target_id', m.target_id, 'program_slug', m.program_slug,
-      'program_name', pr.program_name, 'field', m.field, 'observation', m.observation,
-      'ra', m.ra, 'dec', m.dec, 'redshift', m.redshift,
-      'redshift_auto', m.redshift_auto, 'redshift_inspected', m.redshift_inspected,
-      'redshift_quality', m.redshift_quality, 'spectral_features', m.spectral_features,
-      'dq_flags', m.dq_flags,
-      'max_snr', m.max_snr, 'max_exposure_time', m.max_exposure_time,
-      'last_inspected_at', m.last_inspected_at, 'created_at', m.created_at, 'updated_at', m.updated_at,
-      'spectra', COALESCE(
-        (SELECT jsonb_agg(jsonb_build_object(
-          'id', s.id, 'target_id', s.target_id, 'grating', s.grating,
-          'fits_path', s.fits_path, 'file_hash', s.file_hash, 'file_size', s.file_size,
-          'signal_to_noise', s.signal_to_noise, 'exposure_time', s.exposure_time,
-          'reduction_version', s.reduction_version
-        )) FROM spectra s WHERE s.target_id = m.target_id),
-        '[]'::jsonb)
-    )), '[]'::jsonb),
-    COALESCE((SELECT cnt FROM total), 0)::BIGINT,
-    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
-  FROM matched m LEFT JOIN programs pr ON m.program_slug = pr.slug;
-END;
-$$;
-
-GRANT EXECUTE ON FUNCTION public.get_targets_for_sync TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_targets_for_sync TO service_role;
 
 
 -- =============================================================================
