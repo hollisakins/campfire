@@ -704,12 +704,14 @@ ALTER SEQUENCE "public"."objects_id_seq" OWNED BY "public"."objects"."id";
 
 CREATE TABLE IF NOT EXISTS "public"."user_profiles" (
     "user_id" "uuid" NOT NULL,
+    "username" "text" NOT NULL,
     "full_name" "text" NOT NULL,
     "created_at" timestamp without time zone DEFAULT "now"(),
     "is_group_account" boolean DEFAULT false,
     "can_comment" boolean DEFAULT true,
     "is_admin" boolean DEFAULT false,
-    "preferences" "jsonb" DEFAULT '{}'::"jsonb"
+    "preferences" "jsonb" DEFAULT '{}'::"jsonb",
+    CONSTRAINT "user_profiles_username_check" CHECK (("username" ~ '^[a-z0-9][a-z0-9._-]{0,38}[a-z0-9]$'::"text"))
 );
 
 
@@ -960,6 +962,11 @@ ALTER TABLE ONLY "public"."objects"
 
 ALTER TABLE ONLY "public"."user_profiles"
     ADD CONSTRAINT "user_profiles_pkey" PRIMARY KEY ("user_id");
+
+
+
+ALTER TABLE ONLY "public"."user_profiles"
+    ADD CONSTRAINT "user_profiles_username_key" UNIQUE ("username");
 
 
 

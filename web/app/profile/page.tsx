@@ -61,6 +61,8 @@ export default function ProfilePage() {
   // Edit mode state
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState('');
+  const [editUsername, setEditUsername] = useState('');
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   // Access code state
@@ -85,6 +87,7 @@ export default function ProfilePage() {
 
       setProfileData(data);
       setEditName(data.profile.full_name);
+      setEditUsername(data.profile.username);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch profile');
     } finally {
@@ -98,22 +101,24 @@ export default function ProfilePage() {
 
   const handleSaveProfile = async () => {
     setSaving(true);
+    setSaveError(null);
     try {
       const response = await fetch('/api/profile', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ full_name: editName }),
+        body: JSON.stringify({ full_name: editName, username: editUsername }),
       });
 
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || 'Failed to update profile');
+        setSaveError(data.error || 'Failed to update profile');
+        return;
       }
 
       setIsEditing(false);
       fetchProfile();
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to update profile');
+      setSaveError(err instanceof Error ? err.message : 'Failed to update profile');
     } finally {
       setSaving(false);
     }
@@ -244,13 +249,27 @@ export default function ProfilePage() {
               </div>
               <div>
                 {isEditing ? (
-                  <input
-                    type="text"
-                    value={editName}
-                    onChange={(e) => setEditName(e.target.value)}
-                    className="text-xl font-semibold text-text-primary dark:text-slate-100 px-2 py-1 border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-primary"
-                    autoFocus
-                  />
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="text-xl font-semibold text-text-primary dark:text-slate-100 px-2 py-1 border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-primary w-full"
+                      autoFocus
+                    />
+                    <div className="flex items-center border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-700 focus-within:ring-2 focus-within:ring-primary">
+                      <span className="pl-2 text-text-secondary dark:text-slate-400 select-none">@</span>
+                      <input
+                        type="text"
+                        value={editUsername}
+                        onChange={(e) => setEditUsername(e.target.value)}
+                        className="text-sm text-text-primary dark:text-slate-100 px-2 py-1 bg-transparent focus:outline-none w-full"
+                      />
+                    </div>
+                    {saveError && (
+                      <p className="text-xs text-red-600 dark:text-red-400">{saveError}</p>
+                    )}
+                  </div>
                 ) : (
                   <div className="flex items-center gap-2">
                     <h1 className="text-xl font-semibold text-text-primary dark:text-slate-100">
@@ -263,7 +282,7 @@ export default function ProfilePage() {
                     )}
                   </div>
                 )}
-                <p className="text-text-secondary dark:text-slate-400">{profileData.email}</p>
+                {!isEditing && <p className="text-text-secondary dark:text-slate-400">@{profileData.profile.username} &middot; {profileData.email}</p>}
               </div>
             </div>
 
@@ -276,6 +295,8 @@ export default function ProfilePage() {
                     onClick={() => {
                       setIsEditing(false);
                       setEditName(profileData.profile.full_name);
+                      setEditUsername(profileData.profile.username);
+                      setSaveError(null);
                     }}
                     disabled={saving}
                   >
@@ -296,7 +317,7 @@ export default function ProfilePage() {
                 </>
               ) : (
                 !profileData.profile.is_group_account && (
-                  <Button variant="secondary" size="sm" onClick={() => setIsEditing(true)}>
+                  <Button variant="secondary" size="sm" onClick={() => { setIsEditing(true); setSaveError(null); }}>
                     <Edit2 className="w-4 h-4 mr-2" />
                     Edit
                   </Button>

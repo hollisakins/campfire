@@ -7,6 +7,7 @@
 
 export interface UserProfile {
   user_id: string;
+  username: string;
   full_name: string;
   created_at: string;
   is_group_account: boolean;

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { USERNAME_REGEX } from '@/lib/utils/username';
 
 /**
  * POST /api/invites/accept
@@ -10,7 +11,7 @@ import { createClient, createServiceClient } from '@/lib/supabase/server';
  * - Grants program access
  * - Marks invite as accepted
  *
- * Body: { fullName: string, password: string }
+ * Body: { fullName: string, password: string, username: string }
  */
 export async function POST(request: NextRequest) {
   try {
@@ -27,7 +28,7 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body = await request.json();
-    const { fullName, password } = body;
+    const { fullName, password, username } = body;
 
     // Validate input
     if (!fullName || typeof fullName !== 'string' || !fullName.trim()) {
@@ -40,6 +41,13 @@ export async function POST(request: NextRequest) {
     if (!password || typeof password !== 'string' || password.length < 6) {
       return NextResponse.json(
         { error: 'Password must be at least 6 characters' },
+        { status: 400 }
+      );
+    }
+
+    if (!username || typeof username !== 'string' || !USERNAME_REGEX.test(username)) {
+      return NextResponse.json(
+        { error: 'Username must be 2–40 characters and contain only lowercase letters, numbers, dots, hyphens, and underscores (starting and ending with a letter or number).' },
         { status: 400 }
       );
     }
@@ -62,6 +70,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Check username uniqueness before any irreversible operations
+    const { data: existingUser } = await serviceClient
+      .from('user_profiles')
+      .select('user_id')
+      .eq('username', username)
+      .maybeSingle();
+
+    if (existingUser) {
+      return NextResponse.json(
+        { error: 'That username is already taken. Please choose a different one.' },
+        { status: 409 }
+      );
+    }
+
     // Set user password
     const { error: passwordError } = await supabase.auth.updateUser({
       password: password,
@@ -80,6 +102,7 @@ export async function POST(request: NextRequest) {
       .from('user_profiles')
       .insert({
         user_id: user.id,
+        username,
         full_name: fullName.trim(),
         is_group_account: false,
         can_comment: invite.can_comment,

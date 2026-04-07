@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
 import { UserProfile } from '@/lib/types';
+import { generateUniqueUsername } from '@/lib/utils/username';
 
 interface ProgramAccessInfo {
   hasProprietaryAccess: boolean;
@@ -157,10 +158,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       // Create user profile
       if (data.user) {
+        const username = await generateUniqueUsername(email, async (u) => {
+          const { data: existing } = await supabase
+            .from('user_profiles')
+            .select('user_id')
+            .eq('username', u)
+            .maybeSingle();
+          return !!existing;
+        });
         const { error: profileError } = await supabase
           .from('user_profiles')
           .insert({
             user_id: data.user.id,
+            username,
             full_name: fullName,
             is_group_account: false,
             can_comment: true,
