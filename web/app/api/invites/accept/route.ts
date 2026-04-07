@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { usernameFromEmail } from '@/lib/utils/username';
 
 /**
  * POST /api/invites/accept
@@ -76,10 +77,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Create user profile (using service client to ensure it succeeds)
+    const username = usernameFromEmail(user.email);
     const { error: profileError } = await serviceClient
       .from('user_profiles')
       .insert({
         user_id: user.id,
+        username,
         full_name: fullName.trim(),
         is_group_account: false,
         can_comment: invite.can_comment,

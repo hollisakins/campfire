@@ -263,7 +263,7 @@ export default function ProfilePage() {
                     )}
                   </div>
                 )}
-                <p className="text-text-secondary dark:text-slate-400">{profileData.email}</p>
+                <p className="text-text-secondary dark:text-slate-400">@{profileData.profile.username} &middot; {profileData.email}</p>
               </div>
             </div>
 

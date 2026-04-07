@@ -114,6 +114,7 @@ TEST_USERS = [
     {
         'id': ADMIN_UUID,
         'email': 'admin@campfire.dev',
+        'username': 'admin',
         'full_name': 'Admin User',
         'is_admin': True,
         'can_comment': True,
@@ -121,6 +122,7 @@ TEST_USERS = [
     {
         'id': USER_UUID,
         'email': 'user@campfire.dev',
+        'username': 'user',
         'full_name': 'Regular User',
         'is_admin': False,
         'can_comment': True,
@@ -128,6 +130,7 @@ TEST_USERS = [
     {
         'id': VIEWER_UUID,
         'email': 'viewer@campfire.dev',
+        'username': 'viewer',
         'full_name': 'Viewer User',
         'is_admin': False,
         'can_comment': False,
@@ -460,8 +463,8 @@ def generate_user_profiles_sql() -> str:
     lines.append('')
 
     for user in TEST_USERS:
-        lines.append(f"""INSERT INTO public.user_profiles (user_id, full_name, is_admin, can_comment)
-VALUES ({sql_escape(user['id'])}, {sql_escape(user['full_name'])}, {sql_escape(user['is_admin'])}, {sql_escape(user['can_comment'])});""")
+        lines.append(f"""INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment)
+VALUES ({sql_escape(user['id'])}, {sql_escape(user['username'])}, {sql_escape(user['full_name'])}, {sql_escape(user['is_admin'])}, {sql_escape(user['can_comment'])});""")
 
     lines.append('')
     return '\n'.join(lines)
