@@ -195,6 +195,7 @@ export async function getSpectra(
           programs: obj.programs,
           gratings: obj.gratings,
           member_targets: obj.member_targets,
+          lists: obj.lists,
           num_gratings: obj.gratings?.length ?? 0,
           // Fields not applicable in objects mode
           program_slug: obj.programs?.[0] ?? '',

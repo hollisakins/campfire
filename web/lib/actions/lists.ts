@@ -139,6 +139,8 @@ export async function createList(
   name: string,
   description?: string,
   visibility: 'private' | 'public_read' | 'public_edit' = 'private',
+  icon?: string | null,
+  color?: string | null,
 ): Promise<{ list?: ObjectList; error?: string }> {
   const supabase = await createClient();
 
@@ -200,6 +202,8 @@ export async function createList(
       description: description ?? null,
       visibility,
       is_system: false,
+      icon: icon ?? null,
+      color: color ?? null,
       created_by: user.id,
     })
     .select()
@@ -235,7 +239,7 @@ export async function deleteList(listId: number): Promise<{ error?: string }> {
  */
 export async function updateList(
   listId: number,
-  updates: { name?: string; description?: string; visibility?: string },
+  updates: { name?: string; description?: string; visibility?: string; icon?: string | null; color?: string | null },
 ): Promise<{ error?: string }> {
   const supabase = await createClient();
 

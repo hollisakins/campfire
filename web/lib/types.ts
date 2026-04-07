@@ -295,6 +295,7 @@ export interface SpectrumTarget extends DbTarget {
   programs?: string[];
   gratings?: string[];
   member_targets?: { target_id: string; program_slug: string; observation: string; redshift: number | null; redshift_quality: number }[];
+  lists?: { id: number; name: string; slug: string; icon: string | null; color: string | null }[];
 }
 
 // Member target with full spectra for object detail page

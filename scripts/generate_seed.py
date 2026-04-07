@@ -608,6 +608,73 @@ def generate_object_list_members_sql(objects: list[dict]) -> str:
     return '\n'.join(lines)
 
 
+def generate_user_lists_sql(objects: list[dict]) -> str:
+    """Generate INSERT statements for example user-created lists with sample members."""
+    lines = ['-- ============================================']
+    lines.append('-- 9c. User-Created Lists (example data)')
+    lines.append('-- ============================================')
+    lines.append('')
+
+    user_lists = [
+        {
+            'name': 'High-z Candidates',
+            'slug': f'admin/high-z-candidates',
+            'description': 'Objects at z > 5 worth following up',
+            'visibility': 'private',
+            'icon': '\U0001F680',  # rocket
+            'color': '#bbdefb',
+            'created_by': ADMIN_UUID,
+        },
+        {
+            'name': 'Interesting Spectra',
+            'slug': f'user/interesting-spectra',
+            'description': 'Unusual or noteworthy spectra',
+            'visibility': 'public_read',
+            'icon': '\u2B50',  # star
+            'color': '#fff59d',
+            'created_by': USER_UUID,
+        },
+        {
+            'name': 'Follow-up Needed',
+            'slug': f'admin/follow-up-needed',
+            'description': 'Objects needing additional observations or re-inspection',
+            'visibility': 'public_edit',
+            'icon': '\U0001F3AF',  # target
+            'color': '#ffccbc',
+            'created_by': ADMIN_UUID,
+        },
+    ]
+
+    for lst in user_lists:
+        lines.append(
+            f"INSERT INTO public.object_lists (name, slug, description, visibility, is_system, icon, color, created_by) "
+            f"VALUES ({sql_escape(lst['name'])}, {sql_escape(lst['slug'])}, {sql_escape(lst['description'])}, "
+            f"{sql_escape(lst['visibility'])}, false, {sql_escape(lst['icon'])}, {sql_escape(lst['color'])}, "
+            f"{sql_escape(lst['created_by'])}::uuid);"
+        )
+
+    lines.append('')
+
+    # Add a few sample members to each list from the first few seed objects
+    sample_objects = [o for o in objects if o.get('ra') is not None][:12]
+    if sample_objects:
+        for i, lst in enumerate(user_lists):
+            # Each list gets 3-4 members from different parts of the sample
+            start = i * 3
+            members = sample_objects[start:start + 4]
+            for obj in members:
+                lines.append(
+                    f"INSERT INTO public.object_list_members (list_id, ra, dec, added_by) "
+                    f"SELECT id, {obj['ra']}, {obj['dec']}, {sql_escape(lst['created_by'])}::uuid "
+                    f"FROM public.object_lists WHERE slug = {sql_escape(lst['slug'])} "
+                    f"ON CONFLICT (list_id, ra, dec) DO NOTHING;"
+                )
+
+    lines.append(f'\n-- {len(user_lists)} user lists with sample members')
+    lines.append('')
+    return '\n'.join(lines)
+
+
 def generate_access_codes_sql() -> str:
     """Generate INSERT statements for access_codes."""
     lines = ['-- ============================================']
@@ -656,6 +723,10 @@ def generate_sequence_resets(objects: list[dict], spectra: list[dict],
     max_audit_id = max((e['id'] for e in flag_entries), default=0)
     if max_audit_id > 0:
         lines.append(f"SELECT setval('public.flag_audit_log_id_seq', {max_audit_id + 1}, false);")
+
+    # Object lists and members (auto-increment from whatever the migration + seed created)
+    lines.append("SELECT setval('public.object_lists_id_seq', COALESCE((SELECT MAX(id) FROM public.object_lists), 0) + 1, false);")
+    lines.append("SELECT setval('public.object_list_members_id_seq', COALESCE((SELECT MAX(id) FROM public.object_list_members), 0) + 1, false);")
 
     lines.append('')
     return '\n'.join(lines)
@@ -762,6 +833,7 @@ SET search_path TO public, auth, extensions;
     sql_parts.append(generate_comments_sql(comments, target_id_map))
     sql_parts.append(generate_flag_audit_log_sql(flag_entries, target_id_map))
     sql_parts.append(generate_object_list_members_sql(targets))
+    sql_parts.append(generate_user_lists_sql(targets))
     sql_parts.append(generate_access_codes_sql())
     sql_parts.append(generate_sequence_resets(targets, spectra, comments, flag_entries))
 

@@ -1347,6 +1347,21 @@ BEGIN
             AND t.program_slug = ANY(v_filtered_program_slugs)
           ),
           '[]'::jsonb
+        ),
+        'lists', COALESCE(
+          (SELECT jsonb_agg(
+            jsonb_build_object(
+              'id', ol.id,
+              'name', ol.name,
+              'slug', ol.slug,
+              'icon', ol.icon,
+              'color', ol.color
+            ) ORDER BY ol.name
+          )
+          FROM object_list_members olm
+          JOIN object_lists ol ON ol.id = olm.list_id
+          WHERE olm.object_id = fo.id),
+          '[]'::jsonb
         )
       ) AS obj_json
     FROM filtered_objects fo

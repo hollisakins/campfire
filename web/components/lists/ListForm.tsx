@@ -4,6 +4,8 @@ import React, { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { createList, updateList } from '@/lib/actions/lists';
+import { ListEmojiPicker } from './ListEmojiPicker';
+import { ListColorPicker } from './ListColorPicker';
 import type { ObjectList } from '@/lib/types';
 
 interface ListFormProps {
@@ -19,6 +21,8 @@ export function ListForm({ mode, list, onSuccess, onCancel }: ListFormProps) {
   const [visibility, setVisibility] = useState<'private' | 'public_read' | 'public_edit'>(
     list?.visibility ?? 'private'
   );
+  const [icon, setIcon] = useState<string | null>(list?.icon ?? null);
+  const [color, setColor] = useState<string | null>(list?.color ?? null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -30,11 +34,13 @@ export function ListForm({ mode, list, onSuccess, onCancel }: ListFormProps) {
     setError(null);
 
     const result = mode === 'create'
-      ? await createList(name.trim(), description.trim() || undefined, visibility)
+      ? await createList(name.trim(), description.trim() || undefined, visibility, icon, color)
       : await updateList(list!.id, {
           name: name.trim(),
           description: description.trim() || undefined,
           visibility,
+          icon,
+          color,
         });
 
     setSaving(false);
@@ -91,6 +97,20 @@ export function ListForm({ mode, list, onSuccess, onCancel }: ListFormProps) {
             rows={2}
             className="w-full px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent resize-none"
           />
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+            Icon
+          </label>
+          <ListEmojiPicker value={icon} onChange={setIcon} />
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+            Color
+          </label>
+          <ListColorPicker value={color} onChange={setColor} />
         </div>
 
         <div>
