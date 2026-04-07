@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
-import { usernameFromEmail } from '@/lib/utils/username';
+import { generateUniqueUsername } from '@/lib/utils/username';
 
 /**
  * POST /api/invites/accept
@@ -77,7 +77,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Create user profile (using service client to ensure it succeeds)
-    const username = usernameFromEmail(user.email);
+    const username = await generateUniqueUsername(user.email, async (u) => {
+      const { data: existing } = await serviceClient
+        .from('user_profiles')
+        .select('user_id')
+        .eq('username', u)
+        .maybeSingle();
+      return !!existing;
+    });
     const { error: profileError } = await serviceClient
       .from('user_profiles')
       .insert({

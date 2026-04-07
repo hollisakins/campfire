@@ -1,14 +1,22 @@
 /**
- * Generate a username from an email address.
- *
- * Takes the local part (before @), lowercases, replaces non-alphanumeric
- * characters with hyphens, and trims leading/trailing hyphens.
- *
- * Examples:
- *   "hollis.akins@example.com" → "hollis.akins"
- *   "CMCasey@university.edu"   → "cmcasey"
- *   "user+tag@example.com"     → "user-tag"
+ * Find a unique username by appending -2, -3, etc. until a free slot is found.
+ * @param email - source email address
+ * @param checkExists - async predicate, returns true if the username is already taken
  */
+export async function generateUniqueUsername(
+  email: string,
+  checkExists: (username: string) => Promise<boolean>,
+): Promise<string> {
+  const base = usernameFromEmail(email);
+  if (!(await checkExists(base))) return base;
+  let suffix = 2;
+  while (true) {
+    const candidate = `${base}-${suffix}`;
+    if (!(await checkExists(candidate))) return candidate;
+    suffix++;
+  }
+}
+
 export function usernameFromEmail(email: string): string {
   const local = email.split('@')[0] ?? email;
   const cleaned = local
@@ -18,7 +26,7 @@ export function usernameFromEmail(email: string): string {
     .slice(0, 40);
   // Constraint requires min 2 chars (start + end both alphanumeric)
   if (cleaned.length < 2) {
-    return cleaned + '0';
+    return cleaned.padEnd(2, '0');
   }
   return cleaned;
 }

@@ -4,7 +4,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
 import { UserProfile } from '@/lib/types';
-import { usernameFromEmail } from '@/lib/utils/username';
+import { generateUniqueUsername } from '@/lib/utils/username';
 
 interface ProgramAccessInfo {
   hasProprietaryAccess: boolean;
@@ -158,7 +158,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       // Create user profile
       if (data.user) {
-        const username = usernameFromEmail(email);
+        const username = await generateUniqueUsername(email, async (u) => {
+          const { data: existing } = await supabase
+            .from('user_profiles')
+            .select('user_id')
+            .eq('username', u)
+            .maybeSingle();
+          return !!existing;
+        });
         const { error: profileError } = await supabase
           .from('user_profiles')
           .insert({

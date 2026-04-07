@@ -49,7 +49,7 @@ BEGIN
     IF (SELECT count(*) FROM public.user_profiles WHERE username = rec.username) > 1 THEN
       -- This isn't the first user with this name, so add suffix
       -- (The first one in created_at order keeps the base name)
-      IF (SELECT min(user_id) FROM public.user_profiles WHERE username = rec.username ORDER BY created_at ASC LIMIT 1) != rec.user_id THEN
+      IF (SELECT user_id FROM public.user_profiles WHERE username = rec.username ORDER BY created_at ASC LIMIT 1) != rec.user_id THEN
         suffix := 2;
         LOOP
           new_username := rec.username || '-' || suffix;
