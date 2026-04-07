@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
-import { generateUniqueUsername } from '@/lib/utils/username';
+import { USERNAME_REGEX } from '@/lib/utils/username';
 
 /**
  * POST /api/invites/accept
@@ -11,7 +11,7 @@ import { generateUniqueUsername } from '@/lib/utils/username';
  * - Grants program access
  * - Marks invite as accepted
  *
- * Body: { fullName: string, password: string }
+ * Body: { fullName: string, password: string, username: string }
  */
 export async function POST(request: NextRequest) {
   try {
@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body = await request.json();
-    const { fullName, password } = body;
+    const { fullName, password, username } = body;
 
     // Validate input
     if (!fullName || typeof fullName !== 'string' || !fullName.trim()) {
@@ -41,6 +41,13 @@ export async function POST(request: NextRequest) {
     if (!password || typeof password !== 'string' || password.length < 6) {
       return NextResponse.json(
         { error: 'Password must be at least 6 characters' },
+        { status: 400 }
+      );
+    }
+
+    if (!username || typeof username !== 'string' || !USERNAME_REGEX.test(username)) {
+      return NextResponse.json(
+        { error: 'Username must be 2–40 characters and contain only lowercase letters, numbers, dots, hyphens, and underscores (starting and ending with a letter or number).' },
         { status: 400 }
       );
     }
@@ -76,15 +83,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Check username uniqueness
+    const { data: existingUser } = await serviceClient
+      .from('user_profiles')
+      .select('user_id')
+      .eq('username', username)
+      .maybeSingle();
+
+    if (existingUser) {
+      return NextResponse.json(
+        { error: 'That username is already taken. Please choose a different one.' },
+        { status: 409 }
+      );
+    }
+
     // Create user profile (using service client to ensure it succeeds)
-    const username = await generateUniqueUsername(user.email, async (u) => {
-      const { data: existing } = await serviceClient
-        .from('user_profiles')
-        .select('user_id')
-        .eq('username', u)
-        .maybeSingle();
-      return !!existing;
-    });
     const { error: profileError } = await serviceClient
       .from('user_profiles')
       .insert({

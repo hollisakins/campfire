@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { usernameFromEmail, USERNAME_REGEX } from '@/lib/utils/username';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import {
@@ -42,6 +43,7 @@ export default function WelcomePage() {
 
   // Form fields
   const [fullName, setFullName] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
@@ -80,6 +82,7 @@ export default function WelcomePage() {
 
       // Set name from invite if available, otherwise extract from email
       setFullName(data.invite.full_name || data.invite.email.split('@')[0] || '');
+      setUsername(usernameFromEmail(data.invite.email));
 
       setLoading(false);
     } catch (err) {
@@ -114,6 +117,11 @@ export default function WelcomePage() {
       return;
     }
 
+    if (!USERNAME_REGEX.test(username)) {
+      setError('Username must be 2–40 characters: lowercase letters, numbers, dots, hyphens, and underscores, starting and ending with a letter or number.');
+      return;
+    }
+
     setSaving(true);
 
     try {
@@ -123,6 +131,7 @@ export default function WelcomePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fullName: fullName.trim(),
+          username,
           password: password,
         }),
       });
@@ -248,6 +257,29 @@ export default function WelcomePage() {
               </p>
             </div>
 
+            {/* Username */}
+            <div>
+              <label htmlFor="username" className="block text-sm font-medium text-text-primary mb-2">
+                Username <span className="text-red-500">*</span>
+              </label>
+              <div className="flex items-center border border-border rounded-lg bg-background focus-within:ring-2 focus-within:ring-primary">
+                <span className="pl-4 text-text-secondary select-none">@</span>
+                <input
+                  id="username"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="flex-1 px-2 py-2 bg-transparent text-text-primary focus:outline-none"
+                  placeholder="your-username"
+                  required
+                  disabled={saving}
+                />
+              </div>
+              <p className="text-xs text-text-secondary mt-1">
+                Lowercase letters, numbers, dots, hyphens, and underscores. 2–40 characters.
+              </p>
+            </div>
+
             {/* Password */}
             <div>
               <label htmlFor="password" className="block text-sm font-medium text-text-primary mb-2">
@@ -304,7 +336,7 @@ export default function WelcomePage() {
               type="submit"
               variant="primary"
               className="w-full mt-6"
-              disabled={saving || !fullName.trim() || !password || !confirmPassword}
+              disabled={saving || !fullName.trim() || !username || !password || !confirmPassword}
             >
               {saving ? (
                 <>

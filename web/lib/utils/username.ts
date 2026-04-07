@@ -1,3 +1,5 @@
+export const USERNAME_REGEX = /^[a-z0-9][a-z0-9._-]{0,38}[a-z0-9]$/;
+
 /**
  * Find a unique username by appending -2, -3, etc. until a free slot is found.
  * @param email - source email address

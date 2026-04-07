@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { USERNAME_REGEX } from '@/lib/utils/username';
 
 /**
  * GET /api/profile
@@ -156,11 +157,33 @@ export async function PATCH(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { full_name, preferences } = body;
+    const { full_name, username, preferences } = body;
 
     const updates: Record<string, unknown> = {};
     if (typeof full_name === 'string' && full_name.trim()) {
       updates.full_name = full_name.trim();
+    }
+
+    if (username !== undefined) {
+      if (typeof username !== 'string' || !USERNAME_REGEX.test(username)) {
+        return NextResponse.json(
+          { error: 'Username must be 2–40 characters and contain only lowercase letters, numbers, dots, hyphens, and underscores (starting and ending with a letter or number).' },
+          { status: 400 }
+        );
+      }
+      const { data: existing } = await supabase
+        .from('user_profiles')
+        .select('user_id')
+        .eq('username', username)
+        .neq('user_id', user.id)
+        .maybeSingle();
+      if (existing) {
+        return NextResponse.json(
+          { error: 'That username is already taken. Please choose a different one.' },
+          { status: 409 }
+        );
+      }
+      updates.username = username;
     }
 
     // Handle preferences update (merge with existing)
