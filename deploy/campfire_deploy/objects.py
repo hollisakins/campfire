@@ -363,17 +363,21 @@ def _set_target_fks(
     return total
 
 
-def _relink_list_members(client: Client, field: str) -> int:
+def _relink_list_members(client: Client, field: str) -> dict:
     """Re-link object_list_members.object_id after object rebuild.
 
     List members are keyed by (ra, dec) which survive rebuilds. This
-    updates the object_id FK by joining on coordinates against the
-    newly created objects in a single SQL statement.
+    updates the object_id FK by spatial cross-matching against the
+    newly created objects (within 0.3 arcsec tolerance).
+
+    Returns dict with keys: relinked, orphaned, orphaned_details.
     """
     resp = client.rpc('relink_list_members_for_field', {
         'p_field': field,
     }).execute()
-    return resp.data if isinstance(resp.data, int) else 0
+    if isinstance(resp.data, dict):
+        return resp.data
+    return {'relinked': 0, 'orphaned': 0, 'orphaned_details': []}
 
 
 # ---------------------------------------------------------------------------
@@ -472,9 +476,16 @@ def rebuild_field_objects(
     print(f"    Updated {n_fks} targets")
 
     print(f"  Re-linking list member FKs...")
-    n_list_fks = _relink_list_members(client, field)
-    if n_list_fks:
-        print(f"    Re-linked {n_list_fks} list members")
+    relink_result = _relink_list_members(client, field)
+    n_relinked = relink_result.get('relinked', 0)
+    n_orphaned = relink_result.get('orphaned', 0)
+    if n_relinked:
+        print(f"    Re-linked {n_relinked} list members")
+    if n_orphaned:
+        print(f"    WARNING: {n_orphaned} orphaned list members (no object within 0.3\"):")
+        for detail in relink_result.get('orphaned_details', []):
+            print(f"      - List \"{detail['list_name']}\": "
+                  f"RA={detail['ra']:.6f}, Dec={detail['dec']:.6f}")
 
     print_rebuild_summary(objects, targets)
 

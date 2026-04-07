@@ -8,6 +8,33 @@
 -- =============================================================================
 
 
+-- Helper: is_group_account() for RLS policies
+CREATE OR REPLACE FUNCTION public.is_group_account()
+RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(
+    (SELECT is_group_account FROM user_profiles WHERE user_id = auth.uid()),
+    false
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.is_group_account() TO authenticated;
+
+
+-- Update insert_lists policy to block group accounts
+DROP POLICY IF EXISTS "insert_lists" ON object_lists;
+CREATE POLICY "insert_lists"
+  ON object_lists FOR INSERT TO authenticated
+  WITH CHECK (
+    created_by = auth.uid()
+    AND is_system = false
+    AND public.can_comment()
+    AND NOT public.is_group_account()
+  );
+
+
 CREATE OR REPLACE FUNCTION public.get_filtered_target_ids(
   p_program_slugs TEXT[],
   p_filter_programs TEXT[] DEFAULT NULL,
@@ -1878,23 +1905,99 @@ GRANT ALL ON FUNCTION public.count_distinct_inspected_targets(uuid) TO service_r
 
 
 -- Re-link object_list_members.object_id after object rebuild for a field.
+-- Uses spatial tolerance (0.3 arcsec) to match members to nearest object.
+DROP FUNCTION IF EXISTS public.relink_list_members_for_field(TEXT);
+
 CREATE OR REPLACE FUNCTION public.relink_list_members_for_field(p_field TEXT)
-RETURNS INTEGER
+RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
-  n_updated INTEGER;
+  n_relinked INTEGER := 0;
+  n_orphaned INTEGER := 0;
+  v_orphaned_details JSONB := '[]'::JSONB;
+  v_field_ra_min DOUBLE PRECISION;
+  v_field_ra_max DOUBLE PRECISION;
+  v_field_dec_min DOUBLE PRECISION;
+  v_field_dec_max DOUBLE PRECISION;
+  v_tolerance_deg DOUBLE PRECISION := 0.3 / 3600.0;  -- 0.3 arcsec in degrees
 BEGIN
-  UPDATE object_list_members olm
-  SET object_id = o.id
-  FROM objects o
-  WHERE o.field = p_field
-    AND olm.ra = o.ra
-    AND olm.dec = o.dec
-    AND olm.object_id IS NULL;
-  GET DIAGNOSTICS n_updated = ROW_COUNT;
-  RETURN n_updated;
+  -- Get bounding box of objects in this field (with padding)
+  SELECT MIN(o.ra) - v_tolerance_deg, MAX(o.ra) + v_tolerance_deg,
+         MIN(o.dec) - v_tolerance_deg, MAX(o.dec) + v_tolerance_deg
+  INTO v_field_ra_min, v_field_ra_max, v_field_dec_min, v_field_dec_max
+  FROM objects o WHERE o.field = p_field;
+
+  IF v_field_ra_min IS NULL THEN
+    RETURN jsonb_build_object('relinked', 0, 'orphaned', 0, 'orphaned_details', '[]'::jsonb);
+  END IF;
+
+  -- Re-link: for each unlinked member whose coords fall in this field,
+  -- find the nearest object within 0.3 arcsec tolerance.
+  WITH candidates AS (
+    SELECT olm.id AS member_id,
+           olm.ra AS member_ra,
+           olm.dec AS member_dec,
+           olm.list_id,
+           o.id AS obj_id,
+           SQRT(
+             POWER((olm.ra - o.ra) * COS(RADIANS(olm.dec)), 2) +
+             POWER(olm.dec - o.dec, 2)
+           ) AS dist_deg,
+           ROW_NUMBER() OVER (
+             PARTITION BY olm.id
+             ORDER BY SQRT(
+               POWER((olm.ra - o.ra) * COS(RADIANS(olm.dec)), 2) +
+               POWER(olm.dec - o.dec, 2)
+             ) ASC
+           ) AS rn
+    FROM object_list_members olm
+    CROSS JOIN LATERAL (
+      SELECT o.id, o.ra, o.dec
+      FROM objects o
+      WHERE o.field = p_field
+        AND o.ra BETWEEN olm.ra - v_tolerance_deg AND olm.ra + v_tolerance_deg
+        AND o.dec BETWEEN olm.dec - v_tolerance_deg AND olm.dec + v_tolerance_deg
+    ) o
+    WHERE olm.object_id IS NULL
+      AND olm.ra BETWEEN v_field_ra_min AND v_field_ra_max
+      AND olm.dec BETWEEN v_field_dec_min AND v_field_dec_max
+  ),
+  best_match AS (
+    SELECT member_id, obj_id, dist_deg
+    FROM candidates
+    WHERE rn = 1 AND dist_deg <= v_tolerance_deg
+  ),
+  updated AS (
+    UPDATE object_list_members olm
+    SET object_id = bm.obj_id
+    FROM best_match bm
+    WHERE olm.id = bm.member_id
+    RETURNING olm.id
+  )
+  SELECT COUNT(*) INTO n_relinked FROM updated;
+
+  -- Count orphaned members (still NULL after re-link, coords in field bbox)
+  SELECT COUNT(*),
+         COALESCE(jsonb_agg(jsonb_build_object(
+           'list_slug', ol.slug,
+           'list_name', ol.name,
+           'ra', olm.ra,
+           'dec', olm.dec
+         )), '[]'::jsonb)
+  INTO n_orphaned, v_orphaned_details
+  FROM object_list_members olm
+  JOIN object_lists ol ON ol.id = olm.list_id
+  WHERE olm.object_id IS NULL
+    AND olm.ra BETWEEN v_field_ra_min AND v_field_ra_max
+    AND olm.dec BETWEEN v_field_dec_min AND v_field_dec_max;
+
+  RETURN jsonb_build_object(
+    'relinked', n_relinked,
+    'orphaned', n_orphaned,
+    'orphaned_details', v_orphaned_details
+  );
 END;
 $$;
 

@@ -235,13 +235,15 @@ CREATE POLICY "select_lists"
     OR visibility IN ('public_read', 'public_edit')
   );
 
--- Users can create lists (owned by them, non-system only).
+-- Users can create lists (owned by them, non-system, non-group-account).
 DROP POLICY IF EXISTS "insert_lists" ON object_lists;
 CREATE POLICY "insert_lists"
   ON object_lists FOR INSERT TO authenticated
   WITH CHECK (
     created_by = auth.uid()
     AND is_system = false
+    AND public.can_comment()
+    AND NOT public.is_group_account()
   );
 
 -- Owners can update their own lists (but not system lists).

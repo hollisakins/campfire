@@ -69,10 +69,15 @@ export function ListForm({ mode, list, onSuccess, onCancel }: ListFormProps) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g., AGN Candidates"
+            maxLength={100}
+            minLength={2}
             className="w-full px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
             autoFocus
             required
           />
+          <p className="mt-1 text-[11px] text-text-secondary dark:text-slate-500">
+            {name.trim().length}/100 characters
+          </p>
         </div>
 
         <div>
@@ -108,7 +113,7 @@ export function ListForm({ mode, list, onSuccess, onCancel }: ListFormProps) {
         <Button type="button" variant="secondary" size="sm" onClick={onCancel} disabled={saving}>
           Cancel
         </Button>
-        <Button type="submit" variant="primary" size="sm" disabled={saving || !name.trim()}>
+        <Button type="submit" variant="primary" size="sm" disabled={saving || name.trim().length < 2}>
           {saving ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin mr-1" />

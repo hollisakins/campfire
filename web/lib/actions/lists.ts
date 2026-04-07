@@ -147,12 +147,55 @@ export async function createList(
     return { error: 'Not authenticated' };
   }
 
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  // Validate name
+  const trimmedName = name.trim();
+  if (!trimmedName || trimmedName.length < 2) {
+    return { error: 'List name must be at least 2 characters' };
+  }
+  if (trimmedName.length > 100) {
+    return { error: 'List name must be 100 characters or fewer' };
+  }
+
+  // Check permissions: must be able to comment and not a group account
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('can_comment, is_group_account, username')
+    .eq('user_id', user.id)
+    .single();
+
+  if (!profile?.can_comment) {
+    return { error: 'You do not have permission to create lists' };
+  }
+  if (profile.is_group_account) {
+    return { error: 'Group accounts cannot create lists' };
+  }
+
+  // Generate slug: {username}/{name-slug}
+  const nameSlug = trimmedName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const baseSlug = `${profile.username}/${nameSlug}`;
+
+  // Check for slug collisions and append suffix if needed
+  const { data: existing } = await supabase
+    .from('object_lists')
+    .select('slug')
+    .or(`slug.eq.${baseSlug},slug.like.${baseSlug}-%`);
+
+  let slug = baseSlug;
+  if (existing && existing.length > 0) {
+    const existingSlugs = new Set(existing.map(r => r.slug));
+    if (existingSlugs.has(baseSlug)) {
+      let suffix = 2;
+      while (existingSlugs.has(`${baseSlug}-${suffix}`)) {
+        suffix++;
+      }
+      slug = `${baseSlug}-${suffix}`;
+    }
+  }
 
   const { data, error } = await supabase
     .from('object_lists')
     .insert({
-      name,
+      name: trimmedName,
       slug,
       description: description ?? null,
       visibility,
