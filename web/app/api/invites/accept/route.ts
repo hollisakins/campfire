@@ -70,20 +70,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Set user password
-    const { error: passwordError } = await supabase.auth.updateUser({
-      password: password,
-    });
-
-    if (passwordError) {
-      console.error('Error setting password:', passwordError);
-      return NextResponse.json(
-        { error: `Failed to set password: ${passwordError.message}` },
-        { status: 500 }
-      );
-    }
-
-    // Check username uniqueness
+    // Check username uniqueness before any irreversible operations
     const { data: existingUser } = await serviceClient
       .from('user_profiles')
       .select('user_id')
@@ -94,6 +81,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'That username is already taken. Please choose a different one.' },
         { status: 409 }
+      );
+    }
+
+    // Set user password
+    const { error: passwordError } = await supabase.auth.updateUser({
+      password: password,
+    });
+
+    if (passwordError) {
+      console.error('Error setting password:', passwordError);
+      return NextResponse.json(
+        { error: `Failed to set password: ${passwordError.message}` },
+        { status: 500 }
       );
     }
 

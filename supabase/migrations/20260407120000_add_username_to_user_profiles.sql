@@ -10,15 +10,16 @@ ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS "username" text;
 
 -- Step 2: Populate from auth.users email (local part, lowercased, sanitised)
 UPDATE public.user_profiles up
-SET username = lower(
-  regexp_replace(
+SET username = left(
+  lower(
     regexp_replace(
-      split_part(au.email, '@', 1),
-      '[^a-z0-9._-]', '-', 'gi'
-    ),
-    '^[^a-z0-9]+|[^a-z0-9]+$', '', 'g'
-  )
-)
+      regexp_replace(
+        split_part(au.email, '@', 1),
+        '[^a-z0-9._-]', '-', 'gi'
+      ),
+      '^[^a-z0-9]+|[^a-z0-9]+$', '', 'g'
+    )
+  ), 40)
 FROM auth.users au
 WHERE au.id = up.user_id
   AND up.username IS NULL;
