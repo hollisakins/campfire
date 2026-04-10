@@ -8,4 +8,4 @@ dependencies:
   - pip:
     - jwst>=1.20,<1.21
     - -e ./pipeline
-    - -e ./deploy
+    - -e ./python
