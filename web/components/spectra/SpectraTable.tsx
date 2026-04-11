@@ -220,7 +220,7 @@ const TableSkeleton: React.FC<{ rows: number; columns: ColumnDef<SpectrumTarget>
   </>
 );
 
-// Inline click-to-expand tooltip for the view mode toggle
+// Popup tooltip for the view mode toggle
 const ViewModeTooltip: React.FC = () => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -235,28 +235,21 @@ const ViewModeTooltip: React.FC = () => {
   }, [open]);
 
   return (
-    <div ref={ref} className="flex items-center overflow-hidden">
+    <div ref={ref} className="relative flex items-center">
       <button
         onClick={() => setOpen(!open)}
-        className="text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors flex-shrink-0"
+        className="text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
         aria-label="View mode help"
       >
-        <HelpCircle
-          className="w-3.5 h-3.5 transition-transform duration-300 ease-out"
-          style={{ transform: open ? 'rotate(360deg)' : 'rotate(0deg)' }}
-        />
+        <HelpCircle className="w-3.5 h-3.5" />
       </button>
-      <div
-        className="ml-2 text-xs text-text-secondary dark:text-slate-400 whitespace-nowrap transition-all duration-300 ease-out"
-        style={{
-          maxWidth: open ? '800px' : '0px',
-          opacity: open ? 1 : 0,
-        }}
-      >
-        <span className="font-medium text-text-primary dark:text-slate-200">Objects</span>{' '}= unique sources across programs{' · '}
-        <span className="font-medium text-text-primary dark:text-slate-200">Targets</span>{' '}= per-program observations{' · '}
-        <span className="font-medium text-text-primary dark:text-slate-200">Spectra</span>{' '}= individual grating exposures
-      </div>
+      {open && (
+        <div className="absolute left-0 top-full mt-1.5 z-50 w-64 px-3 py-2 text-xs text-text-secondary dark:text-slate-400 bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
+          <p><span className="font-medium text-text-primary dark:text-slate-200">Objects</span> = unique sources across programs</p>
+          <p><span className="font-medium text-text-primary dark:text-slate-200">Targets</span> = per-program observations</p>
+          <p><span className="font-medium text-text-primary dark:text-slate-200">Spectra</span> = individual grating exposures</p>
+        </div>
+      )}
     </div>
   );
 };
