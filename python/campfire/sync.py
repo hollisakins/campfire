@@ -118,8 +118,8 @@ def _sync_tags(api, store, show_progress):
     try:
         tags_data = api.fetch_tags()
         return store.upsert_tags(tags_data)
-    except Exception:
-        # Tags sync is non-critical — don't fail the whole sync
+    except requests.RequestException:
+        # Transient network errors are non-critical — don't fail the whole sync
         return 0
 
 

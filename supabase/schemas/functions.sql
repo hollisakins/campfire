@@ -1972,7 +1972,8 @@ BEGIN
       (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
        FROM object_list_members olm
        JOIN object_lists ol ON ol.id = olm.list_id
-       WHERE olm.object_id = t.object_id) AS lists
+       WHERE olm.object_id = t.object_id
+         AND (ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit'))) AS lists
     FROM targets t
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (NOT v_grating_filter_active
@@ -2105,7 +2106,8 @@ BEGIN
       (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
        FROM object_list_members olm
        JOIN object_lists ol ON ol.id = olm.list_id
-       WHERE olm.object_id = t.object_id) AS lists
+       WHERE olm.object_id = t.object_id
+         AND (ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit'))) AS lists
     FROM targets t JOIN spectra s ON s.target_id = t.target_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (NOT v_grating_filter_active OR s.grating = ANY(p_gratings))
@@ -2243,7 +2245,8 @@ BEGIN
       (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
        FROM object_list_members olm
        JOIN object_lists ol ON ol.id = olm.list_id
-       WHERE olm.object_id = o.id) AS lists
+       WHERE olm.object_id = o.id
+         AND (ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit'))) AS lists
     FROM objects o
     WHERE o.programs && v_filtered_program_slugs
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))

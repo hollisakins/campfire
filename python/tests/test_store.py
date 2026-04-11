@@ -235,6 +235,65 @@ class TestQueryObjects:
         assert len(obj1["spectra"]) == 2
 
 
+class TestTagFiltering:
+    """Test tag membership upsert and query filtering."""
+
+    def test_upsert_with_lists(self, store, sample_objects):
+        """upsert_targets stores list memberships."""
+        sample_objects[0]["lists"] = ["lrd", "blagn"]
+        sample_objects[1]["lists"] = ["lrd"]
+        store.upsert_targets(sample_objects)
+
+        # Both targets should match 'lrd'
+        results = store.query_targets(tags=["lrd"])
+        assert len(results) == 2
+
+        # Only target 100 should match 'blagn'
+        results = store.query_targets(tags=["blagn"])
+        assert len(results) == 1
+        assert results[0]["target_id"] == "ember_uds_p4_100"
+
+    def test_query_by_multiple_tags(self, store, sample_objects):
+        """query_targets with multiple tags returns union (any match)."""
+        sample_objects[0]["lists"] = ["blagn"]
+        sample_objects[1]["lists"] = ["lae"]
+        store.upsert_targets(sample_objects)
+
+        results = store.query_targets(tags=["blagn", "lae"])
+        assert len(results) == 2
+
+    def test_query_no_matching_tags(self, store, sample_objects):
+        """query_targets returns empty when no targets match the tag."""
+        sample_objects[0]["lists"] = ["lrd"]
+        store.upsert_targets(sample_objects)
+
+        results = store.query_targets(tags=["nonexistent"])
+        assert len(results) == 0
+
+    def test_empty_lists_clears_memberships(self, store, sample_objects):
+        """Syncing with empty lists removes old memberships."""
+        # First upsert with tags
+        sample_objects[0]["lists"] = ["lrd", "blagn"]
+        store.upsert_targets(sample_objects)
+        assert len(store.query_targets(tags=["lrd"])) == 1
+
+        # Second upsert with empty lists — should clear
+        sample_objects[0]["lists"] = []
+        store.upsert_targets(sample_objects)
+        assert len(store.query_targets(tags=["lrd"])) == 0
+
+    def test_no_lists_key_clears_memberships(self, store, sample_objects):
+        """Syncing without a lists key also clears old memberships."""
+        sample_objects[0]["lists"] = ["lrd"]
+        store.upsert_targets(sample_objects)
+        assert len(store.query_targets(tags=["lrd"])) == 1
+
+        # Remove the lists key entirely
+        del sample_objects[0]["lists"]
+        store.upsert_targets(sample_objects)
+        assert len(store.query_targets(tags=["lrd"])) == 0
+
+
 class TestSyncState:
     """Test sync state operations."""
 

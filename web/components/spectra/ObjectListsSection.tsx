@@ -60,8 +60,14 @@ interface ObjectListsSectionProps {
 }
 
 export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProps) {
-  const { userProfile } = useAuth();
+  const { user, userProfile } = useAuth();
   const canEdit = !!userProfile?.can_comment;
+
+  /** Check if the current user can edit a specific list (owner or public_edit). */
+  const canEditList = useCallback((list: ObjectListWithMembership) => {
+    if (!canEdit) return false;
+    return list.created_by === user?.id || list.visibility === 'public_edit';
+  }, [canEdit, user?.id]);
 
   const [lists, setLists] = useState<ObjectListWithMembership[]>([]);
   const [loading, setLoading] = useState(true);
@@ -113,7 +119,7 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
   }, [toast]);
 
   const memberLists = lists.filter(l => l.is_member);
-  const availableLists = lists.filter(l => !l.is_member);
+  const availableLists = lists.filter(l => !l.is_member && canEditList(l));
 
   // Filter available tags by search term (matches name or slug shortname)
   const normalizedSearch = searchTerm.trim().toLowerCase();
@@ -170,16 +176,18 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
     setShowCreateModal(true);
   }, [searchTerm]);
 
-  const handleTagCreated = useCallback(async (newList: ObjectList) => {
-    // Auto-add the object to the newly created tag
-    const { error } = await addObjectToList(newList.id, objectId, ra, dec);
-    if (error) {
-      setToast({ type: 'error', message: error });
-      return;
-    }
+  const handleTagCreated = useCallback((newList: ObjectList) => {
+    startTransition(async () => {
+      // Auto-add the object to the newly created tag
+      const { error } = await addObjectToList(newList.id, objectId, ra, dec);
+      if (error) {
+        setToast({ type: 'error', message: error });
+        return;
+      }
 
-    setLists(prev => [...prev, { ...newList, is_member: true } as ObjectListWithMembership]);
-    setToast({ type: 'success', message: `Created and tagged with ${newList.name}` });
+      setLists(prev => [...prev, { ...newList, is_member: true } as ObjectListWithMembership]);
+      setToast({ type: 'success', message: `Created and tagged with ${newList.name}` });
+    });
   }, [objectId, ra, dec]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -219,7 +227,7 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
           >
             {list.icon && <span>{list.icon}</span>}
             {list.name}
-            {canEdit && (
+            {canEditList(list) && (
               <button
                 onClick={() => handleRemove(list)}
                 disabled={isPending}

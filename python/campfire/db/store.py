@@ -330,11 +330,11 @@ class LocalStore:
 
             # Upsert list memberships
             lists = obj.get("lists") or []
+            self._conn.execute(
+                "DELETE FROM object_list_memberships WHERE object_id = ?",
+                (target_id,),
+            )
             if lists:
-                self._conn.execute(
-                    "DELETE FROM object_list_memberships WHERE object_id = ?",
-                    (target_id,),
-                )
                 self._conn.executemany(
                     "INSERT OR IGNORE INTO object_list_memberships (object_id, list_slug) VALUES (?, ?)",
                     [(target_id, slug) for slug in lists],
@@ -1172,15 +1172,16 @@ class LocalStore:
             # Upsert list memberships for this sky-object
             obj_lists = obj.get("lists") or []
             obj_id_str = obj.get("object_id")
-            if obj_lists and obj_id_str:
+            if obj_id_str:
                 self._conn.execute(
                     "DELETE FROM object_list_memberships WHERE object_id = ?",
                     (obj_id_str,),
                 )
-                self._conn.executemany(
-                    "INSERT OR IGNORE INTO object_list_memberships (object_id, list_slug) VALUES (?, ?)",
-                    [(obj_id_str, slug) for slug in obj_lists],
-                )
+                if obj_lists:
+                    self._conn.executemany(
+                        "INSERT OR IGNORE INTO object_list_memberships (object_id, list_slug) VALUES (?, ?)",
+                        [(obj_id_str, slug) for slug in obj_lists],
+                    )
 
             count += 1
 

@@ -109,6 +109,17 @@ export async function addObjectToList(
     .single();
   if (!profile?.can_comment) return { error: 'You do not have permission to edit tags' };
 
+  // Verify user can edit this list (owner or public_edit)
+  const { data: list } = await supabase
+    .from('object_lists')
+    .select('created_by, visibility')
+    .eq('id', listId)
+    .single();
+  if (!list) return { error: 'Tag not found' };
+  if (list.created_by !== user.id && list.visibility !== 'public_edit') {
+    return { error: 'You do not have permission to add objects to this tag' };
+  }
+
   const { error } = await supabase
     .from('object_list_members')
     .upsert(
@@ -142,6 +153,17 @@ export async function removeObjectFromList(
     .eq('user_id', user.id)
     .single();
   if (!profile?.can_comment) return { error: 'You do not have permission to edit tags' };
+
+  // Verify user can edit this list (owner or public_edit)
+  const { data: list } = await supabase
+    .from('object_lists')
+    .select('created_by, visibility')
+    .eq('id', listId)
+    .single();
+  if (!list) return { error: 'Tag not found' };
+  if (list.created_by !== user.id && list.visibility !== 'public_edit') {
+    return { error: 'You do not have permission to remove objects from this tag' };
+  }
 
   const { error } = await supabase
     .from('object_list_members')
@@ -341,7 +363,7 @@ export async function deleteList(listId: number): Promise<{ error?: string }> {
  */
 export async function updateList(
   listId: number,
-  updates: { name?: string; slug?: string; description?: string; visibility?: string; icon?: string | null; color?: string | null },
+  updates: { name?: string; slug?: string; description?: string; visibility?: 'private' | 'public_read' | 'public_edit'; icon?: string | null; color?: string | null },
 ): Promise<{ error?: string }> {
   const supabase = await createClient();
 
