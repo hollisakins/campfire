@@ -24,7 +24,9 @@ export async function GET(request: NextRequest) {
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data, error } = await supabase.rpc('get_lists_for_sync');
+    const { data, error } = await supabase.rpc('get_lists_for_sync', {
+      p_user_id: userId,
+    });
 
     if (error) {
       console.error('Error fetching lists for sync:', error);

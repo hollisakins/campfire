@@ -49,6 +49,7 @@ export async function GET(request: NextRequest) {
 
     const { data, error } = await supabase.rpc('get_targets_for_sync', {
       p_program_slugs: accessibleProgramSlugs,
+      p_user_id: userId,
       p_updated_since: updatedSince,
       p_limit: limit,
       p_offset: offset,

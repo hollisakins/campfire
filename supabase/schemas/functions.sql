@@ -603,6 +603,7 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_targets_paginated TO service_role;
 
 CREATE OR REPLACE FUNCTION public.get_targets_for_sync(
   p_program_slugs TEXT[],
+  p_user_id UUID DEFAULT NULL,
   p_updated_since TIMESTAMP WITHOUT TIME ZONE DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
   p_offset INTEGER DEFAULT 0
@@ -678,7 +679,8 @@ BEGIN
           (SELECT jsonb_agg(ol.slug ORDER BY ol.slug)
            FROM object_list_members olm
            JOIN object_lists ol ON ol.id = olm.list_id
-           WHERE olm.object_id = m.object_id),
+           WHERE olm.object_id = m.object_id
+             AND (ol.created_by = p_user_id OR ol.visibility IN ('public_read', 'public_edit'))),
           '[]'::jsonb
         )
       )
@@ -690,8 +692,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_targets_for_sync TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_targets_for_sync TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_targets_for_sync(TEXT[], UUID, TIMESTAMP WITHOUT TIME ZONE, INTEGER, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_targets_for_sync(TEXT[], UUID, TIMESTAMP WITHOUT TIME ZONE, INTEGER, INTEGER) TO service_role;
 
 
 -- =============================================================================
@@ -701,6 +703,7 @@ GRANT EXECUTE ON FUNCTION public.get_targets_for_sync TO service_role;
 
 CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_program_slugs TEXT[],
+  p_user_id UUID DEFAULT NULL,
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
   p_offset INTEGER DEFAULT 0
@@ -763,7 +766,8 @@ BEGIN
           (SELECT jsonb_agg(ol.slug ORDER BY ol.slug)
            FROM object_list_members olm
            JOIN object_lists ol ON ol.id = olm.list_id
-           WHERE olm.object_id = m.id),
+           WHERE olm.object_id = m.id
+             AND (ol.created_by = p_user_id OR ol.visibility IN ('public_read', 'public_edit'))),
           '[]'::jsonb
         )
       )
@@ -774,8 +778,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER) TO service_role;
 
 
 -- =============================================================================
@@ -783,7 +787,9 @@ GRANT EXECUTE ON FUNCTION public.get_objects_for_sync TO service_role;
 -- (returns all list metadata for Python client sync)
 -- =============================================================================
 
-CREATE OR REPLACE FUNCTION public.get_lists_for_sync()
+CREATE OR REPLACE FUNCTION public.get_lists_for_sync(
+  p_user_id UUID DEFAULT NULL
+)
 RETURNS JSONB
 LANGUAGE plpgsql STABLE
 AS $$
@@ -801,14 +807,16 @@ BEGIN
       'updated_at', ol.updated_at,
       'member_count', (SELECT COUNT(*) FROM object_list_members olm WHERE olm.list_id = ol.id)
     ) ORDER BY ol.is_system DESC, ol.name)
-    FROM object_lists ol),
+    FROM object_lists ol
+    WHERE ol.created_by = p_user_id
+       OR ol.visibility IN ('public_read', 'public_edit')),
     '[]'::jsonb
   );
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_lists_for_sync TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_lists_for_sync TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_lists_for_sync(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_lists_for_sync(UUID) TO service_role;
 
 
 -- =============================================================================
