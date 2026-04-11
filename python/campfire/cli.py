@@ -445,7 +445,7 @@ def sync_cmd(full: bool, base_url: Optional[str]):
     """
     base_url = base_url or resolve_base_url()
 
-    from .config import meta_dir as _meta_dir
+    from .config import meta_dir as _meta_dir, products_dir as _products_dir
     from .sync import sync_metadata
 
     try:
@@ -484,6 +484,17 @@ def sync_cmd(full: bool, base_url: Optional[str]):
                         f"{result['purged_spectra']} spectra deleted from server.")
         if result.get("sky_objects_purged"):
             click.echo(f"  Removed {result['sky_objects_purged']} sky objects deleted from server.")
+
+        # Verify local files so status reports correct counts immediately
+        pd = _products_dir()
+        if pd.exists():
+            verify = store.verify_local_files(pd, show_progress=True)
+            if verify["cleared"]:
+                click.echo(f"  Detected {verify['cleared']} missing local file(s).")
+            if verify["rehashed"]:
+                click.echo(f"  Re-verified {verify['rehashed']} modified local file(s).")
+            if verify["discovered"]:
+                click.echo(f"  Found {verify['discovered']} existing local file(s).")
 
         if result["stale_count"] > 0:
             click.echo(f"\n⚠ {result['stale_count']} local file(s) have been updated on the server.")
@@ -675,8 +686,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         return
 
     # Reconcile DB with filesystem before planning
-    click.echo("Searching for and verifying local file(s)...")
-    verify = store.verify_local_files(_products_dir())
+    verify = store.verify_local_files(_products_dir(), show_progress=True)
     if verify["cleared"]:
         click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
     if verify.get("rehashed"):
