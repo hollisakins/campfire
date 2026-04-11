@@ -148,7 +148,7 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
 
         {/* Stat Badges */}
         <div className="flex flex-wrap gap-3">
-          <Badge value={program.object_count.toLocaleString()} label="Objects" compact />
+          <Badge value={program.target_count.toLocaleString()} label="Targets" compact />
           <Badge value={program.gratings.length} label="Gratings" compact />
           <Badge value={program.fields.length} label="Fields" compact />
           <Badge value={program.observations.length} label="Observations" compact />
@@ -175,7 +175,7 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
                   <tr className="border-b border-border dark:border-slate-700 bg-gray-50 dark:bg-slate-800/50">
                     <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Observation</th>
                     <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Field</th>
-                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Objects</th>
+                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Targets</th>
                     <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Spectra</th>
                     <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Total Size</th>
                     <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400"></th>
@@ -194,7 +194,7 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
                         {obs.field}
                       </td>
                       <td className="px-4 py-3 text-right text-text-primary dark:text-slate-100">
-                        {obs.object_count.toLocaleString()}
+                        {obs.target_count.toLocaleString()}
                       </td>
                       <td className="px-4 py-3 text-right text-text-primary dark:text-slate-100">
                         {obs.spectrum_count.toLocaleString()}

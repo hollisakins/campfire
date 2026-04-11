@@ -164,7 +164,7 @@ List observations with stats.
       "observation": "ember_uds_p4",
       "program_name": "EMBER-UDS",
       "field": "UDS",
-      "object_count": 450,
+      "target_count": 450,
       "spectrum_count": 1350,
       "total_size_bytes": 2147483648
     }
