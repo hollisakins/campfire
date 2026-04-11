@@ -8,6 +8,7 @@ import type { ProgramOverview } from '@/lib/actions/programs';
 import { useProgramsOverviewQuery } from '@/lib/hooks/useProgramsQuery';
 import { LogIn, Loader2, Telescope, ExternalLink, Users, Hash } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { useRouter } from 'next/navigation';
 
 function formatGratings(gratings: string[]): string {
   if (gratings.length === 0) return '';
@@ -16,29 +17,34 @@ function formatGratings(gratings: string[]): string {
 }
 
 function ProgramCard({ program }: { program: ProgramOverview }) {
+  const router = useRouter();
+
   return (
-    <Link href={`/nirspec/programs/${program.slug}`}>
-      <Card hover className="p-5 h-full">
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
-              {program.program_name || program.slug}
-            </h3>
-            <p className="text-sm text-text-secondary dark:text-slate-400">
-              {program.slug}
-            </p>
-          </div>
-          <a
-            href={`https://www.stsci.edu/jwst-program-info/program/?program=${program.jwst_pids?.[0] ?? ''}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors flex-shrink-0"
-            onClick={(e) => e.stopPropagation()}
-            title="View on STScI"
-          >
-            <ExternalLink className="w-4 h-4" />
-          </a>
+    <Card
+      hover
+      className="p-5 h-full cursor-pointer"
+      onClick={() => router.push(`/nirspec/programs/${program.slug}`)}
+    >
+      <div className="flex items-start justify-between mb-3">
+        <div>
+          <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+            {program.program_name || program.slug}
+          </h3>
+          <p className="text-sm text-text-secondary dark:text-slate-400">
+            {program.slug}
+          </p>
         </div>
+        <a
+          href={`https://www.stsci.edu/jwst-program-info/program/?program=${program.jwst_pids?.[0] ?? ''}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors flex-shrink-0"
+          onClick={(e) => e.stopPropagation()}
+          title="View on STScI"
+        >
+          <ExternalLink className="w-4 h-4" />
+        </a>
+      </div>
 
         {program.pi_name && (
           <div className="flex items-center gap-1.5 text-sm text-text-secondary dark:text-slate-400 mb-2">
@@ -75,7 +81,6 @@ function ProgramCard({ program }: { program: ProgramOverview }) {
           )}
         </div>
       </Card>
-    </Link>
   );
 }
 
@@ -140,7 +145,10 @@ export default function ProgramsPage() {
           <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">JWST Programs</h1>
         </div>
         <p className="text-text-secondary dark:text-slate-400">
-          Browse JWST programs with data available in CAMPFIRE
+          JWST NIRSpec programs with spectra in the CAMPFIRE database. Select a program
+          for observation details and reduction notes. Program metadata is sourced
+          from <a href="https://www.stsci.edu/jwst/science-execution/approved-programs" target="_blank" rel="noopener noreferrer" className="text-primary hover:text-primary-hover transition-colors">STScI</a>.
+          Program missing from CAMPFIRE? <a href="https://github.com/hollisakins/campfire/issues/new?template=data_request.yml" target="_blank" rel="noopener noreferrer" className="text-primary hover:text-primary-hover transition-colors">Request it here</a>.
         </p>
       </div>
 
