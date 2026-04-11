@@ -8,18 +8,50 @@ slit geometry deployment and filter cache refresh.
 from supabase import create_client, Client
 
 
-def get_supabase_client(config: dict) -> Client:
+class AutoRefreshClient:
+    """Wraps a Supabase Client to auto-refresh the JWT before each operation.
+
+    Deployments can run for hours, but Supabase JWTs expire after ~1 hour.
+    This wrapper checks token expiry before every ``table()`` or ``rpc()``
+    call and transparently refreshes via the stored ``TokenManager``.
+    """
+
+    def __init__(self, client: Client, token_manager):
+        self._client = client
+        self._token_manager = token_manager
+
+    def _ensure_valid_token(self):
+        if self._token_manager and self._token_manager.needs_refresh():
+            new_token = self._token_manager.get_supabase_token(auto_refresh=True)
+            if new_token:
+                self._client.postgrest.auth(new_token)
+
+    def table(self, *args, **kwargs):
+        self._ensure_valid_token()
+        return self._client.table(*args, **kwargs)
+
+    def rpc(self, *args, **kwargs):
+        self._ensure_valid_token()
+        return self._client.rpc(*args, **kwargs)
+
+
+def get_supabase_client(config: dict):
     """Create a Supabase client from deploy config.
 
     Requires user JWT authentication via ``campfire login``. The caller's
     Supabase-compatible JWT (from the OAuth device flow) and anon key are
     used to create a client that operates through RLS policies.
 
+    When a ``TokenManager`` is available (from ``campfire login``), the
+    returned client auto-refreshes the JWT before it expires so that
+    long-running deployments don't fail with ``PGRST303 JWT expired``.
+
     The config dict should contain::
 
         config['supabase']['url']                  # always required
         config['supabase']['anon_key']             # from campfire login
         config['supabase']['supabase_token']       # from campfire login
+        config['supabase']['_token_manager']       # optional, enables auto-refresh
     """
     url = config['supabase']['url']
     supabase_token = config['supabase'].get('supabase_token')
@@ -28,6 +60,10 @@ def get_supabase_client(config: dict) -> Client:
     if supabase_token and anon_key:
         client = create_client(url, anon_key)
         client.postgrest.auth(supabase_token)
+
+        token_manager = config['supabase'].get('_token_manager')
+        if token_manager:
+            return AutoRefreshClient(client, token_manager)
         return client
 
     raise ValueError(
