@@ -338,7 +338,7 @@ class Campfire:
             Union[int, str, List[str], SpectralFeatures, FlagQuery]
         ] = None,
         dq_flags: Optional[Union[int, str, List[str], DQFlags, FlagQuery]] = None,
-        lists: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
         inspected_only: Optional[bool] = None,
         search: Optional[str] = None,
         cone_search: Optional[Tuple[float, float, float]] = None,
@@ -377,9 +377,9 @@ class Campfire:
             - FlagQuery: Complex query with |, &, ~ operators
         dq_flags : int, str, list, DQFlags, or FlagQuery, optional
             Filter by data quality flags. Same input types as spectral_features.
-        lists : list of str, optional
-            Filter by list slugs (e.g., ['lrd', 'blagn']).
-            Returns targets whose parent object belongs to any of the given lists.
+        tags : list of str, optional
+            Filter by tag slugs (e.g., ['lrd', 'blagn']).
+            Returns targets whose parent object belongs to any of the given tags.
         inspected_only : bool, optional
             If True, only return visually inspected targets.
         search : str, optional
@@ -412,8 +412,8 @@ class Campfire:
         ...     inspected_only=True
         ... )
         >>>
-        >>> # Filter by list/tag membership
-        >>> results = cf.query_targets(lists=['lrd', 'blagn'])
+        >>> # Filter by tag membership
+        >>> results = cf.query_targets(tags=['lrd', 'blagn'])
         >>>
         >>> # Exclude contaminated objects
         >>> results = cf.query_targets(dq_flags=~DQFlags.CONTAMINATION)
@@ -449,7 +449,7 @@ class Campfire:
                 max_snr_range=max_snr_range,
                 spectral_features=sf_dict,
                 dq_flags=dq_dict,
-                lists=lists,
+                tags=tags,
                 inspected_only=inspected_only,
                 search=search,
                 cone_search=cone_search,
@@ -471,7 +471,7 @@ class Campfire:
                 max_snr_range=max_snr_range,
                 spectral_features=spectral_features,
                 dq_flags=dq_flags,
-                lists=lists,
+                tags=tags,
                 inspected_only=inspected_only,
                 search=search,
                 cone_search=cone_search,
@@ -577,6 +577,41 @@ class Campfire:
         """
         metadata = self._api.get_metadata()
         return metadata.get("observations", [])
+
+    def get_tags(self) -> Table:
+        """
+        List available tags (object classification labels).
+
+        Returns tags from the local store if synced, otherwise fetches
+        from the remote API. Includes both system tags (e.g., 'lrd',
+        'blagn') and user-created tags visible to the current user.
+
+        Returns
+        -------
+        astropy.table.Table
+            Table with columns: slug, name, description, visibility,
+            is_system, member_count.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> tags = cf.get_tags()
+        >>> print(tags['slug', 'name', 'member_count'])
+        slug   name              member_count
+        ------ ----------------- ------------
+        lrd    Little Red Dots            142
+        blagn  Broad Line AGN              87
+        ...
+        """
+        if self._local is not None:
+            rows = self._local.get_tags()
+        else:
+            rows = self._api.fetch_tags()
+
+        if not rows:
+            return Table()
+
+        return Table(rows=rows)
 
     # -------------------------------------------------------------------------
     # Spectrum Data Methods (for plotting)

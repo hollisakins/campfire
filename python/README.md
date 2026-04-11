@@ -75,8 +75,8 @@ results = cf.query_targets(
     inspected_only=True
 )
 
-# Filter by tags (user-defined lists)
-lrds = cf.query_targets(lists=['lrd', 'blagn'])
+# Filter by tags
+lrds = cf.query_targets(tags=['lrd', 'blagn'])
 
 # Download FITS files
 cf.download(observations=['ember_uds_p4'], gratings=['PRISM'])
@@ -86,7 +86,7 @@ spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
 print(spec.wavelength.shape, spec.flux.shape)
 
 # Iterate over all matching targets (auto-pagination)
-for obj in cf.iter_targets(lists=['lrd']):
+for obj in cf.iter_targets(tags=['lrd']):
     print(obj['target_id'], obj['redshift'])
 ```
 

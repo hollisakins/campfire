@@ -109,7 +109,7 @@ cf.query_targets(
     max_snr_range=None,      # tuple[float, float]: (min, max) SNR
     spectral_features=None,  # Flag filter (see Flag Filtering)
     dq_flags=None,           # Flag filter (see Flag Filtering)
-    lists=None,              # list[str]: Tag slugs (e.g., ['lrd', 'blagn'])
+    tags=None,               # list[str]: Tag slugs (e.g., ['lrd', 'blagn'])
     inspected_only=None,     # bool: Only inspected targets
     search=None,             # str: Text search on target_id
     cone_search=None,        # tuple[float, float, float]: (ra, dec, radius_arcsec)
@@ -133,7 +133,7 @@ results = cf.query_targets(
 )
 
 # Filter by tags
-lrds = cf.query_targets(lists=['lrd', 'blagn'])
+lrds = cf.query_targets(tags=['lrd', 'blagn'])
 
 # Cone search around a coordinate
 results = cf.query_targets(
@@ -154,27 +154,43 @@ for obj in cf.iter_targets(redshift_range=(2.0, 4.0)):
     print(obj['target_id'], obj['redshift'])
 
 # Collect into a list
-all_lrds = list(cf.iter_targets(lists=['lrd']))
+all_lrds = list(cf.iter_targets(tags=['lrd']))
 ```
 
 When local data is available, `iter_targets()` queries SQLite directly. Otherwise, it auto-paginates through the remote API.
 
 ---
 
-## Tags (Lists)
+## Tags
 
-Targets can be tagged with user-defined or system-seeded tags (internally called "object lists"). Tags replace the old `object_flags` bitmask system.
+Targets can be tagged with user-defined or system-seeded tags. Tags replace the old `object_flags` bitmask system.
+
+### `get_tags()`
+
+List all available tags (system and user-created).
+
+```python
+>>> tags = cf.get_tags()
+>>> print(tags['slug', 'name', 'member_count'])
+slug   name              member_count
+------ ----------------- ------------
+lrd    Little Red Dots            142
+blagn  Broad Line AGN              87
+...
+```
+
+### Filtering by tags
 
 ```python
 # Filter by tag slugs
-results = cf.query_targets(lists=['lrd', 'blagn'])
+results = cf.query_targets(tags=['lrd', 'blagn'])
 
-# Tags are included in synced catalog data
-for obj in cf.iter_targets():
-    print(obj['target_id'], obj.get('lists', []))
+# Iterate over tagged targets
+for obj in cf.iter_targets(tags=['lrd']):
+    print(obj['target_id'], obj['redshift'])
 ```
 
-System tags (e.g., `lrd`, `blagn`, `lae`) are available to all users. Users can also create private or shared tags via the web portal.
+System tags (e.g., `lrd`, `blagn`, `lae`) are available to all users. Users can also create private or shared tags via the [web portal](/nirspec/tags).
 
 ---
 

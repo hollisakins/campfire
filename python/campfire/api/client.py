@@ -31,7 +31,7 @@ def _build_query_params(
     max_snr_range: Optional[Tuple[float, float]] = None,
     spectral_features=None,
     dq_flags=None,
-    lists: Optional[List[str]] = None,
+    tags: Optional[List[str]] = None,
     inspected_only: Optional[bool] = None,
     search: Optional[str] = None,
     cone_search: Optional[Tuple[float, float, float]] = None,
@@ -74,8 +74,8 @@ def _build_query_params(
     if dq_query:
         params.update(dq_query.to_params("dq_flags"))
 
-    if lists:
-        params["lists"] = ",".join(lists)
+    if tags:
+        params["lists"] = ",".join(tags)
 
     if inspected_only is not None:
         params["inspected_only"] = "true" if inspected_only else "false"
@@ -376,17 +376,17 @@ class APIClient:
             "/sync/objects", updated_since, on_page_complete,
         )
 
-    def fetch_lists(self) -> List[dict]:
-        """Fetch all list metadata via the /sync/lists endpoint.
+    def fetch_tags(self) -> List[dict]:
+        """Fetch all tag metadata via the /sync/lists endpoint.
 
         Returns
         -------
         list of dict
-            List metadata (slug, name, description, visibility, etc.).
+            Tag metadata (slug, name, description, visibility, etc.).
         """
         self._session._ensure_valid_token()
         response = self._session.get("/sync/lists", timeout=30)
-        _handle_response_error(response, "fetching lists")
+        _handle_response_error(response, "fetching tags")
         return response.json().get("data", [])
 
     # Deprecated aliases (old names → new names)

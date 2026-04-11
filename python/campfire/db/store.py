@@ -396,7 +396,7 @@ class LocalStore:
         max_snr_range: Optional[Tuple[float, float]] = None,
         spectral_features: Optional[dict] = None,
         dq_flags: Optional[dict] = None,
-        lists: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
         inspected_only: Optional[bool] = None,
         search: Optional[str] = None,
         cone_search: Optional[Tuple[float, float, float]] = None,
@@ -421,8 +421,8 @@ class LocalStore:
         max_snr_range : tuple of (min, max), optional
         spectral_features, dq_flags : dict, optional
             Flag filter dicts with keys 'include_any', 'include_all', 'exclude'.
-        lists : list of str, optional
-            Filter by list slugs (match targets in any of the given lists).
+        tags : list of str, optional
+            Filter by tag slugs (match targets in any of the given tags).
         inspected_only : bool, optional
         search : str, optional
             Text search on target_id (LIKE match).
@@ -476,13 +476,13 @@ class LocalStore:
             where_clauses.append("o.target_id LIKE ?")
             params.append(f"%{search}%")
 
-        # List membership filter
-        if lists:
-            placeholders = ",".join("?" * len(lists))
+        # Tag membership filter
+        if tags:
+            placeholders = ",".join("?" * len(tags))
             where_clauses.append(
                 f"o.target_id IN (SELECT object_id FROM object_list_memberships WHERE list_slug IN ({placeholders}))"
             )
-            params.extend(lists)
+            params.extend(tags)
 
         # Flag filters
         for flag_col, flag_filter in [
@@ -1187,21 +1187,21 @@ class LocalStore:
         self._conn.commit()
         return count
 
-    def upsert_lists(self, lists_data: list) -> int:
-        """Insert or update list metadata from the /sync/lists endpoint.
+    def upsert_tags(self, tags_data: list) -> int:
+        """Insert or update tag metadata from the /sync/lists endpoint.
 
         Parameters
         ----------
-        lists_data : list of dict
-            List metadata dicts from the API.
+        tags_data : list of dict
+            Tag metadata dicts from the API.
 
         Returns
         -------
         int
-            Number of lists upserted.
+            Number of tags upserted.
         """
         count = 0
-        for lst in lists_data:
+        for lst in tags_data:
             self._conn.execute("""
                 INSERT INTO object_lists
                     (id, slug, name, description, visibility, is_system,
@@ -1229,8 +1229,8 @@ class LocalStore:
         self._conn.commit()
         return count
 
-    def get_lists(self) -> List[dict]:
-        """Get all synced lists.
+    def get_tags(self) -> List[dict]:
+        """Get all synced tags.
 
         Returns
         -------
