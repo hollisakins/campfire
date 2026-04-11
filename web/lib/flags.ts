@@ -42,19 +42,6 @@ export const SPECTRAL_FEATURES: FlagDef[] = [
   { key: 'multi_emission', bit: 5, value: 32, label: 'Multiple Emission Lines', short: 'MEM', icon: '✌️', color: '#ffebee', description: 'Multiple emission lines' },
 ];
 
-// Object properties and classifications (bitmask)
-export const OBJECT_FLAGS: FlagDef[] = [
-  { key: 'LRD', bit: 0, value: 1, label: 'Little Red Dot', short: 'LRD', icon: '🔴', color: '#ffcccb', description: 'Little red dot' },
-  { key: 'broad_line', bit: 1, value: 2, label: 'Broad Line', short: 'BL', icon: '🌋', color: '#c8e6c9', description: 'Broad emission line' },
-  { key: 'lya_emitter', bit: 2, value: 4, label: 'Lyα Emitter', short: 'LAE', icon: '✨', color: '#bbdefb', description: 'Strong Lyman-alpha emission' },
-  { key: 'balmer_break_galaxy', bit: 3, value: 8, label: 'Balmer Break Galaxy', short: 'BBG', icon: '🌌', color: '#e1bee7', description: 'Strong Balmer break indicating evolved stellar population' },
-  { key: 'oiii_emitter', bit: 4, value: 16, label: '[OIII] Emitter', short: 'O3E', icon: '⚡️', color: '#fff59d', description: 'Strong [OIII]4959,5007 emitter' },
-  { key: 'ha_emitter', bit: 5, value: 32, label: 'Hα Emitter', short: 'HAE', icon: '🔥', color: '#f398ad', description: 'Strong H-alpha emitter' },
-  { key: 'passive', bit: 6, value: 64, label: 'Quiescent', short: 'QG', icon: '😴', color: '#d7ccc8', description: 'Quiescent galaxy with little star formation' },
-  { key: 'dusty', bit: 7, value: 128, label: 'Dusty', short: 'DUST', icon: '🌫️', color: '#ffccbc', description: 'Significant dust attenuation' },
-  { key: 'star', bit: 8, value: 256, label: 'Star', short: 'STAR', icon: '⭐', color: '#ffeb3b', description: 'Stellar spectrum' },
-];
-
 // Data quality issues (bitmask)
 export const DQ_FLAGS: FlagDef[] = [
   { key: 'chip_gap', bit: 0, value: 1, label: 'Chip Gap', short: 'GAP', icon: '⚠️', color: '#fff9c4', description: 'Spectrum affected by detector chip gap' },
@@ -82,7 +69,7 @@ export function decodeBitmask(bitmask: number, flags: FlagDef[]): number[] {
 /**
  * Encode an array of flag values into a bitmask
  */
-export function encodeBitmask(values: (string | number)[], flags: FlagDef[]): number {
+export function encodeBitmask(values: (string | number)[]): number {
   return values.reduce<number>((bitmask, value) => bitmask | (typeof value === 'number' ? value : 0), 0);
 }
 

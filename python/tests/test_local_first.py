@@ -33,7 +33,6 @@ def local_store(tmp_path):
             "redshift_inspected": 2.5,
             "redshift_quality": 3,
             "spectral_features": 0,
-            "object_flags": 1,
             "dq_flags": 0,
             "max_snr": 15.0,
             "spectra": [
@@ -60,7 +59,6 @@ def local_store(tmp_path):
             "redshift_inspected": None,
             "redshift_quality": 0,
             "spectral_features": 0,
-            "object_flags": 0,
             "dq_flags": 0,
             "max_snr": 5.0,
             "spectra": [
@@ -104,7 +102,7 @@ class TestLocalFirstQueryObjects:
         """query_objects uses SQLite when observations are synced."""
         client, mock_session, store, _ = local_client
 
-        results = client.query_objects(observations=["test_obs"])
+        results = client.query_targets(observations=["test_obs"])
 
         # Should NOT have hit the API
         mock_session.get.assert_not_called()
@@ -114,7 +112,7 @@ class TestLocalFirstQueryObjects:
         """Local queries support the same filters as remote."""
         client, mock_session, _, _ = local_client
 
-        results = client.query_objects(
+        results = client.query_targets(
             observations=["test_obs"],
             redshift_range=(2.0, 3.0),
         )
@@ -131,7 +129,7 @@ class TestLocalFirstQueryObjects:
         """
         client, mock_session, _, _ = local_client
 
-        results = client.query_objects(observations=["unknown_obs"])
+        results = client.query_targets(observations=["unknown_obs"])
 
         # Should NOT have hit the API — local store handles it
         mock_session.get.assert_not_called()
@@ -146,7 +144,7 @@ class TestLocalFirstQueryObjects:
         mock_response.json.return_value = {"data": [], "pagination": {"total": 0}}
         mock_session.get.return_value = mock_response
 
-        results = client.query_objects(observations=["test_obs"], remote=True)
+        results = client.query_targets(observations=["test_obs"], remote=True)
 
         mock_session.get.assert_called()
 
@@ -254,7 +252,7 @@ class TestIterObjects:
         """iter_objects yields from local store."""
         client, mock_session, _, _ = local_client
 
-        objects = list(client.iter_objects(observations=["test_obs"]))
+        objects = list(client.iter_targets(observations=["test_obs"]))
 
         mock_session.get.assert_not_called()
         assert len(objects) == 2
@@ -263,7 +261,7 @@ class TestIterObjects:
         """iter_objects applies filters locally."""
         client, _, _, _ = local_client
 
-        objects = list(client.iter_objects(
+        objects = list(client.iter_targets(
             observations=["test_obs"],
             redshift_range=(2.0, 3.0),
         ))

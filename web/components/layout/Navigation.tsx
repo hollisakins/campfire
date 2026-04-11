@@ -1,11 +1,58 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Flame, LogOut, User, Shield, Sun, Moon, Monitor } from 'lucide-react';
+import { Flame, LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
+
+type NavLink = { href: string; label: string; children?: { href: string; label: string }[] };
+
+function NavDropdown({ link, isActive }: { link: NavLink; isActive: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`
+          flex items-center gap-1 text-sm font-medium transition-colors pb-1 border-b-2
+          ${isActive
+            ? 'text-white border-primary'
+            : 'text-gray-300 border-transparent hover:text-white hover:border-gray-400'
+          }
+        `}
+      >
+        {link.label}
+        <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-2 w-44 bg-header dark:bg-slate-800 rounded-lg shadow-lg border border-gray-700 dark:border-slate-700 py-1 z-50">
+          {link.children!.map((child) => (
+            <Link
+              key={child.href}
+              href={child.href}
+              onClick={() => setOpen(false)}
+              className="block px-4 py-2 text-sm text-gray-300 hover:text-white hover:bg-white/10 transition-colors"
+            >
+              {child.label}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export const Navigation: React.FC = () => {
   const pathname = usePathname();
@@ -27,10 +74,16 @@ export const Navigation: React.FC = () => {
     return pathname.startsWith(path);
   };
 
-  const navLinks = [
+  const navLinks: NavLink[] = [
     { href: '/', label: 'Home' },
     { href: '/nircam', label: 'NIRCam' },
-    { href: '/nirspec', label: 'NIRSpec' },
+    {
+      href: '/nirspec', label: 'NIRSpec', children: [
+        { href: '/nirspec', label: 'Catalog' },
+        { href: '/nirspec/tags', label: 'Tags' },
+        { href: '/nirspec/programs', label: 'Programs' },
+      ],
+    },
     { href: '/map', label: 'Map' },
     { href: '/docs', label: 'Docs' },
   ];
@@ -52,21 +105,25 @@ export const Navigation: React.FC = () => {
 
           {/* Navigation Links */}
           <div className="flex items-center space-x-8">
-            {navLinks.map((link) => (
-              <Link
-                key={link.href}
-                href={link.href}
-                className={`
-                  text-sm font-medium transition-colors pb-1 border-b-2
-                  ${isActive(link.href)
-                    ? 'text-white border-primary'
-                    : 'text-gray-300 border-transparent hover:text-white hover:border-gray-400'
-                  }
-                `}
-              >
-                {link.label}
-              </Link>
-            ))}
+            {navLinks.map((link) =>
+              link.children ? (
+                <NavDropdown key={link.href} link={link} isActive={isActive(link.href)} />
+              ) : (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={`
+                    text-sm font-medium transition-colors pb-1 border-b-2
+                    ${isActive(link.href)
+                      ? 'text-white border-primary'
+                      : 'text-gray-300 border-transparent hover:text-white hover:border-gray-400'
+                    }
+                  `}
+                >
+                  {link.label}
+                </Link>
+              )
+            )}
 
             {/* Theme Toggle */}
             <button

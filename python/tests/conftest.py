@@ -28,7 +28,6 @@ def sample_objects_response():
                 "redshift_inspected": 2.5432,
                 "redshift_quality": 3,
                 "spectral_features": 0,
-                "object_flags": 0,
                 "dq_flags": 0,
                 "spectra": [
                     {

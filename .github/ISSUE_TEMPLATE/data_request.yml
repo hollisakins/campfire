@@ -1,0 +1,34 @@
+name: Data Request
+description: Request reduction and inclusion of a new JWST program
+labels: ["data request"]
+body:
+  - type: input
+    id: program_id
+    attributes:
+      label: JWST Program ID (PID)
+      placeholder: "e.g. 1234"
+    validations:
+      required: true
+
+  - type: input
+    id: program_name
+    attributes:
+      label: Program name (if known)
+      placeholder: "e.g. JADES, CEERS"
+
+  - type: dropdown
+    id: instrument
+    attributes:
+      label: Instrument
+      options:
+        - NIRSpec
+        - NIRCam
+        - Both
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      placeholder: "Why is this program useful to include? Any specific observations or fields of interest?"

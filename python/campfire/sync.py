@@ -110,6 +110,19 @@ def _sync_objects(api, store, full, show_progress):
     return obj_count, purged
 
 
+def _sync_tags(api, store, show_progress):
+    """Sync tag metadata from the server.
+
+    Returns the number of tags upserted.
+    """
+    try:
+        tags_data = api.fetch_tags()
+        return store.upsert_tags(tags_data)
+    except requests.RequestException:
+        # Transient network errors are non-critical — don't fail the whole sync
+        return 0
+
+
 def sync_metadata(
     api, store, meta_dir: Path,
     show_progress: bool = False,
@@ -138,7 +151,7 @@ def sync_metadata(
     -------
     dict
         Summary with keys: observations, targets, spectra, sky_objects,
-        stale_count, stale_files, incremental.
+        tags, stale_count, stale_files, incremental.
     """
     from .db.export import export_catalogs
 
@@ -151,7 +164,10 @@ def sync_metadata(
     # 2. Sync sky-objects
     obj_count, obj_purged = _sync_objects(api, store, full, show_progress)
 
-    # 3. Export CSVs (always full export from SQLite)
+    # 3. Sync tag metadata
+    tags_count = _sync_tags(api, store, show_progress)
+
+    # 4. Export CSVs (always full export from SQLite)
     export_catalogs(store, meta_dir)
 
     # 4. Detect stale local files
@@ -163,6 +179,7 @@ def sync_metadata(
         "spectra": spec_count,
         "sky_objects": obj_count,
         "sky_objects_purged": obj_purged,
+        "tags": tags_count,
         "stale_count": len(stale),
         "stale_files": stale,
         "incremental": incremental,

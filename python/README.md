@@ -61,7 +61,7 @@ high_z = objects[objects['redshift'] > 3.0]
 The `Campfire` class queries the local catalog when available, falling back to the remote API.
 
 ```python
-from campfire import Campfire, ObjectFlags
+from campfire import Campfire
 
 cf = Campfire()
 
@@ -69,11 +69,14 @@ cf = Campfire()
 cf.sync()
 
 # Query locally — instant, no network
-results = cf.query_objects(
+results = cf.query_targets(
     redshift_range=(3.0, 6.0),
     redshift_quality=[2, 3],
     inspected_only=True
 )
+
+# Filter by tags
+lrds = cf.query_targets(tags=['lrd', 'blagn'])
 
 # Download FITS files
 cf.download(observations=['ember_uds_p4'], gratings=['PRISM'])
@@ -82,23 +85,23 @@ cf.download(observations=['ember_uds_p4'], gratings=['PRISM'])
 spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
 print(spec.wavelength.shape, spec.flux.shape)
 
-# Iterate over all matching objects (auto-pagination)
-for obj in cf.iter_objects(object_flags=ObjectFlags.LRD):
-    print(obj['object_id'], obj['redshift'])
+# Iterate over all matching targets (auto-pagination)
+for obj in cf.iter_targets(tags=['lrd']):
+    print(obj['target_id'], obj['redshift'])
 ```
 
 ### Flag Filtering
 
 ```python
-from campfire.flags import ObjectFlags, DQFlags, SpectralFeatures
+from campfire.flags import DQFlags, SpectralFeatures
 
-# Numpy-style operators
-results = cf.query_objects(
-    object_flags=(ObjectFlags.LRD | ObjectFlags.LYA_EMITTER) & ~ObjectFlags.BROAD_LINE
+# Numpy-style operators for bitmask flags
+results = cf.query_targets(
+    spectral_features=SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION
 )
 
-# Or simple string lists
-results = cf.query_objects(object_flags=['LRD', 'LYA_EMITTER'])
+# Exclude contaminated or low-SNR spectra
+results = cf.query_targets(dq_flags=~DQFlags.CONTAMINATION & ~DQFlags.LOW_SNR)
 ```
 
 ### Spectrum Access

@@ -12,7 +12,6 @@ interface InspectionData {
   redshift_inspected: number | null;
   redshift_quality: number;
   spectral_features: number;
-  object_flags: number;
   dq_flags: number;
   last_inspected_at: string | null;
   last_inspected_by: string | null;

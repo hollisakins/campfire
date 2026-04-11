@@ -80,7 +80,7 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     max_exposure_time_min: parseNumber('exp_min'),
     max_exposure_time_max: parseNumber('exp_max'),
     spectral_features: parseNumberArray('features'),
-    object_flags: parseNumberArray('obj_flags'),
+    list_ids: parseNumberArray('tags'),
     dq_flags: parseNumberArray('dq_flags'),
     inspected_only: parseBoolean('inspected'),
     search: searchParams.get('search') || '',
@@ -88,7 +88,6 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     // Filter modes (default to 'any')
     gratings_mode: parseMode('gratings_mode'),
     spectral_features_mode: parseMode('features_mode'),
-    object_flags_mode: parseMode('obj_flags_mode'),
     dq_flags_mode: parseMode('dq_flags_mode'),
   };
 }
@@ -184,8 +183,8 @@ export function filtersToURLParams(
   if (filters.spectral_features.length > 0) {
     params.set('features', filters.spectral_features.join(','));
   }
-  if (filters.object_flags.length > 0) {
-    params.set('obj_flags', filters.object_flags.join(','));
+  if (filters.list_ids.length > 0) {
+    params.set('tags', filters.list_ids.join(','));
   }
   if (filters.dq_flags.length > 0) {
     params.set('dq_flags', filters.dq_flags.join(','));
@@ -206,9 +205,6 @@ export function filtersToURLParams(
   }
   if (filters.spectral_features.length > 0 && filters.spectral_features_mode && filters.spectral_features_mode !== 'any') {
     params.set('features_mode', filters.spectral_features_mode);
-  }
-  if (filters.object_flags.length > 0 && filters.object_flags_mode && filters.object_flags_mode !== 'any') {
-    params.set('obj_flags_mode', filters.object_flags_mode);
   }
   if (filters.dq_flags.length > 0 && filters.dq_flags_mode && filters.dq_flags_mode !== 'any') {
     params.set('dq_flags_mode', filters.dq_flags_mode);

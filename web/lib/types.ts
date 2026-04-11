@@ -161,7 +161,6 @@ export interface DbTarget {
   redshift_inspected: number | null; // Manual override
   redshift_quality: number;
   spectral_features: number;
-  object_flags: number;
   dq_flags: number;
   last_inspected_at: string | null;
   last_inspected_by: string | null;
@@ -192,6 +191,55 @@ export interface Comment {
   created_at: string;
   edited_at: string | null;
   is_deleted: boolean;
+}
+
+// Object lists (replaces object_flags bitmask)
+export interface ObjectList {
+  id: number;
+  name: string;
+  slug: string;
+  description: string | null;
+  visibility: 'private' | 'public_read' | 'public_edit';
+  is_system: boolean;
+  color: string | null;
+  icon: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ObjectListMember {
+  id: number;
+  list_id: number;
+  object_id: number | null;
+  ra: number;
+  dec: number;
+  notes: string | null;
+  added_by: string | null;
+  added_at: string;
+}
+
+export interface ObjectListWithMembership extends ObjectList {
+  is_member: boolean;
+}
+
+export interface ObjectListOverview extends ObjectList {
+  member_count: number;
+  creator_name: string | null;
+}
+
+export interface ObjectListMemberWithObject extends ObjectListMember {
+  object: {
+    id: number;
+    object_id: string;
+    field: string;
+    ra: number;
+    dec: number;
+    best_redshift: number | null;
+    best_redshift_quality: number;
+    n_spectra: number;
+    max_snr: number | null;
+  } | null;
 }
 
 export interface FlagAuditLog {
@@ -247,6 +295,7 @@ export interface SpectrumTarget extends DbTarget {
   programs?: string[];
   gratings?: string[];
   member_targets?: { target_id: string; program_slug: string; observation: string; redshift: number | null; redshift_quality: number }[];
+  lists?: { id: number; name: string; slug: string; icon: string | null; color: string | null }[];
 }
 
 // Member target with full spectra for object detail page
@@ -417,7 +466,6 @@ export function formatActivityField(fieldName: string, value: number | null): st
 
     // For bitmask fields, just show the numeric value (decoding would be complex)
     case 'spectral_features':
-    case 'object_flags':
     case 'dq_flags':
       return `${value}`;
 
@@ -431,7 +479,6 @@ export function formatFieldName(fieldName: string): string {
     'redshift_quality': 'Redshift Quality',
     'redshift_inspected': 'Redshift (Manual)',
     'spectral_features': 'Spectral Features',
-    'object_flags': 'Object Flags',
     'dq_flags': 'Data Quality',
   };
   return names[fieldName] || fieldName;

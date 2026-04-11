@@ -159,7 +159,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     (filters.max_exposure_time_min !== null ? 1 : 0) +
     (filters.max_exposure_time_max !== null ? 1 : 0) +
     (filters.spectral_features?.length ?? 0) +
-    (filters.object_flags?.length ?? 0) +
+    (filters.list_ids?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
   // Check if any filters are active (including panel filters)
@@ -191,8 +191,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
       max_exposure_time_max: null,
       spectral_features: [],
       spectral_features_mode: 'any',
-      object_flags: [],
-      object_flags_mode: 'any',
+      list_ids: [],
       dq_flags: [],
       dq_flags_mode: 'any',
     });
@@ -261,7 +260,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           selected={filters.programs}
           onChange={(selected) => updateFilter('programs', selected as string[])}
           searchable
-          footerLink={{ label: "Browse all programs", href: "/docs/data-products/programs" }}
+          footerLink={{ label: "Browse all programs", href: "/nirspec/programs" }}
         />
 
         {/* Field filter */}
@@ -280,7 +279,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           selected={filters.observations}
           onChange={(selected) => updateFilter('observations', selected as string[])}
           searchable
-          footerLink={{ label: "Browse all programs", href: "/docs/data-products/programs" }}
+          footerLink={{ label: "Browse all programs", href: "/nirspec/programs" }}
         />
 
         {/* Divider */}

@@ -3,7 +3,6 @@
 import { useState, useCallback, useRef, useMemo } from 'react';
 import {
   SPECTRAL_FEATURES,
-  OBJECT_FLAGS,
   DQ_FLAGS,
   decodeBitmask,
   encodeBitmask,
@@ -14,7 +13,6 @@ export interface InspectionInitialData {
   redshift_inspected: number | null;
   redshift_quality: number;
   spectral_features: number;
-  object_flags: number;
   dq_flags: number;
   last_inspected_at: string | null;
   last_inspected_by: string | null;
@@ -33,8 +31,6 @@ export interface InspectionState {
   setRedshiftQuality: (value: number) => void;
   spectralFeatures: (string | number)[];
   setSpectralFeatures: (value: (string | number)[]) => void;
-  objectFlags: (string | number)[];
-  setObjectFlags: (value: (string | number)[]) => void;
   dqFlags: (string | number)[];
   setDqFlags: (value: (string | number)[]) => void;
   hasChanges: boolean;
@@ -46,7 +42,7 @@ export interface InspectionState {
   save: () => Promise<{ success: boolean; propagated: number }>;
   isDirty: () => boolean;
   saveIfDirty: () => Promise<SaveIfDirtyResult>;
-  toggleFlag: (category: 'spectralFeatures' | 'objectFlags' | 'dqFlags', value: number) => void;
+  toggleFlag: (category: 'spectralFeatures' | 'dqFlags', value: number) => void;
   resetState: (newData: InspectionInitialData) => void;
   /** Counter that increments on every resetState call, used to force effect re-runs */
   resetKey: number;
@@ -63,9 +59,6 @@ export function useInspectionState(
   const [redshiftQuality, _setRedshiftQuality] = useState(initialData.redshift_quality);
   const [spectralFeatures, _setSpectralFeatures] = useState<(string | number)[]>(
     decodeBitmask(initialData.spectral_features, SPECTRAL_FEATURES)
-  );
-  const [objectFlags, _setObjectFlags] = useState<(string | number)[]>(
-    decodeBitmask(initialData.object_flags, OBJECT_FLAGS)
   );
   const [dqFlags, _setDqFlags] = useState<(string | number)[]>(
     decodeBitmask(initialData.dq_flags, DQ_FLAGS)
@@ -85,7 +78,6 @@ export function useInspectionState(
     redshiftInspected: initialData.redshift_inspected?.toString() ?? '',
     redshiftQuality: initialData.redshift_quality,
     spectralFeatures: decodeBitmask(initialData.spectral_features, SPECTRAL_FEATURES) as (string | number)[],
-    objectFlags: decodeBitmask(initialData.object_flags, OBJECT_FLAGS) as (string | number)[],
     dqFlags: decodeBitmask(initialData.dq_flags, DQ_FLAGS) as (string | number)[],
   });
   const initialDataRef = useRef(initialData);
@@ -111,11 +103,6 @@ export function useInspectionState(
     _setSpectralFeatures(value);
   }, []);
 
-  const setObjectFlags = useCallback((value: (string | number)[]) => {
-    valuesRef.current.objectFlags = value;
-    _setObjectFlags(value);
-  }, []);
-
   const setDqFlags = useCallback((value: (string | number)[]) => {
     valuesRef.current.dqFlags = value;
     _setDqFlags(value);
@@ -130,12 +117,11 @@ export function useInspectionState(
     return (
       currentRedshiftInspected !== init.redshift_inspected ||
       redshiftQuality !== init.redshift_quality ||
-      encodeBitmask(spectralFeatures, SPECTRAL_FEATURES) !== init.spectral_features ||
-      encodeBitmask(objectFlags, OBJECT_FLAGS) !== init.object_flags ||
-      encodeBitmask(dqFlags, DQ_FLAGS) !== init.dq_flags
+      encodeBitmask(spectralFeatures) !== init.spectral_features ||
+      encodeBitmask(dqFlags) !== init.dq_flags
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [redshiftInspected, redshiftQuality, spectralFeatures, objectFlags, dqFlags, saveCount]);
+  }, [redshiftInspected, redshiftQuality, spectralFeatures, dqFlags, saveCount]);
 
   // === isDirty: synchronous check using refs (always current, no render lag) ===
   const isDirty = useCallback((): boolean => {
@@ -146,9 +132,8 @@ export function useInspectionState(
     return (
       currentRI !== init.redshift_inspected ||
       v.redshiftQuality !== init.redshift_quality ||
-      encodeBitmask(v.spectralFeatures, SPECTRAL_FEATURES) !== init.spectral_features ||
-      encodeBitmask(v.objectFlags, OBJECT_FLAGS) !== init.object_flags ||
-      encodeBitmask(v.dqFlags, DQ_FLAGS) !== init.dq_flags
+      encodeBitmask(v.spectralFeatures) !== init.spectral_features ||
+      encodeBitmask(v.dqFlags) !== init.dq_flags
     );
   }, []);
 
@@ -178,9 +163,8 @@ export function useInspectionState(
         body: JSON.stringify({
           redshift_inspected: v.redshiftInspected === '' ? null : v.redshiftInspected,
           redshift_quality: v.redshiftQuality,
-          spectral_features: encodeBitmask(v.spectralFeatures, SPECTRAL_FEATURES),
-          object_flags: encodeBitmask(v.objectFlags, OBJECT_FLAGS),
-          dq_flags: encodeBitmask(v.dqFlags, DQ_FLAGS),
+          spectral_features: encodeBitmask(v.spectralFeatures),
+          dq_flags: encodeBitmask(v.dqFlags),
         }),
       });
 
@@ -198,9 +182,8 @@ export function useInspectionState(
         ...initialDataRef.current,
         redshift_inspected: v.redshiftInspected === '' ? null : parseFloat(v.redshiftInspected),
         redshift_quality: v.redshiftQuality,
-        spectral_features: encodeBitmask(v.spectralFeatures, SPECTRAL_FEATURES),
-        object_flags: encodeBitmask(v.objectFlags, OBJECT_FLAGS),
-        dq_flags: encodeBitmask(v.dqFlags, DQ_FLAGS),
+        spectral_features: encodeBitmask(v.spectralFeatures),
+        dq_flags: encodeBitmask(v.dqFlags),
       };
 
       const propagated = data.propagated || 0;
@@ -241,7 +224,7 @@ export function useInspectionState(
       : { saved: false, reason: 'save-failed' };
   }, [isDirty, save]);
 
-  const toggleFlag = useCallback((category: 'spectralFeatures' | 'objectFlags' | 'dqFlags', value: number) => {
+  const toggleFlag = useCallback((category: 'spectralFeatures' | 'dqFlags', value: number) => {
     const currentFlags = valuesRef.current[category];
     const numFlags = currentFlags.map(v => typeof v === 'number' ? v : parseInt(String(v)));
 
@@ -256,7 +239,6 @@ export function useInspectionState(
     valuesRef.current[category] = newFlags;
     const setters = {
       spectralFeatures: _setSpectralFeatures,
-      objectFlags: _setObjectFlags,
       dqFlags: _setDqFlags,
     };
     setters[category](newFlags);
@@ -269,7 +251,6 @@ export function useInspectionState(
       redshiftInspected: newData.redshift_inspected?.toString() ?? '',
       redshiftQuality: newData.redshift_quality,
       spectralFeatures: decodeBitmask(newData.spectral_features, SPECTRAL_FEATURES),
-      objectFlags: decodeBitmask(newData.object_flags, OBJECT_FLAGS),
       dqFlags: decodeBitmask(newData.dq_flags, DQ_FLAGS),
     };
 
@@ -277,7 +258,6 @@ export function useInspectionState(
     _setRedshiftInspected(newData.redshift_inspected?.toString() ?? '');
     _setRedshiftQuality(newData.redshift_quality);
     _setSpectralFeatures(decodeBitmask(newData.spectral_features, SPECTRAL_FEATURES));
-    _setObjectFlags(decodeBitmask(newData.object_flags, OBJECT_FLAGS));
     _setDqFlags(decodeBitmask(newData.dq_flags, DQ_FLAGS));
     setSaveSuccess(false);
     setSaveError(null);
@@ -291,8 +271,6 @@ export function useInspectionState(
     setRedshiftQuality,
     spectralFeatures,
     setSpectralFeatures,
-    objectFlags,
-    setObjectFlags,
     dqFlags,
     setDqFlags,
     hasChanges,

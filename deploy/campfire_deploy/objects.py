@@ -281,8 +281,13 @@ def build_objects(
 # ---------------------------------------------------------------------------
 
 def _clear_field_objects(client: Client, field: str) -> None:
-    """Null target FKs and delete objects for a field."""
-    # Must null FKs first (FK constraint has no ON DELETE SET NULL)
+    """Null target FKs and delete objects for a field.
+
+    object_list_members.object_id has ON DELETE SET NULL, so deleting
+    objects automatically nulls those FKs. They get re-linked after
+    new objects are inserted.
+    """
+    # Must null target FKs first (no ON DELETE SET NULL on targets)
     client.table('targets').update(
         {'object_id': None},
     ).eq('field', field).not_.is_('object_id', 'null').execute()
@@ -356,6 +361,23 @@ def _set_target_fks(
         total += len(batch)
 
     return total
+
+
+def _relink_list_members(client: Client, field: str) -> dict:
+    """Re-link object_list_members.object_id after object rebuild.
+
+    List members are keyed by (ra, dec) which survive rebuilds. This
+    updates the object_id FK by spatial cross-matching against the
+    newly created objects (within 0.3 arcsec tolerance).
+
+    Returns dict with keys: relinked, orphaned, orphaned_details.
+    """
+    resp = client.rpc('relink_list_members_for_field', {
+        'p_field': field,
+    }).execute()
+    if isinstance(resp.data, dict):
+        return resp.data
+    return {'relinked': 0, 'orphaned': 0, 'orphaned_details': []}
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +474,18 @@ def rebuild_field_objects(
     print(f"  Setting target FK references...")
     n_fks = _set_target_fks(client, objects, object_id_to_db_id)
     print(f"    Updated {n_fks} targets")
+
+    print(f"  Re-linking list member FKs...")
+    relink_result = _relink_list_members(client, field)
+    n_relinked = relink_result.get('relinked', 0)
+    n_orphaned = relink_result.get('orphaned', 0)
+    if n_relinked:
+        print(f"    Re-linked {n_relinked} list members")
+    if n_orphaned:
+        print(f"    WARNING: {n_orphaned} orphaned list members (no object within 0.3\"):")
+        for detail in relink_result.get('orphaned_details', []):
+            print(f"      - List \"{detail['list_name']}\": "
+                  f"RA={detail['ra']:.6f}, Dec={detail['dec']:.6f}")
 
     print_rebuild_summary(objects, targets)
 

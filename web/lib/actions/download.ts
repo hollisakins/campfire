@@ -7,7 +7,7 @@ import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { paginateRpc } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
-import { SPECTRAL_FEATURES, OBJECT_FLAGS, DQ_FLAGS } from '@/lib/flags';
+import { SPECTRAL_FEATURES, DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
 
 // JWT signing using Web Crypto API
@@ -40,6 +40,7 @@ interface ObjectsCsvRow {
   max_exposure_time: number | null;
   member_target_ids: string;   // semicolon-separated
   distance: number | null;
+  lists: string | null;        // semicolon-separated list slugs
 }
 
 interface CsvRow {
@@ -58,8 +59,8 @@ interface CsvRow {
   last_inspected_by: string | null;
   distance: number | null;
   spectral_features: number;
-  object_flags: number;
   dq_flags: number;
+  lists: string | null;        // semicolon-separated list slugs
 }
 
 interface SpectraCsvRow {
@@ -79,8 +80,8 @@ interface SpectraCsvRow {
   last_inspected_by: string | null;
   distance: number | null;
   spectral_features: number;
-  object_flags: number;
   dq_flags: number;
+  lists: string | null;        // semicolon-separated list slugs
 }
 
 /**
@@ -137,7 +138,6 @@ export async function generateCSV(
       const {
         p_observations: _obs,
         p_spectral_features_include_any: _sf1, p_spectral_features_include_all: _sf2, p_spectral_features_exclude: _sf3,
-        p_object_flags_include_any: _of1, p_object_flags_include_all: _of2, p_object_flags_exclude: _of3,
         p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
         p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
         ...objectsParams
@@ -246,8 +246,8 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
     'last_inspected_at',
     'last_inspected_by',
     ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
-    ...OBJECT_FLAGS.map(f => `flag_${f.key}`),
     ...DQ_FLAGS.map(f => `dq_${f.key}`),
+    'tags',
   ];
 
   if (includeDistance) {
@@ -279,8 +279,8 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
       escapeCsvValue(row.last_inspected_at || ''),
       escapeCsvValue(row.last_inspected_by || ''),
       ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
-      ...expandBitmask(row.object_flags, OBJECT_FLAGS),
       ...expandBitmask(row.dq_flags, DQ_FLAGS),
+      escapeCsvValue(row.lists || ''),
     );
 
     csvRows.push(values.join(','));
@@ -309,8 +309,8 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
     'last_inspected_at',
     'last_inspected_by',
     ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
-    ...OBJECT_FLAGS.map(f => `flag_${f.key}`),
     ...DQ_FLAGS.map(f => `dq_${f.key}`),
+    'tags',
   ];
 
   if (includeDistance) {
@@ -343,8 +343,8 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
       escapeCsvValue(row.last_inspected_at || ''),
       escapeCsvValue(row.last_inspected_by || ''),
       ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
-      ...expandBitmask(row.object_flags, OBJECT_FLAGS),
       ...expandBitmask(row.dq_flags, DQ_FLAGS),
+      escapeCsvValue(row.lists || ''),
     );
 
     csvRows.push(values.join(','));
@@ -371,6 +371,7 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
     'max_snr',
     'max_exposure_time',
     'member_target_ids',
+    'tags',
   ];
 
   if (includeDistance) {
@@ -401,6 +402,7 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
       row.max_snr != null ? row.max_snr.toFixed(2) : '',
       row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
       escapeCsvValue(row.member_target_ids || ''),
+      escapeCsvValue(row.lists || ''),
     );
 
     csvRows.push(values.join(','));

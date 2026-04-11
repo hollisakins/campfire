@@ -85,7 +85,6 @@ function parseUrlToFilters(
 
   // Bitmask filters (legacy + multi-mode support)
   const sf = parseFlagArrays(searchParams, 'spectral_features');
-  const of = parseFlagArrays(searchParams, 'object_flags');
   const dq = parseFlagArrays(searchParams, 'dq_flags');
 
   // Inspected only
@@ -109,10 +108,9 @@ function parseUrlToFilters(
     max_exposure_time_max: searchParams.get('max_exposure_time_max') ? parseFloat(searchParams.get('max_exposure_time_max')!) : null,
     spectral_features: sf.values,
     spectral_features_mode: sf.mode,
-    object_flags: of.values,
-    object_flags_mode: of.mode,
     dq_flags: dq.values,
     dq_flags_mode: dq.mode,
+    list_ids: [],  // Resolved below from slugs
     inspected_only: inspectedOnly,
     search: searchParams.get('search') || '',
     search_scope: (searchParams.get('search_scope') as 'target_id' | 'my_comments' | 'all_comments') || 'target_id',
@@ -145,8 +143,9 @@ function parseUrlToFilters(
  * - spectral_features_include_any: match any of these flags (OR)
  * - spectral_features_include_all: must have all of these flags (AND)
  * - spectral_features_exclude: must NOT have any of these flags (NOT)
- * (same pattern for object_flags and dq_flags)
+ * (same pattern for dq_flags)
  *
+ * - lists: comma-separated list slugs (e.g., "lrd,blagn")
  * - inspected_only: "true" to filter to inspected objects only
  * - search: text search on target_id
  * - search_scope: search scope (target_id, my_comments, all_comments; default: target_id)
@@ -186,8 +185,24 @@ export async function GET(request: NextRequest) {
 
     const searchParams = request.nextUrl.searchParams;
 
+    // Create Supabase client with service role
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
     // Parse URL params into canonical filter format, then build RPC params
     const filters = parseUrlToFilters(searchParams, accessibleProgramSlugs);
+
+    // Resolve list slugs to IDs if provided
+    const listSlugs = parseCSV(searchParams.get('lists'));
+    if (listSlugs && listSlugs.length > 0) {
+      const { data: listRows } = await supabase
+        .from('object_lists')
+        .select('id')
+        .in('slug', listSlugs);
+      filters.list_ids = (listRows ?? []).map(r => r.id);
+    }
+
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, userId);
 
     // Pagination
@@ -203,11 +218,6 @@ export async function GET(request: NextRequest) {
 
     // Incremental sync filter (ISO 8601 timestamp)
     const updatedSince = searchParams.get('updated_since') || null;
-
-    // Create Supabase client with service role
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Call the RPC function
     const { data, error } = await supabase.rpc('get_filtered_targets_paginated', {

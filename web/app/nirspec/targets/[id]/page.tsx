@@ -354,7 +354,6 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
                 redshift_inspected: spectrum.redshift_inspected,
                 redshift_quality: spectrum.redshift_quality,
                 spectral_features: spectrum.spectral_features,
-                object_flags: spectrum.object_flags,
                 dq_flags: spectrum.dq_flags,
                 last_inspected_at: spectrum.last_inspected_at,
                 last_inspected_by: spectrum.last_inspected_by,

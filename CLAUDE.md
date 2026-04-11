@@ -96,7 +96,7 @@ The migration history was squashed on 2026-03-28 into a single baseline (`202603
 
 ```bash
 python scripts/generate_seed.py          # stratified sample (~100 targets)
-python scripts/generate_seed.py --full   # full production replica (all targets + spectra)
+python scripts/generate_seed.py --objects-per-program 10  # more targets per program
 supabase db reset                        # applies migrations + seed
 cfdeploy objects --all --local           # rebuild objects table (not included in seed)
 ```

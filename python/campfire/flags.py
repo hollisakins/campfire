@@ -1,17 +1,15 @@
 """
 CAMPFIRE flag definitions and query builders.
 
-Provides numpy-style operators for filtering objects by flags:
+Provides numpy-style operators for filtering by bitmask flags:
 
-    from campfire.flags import ObjectFlags, DQFlags, SpectralFeatures
+    from campfire.flags import DQFlags, SpectralFeatures
 
-    # Has LRD OR LAE, but NOT broad line
-    cf.query_objects(
-        object_flags=(ObjectFlags.LRD | ObjectFlags.LAE) & ~ObjectFlags.BROAD_LINE
-    )
+    # Exclude contaminated or low-SNR spectra
+    cf.query_targets(dq_flags=~DQFlags.CONTAMINATION & ~DQFlags.LOW_SNR)
 
-    # Simple string-based query (like web app)
-    cf.query_objects(object_flags=['LRD', 'LAE'])
+    # Has Lyman break OR multiple emission lines
+    cf.query_targets(spectral_features=SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION)
 
 Operators:
     |  : OR  (match any of these flags)
@@ -83,7 +81,7 @@ class FlagQuery:
         Parameters
         ----------
         prefix : str
-            Parameter name prefix (e.g., 'object_flags')
+            Parameter name prefix (e.g., 'spectral_features')
 
         Returns
         -------
@@ -111,9 +109,9 @@ def queryable(cls):
     Example
     -------
     @queryable
-    class ObjectFlags(QueryableFlag):
-        LRD = 1
-        BROAD_LINE = 2
+    class SpectralFeatures(QueryableFlag):
+        CONTINUUM_BREAK = 1
+        LYMAN_BREAK = 2
     """
 
     def _or(self, other):
@@ -242,43 +240,6 @@ class SpectralFeatures(QueryableFlag):
 
 
 @queryable
-class ObjectFlags(QueryableFlag):
-    """
-    Object properties and classifications.
-
-    These flags indicate notable properties or classifications
-    assigned during visual inspection.
-    """
-
-    LRD = 1
-    """Little Red Dot - compact red source."""
-
-    BROAD_LINE = 2
-    """Broad emission line detected (AGN indicator)."""
-
-    LYA_EMITTER = 4
-    """Strong Lyman-alpha emission."""
-
-    BALMER_BREAK_GALAXY = 8
-    """Strong Balmer break indicating evolved stellar population."""
-
-    OIII_EMITTER = 16
-    """Strong [OIII] 4959,5007 emission."""
-
-    HA_EMITTER = 32
-    """Strong H-alpha emission."""
-
-    PASSIVE = 64
-    """Quiescent galaxy with little star formation."""
-
-    DUSTY = 128
-    """Significant dust attenuation."""
-
-    STAR = 256
-    """Stellar spectrum (not a galaxy)."""
-
-
-@queryable
 class DQFlags(QueryableFlag):
     """
     Data quality flags.
@@ -318,7 +279,6 @@ class DQFlags(QueryableFlag):
 # Registry of flag classes by parameter name
 _FLAG_REGISTRY: Dict[str, Type[QueryableFlag]] = {
     "spectral_features": SpectralFeatures,
-    "object_flags": ObjectFlags,
     "dq_flags": DQFlags,
 }
 
@@ -330,16 +290,15 @@ def list_flags(flag_type: Optional[str] = None) -> None:
     Parameters
     ----------
     flag_type : str, optional
-        One of 'spectral_features', 'object_flags', 'dq_flags'.
+        One of 'spectral_features', 'dq_flags'.
         If None, prints all flag types.
 
     Examples
     --------
-    >>> list_flags('object_flags')
-    ObjectFlags:
-      LRD                    = 1
-      BROAD_LINE             = 2
-      LYA_EMITTER            = 4
+    >>> list_flags('spectral_features')
+    SpectralFeatures:
+      CONTINUUM_BREAK        = 1
+      LYMAN_BREAK            = 2
       ...
     """
     if flag_type is not None:
@@ -371,7 +330,7 @@ def decode_flags(value: int, flag_type: str) -> List[str]:
     value : int
         Bitmask integer value.
     flag_type : str
-        One of 'spectral_features', 'object_flags', 'dq_flags'.
+        One of 'spectral_features', 'dq_flags'.
 
     Returns
     -------
@@ -380,8 +339,8 @@ def decode_flags(value: int, flag_type: str) -> List[str]:
 
     Examples
     --------
-    >>> decode_flags(5, 'object_flags')
-    ['LRD', 'LYA_EMITTER']
+    >>> decode_flags(3, 'spectral_features')
+    ['CONTINUUM_BREAK', 'LYMAN_BREAK']
     """
     if flag_type not in _FLAG_REGISTRY:
         raise ValueError(
@@ -402,7 +361,7 @@ def encode_flags(names: List[str], flag_type: str) -> int:
     names : list of str
         List of flag names (case-insensitive).
     flag_type : str
-        One of 'spectral_features', 'object_flags', 'dq_flags'.
+        One of 'spectral_features', 'dq_flags'.
 
     Returns
     -------
@@ -411,8 +370,8 @@ def encode_flags(names: List[str], flag_type: str) -> int:
 
     Examples
     --------
-    >>> encode_flags(['LRD', 'LYA_EMITTER'], 'object_flags')
-    5
+    >>> encode_flags(['CONTINUUM_BREAK', 'LYMAN_BREAK'], 'spectral_features')
+    3
     """
     if flag_type not in _FLAG_REGISTRY:
         raise ValueError(

@@ -15,7 +15,6 @@ from ..exceptions import (
 from ..flags import (
     DQFlags,
     FlagQuery,
-    ObjectFlags,
     SpectralFeatures,
     parse_flag_input,
 )
@@ -31,8 +30,8 @@ def _build_query_params(
     redshift_quality: Optional[List[int]] = None,
     max_snr_range: Optional[Tuple[float, float]] = None,
     spectral_features=None,
-    object_flags=None,
     dq_flags=None,
+    tags: Optional[List[str]] = None,
     inspected_only: Optional[bool] = None,
     search: Optional[str] = None,
     cone_search: Optional[Tuple[float, float, float]] = None,
@@ -71,13 +70,12 @@ def _build_query_params(
     if sf_query:
         params.update(sf_query.to_params("spectral_features"))
 
-    of_query = parse_flag_input(object_flags, ObjectFlags)
-    if of_query:
-        params.update(of_query.to_params("object_flags"))
-
     dq_query = parse_flag_input(dq_flags, DQFlags)
     if dq_query:
         params.update(dq_query.to_params("dq_flags"))
+
+    if tags:
+        params["lists"] = ",".join(tags)
 
     if inspected_only is not None:
         params["inspected_only"] = "true" if inspected_only else "false"
@@ -377,6 +375,19 @@ class APIClient:
         return self._paginate_sync_endpoint(
             "/sync/objects", updated_since, on_page_complete,
         )
+
+    def fetch_tags(self) -> List[dict]:
+        """Fetch all tag metadata via the /sync/lists endpoint.
+
+        Returns
+        -------
+        list of dict
+            Tag metadata (slug, name, description, visibility, etc.).
+        """
+        self._session._ensure_valid_token()
+        response = self._session.get("/sync/lists", timeout=30)
+        _handle_response_error(response, "fetching tags")
+        return response.json().get("data", [])
 
     # Deprecated aliases (old names → new names)
     query_objects = query_targets

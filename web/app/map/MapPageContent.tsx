@@ -58,7 +58,7 @@ export function MapPageContent({
       filters.max_exposure_time_min !== null ||
       filters.max_exposure_time_max !== null ||
       (filters.spectral_features?.length ?? 0) > 0 ||
-      (filters.object_flags?.length ?? 0) > 0 ||
+      (filters.list_ids?.length ?? 0) > 0 ||
       (filters.dq_flags?.length ?? 0) > 0 ||
       filters.search.length > 0
     );

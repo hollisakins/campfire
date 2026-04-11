@@ -80,6 +80,7 @@ FILTER_WAVELENGTHS = {
     'f210m': (2.096375, 1.961600, 2.232600),
     'f250m': (2.503802, 2.393530, 2.616900),
     'f277w': (2.769332, 2.365900, 3.216190),
+    'f300m': (2.990760, 2.770020, 3.247010),
     'f335m': (3.363887, 3.118640, 3.642920),
     'f356w': (3.576787, 3.070000, 4.078020),
     'f360m': (3.626058, 3.322680, 3.902360),
@@ -113,44 +114,43 @@ def _get_cosmos_paths():
 
     if hostname == 'patrick':
         image_data = {
-            'u': '/Users/hba423/simmons/mosaics/cosmos/cfht/cfht_u_{ext}_{tile}.fits',
-            'g': '/Users/hba423/simmons/mosaics/cosmos/hsc/hsc_g_{ext}_{tile}.fits',
-            'r': '/Users/hba423/simmons/mosaics/cosmos/hsc/hsc_r_{ext}_{tile}.fits',
-            'i': '/Users/hba423/simmons/mosaics/cosmos/hsc/hsc_i_{ext}_{tile}.fits',
-            'z': '/Users/hba423/simmons/mosaics/cosmos/hsc/hsc_z_{ext}_{tile}.fits',
-            'y': '/Users/hba423/simmons/mosaics/cosmos/hsc/hsc_y_{ext}_{tile}.fits',
-            'Y': '/Users/hba423/simmons/mosaics/cosmos/uvista/uvista_Y_{ext}_{tile}.fits',
-            'J': '/Users/hba423/simmons/mosaics/cosmos/uvista/uvista_J_{ext}_{tile}.fits',
-            'H': '/Users/hba423/simmons/mosaics/cosmos/uvista/uvista_H_{ext}_{tile}.fits',
-            'Ks': '/Users/hba423/simmons/mosaics/cosmos/uvista/uvista_Ks_{ext}_{tile}.fits',
+            'u': '/V/maurice/mosaics/cosmos/cfht/cfht_u_{ext}_{tile}.fits',
+            'g': '/V/maurice/mosaics/cosmos/hsc/hsc_g_{ext}_{tile}.fits',
+            'r': '/V/maurice/mosaics/cosmos/hsc/hsc_r_{ext}_{tile}.fits',
+            'i': '/V/maurice/mosaics/cosmos/hsc/hsc_i_{ext}_{tile}.fits',
+            'z': '/V/maurice/mosaics/cosmos/hsc/hsc_z_{ext}_{tile}.fits',
+            'y': '/V/maurice/mosaics/cosmos/hsc/hsc_y_{ext}_{tile}.fits',
+            'Y': '/V/maurice/mosaics/cosmos/uvista/uvista_Y_{ext}_{tile}.fits',
+            'J': '/V/maurice/mosaics/cosmos/uvista/uvista_J_{ext}_{tile}.fits',
+            'H': '/V/maurice/mosaics/cosmos/uvista/uvista_H_{ext}_{tile}.fits',
+            'Ks': '/V/maurice/mosaics/cosmos/uvista/uvista_Ks_{ext}_{tile}.fits',
             'f435w': '/V/maurice/mosaics/cosmos/f435w/mosaic_cosmos_all_hst_acs_wfc_f435w_30mas_tile_{tile}_v0.3_{ext}.fits',
             'f606w': '/V/maurice/mosaics/cosmos/f606w/mosaic_cosmos_all_hst_acs_wfc_f606w_30mas_tile_{tile}_v0.3_{ext}.fits',
             'f814w': '/V/maurice/mosaics/cosmos/f814w/mosaic_cosmos_web_30mas_tile_{tile}_hst_acs_wfc_f814w_{ext}.fits',
             'f098m': '/V/maurice/mosaics/cosmos/f098m/mosaic_cosmos_all_hst_wfc3_ir_f098m_30mas_tile_{tile}_v0.3_{ext}.fits',
-            'f090w': '/V/maurice/mosaics/cosmos/f090w/mosaic_nircam_f090w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f115w': '/V/maurice/mosaics/cosmos/f115w/mosaic_nircam_f115w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f140m': '/V/maurice/mosaics/cosmos/f140m/mosaic_nircam_f140m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f150w': '/V/maurice/mosaics/cosmos/f150w/mosaic_nircam_f150w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f182m': '/V/maurice/mosaics/cosmos/f182m/mosaic_nircam_f182m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f200w': '/V/maurice/mosaics/cosmos/f200w/mosaic_nircam_f200w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f210m': '/V/maurice/mosaics/cosmos/f210m/mosaic_nircam_f210m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f250m': '/V/maurice/mosaics/cosmos/f250m/mosaic_nircam_f250m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f277w': '/V/maurice/mosaics/cosmos/f277w/mosaic_nircam_f277w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f335m': '/V/maurice/mosaics/cosmos/f335m/mosaic_nircam_f335m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f356w': '/V/maurice/mosaics/cosmos/f356w/mosaic_nircam_f356w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f360m': '/V/maurice/mosaics/cosmos/f360m/mosaic_nircam_f360m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f410m': '/V/maurice/mosaics/cosmos/f410m/mosaic_nircam_f410m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f430m': '/V/maurice/mosaics/cosmos/f430m/mosaic_nircam_f430m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f444w': '/V/maurice/mosaics/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f460m': '/V/maurice/mosaics/cosmos/f460m/mosaic_nircam_f460m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f480m': '/V/maurice/mosaics/cosmos/f480m/mosaic_nircam_f480m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f770w': '/Users/hba423/simmons/cosmos/f770w/mosaic_miri_f770w_COSMOS-Web_30mas_{tile}_v1.0_{ext}.fits',
-            'gri': '/Users/hba423/simmons/mosaics/cosmos/hsc/hsc_gri_{ext}_{tile}.fits',
+            'f090w': '/V/maurice/mosaics/cosmos/f090w/mosaic_nircam_f090w_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f115w': '/V/maurice/mosaics/cosmos/f115w/mosaic_nircam_f115w_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f140m': '/V/maurice/mosaics/cosmos/f140m/mosaic_nircam_f140m_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f150w': '/V/maurice/mosaics/cosmos/f150w/mosaic_nircam_f150w_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f182m': '/V/maurice/mosaics/cosmos/f182m/mosaic_nircam_f182m_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f200w': '/V/maurice/mosaics/cosmos/f200w/mosaic_nircam_f200w_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f210m': '/V/maurice/mosaics/cosmos/f210m/mosaic_nircam_f210m_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f250m': '/V/maurice/mosaics/cosmos/f250m/mosaic_nircam_f250m_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f277w': '/V/maurice/mosaics/cosmos/f277w/mosaic_nircam_f277w_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f300m': '/V/maurice/mosaics/cosmos/f300m/mosaic_nircam_f300m_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f335m': '/V/maurice/mosaics/cosmos/f335m/mosaic_nircam_f335m_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f356w': '/V/maurice/mosaics/cosmos/f356w/mosaic_nircam_f356w_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f360m': '/V/maurice/mosaics/cosmos/f360m/mosaic_nircam_f360m_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f410m': '/V/maurice/mosaics/cosmos/f410m/mosaic_nircam_f410m_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f444w': '/V/maurice/mosaics/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f480m': '/V/maurice/mosaics/cosmos/f480m/mosaic_nircam_f480m_cosmos_30mas_{version}_{tile}_{ext}.fits',
+            'f770w': '/V/maurice/mosaics/cosmos/f770w/mosaic_miri_f770w_COSMOS-Web_30mas_{tile}_v1.0_{ext}.fits',
+            'gri': '/V/maurice/mosaics/cosmos/hsc/hsc_gri_{ext}_{tile}.fits',
             'vis': '/V/maurice/mosaics/cosmos/vis/mosaic_euclid_vis_cosmos_30mas_v1_{tile}_{ext}.fits',
         }
-        catalog_file = '/Users/hba423/simmons/cosmos/catalog_cosmos_v1.1_merged.fits'
-        detection_image = '/research/COSMOS-3D/highz/catalog/cosmos_v1.0/detection_images/detection_image_ivw_{tile}.fits'
-        segmentation_image = '/research/COSMOS-3D/highz/catalog/cosmos_v1.0/detection_images/segmap_ivw_hot+cold_{tile}.fits'
+        catalog_file = '/Users/hba423/simmons/cosmos_v1.2/data/catalog_cosmos_v1.2_merged_zpcorr.fits'
+        detection_image = '/Users/hba423/simmons/cosmos_v1.2/data/detection_images/detection_image_ivw_{tile}.fits'
+        segmentation_image = '/Users/hba423/simmons/cosmos_v1.2/data/detection_images/segmap_ivw_hot+cold_{tile}.fits'
 
     elif hostname == 'gerald':
         image_data = {
@@ -193,43 +193,7 @@ def _get_cosmos_paths():
         segmentation_image = '/research/COSMOS-3D/highz/catalog/cosmos_v1.0/detection_images/segmap_ivw_hot+cold_{tile}.fits'
 
     else:  # candide
-        image_data = {
-            'u': '/V/maurice/mosaics/cosmos/cfht/cfht_u_{ext}_{tile}.fits',
-            'g': '/V/maurice/mosaics/cosmos/hsc/hsc_g_{ext}_{tile}.fits',
-            'r': '/V/maurice/mosaics/cosmos/hsc/hsc_r_{ext}_{tile}.fits',
-            'i': '/V/maurice/mosaics/cosmos/hsc/hsc_i_{ext}_{tile}.fits',
-            'z': '/V/maurice/mosaics/cosmos/hsc/hsc_z_{ext}_{tile}.fits',
-            'y': '/V/maurice/mosaics/cosmos/hsc/hsc_y_{ext}_{tile}.fits',
-            'Y': '/V/maurice/mosaics/cosmos/uvista/uvista_Y_{ext}_{tile}.fits',
-            'J': '/V/maurice/mosaics/cosmos/uvista/uvista_J_{ext}_{tile}.fits',
-            'H': '/V/maurice/mosaics/cosmos/uvista/uvista_H_{ext}_{tile}.fits',
-            'Ks': '/V/maurice/mosaics/cosmos/uvista/uvista_Ks_{ext}_{tile}.fits',
-            'f435w': '/V/maurice/mosaics/cosmos/f435w/mosaic_cosmos_all_hst_acs_wfc_f435w_30mas_tile_{tile}_v0.3_{ext}.fits',
-            'f606w': '/V/maurice/mosaics/cosmos/f606w/mosaic_cosmos_all_hst_acs_wfc_f606w_30mas_tile_{tile}_v0.3_{ext}.fits',
-            'f814w': '/V/maurice/mosaics/cosmos/f814w/mosaic_cosmos_web_30mas_tile_{tile}_hst_acs_wfc_f814w_{ext}.fits',
-            'f098m': '/V/maurice/mosaics/cosmos/f098m/mosaic_cosmos_all_hst_wfc3_ir_f098m_30mas_tile_{tile}_v0.3_{ext}.fits',
-            'f090w': '/V/maurice/mosaics/cosmos/f090w/mosaic_nircam_f090w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f115w': '/V/maurice/mosaics/cosmos/f115w/mosaic_nircam_f115w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f140m': '/V/maurice/mosaics/cosmos/f140m/mosaic_nircam_f140m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f150w': '/V/maurice/mosaics/cosmos/f150w/mosaic_nircam_f150w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f182m': '/V/maurice/mosaics/cosmos/f182m/mosaic_nircam_f182m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f200w': '/V/maurice/mosaics/cosmos/f200w/mosaic_nircam_f200w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f210m': '/V/maurice/mosaics/cosmos/f210m/mosaic_nircam_f210m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f250m': '/V/maurice/mosaics/cosmos/f250m/mosaic_nircam_f250m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f277w': '/V/maurice/mosaics/cosmos/f277w/mosaic_nircam_f277w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f335m': '/V/maurice/mosaics/cosmos/f335m/mosaic_nircam_f335m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f356w': '/V/maurice/mosaics/cosmos/f356w/mosaic_nircam_f356w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f360m': '/V/maurice/mosaics/cosmos/f360m/mosaic_nircam_f360m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f410m': '/V/maurice/mosaics/cosmos/f410m/mosaic_nircam_f410m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f430m': '/V/maurice/mosaics/cosmos/f430m/mosaic_nircam_f430m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f444w': '/V/maurice/mosaics/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f460m': '/V/maurice/mosaics/cosmos/f460m/mosaic_nircam_f460m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'f480m': '/V/maurice/mosaics/cosmos/f480m/mosaic_nircam_f480m_cosmos_30mas_v0p7_{tile}_{ext}.fits',
-            'vis': '/V/maurice/mosaics/cosmos/vis/mosaic_euclid_vis_cosmos_30mas_v1_{tile}_{ext}.fits',
-        }
-        catalog_file = '/V/maurice/catalog_cosmos_v1.1_merged.fits'
-        detection_image = '/V/maurice/detection_images/detection_image_ivw_{tile}.fits'
-        segmentation_image = '/V/maurice/detection_images/segmap_ivw_hot+cold_{tile}.fits'
+        raise NotImplementedError
 
     return image_data, catalog_file, detection_image, segmentation_image
 
@@ -276,8 +240,10 @@ class InspectionPlotGenerator:
         cutout_kwargs=dict(vmin=-3, vmax=8, cmap="Greys"),
         verbose=False,
         lazy_runs=None,
+        version=None,
     ):
         self.field = field
+        self.version = version
         self.output_dir = output_dir
         self.output_file_base = output_file_base
         self.output_format = output_format
@@ -315,6 +281,11 @@ class InspectionPlotGenerator:
                 filepath = filepath.replace('{tile}', tile)
             if '{ext}' in filepath:
                 filepath = filepath.replace('{ext}', 'sci')
+            if '{version}' in filepath:
+                if os.path.exists(filepath.replace('{version}', 'v0p8')):
+                    filepath = filepath.replace('{version}', 'v0p8')
+                else:
+                    filepath = filepath.replace('{version}', 'v0p7')
 
             try:
                 with fits.open(filepath) as hdul:
@@ -368,6 +339,11 @@ class InspectionPlotGenerator:
         filepath = self.image_data[band]
         if '{tile}' in filepath:
             filepath = filepath.replace('{tile}', tile)
+        if '{version}' in filepath:
+            if os.path.exists(filepath.replace('{ext}', 'sci').replace('{version}', 'v0p8')):
+                filepath = filepath.replace('{version}', 'v0p8')
+            else:
+                filepath = filepath.replace('{version}', 'v0p7')
         if '{ext}' in filepath:
             if os.path.exists(filepath.replace('{ext}', 'sci')):
                 filepath = filepath.replace('{ext}', 'sci')
@@ -416,62 +392,70 @@ class InspectionPlotGenerator:
         return result
 
     @staticmethod
-    def plot_data(ax,
-                  wav, wav_min, wav_max,
-                  flux, flux_err,
-                  colors, sizes, zorders,
-                  plot_xerr=True, annotate=True, label=None,
-                  marker='o', mew=1):
+    def plot_data(ax, 
+        wav, 
+        wav_min, 
+        wav_max, 
+        flux, 
+        flux_err, 
+        colors, 
+        sizes, 
+        zorders, 
+        plot_xerr=True, 
+        annotate=True, 
+        label=None,
+        marker='o', 
+        mew=1,
+    ):
 
         min_mag, max_mag = 0, -32
 
         colors = np.array(colors)
-        wav = wav[flux_err > 0]
-        wav_min = wav_min[flux_err > 0]
-        wav_max = wav_max[flux_err > 0]
-        colors = colors[flux_err > 0]
-        flux = flux[flux_err > 0]
-        flux_err = flux_err[flux_err > 0]
-
-        snrs = flux / flux_err
-        flux_uplim = 2.5 * np.log10(2 * flux_err / 3631e6)
-        flux_upper_err = 2.5 * np.log10((flux + flux_err) / 3631e6) - 2.5 * np.log10(flux / 3631e6)
-        flux_lower_err = 2.5 * np.log10(flux / 3631e6) - 2.5 * np.log10((flux - flux_err) / 3631e6)
-        flux = 2.5 * np.log10(flux / 3631e6)
-        for w, w1, w2, f, f_up_err, f_lo_err, f_up_lim, snr, c, s, z in zip(
-            wav, wav_min, wav_max, flux, flux_upper_err, flux_lower_err, flux_uplim, snrs, colors, sizes, zorders
-        ):
-            if f + f_up_err > -16:
+        wav = wav[flux_err>0]
+        wav_min = wav_min[flux_err>0]
+        wav_max = wav_max[flux_err>0]
+        colors = colors[flux_err>0]
+        flux = flux[flux_err>0]
+        flux_err = flux_err[flux_err>0]
+        
+        snrs = flux/flux_err
+        flux_uplim = 2.5*np.log10(2*flux_err/3631e6)
+        flux_upper_err = 2.5*np.log10((flux+flux_err)/3631e6) - 2.5*np.log10(flux/3631e6)
+        flux_lower_err = 2.5*np.log10(flux/3631e6) - 2.5*np.log10((flux-flux_err)/3631e6)
+        flux = 2.5*np.log10(flux/3631e6)
+        for w, w1, w2, f, f_up_err, f_lo_err, f_up_lim, snr, c, s, z in zip(wav, wav_min, wav_max, flux, flux_upper_err, flux_lower_err, flux_uplim, snrs, colors, sizes, zorders):
+            if f+f_up_err > -16: 
                 continue
             if snr > 1.5:
                 try:
-                    ax.errorbar(w, f, yerr=[[f_lo_err], [f_up_err]], linewidth=0, marker=marker, ms=s,
+                    ax.errorbar(w, f, yerr=[[f_lo_err],[f_up_err]], linewidth=0, marker=marker, ms=s, 
                                 mfc=c, mec=c, elinewidth=mew, ecolor=c, mew=mew, capthick=0, capsize=0, zorder=z)
                     if plot_xerr:
-                        ax.errorbar(w, f, xerr=[[w - w1], [w2 - w]], linewidth=0, marker='none',
+                        ax.errorbar(w, f, xerr=[[w-w1],[w2-w]], linewidth=0, marker='none',
                                     elinewidth=mew, ecolor=c, mew=mew, capthick=0, capsize=0, zorder=z)
                 except ValueError:
                     continue
                 if not np.isinf(f):
-                    min_mag = np.nanmin([min_mag, f - f_lo_err])
-                    max_mag = np.nanmax([max_mag, f + f_up_err])
+                    min_mag = np.nanmin([min_mag, f-f_lo_err])
+                    max_mag = np.nanmax([max_mag, f+f_up_err])
             else:
                 ax.errorbar(w, f_up_lim, yerr=0.3, uplims=True, linewidth=0,
-                            mfc='none', mec=c, elinewidth=mew, ecolor=c, mew=mew, capthick=1, capsize=s / 2, zorder=z)
+                            mfc='none', mec=c, elinewidth=mew, color=c, ecolor=c, mew=mew, capthick=1, capsize=s/2, zorder=z)
                 if plot_xerr:
-                    ax.errorbar(w, f_up_lim, xerr=[[w - w1], [w2 - w]], linewidth=0, marker='none',
+                    ax.errorbar(w, f_up_lim, xerr=[[w-w1],[w2-w]], linewidth=0, marker='none', 
                                 elinewidth=mew, ecolor=c, mew=mew, capthick=0, capsize=0, zorder=z)
                 if not np.isinf(f_up_lim):
-                    min_mag = np.nanmin([min_mag, f_up_lim - 0.3])
+                    min_mag = np.nanmin([min_mag, f_up_lim-0.3])
                     max_mag = np.nanmax([max_mag, f_up_lim])
 
         if label:
-            handle = ax.errorbar(-100, -100, xerr=1, yerr=1, linewidth=0, marker=marker, ms=sizes[0], mfc=colors[0],
-                                 elinewidth=mew, mec=colors[0], ecolor=colors[0], mew=mew, capthick=0, capsize=0, zorder=1)
+            handle = ax.errorbar(-100,-100, xerr=1, yerr=1, linewidth=0, marker=marker, ms=sizes[0], mfc=colors[0],
+                elinewidth=mew, mec=colors[0], ecolor=colors[0], mew=mew, capthick=0, capsize=0, zorder=1)
+
             return min_mag, max_mag, handle
-
+        
         return min_mag, max_mag
-
+    
     def make_single_object_plot(self, ID,
                                 overwrite=False, notes=None, msata=False,
                                 prism_wavelength_coverage=None,
@@ -540,13 +524,15 @@ class InspectionPlotGenerator:
             ax.tick_params(labelleft=False, labelbottom=False, left=False, right=False, top=False, bottom=False, which='both')
 
         fig.text(0.015, 0.980, f'ID: {ID}', va='top', ha='left', fontsize=12, weight='bold')
+        txt = f'{self.field}'
         if tile is not None:
-            fig.text(0.015, 0.955, f'{self.field}-{tile}', va='top', ha='left', fontsize=12)
-        else:
-            fig.text(0.015, 0.955, f'{self.field}', va='top', ha='left', fontsize=12)
+            txt += f'-{tile}'
+        if self.version is not None:
+            txt += f' ({self.version})'
+        fig.text(0.015, 0.955, txt, va='top', ha='left', fontsize=12)
 
         if notes is not None:
-            fig.text(0.15, 0.955, str(notes), va='top', ha='left', fontsize=12, color='k')
+            fig.text(0.20, 0.955, str(notes), va='top', ha='left', fontsize=12, color='k')
 
         fig.text(0.985, 0.980, f'RA, Dec: ({coordstring[0]}, {coordstring[1]})', va='top', ha='right', fontsize=12)
         fig.text(0.985, 0.955, f'({coord.ra.value:.7f}, {coord.dec.value:.6f})', va='top', ha='right', fontsize=12)
@@ -658,9 +644,14 @@ class InspectionPlotGenerator:
         cen = np.shape(d)[0] // 2
 
         if msata:
-            from scipy.ndimage import uniform_filter
+            from astropy.convolution import convolve_fft, Box2DKernel
             box_size = 9
-            sci_smoothed = uniform_filter(detec_sci_cutout.data * 0.02115399, size=box_size, mode='constant') * (box_size ** 2)
+            kernel = Box2DKernel(box_size)
+            sci_smoothed = convolve_fft(
+                detec_sci_cutout.data * 0.02115399, kernel,
+                boundary='fill', fill_value=0.0,
+                nan_treatment='interpolate',
+            ) * (box_size ** 2)
             sci = 2.5 * np.log10(sci_smoothed / 3631e6)
             cmap_detec = plt.colormaps['Greys_r']
             cmap_detec.set_bad('k')
@@ -724,14 +715,14 @@ class InspectionPlotGenerator:
         handles, labels = [], []
 
         short_names = ['vis', 'f435w', 'f606w', 'f814w', 'f098m', 'f090w', 'f115w', 'f140m', 'f150w', 'f182m',
-                        'f200w', 'f210m', 'f250m', 'f277w', 'f335m', 'f356w', 'f360m', 'f410m', 'f430m', 'f444w',
-                        'f460m', 'f480m', 'f770w']
+                        'f200w', 'f210m', 'f250m', 'f277w', 'f300m', 'f335m', 'f356w', 'f360m', 'f410m', 'f444w',
+                        'f480m', 'f770w']
         wav = np.array([FILTER_WAVELENGTHS[n][0] for n in short_names])
         wav_min = np.array([FILTER_WAVELENGTHS[n][1] for n in short_names])
         wav_max = np.array([FILTER_WAVELENGTHS[n][2] for n in short_names])
 
-        flux_cols = [f'f_auto_{band}' for band in short_names]
-        error_cols = [f'e_auto_{band}' for band in short_names]
+        flux_cols = [f'f_auto_{band}_zpcorr' for band in short_names]
+        error_cols = [f'e_auto_{band}_zpcorr' for band in short_names]
 
         flux = np.array([cat[col] for col in flux_cols])
         error = np.array([cat[col] for col in error_cols])
@@ -772,46 +763,54 @@ class InspectionPlotGenerator:
             for key, lazy_run in self.lazy_runs.items():
                 label_text = lazy_run.get('label', None)
                 file = lazy_run.get('file', None)
-                file_lowz = lazy_run.get('file_lowz', None)
                 color = lazy_run.get('color', None)
 
-                if file_lowz:
-                    lazy = fits.getdata(file_lowz, ext=1)
-                    i = np.where(lazy['ID'] == ID)[0][0]
-                    z_best = lazy['z_best'][i]
-                    lazy_chi2_lowz = lazy['chi2'][i]
+                lazy = fits.getdata(file, ext=1)
+                lazy_pz = fits.getdata(file, ext=2)
+                lazy_sed1 = fits.getdata(file, ext=3)
+                lazy_sed2 = fits.getdata(file, ext=4)
+                i = np.where(lazy['ID'] == ID)[0][0]
+                templ_run = lazy['TEMPL_RUN'][i]
+                has_lowz = 'delta_chi2' in lazy.dtype.names
 
-                    lazy_sed = fits.getdata(file_lowz, ext=-1)
+                if has_lowz:
+                    z_best = lazy['z_best_lowz'][i]
+                    lazy_chi2_lowz = lazy['chi2'][i] + lazy['delta_chi2'][i]
+                    if templ_run == 'fiducial':
+                        lazy_sed = lazy_sed1
+                        coeffs = lazy['coeffs_lowz_fiducial'][i]
+                    else:
+                        lazy_sed = lazy_sed2
+                        coeffs = lazy['coeffs_lowz_schr'][i]
                     izbest = np.argmin(np.abs(z_best - lazy_sed['z']))
                     template_names = [n for n in lazy_sed.dtype.names if n != 'z']
-                    templates = np.array([lazy_sed[template][izbest] for template in template_names])
-                    coeffs = lazy['coeffs'][i]
+                    templates = np.array([lazy_sed[t][izbest] for t in template_names])
                     x = lazy_sed[template_names[0]][0] * (1 + z_best) / 1e4
                     y = np.dot(templates.T, coeffs)
                     y = 2.5 * np.log10(y / 3631e6)
                     y = np.where(~np.isfinite(y), -99, y)
                     p_lowz, = ax_sed.plot(x, y, linewidth=0.8, color='0.7', zorder=1)
 
-                    lazy_pz = fits.getdata(file_lowz, ext=2)
-                    x = lazy_pz['Pz'][0]
-                    y = lazy_pz['Pz'][i + 1]
+                    x = lazy_pz['Pz_lowz'][0]
+                    y = lazy_pz['Pz_lowz'][i + 1]
                     y = y / np.max(y)
                     ax_pz.fill_between(x, y, facecolor='0.7', edgecolor='none', alpha=0.2)
                     ax_pz.plot(x, y, color='0.7', linewidth=0.8)
 
-                lazy = fits.getdata(file, ext=1)
-                i = np.where(lazy['ID'] == ID)[0][0]
                 z_best = lazy['z_best'][i]
                 lazy_chi2 = lazy['chi2'][i]
-
-                if file_lowz:
+                if has_lowz:
                     delta_chi2 = lazy_chi2_lowz - lazy_chi2
 
-                lazy_sed = fits.getdata(file, ext=3)
+                if templ_run == 'fiducial':
+                    lazy_sed = lazy_sed1
+                    coeffs = lazy['coeffs_fiducial'][i]
+                else:
+                    lazy_sed = lazy_sed2
+                    coeffs = lazy['coeffs_schr'][i]
                 izbest = np.argmin(np.abs(z_best - lazy_sed['z']))
                 template_names = [n for n in lazy_sed.dtype.names if n != 'z']
-                templates = np.array([lazy_sed[template][izbest] for template in template_names])
-                coeffs = lazy['coeffs'][i]
+                templates = np.array([lazy_sed[t][izbest] for t in template_names])
                 lam_rest = lazy_sed[template_names[0]][0] / 1e4
                 lam_obs = lam_rest * (1 + z_best)
                 fnu = np.dot(templates.T, coeffs)
@@ -854,7 +853,7 @@ class InspectionPlotGenerator:
                 handles.append(p)
                 labels.append(label_text + r' ($z =' f'{zmed:.1f}' r'^{+' f'{zuperr:.1f}' r'}_{-' f'{zloerr:.1f}' r'}$)')
 
-                if file_lowz:
+                if has_lowz:
                     handles.append(p_lowz)
                     labels.append(label_text + ' (forced $z<7$)')
 
@@ -981,7 +980,7 @@ class InspectionPlotGenerator:
             dec_s = prism_shutter[1]
             shutter_c = SkyCoord(ra_s, dec_s, unit='deg')
             pa = prism_shutter[2] * u.deg
-            for i in [-1, 0, 1]:
+            for i in [-2, -1, 0, 1, 2]:
                 c = shutter_c.directional_offset_by(-pa, i * 0.53 * u.arcsec)
                 p = mpl.patches.Rectangle(
                     ((c.ra.value - coord.ra.value - 0.22 / 3600 / 2) * 3600,
@@ -998,7 +997,7 @@ class InspectionPlotGenerator:
             dec_s = g395m_shutter[1]
             shutter_c = SkyCoord(ra_s, dec_s, unit='deg')
             pa = g395m_shutter[2] * u.deg
-            for i in [-1, 0, 1]:
+            for i in [-2, -1, 0, 1, 2]:
                 c = shutter_c.directional_offset_by(-pa, i * 0.53 * u.arcsec)
                 p = mpl.patches.Rectangle(
                     ((c.ra.value - coord.ra.value - 0.22 / 3600 / 2) * 3600,
@@ -1065,26 +1064,7 @@ def generate_sed_plots(
 
     # Cross-match with COSMOS positions catalog
     _, catalog_file, _, _ = _get_cosmos_paths()
-    pos_catalog_path = catalog_file.replace('catalog_cosmos_v1.1_merged.fits',
-                                            '../target_selection/cosmos/data/cosmos_v1.1_positions.ecsv')
-    # Try standard positions file locations
-    positions_candidates = [
-        '/research/EMBER/target_selection/cosmos/data/cosmos_v1.1_positions.ecsv',
-        pos_catalog_path,
-    ]
-    root = os.environ.get('CAMPFIRE_ROOT', '')
-    if root:
-        positions_candidates.insert(0, os.path.join(root, 'config', 'cosmos_v1.1_positions.ecsv'))
-
-    pos = None
-    for path in positions_candidates:
-        if os.path.exists(path):
-            pos = Table.read(path)
-            break
-
-    if pos is None:
-        print("Warning: Could not find COSMOS positions catalog. Skipping SED generation.")
-        return 0
+    pos = Table.read(catalog_file)[['id','ra','dec']]
 
     coords = SkyCoord(pos['ra'], pos['dec'], unit='deg')
 
@@ -1092,18 +1072,14 @@ def generate_sed_plots(
         field='cosmos',
         output_dir=str(obs_dir),
         output_file_base='cosmos_sed',
+        version='v1.2',
         lazy_runs={
-            'fiducial': {
-                'label': "Lazy.jl AUTO",
-                'file': '/Users/hba423/simmons/cosmos/catalog_cosmos_v1.1_merged_lazy.fits',
-                'file_lowz': '/Users/hba423/simmons/cosmos/catalog_cosmos_v1.1_merged_lazy_lowz.fits',
-                'color': '#1751ff',
-            },
-            'auto': {
-                'label': 'Lazy.jl CIRC',
-                'file': '/Users/hba423/simmons/cosmos/catalog_cosmos_v1.1_merged_lazy_aper.fits',
-                'color': '#A4D0A4',
-            },
+            'fiducial':
+                {
+                    'label': "Lazy.jl AUTO",
+                    'file': f'/Users/hba423/simmons/cosmos_v1.2/data/catalog_cosmos_v1.2_merged_lazy_fiducial_hybrid.fits',
+                    'color': '#1751ff',
+                },
         },
     )
 

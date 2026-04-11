@@ -216,8 +216,8 @@ high_z = objects[objects['redshift'] > 3.0]
 | `redshift_inspected` | float | Manually inspected redshift |
 | `redshift_quality` | int | Quality (0=none, 1=impossible, 2=tentative, 3=probable) |
 | `spectral_features` | int | Bitmask (see [Flags](/docs/inspection/flags)) |
-| `object_flags` | int | Bitmask (see [Flags](/docs/inspection/flags)) |
 | `dq_flags` | int | Bitmask (see [Flags](/docs/inspection/flags)) |
+| `lists` | str | Semicolon-separated tag slugs |
 | `max_snr` | float | Maximum signal-to-noise ratio |
 
 **spectra.csv columns:**

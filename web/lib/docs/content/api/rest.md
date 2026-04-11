@@ -40,9 +40,7 @@ Query targets with filters.
 | `spectral_features_include_any` | int | Match any of these flags |
 | `spectral_features_include_all` | int | Must have all flags |
 | `spectral_features_exclude` | int | Must not have any flags |
-| `object_flags_include_any` | int | Same pattern |
-| `object_flags_include_all` | int | |
-| `object_flags_exclude` | int | |
+| `lists` | string | Comma-separated tag slugs (e.g., `lrd,blagn`) |
 | `dq_flags_include_any` | int | Same pattern |
 | `dq_flags_include_all` | int | |
 | `dq_flags_exclude` | int | |

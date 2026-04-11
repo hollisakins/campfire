@@ -14,13 +14,13 @@ from typing import Dict, List, Optional, Tuple, Union
 
 # Schema version — bump when tables change.
 # Squashed to v1 on 2026-04-06; existing databases must be deleted and re-synced.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Column lists used by both store and export
 TARGET_COLUMNS = [
     "id", "target_id", "program_slug", "program_name", "field", "observation",
     "ra", "dec", "redshift", "redshift_auto", "redshift_inspected",
-    "redshift_quality", "spectral_features", "object_flags", "dq_flags",
+    "redshift_quality", "spectral_features", "dq_flags",
     "max_snr", "max_exposure_time",
     "last_inspected_at", "last_inspected_by", "created_at", "updated_at",
 ]
@@ -35,7 +35,7 @@ SPECTRA_COLUMNS = [
 TARGET_EXPORT_COLUMNS = [
     "target_id", "program_slug", "program_name", "field", "observation",
     "ra", "dec", "redshift", "redshift_auto", "redshift_inspected",
-    "redshift_quality", "spectral_features", "object_flags", "dq_flags",
+    "redshift_quality", "spectral_features", "dq_flags",
     "max_snr", "max_exposure_time",
     "last_inspected_at", "last_inspected_by", "created_at", "updated_at",
 ]
@@ -87,7 +87,6 @@ CREATE TABLE IF NOT EXISTS targets (
     redshift_inspected REAL,
     redshift_quality INTEGER DEFAULT 0,
     spectral_features INTEGER DEFAULT 0,
-    object_flags INTEGER DEFAULT 0,
     dq_flags INTEGER DEFAULT 0,
     max_snr REAL,
     max_exposure_time REAL,
@@ -102,7 +101,26 @@ CREATE INDEX IF NOT EXISTS idx_targets_target_id ON targets(target_id);
 CREATE INDEX IF NOT EXISTS idx_targets_observation ON targets(observation);
 CREATE INDEX IF NOT EXISTS idx_targets_field ON targets(field);
 CREATE INDEX IF NOT EXISTS idx_targets_redshift ON targets(redshift);
-CREATE INDEX IF NOT EXISTS idx_targets_object_flags ON targets(object_flags);
+
+CREATE TABLE IF NOT EXISTS object_list_memberships (
+    object_id TEXT NOT NULL,
+    list_slug TEXT NOT NULL,
+    PRIMARY KEY (object_id, list_slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_olm_list_slug ON object_list_memberships(list_slug);
+
+CREATE TABLE IF NOT EXISTS object_lists (
+    id INTEGER PRIMARY KEY,
+    slug TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    visibility TEXT DEFAULT 'private',
+    is_system INTEGER DEFAULT 0,
+    member_count INTEGER DEFAULT 0,
+    created_at TEXT,
+    updated_at TEXT
+);
 
 CREATE TABLE IF NOT EXISTS objects (
     id INTEGER PRIMARY KEY,
@@ -263,11 +281,11 @@ class LocalStore:
                 INSERT INTO targets
                     (id, target_id, program_slug, program_name, field, observation,
                      ra, dec, redshift, redshift_auto, redshift_inspected,
-                     redshift_quality, spectral_features, object_flags, dq_flags,
+                     redshift_quality, spectral_features, dq_flags,
                      max_snr, max_exposure_time,
                      last_inspected_at, last_inspected_by,
                      created_at, updated_at, _synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(target_id) DO UPDATE SET
                     program_slug=excluded.program_slug,
                     program_name=excluded.program_name,
@@ -279,7 +297,6 @@ class LocalStore:
                     redshift_inspected=excluded.redshift_inspected,
                     redshift_quality=excluded.redshift_quality,
                     spectral_features=excluded.spectral_features,
-                    object_flags=excluded.object_flags,
                     dq_flags=excluded.dq_flags,
                     max_snr=excluded.max_snr,
                     max_exposure_time=excluded.max_exposure_time,
@@ -301,7 +318,6 @@ class LocalStore:
                 obj.get("redshift_inspected"),
                 obj.get("redshift_quality", 0),
                 obj.get("spectral_features", 0),
-                obj.get("object_flags", 0),
                 obj.get("dq_flags", 0),
                 obj.get("max_snr"),
                 obj.get("max_exposure_time"),
@@ -311,6 +327,18 @@ class LocalStore:
                 obj.get("updated_at"),
                 now,
             ))
+
+            # Upsert list memberships
+            lists = obj.get("lists") or []
+            self._conn.execute(
+                "DELETE FROM object_list_memberships WHERE object_id = ?",
+                (target_id,),
+            )
+            if lists:
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO object_list_memberships (object_id, list_slug) VALUES (?, ?)",
+                    [(target_id, slug) for slug in lists],
+                )
             obj_count += 1
 
             # Upsert spectra — preserve local_path and synced_at if already set
@@ -367,8 +395,8 @@ class LocalStore:
         redshift_quality: Optional[List[int]] = None,
         max_snr_range: Optional[Tuple[float, float]] = None,
         spectral_features: Optional[dict] = None,
-        object_flags: Optional[dict] = None,
         dq_flags: Optional[dict] = None,
+        tags: Optional[List[str]] = None,
         inspected_only: Optional[bool] = None,
         search: Optional[str] = None,
         cone_search: Optional[Tuple[float, float, float]] = None,
@@ -391,8 +419,10 @@ class LocalStore:
         redshift_range : tuple of (min, max), optional
         redshift_quality : list of int, optional
         max_snr_range : tuple of (min, max), optional
-        spectral_features, object_flags, dq_flags : dict, optional
+        spectral_features, dq_flags : dict, optional
             Flag filter dicts with keys 'include_any', 'include_all', 'exclude'.
+        tags : list of str, optional
+            Filter by tag slugs (match targets in any of the given tags).
         inspected_only : bool, optional
         search : str, optional
             Text search on target_id (LIKE match).
@@ -446,10 +476,17 @@ class LocalStore:
             where_clauses.append("o.target_id LIKE ?")
             params.append(f"%{search}%")
 
+        # Tag membership filter
+        if tags:
+            placeholders = ",".join("?" * len(tags))
+            where_clauses.append(
+                f"o.target_id IN (SELECT object_id FROM object_list_memberships WHERE list_slug IN ({placeholders}))"
+            )
+            params.extend(tags)
+
         # Flag filters
         for flag_col, flag_filter in [
             ("o.spectral_features", spectral_features),
-            ("o.object_flags", object_flags),
             ("o.dq_flags", dq_flags),
         ]:
             if flag_filter:
@@ -1132,10 +1169,78 @@ class LocalStore:
                 obj.get("updated_at"),
                 now,
             ))
+            # Upsert list memberships for this sky-object
+            obj_lists = obj.get("lists") or []
+            obj_id_str = obj.get("object_id")
+            if obj_id_str:
+                self._conn.execute(
+                    "DELETE FROM object_list_memberships WHERE object_id = ?",
+                    (obj_id_str,),
+                )
+                if obj_lists:
+                    self._conn.executemany(
+                        "INSERT OR IGNORE INTO object_list_memberships (object_id, list_slug) VALUES (?, ?)",
+                        [(obj_id_str, slug) for slug in obj_lists],
+                    )
+
             count += 1
 
         self._conn.commit()
         return count
+
+    def upsert_tags(self, tags_data: list) -> int:
+        """Insert or update tag metadata from the /sync/lists endpoint.
+
+        Parameters
+        ----------
+        tags_data : list of dict
+            Tag metadata dicts from the API.
+
+        Returns
+        -------
+        int
+            Number of tags upserted.
+        """
+        count = 0
+        for lst in tags_data:
+            self._conn.execute("""
+                INSERT INTO object_lists
+                    (id, slug, name, description, visibility, is_system,
+                     member_count, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(slug) DO UPDATE SET
+                    name=excluded.name,
+                    description=excluded.description,
+                    visibility=excluded.visibility,
+                    is_system=excluded.is_system,
+                    member_count=excluded.member_count,
+                    updated_at=excluded.updated_at
+            """, (
+                lst.get("id"),
+                lst.get("slug"),
+                lst.get("name"),
+                lst.get("description"),
+                lst.get("visibility"),
+                1 if lst.get("is_system") else 0,
+                lst.get("member_count", 0),
+                lst.get("created_at"),
+                lst.get("updated_at"),
+            ))
+            count += 1
+        self._conn.commit()
+        return count
+
+    def get_tags(self) -> List[dict]:
+        """Get all synced tags.
+
+        Returns
+        -------
+        list of dict
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM object_lists ORDER BY is_system DESC, name"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def query_sky_objects(
         self,

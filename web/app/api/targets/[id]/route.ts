@@ -104,14 +104,13 @@ export async function PATCH(
       redshift_inspected,
       redshift_quality,
       spectral_features,
-      object_flags,
       dq_flags,
     } = body;
 
     // Fetch current target state for audit logging
     const { data: currentTarget, error: fetchError } = await supabase
       .from('targets')
-      .select('redshift_inspected, redshift_quality, spectral_features, object_flags, dq_flags')
+      .select('redshift_inspected, redshift_quality, spectral_features, dq_flags')
       .eq('id', targetId)
       .single();
 
@@ -178,21 +177,6 @@ export async function PATCH(
           user_id: user.id,
           field_name: 'spectral_features',
           old_value: currentTarget.spectral_features,
-          new_value: newValue,
-        });
-      }
-    }
-
-    // Handle object_flags
-    if (object_flags !== undefined) {
-      const newValue = parseInt(object_flags, 10);
-      if (!isNaN(newValue) && newValue !== currentTarget.object_flags) {
-        updates.object_flags = newValue;
-        auditEntries.push({
-          target_id: targetId,
-          user_id: user.id,
-          field_name: 'object_flags',
-          old_value: currentTarget.object_flags,
           new_value: newValue,
         });
       }

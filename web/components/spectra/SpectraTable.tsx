@@ -111,6 +111,7 @@ const OBJECTS_COLUMNS: ColumnDefinition[] = [
   { id: 'n_spectra', label: '# Spectra', defaultVisible: false },
   { id: 'obj_programs', label: 'Programs', defaultVisible: true },
   { id: 'obj_gratings', label: 'Gratings', defaultVisible: true },
+  { id: 'obj_lists', label: 'Tags', defaultVisible: false },
   { id: 'max_snr', label: 'Max S/N', defaultVisible: true },
   { id: 'max_exposure_time', label: 'Max Exp. Time', defaultVisible: false },
 ];
@@ -668,6 +669,36 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
                 <span key={g} className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-surface-secondary text-text-secondary">
                   {g}
                 </span>
+              ))}
+            </div>
+          );
+        },
+        enableSorting: false,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
+      // Objects mode: lists column
+      ...(isObjectsMode ? [{
+        id: 'obj_lists',
+        minSize: 160,
+        header: () => <span className="normal-case">Tags</span>,
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => {
+          const lists = row.original.lists ?? [];
+          if (lists.length === 0) return <span className="text-xs text-text-secondary dark:text-slate-500">---</span>;
+          return (
+            <div className="flex flex-wrap gap-1 max-w-[200px]">
+              {lists.map((l) => (
+                <Link
+                  key={l.id}
+                  href={`/nirspec/tags/${l.slug}`}
+                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium hover:opacity-80 transition-opacity"
+                  style={{
+                    backgroundColor: l.color ? `${l.color}40` : 'var(--color-surface-secondary)',
+                    color: l.color || 'var(--color-text-secondary)',
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {l.icon && <span>{l.icon}</span>}
+                  {l.name}
+                </Link>
               ))}
             </div>
           );
