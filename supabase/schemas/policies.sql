@@ -275,7 +275,8 @@ ALTER TABLE object_list_members ENABLE ROW LEVEL SECURITY;
 -- Members visible if:
 --   1. The list is visible to the user, AND
 --   2. The matched object (if any) has at least one accessible program
--- Members with NULL object_id (orphaned) are visible to the list owner only.
+-- Members with NULL object_id (orphaned) are visible to the list owner
+-- OR to anyone if the list is public_edit (so co-editors can see orphans).
 DROP POLICY IF EXISTS "select_list_members" ON object_list_members;
 CREATE POLICY "select_list_members"
   ON object_list_members FOR SELECT TO authenticated
@@ -287,7 +288,8 @@ CREATE POLICY "select_list_members"
     )
     AND (
       (object_id IS NULL AND list_id IN (
-        SELECT id FROM object_lists WHERE created_by = auth.uid()
+        SELECT id FROM object_lists
+        WHERE created_by = auth.uid() OR visibility = 'public_edit'
       ))
       OR object_id IN (
         SELECT o.id FROM objects o
@@ -300,6 +302,28 @@ CREATE POLICY "select_list_members"
 DROP POLICY IF EXISTS "insert_list_members" ON object_list_members;
 CREATE POLICY "insert_list_members"
   ON object_list_members FOR INSERT TO authenticated
+  WITH CHECK (
+    public.can_comment()
+    AND list_id IN (
+      SELECT id FROM object_lists
+      WHERE created_by = auth.uid()
+         OR visibility = 'public_edit'
+    )
+  );
+
+-- can_comment users can update members in own lists + public_edit lists
+-- (needed for upsert ON CONFLICT DO UPDATE when re-linking coordinate entries).
+DROP POLICY IF EXISTS "update_list_members" ON object_list_members;
+CREATE POLICY "update_list_members"
+  ON object_list_members FOR UPDATE TO authenticated
+  USING (
+    public.can_comment()
+    AND list_id IN (
+      SELECT id FROM object_lists
+      WHERE created_by = auth.uid()
+         OR visibility = 'public_edit'
+    )
+  )
   WITH CHECK (
     public.can_comment()
     AND list_id IN (

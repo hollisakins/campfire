@@ -76,60 +76,60 @@ class TestClientInitialization:
         MockSession.assert_called_once_with(base_url=None, auto_refresh=False)
 
 
-class TestQueryObjects:
-    """Test query_objects method."""
+class TestQueryTargets:
+    """Test query_targets method."""
 
-    def test_query_objects_success(self, mock_api_session, sample_objects_response):
-        """query_objects returns astropy Table on success."""
+    def test_query_targets_success(self, mock_api_session, sample_objects_response):
+        """query_targets returns astropy Table on success."""
         mock_api_session.get.return_value = _make_mock_response(
             json_data=sample_objects_response
         )
 
         client = Campfire()
-        result = client.query_objects()
+        result = client.query_targets(remote=True)
 
         assert len(result) == 1
         assert result[0]["target_id"] == "ember_uds_p4_123456"
 
-    def test_query_objects_empty(self, mock_api_session):
-        """query_objects returns empty Table when no results."""
+    def test_query_targets_empty(self, mock_api_session):
+        """query_targets returns empty Table when no results."""
         mock_api_session.get.return_value = _make_mock_response(
             json_data={"data": [], "pagination": {"total": 0}}
         )
 
         client = Campfire()
-        result = client.query_objects()
+        result = client.query_targets(remote=True)
 
         assert len(result) == 0
 
-    def test_query_objects_auth_error(self, mock_api_session):
-        """query_objects raises AuthenticationError on 401."""
+    def test_query_targets_auth_error(self, mock_api_session):
+        """query_targets raises AuthenticationError on 401."""
         mock_api_session.get.return_value = _make_mock_response(
             status_code=401, text="Invalid API key"
         )
 
         client = Campfire()
         with pytest.raises(AuthenticationError):
-            client.query_objects()
+            client.query_targets(remote=True)
 
-    def test_query_objects_access_denied(self, mock_api_session):
-        """query_objects raises AuthenticationError on 403."""
+    def test_query_targets_access_denied(self, mock_api_session):
+        """query_targets raises AuthenticationError on 403."""
         mock_api_session.get.return_value = _make_mock_response(
             status_code=403, text="Access denied"
         )
 
         client = Campfire()
         with pytest.raises(AuthenticationError):
-            client.query_objects()
+            client.query_targets(remote=True)
 
-    def test_query_objects_with_filters(self, mock_api_session, sample_objects_response):
-        """query_objects passes filter parameters correctly."""
+    def test_query_targets_with_filters(self, mock_api_session, sample_objects_response):
+        """query_targets passes filter parameters correctly."""
         mock_api_session.get.return_value = _make_mock_response(
             json_data=sample_objects_response
         )
 
         client = Campfire()
-        client.query_objects(
+        client.query_targets(
             programs=[1, 2],
             fields=["COSMOS", "UDS"],
             gratings=["PRISM"],
@@ -137,12 +137,11 @@ class TestQueryObjects:
             redshift_quality=[2, 3],
             inspected_only=True,
             limit=100,
+            remote=True,
         )
 
         # Check that the session.get was called with params
         call_args = mock_api_session.get.call_args
-        # APIClient calls session.get(path, params=...) or session.get(path, **kwargs)
-        # The path is "/objects" and params are passed
         params = call_args.kwargs.get("params", {})
 
         assert "programs" in params
@@ -154,14 +153,14 @@ class TestQueryObjects:
         assert "inspected_only" in params
         assert params["limit"] == 100
 
-    def test_query_objects_cone_search(self, mock_api_session, sample_objects_response):
-        """query_objects passes cone search parameters."""
+    def test_query_targets_cone_search(self, mock_api_session, sample_objects_response):
+        """query_targets passes cone search parameters."""
         mock_api_session.get.return_value = _make_mock_response(
             json_data=sample_objects_response
         )
 
         client = Campfire()
-        client.query_objects(cone_search=(150.0, 2.5, 5.0))
+        client.query_targets(cone_search=(150.0, 2.5, 5.0), remote=True)
 
         call_args = mock_api_session.get.call_args
         params = call_args.kwargs.get("params", {})

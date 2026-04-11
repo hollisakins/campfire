@@ -33,7 +33,6 @@ def sample_objects():
             "redshift_inspected": 2.54,
             "redshift_quality": 3,
             "spectral_features": 0,
-            "object_flags": 1,  # LRD
             "dq_flags": 0,
             "max_snr": 15.5,
             "max_exposure_time": 3600.0,
@@ -73,7 +72,6 @@ def sample_objects():
             "redshift_inspected": None,
             "redshift_quality": 0,
             "spectral_features": 32,  # MULTI_EMISSION
-            "object_flags": 32,  # HA_EMITTER
             "dq_flags": 2,  # CONTAMINATION
             "max_snr": 5.0,
             "max_exposure_time": 3600.0,
@@ -198,15 +196,6 @@ class TestQueryObjects:
         results = store.query_objects(inspected_only=True)
         assert len(results) == 1
         assert results[0]["redshift_quality"] == 3
-
-    def test_query_by_object_flags(self, store, sample_objects):
-        """query_objects filters by object flags (include_any)."""
-        store.upsert_objects(sample_objects)
-        results = store.query_objects(
-            object_flags={"include_any": 1}  # LRD
-        )
-        assert len(results) == 1
-        assert results[0]["target_id"] == "ember_uds_p4_100"
 
     def test_query_exclude_dq_flags(self, store, sample_objects):
         """query_objects excludes by dq_flags."""

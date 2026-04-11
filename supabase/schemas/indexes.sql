@@ -109,6 +109,12 @@ CREATE INDEX IF NOT EXISTS idx_list_members_object_id
 CREATE INDEX IF NOT EXISTS idx_list_members_list_id
     ON public.object_list_members USING btree (list_id);
 
+-- Composite covering index for the p_list_ids filter subquery in RPCs:
+-- WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+CREATE INDEX IF NOT EXISTS idx_list_members_list_id_object_id
+    ON public.object_list_members USING btree (list_id, object_id)
+    WHERE (object_id IS NOT NULL);
+
 CREATE INDEX IF NOT EXISTS idx_list_members_coords
     ON public.object_list_members USING btree (ra, dec);
 

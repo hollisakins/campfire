@@ -117,8 +117,8 @@ export function useInspectionState(
     return (
       currentRedshiftInspected !== init.redshift_inspected ||
       redshiftQuality !== init.redshift_quality ||
-      encodeBitmask(spectralFeatures, SPECTRAL_FEATURES) !== init.spectral_features ||
-      encodeBitmask(dqFlags, DQ_FLAGS) !== init.dq_flags
+      encodeBitmask(spectralFeatures) !== init.spectral_features ||
+      encodeBitmask(dqFlags) !== init.dq_flags
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [redshiftInspected, redshiftQuality, spectralFeatures, dqFlags, saveCount]);
@@ -132,8 +132,8 @@ export function useInspectionState(
     return (
       currentRI !== init.redshift_inspected ||
       v.redshiftQuality !== init.redshift_quality ||
-      encodeBitmask(v.spectralFeatures, SPECTRAL_FEATURES) !== init.spectral_features ||
-      encodeBitmask(v.dqFlags, DQ_FLAGS) !== init.dq_flags
+      encodeBitmask(v.spectralFeatures) !== init.spectral_features ||
+      encodeBitmask(v.dqFlags) !== init.dq_flags
     );
   }, []);
 
@@ -163,8 +163,8 @@ export function useInspectionState(
         body: JSON.stringify({
           redshift_inspected: v.redshiftInspected === '' ? null : v.redshiftInspected,
           redshift_quality: v.redshiftQuality,
-          spectral_features: encodeBitmask(v.spectralFeatures, SPECTRAL_FEATURES),
-          dq_flags: encodeBitmask(v.dqFlags, DQ_FLAGS),
+          spectral_features: encodeBitmask(v.spectralFeatures),
+          dq_flags: encodeBitmask(v.dqFlags),
         }),
       });
 
@@ -182,8 +182,8 @@ export function useInspectionState(
         ...initialDataRef.current,
         redshift_inspected: v.redshiftInspected === '' ? null : parseFloat(v.redshiftInspected),
         redshift_quality: v.redshiftQuality,
-        spectral_features: encodeBitmask(v.spectralFeatures, SPECTRAL_FEATURES),
-        dq_flags: encodeBitmask(v.dqFlags, DQ_FLAGS),
+        spectral_features: encodeBitmask(v.spectralFeatures),
+        dq_flags: encodeBitmask(v.dqFlags),
       };
 
       const propagated = data.propagated || 0;

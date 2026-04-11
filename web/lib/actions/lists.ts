@@ -99,6 +99,16 @@ export async function addObjectToList(
 ): Promise<{ error?: string }> {
   const supabase = await createClient();
 
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not authenticated' };
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('can_comment')
+    .eq('user_id', user.id)
+    .single();
+  if (!profile?.can_comment) return { error: 'You do not have permission to edit tags' };
+
   const { error } = await supabase
     .from('object_list_members')
     .upsert(
@@ -122,6 +132,16 @@ export async function removeObjectFromList(
   objectId: number,
 ): Promise<{ error?: string }> {
   const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not authenticated' };
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('can_comment')
+    .eq('user_id', user.id)
+    .single();
+  if (!profile?.can_comment) return { error: 'You do not have permission to edit tags' };
 
   const { error } = await supabase
     .from('object_list_members')
@@ -209,6 +229,11 @@ export async function createList(
     return { error: 'Tag name must be 100 characters or fewer' };
   }
 
+  // Validate color format if provided
+  if (color && !/^#[0-9a-f]{6}$/i.test(color)) {
+    return { error: 'Invalid color format' };
+  }
+
   // Check permissions: must be able to comment and not a group account
   const { data: profile } = await supabase
     .from('user_profiles')
@@ -240,12 +265,16 @@ export async function createList(
     // Auto-generate: {username}/{name-slug}
     const nameSlug = trimmedName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     finalSlug = `${profile.username}/${nameSlug}`;
-    // Append suffix if collision
+    // Append suffix if collision (capped to avoid unbounded DB round-trips)
     const { available } = await checkSlugAvailability(finalSlug);
     if (!available) {
+      const MAX_SUFFIX = 20;
       let suffix = 2;
-      while (!(await checkSlugAvailability(`${finalSlug}-${suffix}`)).available) {
+      while (suffix <= MAX_SUFFIX && !(await checkSlugAvailability(`${finalSlug}-${suffix}`)).available) {
         suffix++;
+      }
+      if (suffix > MAX_SUFFIX) {
+        return { error: 'Could not auto-generate a unique shortname. Please set one manually.' };
       }
       finalSlug = `${finalSlug}-${suffix}`;
     }
@@ -267,6 +296,10 @@ export async function createList(
     .single();
 
   if (error) {
+    // Handle race condition: slug was available at check time but taken by insert time
+    if (error.code === '23505') {
+      return { error: `Shortname "${finalSlug}" is already taken` };
+    }
     return { error: error.message };
   }
 
@@ -278,6 +311,18 @@ export async function createList(
  */
 export async function deleteList(listId: number): Promise<{ error?: string }> {
   const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not authenticated' };
+
+  const { data: list } = await supabase
+    .from('object_lists')
+    .select('created_by, is_system')
+    .eq('id', listId)
+    .single();
+  if (!list) return { error: 'Tag not found' };
+  if (list.is_system) return { error: 'Cannot delete system tags' };
+  if (list.created_by !== user.id) return { error: 'Permission denied' };
 
   const { error } = await supabase
     .from('object_lists')
@@ -300,6 +345,18 @@ export async function updateList(
 ): Promise<{ error?: string }> {
   const supabase = await createClient();
 
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not authenticated' };
+
+  const { data: list } = await supabase
+    .from('object_lists')
+    .select('created_by, is_system')
+    .eq('id', listId)
+    .single();
+  if (!list) return { error: 'Tag not found' };
+  if (list.is_system) return { error: 'Cannot modify system tags' };
+  if (list.created_by !== user.id) return { error: 'Permission denied' };
+
   // Validate slug if changing
   if (updates.slug) {
     const validation = validateSlug(updates.slug);
@@ -310,6 +367,11 @@ export async function updateList(
     if (!available) {
       return { error: `Shortname "${updates.slug}" is already taken` };
     }
+  }
+
+  // Validate color format if provided
+  if (updates.color && !/^#[0-9a-f]{6}$/i.test(updates.color)) {
+    return { error: 'Invalid color format' };
   }
 
   const { error } = await supabase

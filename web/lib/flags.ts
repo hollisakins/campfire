@@ -69,7 +69,7 @@ export function decodeBitmask(bitmask: number, flags: FlagDef[]): number[] {
 /**
  * Encode an array of flag values into a bitmask
  */
-export function encodeBitmask(values: (string | number)[], flags: FlagDef[]): number {
+export function encodeBitmask(values: (string | number)[]): number {
   return values.reduce<number>((bitmask, value) => bitmask | (typeof value === 'number' ? value : 0), 0);
 }
 
