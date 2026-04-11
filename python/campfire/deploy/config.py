@@ -195,6 +195,8 @@ def _inject_user_credentials(config: dict) -> dict:
             if sb_token and creds:
                 config.setdefault('supabase', {})
                 config['supabase']['supabase_token'] = sb_token
+                # Store TokenManager so the Supabase client can auto-refresh
+                config['supabase']['_token_manager'] = tm
 
                 # Use stored Supabase connection info from login
                 if creds.supabase_url:
