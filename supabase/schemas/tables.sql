@@ -385,6 +385,7 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "n_spectra" integer NOT NULL DEFAULT 0,
     "programs" "text"[] NOT NULL DEFAULT '{}'::"text"[],
     "gratings" "text"[] NOT NULL DEFAULT '{}'::"text"[],
+    "observations" "text"[] NOT NULL DEFAULT '{}'::"text"[],
     "max_snr" double precision,
     "max_exposure_time" double precision,
     "best_redshift" double precision,

@@ -114,7 +114,7 @@ export async function getSpectra(
         : 'get_filtered_targets_paginated';
 
     // Build final params for the chosen RPC
-    // Objects RPC has a smaller parameter set (no bitmask flags, observations, comments, thumbnails)
+    // Objects RPC has a smaller parameter set (no bitmask flags, comments, thumbnails)
     const callParams = viewMode === 'objects'
       ? {
           p_program_slugs: rpcParams.p_program_slugs,
@@ -122,6 +122,7 @@ export async function getSpectra(
           p_fields: rpcParams.p_fields,
           p_gratings: rpcParams.p_gratings,
           p_gratings_mode: rpcParams.p_gratings_mode,
+          p_observations: rpcParams.p_observations,
           p_redshift_quality: rpcParams.p_redshift_quality,
           p_redshift_min: rpcParams.p_redshift_min,
           p_redshift_max: rpcParams.p_redshift_max,
@@ -891,7 +892,6 @@ export async function getAdjacentObjectIds(
 
     // Strip target-only params that the objects RPC doesn't accept
     const {
-      p_observations: _obs,
       p_spectral_features_include_any: _sf1, p_spectral_features_include_all: _sf2, p_spectral_features_exclude: _sf3,
       p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
       p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
