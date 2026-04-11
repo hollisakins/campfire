@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { ListCard } from '@/components/lists/ListCard';
 import { useListsOverviewQuery } from '@/lib/hooks/useListsQuery';
-import { LogIn, Loader2, List } from 'lucide-react';
+import { LogIn, Loader2, Tag } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
 export default function ListsPage() {
@@ -16,7 +16,7 @@ export default function ListsPage() {
 
   const breadcrumbs = [
     { label: 'CAMPFIRE', href: '/' },
-    { label: 'Lists' },
+    { label: 'Tags' },
   ];
 
   if (!authLoading && !user) {
@@ -28,10 +28,10 @@ export default function ListsPage() {
             <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
           </div>
           <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
-            Sign in to view lists
+            Sign in to view tags
           </h2>
           <p className="text-text-secondary dark:text-slate-400 mb-6 max-w-md">
-            Please sign in with your CAMPFIRE account to browse object lists.
+            Please sign in with your CAMPFIRE account to browse tags.
           </p>
           <Link
             href="/login"
@@ -52,12 +52,12 @@ export default function ListsPage() {
       {/* Page Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
-          <List className="w-8 h-8 text-primary" />
-          <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">Object Lists</h1>
+          <Tag className="w-8 h-8 text-primary" />
+          <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">Tags</h1>
         </div>
         <p className="text-text-secondary dark:text-slate-400 max-w-2xl">
-          Curated collections of objects. System lists contain community classifications;
-          user lists are custom selections for your research.
+          Tag objects for your research. System tags contain community classifications;
+          user tags are custom selections you define.
         </p>
       </div>
 
@@ -65,7 +65,7 @@ export default function ListsPage() {
       {isLoading || authLoading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading lists...</span>
+          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading tags...</span>
         </div>
       ) : error ? (
         <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4">
@@ -73,8 +73,8 @@ export default function ListsPage() {
         </div>
       ) : lists.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <List className="w-12 h-12 text-text-secondary dark:text-slate-500 mb-4" />
-          <p className="text-text-secondary dark:text-slate-400">No lists available yet.</p>
+          <Tag className="w-12 h-12 text-text-secondary dark:text-slate-500 mb-4" />
+          <p className="text-text-secondary dark:text-slate-400">No tags available yet.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

@@ -38,7 +38,7 @@ export function ListMembersTable({ members, totalMembers, page, pageSize, onPage
     return (
       <Card className="p-8 text-center">
         <p className="text-text-secondary dark:text-slate-400">
-          No objects in this list yet.
+          No objects with this tag yet.
         </p>
       </Card>
     );

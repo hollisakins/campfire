@@ -133,7 +133,53 @@ export async function removeObjectFromList(
 }
 
 /**
- * Create a new user list.
+ * Validate and normalize a user-chosen slug (shortname).
+ * Allowed: lowercase alphanumeric, hyphens, and a single forward slash.
+ */
+function validateSlug(slug: string): { valid: boolean; error?: string } {
+  if (!slug || slug.length < 2) {
+    return { valid: false, error: 'Shortname must be at least 2 characters' };
+  }
+  if (slug.length > 60) {
+    return { valid: false, error: 'Shortname must be 60 characters or fewer' };
+  }
+  if (!/^[a-z0-9]+(?:[-/][a-z0-9]+)*$/.test(slug)) {
+    return { valid: false, error: 'Shortname can only contain lowercase letters, numbers, hyphens, and one slash' };
+  }
+  if ((slug.match(/\//g) || []).length > 1) {
+    return { valid: false, error: 'Shortname can contain at most one slash' };
+  }
+  return { valid: true };
+}
+
+/**
+ * Check whether a slug is available (not already taken).
+ */
+export async function checkSlugAvailability(
+  slug: string,
+  excludeListId?: number,
+): Promise<{ available: boolean; error?: string }> {
+  const validation = validateSlug(slug);
+  if (!validation.valid) {
+    return { available: false, error: validation.error };
+  }
+
+  const supabase = await createClient();
+  let query = supabase
+    .from('object_lists')
+    .select('id')
+    .eq('slug', slug);
+
+  if (excludeListId) {
+    query = query.neq('id', excludeListId);
+  }
+
+  const { data } = await query;
+  return { available: !data || data.length === 0 };
+}
+
+/**
+ * Create a new user tag.
  */
 export async function createList(
   name: string,
@@ -141,6 +187,7 @@ export async function createList(
   visibility: 'private' | 'public_read' | 'public_edit' = 'private',
   icon?: string | null,
   color?: string | null,
+  slug?: string,
 ): Promise<{ list?: ObjectList; error?: string }> {
   const supabase = await createClient();
 
@@ -152,10 +199,10 @@ export async function createList(
   // Validate name
   const trimmedName = name.trim();
   if (!trimmedName || trimmedName.length < 2) {
-    return { error: 'List name must be at least 2 characters' };
+    return { error: 'Tag name must be at least 2 characters' };
   }
   if (trimmedName.length > 100) {
-    return { error: 'List name must be 100 characters or fewer' };
+    return { error: 'Tag name must be 100 characters or fewer' };
   }
 
   // Check permissions: must be able to comment and not a group account
@@ -166,31 +213,37 @@ export async function createList(
     .single();
 
   if (!profile?.can_comment) {
-    return { error: 'You do not have permission to create lists' };
+    return { error: 'You do not have permission to create tags' };
   }
   if (profile.is_group_account) {
-    return { error: 'Group accounts cannot create lists' };
+    return { error: 'Group accounts cannot create tags' };
   }
 
-  // Generate slug: {username}/{name-slug}
-  const nameSlug = trimmedName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  const baseSlug = `${profile.username}/${nameSlug}`;
-
-  // Check for slug collisions and append suffix if needed
-  const { data: existing } = await supabase
-    .from('object_lists')
-    .select('slug')
-    .or(`slug.eq.${baseSlug},slug.like.${baseSlug}-%`);
-
-  let slug = baseSlug;
-  if (existing && existing.length > 0) {
-    const existingSlugs = new Set(existing.map(r => r.slug));
-    if (existingSlugs.has(baseSlug)) {
+  // Use user-provided slug or generate a default
+  let finalSlug: string;
+  if (slug) {
+    const validation = validateSlug(slug);
+    if (!validation.valid) {
+      return { error: validation.error };
+    }
+    // Check availability
+    const { available } = await checkSlugAvailability(slug);
+    if (!available) {
+      return { error: `Shortname "${slug}" is already taken` };
+    }
+    finalSlug = slug;
+  } else {
+    // Auto-generate: {username}/{name-slug}
+    const nameSlug = trimmedName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    finalSlug = `${profile.username}/${nameSlug}`;
+    // Append suffix if collision
+    const { available } = await checkSlugAvailability(finalSlug);
+    if (!available) {
       let suffix = 2;
-      while (existingSlugs.has(`${baseSlug}-${suffix}`)) {
+      while (!(await checkSlugAvailability(`${finalSlug}-${suffix}`)).available) {
         suffix++;
       }
-      slug = `${baseSlug}-${suffix}`;
+      finalSlug = `${finalSlug}-${suffix}`;
     }
   }
 
@@ -198,7 +251,7 @@ export async function createList(
     .from('object_lists')
     .insert({
       name: trimmedName,
-      slug,
+      slug: finalSlug,
       description: description ?? null,
       visibility,
       is_system: false,
@@ -235,13 +288,25 @@ export async function deleteList(listId: number): Promise<{ error?: string }> {
 }
 
 /**
- * Update a user list (name, description, visibility).
+ * Update a user tag (name, slug, description, visibility, icon, color).
  */
 export async function updateList(
   listId: number,
-  updates: { name?: string; description?: string; visibility?: string; icon?: string | null; color?: string | null },
+  updates: { name?: string; slug?: string; description?: string; visibility?: string; icon?: string | null; color?: string | null },
 ): Promise<{ error?: string }> {
   const supabase = await createClient();
+
+  // Validate slug if changing
+  if (updates.slug) {
+    const validation = validateSlug(updates.slug);
+    if (!validation.valid) {
+      return { error: validation.error };
+    }
+    const { available } = await checkSlugAvailability(updates.slug, listId);
+    if (!available) {
+      return { error: `Shortname "${updates.slug}" is already taken` };
+    }
+  }
 
   const { error } = await supabase
     .from('object_lists')

@@ -13,7 +13,7 @@ interface ListCardProps {
 
 export function ListCard({ list }: ListCardProps) {
   return (
-    <Link href={`/lists/${list.slug}`}>
+    <Link href={`/tags/${list.slug}`}>
       <Card hover className="p-5 h-full">
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-center gap-2">
@@ -26,9 +26,12 @@ export function ListCard({ list }: ListCardProps) {
                 style={{ backgroundColor: list.color }}
               />
             )}
-            <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
-              {list.name}
-            </h3>
+            <div>
+              <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+                {list.name}
+              </h3>
+              <span className="text-xs font-mono text-text-secondary dark:text-slate-500">#{list.slug}</span>
+            </div>
           </div>
           <ListBadge visibility={list.visibility} isSystem={list.is_system} />
         </div>

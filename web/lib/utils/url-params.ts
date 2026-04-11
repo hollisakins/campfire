@@ -80,7 +80,7 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     max_exposure_time_min: parseNumber('exp_min'),
     max_exposure_time_max: parseNumber('exp_max'),
     spectral_features: parseNumberArray('features'),
-    list_ids: parseNumberArray('lists'),
+    list_ids: parseNumberArray('tags'),
     dq_flags: parseNumberArray('dq_flags'),
     inspected_only: parseBoolean('inspected'),
     search: searchParams.get('search') || '',
@@ -184,7 +184,7 @@ export function filtersToURLParams(
     params.set('features', filters.spectral_features.join(','));
   }
   if (filters.list_ids.length > 0) {
-    params.set('lists', filters.list_ids.join(','));
+    params.set('tags', filters.list_ids.join(','));
   }
   if (filters.dq_flags.length > 0) {
     params.set('dq_flags', filters.dq_flags.join(','));

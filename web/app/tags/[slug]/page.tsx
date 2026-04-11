@@ -15,7 +15,7 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import {
   LogIn,
   Loader2,
-  List,
+  Tag,
   ExternalLink,
   Edit2,
   Trash2,
@@ -53,13 +53,13 @@ export default function ListDetailPage() {
       alert(result.error);
       setDeleting(false);
     } else {
-      router.push('/lists');
+      router.push('/tags');
     }
   };
 
   const breadcrumbs = [
     { label: 'CAMPFIRE', href: '/' },
-    { label: 'Lists', href: '/lists' },
+    { label: 'Tags', href: '/tags' },
     { label: list?.name ?? slug },
   ];
 
@@ -72,7 +72,7 @@ export default function ListDetailPage() {
             <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
           </div>
           <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
-            Sign in to view this list
+            Sign in to view this tag
           </h2>
           <Link
             href="/login"
@@ -92,7 +92,7 @@ export default function ListDetailPage() {
         <Breadcrumbs items={breadcrumbs} className="mb-6" />
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading list...</span>
+          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading tag...</span>
         </div>
       </div>
     );
@@ -103,7 +103,7 @@ export default function ListDetailPage() {
       <div className="container mx-auto px-4 py-8">
         <Breadcrumbs items={breadcrumbs} className="mb-6" />
         <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4">
-          <p className="text-red-800 dark:text-red-400">{error || 'List not found'}</p>
+          <p className="text-red-800 dark:text-red-400">{error || 'Tag not found'}</p>
         </div>
       </div>
     );
@@ -141,7 +141,8 @@ export default function ListDetailPage() {
                     <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">
                       {list.name}
                     </h1>
-                    <div className="mt-1">
+                    <div className="mt-1 flex items-center gap-2">
+                      <span className="text-sm font-mono text-text-secondary dark:text-slate-400">#{list.slug}</span>
                       <ListBadge visibility={list.visibility} isSystem={list.is_system} size="md" />
                     </div>
                   </div>
@@ -196,7 +197,7 @@ export default function ListDetailPage() {
               {/* Action buttons */}
               <div className="mt-4 pt-4 border-t border-border dark:border-slate-700">
                 <Link
-                  href={`/nirspec?view=objects&lists=${list.id}`}
+                  href={`/nirspec?view=objects&tags=${list.id}`}
                   className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
                 >
                   <ExternalLink className="w-4 h-4" />
@@ -210,7 +211,7 @@ export default function ListDetailPage() {
         {/* Members Table */}
         <div>
           <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100 mb-4 flex items-center gap-2">
-            <List className="w-5 h-5 text-primary" />
+            <Tag className="w-5 h-5 text-primary" />
             Members
           </h2>
           <ListMembersTable

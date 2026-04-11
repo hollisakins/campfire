@@ -111,7 +111,7 @@ const OBJECTS_COLUMNS: ColumnDefinition[] = [
   { id: 'n_spectra', label: '# Spectra', defaultVisible: false },
   { id: 'obj_programs', label: 'Programs', defaultVisible: true },
   { id: 'obj_gratings', label: 'Gratings', defaultVisible: true },
-  { id: 'obj_lists', label: 'Lists', defaultVisible: false },
+  { id: 'obj_lists', label: 'Tags', defaultVisible: false },
   { id: 'max_snr', label: 'Max S/N', defaultVisible: true },
   { id: 'max_exposure_time', label: 'Max Exp. Time', defaultVisible: false },
 ];
@@ -679,7 +679,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       ...(isObjectsMode ? [{
         id: 'obj_lists',
         minSize: 160,
-        header: () => <span className="normal-case">Lists</span>,
+        header: () => <span className="normal-case">Tags</span>,
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const lists = row.original.lists ?? [];
           if (lists.length === 0) return <span className="text-xs text-text-secondary dark:text-slate-500">---</span>;
@@ -688,7 +688,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
               {lists.map((l) => (
                 <Link
                   key={l.id}
-                  href={`/lists/${l.slug}`}
+                  href={`/tags/${l.slug}`}
                   className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium hover:opacity-80 transition-opacity"
                   style={{
                     backgroundColor: l.color ? `${l.color}40` : 'var(--color-surface-secondary)',

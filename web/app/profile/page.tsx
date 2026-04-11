@@ -22,7 +22,7 @@ import {
   Key,
   Terminal,
   ChevronRight,
-  List,
+  Tag,
 } from 'lucide-react';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ProfileStats as ProfileStatsCard } from '@/components/profile/ProfileStats';
@@ -367,17 +367,17 @@ export default function ProfilePage() {
         />
 
         {/* My Lists */}
-        <Link href="/profile/lists" className="block">
+        <Link href="/profile/tags" className="block">
           <Card className="p-6 hover:bg-background-hover dark:hover:bg-slate-700 transition-colors cursor-pointer">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center">
-                  <List className="w-6 h-6 text-primary" />
+                  <Tag className="w-6 h-6 text-primary" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">My Lists</h2>
+                  <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">My Tags</h2>
                   <p className="text-sm text-text-secondary dark:text-slate-400">
-                    Create and manage your object lists
+                    Create and manage your tags
                   </p>
                 </div>
               </div>

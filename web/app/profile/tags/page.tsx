@@ -15,7 +15,7 @@ import type { ObjectListOverview } from '@/lib/types';
 import {
   LogIn,
   Loader2,
-  List,
+  Tag,
   Plus,
   Edit2,
   Trash2,
@@ -54,7 +54,7 @@ export default function MyListsPage() {
   const breadcrumbs = [
     { label: 'CAMPFIRE', href: '/' },
     { label: 'Profile', href: '/profile' },
-    { label: 'My Lists' },
+    { label: 'My Tags' },
   ];
 
   if (!authLoading && !user) {
@@ -66,7 +66,7 @@ export default function MyListsPage() {
             <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
           </div>
           <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
-            Sign in to manage your lists
+            Sign in to manage your tags
           </h2>
           <Link
             href="/login"
@@ -86,7 +86,7 @@ export default function MyListsPage() {
         <Breadcrumbs items={breadcrumbs} className="mb-6" />
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading lists...</span>
+          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading tags...</span>
         </div>
       </div>
     );
@@ -100,20 +100,20 @@ export default function MyListsPage() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <List className="w-8 h-8 text-primary" />
-            <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">My Lists</h1>
+            <Tag className="w-8 h-8 text-primary" />
+            <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">My Tags</h1>
           </div>
           {canComment && !showCreateForm && (
             <Button variant="primary" size="sm" onClick={() => setShowCreateForm(true)}>
               <Plus className="w-4 h-4 mr-1" />
-              New List
+              New Tag
             </Button>
           )}
         </div>
 
         {!canComment && (
           <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-4 text-sm text-amber-700 dark:text-amber-300">
-            You need comment permissions to create and manage lists. Contact an admin for access.
+            You need comment permissions to create and manage tags. Contact an admin for access.
           </div>
         )}
 
@@ -138,13 +138,13 @@ export default function MyListsPage() {
         {/* Lists */}
         {lists.length === 0 && !showCreateForm ? (
           <Card className="p-8 text-center">
-            <List className="w-12 h-12 text-text-secondary dark:text-slate-500 mx-auto mb-4" />
+            <Tag className="w-12 h-12 text-text-secondary dark:text-slate-500 mx-auto mb-4" />
             <p className="text-text-secondary dark:text-slate-400 mb-2">
-              No lists yet.
+              No tags yet.
             </p>
             {canComment && (
               <p className="text-sm text-text-secondary dark:text-slate-500">
-                Create one to organize your objects into curated collections.
+                Create a tag to organize objects for your research.
               </p>
             )}
           </Card>
@@ -167,11 +167,12 @@ export default function MyListsPage() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <Link
-                          href={`/lists/${list.slug}`}
+                          href={`/tags/${list.slug}`}
                           className="text-base font-semibold text-text-primary dark:text-slate-100 hover:text-primary transition-colors truncate"
                         >
                           {list.name}
                         </Link>
+                        <span className="text-xs font-mono text-text-secondary dark:text-slate-500">#{list.slug}</span>
                         <ListBadge visibility={list.visibility} />
                       </div>
                       {list.description && (
@@ -193,9 +194,9 @@ export default function MyListsPage() {
 
                     <div className="flex items-center gap-1 flex-shrink-0">
                       <Link
-                        href={`/lists/${list.slug}`}
+                        href={`/tags/${list.slug}`}
                         className="p-2 rounded-lg text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
-                        title="View list"
+                        title="View tag"
                       >
                         <ExternalLink className="w-4 h-4" />
                       </Link>
@@ -204,7 +205,7 @@ export default function MyListsPage() {
                           <button
                             onClick={() => setEditingListId(list.id)}
                             className="p-2 rounded-lg text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
-                            title="Edit list"
+                            title="Edit tag"
                           >
                             <Edit2 className="w-4 h-4" />
                           </button>
@@ -212,7 +213,7 @@ export default function MyListsPage() {
                             onClick={() => handleDelete(list)}
                             disabled={deletingId === list.id}
                             className="p-2 rounded-lg text-text-secondary dark:text-slate-400 hover:bg-red-50 dark:hover:bg-red-950 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                            title="Delete list"
+                            title="Delete tag"
                           >
                             {deletingId === list.id ? (
                               <Loader2 className="w-4 h-4 animate-spin" />
@@ -233,10 +234,10 @@ export default function MyListsPage() {
         {/* Browse all lists link */}
         <div className="text-center">
           <Link
-            href="/lists"
+            href="/tags"
             className="text-sm text-text-secondary dark:text-slate-400 hover:text-primary transition-colors"
           >
-            Browse all public lists
+            Browse all public tags
           </Link>
         </div>
       </div>

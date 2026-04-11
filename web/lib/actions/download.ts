@@ -247,7 +247,7 @@ function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
     'last_inspected_by',
     ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
     ...DQ_FLAGS.map(f => `dq_${f.key}`),
-    'lists',
+    'tags',
   ];
 
   if (includeDistance) {
@@ -310,7 +310,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
     'last_inspected_by',
     ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
     ...DQ_FLAGS.map(f => `dq_${f.key}`),
-    'lists',
+    'tags',
   ];
 
   if (includeDistance) {
@@ -371,7 +371,7 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
     'max_snr',
     'max_exposure_time',
     'member_target_ids',
-    'lists',
+    'tags',
   ];
 
   if (includeDistance) {

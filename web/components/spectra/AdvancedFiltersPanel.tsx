@@ -545,11 +545,11 @@ export function AdvancedFiltersPanel({
             </div>
           </div>
 
-          {/* Object Lists Section */}
+          {/* Tags Section */}
           {listOptions.length > 0 && (
             <div className="p-4 border-b border-border dark:border-slate-700">
               <InlineMultiFilter
-                label="Lists"
+                label="Tags"
                 options={listOptions}
                 selected={filters.list_ids ?? []}
                 onChange={(s) => onFiltersChange({ ...filters, list_ids: s as number[] })}
