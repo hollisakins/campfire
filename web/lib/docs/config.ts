@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 
 // Dynamic (non-markdown) page prefixes — exact match or prefix match (with /)
-const DYNAMIC_PREFIXES = ['data-products/programs'];
+const DYNAMIC_PREFIXES: string[] = [];
 
 /** Check if a slug is a dynamic (non-markdown) page */
 export function isDynamicSlug(slug: string): boolean {
@@ -108,11 +108,6 @@ export const docsNav: DocPage[] = [
         title: 'Overview',
         slug: 'data-products',
         description: 'Data product overview',
-      },
-      {
-        title: 'NIRSpec Programs',
-        slug: 'data-products/programs',
-        description: 'Browse JWST programs with data in CAMPFIRE',
       },
       {
         title: 'FITS Reference',

@@ -378,7 +378,7 @@ class Campfire:
         dq_flags : int, str, list, DQFlags, or FlagQuery, optional
             Filter by data quality flags. Same input types as spectral_features.
         lists : list of str, optional
-            Filter by list slugs (e.g., ['lrd', 'broad-line-agn']).
+            Filter by list slugs (e.g., ['lrd', 'blagn']).
             Returns targets whose parent object belongs to any of the given lists.
         inspected_only : bool, optional
             If True, only return visually inspected targets.
@@ -413,7 +413,7 @@ class Campfire:
         ... )
         >>>
         >>> # Filter by list membership (replaces object_flags)
-        >>> results = cf.query_targets(lists=['lrd', 'broad-line-agn'])
+        >>> results = cf.query_targets(lists=['lrd', 'blagn'])
         >>>
         >>> # Exclude contaminated objects
         >>> results = cf.query_targets(dq_flags=~DQFlags.CONTAMINATION)

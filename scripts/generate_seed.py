@@ -564,12 +564,12 @@ VALUES ({entry['id']}, {obj_int_id}, {sql_escape(ADMIN_UUID)}, {sql_escape(entry
 # (matches the 9 system lists seeded by the object_lists migration)
 OBJECT_FLAG_TO_LIST_SLUG = [
     (1, 'lrd'),
-    (2, 'broad-line'),
-    (4, 'lya-emitter'),
-    (8, 'balmer-break-galaxy'),
-    (16, 'oiii-emitter'),
-    (32, 'ha-emitter'),
-    (64, 'passive'),
+    (2, 'blagn'),
+    (4, 'lae'),
+    (8, 'bbg'),
+    (16, 'o3e'),
+    (32, 'hae'),
+    (64, 'qg'),
     (128, 'dusty'),
     (256, 'star'),
 ]

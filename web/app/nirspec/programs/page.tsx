@@ -17,7 +17,7 @@ function formatGratings(gratings: string[]): string {
 
 function ProgramCard({ program }: { program: ProgramOverview }) {
   return (
-    <Link href={`/programs/${program.slug}`}>
+    <Link href={`/nirspec/programs/${program.slug}`}>
       <Card hover className="p-5 h-full">
         <div className="flex items-start justify-between mb-3">
           <div>
@@ -93,7 +93,8 @@ export default function ProgramsPage() {
         <Breadcrumbs
           items={[
             { label: 'CAMPFIRE', href: '/' },
-            { label: 'Programs' },
+            { label: 'NIRSpec', href: '/nirspec' },
+          { label: 'Programs' },
           ]}
           className="mb-6"
         />
@@ -126,6 +127,7 @@ export default function ProgramsPage() {
       <Breadcrumbs
         items={[
           { label: 'CAMPFIRE', href: '/' },
+          { label: 'NIRSpec', href: '/nirspec' },
           { label: 'Programs' },
         ]}
         className="mb-6"

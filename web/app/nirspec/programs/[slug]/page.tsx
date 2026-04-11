@@ -42,7 +42,8 @@ export default function ProgramDetailPage() {
         <Breadcrumbs
           items={[
             { label: 'CAMPFIRE', href: '/' },
-            { label: 'Programs', href: '/programs' },
+            { label: 'NIRSpec', href: '/nirspec' },
+          { label: 'Programs', href: '/nirspec/programs' },
             { label: programSlug },
           ]}
           className="mb-6"
@@ -76,7 +77,8 @@ export default function ProgramDetailPage() {
         <Breadcrumbs
           items={[
             { label: 'CAMPFIRE', href: '/' },
-            { label: 'Programs', href: '/programs' },
+            { label: 'NIRSpec', href: '/nirspec' },
+          { label: 'Programs', href: '/nirspec/programs' },
             { label: '...' },
           ]}
           className="mb-6"
@@ -96,7 +98,8 @@ export default function ProgramDetailPage() {
         <Breadcrumbs
           items={[
             { label: 'CAMPFIRE', href: '/' },
-            { label: 'Programs', href: '/programs' },
+            { label: 'NIRSpec', href: '/nirspec' },
+          { label: 'Programs', href: '/nirspec/programs' },
             { label: programSlug },
           ]}
           className="mb-6"
@@ -114,7 +117,7 @@ export default function ProgramDetailPage() {
               : 'The program you are looking for does not exist.'}
           </p>
           <Link
-            href="/programs"
+            href="/nirspec/programs"
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
           >
             Back to Programs
@@ -132,7 +135,8 @@ export default function ProgramDetailPage() {
       <Breadcrumbs
         items={[
           { label: 'CAMPFIRE', href: '/' },
-          { label: 'Programs', href: '/programs' },
+          { label: 'NIRSpec', href: '/nirspec' },
+          { label: 'Programs', href: '/nirspec/programs' },
           { label: program.program_name || program.slug },
         ]}
         className="mb-6"

@@ -688,7 +688,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
               {lists.map((l) => (
                 <Link
                   key={l.id}
-                  href={`/tags/${l.slug}`}
+                  href={`/nirspec/tags/${l.slug}`}
                   className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium hover:opacity-80 transition-opacity"
                   style={{
                     backgroundColor: l.color ? `${l.color}40` : 'var(--color-surface-secondary)',

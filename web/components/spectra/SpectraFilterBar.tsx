@@ -260,7 +260,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           selected={filters.programs}
           onChange={(selected) => updateFilter('programs', selected as string[])}
           searchable
-          footerLink={{ label: "Browse all programs", href: "/docs/data-products/programs" }}
+          footerLink={{ label: "Browse all programs", href: "/nirspec/programs" }}
         />
 
         {/* Field filter */}
@@ -279,7 +279,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           selected={filters.observations}
           onChange={(selected) => updateFilter('observations', selected as string[])}
           searchable
-          footerLink={{ label: "Browse all programs", href: "/docs/data-products/programs" }}
+          footerLink={{ label: "Browse all programs", href: "/nirspec/programs" }}
         />
 
         {/* Divider */}

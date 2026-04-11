@@ -27,7 +27,7 @@ import {
 export default function ListDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const slug = params.slug as string;
+  const slug = Array.isArray(params.slug) ? params.slug.join('/') : (params.slug as string);
   const { user, loading: authLoading } = useAuth();
 
   const [page, setPage] = useState(1);
@@ -53,13 +53,14 @@ export default function ListDetailPage() {
       alert(result.error);
       setDeleting(false);
     } else {
-      router.push('/tags');
+      router.push('/nirspec/tags');
     }
   };
 
   const breadcrumbs = [
     { label: 'CAMPFIRE', href: '/' },
-    { label: 'Tags', href: '/tags' },
+    { label: 'NIRSpec', href: '/nirspec' },
+    { label: 'Tags', href: '/nirspec/tags' },
     { label: list?.name ?? slug },
   ];
 

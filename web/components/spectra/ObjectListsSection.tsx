@@ -8,6 +8,51 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import { getContrastColor } from '@/lib/flags';
 import type { ObjectList, ObjectListWithMembership } from '@/lib/types';
 
+// Darken and saturate a hex color (same utility used in ChipSelect, FilterChip, etc.)
+function darkenColor(hex: string, percent: number): string {
+  const color = hex.replace('#', '');
+  const num = parseInt(color, 16);
+  const r = ((num >> 16) & 0xff) / 255;
+  const g = ((num >> 8) & 0xff) / 255;
+  const b = (num & 0xff) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0, s = 0, l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6; break;
+      case b: h = ((r - g) / d + 4) / 6; break;
+    }
+  }
+  s = Math.min(1, s * 1.2);
+  l = l * (1 - percent / 100);
+  const hue2rgb = (p: number, q: number, t: number) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  };
+  let rOut, gOut, bOut;
+  if (s === 0) {
+    rOut = gOut = bOut = l;
+  } else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    rOut = hue2rgb(p, q, h + 1/3);
+    gOut = hue2rgb(p, q, h);
+    bOut = hue2rgb(p, q, h - 1/3);
+  }
+  const rHex = Math.round(rOut * 255);
+  const gHex = Math.round(gOut * 255);
+  const bHex = Math.round(bOut * 255);
+  return '#' + ((rHex << 16) | (gHex << 8) | bHex).toString(16).padStart(6, '0');
+}
+
 interface ObjectListsSectionProps {
   objectId: number;
   ra: number;
@@ -160,15 +205,16 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
   }
 
   return (
-    <div className="space-y-2">
+    <div className="relative">
       <div className="flex flex-wrap items-center gap-2">
         {memberLists.map(list => (
           <span
             key={list.id}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border"
             style={{
               backgroundColor: list.color ?? '#e0e0e0',
               color: getContrastColor(list.color ?? '#e0e0e0'),
+              borderColor: darkenColor(list.color ?? '#e0e0e0', 20),
             }}
           >
             {list.icon && <span>{list.icon}</span>}
@@ -177,7 +223,7 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
               <button
                 onClick={() => handleRemove(list)}
                 disabled={isPending}
-                className="ml-0.5 hover:opacity-70 transition-opacity"
+                className="ml-0.5 rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
                 title={`Remove tag ${list.name}`}
               >
                 <X className="w-3 h-3" />
@@ -190,16 +236,16 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setShowDropdown(!showDropdown)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border border-dashed border-gray-300 dark:border-slate-600 text-text-secondary dark:text-slate-400 hover:border-primary hover:text-primary transition-colors"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border border-dashed border-border dark:border-slate-600 text-text-secondary dark:text-slate-400 hover:border-primary hover:text-primary transition-colors"
             >
               <Plus className="w-3 h-3" />
               Add tag
             </button>
 
             {showDropdown && (
-              <div className="absolute top-full left-0 mt-1 z-50 w-64 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-gray-200 dark:border-slate-700">
+              <div className="absolute top-full left-0 mt-1 z-50 w-72 animate-zoom-in bg-background dark:bg-slate-800 rounded-lg shadow-lg border border-border dark:border-slate-700">
                 {/* Search input */}
-                <div className="p-2 border-b border-gray-200 dark:border-slate-700">
+                <div className="p-2 border-b border-border dark:border-slate-700">
                   <div className="relative">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary dark:text-slate-500" />
                     <input
@@ -209,49 +255,50 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
                       onChange={(e) => setSearchTerm(e.target.value)}
                       onKeyDown={handleKeyDown}
                       placeholder="Search or create tag..."
-                      className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-900 text-text-primary dark:text-slate-100 placeholder:text-text-secondary dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                      className="w-full pl-8 pr-3 py-1.5 text-sm border border-border dark:border-slate-700 rounded-md bg-background dark:bg-slate-900 text-text-primary dark:text-slate-100 placeholder:text-text-secondary dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
                     />
                   </div>
                 </div>
 
                 {/* Tag options */}
-                <div className="max-h-[240px] overflow-y-auto p-1">
+                <div className="max-h-[240px] overflow-y-auto p-1.5">
                   {sortedAvailable.length > 0 ? (
-                    sortedAvailable.map(list => (
-                      <button
-                        key={list.id}
-                        onClick={() => handleAdd(list)}
-                        disabled={isPending}
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-slate-700 rounded-md flex items-center gap-2 transition-colors"
-                      >
-                        {list.color && (
-                          <span
-                            className="w-3 h-3 rounded-full flex-shrink-0"
-                            style={{ backgroundColor: list.color }}
-                          />
-                        )}
-                        {list.icon && <span className="text-sm">{list.icon}</span>}
-                        <span className="flex-1 truncate">{list.name}</span>
-                        <span className="text-[10px] text-text-secondary dark:text-slate-500 flex-shrink-0">
-                          #{list.slug}
-                        </span>
-                      </button>
-                    ))
+                    <div className="flex flex-wrap gap-1.5">
+                      {sortedAvailable.map(list => (
+                        <button
+                          key={list.id}
+                          onClick={() => handleAdd(list)}
+                          disabled={isPending}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border cursor-pointer transition-all duration-150 hover:brightness-90 hover:shadow-sm disabled:opacity-50"
+                          style={{
+                            backgroundColor: `${list.color ?? '#e0e0e0'}60`,
+                            borderColor: darkenColor(list.color ?? '#e0e0e0', 20),
+                            color: 'inherit',
+                          }}
+                        >
+                          {list.icon && <span>{list.icon}</span>}
+                          <span className="truncate">{list.name}</span>
+                          <span className="opacity-50">#{list.slug}</span>
+                        </button>
+                      ))}
+                    </div>
                   ) : !showCreateOption ? (
-                    <div className="px-3 py-4 text-xs text-text-secondary dark:text-slate-400 text-center">
+                    <div className="px-3 py-4 text-sm text-text-secondary dark:text-slate-500 text-center">
                       {normalizedSearch ? 'No matching tags' : 'All tags applied'}
                     </div>
                   ) : null}
 
                   {/* Create new tag option */}
                   {showCreateOption && (
-                    <button
-                      onClick={handleOpenCreateModal}
-                      className="w-full text-left px-3 py-2 text-sm hover:bg-primary/10 rounded-md flex items-center gap-2 transition-colors text-primary border-t border-gray-100 dark:border-slate-700 mt-1 pt-2"
-                    >
-                      <Tag className="w-3.5 h-3.5 flex-shrink-0" />
-                      <span>Create <strong>{searchTerm.trim()}</strong></span>
-                    </button>
+                    <div className={sortedAvailable.length > 0 ? 'border-t border-border dark:border-slate-700 mt-1.5 pt-1.5' : ''}>
+                      <button
+                        onClick={handleOpenCreateModal}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-primary/10 rounded-md flex items-center gap-2 transition-colors text-primary"
+                      >
+                        <Tag className="w-3.5 h-3.5 flex-shrink-0" />
+                        <span>Create <strong>{searchTerm.trim()}</strong></span>
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -265,6 +312,18 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
           </span>
         )}
       </div>
+
+      {/* Toast — absolutely positioned to avoid layout shift */}
+      {toast && (
+        <div className={`absolute left-0 top-full mt-1.5 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md animate-fade-in z-40 ${
+          toast.type === 'success'
+            ? 'text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800'
+            : 'text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
+        }`}>
+          {toast.type === 'success' ? <Check className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
+          {toast.message}
+        </div>
+      )}
 
       {/* Create tag modal */}
       {showCreateModal && (
@@ -282,17 +341,6 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
               onCancel={() => setShowCreateModal(false)}
             />
           </div>
-        </div>
-      )}
-
-      {toast && (
-        <div className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded ${
-          toast.type === 'success'
-            ? 'text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20'
-            : 'text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20'
-        }`}>
-          {toast.type === 'success' ? <Check className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
-          {toast.message}
         </div>
       )}
     </div>

@@ -13,7 +13,7 @@ interface ListCardProps {
 
 export function ListCard({ list }: ListCardProps) {
   return (
-    <Link href={`/tags/${list.slug}`}>
+    <Link href={`/nirspec/tags/${list.slug}`}>
       <Card hover className="p-5 h-full">
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-center gap-2">

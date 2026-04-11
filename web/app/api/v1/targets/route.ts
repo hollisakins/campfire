@@ -145,7 +145,7 @@ function parseUrlToFilters(
  * - spectral_features_exclude: must NOT have any of these flags (NOT)
  * (same pattern for dq_flags)
  *
- * - lists: comma-separated list slugs (e.g., "lrd,broad-line-agn")
+ * - lists: comma-separated list slugs (e.g., "lrd,blagn")
  * - inspected_only: "true" to filter to inspected objects only
  * - search: text search on target_id
  * - search_scope: search scope (target_id, my_comments, all_comments; default: target_id)

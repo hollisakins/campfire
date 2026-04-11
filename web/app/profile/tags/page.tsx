@@ -167,7 +167,7 @@ export default function MyListsPage() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <Link
-                          href={`/tags/${list.slug}`}
+                          href={`/nirspec/tags/${list.slug}`}
                           className="text-base font-semibold text-text-primary dark:text-slate-100 hover:text-primary transition-colors truncate"
                         >
                           {list.name}
@@ -194,7 +194,7 @@ export default function MyListsPage() {
 
                     <div className="flex items-center gap-1 flex-shrink-0">
                       <Link
-                        href={`/tags/${list.slug}`}
+                        href={`/nirspec/tags/${list.slug}`}
                         className="p-2 rounded-lg text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
                         title="View tag"
                       >
@@ -234,7 +234,7 @@ export default function MyListsPage() {
         {/* Browse all lists link */}
         <div className="text-center">
           <Link
-            href="/tags"
+            href="/nirspec/tags"
             className="text-sm text-text-secondary dark:text-slate-400 hover:text-primary transition-colors"
           >
             Browse all public tags

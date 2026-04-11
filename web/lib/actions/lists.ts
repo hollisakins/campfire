@@ -60,22 +60,26 @@ export async function getListsWithMembership(objectId: number): Promise<{
   lists: ObjectListWithMembership[];
   error?: string;
 }> {
-  const { lists: allLists, error: listsError } = await getAvailableLists();
-  if (listsError) return { lists: [], error: listsError };
-
   const supabase = await createClient();
-  const { data: members, error: membersError } = await supabase
-    .from('object_list_members')
-    .select('list_id')
-    .eq('object_id', objectId);
 
-  if (membersError) {
-    return { lists: [], error: membersError.message };
-  }
+  const [listsResult, membersResult] = await Promise.all([
+    supabase
+      .from('object_lists')
+      .select('*')
+      .order('is_system', { ascending: false })
+      .order('name'),
+    supabase
+      .from('object_list_members')
+      .select('list_id')
+      .eq('object_id', objectId),
+  ]);
 
-  const memberListIds = new Set((members ?? []).map(m => m.list_id));
+  if (listsResult.error) return { lists: [], error: listsResult.error.message };
+  if (membersResult.error) return { lists: [], error: membersResult.error.message };
 
-  const lists: ObjectListWithMembership[] = allLists.map(list => ({
+  const memberListIds = new Set((membersResult.data ?? []).map(m => m.list_id));
+
+  const lists: ObjectListWithMembership[] = (listsResult.data ?? []).map(list => ({
     ...list,
     is_member: memberListIds.has(list.id),
   }));
