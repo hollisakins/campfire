@@ -42,62 +42,7 @@ BEGIN
 END;
 $$;
 
--- 2. update_target_max_snr
---    Recomputes targets.max_snr from spectra.signal_to_noise after any
---    INSERT, DELETE, or UPDATE on spectra.
-DROP FUNCTION IF EXISTS public.update_target_max_snr CASCADE;
-
-CREATE OR REPLACE FUNCTION public.update_target_max_snr() RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  v_target_id TEXT;
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    v_target_id := OLD.target_id;
-  ELSE
-    v_target_id := NEW.target_id;
-  END IF;
-  UPDATE targets
-  SET max_snr = (
-    SELECT MAX(signal_to_noise)
-    FROM spectra
-    WHERE spectra.target_id = v_target_id
-  )
-  WHERE targets.target_id = v_target_id;
-  RETURN NEW;
-END;
-$$;
-
--- 3. update_target_max_exposure_time
---    Recomputes targets.max_exposure_time from spectra.exposure_time after any
---    INSERT, DELETE, or UPDATE on spectra.
-DROP FUNCTION IF EXISTS public.update_target_max_exposure_time CASCADE;
-
-CREATE OR REPLACE FUNCTION public.update_target_max_exposure_time() RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  v_target_id TEXT;
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    v_target_id := OLD.target_id;
-  ELSE
-    v_target_id := NEW.target_id;
-  END IF;
-  UPDATE targets
-  SET max_exposure_time = (
-    SELECT MAX(exposure_time)
-    FROM spectra
-    WHERE spectra.target_id = v_target_id
-  )
-  WHERE targets.target_id = v_target_id;
-  RETURN NEW;
-END;
-$$;
-
-
--- 4. update_object_best_redshift
+-- 2. update_object_best_redshift
 --    Recomputes objects.best_redshift and best_redshift_quality from the
 --    highest-quality, highest-SNR member target when redshift-related
 --    columns change on a target.
@@ -148,14 +93,7 @@ CREATE TRIGGER track_flag_changes
   FOR EACH ROW EXECUTE FUNCTION public.log_flag_changes();
 
 DROP TRIGGER IF EXISTS update_max_snr_trigger ON public.spectra;
-CREATE TRIGGER update_max_snr_trigger
-  AFTER INSERT OR DELETE OR UPDATE ON public.spectra
-  FOR EACH ROW EXECUTE FUNCTION public.update_target_max_snr();
-
 DROP TRIGGER IF EXISTS update_max_exposure_time_trigger ON public.spectra;
-CREATE TRIGGER update_max_exposure_time_trigger
-  AFTER INSERT OR DELETE OR UPDATE ON public.spectra
-  FOR EACH ROW EXECUTE FUNCTION public.update_target_max_exposure_time();
 
 DROP TRIGGER IF EXISTS update_object_best_redshift_trigger ON public.targets;
 CREATE TRIGGER update_object_best_redshift_trigger

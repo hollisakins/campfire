@@ -3011,3 +3011,42 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.bulk_set_target_object_fks(JSONB, TIMESTAMPTZ) TO service_role;
+
+
+-- =============================================================================
+-- Recompute target aggregate columns from spectra
+-- =============================================================================
+-- Bulk-recomputes max_snr and max_exposure_time on targets from the spectra
+-- table. Called by the deploy CLI after batch spectra upserts, replacing the
+-- old per-row triggers which caused statement timeouts on large batches.
+
+CREATE OR REPLACE FUNCTION public.recompute_target_aggregates(
+  p_target_ids TEXT[]
+)
+RETURNS INTEGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  n INTEGER;
+BEGIN
+  UPDATE targets t SET
+    max_snr = sub.max_snr,
+    max_exposure_time = sub.max_exposure_time
+  FROM (
+    SELECT
+      s.target_id,
+      MAX(s.signal_to_noise) AS max_snr,
+      MAX(s.exposure_time) AS max_exposure_time
+    FROM spectra s
+    WHERE s.target_id = ANY(p_target_ids)
+    GROUP BY s.target_id
+  ) sub
+  WHERE t.target_id = sub.target_id;
+
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_role;

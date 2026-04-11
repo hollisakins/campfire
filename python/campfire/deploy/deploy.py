@@ -43,6 +43,7 @@ from campfire.deploy.supabase import (
     get_user_id_from_token,
     insert_deployment,
     propagate_crossmatches,
+    recompute_target_aggregates,
     refresh_filter_options,
     refresh_programs_overview,
     update_has_sed_plot,
@@ -310,6 +311,11 @@ def deploy_observation(
         print("Upserting spectra...")
         n_spec = batch_upsert_spectra(sb, spectra)
         print(f"  {n_spec} spectra")
+
+        # Recompute aggregate columns (max_snr, max_exposure_time) in bulk
+        target_ids = [o['object_id'] for o in objects]
+        n_agg = recompute_target_aggregates(sb, target_ids)
+        print(f"  Recomputed aggregates for {n_agg} targets")
 
         # Cross-match propagation for new objects
         if new_object_ids:

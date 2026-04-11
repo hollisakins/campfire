@@ -329,13 +329,16 @@ def batch_upsert_objects(
 def batch_upsert_spectra(
     client: Client,
     spectra: list[dict],
-    batch_size: int = 500,
+    batch_size: int = 50,
 ) -> int:
     """
     Upsert spectra in batches, keyed on the UNIQUE constraint (target_id, grating).
 
     Uses PostgreSQL ON CONFLICT (target_id, grating) for a single-pass upsert,
     eliminating the need to pre-fetch existing records.
+
+    Note: batch_size is kept small (default 50) because each row includes
+    inline SVG thumbnails that inflate payload size.
 
     Args:
         spectra: List of dicts from summary.get_spectra_records(), optionally
@@ -355,6 +358,38 @@ def batch_upsert_spectra(
         ).execute()
 
     return len(spectra)
+
+
+def recompute_target_aggregates(
+    client: Client,
+    target_ids: list[str],
+    batch_size: int = 500,
+) -> int:
+    """
+    Bulk-recompute max_snr and max_exposure_time on targets from spectra.
+
+    Replaces the old per-row triggers which caused statement timeouts
+    on large batch upserts.
+
+    Args:
+        target_ids: List of target_id strings to recompute
+        batch_size: IDs per RPC call
+
+    Returns:
+        Number of targets updated
+    """
+    if not target_ids:
+        return 0
+
+    total = 0
+    for i in range(0, len(target_ids), batch_size):
+        batch = target_ids[i:i + batch_size]
+        result = client.rpc('recompute_target_aggregates', {
+            'p_target_ids': batch,
+        }).execute()
+        total += result.data or 0
+
+    return total
 
 
 def propagate_crossmatches(
