@@ -66,7 +66,7 @@ function ProgramCard({ program }: { program: ProgramOverview }) {
           )}
           <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-primary/10 text-primary rounded-full text-xs font-medium">
             <Hash className="w-3 h-3" />
-            {program.object_count.toLocaleString()} objects
+            {program.target_count.toLocaleString()} targets
           </span>
           {program.gratings.length > 0 && (
             <span className="inline-flex items-center px-2.5 py-1 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 rounded-full text-xs font-medium">

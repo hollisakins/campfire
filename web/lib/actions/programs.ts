@@ -9,7 +9,7 @@ export interface ProgramOverview {
   description: string | null;
   is_public: boolean;
   cycle: number | null;
-  object_count: number;
+  target_count: number;
   gratings: string[];
   fields: string[];
   observations: string[];
@@ -21,7 +21,7 @@ export interface ObservationStat {
   program_slug: string;
   program_name: string;
   field: string;
-  object_count: number;
+  target_count: number;
   spectrum_count: number;
   total_size_bytes: number;
 }
@@ -72,7 +72,7 @@ export async function getProgramsOverview(): Promise<ProgramsOverviewResult> {
         description: p.description,
         is_public: p.is_public,
         cycle: p.cycle ?? null,
-        object_count: Number(p.object_count) || 0,
+        target_count: Number(p.target_count) || 0,
         gratings: p.gratings || [],
         fields: p.fields || [],
         observations: p.observations || [],
@@ -130,7 +130,7 @@ export async function getProgramDetail(programSlug: string): Promise<ProgramDeta
       description: programData.description,
       is_public: programData.is_public,
       cycle: programData.cycle ?? null,
-      object_count: Number(programData.object_count) || 0,
+      target_count: Number(programData.target_count) || 0,
       gratings: programData.gratings || [],
       fields: programData.fields || [],
       observations: programData.observations || [],
@@ -144,7 +144,7 @@ export async function getProgramDetail(programSlug: string): Promise<ProgramDeta
         program_slug: o.program_slug,
         program_name: o.program_name,
         field: o.field,
-        object_count: Number(o.object_count) || 0,
+        target_count: Number(o.target_count) || 0,
         spectrum_count: Number(o.spectrum_count) || 0,
         total_size_bytes: Number(o.total_size_bytes) || 0,
       })
