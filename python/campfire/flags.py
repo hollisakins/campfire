@@ -1,17 +1,15 @@
 """
 CAMPFIRE flag definitions and query builders.
 
-Provides numpy-style operators for filtering objects by flags:
+Provides numpy-style operators for filtering by bitmask flags:
 
-    from campfire.flags import ObjectFlags, DQFlags, SpectralFeatures
+    from campfire.flags import DQFlags, SpectralFeatures
 
-    # Has LRD OR LAE, but NOT broad line
-    cf.query_objects(
-        object_flags=(ObjectFlags.LRD | ObjectFlags.LAE) & ~ObjectFlags.BROAD_LINE
-    )
+    # Exclude contaminated or low-SNR spectra
+    cf.query_targets(dq_flags=~DQFlags.CONTAMINATION & ~DQFlags.LOW_SNR)
 
-    # Simple string-based query (like web app)
-    cf.query_objects(object_flags=['LRD', 'LAE'])
+    # Has Lyman break OR multiple emission lines
+    cf.query_targets(spectral_features=SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION)
 
 Operators:
     |  : OR  (match any of these flags)
@@ -83,7 +81,7 @@ class FlagQuery:
         Parameters
         ----------
         prefix : str
-            Parameter name prefix (e.g., 'object_flags')
+            Parameter name prefix (e.g., 'spectral_features')
 
         Returns
         -------
@@ -111,9 +109,9 @@ def queryable(cls):
     Example
     -------
     @queryable
-    class ObjectFlags(QueryableFlag):
-        LRD = 1
-        BROAD_LINE = 2
+    class SpectralFeatures(QueryableFlag):
+        CONTINUUM_BREAK = 1
+        LYMAN_BREAK = 2
     """
 
     def _or(self, other):
@@ -239,46 +237,6 @@ class SpectralFeatures(QueryableFlag):
 
     MULTI_EMISSION = 32
     """Multiple emission lines detected."""
-
-
-@queryable
-class ObjectFlags(QueryableFlag):
-    """
-    Object properties and classifications.
-
-    .. deprecated::
-        The ``object_flags`` bitmask column on ``targets`` has been replaced
-        by the ``object_lists`` / ``object_list_members`` system. This enum
-        is retained for backward compatibility but will be removed in a
-        future release. Use the lists API instead.
-    """
-
-    LRD = 1
-    """Little Red Dot - compact red source."""
-
-    BROAD_LINE = 2
-    """Broad emission line detected (AGN indicator)."""
-
-    LYA_EMITTER = 4
-    """Strong Lyman-alpha emission."""
-
-    BALMER_BREAK_GALAXY = 8
-    """Strong Balmer break indicating evolved stellar population."""
-
-    OIII_EMITTER = 16
-    """Strong [OIII] 4959,5007 emission."""
-
-    HA_EMITTER = 32
-    """Strong H-alpha emission."""
-
-    PASSIVE = 64
-    """Quiescent galaxy with little star formation."""
-
-    DUSTY = 128
-    """Significant dust attenuation."""
-
-    STAR = 256
-    """Stellar spectrum (not a galaxy)."""
 
 
 @queryable
@@ -412,8 +370,8 @@ def encode_flags(names: List[str], flag_type: str) -> int:
 
     Examples
     --------
-    >>> encode_flags(['LRD', 'LYA_EMITTER'], 'object_flags')
-    5
+    >>> encode_flags(['CONTINUUM_BREAK', 'LYMAN_BREAK'], 'spectral_features')
+    3
     """
     if flag_type not in _FLAG_REGISTRY:
         raise ValueError(

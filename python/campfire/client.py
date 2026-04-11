@@ -412,7 +412,7 @@ class Campfire:
         ...     inspected_only=True
         ... )
         >>>
-        >>> # Filter by list membership (replaces object_flags)
+        >>> # Filter by list/tag membership
         >>> results = cf.query_targets(lists=['lrd', 'blagn'])
         >>>
         >>> # Exclude contaminated objects

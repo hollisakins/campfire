@@ -99,7 +99,7 @@ if result['stale_count'] > 0:
 Query the spectroscopic database with filters. Returns an `astropy.table.Table`.
 
 ```python
-cf.query_objects(
+cf.query_targets(
     programs=None,           # list[int|str]: Program IDs or slugs
     fields=None,             # list[str]: e.g., ['COSMOS', 'UDS']
     gratings=None,           # list[str]: e.g., ['PRISM', 'G395M']
@@ -108,14 +108,14 @@ cf.query_objects(
     redshift_quality=None,   # list[int]: Quality codes
     max_snr_range=None,      # tuple[float, float]: (min, max) SNR
     spectral_features=None,  # Flag filter (see Flag Filtering)
-    object_flags=None,       # Flag filter (see Flag Filtering)
     dq_flags=None,           # Flag filter (see Flag Filtering)
-    inspected_only=None,     # bool: Only inspected objects
-    search=None,             # str: Text search on object_id
+    lists=None,              # list[str]: Tag slugs (e.g., ['lrd', 'blagn'])
+    inspected_only=None,     # bool: Only inspected targets
+    search=None,             # str: Text search on target_id
     cone_search=None,        # tuple[float, float, float]: (ra, dec, radius_arcsec)
     limit=1000,              # int: Max results
     offset=0,                # int: Pagination offset
-    sort='object_id',        # str: Sort column
+    sort='target_id',        # str: Sort column
     sort_dir='asc',          # str: 'asc' or 'desc'
     remote=False,            # bool: Force remote API (skip local)
 )
@@ -125,77 +125,93 @@ cf.query_objects(
 
 ```python
 # High-z galaxies in COSMOS with good redshifts
-results = cf.query_objects(
+results = cf.query_targets(
     fields=['COSMOS'],
     redshift_range=(4.0, 8.0),
     redshift_quality=[2, 3],
     inspected_only=True
 )
 
+# Filter by tags
+lrds = cf.query_targets(lists=['lrd', 'blagn'])
+
 # Cone search around a coordinate
-results = cf.query_objects(
+results = cf.query_targets(
     cone_search=(150.0832, 2.3511, 30.0)  # RA, Dec, radius in arcsec
 )
 
 # Force remote API (bypass local data)
-results = cf.query_objects(remote=True)
+results = cf.query_targets(remote=True)
 ```
 
-### `iter_objects()`
+### `iter_targets()`
 
-Auto-paginating iterator over all matching objects. Accepts the same filters as `query_objects()`.
+Auto-paginating iterator over all matching targets. Accepts the same filters as `query_targets()`.
 
 ```python
-# Iterate over ALL matching objects without worrying about pagination
-for obj in cf.iter_objects(redshift_range=(2.0, 4.0)):
-    print(obj['object_id'], obj['redshift'])
+# Iterate over ALL matching targets without worrying about pagination
+for obj in cf.iter_targets(redshift_range=(2.0, 4.0)):
+    print(obj['target_id'], obj['redshift'])
 
 # Collect into a list
-all_lrds = list(cf.iter_objects(object_flags=ObjectFlags.LRD))
+all_lrds = list(cf.iter_targets(lists=['lrd']))
 ```
 
-When local data is available, `iter_objects()` queries SQLite directly. Otherwise, it auto-paginates through the remote API.
+When local data is available, `iter_targets()` queries SQLite directly. Otherwise, it auto-paginates through the remote API.
+
+---
+
+## Tags (Lists)
+
+Targets can be tagged with user-defined or system-seeded tags (internally called "object lists"). Tags replace the old `object_flags` bitmask system.
+
+```python
+# Filter by tag slugs
+results = cf.query_targets(lists=['lrd', 'blagn'])
+
+# Tags are included in synced catalog data
+for obj in cf.iter_targets():
+    print(obj['target_id'], obj.get('lists', []))
+```
+
+System tags (e.g., `lrd`, `blagn`, `lae`) are available to all users. Users can also create private or shared tags via the web portal.
 
 ---
 
 ## Flag Filtering
 
-CAMPFIRE uses bitmask flags for spectral features, object classifications, and data quality. The Python client provides numpy-style operators for intuitive filtering.
+CAMPFIRE uses bitmask flags for spectral features and data quality. The Python client provides numpy-style operators for intuitive filtering.
 
 ### Operators
 
 ```python
-from campfire.flags import ObjectFlags, DQFlags, SpectralFeatures
+from campfire.flags import DQFlags, SpectralFeatures
 
 # OR: Match any of these flags
-ObjectFlags.LRD | ObjectFlags.LYA_EMITTER
+SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION
 
 # AND: Must have all these flags
-ObjectFlags.LRD & ObjectFlags.BROAD_LINE
+SpectralFeatures.LYMAN_BREAK & SpectralFeatures.BALMER_BREAK
 
 # NOT: Exclude this flag
 ~DQFlags.CONTAMINATION
 
 # Complex expressions
-(ObjectFlags.LRD | ObjectFlags.LYA_EMITTER) & ~ObjectFlags.BROAD_LINE
+(SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION) & ~DQFlags.LOW_SNR
 ```
 
 ### Examples
 
 ```python
-# Find LRDs or LAEs, excluding broad-line AGN
-results = cf.query_objects(
-    object_flags=(ObjectFlags.LRD | ObjectFlags.LYA_EMITTER) & ~ObjectFlags.BROAD_LINE
+# Targets with Lyman break or multiple emission lines
+results = cf.query_targets(
+    spectral_features=SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION
 )
 
-# Objects with multiple emission lines and clean data
-results = cf.query_objects(
-    spectral_features=SpectralFeatures.MULTI_EMISSION,
+# Clean data only
+results = cf.query_targets(
     dq_flags=~(DQFlags.CONTAMINATION | DQFlags.LOW_SNR)
 )
-
-# Simple string-based filtering
-results = cf.query_objects(object_flags=['LRD', 'LYA_EMITTER'])
 ```
 
 ### Flag Reference
@@ -207,10 +223,10 @@ See the [Flags documentation](/docs/inspection/flags) for full flag definitions 
 ```python
 from campfire import list_flags, decode_flags, encode_flags
 
-list_flags()                                          # Print all flags
-list_flags('object_flags')                            # Print specific type
-decode_flags(5, 'object_flags')                       # [LRD, LYA_EMITTER]
-encode_flags(['LRD', 'LYA_EMITTER'], 'object_flags') # 5
+list_flags()                                                          # Print all flags
+list_flags('spectral_features')                                       # Print specific type
+decode_flags(3, 'spectral_features')                                  # ['CONTINUUM_BREAK', 'LYMAN_BREAK']
+encode_flags(['CONTINUUM_BREAK', 'LYMAN_BREAK'], 'spectral_features') # 3
 ```
 
 ---

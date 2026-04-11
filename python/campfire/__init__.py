@@ -18,7 +18,6 @@ from .exceptions import (
 from .flags import (
     RedshiftQuality,
     SpectralFeatures,
-    ObjectFlags,
     DQFlags,
     FlagQuery,
     list_flags,
@@ -52,7 +51,6 @@ __all__ = [
     # Flags
     "RedshiftQuality",
     "SpectralFeatures",
-    "ObjectFlags",
     "DQFlags",
     "FlagQuery",
     "list_flags",

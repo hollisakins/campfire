@@ -1,7 +1,7 @@
 """Tests for flag query operators."""
 
 import pytest
-from campfire.flags import ObjectFlags, SpectralFeatures, DQFlags, FlagQuery
+from campfire.flags import SpectralFeatures, DQFlags, FlagQuery
 
 
 class TestFlagOperators:
@@ -9,7 +9,7 @@ class TestFlagOperators:
 
     def test_or_returns_flagquery(self):
         """Test that | operator returns FlagQuery with include_any."""
-        result = ObjectFlags.LRD | ObjectFlags.BROAD_LINE
+        result = SpectralFeatures.CONTINUUM_BREAK | SpectralFeatures.LYMAN_BREAK
         assert isinstance(result, FlagQuery)
         assert result.include_any == 3  # 1 | 2
         assert result.include_all == 0
@@ -17,7 +17,7 @@ class TestFlagOperators:
 
     def test_and_returns_flagquery(self):
         """Test that & operator returns FlagQuery with include_all."""
-        result = ObjectFlags.LRD & ObjectFlags.BROAD_LINE
+        result = SpectralFeatures.CONTINUUM_BREAK & SpectralFeatures.LYMAN_BREAK
         assert isinstance(result, FlagQuery)
         assert result.include_all == 3  # 1 | 2
         assert result.include_any == 0
@@ -25,49 +25,49 @@ class TestFlagOperators:
 
     def test_invert_returns_flagquery(self):
         """Test that ~ operator returns FlagQuery with exclude."""
-        result = ~ObjectFlags.LRD
+        result = ~SpectralFeatures.CONTINUUM_BREAK
         assert isinstance(result, FlagQuery)
         assert result.exclude == 1
         assert result.include_any == 0
         assert result.include_all == 0
 
     def test_complex_or_and_not(self):
-        """Test (LRD | LAE) & ~BROAD_LINE expression."""
-        result = (ObjectFlags.LRD | ObjectFlags.LYA_EMITTER) & ~ObjectFlags.BROAD_LINE
+        """Test (A | B) & ~C expression."""
+        result = (SpectralFeatures.CONTINUUM_BREAK | SpectralFeatures.BALMER_BREAK) & ~SpectralFeatures.LYMAN_BREAK
         assert isinstance(result, FlagQuery)
         assert result.include_any == 5  # 1 | 4
-        assert result.exclude == 2  # BROAD_LINE
+        assert result.exclude == 2  # LYMAN_BREAK
 
     def test_chained_or(self):
         """Test multiple OR operations."""
-        result = ObjectFlags.LRD | ObjectFlags.BROAD_LINE | ObjectFlags.LYA_EMITTER
+        result = SpectralFeatures.CONTINUUM_BREAK | SpectralFeatures.LYMAN_BREAK | SpectralFeatures.BALMER_BREAK
         assert isinstance(result, FlagQuery)
         assert result.include_any == 7  # 1 | 2 | 4
 
     def test_chained_and(self):
         """Test multiple AND operations."""
-        result = ObjectFlags.LRD & ObjectFlags.BROAD_LINE & ObjectFlags.LYA_EMITTER
+        result = SpectralFeatures.CONTINUUM_BREAK & SpectralFeatures.LYMAN_BREAK & SpectralFeatures.BALMER_BREAK
         assert isinstance(result, FlagQuery)
         assert result.include_all == 7  # 1 | 2 | 4
 
     def test_or_with_flagquery(self):
         """Test Flag | FlagQuery."""
         query = FlagQuery(include_any=2)
-        result = ObjectFlags.LRD | query
+        result = SpectralFeatures.CONTINUUM_BREAK | query
         assert isinstance(result, FlagQuery)
         assert result.include_any == 3  # 1 | 2
 
     def test_and_with_flagquery(self):
         """Test Flag & FlagQuery."""
         query = FlagQuery(include_all=2, exclude=4)
-        result = ObjectFlags.LRD & query
+        result = SpectralFeatures.CONTINUUM_BREAK & query
         assert isinstance(result, FlagQuery)
         assert result.include_all == 3  # 1 | 2
         assert result.exclude == 4  # preserved from query
 
     def test_all_flag_classes_have_operators(self):
         """Test that all flag classes support operators."""
-        for cls in [ObjectFlags, SpectralFeatures, DQFlags]:
+        for cls in [SpectralFeatures, DQFlags]:
             flag = list(cls)[0]
             # OR
             result = flag | flag
@@ -114,17 +114,17 @@ class TestFlagQueryCombination:
     def test_flagquery_to_params(self):
         """Test FlagQuery.to_params() method."""
         query = FlagQuery(include_any=1, include_all=2, exclude=4)
-        params = query.to_params("object_flags")
+        params = query.to_params("spectral_features")
         assert params == {
-            "object_flags_include_any": 1,
-            "object_flags_include_all": 2,
-            "object_flags_exclude": 4,
+            "spectral_features_include_any": 1,
+            "spectral_features_include_all": 2,
+            "spectral_features_exclude": 4,
         }
 
     def test_flagquery_to_params_omits_zeros(self):
         """Test that to_params omits zero values."""
         query = FlagQuery(include_any=1)
-        params = query.to_params("object_flags")
-        assert params == {"object_flags_include_any": 1}
-        assert "object_flags_include_all" not in params
-        assert "object_flags_exclude" not in params
+        params = query.to_params("spectral_features")
+        assert params == {"spectral_features_include_any": 1}
+        assert "spectral_features_include_all" not in params
+        assert "spectral_features_exclude" not in params
