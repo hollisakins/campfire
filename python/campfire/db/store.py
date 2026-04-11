@@ -744,7 +744,12 @@ class LocalStore:
 
         return result
 
-    def verify_local_files(self, products_dir: Path, observation: Optional[str] = None) -> dict:
+    def verify_local_files(
+        self,
+        products_dir: Path,
+        observation: Optional[str] = None,
+        show_progress: bool = False,
+    ) -> dict:
         """Reconcile database sync state with the local filesystem.
 
         Performs three checks:
@@ -763,6 +768,8 @@ class LocalStore:
             Root products directory (contains ``<obs>/`` subdirs).
         observation : str, optional
             Limit check to a single observation. If None, checks all.
+        show_progress : bool, optional
+            Show a tqdm progress bar during verification. Default False.
 
         Returns
         -------
@@ -786,6 +793,21 @@ class LocalStore:
 
         cleared = 0
         rehashed = 0
+
+        # 2. Discover files that exist but aren't tracked
+        untracked_rows = self._conn.execute(f"""
+            SELECT s.spectra_id, s.fits_path, s.file_hash, o.observation
+            FROM spectra s
+            JOIN targets o ON s.target_id = o.target_id
+            WHERE s.local_path IS NULL AND s.fits_path IS NOT NULL {obs_filter}
+        """, obs_params).fetchall()
+
+        total = len(tracked_rows) + len(untracked_rows)
+        pbar = None
+        if show_progress and total > 0:
+            from tqdm import tqdm
+            pbar = tqdm(total=total, desc="Verifying local files", unit="file")
+
         for row in tracked_rows:
             full_path = products_dir / row["local_path"]
             if not full_path.exists():
@@ -804,6 +826,8 @@ class LocalStore:
                         and stored_size is not None
                         and abs(st.st_mtime - stored_mtime) < 0.001
                         and st.st_size == stored_size):
+                    if pbar:
+                        pbar.update(1)
                     continue  # Fast path: unchanged
                 # Re-hash — mtime/size changed or not yet tracked (pre-v5)
                 new_hash = compute_file_hash(full_path)
@@ -814,14 +838,8 @@ class LocalStore:
                     (new_hash, st.st_mtime, st.st_size, row["spectra_id"]),
                 )
                 rehashed += 1
-
-        # 2. Discover files that exist but aren't tracked
-        untracked_rows = self._conn.execute(f"""
-            SELECT s.spectra_id, s.fits_path, s.file_hash, o.observation
-            FROM spectra s
-            JOIN targets o ON s.target_id = o.target_id
-            WHERE s.local_path IS NULL AND s.fits_path IS NOT NULL {obs_filter}
-        """, obs_params).fetchall()
+            if pbar:
+                pbar.update(1)
 
         discovered = 0
         for row in untracked_rows:
@@ -839,6 +857,11 @@ class LocalStore:
                     (rel_path, actual_hash, st.st_mtime, st.st_size, now, row["spectra_id"]),
                 )
                 discovered += 1
+            if pbar:
+                pbar.update(1)
+
+        if pbar:
+            pbar.close()
 
         if cleared or discovered or rehashed:
             self._conn.commit()
