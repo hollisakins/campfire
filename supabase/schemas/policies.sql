@@ -200,6 +200,25 @@ CREATE POLICY "select_objects_by_access"
     programs && public.accessible_program_slugs()
   );
 
+-- Admins can insert objects (deploy CLI: objects rebuild).
+DROP POLICY IF EXISTS "admin_objects_insert" ON objects;
+CREATE POLICY "admin_objects_insert"
+  ON objects FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Admins can update objects (deploy CLI: objects rebuild).
+DROP POLICY IF EXISTS "admin_objects_update" ON objects;
+CREATE POLICY "admin_objects_update"
+  ON objects FOR UPDATE TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- Admins can delete objects (deploy CLI: objects rebuild wipes before re-insert).
+DROP POLICY IF EXISTS "admin_objects_delete" ON objects;
+CREATE POLICY "admin_objects_delete"
+  ON objects FOR DELETE TO authenticated
+  USING (public.is_admin());
+
 
 -- =============================================================================
 -- spectra

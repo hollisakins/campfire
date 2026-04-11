@@ -326,6 +326,12 @@ def deploy_observation(
             else:
                 print("  No cross-matches found")
 
+        # Rebuild objects table for this field
+        from campfire.deploy.objects import rebuild_field_objects
+        print("\nRebuilding objects...")
+        n_obj, n_multi = rebuild_field_objects(sb, field)
+        print(f"  {n_obj} objects ({n_multi} multi-target)")
+
         print()
         refresh_filter_options(sb)
         refresh_programs_overview(sb)

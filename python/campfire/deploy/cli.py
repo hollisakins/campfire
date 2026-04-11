@@ -62,7 +62,7 @@ from campfire.deploy.deploy import (
     deploy_thumbnails,
     deploy_zfit,
 )
-from campfire.deploy.supabase import get_supabase_client, upsert_programs, refresh_programs_overview
+from campfire.deploy.supabase import get_supabase_client, upsert_programs, refresh_filter_options, refresh_programs_overview
 
 
 def _check_admin() -> None:
@@ -271,6 +271,53 @@ def shutters(config_path, obs, dry_run, skip_astrometry):
     for obs_name in obs:
         deploy_shutters(obs_name, config, dry_run=dry_run,
                         skip_astrometry=skip_astrometry)
+
+
+# ---------------------------------------------------------------------------
+# objects subcommand
+# ---------------------------------------------------------------------------
+
+@deploy_group.command()
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--field', type=str, default=None,
+              help='Rebuild objects for a single field.')
+@click.option('--all', 'all_fields', is_flag=True,
+              help='Rebuild objects for all fields.')
+@click.option('--dry-run', is_flag=True,
+              help='Show stats without making changes.')
+@click.option('--radius', type=float, default=0.2,
+              help='Cross-match radius in arcseconds (default: 0.2).')
+def objects(config_path, field, all_fields, dry_run, radius):
+    """Rebuild the objects table via position cross-matching."""
+    if not field and not all_fields:
+        raise click.UsageError("Specify --field <name> or --all.")
+
+    from campfire.deploy.objects import fetch_distinct_fields, rebuild_field_objects
+
+    config = load_config(config_path)
+    sb = get_supabase_client(config)
+
+    if all_fields:
+        fields = fetch_distinct_fields(sb)
+        print(f"Found {len(fields)} fields: {', '.join(fields)}")
+    else:
+        fields = [field]
+
+    for f in fields:
+        print(f"\nRebuilding objects for field '{f}'...")
+        n_obj, n_multi = rebuild_field_objects(
+            sb, f, radius=radius, dry_run=dry_run,
+        )
+        if not dry_run:
+            print(f"  {n_obj} objects ({n_multi} multi-target)")
+
+    if not dry_run:
+        print()
+        refresh_filter_options(sb)
+        refresh_programs_overview(sb)
+
+    print("Done.")
 
 
 # ---------------------------------------------------------------------------
