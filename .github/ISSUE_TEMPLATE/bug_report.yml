@@ -11,6 +11,7 @@ body:
         - Pipeline (NIRSpec)
         - Pipeline (NIRCam)
         - Deployment / Infrastructure
+        - Python Client
         - Other
     validations:
       required: true
