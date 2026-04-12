@@ -514,11 +514,34 @@ def sync_cmd(full: bool, base_url: Optional[str]):
 # ---------------------------------------------------------------------------
 
 
+class _VariadicOption(click.Option):
+    """Click option that consumes multiple space-separated values after a single flag.
+
+    Allows e.g. ``--obs obs1 obs2 obs3`` in addition to the standard
+    ``--obs obs1 --obs obs2 --obs obs3`` syntax.
+    """
+
+    def add_to_parser(self, parser, ctx):
+        super().add_to_parser(parser, ctx)
+        name = self.opts[-1]
+        opt = parser._long_opt.get(name)
+        if opt is None:
+            return
+        original_process = opt.process
+
+        def _eat_remaining(value, state):
+            original_process(value, state)
+            while state.rargs and not state.rargs[0].startswith('-'):
+                original_process(state.rargs.pop(0), state)
+
+        opt.process = _eat_remaining
+
+
 @cli.command()
-@click.option("--obs", "obs_filter", multiple=True, help="Download by observation name")
-@click.option("--program", "program_filter", multiple=True, help="Download by program slug")
-@click.option("--field", "field_filter", multiple=True, help="Download by field name")
-@click.option("--grating", "grating_filter", multiple=True, help="Filter by grating type")
+@click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption, help="Download by observation name")
+@click.option("--program", "program_filter", multiple=True, cls=_VariadicOption, help="Download by program slug")
+@click.option("--field", "field_filter", multiple=True, cls=_VariadicOption, help="Download by field name")
+@click.option("--grating", "grating_filter", multiple=True, cls=_VariadicOption, help="Filter by grating type")
 @click.option("--stale", is_flag=True, help="Re-download files updated on the server")
 @click.option("--all", "download_all", is_flag=True, help="Download everything accessible")
 @click.option("--workers", default=4, help="Parallel download workers")
@@ -535,6 +558,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
     \b
     Examples:
       campfire download --obs ember_uds_p4
+      campfire download --obs ember_uds_p4 ember_uds_p5
       campfire download --program EMBER-UDS --grating PRISM
       campfire download --field COSMOS
       campfire download --stale
