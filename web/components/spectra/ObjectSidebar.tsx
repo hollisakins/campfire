@@ -30,7 +30,7 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [dropPosition, setDropPosition] = useState<'above' | 'below'>('below');
-  const dragCounterRef = useRef(0);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const allChecked = members.every(m => visibility[m.target_id]);
   const noneChecked = members.every(m => !visibility[m.target_id]);
@@ -41,28 +41,20 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
     e.dataTransfer.setData('text/plain', targetId);
   }, []);
 
+  // dragover fires continuously on the hovered element — reliable source of truth
   const handleDragOver = useCallback((e: React.DragEvent, targetId: string) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (targetId === draggedId) return;
+    if (targetId === draggedId) {
+      setDropTargetId(null);
+      return;
+    }
 
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const midY = rect.top + rect.height / 2;
     setDropTargetId(targetId);
     setDropPosition(e.clientY < midY ? 'above' : 'below');
   }, [draggedId]);
-
-  const handleDragEnter = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    dragCounterRef.current++;
-  }, []);
-
-  const handleDragLeave = useCallback(() => {
-    dragCounterRef.current--;
-    if (dragCounterRef.current === 0) {
-      setDropTargetId(null);
-    }
-  }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -84,7 +76,13 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
   const handleDragEnd = useCallback(() => {
     setDraggedId(null);
     setDropTargetId(null);
-    dragCounterRef.current = 0;
+  }, []);
+
+  // Clear drop indicator when pointer leaves the member list container entirely
+  const handleContainerDragLeave = useCallback((e: React.DragEvent) => {
+    if (containerRef.current && !containerRef.current.contains(e.relatedTarget as Node)) {
+      setDropTargetId(null);
+    }
   }, []);
 
   return (
@@ -117,7 +115,11 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
       </div>
 
       {/* Member target tabs */}
-      <div className="space-y-0.5">
+      <div
+        ref={containerRef}
+        className="space-y-0.5"
+        onDragLeave={handleContainerDragLeave}
+      >
         {members.map((member) => {
           const qualityDef = QUALITY_LABELS.find(q => q.value === member.redshift_quality);
           const memberGratings = [...new Set(member.spectra.map(s => s.grating))];
@@ -132,8 +134,6 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
               draggable
               onDragStart={(e) => handleDragStart(e, member.target_id)}
               onDragOver={(e) => handleDragOver(e, member.target_id)}
-              onDragEnter={handleDragEnter}
-              onDragLeave={handleDragLeave}
               onDrop={handleDrop}
               onDragEnd={handleDragEnd}
               className={`flex items-start gap-1.5 rounded-lg text-sm transition-all ${

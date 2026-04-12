@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { createClient } from '@/lib/supabase/client';
@@ -14,7 +14,7 @@ interface ObjectCommentsProps {
 
 export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId }) => {
   const { user, userProfile } = useAuth();
-  const supabase = createClient();
+  const supabase = useMemo(() => createClient(), []);
   const canEdit = user && userProfile?.can_comment;
 
   const [comments, setComments] = useState<CommentWithUser[]>([]);

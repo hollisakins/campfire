@@ -59,7 +59,10 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
     [filteredMembers, visibility, selectedGrating, colors]
   );
 
-  const excludeTargetIds = object.member_targets.map(m => m.target_id);
+  const excludeTargetIds = useMemo(
+    () => object.member_targets.map(m => m.target_id),
+    [object.member_targets]
+  );
 
   return (
     <div>

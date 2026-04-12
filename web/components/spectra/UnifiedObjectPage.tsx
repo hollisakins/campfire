@@ -106,9 +106,9 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
 
     const params = new URLSearchParams(searchParams.toString());
     params.set('tab', tab);
-    if (tab === 'overview') {
-      params.delete('grating');
-    }
+    // Grating is only meaningful on initial mount of a specific target tab;
+    // clear it on any tab switch to avoid stale/invalid values in the URL
+    params.delete('grating');
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   }, [router, pathname, searchParams]);
 
@@ -118,6 +118,24 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
   }, [activeTab, object.member_targets]);
 
   const resolvedTab = activeTarget ? activeTab : 'overview';
+
+  // Index of active target in ordered members (for Save & Next)
+  const activeTargetIndex = useMemo(() => {
+    if (!activeTarget) return -1;
+    return orderedMembers.findIndex(m => m.target_id === activeTarget.target_id);
+  }, [activeTarget, orderedMembers]);
+
+  const hasNextTarget = activeTargetIndex >= 0 && activeTargetIndex < orderedMembers.length - 1;
+
+  const handleSaveAndNext = useCallback(async () => {
+    if (!hasNextTarget) return;
+    const nextTarget = orderedMembers[activeTargetIndex + 1];
+    // handleTabChange will skip the dirty check since we're saving first
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('tab', nextTarget.target_id);
+    params.delete('grating');
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }, [hasNextTarget, orderedMembers, activeTargetIndex, searchParams, router, pathname]);
 
   // === Cutout shutter colors: reactive to current state ===
   const cutoutMemberColors = useMemo(() => {
@@ -222,6 +240,22 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
         </div>
 
         <div className="flex-1 min-w-0">
+          {/* Mobile target selector (replaces sidebar on small screens) */}
+          <div className="lg:hidden mb-4">
+            <select
+              value={resolvedTab}
+              onChange={(e) => handleTabChange(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-lg bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
+            >
+              <option value="overview">Overview</option>
+              {orderedMembers.map(m => (
+                <option key={m.target_id} value={m.target_id}>
+                  {m.target_id} — {m.program_name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {resolvedTab === 'overview' ? (
             <OverviewTab
               object={object}
@@ -237,6 +271,8 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
               initialGrating={grating}
               color={colors[activeTarget.target_id]}
               onDirtyRef={inspectionDirtyRef}
+              onSaveAndNext={handleSaveAndNext}
+              hasNext={hasNextTarget}
             />
           ) : null}
         </div>

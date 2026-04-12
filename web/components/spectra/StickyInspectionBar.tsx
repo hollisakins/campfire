@@ -157,7 +157,10 @@ export const StickyInspectionBar: React.FC<StickyInspectionBarProps> = ({
           <Button
             variant="secondary"
             size="sm"
-            onClick={onSaveAndNext}
+            onClick={async () => {
+              const result = await inspection.save();
+              if (result.success) onSaveAndNext();
+            }}
             disabled={inspection.saving || inspection.redshiftQuality === 0}
           >
             Save & Next

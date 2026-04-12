@@ -30,8 +30,7 @@ with check (((((target_id IS NOT NULL) AND (target_id IN ( SELECT t.id
    FROM public.targets t
   WHERE (t.program_slug = ANY (public.accessible_program_slugs()))))) OR ((target_id IS NULL) AND (object_id IS NOT NULL) AND (object_id IN ( SELECT o.id
    FROM public.objects o
-  WHERE (o.programs && ( SELECT array_agg(s.s) AS array_agg
-           FROM unnest(public.accessible_program_slugs()) s(s))))))) AND public.can_comment()));
+  WHERE (o.programs && public.accessible_program_slugs()))))) AND public.can_comment()));
 
 
 
@@ -44,8 +43,7 @@ using ((((target_id IS NOT NULL) AND (target_id IN ( SELECT t.id
    FROM public.targets t
   WHERE (t.program_slug = ANY (public.accessible_program_slugs()))))) OR ((target_id IS NULL) AND (object_id IS NOT NULL) AND (object_id IN ( SELECT o.id
    FROM public.objects o
-  WHERE (o.programs && ( SELECT array_agg(s.s) AS array_agg
-           FROM unnest(public.accessible_program_slugs()) s(s))))))));
+  WHERE (o.programs && public.accessible_program_slugs()))))));
 
 
 

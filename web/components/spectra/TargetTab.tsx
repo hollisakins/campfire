@@ -18,6 +18,10 @@ interface TargetTabProps {
   color: string;
   /** Ref callback: parent sets this to check dirty state before tab switch */
   onDirtyRef?: React.MutableRefObject<(() => boolean) | null>;
+  /** Called when user clicks Save & Next — parent advances to next target */
+  onSaveAndNext?: () => void;
+  /** Whether there is a next target to advance to */
+  hasNext?: boolean;
 }
 
 export const TargetTab: React.FC<TargetTabProps> = ({
@@ -25,6 +29,8 @@ export const TargetTab: React.FC<TargetTabProps> = ({
   initialGrating,
   color,
   onDirtyRef,
+  onSaveAndNext,
+  hasNext = false,
 }) => {
   // Sort spectra by standard grating order
   const sortedSpectra = useMemo(() =>
@@ -68,6 +74,17 @@ export const TargetTab: React.FC<TargetTabProps> = ({
       if (onDirtyRef) onDirtyRef.current = null;
     };
   }, [onDirtyRef, inspection.isDirty]);
+
+  // Protect against browser back/forward/close when dirty
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (inspection.isDirty()) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [inspection.isDirty]);
 
   return (
     <div>
@@ -171,7 +188,11 @@ export const TargetTab: React.FC<TargetTabProps> = ({
       </Tabs>
 
       {/* Sticky inspection bar — always visible at bottom of target tab */}
-      <StickyInspectionBar inspection={inspection} />
+      <StickyInspectionBar
+        inspection={inspection}
+        onSaveAndNext={onSaveAndNext}
+        hasNext={hasNext}
+      />
     </div>
   );
 };

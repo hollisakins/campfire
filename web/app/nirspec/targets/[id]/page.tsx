@@ -61,8 +61,12 @@ export default async function TargetRedirectPage({ params, searchParams }: Targe
     notFound();
   }
 
-  // Build redirect URL
-  const objectId = (data.objects as unknown as { object_id: string }).object_id;
+  // Build redirect URL — targets.object_id is the FK (integer), objects.object_id is the human-readable ID
+  const joined = data.objects as { object_id: string } | { object_id: string }[] | null;
+  const objectId = Array.isArray(joined) ? joined[0]?.object_id : joined?.object_id;
+  if (!objectId) {
+    notFound();
+  }
 
   // Preserve relevant search params (filter/sort state)
   const redirectParams = new URLSearchParams();
@@ -74,7 +78,7 @@ export default async function TargetRedirectPage({ params, searchParams }: Targe
   }
   // Forward filter/sort params
   Object.entries(searchParamsObj).forEach(([key, value]) => {
-    if (value && key !== 'from_object' && key !== 'grating' && key !== 'tab') {
+    if (value && key !== 'grating' && key !== 'tab') {
       redirectParams.set(key, Array.isArray(value) ? value.join(',') : value);
     }
   });

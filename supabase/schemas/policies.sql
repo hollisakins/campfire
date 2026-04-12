@@ -429,7 +429,7 @@ CREATE POLICY "select_comments_by_access"
     -- Object-level comments
     (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
       SELECT o.id FROM objects o
-      WHERE o.programs && (SELECT array_agg(s) FROM unnest(public.accessible_program_slugs()) AS s)
+      WHERE o.programs && public.accessible_program_slugs()
     ))
   );
 
@@ -448,7 +448,7 @@ CREATE POLICY "insert_comments_by_access"
       -- Object-level comments
       (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
         SELECT o.id FROM objects o
-        WHERE o.programs && (SELECT array_agg(s) FROM unnest(public.accessible_program_slugs()) AS s)
+        WHERE o.programs && public.accessible_program_slugs()
       ))
     )
     AND public.can_comment()
