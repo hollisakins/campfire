@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 import requests as http_requests
-from tqdm import tqdm
+
+from campfire.output import console, progress_bar
 
 
 class UploadTask(NamedTuple):
@@ -111,7 +112,7 @@ def request_presigned_urls(
             data = resp.json()
             all_urls.update(data['urls'])
         except Exception as e:
-            print(f"  Warning: Presign request failed: {e}")
+            console.print(f"  Warning: Presign request failed: {e}")
             return None
 
     return all_urls
@@ -170,7 +171,7 @@ def upload_files_presigned(
             if task.r2_key in urls
         }
 
-        with tqdm(total=len(future_to_task), desc=desc, unit='file') as pbar:
+        with progress_bar(total=len(future_to_task), description=desc) as pbar:
             for future in as_completed(future_to_task):
                 task = future_to_task[future]
                 try:
@@ -257,7 +258,7 @@ def upload_files_direct(
             for task in tasks
         }
 
-        with tqdm(total=len(tasks), desc=desc, unit='file') as pbar:
+        with progress_bar(total=len(tasks), description=desc) as pbar:
             for future in as_completed(future_to_task):
                 task = future_to_task[future]
                 try:
@@ -358,7 +359,7 @@ def upload_files_parallel(
                 for task in tasks
             }
 
-            with tqdm(total=len(tasks), desc=desc, unit='file') as pbar:
+            with progress_bar(total=len(tasks), description=desc) as pbar:
                 for future in as_completed(future_to_task):
                     task = future_to_task[future]
                     try:

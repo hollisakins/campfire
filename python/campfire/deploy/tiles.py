@@ -12,8 +12,6 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from tqdm import tqdm
-
 logger = logging.getLogger(__name__)
 
 

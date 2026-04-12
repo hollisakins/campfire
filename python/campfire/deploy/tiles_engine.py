@@ -42,11 +42,22 @@ try:
 except ImportError:
     import tomli as tomllib
 
-try:
-    from tqdm import tqdm
-except ImportError:
-    def tqdm(iterable, **kwargs):
-        return iterable
+from campfire.output import track as _track, progress_bar as _progress_bar
+
+
+def tqdm(iterable=None, **kwargs):
+    """Compatibility shim: routes to Rich track() or progress_bar()."""
+    if iterable is not None:
+        return _track(
+            iterable,
+            description=kwargs.get("desc", ""),
+            total=kwargs.get("total"),
+        )
+    # Standalone mode (total= given, no iterable) — return a progress bar
+    return _progress_bar(
+        total=kwargs.get("total"),
+        description=kwargs.get("desc", ""),
+    )
 
 
 # ============================================

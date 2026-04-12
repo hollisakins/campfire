@@ -12,7 +12,7 @@ Each public function follows the same pattern:
 import shutil
 from pathlib import Path
 
-from tqdm import tqdm
+from campfire.output import console, track, progress_bar
 
 from campfire.deploy.config import load_observations, load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir
 from campfire.deploy.discover import (
@@ -110,7 +110,7 @@ def deploy_observation(
     if source_ids:
         total = len(summary)
         summary = filter_by_source_ids(summary, source_ids)
-        print(f"Filtered {total} spectra to {len(summary)} matching {len(source_ids)} source IDs")
+        console.print(f"Filtered {total} spectra to {len(summary)} matching {len(source_ids)} source IDs")
 
     field = get_field(summary)
     program_slug = get_program_slug(summary)
@@ -122,12 +122,12 @@ def deploy_observation(
     # Get JWST PID from first row (all rows share the same PID per observation)
     jwst_program_id = int(summary['program_id'][0]) if len(summary) > 0 else 0
 
-    print(f"Observation: {obs_name}")
-    print(f"  Field: {field}")
-    print(f"  Program: {program_slug}")
-    print(f"  Objects: {len(objects)}")
-    print(f"  Spectra: {len(spectra)}")
-    print(f"  Zfit files: {len(zfit_paths)}")
+    console.print(f"Observation: {obs_name}")
+    console.print(f"  Field: {field}")
+    console.print(f"  Program: {program_slug}")
+    console.print(f"  Objects: {len(objects)}")
+    console.print(f"  Spectra: {len(spectra)}")
+    console.print(f"  Zfit files: {len(zfit_paths)}")
 
     # Generate RGB/SED if requested (skips existing files)
     if not dry_run:
@@ -136,13 +136,13 @@ def deploy_observation(
             n = generate_rgb_images(obs_name, obs_dir, field,
                                     source_ids=source_ids)
             if n:
-                print(f"  Generated {n} RGB images")
+                console.print(f"  Generated {n} RGB images")
         if include_sed:
             from campfire.deploy.generate_sed import generate_sed_plots
             n = generate_sed_plots(obs_name, obs_dir, field,
                                    source_ids=source_ids)
             if n:
-                print(f"  Generated {n} SED plots")
+                console.print(f"  Generated {n} SED plots")
 
     # Discover optional file types
     rgb_files = discover_rgb_images(obs_dir) if include_rgb else []
@@ -153,50 +153,50 @@ def deploy_observation(
         sed_files = filter_files_by_source_ids(sed_files, source_ids, obs_name)
 
     if rgb_files:
-        print(f"  RGB images: {len(rgb_files)}")
+        console.print(f"  RGB images: {len(rgb_files)}")
     if sed_files:
-        print(f"  SED plots: {len(sed_files)}")
-    print()
+        console.print(f"  SED plots: {len(sed_files)}")
+    console.print()
 
     # Build set of object_ids with SED plots
     objects_with_sed = extract_object_ids_from_files(sed_files, '_sed.pdf') if sed_files else set()
 
     # --- Dry run ---
     if dry_run:
-        print("=== DRY RUN ===")
+        console.print("=== DRY RUN ===")
         if force_overwrite:
-            print("!! FORCE OVERWRITE: inspection data will be reset")
+            console.print("!! FORCE OVERWRITE: inspection data will be reset")
         if not supabase_only:
-            print(f"Would upload to R2:")
-            print(f"  {len(spec_paths)} FITS files")
-            print(f"  {len(spec_paths)} spectrum JSON files")
+            console.print(f"Would upload to R2:")
+            console.print(f"  {len(spec_paths)} FITS files")
+            console.print(f"  {len(spec_paths)} spectrum JSON files")
             if zfit_paths:
-                print(f"  {len(zfit_paths)} zfit JSON files")
+                console.print(f"  {len(zfit_paths)} zfit JSON files")
             if rgb_files:
-                print(f"  {len(rgb_files)} RGB images")
+                console.print(f"  {len(rgb_files)} RGB images")
             if sed_files:
-                print(f"  {len(sed_files)} SED plots")
-        print(f"Would upsert to Supabase:")
-        print(f"  Program: {program_slug}")
-        print(f"  {len(objects)} object(s)")
-        print(f"  {len(spectra)} spectrum record(s)")
+                console.print(f"  {len(sed_files)} SED plots")
+        console.print(f"Would upsert to Supabase:")
+        console.print(f"  Program: {program_slug}")
+        console.print(f"  {len(objects)} object(s)")
+        console.print(f"  {len(spectra)} spectrum record(s)")
         if include_shutters:
             ecsv_path = discover_shutters_ecsv(obs_dir, obs_name)
             if ecsv_path:
                 shutters_data = load_shutters_ecsv(ecsv_path)
-                print(f"  {len(shutters_data)} shutter record(s)")
+                console.print(f"  {len(shutters_data)} shutter record(s)")
             else:
-                print("  No shutters ECSV found, would skip")
+                console.print("  No shutters ECSV found, would skip")
         else:
-            print("  Shutters: skipped (--no-shutters)")
+            console.print("  Shutters: skipped (--no-shutters)")
         if not force_overwrite:
-            print("  (existing objects: pipeline fields only, inspection data preserved)")
-        print()
-        print("Sample object IDs:")
+            console.print("  (existing objects: pipeline fields only, inspection data preserved)")
+        console.print()
+        console.print("Sample object IDs:")
         for obj in objects[:5]:
-            print(f"  - {obj['object_id']}")
+            console.print(f"  - {obj['object_id']}")
         if len(objects) > 5:
-            print(f"  ... and {len(objects) - 5} more")
+            console.print(f"  ... and {len(objects) - 5} more")
         return
 
     # --- Live deployment ---
@@ -207,25 +207,25 @@ def deploy_observation(
     target_ids = [o['object_id'] for o in objects]
     existing = check_existing_objects(sb, target_ids)
     if existing:
-        print(f"Found {len(existing)} existing objects")
+        console.print(f"Found {len(existing)} existing objects")
         if force_overwrite:
-            print("  FORCE OVERWRITE: inspection data will be RESET!")
+            console.print("  FORCE OVERWRITE: inspection data will be RESET!")
             if not auto_approve:
                 resp = input("  Are you sure? [y/N]: ")
                 if resp.lower() != 'y':
-                    print("Aborted.")
+                    console.print("Aborted.")
                     return
         else:
-            print("  (inspection data preserved)")
+            console.print("  (inspection data preserved)")
             if not auto_approve:
                 resp = input("  Update pipeline data for existing objects? [y/N]: ")
                 if resp.lower() != 'y':
-                    print("Aborted.")
+                    console.print("Aborted.")
                     return
-    print()
+    console.print()
 
     # Upsert program
-    print("Upserting program...")
+    console.print("Upserting program...")
     upsert_programs(sb, [program_slug], programs_config)
 
     # Upsert observation record with definition from observations.toml
@@ -240,7 +240,7 @@ def deploy_observation(
         gratings=obs_gratings if obs_gratings else None,
         data_subdir=obs_data_subdir,
     )
-    print()
+    console.print()
 
     # Generate content and upload
     temp_dir = obs_dir / '.deploy_temp'
@@ -251,8 +251,8 @@ def deploy_observation(
         r2_prefix = f"spectra/{obs_name}"
 
         if not supabase_only:
-            print("Generating content...")
-            for spec_path in tqdm(spec_paths, desc="Processing", unit="file"):
+            console.print("Generating content...")
+            for spec_path in track(spec_paths, description="Processing"):
                 # FITS file
                 upload_tasks.append(UploadTask(spec_path, f"{r2_prefix}/{spec_path.name}", 'application/fits'))
 
@@ -273,27 +273,27 @@ def deploy_observation(
             for sed_path in sed_files:
                 upload_tasks.append(UploadTask(sed_path, f"sed/{obs_name}/{sed_path.name}", 'application/pdf'))
 
-            print(f"Uploading {len(upload_tasks)} files...")
+            console.print(f"Uploading {len(upload_tasks)} files...")
             success, failed, failed_msgs = upload_files_parallel(config, upload_tasks, desc="R2 uploads")
 
             if failed_msgs:
-                print(f"\n  {failed} uploads failed:")
+                console.print(f"\n  {failed} uploads failed:")
                 for msg in failed_msgs[:10]:
-                    print(f"    - {msg}")
+                    console.print(f"    - {msg}")
                 if len(failed_msgs) > 10:
-                    print(f"    ... and {len(failed_msgs) - 10} more")
-            print(f"Uploaded {success}/{len(upload_tasks)} files")
-            print()
+                    console.print(f"    ... and {len(failed_msgs) - 10} more")
+            console.print(f"Uploaded {success}/{len(upload_tasks)} files")
+            console.print()
 
         # Generate thumbnails and enrich spectra records
-        print("Generating thumbnails...")
+        console.print("Generating thumbnails...")
         thumb_map = {}
-        for spec_path in tqdm(spec_paths, desc="Thumbnails", unit="file"):
+        for spec_path in track(spec_paths, description="Thumbnails"):
             try:
                 thumbs = generate_thumbnails_from_fits(spec_path)
                 thumb_map[spec_path.name] = thumbs
             except Exception as e:
-                print(f"  Warning: {spec_path.name}: {e}")
+                console.print(f"  Warning: {spec_path.name}: {e}")
 
         # Enrich spectra records with thumbnails
         for rec in spectra:
@@ -302,37 +302,37 @@ def deploy_observation(
                 rec.update(thumb_map[fits_name])
 
         # Supabase upserts
-        print("Upserting objects...")
+        console.print("Upserting objects...")
         n_obj, new_object_ids, n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
-        print(f"  {n_obj} objects")
+        console.print(f"  {n_obj} objects")
         if n_quality_reset:
-            print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift > {REDSHIFT_DRIFT_THRESHOLD}, no manual override)")
+            console.print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift > {REDSHIFT_DRIFT_THRESHOLD}, no manual override)")
 
-        print("Upserting spectra...")
+        console.print("Upserting spectra...")
         n_spec = batch_upsert_spectra(sb, spectra)
-        print(f"  {n_spec} spectra")
+        console.print(f"  {n_spec} spectra")
 
         # Recompute aggregate columns (max_snr, max_exposure_time) in bulk
         target_ids = [o['object_id'] for o in objects]
         n_agg = recompute_target_aggregates(sb, target_ids)
-        print(f"  Recomputed aggregates for {n_agg} targets")
+        console.print(f"  Recomputed aggregates for {n_agg} targets")
 
         # Cross-match propagation for new objects
         if new_object_ids:
-            print("Checking cross-matches...")
+            console.print("Checking cross-matches...")
             n_propagated = propagate_crossmatches(sb, new_object_ids)
             if n_propagated:
-                print(f"  Auto-secured {n_propagated} objects via cross-match")
+                console.print(f"  Auto-secured {n_propagated} objects via cross-match")
             else:
-                print("  No cross-matches found")
+                console.print("  No cross-matches found")
 
         # Rebuild objects table for this field
         from campfire.deploy.objects import rebuild_field_objects
-        print("\nRebuilding objects...")
+        console.print("\nRebuilding objects...")
         n_obj, n_multi = rebuild_field_objects(sb, field)
-        print(f"  {n_obj} objects ({n_multi} multi-target)")
+        console.print(f"  {n_obj} objects ({n_multi} multi-target)")
 
-        print()
+        console.print()
         refresh_filter_options(sb)
         refresh_programs_overview(sb)
 
@@ -343,7 +343,7 @@ def deploy_observation(
             if ecsv_path:
                 shutters_data = load_shutters_ecsv(ecsv_path)
                 n_src = len(set(r['object_id'] for r in shutters_data))
-                print(f"\nDeploying shutters ({len(shutters_data)} records, {n_src} sources)...")
+                console.print(f"\nDeploying shutters ({len(shutters_data)} records, {n_src} sources)...")
 
                 if not skip_astrometry:
                     import tomllib
@@ -356,13 +356,13 @@ def deploy_observation(
                         shutters_data, obs_dir, obs_name, field, imaging_config,
                     )
                     if n_corrected:
-                        print(f"  Astrometry: corrected {n_corrected} shutters "
+                        console.print(f"  Astrometry: corrected {n_corrected} shutters "
                               f"({n_matches} catalog cross-matches)")
 
                 n_shutters = db_deploy_shutters(sb, obs_name, shutters_data)
-                print(f"  Deployed {n_shutters} shutter records")
+                console.print(f"  Deployed {n_shutters} shutter records")
             else:
-                print(f"\nNo shutters ECSV found for {obs_name}, skipping shutter deployment")
+                console.print(f"\nNo shutters ECSV found for {obs_name}, skipping shutter deployment")
 
         # Record deployment provenance
         config_snapshot = _load_config_snapshot(obs_dir, obs_name)
@@ -389,9 +389,9 @@ def deploy_observation(
         )
         if deployment_id:
             update_latest_deployment(sb, obs_name, deployment_id)
-            print(f"\nDeployment #{deployment_id} recorded")
+            console.print(f"\nDeployment #{deployment_id} recorded")
 
-        print()
+        console.print()
         msg = f"Deployed {len(spectra)} spectra from {len(objects)} objects"
         if zfit_paths:
             msg += f" + {len(zfit_paths)} zfit files"
@@ -401,7 +401,7 @@ def deploy_observation(
             msg += f" + {len(sed_files)} SED plots"
         if n_shutters:
             msg += f" + {n_shutters} shutters"
-        print(msg)
+        console.print(msg)
 
     finally:
         if temp_dir.exists():
@@ -431,7 +431,7 @@ def deploy_rgb(
             n = generate_rgb_images(obs_name, obs_dir, field,
                                     overwrite=overwrite, source_ids=source_ids)
             if n:
-                print(f"Generated {n} RGB images")
+                console.print(f"Generated {n} RGB images")
 
     rgb_files = discover_rgb_images(obs_dir)
 
@@ -439,28 +439,28 @@ def deploy_rgb(
         rgb_files = filter_files_by_source_ids(rgb_files, source_ids, obs_name)
 
     if not rgb_files:
-        print("No RGB images found.")
+        console.print("No RGB images found.")
         return
 
-    print(f"Found {len(rgb_files)} RGB images")
+    console.print(f"Found {len(rgb_files)} RGB images")
 
     if dry_run:
-        print("=== DRY RUN ===")
+        console.print("=== DRY RUN ===")
         for path in rgb_files[:5]:
-            print(f"  {path.name} -> rgb/{obs_name}/{path.name}")
+            console.print(f"  {path.name} -> rgb/{obs_name}/{path.name}")
         if len(rgb_files) > 5:
-            print(f"  ... and {len(rgb_files) - 5} more")
+            console.print(f"  ... and {len(rgb_files) - 5} more")
         return
 
     tasks = [UploadTask(p, f"rgb/{obs_name}/{p.name}", 'image/png') for p in rgb_files]
     success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="RGB images")
 
     if failed_msgs:
-        print(f"\n  {failed} failed:")
+        console.print(f"\n  {failed} failed:")
         for msg in failed_msgs[:5]:
-            print(f"    - {msg}")
+            console.print(f"    - {msg}")
 
-    print(f"Uploaded {success}/{len(rgb_files)} RGB images")
+    console.print(f"Uploaded {success}/{len(rgb_files)} RGB images")
 
 
 def deploy_sed(
@@ -482,7 +482,7 @@ def deploy_sed(
             n = generate_sed_plots(obs_name, obs_dir, field,
                                    overwrite=overwrite, source_ids=source_ids)
             if n:
-                print(f"Generated {n} SED plots")
+                console.print(f"Generated {n} SED plots")
 
     sed_files = discover_sed_plots(obs_dir)
 
@@ -490,35 +490,35 @@ def deploy_sed(
         sed_files = filter_files_by_source_ids(sed_files, source_ids, obs_name)
 
     if not sed_files:
-        print("No SED plots found.")
+        console.print("No SED plots found.")
         return
 
     objects_with_sed = extract_object_ids_from_files(sed_files, '_sed.pdf')
-    print(f"Found {len(sed_files)} SED plots ({len(objects_with_sed)} objects)")
+    console.print(f"Found {len(sed_files)} SED plots ({len(objects_with_sed)} objects)")
 
     if dry_run:
-        print("=== DRY RUN ===")
+        console.print("=== DRY RUN ===")
         for path in sed_files[:5]:
-            print(f"  {path.name} -> sed/{obs_name}/{path.name}")
+            console.print(f"  {path.name} -> sed/{obs_name}/{path.name}")
         if len(sed_files) > 5:
-            print(f"  ... and {len(sed_files) - 5} more")
-        print(f"Would set has_sed_plot=true for {len(objects_with_sed)} objects")
+            console.print(f"  ... and {len(sed_files) - 5} more")
+        console.print(f"Would set has_sed_plot=true for {len(objects_with_sed)} objects")
         return
 
     tasks = [UploadTask(p, f"sed/{obs_name}/{p.name}", 'application/pdf') for p in sed_files]
     success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="SED plots")
 
     if failed_msgs:
-        print(f"\n  {failed} failed:")
+        console.print(f"\n  {failed} failed:")
         for msg in failed_msgs[:5]:
-            print(f"    - {msg}")
+            console.print(f"    - {msg}")
 
-    print(f"Uploaded {success}/{len(sed_files)} SED plots")
+    console.print(f"Uploaded {success}/{len(sed_files)} SED plots")
 
     # Update database
     sb = get_supabase_client(config)
     n = update_has_sed_plot(sb, objects_with_sed)
-    print(f"Updated has_sed_plot for {n} objects")
+    console.print(f"Updated has_sed_plot for {n} objects")
 
 
 def deploy_json(
@@ -538,38 +538,38 @@ def deploy_json(
     spec_paths = get_spec_paths(summary, obs_dir)
 
     if not spec_paths:
-        print("No spectrum files found.")
+        console.print("No spectrum files found.")
         return
 
-    print(f"Found {len(spec_paths)} spectrum files")
+    console.print(f"Found {len(spec_paths)} spectrum files")
 
     if dry_run:
-        print("=== DRY RUN ===")
+        console.print("=== DRY RUN ===")
         for path in spec_paths[:5]:
-            print(f"  {path.name} -> spectra/{obs_name}/{path.stem}.json")
+            console.print(f"  {path.name} -> spectra/{obs_name}/{path.stem}.json")
         if len(spec_paths) > 5:
-            print(f"  ... and {len(spec_paths) - 5} more")
+            console.print(f"  ... and {len(spec_paths) - 5} more")
         return
 
     temp_dir = obs_dir / '.deploy_temp'
     temp_dir.mkdir(exist_ok=True)
 
     try:
-        print("Generating JSON files...")
+        console.print("Generating JSON files...")
         tasks = []
-        for path in tqdm(spec_paths, desc="Generating", unit="file"):
+        for path in track(spec_paths, description="Generating"):
             json_path = generate_spectrum_json(path, temp_dir)
             tasks.append(UploadTask(json_path, f"spectra/{obs_name}/{json_path.name}", 'application/json'))
 
-        print("Uploading...")
+        console.print("Uploading...")
         success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="JSON files")
 
         if failed_msgs:
-            print(f"\n  {failed} failed:")
+            console.print(f"\n  {failed} failed:")
             for msg in failed_msgs[:5]:
-                print(f"    - {msg}")
+                console.print(f"    - {msg}")
 
-        print(f"Uploaded {success}/{len(spec_paths)} JSON files")
+        console.print(f"Uploaded {success}/{len(spec_paths)} JSON files")
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
@@ -595,18 +595,18 @@ def deploy_zfit(
     objects = get_unique_objects(summary)
     field = get_field(summary)
 
-    print(f"Found {len(zfit_paths)} zfit files for {len(objects)} objects")
+    console.print(f"Found {len(zfit_paths)} zfit files for {len(objects)} objects")
 
     if not zfit_paths:
-        print("No zfit files to deploy.")
+        console.print("No zfit files to deploy.")
         return
 
     if dry_run:
-        print("=== DRY RUN ===")
+        console.print("=== DRY RUN ===")
         if force_overwrite:
-            print("!! FORCE OVERWRITE: inspection data will be reset")
-        print(f"Would upload {len(zfit_paths)} zfit JSON files")
-        print(f"Would update redshift_auto for {len(objects)} objects")
+            console.print("!! FORCE OVERWRITE: inspection data will be reset")
+        console.print(f"Would upload {len(zfit_paths)} zfit JSON files")
+        console.print(f"Would update redshift_auto for {len(objects)} objects")
         return
 
     # Upload zfit JSONs
@@ -614,21 +614,21 @@ def deploy_zfit(
     temp_dir.mkdir(exist_ok=True)
 
     try:
-        print("Generating zfit JSON files...")
+        console.print("Generating zfit JSON files...")
         tasks = []
         for path in zfit_paths:
             json_path = generate_zfit_json(path, temp_dir)
             tasks.append(UploadTask(json_path, f"spectra/{obs_name}/{json_path.name}", 'application/json'))
 
-        print("Uploading...")
+        console.print("Uploading...")
         success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="Zfit JSON")
 
         if failed_msgs:
-            print(f"\n  {failed} failed:")
+            console.print(f"\n  {failed} failed:")
             for msg in failed_msgs[:5]:
-                print(f"    - {msg}")
+                console.print(f"    - {msg}")
 
-        print(f"Uploaded {success}/{len(zfit_paths)} zfit JSON files")
+        console.print(f"Uploaded {success}/{len(zfit_paths)} zfit JSON files")
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
@@ -639,21 +639,21 @@ def deploy_zfit(
     if force_overwrite:
         existing = check_existing_objects(sb, [o['object_id'] for o in objects])
         if existing and not auto_approve:
-            print(f"  {len(existing)} objects exist. FORCE OVERWRITE will reset inspection data!")
+            console.print(f"  {len(existing)} objects exist. FORCE OVERWRITE will reset inspection data!")
             resp = input("  Are you sure? [y/N]: ")
             if resp.lower() != 'y':
-                print("Aborted.")
+                console.print("Aborted.")
                 return
 
-    print("Updating objects...")
+    console.print("Updating objects...")
     n, _, n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite)
-    print(f"  Updated {n} objects")
+    console.print(f"  Updated {n} objects")
     if n_quality_reset:
-        print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift)")
+        console.print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift)")
 
     refresh_filter_options(sb)
     refresh_programs_overview(sb)
-    print(f"Deployed {len(zfit_paths)} zfit files, updated {n} objects")
+    console.print(f"Deployed {len(zfit_paths)} zfit files, updated {n} objects")
 
 
 def deploy_thumbnails(
@@ -673,23 +673,23 @@ def deploy_thumbnails(
     spec_paths = get_spec_paths(summary, obs_dir)
 
     if not spec_paths:
-        print("No spectrum files found.")
+        console.print("No spectrum files found.")
         return
 
-    print(f"Found {len(spec_paths)} spectrum files")
+    console.print(f"Found {len(spec_paths)} spectrum files")
 
     if dry_run:
-        print("=== DRY RUN ===")
-        print(f"Would regenerate thumbnails for {len(spec_paths)} spectra")
+        console.print("=== DRY RUN ===")
+        console.print(f"Would regenerate thumbnails for {len(spec_paths)} spectra")
         return
 
     sb = get_supabase_client(config)
 
-    print("Generating and updating thumbnails...")
+    console.print("Generating and updating thumbnails...")
     updated = 0
     errors = []
 
-    for spec_path in tqdm(spec_paths, desc="Processing", unit="file"):
+    for spec_path in track(spec_paths, description="Processing"):
         try:
             thumbs = generate_thumbnails_from_fits(spec_path)
 
@@ -708,13 +708,13 @@ def deploy_thumbnails(
             errors.append(f"{spec_path.name}: {e}")
 
     if errors:
-        print(f"\n  {len(errors)} errors:")
+        console.print(f"\n  {len(errors)} errors:")
         for msg in errors[:5]:
-            print(f"    - {msg}")
+            console.print(f"    - {msg}")
         if len(errors) > 5:
-            print(f"    ... and {len(errors) - 5} more")
+            console.print(f"    ... and {len(errors) - 5} more")
 
-    print(f"Updated thumbnails for {updated}/{len(spec_paths)} spectra")
+    console.print(f"Updated thumbnails for {updated}/{len(spec_paths)} spectra")
 
 
 def deploy_slits(
@@ -728,24 +728,24 @@ def deploy_slits(
     slits_path = discover_slits_json(obs_dir, obs_name)
 
     if not slits_path:
-        print(f"Error: Slit file not found: {obs_dir / f'{obs_name}_slits.json'}")
-        print(f"Generate it first with: cfpipe nirspec slits --obs {obs_name}")
+        console.print(f"Error: Slit file not found: {obs_dir / f'{obs_name}_slits.json'}")
+        console.print(f"Generate it first with: cfpipe nirspec slits --obs {obs_name}")
         return
 
     slits_data = load_slits_json(slits_path)
-    print(f"Found {len(slits_data)} slit records")
+    console.print(f"Found {len(slits_data)} slit records")
 
     if dry_run:
-        print("=== DRY RUN ===")
-        print(f"Would delete existing slit_regions for '{obs_name}'")
-        print(f"Would insert {len(slits_data)} rows")
+        console.print("=== DRY RUN ===")
+        console.print(f"Would delete existing slit_regions for '{obs_name}'")
+        console.print(f"Would insert {len(slits_data)} rows")
         return
 
     sb = get_supabase_client(config)
 
-    print("Deploying slits...")
+    console.print("Deploying slits...")
     n = db_deploy_slits(sb, obs_name, slits_data)
-    print(f"Deployed {n} slit records for {obs_name}")
+    console.print(f"Deployed {n} slit records for {obs_name}")
 
 
 def deploy_shutters(
@@ -760,24 +760,24 @@ def deploy_shutters(
     ecsv_path = discover_shutters_ecsv(obs_dir, obs_name)
 
     if not ecsv_path:
-        print(f"Error: Shutters file not found: {obs_dir / f'{obs_name}_shutters.ecsv'}")
-        print(f"Generate it first with: cfpipe nirspec summary --obs {obs_name}")
+        console.print(f"Error: Shutters file not found: {obs_dir / f'{obs_name}_shutters.ecsv'}")
+        console.print(f"Generate it first with: cfpipe nirspec summary --obs {obs_name}")
         return
 
     shutters_data = load_shutters_ecsv(ecsv_path)
     n_sources = len(set(r['object_id'] for r in shutters_data))
-    print(f"Found {len(shutters_data)} shutter records ({n_sources} sources)")
+    console.print(f"Found {len(shutters_data)} shutter records ({n_sources} sources)")
 
     # Astrometric correction: align MSA coordinates to imaging reference frame
     if skip_astrometry:
-        print("Skipping astrometry correction (--skip-astrometry)")
+        console.print("Skipping astrometry correction (--skip-astrometry)")
     else:
         import tomllib
         from campfire.deploy.astrometry import correct_shutter_positions
 
         field = resolve_field(obs_name)
         if not field:
-            print("  Could not determine field, skipping astrometry")
+            console.print("  Could not determine field, skipping astrometry")
         else:
             imaging_path = resolve_imaging_config()
             with open(imaging_path, 'rb') as f:
@@ -786,20 +786,20 @@ def deploy_shutters(
                 shutters_data, obs_dir, obs_name, field, imaging_config,
             )
             if n_corrected:
-                print(f"  Astrometry: corrected {n_corrected} shutters "
+                console.print(f"  Astrometry: corrected {n_corrected} shutters "
                       f"({n_matches} catalog cross-matches)")
 
     if dry_run:
-        print("=== DRY RUN ===")
-        print(f"Would delete existing shutters for '{obs_name}'")
-        print(f"Would insert {len(shutters_data)} rows")
+        console.print("=== DRY RUN ===")
+        console.print(f"Would delete existing shutters for '{obs_name}'")
+        console.print(f"Would insert {len(shutters_data)} rows")
         return
 
     sb = get_supabase_client(config)
 
-    print("Deploying shutters...")
+    console.print("Deploying shutters...")
     n = db_deploy_shutters(sb, obs_name, shutters_data)
-    print(f"Deployed {n} shutter records for {obs_name}")
+    console.print(f"Deployed {n} shutter records for {obs_name}")
 
 
 def fetch_config(
@@ -830,7 +830,7 @@ def fetch_config(
     result = fetch_deployment_config(sb, obs_name)
 
     if result is None:
-        print(f"Error: Observation '{obs_name}' not found or has no deployment record.")
+        console.print(f"Error: Observation '{obs_name}' not found or has no deployment record.")
         return
 
     obs_data = result['observation']
@@ -874,14 +874,14 @@ def fetch_config(
     files_written.append(obs_path)
 
     # Summary
-    print(f"Fetched config for '{obs_name}':")
+    console.print(f"Fetched config for '{obs_name}':")
     for p in files_written:
-        print(f"  {p}")
+        console.print(f"  {p}")
 
-    print(f"\nDeployment #{dep_data.get('id')}:")
-    print(f"  Deployed by: {dep_data.get('deployed_by', 'unknown')}")
-    print(f"  Deployed at: {dep_data.get('deployed_at', 'unknown')}")
-    print(f"  Reduced at:  {dep_data.get('reduced_at', 'unknown')}")
-    print(f"  cfpipe:      {dep_data.get('cfpipe_version', 'unknown')}")
-    print(f"  jwst:        {dep_data.get('jwst_version', 'unknown')}")
-    print(f"  CRDS:        {dep_data.get('crds_context', 'unknown')}")
+    console.print(f"\nDeployment #{dep_data.get('id')}:")
+    console.print(f"  Deployed by: {dep_data.get('deployed_by', 'unknown')}")
+    console.print(f"  Deployed at: {dep_data.get('deployed_at', 'unknown')}")
+    console.print(f"  Reduced at:  {dep_data.get('reduced_at', 'unknown')}")
+    console.print(f"  cfpipe:      {dep_data.get('cfpipe_version', 'unknown')}")
+    console.print(f"  jwst:        {dep_data.get('jwst_version', 'unknown')}")
+    console.print(f"  CRDS:        {dep_data.get('crds_context', 'unknown')}")

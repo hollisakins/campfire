@@ -805,8 +805,8 @@ class LocalStore:
         total = len(tracked_rows) + len(untracked_rows)
         pbar = None
         if show_progress and total > 0:
-            from tqdm import tqdm
-            pbar = tqdm(total=total, desc="Verifying local files", unit="file")
+            from campfire.output import progress_bar
+            pbar = progress_bar(total=total, description="Verifying local files")
 
         for row in tracked_rows:
             full_path = products_dir / row["local_path"]

@@ -25,6 +25,14 @@ from .auth.credentials import CredentialManager
 from .auth.device_flow import run_device_flow
 from .auth.tokens import TokenManager
 from .exceptions import AuthenticationError
+from .output import (
+    console,
+    make_table,
+    print_error,
+    print_msg,
+    print_success,
+    print_warning,
+)
 
 
 def _require_auth(base_url: str) -> APISession:
@@ -32,8 +40,8 @@ def _require_auth(base_url: str) -> APISession:
     try:
         return APISession(base_url=base_url)
     except AuthenticationError as e:
-        click.echo(f"✗ {e}")
-        click.echo("  Run: campfire login")
+        print_error(str(e))
+        print_msg("  Run: campfire login")
         sys.exit(1)
 
 
@@ -51,17 +59,17 @@ def _open_store():
     try:
         return LocalStore(db_path)
     except SchemaMismatchError as e:
-        click.echo(f"⚠  {e}")
-        click.echo("   The database must be recreated to match the current client version.")
+        print_warning(str(e))
+        print_msg("   The database must be recreated to match the current client version.")
         if click.confirm("   Delete and rebuild on next sync?", default=True):
             db_path.unlink(missing_ok=True)
             # Also remove WAL/SHM files left by SQLite
             db_path.with_suffix(".db-wal").unlink(missing_ok=True)
             db_path.with_suffix(".db-shm").unlink(missing_ok=True)
-            click.echo("   Deleted. Creating fresh database…")
+            print_msg("   Deleted. Creating fresh database…")
             return LocalStore(db_path)
         else:
-            click.echo("   Aborting.")
+            print_msg("   Aborting.")
             sys.exit(1)
 
 
@@ -80,21 +88,27 @@ def _check_client_version(base_url: str) -> None:
         minimum = Version(data.get("minimum", "0.0.0"))
 
         if current < minimum:
-            click.echo(f"\n⚠ campfire v{__version__} is no longer supported "
-                        f"(minimum: v{minimum}). Please update:")
-            click.echo("  pip install -U git+https://github.com/hollisakins/campfire.git#subdirectory=python")
+            print_warning(f"campfire v{__version__} is no longer supported "
+                          f"(minimum: v{minimum}). Please update:")
+            print_msg("  pip install -U git+https://github.com/hollisakins/campfire.git#subdirectory=python")
         elif current < latest:
-            click.echo(f"\n  Update available: v{__version__} → v{latest}")
-            click.echo("  pip install -U git+https://github.com/hollisakins/campfire.git#subdirectory=python")
+            print_msg(f"\n  Update available: v{__version__} → v{latest}")
+            print_msg("  pip install -U git+https://github.com/hollisakins/campfire.git#subdirectory=python")
     except Exception:
         pass  # Never block sync for a version check failure
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(version="0.3.0", prog_name="campfire")
-def cli():
+@click.pass_context
+def cli(ctx):
     """CAMPFIRE — Python client and deployment tools for NIRSpec spectroscopic data."""
-    pass
+    if ctx.invoked_subcommand is None:
+        if sys.stdout.isatty():
+            from .tui import launch_tui
+            launch_tui()
+        else:
+            click.echo(ctx.get_help())
 
 
 def _register_deploy_group():
@@ -141,18 +155,18 @@ def login(browser: Optional[bool], base_url: Optional[str]):
         existing = creds.load()
         if existing:
             if existing.is_oauth() and existing.user_email:
-                click.echo(f"Already logged in as {existing.user_email}")
+                print_msg(f"Already logged in as {existing.user_email}")
             elif existing.is_api_key():
-                click.echo("Already authenticated with API key")
+                print_msg("Already authenticated with API key")
 
             if not click.confirm("Do you want to re-authenticate?"):
                 return
 
     # Determine authentication method
     if browser is None:
-        click.echo("\nHow would you like to authenticate?")
-        click.echo("  1. Login with web browser (recommended)")
-        click.echo("  2. Paste an API key")
+        print_msg("\nHow would you like to authenticate?")
+        print_msg("  1. Login with web browser (recommended)")
+        print_msg("  2. Paste an API key")
         choice = click.prompt("Choice", type=click.IntRange(1, 2), default=1)
         browser = choice == 1
 
@@ -164,7 +178,7 @@ def login(browser: Optional[bool], base_url: Optional[str]):
 
 def _browser_login(base_url: str, creds: CredentialManager):
     """Handle browser-based OAuth flow."""
-    click.echo("\nStarting browser authentication...")
+    print_msg("\nStarting browser authentication...")
 
     try:
         tokens = run_device_flow(base_url, open_browser=True, show_progress=True)
@@ -180,61 +194,57 @@ def _browser_login(base_url: str, creds: CredentialManager):
             supabase_anon_key=tokens.supabase_anon_key,
         )
 
-        click.echo(f"\n✓ Logged in successfully!")
+        print_success("Logged in successfully!")
         if user_email:
-            click.echo(f"  Authenticated as: {user_email}")
-        click.echo(f"  Credentials saved to: ~/.campfire/credentials")
+            print_msg(f"  Authenticated as: {user_email}")
+        print_msg("  Credentials saved to: ~/.campfire/credentials")
 
     except AuthenticationError as e:
-        click.echo(f"\n✗ Authentication failed: {e}", err=True)
+        print_error(f"Authentication failed: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
-        click.echo("\n\nAuthentication cancelled.")
+        print_msg("\n\nAuthentication cancelled.")
         sys.exit(1)
 
 
 def _api_key_login(base_url: str, creds: CredentialManager):
     """Handle manual API key entry."""
-    click.echo("\nGenerate an API key at:")
-    click.echo(f"  {base_url.replace('/api/v1', '')}/profile/api-keys")
-    click.echo()
+    print_msg("\nGenerate an API key at:")
+    print_msg(f"  {base_url.replace('/api/v1', '')}/profile/api-keys")
+    print_msg()
 
     api_key = click.prompt("Paste your API key", hide_input=True)
 
     if not api_key:
-        click.echo("✗ No API key provided", err=True)
+        print_error("No API key provided")
         sys.exit(1)
 
     if not api_key.startswith("sk_"):
-        click.echo("✗ Invalid API key format (should start with 'sk_')", err=True)
+        print_error("Invalid API key format (should start with 'sk_')")
         sys.exit(1)
 
-    click.echo("Validating...", nl=False)
+    with console.status("Validating..."):
+        try:
+            response = requests.get(
+                f"{base_url}/auth/whoami",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10,
+            )
 
-    try:
-        response = requests.get(
-            f"{base_url}/auth/whoami",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=10,
-        )
+            if response.status_code == 401:
+                print_error("Invalid API key")
+                sys.exit(1)
 
-        if response.status_code == 401:
-            click.echo(" ✗")
-            click.echo("Invalid API key", err=True)
+            response.raise_for_status()
+
+        except requests.RequestException as e:
+            print_error(f"Failed to validate API key: {e}")
             sys.exit(1)
 
-        response.raise_for_status()
-        click.echo(" ✓")
+    creds.save_api_key(api_key)
 
-        creds.save_api_key(api_key)
-
-        click.echo(f"\n✓ API key saved successfully!")
-        click.echo(f"  Credentials saved to: ~/.campfire/credentials")
-
-    except requests.RequestException as e:
-        click.echo(" ✗")
-        click.echo(f"Failed to validate API key: {e}", err=True)
-        sys.exit(1)
+    print_success("API key saved successfully!")
+    print_msg("  Credentials saved to: ~/.campfire/credentials")
 
 
 def _get_user_email(base_url: str, access_token: str) -> Optional[str]:
@@ -261,7 +271,7 @@ def logout(base_url: Optional[str]):
     creds = CredentialManager()
 
     if not creds.exists():
-        click.echo("Not logged in.")
+        print_msg("Not logged in.")
         return
 
     # Revoke server-side refresh token before deleting local credentials
@@ -277,7 +287,7 @@ def logout(base_url: Optional[str]):
             pass  # Best-effort; still delete local creds
 
     creds.delete()
-    click.echo("✓ Logged out successfully")
+    print_success("Logged out successfully")
 
 
 @cli.command()
@@ -288,18 +298,18 @@ def whoami(base_url: Optional[str]):
     creds = CredentialManager()
 
     if not creds.exists():
-        click.echo("Not logged in. Run: campfire login")
+        print_msg("Not logged in. Run: campfire login")
         sys.exit(1)
 
     loaded = creds.load()
     if not loaded:
-        click.echo("Invalid credentials. Run: campfire login")
+        print_msg("Invalid credentials. Run: campfire login")
         sys.exit(1)
 
     if loaded.is_api_key():
-        click.echo("Authentication: API key")
+        print_msg("Authentication: API key")
         if loaded.api_key:
-            click.echo(f"Key prefix: {loaded.api_key[:20]}...")
+            print_msg(f"Key prefix: {loaded.api_key[:20]}...")
 
         try:
             response = requests.get(
@@ -309,16 +319,16 @@ def whoami(base_url: Optional[str]):
             )
             if response.status_code == 200:
                 data = response.json()
-                click.echo(f"Email: {data.get('email', 'unknown')}")
+                print_msg(f"Email: {data.get('email', 'unknown')}")
         except requests.RequestException:
             pass
 
     elif loaded.is_oauth():
-        click.echo("Authentication: OAuth (device flow)")
+        print_msg("Authentication: OAuth (device flow)")
         if loaded.user_email:
-            click.echo(f"Email: {loaded.user_email}")
+            print_msg(f"Email: {loaded.user_email}")
         if loaded.expires_at:
-            click.echo(f"Token expires: {loaded.expires_at}")
+            print_msg(f"Token expires: {loaded.expires_at}")
 
 
 @cli.command()
@@ -331,8 +341,8 @@ def status(base_url: Optional[str]):
         token_manager = TokenManager(base_url)
 
         if not token_manager.has_credentials():
-            click.echo("✗ No credentials found")
-            click.echo("  Run: campfire login")
+            print_error("No credentials found")
+            print_msg("  Run: campfire login")
             sys.exit(1)
 
         token = token_manager.get_valid_token(auto_refresh=True)
@@ -344,21 +354,21 @@ def status(base_url: Optional[str]):
         )
 
         if response.status_code == 200:
-            click.echo("✓ Credentials valid")
+            print_success("Credentials valid")
             data = response.json()
             if data.get("email"):
-                click.echo(f"  User: {data['email']}")
+                print_msg(f"  User: {data['email']}")
         else:
-            click.echo("✗ Credentials invalid or expired")
-            click.echo("  Run: campfire login")
+            print_error("Credentials invalid or expired")
+            print_msg("  Run: campfire login")
             sys.exit(1)
 
     except AuthenticationError as e:
-        click.echo(f"✗ {e}")
-        click.echo("  Run: campfire login")
+        print_error(str(e))
+        print_msg("  Run: campfire login")
         sys.exit(1)
     except requests.RequestException as e:
-        click.echo(f"✗ Failed to verify credentials: {e}")
+        print_error(f"Failed to verify credentials: {e}")
         sys.exit(1)
 
     # Show catalog and download status
@@ -366,12 +376,12 @@ def status(base_url: Optional[str]):
     from .sync import format_size
 
     data_dir = resolve_data_dir()
-    click.echo()
-    click.echo(f"Data directory: {data_dir}")
+    print_msg()
+    print_msg(f"Data directory: {data_dir}")
 
     db_path = _meta_dir(data_dir) / "campfire.db"
     if not db_path.exists():
-        click.echo("\nNo local catalog. Run: campfire sync")
+        print_msg("\nNo local catalog. Run: campfire sync")
         return
 
     from .db.store import LocalStore, SchemaMismatchError
@@ -379,7 +389,7 @@ def status(base_url: Optional[str]):
     try:
         store = LocalStore(db_path)
     except SchemaMismatchError:
-        click.echo("\n⚠  Local catalog has an outdated schema. Run: campfire sync")
+        print_warning("Local catalog has an outdated schema. Run: campfire sync")
         return
 
     # Catalog stats
@@ -387,14 +397,13 @@ def status(base_url: Optional[str]):
     last_synced = store.get_last_synced_at()
     if last_synced:
         last_str = last_synced[:16].replace("T", " ")
-        click.echo(f"Catalog: {len(obs_list)} observations (last synced {last_str})")
+        print_msg(f"Catalog: {len(obs_list)} observations (last synced {last_str})")
     else:
-        click.echo(f"Catalog: {len(obs_list)} observations")
+        print_msg(f"Catalog: {len(obs_list)} observations")
 
     # Download stats per observation
     if obs_list:
-        click.echo()
-        click.echo(f"  {'OBSERVATION':<25} {'DOWNLOADED':<14} {'SIZE':<12}")
+        table = make_table("OBSERVATION", "DOWNLOADED", "SIZE")
 
         total_downloaded = 0
         total_bytes = 0
@@ -405,20 +414,22 @@ def status(base_url: Optional[str]):
             total_downloaded += downloaded
             total_bytes += stats["total_bytes"]
             if downloaded > 0:
-                click.echo(f"  {obs:<25} {downloaded:<14} {size:<12}")
+                table.add_row(obs, str(downloaded), size)
 
         if total_downloaded == 0:
-            click.echo("  No FITS files downloaded yet. Run: campfire download --obs <name>")
+            print_msg("  No FITS files downloaded yet. Run: campfire download --obs <name>")
+        else:
+            console.print(table)
 
     # Stale files
     stale = store.get_stale_files()
     if stale:
-        click.echo(f"\n⚠ {len(stale)} local file(s) updated on server. Run: campfire download --stale")
+        print_warning(f"{len(stale)} local file(s) updated on server. Run: campfire download --stale")
 
     # Disk usage
     if data_dir.exists():
         total = sum(f.stat().st_size for f in data_dir.rglob("*") if f.is_file())
-        click.echo(f"\nDisk usage: {format_size(total)}")
+        print_msg(f"\nDisk usage: {format_size(total)}")
 
     store.close()
 
@@ -452,7 +463,7 @@ def sync_cmd(full: bool, base_url: Optional[str]):
         api_session = APISession(base_url=base_url)
         api = APIClient(api_session)
     except AuthenticationError as e:
-        click.echo(f"✗ {e}")
+        print_error(str(e))
         sys.exit(1)
 
     store = _open_store()
@@ -460,9 +471,9 @@ def sync_cmd(full: bool, base_url: Optional[str]):
     try:
         is_incremental = not full and store.get_max_updated_at() is not None
         if is_incremental:
-            click.echo("Syncing catalog (updating existing)...")
+            print_msg("Syncing catalog (updating existing)...")
         else:
-            click.echo("Syncing full CAMPFIRE catalog (may take a while)...")
+            print_msg("Syncing full CAMPFIRE catalog (may take a while)...")
 
         result = sync_metadata(
             api, store, _meta_dir(),
@@ -471,39 +482,39 @@ def sync_cmd(full: bool, base_url: Optional[str]):
         )
 
         if result.get("incremental"):
-            click.echo(f"✓ Incremental sync complete: {result['observations']} observations, "
-                        f"{result['targets']} targets, {result['spectra']} spectra, "
-                        f"{result['sky_objects']} sky objects updated.")
+            print_success(f"Incremental sync complete: {result['observations']} observations, "
+                          f"{result['targets']} targets, {result['spectra']} spectra, "
+                          f"{result['sky_objects']} sky objects updated.")
         else:
-            click.echo(f"✓ Full sync complete: {result['observations']} observations, "
-                        f"{result['targets']} targets, {result['spectra']} spectra, "
-                        f"{result['sky_objects']} sky objects.")
+            print_success(f"Full sync complete: {result['observations']} observations, "
+                          f"{result['targets']} targets, {result['spectra']} spectra, "
+                          f"{result['sky_objects']} sky objects.")
 
         if result.get("purged_objects") or result.get("purged_spectra"):
-            click.echo(f"  Removed {result['purged_objects']} targets and "
-                        f"{result['purged_spectra']} spectra deleted from server.")
+            print_msg(f"  Removed {result['purged_objects']} targets and "
+                      f"{result['purged_spectra']} spectra deleted from server.")
         if result.get("sky_objects_purged"):
-            click.echo(f"  Removed {result['sky_objects_purged']} sky objects deleted from server.")
+            print_msg(f"  Removed {result['sky_objects_purged']} sky objects deleted from server.")
 
         # Verify local files so status reports correct counts immediately
         pd = _products_dir()
         if pd.exists():
             verify = store.verify_local_files(pd, show_progress=True)
             if verify["cleared"]:
-                click.echo(f"  Detected {verify['cleared']} missing local file(s).")
+                print_msg(f"  Detected {verify['cleared']} missing local file(s).")
             if verify["rehashed"]:
-                click.echo(f"  Re-verified {verify['rehashed']} modified local file(s).")
+                print_msg(f"  Re-verified {verify['rehashed']} modified local file(s).")
             if verify["discovered"]:
-                click.echo(f"  Found {verify['discovered']} existing local file(s).")
+                print_msg(f"  Found {verify['discovered']} existing local file(s).")
 
         if result["stale_count"] > 0:
-            click.echo(f"\n⚠ {result['stale_count']} local file(s) have been updated on the server.")
-            click.echo("  Run: campfire download --stale")
+            print_warning(f"{result['stale_count']} local file(s) have been updated on the server.")
+            print_msg("  Run: campfire download --stale")
 
         # Check for client updates (non-blocking)
         _check_client_version(base_url)
     except Exception as e:
-        click.echo(f"✗ Sync failed: {e}", err=True)
+        print_error(f"Sync failed: {e}")
         sys.exit(1)
     finally:
         store.close()
@@ -554,7 +565,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         api_session = APISession(base_url=base_url)
         api = APIClient(api_session)
     except AuthenticationError as e:
-        click.echo(f"✗ {e}")
+        print_error(str(e))
         sys.exit(1)
 
     store = _open_store()
@@ -563,14 +574,14 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
     try:
         is_first_sync = store.get_max_updated_at() is None
         if is_first_sync:
-            click.echo("Syncing catalog for the first time...")
+            print_msg("Syncing catalog for the first time...")
         else:
-            click.echo("Syncing catalog...")
+            print_msg("Syncing catalog...")
 
         result = sync_metadata(api, store, _meta_dir(), show_progress=is_first_sync)
 
         if result.get("needs_full_sync"):
-            click.echo("  Local catalog out of sync with server, running full sync...")
+            print_msg("  Local catalog out of sync with server, running full sync...")
             result = sync_metadata(api, store, _meta_dir(), show_progress=True, full=True)
 
         parts = []
@@ -579,16 +590,16 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         if result.get("purged_objects"):
             parts.append(f"{result['purged_objects']} removed")
         if parts:
-            click.echo(f"  {', '.join(parts)}")
+            print_msg(f"  {', '.join(parts)}")
         else:
-            click.echo("  Up to date.")
+            print_msg("  Up to date.")
     except Exception as e:
-        click.echo(f"  ⚠ Sync failed: {e}", err=True)
-        click.echo("  Continuing with existing catalog data.")
+        print_warning(f"Sync failed: {e}")
+        print_msg("  Continuing with existing catalog data.")
 
     catalog_obs = store.get_synced_observations()
     if not catalog_obs:
-        click.echo("✗ No catalog data.")
+        print_error("No catalog data.")
         store.close()
         sys.exit(1)
 
@@ -597,13 +608,9 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         summary = store.get_observation_summary()
         store.close()
 
-        lines = []
-        lines.append("")
-        lines.append(f"Available observations ({len(summary)} total):")
-        if len(summary) > 30:
-            lines.append("(scroll with arrow keys, q to quit)")
-        lines.append("")
-        lines.append(f"  {'OBSERVATION':<25} {'PROGRAM':<15} {'FIELD':<10} {'SPECTRA':>8}   LOCAL")
+        print_msg(f"\nAvailable observations ({len(summary)} total):\n")
+
+        table = make_table("OBSERVATION", "PROGRAM", "FIELD", "SPECTRA", "LOCAL")
         for row in summary:
             downloaded = row["downloaded_count"]
             total = row["spectrum_count"]
@@ -613,35 +620,34 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
                 local_str = f"{downloaded}/{total}"
             else:
                 local_str = ""
-            lines.append(
-                f"  {row['observation']:<25} "
-                f"{row['program_slug']:<15} "
-                f"{row['field']:<10} "
-                f"{total:>8}   {local_str}"
+            table.add_row(
+                row["observation"],
+                row["program_slug"],
+                row["field"],
+                str(total),
+                local_str,
             )
 
-        lines.append("")
-        lines.append("Use --obs, --program, or --field to download, or --all for everything.")
-        lines.append("")
-
-        output = "\n".join(lines)
         if len(summary) > 30:
-            click.echo_via_pager(output)
+            with console.pager():
+                console.print(table)
         else:
-            click.echo(output)
+            console.print(table)
+
+        print_msg("\nUse --obs, --program, or --field to download, or --all for everything.")
         return
 
     # Determine which observations to download
     if stale:
         stale_files = store.get_stale_files()
         if not stale_files:
-            click.echo("All local files are up to date.")
+            print_msg("All local files are up to date.")
             store.close()
             return
         # Group stale files by observation
         stale_obs = set(f["observation"] for f in stale_files)
         target_obs = sorted(stale_obs)
-        click.echo(f"Found {len(stale_files)} stale file(s) across {len(target_obs)} observation(s)")
+        print_msg(f"Found {len(stale_files)} stale file(s) across {len(target_obs)} observation(s)")
     else:
         target_obs = set()
 
@@ -651,7 +657,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         if obs_filter:
             for name in obs_filter:
                 if name not in catalog_obs:
-                    click.echo(f"✗ Observation '{name}' not in catalog. Run: campfire sync", err=True)
+                    print_error(f"Observation '{name}' not in catalog. Run: campfire sync")
                     store.close()
                     sys.exit(1)
                 target_obs.add(name)
@@ -663,7 +669,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
                 results = store.query_targets(programs=[prog], limit=999999)
                 obs_for_prog = set(r["observation"] for r in results)
                 if not obs_for_prog:
-                    click.echo(f"✗ No observations found for program '{prog}'", err=True)
+                    print_error(f"No observations found for program '{prog}'")
                     store.close()
                     sys.exit(1)
                 target_obs.update(obs_for_prog)
@@ -673,7 +679,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
                 results = store.query_targets(fields=[fld], limit=999999)
                 obs_for_field = set(r["observation"] for r in results)
                 if not obs_for_field:
-                    click.echo(f"✗ No observations found for field '{fld}'", err=True)
+                    print_error(f"No observations found for field '{fld}'")
                     store.close()
                     sys.exit(1)
                 target_obs.update(obs_for_field)
@@ -681,22 +687,22 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         target_obs = sorted(target_obs)
 
     if not target_obs:
-        click.echo("Nothing to download.")
+        print_msg("Nothing to download.")
         store.close()
         return
 
     # Reconcile DB with filesystem before planning
     verify = store.verify_local_files(_products_dir(), show_progress=True)
     if verify["cleared"]:
-        click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
+        print_msg(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
     if verify.get("rehashed"):
-        click.echo(f"  Re-verified {verify['rehashed']} modified local file(s).")
+        print_msg(f"  Re-verified {verify['rehashed']} modified local file(s).")
     if verify["discovered"]:
-        click.echo(f"  Found {verify['discovered']} existing local file(s), skipping download.")
+        print_msg(f"  Found {verify['discovered']} existing local file(s), skipping download.")
 
     # Compute download plan locally (no HTTP requests)
     grating_list = list(grating_filter) if grating_filter else None
-    click.echo("Checking files...")
+    print_msg("Checking files...")
 
     pending = store.get_pending_downloads(
         observations=list(target_obs),
@@ -711,7 +717,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
     for obs in target_obs:
         obs_pending = pending.get(obs, [])
         if not obs_pending:
-            click.echo(f"  {obs}: up to date")
+            print_msg(f"  {obs}: up to date")
             continue
 
         new_count = sum(1 for s in obs_pending if s["status"] == "new")
@@ -723,30 +729,30 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             parts.append(f"{new_count} new")
         if updated_count:
             parts.append(f"{updated_count} updated")
-        click.echo(f"  {obs}: {', '.join(parts)} ({format_size(download_bytes)})")
+        print_msg(f"  {obs}: {', '.join(parts)} ({format_size(download_bytes)})")
 
         obs_with_downloads.append(obs)
         total_download += download_bytes
         total_files += len(obs_pending)
 
     if total_files == 0:
-        click.echo("\nAll files up to date.")
+        print_msg("\nAll files up to date.")
         store.close()
         return
 
     if dry_run:
-        click.echo(f"\nDry run: would download {total_files} files ({format_size(total_download)})")
+        print_msg(f"\nDry run: would download {total_files} files ({format_size(total_download)})")
         store.close()
         return
 
     if not yes:
-        click.echo(f"\nDownload {total_files} files ({format_size(total_download)})?")
+        print_msg(f"\nDownload {total_files} files ({format_size(total_download)})?")
         if not click.confirm("Proceed?", default=True):
             store.close()
             return
 
     # Execute downloads — only fetch manifests for observations that need them
-    click.echo()
+    print_msg()
     dl_session = create_download_session(max_workers=workers)
     all_stats = []
 
@@ -763,16 +769,16 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             )
             all_stats.append(stats)
         except Exception as e:
-            click.echo(f"✗ Failed to download {obs}: {e}")
+            print_error(f"Failed to download {obs}: {e}")
 
     # Summary
     total_downloaded = sum(s.get("downloaded", 0) for s in all_stats)
     total_failed = sum(s.get("failed", 0) for s in all_stats)
-    click.echo(f"\n✓ Download complete")
-    click.echo(f"  Files downloaded: {total_downloaded}")
+    print_success("Download complete")
+    print_msg(f"  Files downloaded: {total_downloaded}")
     if total_failed:
-        click.echo(f"  Files failed: {total_failed}")
-    click.echo(f"  Total size: {format_size(total_download)}")
+        print_msg(f"  Files failed: {total_failed}")
+    print_msg(f"  Total size: {format_size(total_download)}")
 
     store.close()
 

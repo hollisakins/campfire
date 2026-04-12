@@ -31,6 +31,7 @@ import click
 import requests
 
 from campfire.deploy.config import load_config, load_programs, resolve_imaging_config, resolve_tiles_dir
+from campfire.output import console
 
 
 class _VariadicOption(click.Option):
@@ -75,7 +76,7 @@ def _check_admin() -> None:
         tm = TokenManager(base_url=base_url)
         token = tm.get_valid_token(auto_refresh=True)
     except Exception:
-        print("Error: Not logged in. Run: campfire login")
+        console.print("Error: Not logged in. Run: campfire login")
         sys.exit(1)
 
     try:
@@ -87,13 +88,13 @@ def _check_admin() -> None:
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        print(f"Error: Failed to verify admin status: {e}")
+        console.print(f"Error: Failed to verify admin status: {e}")
         sys.exit(1)
 
     if not data.get("is_admin"):
-        print(f"Error: Deploy requires admin privileges.")
-        print(f"  Logged in as: {data.get('email', 'unknown')}")
-        print(f"  Contact an administrator to request access.")
+        console.print(f"Error: Deploy requires admin privileges.")
+        console.print(f"  Logged in as: {data.get('email', 'unknown')}")
+        console.print(f"  Contact an administrator to request access.")
         sys.exit(1)
 
 
@@ -149,8 +150,8 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
     # When invoked without a subcommand, --obs is required
     if ctx.invoked_subcommand is None:
         if not obs:
-            print("Error: --obs is required for full deployment.")
-            print("Usage: campfire deploy --obs <observation_name>")
+            console.print("Error: --obs is required for full deployment.")
+            console.print("Usage: campfire deploy --obs <observation_name>")
             sys.exit(1)
 
         config = load_config(config_path)
@@ -300,24 +301,24 @@ def objects(config_path, field, all_fields, dry_run, radius):
 
     if all_fields:
         fields = fetch_distinct_fields(sb)
-        print(f"Found {len(fields)} fields: {', '.join(fields)}")
+        console.print(f"Found {len(fields)} fields: {', '.join(fields)}")
     else:
         fields = [field]
 
     for f in fields:
-        print(f"\nRebuilding objects for field '{f}'...")
+        console.print(f"\nRebuilding objects for field '{f}'...")
         n_obj, n_multi = rebuild_field_objects(
             sb, f, radius=radius, dry_run=dry_run,
         )
         if not dry_run:
-            print(f"  {n_obj} objects ({n_multi} multi-target)")
+            console.print(f"  {n_obj} objects ({n_multi} multi-target)")
 
     if not dry_run:
-        print()
+        console.print()
         refresh_filter_options(sb)
         refresh_programs_overview(sb)
 
-    print("Done.")
+    console.print("Done.")
 
 
 # ---------------------------------------------------------------------------
@@ -332,24 +333,24 @@ def sync_programs(config_path, dry_run):
     programs_config = load_programs()
     program_slugs = list(programs_config.keys())
 
-    print(f"Found {len(program_slugs)} programs in programs.toml")
+    console.print(f"Found {len(program_slugs)} programs in programs.toml")
     for slug, info in programs_config.items():
-        print(f"  {slug}: {info.get('program_name', '?')} (cycle {info.get('cycle', '?')})")
+        console.print(f"  {slug}: {info.get('program_name', '?')} (cycle {info.get('cycle', '?')})")
 
     if dry_run:
-        print("\nDry run — no changes made.")
+        console.print("\nDry run — no changes made.")
         return
 
     config = load_config(config_path)
     sb = get_supabase_client(config)
 
-    print("\nUpserting programs...")
+    console.print("\nUpserting programs...")
     upsert_programs(sb, program_slugs, programs_config)
 
-    print("\nRefreshing materialized view...")
+    console.print("\nRefreshing materialized view...")
     refresh_programs_overview(sb)
 
-    print("Done.")
+    console.print("Done.")
 
 
 # ---------------------------------------------------------------------------

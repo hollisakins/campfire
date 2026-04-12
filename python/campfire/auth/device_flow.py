@@ -264,33 +264,41 @@ def run_device_flow(
     TokenResponse
         Access and refresh tokens.
     """
+    from campfire.output import console, print_msg
+
     flow = DeviceFlowAuth(base_url)
 
     # Initiate flow
     device = flow.initiate()
 
     if show_progress:
-        print(f"\nOpening browser to: {device.verification_uri}")
-        print(f"Enter code: {device.user_code}")
-        print("\nWaiting for authorization...", end="", flush=True)
+        print_msg(f"\nOpening browser to: {device.verification_uri}")
+        print_msg(f"Enter code: [bold]{device.user_code}[/bold]")
 
     # Open browser
     if open_browser:
         flow.open_browser(device.verification_uri_complete)
 
-    # Poll for token with progress indicator
-    def on_pending():
+    # Poll for token with status spinner
+    if show_progress and console.is_terminal:
+        with console.status("Waiting for authorization...") as status:
+            tokens = flow.poll_for_token(
+                device.device_code,
+                interval=device.interval,
+                timeout=device.expires_in,
+            )
+    else:
         if show_progress:
-            print(".", end="", flush=True)
+            print_msg("\nWaiting for authorization...")
 
-    tokens = flow.poll_for_token(
-        device.device_code,
-        interval=device.interval,
-        timeout=device.expires_in,
-        on_pending=on_pending,
-    )
+        def on_pending():
+            pass  # Silent in non-tty mode
 
-    if show_progress:
-        print(" done!")
+        tokens = flow.poll_for_token(
+            device.device_code,
+            interval=device.interval,
+            timeout=device.expires_in,
+            on_pending=on_pending,
+        )
 
     return tokens

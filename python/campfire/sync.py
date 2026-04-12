@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
-from tqdm import tqdm
 
 from .api.session import create_download_session
+from .output import print_error, progress_bar
 from .exceptions import DownloadError
 
 
@@ -27,10 +27,10 @@ def compute_file_hash(path: Path) -> str:
 
 
 def _make_progress(show, unit, desc):
-    """Create a tqdm progress bar and page-complete callback."""
+    """Create a Rich progress bar and page-complete callback."""
     if not show:
         return None, None
-    pbar = tqdm(unit=unit, desc=desc)
+    pbar = progress_bar(description=desc)
 
     def callback(fetched, total):
         pbar.total = total
@@ -374,7 +374,7 @@ def download_observation(
             for spec in to_download
         }
 
-        with tqdm(total=len(to_download), desc=obs_name, unit="file") as pbar:
+        with progress_bar(total=len(to_download), description=obs_name) as pbar:
             for future in as_completed(future_to_spec):
                 spec = future_to_spec[future]
                 try:
@@ -395,7 +395,7 @@ def download_observation(
                     bytes_downloaded += result.get("file_size") or 0
                 except Exception as e:
                     stats["failed"] += 1
-                    tqdm.write(f"  Failed: {spec['fits_path']}: {e}")
+                    pbar.write(f"  Failed: {spec['fits_path']}: {e}")
                 pbar.update(1)
 
     store.log_sync_complete(log_id, stats["downloaded"], stats["skipped"], bytes_downloaded)
