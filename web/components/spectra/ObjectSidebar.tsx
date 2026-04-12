@@ -88,7 +88,7 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
   }, []);
 
   return (
-    <nav className="w-60 flex-shrink-0 border-r border-border dark:border-slate-700 pr-3">
+    <nav className="w-60 flex-shrink-0 border-r border-border dark:border-slate-700 pr-3 sticky top-4 max-h-[calc(100vh-6rem)] overflow-y-auto">
       {/* Overview tab */}
       <button
         onClick={() => onTabChange('overview')}
@@ -195,9 +195,6 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
                 <div className="pl-4 text-xs text-text-secondary dark:text-slate-500">
                   <div className="flex items-center gap-1">
                     <span className="truncate">{member.program_name}</span>
-                    {member.max_snr != null && (
-                      <span className="font-mono ml-auto flex-shrink-0">S/N {member.max_snr.toFixed(0)}</span>
-                    )}
                   </div>
                   <div className="flex items-center gap-1 mt-0.5">
                     {member.redshift != null && (
@@ -207,7 +204,7 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
                       {sortedGratings.map(g => (
                         <span
                           key={g}
-                          className="text-[10px] px-1 py-0 rounded font-mono bg-gray-100 dark:bg-slate-700 text-text-secondary/70 dark:text-slate-500"
+                          className="text-[11px] px-1 py-0.5 rounded font-mono bg-gray-100 dark:bg-slate-700 text-text-secondary dark:text-slate-400"
                         >
                           {g}
                         </span>

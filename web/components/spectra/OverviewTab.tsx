@@ -14,6 +14,8 @@ interface OverviewTabProps {
   orderedMembers: ObjectMemberTarget[];
   /** Visibility state (from sidebar checkboxes) */
   visibility: Record<string, boolean>;
+  /** Map from program slug to human-readable name */
+  programNames: Record<string, string>;
 }
 
 export const OverviewTab: React.FC<OverviewTabProps> = ({
@@ -21,6 +23,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   colors,
   orderedMembers,
   visibility,
+  programNames,
 }) => {
   const sortedGratings = useMemo(() =>
     GRATINGS.filter(g => object.gratings.includes(g)),
@@ -86,7 +89,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
                       : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
                   }`}
                 >
-                  {p}
+                  {programNames[p] || p}
                 </button>
               ))}
             </div>

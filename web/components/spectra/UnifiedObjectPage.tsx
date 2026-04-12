@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import type { ObjectDetail, ObjectMemberTarget, Spectrum } from '@/lib/types';
@@ -37,6 +37,17 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
       c[m.target_id] = MEMBER_COLORS[i % MEMBER_COLORS.length];
     });
     return c;
+  }, [object.member_targets]);
+
+  // Program slug → human-readable name
+  const programNames = useMemo(() => {
+    const names: Record<string, string> = {};
+    for (const m of object.member_targets) {
+      if (!names[m.program_slug]) {
+        names[m.program_slug] = m.program_name;
+      }
+    }
+    return names;
   }, [object.member_targets]);
 
   // === Shared visibility + order state (used by sidebar + overview spectrum viewer) ===
@@ -80,8 +91,19 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
       .filter((m): m is ObjectMemberTarget => m != null);
   }, [object.member_targets, memberOrder]);
 
+  // === Dirty-state ref for inspection confirmation ===
+  const inspectionDirtyRef = useRef<(() => boolean) | null>(null);
+
   // === Tab navigation ===
   const handleTabChange = useCallback((tab: string) => {
+    // Check for unsaved inspection changes before switching away from a target tab
+    if (inspectionDirtyRef.current?.()) {
+      const confirmed = window.confirm(
+        'You have unsaved inspection changes. Discard and switch targets?'
+      );
+      if (!confirmed) return;
+    }
+
     const params = new URLSearchParams(searchParams.toString());
     params.set('tab', tab);
     if (tab === 'overview') {
@@ -122,9 +144,9 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
   return (
     <div>
       {/* Object Header + Cutout */}
-      <div className="flex gap-6 items-start mb-6">
+      <div className="flex flex-col lg:flex-row gap-6 items-start mb-6">
         {/* Left: metadata */}
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100 mb-2">
             {object.object_id}
           </h1>
@@ -169,7 +191,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
         </div>
 
         {/* Right: cutout (single instance, reactive) */}
-        <div className="flex-shrink-0" style={{ width: '300px' }}>
+        <div className="flex-shrink-0 w-[200px] lg:w-[300px]">
           <TileThumbnailWithToggle
             targetId={object.object_id}
             size={600}
@@ -186,16 +208,18 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
 
       {/* Sidebar + Main Panel */}
       <div className="flex gap-6 min-h-[600px]">
-        <ObjectSidebar
-          members={orderedMembers}
-          activeTab={resolvedTab}
-          onTabChange={handleTabChange}
-          colors={colors}
-          visibility={visibility}
-          onVisibilityChange={handleVisibilityChange}
-          onToggleAll={handleToggleAll}
-          onReorder={handleReorder}
-        />
+        <div className="hidden lg:block">
+          <ObjectSidebar
+            members={orderedMembers}
+            activeTab={resolvedTab}
+            onTabChange={handleTabChange}
+            colors={colors}
+            visibility={visibility}
+            onVisibilityChange={handleVisibilityChange}
+            onToggleAll={handleToggleAll}
+            onReorder={handleReorder}
+          />
+        </div>
 
         <div className="flex-1 min-w-0">
           {resolvedTab === 'overview' ? (
@@ -204,6 +228,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
               colors={colors}
               orderedMembers={orderedMembers}
               visibility={visibility}
+              programNames={programNames}
             />
           ) : activeTarget ? (
             <TargetTab
@@ -211,6 +236,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
               target={activeTarget}
               initialGrating={grating}
               color={colors[activeTarget.target_id]}
+              onDirtyRef={inspectionDirtyRef}
             />
           ) : null}
         </div>

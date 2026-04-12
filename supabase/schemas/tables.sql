@@ -145,7 +145,8 @@ CREATE TABLE IF NOT EXISTS "public"."comments" (
     "content" "text" NOT NULL,
     "created_at" timestamp without time zone DEFAULT "now"(),
     "edited_at" timestamp without time zone,
-    "is_deleted" boolean DEFAULT false
+    "is_deleted" boolean DEFAULT false,
+    CONSTRAINT "comments_exactly_one_parent" CHECK (num_nonnulls(target_id, object_id) = 1)
 );
 
 

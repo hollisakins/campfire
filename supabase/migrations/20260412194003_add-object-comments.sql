@@ -16,6 +16,10 @@ alter table "public"."comments" add constraint "comments_object_id_fkey" FOREIGN
 
 alter table "public"."comments" validate constraint "comments_object_id_fkey";
 
+alter table "public"."comments" add constraint "comments_exactly_one_parent" CHECK (num_nonnulls(target_id, object_id) = 1) not valid;
+
+alter table "public"."comments" validate constraint "comments_exactly_one_parent";
+
 
   create policy "insert_comments_by_access"
   on "public"."comments"

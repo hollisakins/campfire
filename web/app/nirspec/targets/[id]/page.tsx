@@ -62,8 +62,7 @@ export default async function TargetRedirectPage({ params, searchParams }: Targe
   }
 
   // Build redirect URL
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const objectId = (data.objects as any).object_id as string;
+  const objectId = (data.objects as unknown as { object_id: string }).object_id;
 
   // Preserve relevant search params (filter/sort state)
   const redirectParams = new URLSearchParams();
