@@ -282,13 +282,46 @@ def build_objects(
 # ---------------------------------------------------------------------------
 
 def _clear_field_objects(client: Client, field: str) -> None:
-    """Null target FKs and delete objects for a field."""
-    # Must null FKs first (FK constraint has no ON DELETE SET NULL)
-    client.table('targets').update(
-        {'object_id': None},
-    ).eq('field', field).not_.is_('object_id', 'null').execute()
+    """Null target FKs and delete objects for a field, in batches.
 
-    client.table('objects').delete().eq('field', field).execute()
+    Large fields (e.g. COSMOS with ~10k targets) exceed Supabase's
+    statement timeout when updated in a single call.  We fetch small
+    batches of IDs and update/delete them individually to stay within
+    the timeout.
+    """
+    # 1. Batch-null the target FK references
+    while True:
+        resp = (
+            client.table('targets')
+            .select('id')
+            .eq('field', field)
+            .not_.is_('object_id', 'null')
+            .order('id')
+            .limit(BATCH_SIZE)
+            .execute()
+        )
+        if not resp.data:
+            break
+        ids = [row['id'] for row in resp.data]
+        client.table('targets').update(
+            {'object_id': None},
+        ).in_('id', ids).execute()
+
+    # 2. Batch-delete objects (ON DELETE SET NULL cascades to
+    #    object_list_members, so large deletes can also time out)
+    while True:
+        resp = (
+            client.table('objects')
+            .select('id')
+            .eq('field', field)
+            .order('id')
+            .limit(BATCH_SIZE)
+            .execute()
+        )
+        if not resp.data:
+            break
+        ids = [row['id'] for row in resp.data]
+        client.table('objects').delete().in_('id', ids).execute()
 
 
 def _insert_objects(
