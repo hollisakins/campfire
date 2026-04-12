@@ -1,14 +1,13 @@
 'use client';
 
-import React, { useMemo, useEffect } from 'react';
+import React, { useMemo } from 'react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
 import { GratingDetails } from '@/components/spectra/GratingDetails';
 import { SpectrumPlot } from '@/components/spectra/SpectrumPlot';
 import { RedshiftFitSummary } from '@/components/spectra/RedshiftFitSummary';
 import { RedshiftFitPlot } from '@/components/spectra/RedshiftFitPlot';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
-import { StickyInspectionBar } from '@/components/spectra/StickyInspectionBar';
-import { useInspectionState } from '@/lib/hooks/useInspectionState';
+import type { InspectionState } from '@/lib/hooks/useInspectionState';
 import type { ObjectMemberTarget } from '@/lib/types';
 import { GRATINGS } from '@/lib/types';
 
@@ -16,21 +15,14 @@ interface TargetTabProps {
   target: ObjectMemberTarget;
   initialGrating?: string;
   color: string;
-  /** Ref callback: parent sets this to check dirty state before tab switch */
-  onDirtyRef?: React.MutableRefObject<(() => boolean) | null>;
-  /** Called when user clicks Save & Next — parent advances to next target */
-  onSaveAndNext?: () => void;
-  /** Whether there is a next target to advance to */
-  hasNext?: boolean;
+  inspection: InspectionState;
 }
 
 export const TargetTab: React.FC<TargetTabProps> = ({
   target,
   initialGrating,
   color,
-  onDirtyRef,
-  onSaveAndNext,
-  hasNext = false,
+  inspection,
 }) => {
   // Sort spectra by standard grating order
   const sortedSpectra = useMemo(() =>
@@ -52,39 +44,7 @@ export const TargetTab: React.FC<TargetTabProps> = ({
     return sortedSpectra[0]?.grating.toLowerCase() || 'redshift';
   }, [initialGrating, sortedSpectra]);
 
-  const initialRedshift = target.redshift_inspected ?? target.redshift_auto;
-
-  // Inspection state — powers the sticky bar at the bottom
-  const inspection = useInspectionState(target.id, {
-    redshift_auto: target.redshift_auto,
-    redshift_inspected: target.redshift_inspected,
-    redshift_quality: target.redshift_quality,
-    spectral_features: target.spectral_features,
-    dq_flags: target.dq_flags,
-    last_inspected_at: target.last_inspected_at,
-    last_inspected_by: target.last_inspected_by,
-  });
-
-  // Expose isDirty to parent for tab-switch confirmation
-  useEffect(() => {
-    if (onDirtyRef) {
-      onDirtyRef.current = inspection.isDirty;
-    }
-    return () => {
-      if (onDirtyRef) onDirtyRef.current = null;
-    };
-  }, [onDirtyRef, inspection.isDirty]);
-
-  // Protect against browser back/forward/close when dirty
-  useEffect(() => {
-    const handler = (e: BeforeUnloadEvent) => {
-      if (inspection.isDirty()) {
-        e.preventDefault();
-      }
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [inspection.isDirty]);
+  const initialRedshift = inspection.currentRedshift ?? target.redshift_auto;
 
   return (
     <div>
@@ -186,13 +146,6 @@ export const TargetTab: React.FC<TargetTabProps> = ({
           )}
         </div>
       </Tabs>
-
-      {/* Sticky inspection bar — always visible at bottom of target tab */}
-      <StickyInspectionBar
-        inspection={inspection}
-        onSaveAndNext={onSaveAndNext}
-        hasNext={hasNext}
-      />
     </div>
   );
 };

@@ -1,16 +1,17 @@
 'use client';
 
-import React, { useState, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import type { ObjectDetail, ObjectMemberTarget, Spectrum } from '@/lib/types';
 import { MEMBER_COLORS } from '@/lib/types';
+import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
 import { MetricCards } from '@/components/spectra/MetricCards';
 import { DownloadButtons } from '@/components/spectra/DownloadButtons';
 import { CopyLinkButton } from '@/components/spectra/CopyLinkButton';
 import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
 import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
-import { ObjectListsSection } from '@/components/spectra/ObjectListsSection';
+import { FloatingInspectionPanel } from './FloatingInspectionPanel';
 import { TileThumbnailWithToggle } from './TileThumbnailWithToggle';
 import { ObjectSidebar } from './ObjectSidebar';
 import { OverviewTab } from './OverviewTab';
@@ -91,13 +92,87 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
       .filter((m): m is ObjectMemberTarget => m != null);
   }, [object.member_targets, memberOrder]);
 
-  // === Dirty-state ref for inspection confirmation ===
-  const inspectionDirtyRef = useRef<(() => boolean) | null>(null);
+  // === Tab + target resolution ===
+  const activeTarget = useMemo(() => {
+    if (activeTab === 'overview') return null;
+    return object.member_targets.find(m => m.target_id === activeTab) || null;
+  }, [activeTab, object.member_targets]);
+
+  const resolvedTab = activeTarget ? activeTab : 'overview';
+
+  const isSingleton = object.member_targets.length === 1;
+
+  // The target whose inspection state is active:
+  // - on a target tab: that target
+  // - on overview with a singleton: the only target
+  // - on overview with multiple targets: null (inspection disabled)
+  const resolvedTarget = useMemo(() => {
+    if (activeTarget) return activeTarget;
+    if (isSingleton) return object.member_targets[0];
+    return null;
+  }, [activeTarget, isSingleton, object.member_targets]);
+
+  // === Lifted inspection state ===
+  const emptyInitial: InspectionInitialData = {
+    redshift_auto: null, redshift_inspected: null, redshift_quality: 0,
+    spectral_features: 0, dq_flags: 0, last_inspected_at: null, last_inspected_by: null,
+  };
+
+  const initialDataForTarget = useMemo((): InspectionInitialData => {
+    if (!resolvedTarget) return emptyInitial;
+    return {
+      redshift_auto: resolvedTarget.redshift_auto,
+      redshift_inspected: resolvedTarget.redshift_inspected,
+      redshift_quality: resolvedTarget.redshift_quality,
+      spectral_features: resolvedTarget.spectral_features,
+      dq_flags: resolvedTarget.dq_flags,
+      last_inspected_at: resolvedTarget.last_inspected_at,
+      last_inspected_by: resolvedTarget.last_inspected_by,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedTarget?.id]);
+
+  const inspection = useInspectionState(
+    resolvedTarget?.id ?? -1,
+    initialDataForTarget,
+  );
+
+  // Reset inspection state when the resolved target changes
+  const prevTargetIdRef = useRef(resolvedTarget?.id ?? -1);
+  useEffect(() => {
+    const newId = resolvedTarget?.id ?? -1;
+    if (newId !== prevTargetIdRef.current) {
+      prevTargetIdRef.current = newId;
+      if (resolvedTarget) {
+        inspection.resetState({
+          redshift_auto: resolvedTarget.redshift_auto,
+          redshift_inspected: resolvedTarget.redshift_inspected,
+          redshift_quality: resolvedTarget.redshift_quality,
+          spectral_features: resolvedTarget.spectral_features,
+          dq_flags: resolvedTarget.dq_flags,
+          last_inspected_at: resolvedTarget.last_inspected_at,
+          last_inspected_by: resolvedTarget.last_inspected_by,
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedTarget?.id]);
+
+  // Protect against browser back/forward/close when dirty
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (resolvedTarget && inspection.isDirty()) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [resolvedTarget, inspection.isDirty]);
 
   // === Tab navigation ===
   const handleTabChange = useCallback((tab: string) => {
-    // Check for unsaved inspection changes before switching away from a target tab
-    if (inspectionDirtyRef.current?.()) {
+    // Check for unsaved inspection changes before switching away
+    if (resolvedTarget && inspection.isDirty()) {
       const confirmed = window.confirm(
         'You have unsaved inspection changes. Discard and switch targets?'
       );
@@ -110,14 +185,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
     // clear it on any tab switch to avoid stale/invalid values in the URL
     params.delete('grating');
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  }, [router, pathname, searchParams]);
-
-  const activeTarget = useMemo(() => {
-    if (activeTab === 'overview') return null;
-    return object.member_targets.find(m => m.target_id === activeTab) || null;
-  }, [activeTab, object.member_targets]);
-
-  const resolvedTab = activeTarget ? activeTab : 'overview';
+  }, [router, pathname, searchParams, resolvedTarget, inspection]);
 
   // Index of active target in ordered members (for Save & Next)
   const activeTargetIndex = useMemo(() => {
@@ -130,7 +198,6 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
   const handleSaveAndNext = useCallback(async () => {
     if (!hasNextTarget) return;
     const nextTarget = orderedMembers[activeTargetIndex + 1];
-    // handleTabChange will skip the dirty check since we're saving first
     const params = new URLSearchParams(searchParams.toString());
     params.set('tab', nextTarget.target_id);
     params.delete('grating');
@@ -187,10 +254,6 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
           </div>
 
           <div className="mb-4">
-            <ObjectListsSection objectId={object.id} ra={object.ra} dec={object.dec} />
-          </div>
-
-          <div className="mb-4">
             <MetricCards
               maxSnr={object.max_snr}
               redshift={object.best_redshift}
@@ -225,7 +288,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
       </div>
 
       {/* Sidebar + Main Panel */}
-      <div className="flex gap-6 min-h-[600px]">
+      <div className="flex gap-6 min-h-[600px] pb-24">
         <div className="hidden lg:block">
           <ObjectSidebar
             members={orderedMembers}
@@ -270,13 +333,21 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
               target={activeTarget}
               initialGrating={grating}
               color={colors[activeTarget.target_id]}
-              onDirtyRef={inspectionDirtyRef}
-              onSaveAndNext={handleSaveAndNext}
-              hasNext={hasNextTarget}
+              inspection={inspection}
             />
           ) : null}
         </div>
       </div>
+
+      {/* Floating inspection panel — always visible */}
+      <FloatingInspectionPanel
+        objectId={object.id}
+        ra={object.ra}
+        dec={object.dec}
+        inspection={resolvedTarget ? inspection : null}
+        onSaveAndNext={hasNextTarget ? handleSaveAndNext : undefined}
+        hasNext={hasNextTarget}
+      />
     </div>
   );
 };

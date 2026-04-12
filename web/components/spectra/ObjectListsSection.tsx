@@ -57,9 +57,11 @@ interface ObjectListsSectionProps {
   objectId: number;
   ra: number;
   dec: number;
+  /** Direction dropdown opens. Default 'bottom'. Use 'top' when near bottom of viewport. */
+  dropdownPlacement?: 'bottom' | 'top';
 }
 
-export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProps) {
+export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bottom' }: ObjectListsSectionProps) {
   const { user, userProfile } = useAuth();
   const canEdit = !!userProfile?.can_comment;
 
@@ -251,7 +253,7 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
             </button>
 
             {showDropdown && (
-              <div className="absolute top-full left-0 mt-1 z-50 w-72 animate-zoom-in bg-background dark:bg-slate-800 rounded-lg shadow-lg border border-border dark:border-slate-700">
+              <div className={`absolute ${dropdownPlacement === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'} left-0 z-50 w-72 animate-zoom-in bg-background dark:bg-slate-800 rounded-lg shadow-lg border border-border dark:border-slate-700`}>
                 {/* Search input */}
                 <div className="p-2 border-b border-border dark:border-slate-700">
                   <div className="relative">
@@ -323,7 +325,7 @@ export function ObjectListsSection({ objectId, ra, dec }: ObjectListsSectionProp
 
       {/* Toast — absolutely positioned to avoid layout shift */}
       {toast && (
-        <div className={`absolute left-0 top-full mt-1.5 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md animate-fade-in z-40 ${
+        <div className={`absolute left-0 ${dropdownPlacement === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md animate-fade-in z-40 ${
           toast.type === 'success'
             ? 'text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800'
             : 'text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
