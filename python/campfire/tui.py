@@ -46,7 +46,6 @@ def _get_store():
 def _fetch_status_data() -> dict:
     """Collect status data (credentials, catalog, disk usage)."""
     from .auth.credentials import CredentialManager
-    from .config import resolve_data_dir
     from .sync import format_size
 
     result = {
@@ -88,18 +87,14 @@ def _fetch_status_data() -> dict:
         result["stale_count"] = len(store.get_stale_files())
         store.close()
 
-    data_dir = resolve_data_dir()
-    if data_dir.exists():
-        total = sum(f.stat().st_size for f in data_dir.rglob("*") if f.is_file())
-        result["disk_usage"] = format_size(total)
+    # Skip disk usage scan — too slow for large data directories with FITS files.
+    # The CLI `campfire status` can afford the wait; the TUI cannot block on mount.
 
     return result
 
 
 def _fetch_observation_summary() -> list[dict]:
     """Get the observation summary table data."""
-    from .sync import format_size
-
     store = _get_store()
     if not store:
         return []
@@ -205,9 +200,9 @@ class StatusPanel(Static):
     @work(thread=True)
     def refresh_data(self) -> None:
         data = _fetch_status_data()
-        self.app.call_from_thread(self._render, data)
+        self.app.call_from_thread(self._show_status, data)
 
-    def _render(self, data: dict) -> None:
+    def _show_status(self, data: dict) -> None:
         lines = []
         if data["logged_in"]:
             user = data["email"] or "authenticated"
