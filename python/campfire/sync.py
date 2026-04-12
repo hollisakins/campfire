@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 import requests
 
 from .api.session import create_download_session
-from .output import print_error, progress_bar
+from .output import progress_bar
 from .exceptions import DownloadError
 
 
@@ -297,6 +297,7 @@ def download_observation(
     download_session: Optional[requests.Session] = None,
     manifest: Optional[dict] = None,
     grating_filter: Optional[List[str]] = None,
+    show_progress: bool = True,
 ) -> dict:
     """Download FITS files for a single observation.
 
@@ -320,6 +321,9 @@ def download_observation(
         Pre-fetched manifest (avoids re-fetching if caller already has it).
     grating_filter : list of str, optional
         Only download spectra matching these gratings.
+    show_progress : bool
+        Show a Rich progress bar during download. Set False when called
+        from the Textual TUI to avoid corrupting the display.
 
     Returns
     -------
@@ -374,29 +378,37 @@ def download_observation(
             for spec in to_download
         }
 
-        with progress_bar(total=len(to_download), description=obs_name) as pbar:
-            for future in as_completed(future_to_spec):
-                spec = future_to_spec[future]
-                try:
-                    result = future.result()
-                    store.mark_synced(
-                        result["spectra_id"],
-                        result["target_id"],
-                        obs_name,
-                        result["grating"],
-                        result["fits_path"],
-                        result["local_path"],
-                        result["file_hash"],
-                        result["file_size"],
-                        local_file_mtime=result.get("local_file_mtime"),
-                        local_file_size=result.get("local_file_size"),
-                    )
-                    stats["downloaded"] += 1
-                    bytes_downloaded += result.get("file_size") or 0
-                except Exception as e:
-                    stats["failed"] += 1
+        pbar = progress_bar(total=len(to_download), description=obs_name) if show_progress else None
+        if pbar:
+            pbar._ensure_started()
+
+        for future in as_completed(future_to_spec):
+            spec = future_to_spec[future]
+            try:
+                result = future.result()
+                store.mark_synced(
+                    result["spectra_id"],
+                    result["target_id"],
+                    obs_name,
+                    result["grating"],
+                    result["fits_path"],
+                    result["local_path"],
+                    result["file_hash"],
+                    result["file_size"],
+                    local_file_mtime=result.get("local_file_mtime"),
+                    local_file_size=result.get("local_file_size"),
+                )
+                stats["downloaded"] += 1
+                bytes_downloaded += result.get("file_size") or 0
+            except Exception as e:
+                stats["failed"] += 1
+                if pbar:
                     pbar.write(f"  Failed: {spec['fits_path']}: {e}")
+            if pbar:
                 pbar.update(1)
+
+        if pbar:
+            pbar.close()
 
     store.log_sync_complete(log_id, stats["downloaded"], stats["skipped"], bytes_downloaded)
     return stats

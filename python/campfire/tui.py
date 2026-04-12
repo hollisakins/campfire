@@ -168,6 +168,7 @@ def _run_download(obs_name: str, on_status) -> dict | None:
             _products_dir(), store,
             max_workers=4,
             download_session=dl_session,
+            show_progress=False,
         )
         return stats
     except Exception as e:
