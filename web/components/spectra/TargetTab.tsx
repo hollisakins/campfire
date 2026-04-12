@@ -8,20 +8,17 @@ import { RedshiftFitSummary } from '@/components/spectra/RedshiftFitSummary';
 import { RedshiftFitPlot } from '@/components/spectra/RedshiftFitPlot';
 import { SEDPlotViewer } from '@/components/spectra/SEDPlotViewer';
 import { InspectionPanel } from '@/components/spectra/InspectionPanel';
-import { TileThumbnailWithToggle } from '@/components/spectra/TileThumbnailWithToggle';
 import type { ObjectMemberTarget } from '@/lib/types';
 import { GRATINGS } from '@/lib/types';
 
 interface TargetTabProps {
   target: ObjectMemberTarget;
-  field: string;
   initialGrating?: string;
   color: string;
 }
 
 export const TargetTab: React.FC<TargetTabProps> = ({
   target,
-  field,
   initialGrating,
   color,
 }) => {
@@ -50,60 +47,42 @@ export const TargetTab: React.FC<TargetTabProps> = ({
   return (
     <div>
       <Tabs defaultValue={defaultTab}>
-        {/* Header with target info + cutout */}
-        <div className="flex gap-6 items-start mb-4">
-          <div className="flex-1">
-            {/* Target metadata */}
-            <div className="mb-3">
-              <div className="flex items-center gap-2 mb-1">
-                <div
-                  className="w-3 h-3 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: color }}
-                />
-                <h2 className="text-xl font-bold font-mono text-text-primary dark:text-slate-100">
-                  {target.target_id}
-                </h2>
-              </div>
-              <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400">
-                <span>{target.program_name}</span>
-                <span>·</span>
-                <span>{target.observation}</span>
-                {target.redshift != null && (
-                  <>
-                    <span>·</span>
-                    <span className="font-mono">z = {target.redshift.toFixed(4)}</span>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* Grating sub-tabs */}
-            <TabsList>
-              {sortedSpectra.map(spec => (
-                <TabsTrigger key={spec.grating} value={spec.grating.toLowerCase()}>
-                  {spec.grating}
-                </TabsTrigger>
-              ))}
-              <TabsTrigger value="redshift">REDSHIFT</TabsTrigger>
-              {target.has_sed_plot && (
-                <TabsTrigger value="photometry">PHOTOMETRY</TabsTrigger>
-              )}
-              <TabsTrigger value="inspect">INSPECT</TabsTrigger>
-            </TabsList>
-          </div>
-
-          {/* Cutout */}
-          <div className="flex-shrink-0" style={{ width: '250px' }}>
-            <TileThumbnailWithToggle
-              targetId={target.target_id}
-              size={500}
-              displaySize={250}
-              fov={3.2}
-              ra={target.ra}
-              dec={target.dec}
-              field={field}
+        {/* Target header */}
+        <div className="mb-4">
+          <div className="flex items-center gap-2 mb-1">
+            <div
+              className="w-3 h-3 rounded-full flex-shrink-0"
+              style={{ backgroundColor: color }}
             />
+            <h2 className="text-xl font-bold font-mono text-text-primary dark:text-slate-100">
+              {target.target_id}
+            </h2>
           </div>
+          <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
+            <span>{target.program_name}</span>
+            <span>&middot;</span>
+            <span>{target.observation}</span>
+            {target.redshift != null && (
+              <>
+                <span>&middot;</span>
+                <span className="font-mono">z = {target.redshift.toFixed(4)}</span>
+              </>
+            )}
+          </div>
+
+          {/* Grating sub-tabs */}
+          <TabsList>
+            {sortedSpectra.map(spec => (
+              <TabsTrigger key={spec.grating} value={spec.grating.toLowerCase()}>
+                {spec.grating}
+              </TabsTrigger>
+            ))}
+            <TabsTrigger value="redshift">REDSHIFT</TabsTrigger>
+            {target.has_sed_plot && (
+              <TabsTrigger value="photometry">PHOTOMETRY</TabsTrigger>
+            )}
+            <TabsTrigger value="inspect">INSPECT</TabsTrigger>
+          </TabsList>
         </div>
 
         {/* Tab content */}
