@@ -11,8 +11,8 @@ from __future__ import annotations
 import sys
 
 from rich.text import Text
-from textual import work
 from textual.app import App, ComposeResult
+from textual import work
 from textual.binding import Binding
 from textual.widgets import (
     Button,
