@@ -229,7 +229,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
   return (
     <div>
       {/* Object Header + Cutout */}
-      <div className="flex flex-col lg:flex-row gap-6 items-start mb-6">
+      <div className="flex flex-col lg:flex-row gap-6 items-start lg:items-end mb-3">
         {/* Left: metadata */}
         <div className="flex-1 min-w-0">
           <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100 mb-2">
@@ -332,7 +332,6 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
               key={activeTarget.target_id}
               target={activeTarget}
               initialGrating={grating}
-              color={colors[activeTarget.target_id]}
               inspection={inspection}
             />
           ) : null}

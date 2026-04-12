@@ -138,8 +138,8 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
               onDragEnd={handleDragEnd}
               className={`flex items-start gap-1.5 rounded-lg text-sm transition-all ${
                 isActive
-                  ? 'bg-accent/10 dark:bg-accent/20'
-                  : 'hover:bg-gray-100 dark:hover:bg-slate-800'
+                  ? 'bg-accent/10 dark:bg-accent/20 border-l-3 border-l-accent'
+                  : 'hover:bg-gray-100 dark:hover:bg-slate-800 border-l-3 border-l-transparent'
               } ${isDragged ? 'opacity-30' : ''} ${
                 isDropTarget && dropPosition === 'above' ? 'border-t-2 border-t-accent' : ''
               } ${
@@ -175,10 +175,10 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
                     style={{ backgroundColor: colors[member.target_id] }}
                   />
                   <span
-                    className={`font-mono text-xs truncate ${
+                    className={`font-mono truncate ${
                       isActive
-                        ? 'text-accent font-medium'
-                        : 'text-text-primary dark:text-slate-200'
+                        ? 'text-sm text-accent font-semibold'
+                        : 'text-xs text-text-primary dark:text-slate-200'
                     }`}
                     title={member.target_id}
                   >

@@ -66,8 +66,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
 
   return (
     <div>
-      {/* Program and Grating filter toggles */}
+      {/* Spectrum comparison header + filter toggles */}
       <div className="flex flex-wrap gap-5 items-center mb-4">
+        <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+          Spectrum Comparison{selectedGrating ? ` — ${selectedGrating}` : ''}
+        </h2>
         {object.programs.length > 1 && (
           <div className="flex items-center gap-2">
             <span className="text-sm text-text-secondary dark:text-slate-400">Program:</span>
@@ -130,9 +133,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
 
       {/* Spectrum comparison viewer */}
       <div className="mb-6">
-        <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100 mb-3">
-          Spectrum Comparison{selectedGrating ? ` — ${selectedGrating}` : ''}
-        </h2>
         <MultiSpectrumViewer
           sources={sources}
           grating={selectedGrating}

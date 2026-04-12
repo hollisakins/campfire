@@ -14,14 +14,12 @@ import { GRATINGS } from '@/lib/types';
 interface TargetTabProps {
   target: ObjectMemberTarget;
   initialGrating?: string;
-  color: string;
   inspection: InspectionState;
 }
 
 export const TargetTab: React.FC<TargetTabProps> = ({
   target,
   initialGrating,
-  color,
   inspection,
 }) => {
   // Sort spectra by standard grating order
@@ -49,30 +47,8 @@ export const TargetTab: React.FC<TargetTabProps> = ({
   return (
     <div>
       <Tabs defaultValue={defaultTab}>
-        {/* Target header */}
+        {/* Grating sub-tabs */}
         <div className="mb-4">
-          <div className="flex items-center gap-2 mb-1">
-            <div
-              className="w-3 h-3 rounded-full flex-shrink-0"
-              style={{ backgroundColor: color }}
-            />
-            <h2 className="text-xl font-bold font-mono text-text-primary dark:text-slate-100">
-              {target.target_id}
-            </h2>
-          </div>
-          <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
-            <span>{target.program_name}</span>
-            <span>&middot;</span>
-            <span>{target.observation}</span>
-            {target.redshift != null && (
-              <>
-                <span>&middot;</span>
-                <span className="font-mono">z = {target.redshift.toFixed(4)}</span>
-              </>
-            )}
-          </div>
-
-          {/* Grating sub-tabs */}
           <TabsList>
             {sortedSpectra.map(spec => (
               <TabsTrigger key={spec.grating} value={spec.grating.toLowerCase()}>
@@ -91,12 +67,12 @@ export const TargetTab: React.FC<TargetTabProps> = ({
           {/* Grating tabs */}
           {sortedSpectra.map(spec => (
             <TabsContent key={spec.grating} value={spec.grating.toLowerCase()}>
-              <GratingDetails spectrum={spec} />
               <SpectrumPlot
                 fitsPath={spec.fits_path}
                 grating={spec.grating}
                 initialRedshift={initialRedshift}
               />
+              <GratingDetails spectrum={spec} />
             </TabsContent>
           ))}
 
