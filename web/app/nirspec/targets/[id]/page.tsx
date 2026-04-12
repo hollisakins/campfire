@@ -217,6 +217,18 @@ export default async function SpectrumDetailPage({ params, searchParams }: Spect
                     </Link>
                   </>
                 )}
+                {spectrum.parent_object_id && (
+                  <>
+                    <span>·</span>
+                    <span>Object:</span>
+                    <Link
+                      href={`/nirspec/objects/${encodeURIComponent(spectrum.parent_object_id)}`}
+                      className="inline-flex items-center hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors text-text-primary dark:text-slate-100"
+                    >
+                      {spectrum.parent_object_id}
+                    </Link>
+                  </>
+                )}
               </div>
               <div className="flex items-center gap-4">
                 <CoordinateDisplay ra={spectrum.ra} dec={spectrum.dec} />
