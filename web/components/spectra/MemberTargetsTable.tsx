@@ -15,6 +15,7 @@ interface MemberTargetsTableProps {
   onVisibilityChange: (targetId: string, visible: boolean) => void;
   onToggleAll: (visible: boolean) => void;
   onReorder?: (orderedIds: string[]) => void;
+  onTargetClick?: (targetId: string) => void;
 }
 
 export const MemberTargetsTable: React.FC<MemberTargetsTableProps> = ({
@@ -26,6 +27,7 @@ export const MemberTargetsTable: React.FC<MemberTargetsTableProps> = ({
   onVisibilityChange,
   onToggleAll,
   onReorder,
+  onTargetClick,
 }) => {
   const allChecked = members.every(m => visibility[m.target_id]);
   const noneChecked = members.every(m => !visibility[m.target_id]);
@@ -164,12 +166,21 @@ export const MemberTargetsTable: React.FC<MemberTargetsTableProps> = ({
                   />
                 </td>
                 <td className="px-3 py-2">
-                  <Link
-                    href={`/nirspec/targets/${encodeURIComponent(member.target_id)}?from_object=${encodeURIComponent(objectId)}`}
-                    className="font-mono text-primary hover:underline"
-                  >
-                    {member.target_id}
-                  </Link>
+                  {onTargetClick ? (
+                    <button
+                      onClick={() => onTargetClick(member.target_id)}
+                      className="font-mono text-primary hover:underline text-left"
+                    >
+                      {member.target_id}
+                    </button>
+                  ) : (
+                    <Link
+                      href={`/nirspec/targets/${encodeURIComponent(member.target_id)}?from_object=${encodeURIComponent(objectId)}`}
+                      className="font-mono text-primary hover:underline"
+                    >
+                      {member.target_id}
+                    </Link>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-text-primary dark:text-slate-200">
                   {member.program_name}
