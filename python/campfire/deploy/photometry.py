@@ -224,8 +224,15 @@ def generate_pz_sidecar(
 ) -> dict | None:
     """Generate P(z) + template sidecar JSON for one object.
 
-    Each pz_run dict has keys: name, label, file, id_column, z_best_column,
-    chi2_column, coeffs_column, pz_ext, templates_ext, color.
+    Reads Lazy.jl photo-z output files. Each pz_run dict has keys:
+    name, label, file, id_column, z_best_column, chi2_column,
+    coeffs_column, pz_ext, templates_ext, color.
+
+    Lazy.jl FITS structure:
+      - Ext 1: main table (ID, z_best, chi2, coeffs per source)
+      - Ext pz_ext: P(z) column where row 0 = z-grid, row N+1 = P(z) for source N
+      - Ext templates_ext: template basis functions with z grid; rest-frame
+        wavelength in Angstroms from template[0][0]
 
     Returns dict ready for JSON serialization, or None if no runs match.
     """
