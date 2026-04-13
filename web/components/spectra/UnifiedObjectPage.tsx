@@ -228,49 +228,9 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
 
   return (
     <div>
-      {/* Object Header */}
-      <div className="mb-4">
-        <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100 mb-2">
-          {object.object_id}
-        </h1>
-        <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
-          <span>Field:</span>
-          <Link
-            href={`/nirspec?view=objects&fields=${object.field}`}
-            className="inline-flex items-center hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors text-text-primary dark:text-slate-100"
-          >
-            {object.field}
-          </Link>
-          <span>&middot;</span>
-          <span>{object.n_targets} targets</span>
-          <span>&middot;</span>
-          <span>{object.n_spectra} spectra</span>
-        </div>
-        <div className="flex items-center gap-4 mb-3">
-          <CoordinateDisplay ra={object.ra} dec={object.dec} />
-          <ShowOnMapLink ra={object.ra} dec={object.dec} field={object.field} objectId={object.object_id} />
-        </div>
-
-        <div className="mb-3">
-          <MetricCards
-            maxSnr={object.max_snr}
-            redshift={object.best_redshift}
-            redshiftQuality={object.best_redshift_quality}
-            numGratings={object.gratings.length}
-          />
-        </div>
-
-        <div className="flex gap-4">
-          <DownloadButtons spectra={allSpectra} targetId={object.object_id} />
-          <CopyLinkButton
-            targetId={object.object_id}
-            url={`/nirspec/objects/${encodeURIComponent(object.object_id)}`}
-          />
-        </div>
-      </div>
-
-      {/* Sidebar (with cutout) + Main Panel */}
-      <div className="flex gap-6 min-h-[600px] pb-24">
+      {/* Sidebar (with cutout) + Header + Main Panel */}
+      <div className="flex gap-6 pb-24">
+        {/* Desktop sidebar — spans full height from header to bottom */}
         <div className="hidden lg:block">
           <div className="w-[260px] flex-shrink-0 sticky top-4 max-h-[calc(100vh-6rem)] overflow-y-auto border-r border-border dark:border-slate-700 pr-3">
             {/* Cutout — reactive to sidebar/tab state */}
@@ -302,6 +262,47 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
         </div>
 
         <div className="flex-1 min-w-0">
+          {/* Object Header */}
+          <div className="mb-4">
+            <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100 mb-2">
+              {object.object_id}
+            </h1>
+            <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
+              <span>Field:</span>
+              <Link
+                href={`/nirspec?view=objects&fields=${object.field}`}
+                className="inline-flex items-center hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors text-text-primary dark:text-slate-100"
+              >
+                {object.field}
+              </Link>
+              <span>&middot;</span>
+              <span>{object.n_targets} targets</span>
+              <span>&middot;</span>
+              <span>{object.n_spectra} spectra</span>
+            </div>
+            <div className="flex items-center gap-4 mb-3">
+              <CoordinateDisplay ra={object.ra} dec={object.dec} />
+              <ShowOnMapLink ra={object.ra} dec={object.dec} field={object.field} objectId={object.object_id} />
+            </div>
+
+            <div className="mb-3">
+              <MetricCards
+                maxSnr={object.max_snr}
+                redshift={object.best_redshift}
+                redshiftQuality={object.best_redshift_quality}
+                numGratings={object.gratings.length}
+              />
+            </div>
+
+            <div className="flex gap-4">
+              <DownloadButtons spectra={allSpectra} targetId={object.object_id} />
+              <CopyLinkButton
+                targetId={object.object_id}
+                url={`/nirspec/objects/${encodeURIComponent(object.object_id)}`}
+              />
+            </div>
+          </div>
+
           {/* Mobile: cutout + target selector (replaces sidebar on small screens) */}
           <div className="lg:hidden mb-4">
             <div className="mb-3">
@@ -331,6 +332,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
             </select>
           </div>
 
+          {/* Main content */}
           {resolvedTab === 'overview' ? (
             <OverviewTab
               object={object}
