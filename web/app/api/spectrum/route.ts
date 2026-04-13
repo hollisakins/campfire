@@ -87,7 +87,9 @@ export async function GET(request: NextRequest) {
 
     const data: SpectrumData = await response.json();
 
-    return NextResponse.json(data);
+    const response2 = NextResponse.json(data);
+    response2.headers.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
+    return response2;
   } catch (error) {
     console.error('Error fetching spectrum data:', error);
     return NextResponse.json(

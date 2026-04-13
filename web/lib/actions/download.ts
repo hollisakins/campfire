@@ -119,19 +119,13 @@ export async function generateCSV(
       return { csv: null, error: 'Not authenticated' };
     }
 
-    // Determine accessible programs (same logic as getSpectra)
-    const { data: accessData } = await supabase
-      .from('user_program_access')
-      .select('program_slug')
-      .eq('user_id', user.id);
+    // Determine accessible programs (parallel queries)
+    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+      supabase.from('programs').select('slug').eq('is_public', true),
+    ]);
 
     const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-
-    const { data: publicPrograms } = await supabase
-      .from('programs')
-      .select('slug')
-      .eq('is_public', true);
-
     const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
     const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 

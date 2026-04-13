@@ -93,7 +93,9 @@ export async function GET(request: NextRequest) {
 
     const data: RedshiftFitData = await response.json();
 
-    return NextResponse.json(data);
+    const resp = NextResponse.json(data);
+    resp.headers.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
+    return resp;
   } catch (error) {
     console.error('Error fetching redshift fit data:', error);
     return NextResponse.json(
