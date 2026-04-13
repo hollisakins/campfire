@@ -370,8 +370,10 @@ export interface CommentHistoryItem {
   content: string;
   created_at: string;
   edited_at: string | null;
-  target_db_id: number;
-  target_display_id: string;
+  target_db_id: number | null;
+  target_display_id: string | null;
+  object_db_id: number | null;
+  object_display_id: string | null;
 }
 
 export interface ProfileRecentComments {
