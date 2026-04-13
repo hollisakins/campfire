@@ -285,21 +285,20 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
               <ShowOnMapLink ra={object.ra} dec={object.dec} field={object.field} objectId={object.object_id} />
             </div>
 
-            <div className="mb-3">
+            <div className="flex items-end justify-between gap-4 flex-wrap">
               <MetricCards
                 maxSnr={object.max_snr}
                 redshift={object.best_redshift}
                 redshiftQuality={object.best_redshift_quality}
                 numGratings={object.gratings.length}
               />
-            </div>
-
-            <div className="flex gap-4">
-              <DownloadButtons spectra={allSpectra} targetId={object.object_id} />
-              <CopyLinkButton
-                targetId={object.object_id}
-                url={`/nirspec/objects/${encodeURIComponent(object.object_id)}`}
-              />
+              <div className="flex gap-4">
+                <DownloadButtons spectra={allSpectra} targetId={object.object_id} />
+                <CopyLinkButton
+                  targetId={object.object_id}
+                  url={`/nirspec/objects/${encodeURIComponent(object.object_id)}`}
+                />
+              </div>
             </div>
           </div>
 
