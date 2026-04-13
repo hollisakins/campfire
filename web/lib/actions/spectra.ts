@@ -144,6 +144,9 @@ export async function getSpectra(
         }
       : {
           ...rpcParams,
+          p_has_photometry: undefined,
+          p_photo_z_min: undefined,
+          p_photo_z_max: undefined,
           p_sort_column: sortColumn,
           p_sort_direction: sortDirection,
           p_page: page,
