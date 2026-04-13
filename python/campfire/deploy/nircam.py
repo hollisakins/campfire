@@ -17,15 +17,15 @@ Pull workflow:
 import json
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
 
 from astropy.io import fits
 
-from campfire_deploy.config import load_config
-from campfire_deploy.r2 import UploadTask, get_r2_client, upload_files_parallel
-from campfire_deploy.supabase import get_supabase_client
+from campfire.deploy.r2 import UploadTask, upload_files_parallel
+from campfire.deploy.supabase import get_supabase_client
 
 
 # ---------------------------------------------------------------------------
@@ -119,11 +119,6 @@ def discover_exposures(dirs, filters):
                         'best_file': filepath,
                     }
                 # Already found at a higher stage; skip
-
-        # Also check for uncal-only exposures in raw dir
-        # Raw dir structure: $CAMPFIRE_ROOT/raw/{data_subdir}/{filter}/
-        # Since we don't know data_subdir, scan known filters from stage dirs
-        # Uncal-only exposures are rare; skip for now since we deploy from products
 
     return exposures
 
@@ -288,8 +283,6 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         records.append(record)
 
     if dry_run:
-        # Print summary
-        from collections import Counter
         stage_counts = Counter(r['stage'] for r in records)
         print("\nStage breakdown:")
         for stage in ('uncal', 'rate', 'cal', 'jhat', 'crf'):
@@ -304,11 +297,9 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
     # Upload PNGs to R2
     if png_tasks:
         print("\nUploading PNGs to R2...")
-        r2_client = get_r2_client(config)
-        bucket = config['r2']['bucket_name']
         upload_task_list = [t[0] for t in png_tasks]
         success, failed, failures = upload_files_parallel(
-            r2_client, bucket, upload_task_list,
+            config, upload_task_list,
             desc='Uploading PNGs',
         )
         print(f"  Uploaded: {success}, Failed: {failed}")
@@ -464,7 +455,6 @@ def pull_nircam(field, config, filters=None):
     print(f"Wrote contract: {contract_path}")
 
     # Print summary
-    from collections import Counter
     review_counts = Counter(e['review_status'] for e in exposures.values())
     masking_counts = Counter(e['masking'] for e in exposures.values())
     correction_counts = Counter(e['correction'] for e in exposures.values())
