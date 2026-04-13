@@ -46,14 +46,12 @@ interface PzSidecarData {
 interface PhotometrySEDProps {
   photometry: ObjectPhotometry;
   objectId: string;
-  field: string;
   bestRedshift: number | null;
 }
 
 export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
   photometry,
   objectId,
-  field,
   bestRedshift,
 }) => {
   const { resolvedTheme } = useTheme();
@@ -70,7 +68,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
       setPzLoading(true);
       try {
         const resp = await fetch(
-          `/api/photometry-pz?object_id=${encodeURIComponent(objectId)}&field=${encodeURIComponent(field)}`
+          `/api/photometry-pz?object_id=${encodeURIComponent(objectId)}`
         );
         if (resp.ok) {
           const { url } = await resp.json();
@@ -87,7 +85,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
     };
 
     fetchPz();
-  }, [photometry.has_pz, objectId, field]);
+  }, [photometry.has_pz, objectId]);
 
   const { bands } = photometry.photometry;
 

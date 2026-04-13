@@ -147,7 +147,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
           <PhotometrySED
             photometry={object.photometry}
             objectId={object.object_id}
-            field={object.field}
             bestRedshift={object.best_redshift}
           />
         </div>
