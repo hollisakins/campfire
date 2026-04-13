@@ -421,5 +421,21 @@ CREATE INDEX IF NOT EXISTS idx_user_profiles_preferences
     ON public.user_profiles USING gin (preferences);
 
 
+-- =============================================================================
+-- user_program_access
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_user_program_access_user_slug
+    ON public.user_program_access USING btree (user_id, program_slug);
+
+
+-- =============================================================================
+-- programs (access control)
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_programs_is_public_slug
+    ON public.programs USING btree (is_public, slug) WHERE (is_public = true);
+
+
 -- NOTE: Materialized view indexes (mv_programs_overview, mv_filter_options)
 -- are defined in views.sql alongside the view definitions.

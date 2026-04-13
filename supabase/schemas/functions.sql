@@ -2063,22 +2063,31 @@ BEGIN
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN RETURN; END IF;
 
   RETURN QUERY
-  WITH filtered_targets AS (
+  WITH spectra_counts AS (
+    SELECT s.target_id, COUNT(*)::INTEGER AS num_gratings
+    FROM spectra s GROUP BY s.target_id
+  ),
+  visible_lists AS (
+    SELECT olm.object_id, string_agg(ol.slug, ';' ORDER BY ol.slug) AS lists
+    FROM object_list_members olm
+    JOIN object_lists ol ON ol.id = olm.list_id
+    WHERE ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
+    GROUP BY olm.object_id
+  ),
+  filtered_targets AS (
     SELECT t.target_id, t.field, t.ra, t.dec, t.redshift, t.redshift_quality,
       t.max_snr, t.max_exposure_time,
-      (SELECT COUNT(*)::INTEGER FROM spectra s WHERE s.target_id = t.target_id) AS num_gratings,
+      COALESCE(sc.num_gratings, 0) AS num_gratings,
       t.program_slug, t.observation, t.last_inspected_at, t.last_inspected_by,
       CASE WHEN v_coord_search_active THEN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(t.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(t.dec)) * POWER(SIN(RADIANS(t.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
       COALESCE(t.spectral_features, 0) AS spectral_features,
       COALESCE(t.dq_flags, 0) AS dq_flags,
-      (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
-       FROM object_list_members olm
-       JOIN object_lists ol ON ol.id = olm.list_id
-       WHERE olm.object_id = t.object_id
-         AND (ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit'))) AS lists
+      vl.lists
     FROM targets t
+    LEFT JOIN spectra_counts sc ON sc.target_id = t.target_id
+    LEFT JOIN visible_lists vl ON vl.object_id = t.object_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (NOT v_grating_filter_active
         OR (v_gratings_mode = 'any' AND EXISTS (SELECT 1 FROM spectra gs WHERE gs.target_id = t.target_id AND gs.grating = ANY(p_gratings)))
@@ -2200,7 +2209,14 @@ BEGIN
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN RETURN; END IF;
 
   RETURN QUERY
-  WITH filtered_spectra AS (
+  WITH visible_lists AS (
+    SELECT olm.object_id, string_agg(ol.slug, ';' ORDER BY ol.slug) AS lists
+    FROM object_list_members olm
+    JOIN object_lists ol ON ol.id = olm.list_id
+    WHERE ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
+    GROUP BY olm.object_id
+  ),
+  filtered_spectra AS (
     SELECT t.target_id, s.grating, t.field, t.ra, t.dec, t.redshift, t.redshift_quality,
       s.signal_to_noise, s.exposure_time, s.fits_path, t.program_slug, t.observation,
       t.last_inspected_at, t.last_inspected_by,
@@ -2209,12 +2225,10 @@ BEGIN
       ELSE NULL END AS distance,
       COALESCE(t.spectral_features, 0) AS spectral_features,
       COALESCE(t.dq_flags, 0) AS dq_flags,
-      (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
-       FROM object_list_members olm
-       JOIN object_lists ol ON ol.id = olm.list_id
-       WHERE olm.object_id = t.object_id
-         AND (ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit'))) AS lists
-    FROM targets t JOIN spectra s ON s.target_id = t.target_id
+      vl.lists
+    FROM targets t
+    JOIN spectra s ON s.target_id = t.target_id
+    LEFT JOIN visible_lists vl ON vl.object_id = t.object_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (NOT v_grating_filter_active OR s.grating = ANY(p_gratings))
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR t.field = ANY(p_fields))
@@ -2339,29 +2353,36 @@ BEGIN
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN RETURN; END IF;
 
   RETURN QUERY
-  WITH filtered_objects AS (
+  WITH member_targets AS (
+    SELECT t.object_id, string_agg(t.target_id, ';' ORDER BY t.target_id) AS member_target_ids
+    FROM targets t
+    WHERE t.program_slug = ANY(v_filtered_program_slugs)
+    GROUP BY t.object_id
+  ),
+  visible_lists AS (
+    SELECT olm.object_id, string_agg(ol.slug, ';' ORDER BY ol.slug) AS lists
+    FROM object_list_members olm
+    JOIN object_lists ol ON ol.id = olm.list_id
+    WHERE ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
+    GROUP BY olm.object_id
+  ),
+  filtered_objects AS (
     SELECT o.object_id, o.field, o.ra, o.dec,
       o.best_redshift, o.best_redshift_quality,
       o.n_targets, o.n_spectra,
       array_to_string(o.programs, ';') AS programs,
       array_to_string(o.gratings, ';') AS gratings,
       o.max_snr, o.max_exposure_time,
-      (SELECT array_to_string(ARRAY(
-        SELECT t.target_id FROM targets t
-        WHERE t.object_id = o.id AND t.program_slug = ANY(v_filtered_program_slugs)
-        ORDER BY t.target_id
-      ), ';')) AS member_target_ids,
+      mt.member_target_ids,
       CASE WHEN v_coord_search_active THEN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) * POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
-      (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
-       FROM object_list_members olm
-       JOIN object_lists ol ON ol.id = olm.list_id
-       WHERE olm.object_id = o.id
-         AND (ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit'))) AS lists,
+      vl.lists,
       o.has_photometry, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi,
       phot.photometry
     FROM objects o
+    LEFT JOIN member_targets mt ON mt.object_id = o.id
+    LEFT JOIN visible_lists vl ON vl.object_id = o.id
     LEFT JOIN LATERAL (
       SELECT op.photometry FROM object_photometry op
       WHERE op.object_id = o.id ORDER BY op.updated_at DESC LIMIT 1

@@ -68,10 +68,12 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    return NextResponse.json({
+    const resp = NextResponse.json({
       url: signedUrl,
       path: sedPlotPath
     });
+    resp.headers.set('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
+    return resp;
   } catch (error) {
     console.error('Error generating SED plot URL:', error);
     return NextResponse.json(

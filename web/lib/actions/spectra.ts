@@ -73,23 +73,14 @@ export async function getSpectra(
   }
 
   try {
-    // First, determine which programs the user can access
-    const { data: accessData } = await supabase
-      .from('user_program_access')
-      .select('program_slug')
-      .eq('user_id', user.id);
+    // Determine which programs the user can access (parallel queries)
+    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+      supabase.from('programs').select('slug').eq('is_public', true),
+    ]);
 
     const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-
-    // Get public programs
-    const { data: publicPrograms } = await supabase
-      .from('programs')
-      .select('slug')
-      .eq('is_public', true);
-
     const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-
-    // Combine accessible program slugs (public + explicit access)
     const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
     if (accessibleProgramSlugs.length === 0) {
@@ -296,23 +287,14 @@ export async function getSpectrumById(targetId: string): Promise<{
   }
 
   try {
-    // First, determine which programs the user can access
-    const { data: accessData } = await supabase
-      .from('user_program_access')
-      .select('program_slug')
-      .eq('user_id', user.id);
+    // Determine which programs the user can access (parallel queries)
+    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+      supabase.from('programs').select('slug').eq('is_public', true),
+    ]);
 
     const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-
-    // Get public programs
-    const { data: publicPrograms } = await supabase
-      .from('programs')
-      .select('slug')
-      .eq('is_public', true);
-
     const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-
-    // Combine accessible program slugs
     const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
     const { data, error } = await supabase
@@ -633,22 +615,17 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
   }
 
   try {
-    // Fetch programs the user has explicit access to
-    const { data: accessData, error: accessError } = await supabase
-      .from('user_program_access')
-      .select('program_slug')
-      .eq('user_id', user.id);
+    // Fetch user access and all programs in parallel
+    const [{ data: accessData, error: accessError }, { data: allPrograms, error: programsError }] = await Promise.all([
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+      supabase.from('programs').select('*'),
+    ]);
 
     if (accessError) {
       console.error('Error fetching program access:', accessError);
     }
 
     const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-
-    // Fetch all programs (we'll filter for public + explicit access)
-    const { data: allPrograms, error: programsError } = await supabase
-      .from('programs')
-      .select('*');
 
     if (programsError) {
       console.error('Error fetching programs:', programsError);
@@ -747,19 +724,13 @@ export async function getInspectionQueueIds(
   }
 
   try {
-    // Determine which programs the user can access
-    const { data: accessData } = await supabase
-      .from('user_program_access')
-      .select('program_slug')
-      .eq('user_id', user.id);
+    // Determine which programs the user can access (parallel queries)
+    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+      supabase.from('programs').select('slug').eq('is_public', true),
+    ]);
 
     const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-
-    const { data: publicPrograms } = await supabase
-      .from('programs')
-      .select('slug')
-      .eq('is_public', true);
-
     const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
     const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
@@ -824,23 +795,14 @@ export async function getAdjacentTargetIds(
   }
 
   try {
-    // First, determine which programs the user can access
-    const { data: accessData } = await supabase
-      .from('user_program_access')
-      .select('program_slug')
-      .eq('user_id', user.id);
+    // Determine which programs the user can access (parallel queries)
+    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+      supabase.from('programs').select('slug').eq('is_public', true),
+    ]);
 
     const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-
-    // Get public programs
-    const { data: publicPrograms } = await supabase
-      .from('programs')
-      .select('slug')
-      .eq('is_public', true);
-
     const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-
-    // Combine accessible program slugs (public + explicit access)
     const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
     if (accessibleProgramSlugs.length === 0) {
@@ -904,18 +866,12 @@ export async function getAdjacentObjectIds(
   }
 
   try {
-    const { data: accessData } = await supabase
-      .from('user_program_access')
-      .select('program_slug')
-      .eq('user_id', user.id);
+    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+      supabase.from('programs').select('slug').eq('is_public', true),
+    ]);
 
     const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-
-    const { data: publicPrograms } = await supabase
-      .from('programs')
-      .select('slug')
-      .eq('is_public', true);
-
     const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
     const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
