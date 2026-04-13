@@ -488,6 +488,20 @@ def deploy_field_photometry(
             'n_pz': 0,
         }
 
+    # De-duplicate: when multiple objects match the same catalog source,
+    # keep only the closest match (unique constraint on field+catalog_name+catalog_id)
+    matches.sort(key=lambda m: m[2])  # sort by distance
+    seen_cat_idx: set[int] = set()
+    unique_matches = []
+    for obj_idx, cat_idx, dist in matches:
+        if cat_idx not in seen_cat_idx:
+            seen_cat_idx.add(cat_idx)
+            unique_matches.append((obj_idx, cat_idx, dist))
+    if len(unique_matches) < len(matches):
+        print(f"    De-duplicated: {len(matches)} → {len(unique_matches)} "
+              f"(kept closest match per catalog source)")
+    matches = unique_matches
+
     # Build records + P(z) sidecars
     now = datetime.now(timezone.utc).isoformat()
     records = []
