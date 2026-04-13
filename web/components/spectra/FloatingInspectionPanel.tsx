@@ -17,7 +17,6 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle,
-  ChevronRight,
 } from 'lucide-react';
 
 interface FloatingInspectionPanelProps {
@@ -25,8 +24,6 @@ interface FloatingInspectionPanelProps {
   ra: number;
   dec: number;
   inspection: InspectionState | null;
-  onSaveAndNext?: () => void;
-  hasNext?: boolean;
 }
 
 export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = ({
@@ -34,8 +31,6 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
   ra,
   dec,
   inspection,
-  onSaveAndNext,
-  hasNext = false,
 }) => {
   const { user, userProfile } = useAuth();
   const canEdit = user && userProfile?.can_comment;
@@ -176,21 +171,6 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
                 )}
               </Button>
 
-              {/* Save & Next */}
-              {onSaveAndNext && hasNext && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={async () => {
-                    const result = await inspection.save();
-                    if (result.success) onSaveAndNext();
-                  }}
-                  disabled={inspection.saving || inspection.redshiftQuality === 0}
-                >
-                  Save & Next
-                  <ChevronRight className="w-4 h-4 ml-1" />
-                </Button>
-              )}
             </>
           )}
         </div>

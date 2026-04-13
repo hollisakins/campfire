@@ -187,23 +187,6 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   }, [router, pathname, searchParams, resolvedTarget, inspection]);
 
-  // Index of active target in ordered members (for Save & Next)
-  const activeTargetIndex = useMemo(() => {
-    if (!activeTarget) return -1;
-    return orderedMembers.findIndex(m => m.target_id === activeTarget.target_id);
-  }, [activeTarget, orderedMembers]);
-
-  const hasNextTarget = activeTargetIndex >= 0 && activeTargetIndex < orderedMembers.length - 1;
-
-  const handleSaveAndNext = useCallback(async () => {
-    if (!hasNextTarget) return;
-    const nextTarget = orderedMembers[activeTargetIndex + 1];
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('tab', nextTarget.target_id);
-    params.delete('grating');
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  }, [hasNextTarget, orderedMembers, activeTargetIndex, searchParams, router, pathname]);
-
   // === Cutout shutter colors: reactive to current state ===
   const cutoutMemberColors = useMemo(() => {
     if (activeTarget) {
@@ -358,8 +341,6 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
         ra={object.ra}
         dec={object.dec}
         inspection={resolvedTarget ? inspection : null}
-        onSaveAndNext={hasNextTarget ? handleSaveAndNext : undefined}
-        hasNext={hasNextTarget}
       />
     </div>
   );
