@@ -467,7 +467,17 @@ def _relink_comments(
     This matches each comment's saved (ra, dec) to the nearest new object
     within 0.3 arcsec tolerance and restores the FK.
     """
-    if not orphan_coords or not objects:
+    if not orphan_coords:
+        return {'relinked': 0, 'orphaned': 0}
+
+    if not objects:
+        # No new objects — soft-delete all orphaned comments
+        all_ids = [cc['comment_id'] for cc in orphan_coords]
+        for i in range(0, len(all_ids), BATCH_SIZE):
+            batch = all_ids[i:i + BATCH_SIZE]
+            client.table('comments').update(
+                {'is_deleted': True}
+            ).in_('id', batch).execute()
         return {'relinked': 0, 'orphaned': len(orphan_coords)}
 
     # Build arrays of new object positions
@@ -478,7 +488,7 @@ def _relink_comments(
 
     # Match each comment to nearest new object
     updates: dict[int, list[int]] = {}  # new_object_db_id -> [comment_ids]
-    n_orphaned = 0
+    orphaned_ids: list[int] = []
 
     for cc in orphan_coords:
         cos_dec = np.cos(np.radians(cc['dec']))
@@ -491,9 +501,9 @@ def _relink_comments(
             db_id = new_db_ids[best_idx]
             updates.setdefault(db_id, []).append(cc['comment_id'])
         else:
-            n_orphaned += 1
+            orphaned_ids.append(cc['comment_id'])
 
-    # Batch-update comments
+    # Batch-update matched comments
     n_relinked = 0
     for new_obj_id, comment_ids in updates.items():
         for i in range(0, len(comment_ids), BATCH_SIZE):
@@ -503,7 +513,15 @@ def _relink_comments(
             ).in_('id', batch).execute()
             n_relinked += len(batch)
 
-    return {'relinked': n_relinked, 'orphaned': n_orphaned}
+    # Soft-delete unmatched comments — they'd be invisible via RLS
+    # with both FKs NULL, so mark them deleted rather than leaving limbo
+    for i in range(0, len(orphaned_ids), BATCH_SIZE):
+        batch = orphaned_ids[i:i + BATCH_SIZE]
+        client.table('comments').update(
+            {'is_deleted': True}
+        ).in_('id', batch).execute()
+
+    return {'relinked': n_relinked, 'orphaned': len(orphaned_ids)}
 
 
 # ---------------------------------------------------------------------------
