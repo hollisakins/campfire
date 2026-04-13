@@ -185,7 +185,8 @@ export interface Spectrum {
 
 export interface Comment {
   id: number;
-  target_id: number;
+  target_id: number | null;
+  object_id: number | null;
   user_id: string;
   content: string;
   created_at: string;
@@ -308,7 +309,14 @@ export interface ObjectMemberTarget {
   ra: number;
   dec: number;
   redshift: number | null;
+  redshift_auto: number | null;
+  redshift_inspected: number | null;
   redshift_quality: number;
+  spectral_features: number;
+  dq_flags: number;
+  last_inspected_at: string | null;
+  last_inspected_by: string | null;
+  has_sed_plot: boolean;
   max_snr: number | null;
   max_exposure_time: number | null;
   spectra: Spectrum[];

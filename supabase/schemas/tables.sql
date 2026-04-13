@@ -139,12 +139,14 @@ ALTER TABLE "public"."code_redemptions" OWNER TO "postgres";
 
 CREATE TABLE IF NOT EXISTS "public"."comments" (
     "id" integer NOT NULL,
-    "target_id" integer NOT NULL,
+    "target_id" integer,
+    "object_id" integer,
     "user_id" "uuid" NOT NULL,
     "content" "text" NOT NULL,
     "created_at" timestamp without time zone DEFAULT "now"(),
     "edited_at" timestamp without time zone,
-    "is_deleted" boolean DEFAULT false
+    "is_deleted" boolean DEFAULT false,
+    CONSTRAINT "comments_exactly_one_parent" CHECK (num_nonnulls(target_id, object_id) = 1)
 );
 
 
@@ -1151,6 +1153,9 @@ ALTER TABLE ONLY "public"."code_redemptions"
 ALTER TABLE ONLY "public"."comments"
     ADD CONSTRAINT "comments_target_id_fkey" FOREIGN KEY ("target_id") REFERENCES "public"."targets"("id") ON DELETE CASCADE;
 
+
+ALTER TABLE ONLY "public"."comments"
+    ADD CONSTRAINT "comments_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE CASCADE;
 
 
 ALTER TABLE ONLY "public"."comments"

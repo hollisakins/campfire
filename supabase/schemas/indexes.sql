@@ -172,7 +172,10 @@ CREATE INDEX IF NOT EXISTS idx_deployments_deployed_at
 -- =============================================================================
 
 CREATE INDEX IF NOT EXISTS idx_comments_target
-    ON public.comments USING btree (target_id);
+    ON public.comments USING btree (target_id) WHERE (target_id IS NOT NULL);
+
+CREATE INDEX IF NOT EXISTS idx_comments_object_id
+    ON public.comments USING btree (object_id) WHERE (object_id IS NOT NULL);
 
 
 -- =============================================================================

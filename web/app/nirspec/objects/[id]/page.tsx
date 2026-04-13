@@ -3,18 +3,11 @@ import { notFound } from 'next/navigation';
 import { Metadata } from 'next';
 import { LogIn } from 'lucide-react';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
-import { MetricCards } from '@/components/spectra/MetricCards';
-import { DownloadButtons } from '@/components/spectra/DownloadButtons';
-import { CopyLinkButton } from '@/components/spectra/CopyLinkButton';
-import { CoordinateDisplay } from '@/components/spectra/CoordinateDisplay';
-import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
 import { ReturnToMapButton } from '@/components/map/ReturnToMapButton';
-import { ObjectDetailClient } from '@/components/spectra/ObjectDetailClient';
-import { ObjectListsSection } from '@/components/spectra/ObjectListsSection';
 import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
+import { UnifiedObjectPage } from '@/components/spectra/UnifiedObjectPage';
 import { getObjectById, getObjectMetadata } from '@/lib/actions/spectra';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
-import type { Spectrum } from '@/lib/types';
 
 interface ObjectDetailPageProps {
   params: Promise<{ id: string }>;
@@ -65,7 +58,7 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
   const urlParams = new URLSearchParams();
   urlParams.set('view', 'objects');
   Object.entries(searchParamsObj).forEach(([key, value]) => {
-    if (value && key !== 'view') {
+    if (value && key !== 'view' && key !== 'tab' && key !== 'grating') {
       urlParams.set(key, Array.isArray(value) ? value.join(',') : value);
     }
   });
@@ -116,9 +109,6 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
     notFound();
   }
 
-  // Flatten all member spectra for download button
-  const allSpectra: Spectrum[] = object.member_targets.flatMap(m => m.spectra);
-
   return (
     <div className="container mx-auto px-4 py-8">
       {/* Breadcrumbs + Navigation */}
@@ -135,7 +125,7 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
             href={backHref}
             className="text-sm text-primary hover:text-primary-hover flex items-center gap-1"
           >
-            ← Back to List
+            &larr; Back to List
           </Link>
           <ReturnToMapButton />
         </div>
@@ -149,56 +139,8 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
         />
       </div>
 
-      {/* Header + Selectors + Table + Viewer */}
-      <ObjectDetailClient
-        object={object}
-        headerContent={
-          <>
-            <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100 mb-2">
-              {object.object_id}
-            </h1>
-            <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
-              <span>Field:</span>
-              <Link
-                href={`/nirspec?view=objects&fields=${object.field}`}
-                className="inline-flex items-center hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors text-text-primary dark:text-slate-100"
-              >
-                {object.field}
-              </Link>
-              <span>·</span>
-              <span>{object.n_targets} targets</span>
-              <span>·</span>
-              <span>{object.n_spectra} spectra</span>
-            </div>
-            <div className="flex items-center gap-4 mb-3">
-              <CoordinateDisplay ra={object.ra} dec={object.dec} />
-              <ShowOnMapLink ra={object.ra} dec={object.dec} field={object.field} objectId={object.object_id} />
-            </div>
-
-            <div className="mb-4">
-              <ObjectListsSection objectId={object.id} ra={object.ra} dec={object.dec} />
-            </div>
-
-            <div className="mb-4">
-              <MetricCards
-                maxSnr={object.max_snr}
-                redshift={object.best_redshift}
-                redshiftQuality={object.best_redshift_quality}
-                numGratings={object.gratings.length}
-              />
-            </div>
-
-            <div className="flex gap-4">
-              <DownloadButtons spectra={allSpectra} targetId={object.object_id} />
-              <CopyLinkButton
-                targetId={object.object_id}
-                url={`/nirspec/objects/${encodeURIComponent(object.object_id)}`}
-              />
-            </div>
-          </>
-        }
-      />
-
+      {/* Header + cutout + sidebar + panel (all client-managed) */}
+      <UnifiedObjectPage object={object} />
     </div>
   );
 }

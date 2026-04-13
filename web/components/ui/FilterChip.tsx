@@ -95,6 +95,8 @@ interface FilterChipProps {
   shortcut?: ShortcutButton;
   searchable?: boolean;
   footerLink?: FooterLink;
+  /** Direction dropdown opens. Default 'bottom'. Use 'top' when chip is near bottom of viewport. */
+  dropdownPlacement?: 'bottom' | 'top';
 }
 
 export const FilterChip: React.FC<FilterChipProps> = ({
@@ -108,6 +110,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   shortcut,
   searchable = false,
   footerLink,
+  dropdownPlacement = 'bottom',
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -208,7 +211,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
       {/* Dropdown */}
       {isOpen && !disabled && (
         <div
-          className={`absolute z-50 mt-1 ${searchable ? 'min-w-[280px] max-w-[360px]' : 'min-w-[200px] max-w-[280px]'} bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg`}
+          className={`absolute z-50 ${dropdownPlacement === 'top' ? 'bottom-full mb-1' : 'mt-1'} ${searchable ? 'min-w-[280px] max-w-[360px]' : 'min-w-[200px] max-w-[280px]'} bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg`}
         >
           {/* Search input */}
           {searchable && (

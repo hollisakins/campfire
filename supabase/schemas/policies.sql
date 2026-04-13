@@ -415,25 +415,41 @@ CREATE POLICY "admin_spectra_update"
 
 ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
 
--- Comments visible if their parent target is in an accessible program.
+-- Comments visible if their parent target or object is in an accessible program.
 DROP POLICY IF EXISTS "select_comments_by_access" ON comments;
 CREATE POLICY "select_comments_by_access"
   ON comments FOR SELECT
   USING (
-    target_id IN (
+    -- Target-level comments
+    (target_id IS NOT NULL AND target_id IN (
       SELECT t.id FROM targets t
       WHERE t.program_slug = ANY(public.accessible_program_slugs())
-    )
+    ))
+    OR
+    -- Object-level comments
+    (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
+      SELECT o.id FROM objects o
+      WHERE o.programs && public.accessible_program_slugs()
+    ))
   );
 
--- Users with can_comment permission can insert comments on accessible targets.
+-- Users with can_comment permission can insert comments on accessible targets or objects.
 DROP POLICY IF EXISTS "insert_comments_by_access" ON comments;
 CREATE POLICY "insert_comments_by_access"
   ON comments FOR INSERT
   WITH CHECK (
-    target_id IN (
-      SELECT t.id FROM targets t
-      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    (
+      -- Target-level comments
+      (target_id IS NOT NULL AND target_id IN (
+        SELECT t.id FROM targets t
+        WHERE t.program_slug = ANY(public.accessible_program_slugs())
+      ))
+      OR
+      -- Object-level comments
+      (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
+        SELECT o.id FROM objects o
+        WHERE o.programs && public.accessible_program_slugs()
+      ))
     )
     AND public.can_comment()
   );
