@@ -148,6 +148,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_target_ids(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -264,6 +265,7 @@ BEGIN
           OR (p_inspected_only = TRUE AND t.redshift_quality > 0)
           OR (p_inspected_only = FALSE AND t.redshift_quality = 0)
         )
+        AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
         AND (
           NOT v_comment_search_active
           OR EXISTS (
@@ -391,6 +393,7 @@ BEGIN
           OR (p_inspected_only = TRUE AND t.redshift_quality > 0)
           OR (p_inspected_only = FALSE AND t.redshift_quality = 0)
         )
+        AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
         AND (
           NOT v_comment_search_active
           OR EXISTS (
@@ -476,6 +479,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_targets_paginated(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -524,7 +528,8 @@ BEGIN
       v_sf_include_any, v_sf_include_all, v_sf_exclude,
       v_dq_include_any, v_dq_include_all, v_dq_exclude,
       p_list_ids,
-      p_search, p_inspected_only, p_comment_search, p_comment_search_scope, p_comment_user_id,
+      p_search, p_inspected_only, p_has_photometry,
+      p_comment_search, p_comment_search_scope, p_comment_user_id,
       p_coord_ra, p_coord_dec, p_radius_degrees,
       p_sort_column, p_sort_direction,
       p_page, p_page_size,
@@ -847,6 +852,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -989,6 +995,7 @@ BEGIN
         OR (p_inspected_only = TRUE AND t.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND t.redshift_quality = 0)
       )
+      AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
       AND (
         NOT v_comment_search_active
         OR EXISTS (
@@ -1545,6 +1552,7 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_targets(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -1647,6 +1655,7 @@ BEGIN
       AND (p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND t.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND t.redshift_quality = 0))
+      AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
       AND (NOT v_comment_search_active OR EXISTS (
         SELECT 1 FROM comments c WHERE c.target_id = t.id AND c.is_deleted = false
           AND c.content ILIKE '%' || p_comment_search || '%'
@@ -1945,6 +1954,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export(
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
@@ -2023,6 +2033,7 @@ BEGIN
       ))
       AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND t.redshift_quality > 0) OR (p_inspected_only = FALSE AND t.redshift_quality = 0))
+      AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
       AND (NOT v_comment_search_active OR EXISTS (
         SELECT 1 FROM comments c WHERE c.target_id = t.id AND c.is_deleted = false
           AND c.content ILIKE '%' || p_comment_search || '%'
@@ -2084,6 +2095,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
@@ -2154,6 +2166,7 @@ BEGIN
       ))
       AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND t.redshift_quality > 0) OR (p_inspected_only = FALSE AND t.redshift_quality = 0))
+      AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
       AND (NOT v_comment_search_active OR EXISTS (
         SELECT 1 FROM comments c WHERE c.target_id = t.id AND c.is_deleted = false
           AND c.content ILIKE '%' || p_comment_search || '%'
