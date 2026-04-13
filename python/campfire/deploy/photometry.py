@@ -338,7 +338,7 @@ class PhotozData:
             valid = np.isfinite(fnu) & (fnu > 0)
             if np.any(valid):
                 result['template_wav'] = lam_obs[valid].tolist()
-                result['template_flux_ujy'] = (fnu[valid] * 1e6).tolist()  # Jy → µJy
+                result['template_flux_ujy'] = fnu[valid].tolist()  # already µJy
 
         return result
 

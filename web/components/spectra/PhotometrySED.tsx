@@ -118,6 +118,34 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
     });
   }, [bandData]);
 
+  // Auto-scale y-axis: 10% padding on faint side, 50% on bright side
+  // (matches generate_sed.py convention)
+  const yRange: [number, number] = useMemo(() => {
+    let brightest = 40;
+    let faintest = 0;
+    for (const b of plotData) {
+      if (b.y_upper_limit !== undefined) {
+        // Upper limit
+        if (isFinite(b.y)) {
+          brightest = Math.min(brightest, b.y - 0.3);
+          faintest = Math.max(faintest, b.y);
+        }
+      } else {
+        // Detection
+        if (isFinite(b.y) && isFinite(b.y_err)) {
+          brightest = Math.min(brightest, b.y - b.y_err);
+          faintest = Math.max(faintest, b.y + b.y_err);
+        }
+      }
+    }
+    const range = faintest - brightest;
+    // [faint end, bright end] — Plotly renders range[0] > range[1] as reversed axis
+    return [
+      Math.ceil(faintest + 0.1 * range),
+      Math.floor(brightest - 0.5 * range),
+    ];
+  }, [plotData]);
+
   // Group by category for legend
   const categories = useMemo(() => {
     const cats = new Map<string, string>();
@@ -218,16 +246,19 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const plotColors = useMemo(() => getPlotColors(), [resolvedTheme]);
 
+  const hasPzPanel = !!(pzData || pzLoading);
+
   const layout: Partial<Plotly.Layout> = useMemo(() => ({
     autosize: true,
     height: 400,
-    margin: { l: 70, r: 20, t: 30, b: 50 },
+    margin: { l: 70, r: 20, t: 10, b: 50 },
     paper_bgcolor: plotColors.paper,
     plot_bgcolor: plotColors.bg,
     font: { color: plotColors.text, family: 'Inter, sans-serif', size: 12 },
     xaxis: {
       title: { text: 'Wavelength (µm)' },
       type: 'log',
+      range: [Math.log10(0.3), Math.log10(20)],
       gridcolor: plotColors.grid,
       zerolinecolor: plotColors.grid,
       tickformat: '.2f',
@@ -235,18 +266,18 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
     yaxis: {
       title: { text: 'AB Magnitude' },
       type: 'linear',
-      autorange: 'reversed',
+      range: yRange,
       gridcolor: plotColors.grid,
       zerolinecolor: plotColors.grid,
     },
     legend: {
       x: 0.02,
-      y: 0.98,
+      y: 0.02,
       bgcolor: 'rgba(0,0,0,0)',
       font: { size: 10, color: plotColors.text },
     },
     hovermode: 'closest',
-  }), [plotColors]);
+  }), [plotColors, yRange]);
 
   // P(z) traces for the inset panel
   const pzTraces: Plotly.Data[] = useMemo(() => {
@@ -283,8 +314,8 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
 
   const pzLayout: Partial<Plotly.Layout> = useMemo(() => ({
     autosize: true,
-    height: 200,
-    margin: { l: 50, r: 20, t: 10, b: 40 },
+    height: 400,
+    margin: { l: 50, r: 20, t: 10, b: 50 },
     paper_bgcolor: plotColors.paper,
     plot_bgcolor: plotColors.bg,
     font: { color: plotColors.text, family: 'Inter, sans-serif', size: 11 },
@@ -300,7 +331,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
       range: [0, 1.1],
     },
     legend: {
-      x: 0.6,
+      x: 0.5,
       y: 0.98,
       bgcolor: 'rgba(0,0,0,0)',
       font: { size: 10, color: plotColors.text },
@@ -314,7 +345,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -352,41 +383,37 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
         </div>
       )}
 
-      {/* SED Plot */}
-      <div className="bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
-        <Plot
-          data={traces}
-          layout={layout}
-          config={{ responsive: true, displayModeBar: false }}
-          style={{ width: '100%' }}
-        />
-      </div>
+      {/* SED + P(z) side by side */}
+      <div className="flex gap-3">
+        {/* SED Plot */}
+        <div className={`bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden ${hasPzPanel ? 'flex-[2]' : 'flex-1'} min-w-0`}>
+          <Plot
+            data={traces}
+            layout={layout}
+            config={{ responsive: true, displayModeBar: false }}
+            style={{ width: '100%' }}
+          />
+        </div>
 
-      {/* P(z) Panel */}
-      {(pzData || pzLoading) && (
-        <div className="bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
-          {pzLoading ? (
-            <div className="flex items-center justify-center h-[200px]">
-              <Loader2 className="w-5 h-5 animate-spin text-primary" />
-              <span className="ml-2 text-sm text-text-secondary">Loading P(z)...</span>
-            </div>
-          ) : pzTraces.length > 0 ? (
-            <>
-              <div className="px-4 pt-3 pb-1">
-                <h4 className="text-sm font-medium text-text-secondary dark:text-slate-400">
-                  Photometric Redshift Distribution
-                </h4>
+        {/* P(z) Panel */}
+        {hasPzPanel && (
+          <div className="flex-1 min-w-0 bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+            {pzLoading ? (
+              <div className="flex items-center justify-center h-[400px]">
+                <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                <span className="ml-2 text-sm text-text-secondary">Loading P(z)...</span>
               </div>
+            ) : pzTraces.length > 0 ? (
               <Plot
                 data={pzTraces}
                 layout={pzLayout}
                 config={{ responsive: true, displayModeBar: false }}
                 style={{ width: '100%' }}
               />
-            </>
-          ) : null}
-        </div>
-      )}
+            ) : null}
+          </div>
+        )}
+      </div>
     </div>
   );
 };
