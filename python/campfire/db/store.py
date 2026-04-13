@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 # Schema version — bump when tables change.
 # Squashed to v1 on 2026-04-06; existing databases must be deleted and re-synced.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Column lists used by both store and export
 TARGET_COLUMNS = [
@@ -53,6 +53,7 @@ OBJECT_COLUMNS = [
     "programs", "gratings",
     "max_snr", "max_exposure_time",
     "best_redshift", "best_redshift_quality",
+    "has_photometry", "photo_z", "photo_z_err_lo", "photo_z_err_hi",
     "member_target_ids",
     "created_at", "updated_at",
 ]
@@ -63,7 +64,22 @@ OBJECT_EXPORT_COLUMNS = [
     "n_targets", "n_spectra",
     "programs", "gratings",
     "max_snr", "max_exposure_time",
+    "has_photometry", "photo_z", "photo_z_err_lo", "photo_z_err_hi",
     "member_target_ids",
+]
+
+# Columns for the object_photometry table
+PHOTOMETRY_COLUMNS = [
+    "id", "object_id", "field", "catalog_name", "catalog_id",
+    "match_distance_arcsec", "photometry",
+    "photo_z", "photo_z_err_lo", "photo_z_err_hi", "has_pz",
+    "created_at", "updated_at",
+]
+
+PHOTOMETRY_EXPORT_COLUMNS = [
+    "object_id", "field", "catalog_name", "catalog_id",
+    "match_distance_arcsec",
+    "photo_z", "photo_z_err_lo", "photo_z_err_hi",
 ]
 
 
@@ -136,6 +152,10 @@ CREATE TABLE IF NOT EXISTS objects (
     max_exposure_time REAL,
     best_redshift REAL,
     best_redshift_quality INTEGER DEFAULT 0,
+    has_photometry INTEGER DEFAULT 0,
+    photo_z REAL,
+    photo_z_err_lo REAL,
+    photo_z_err_hi REAL,
     member_target_ids TEXT,
     created_at TEXT,
     updated_at TEXT,
@@ -144,6 +164,25 @@ CREATE TABLE IF NOT EXISTS objects (
 
 CREATE INDEX IF NOT EXISTS idx_objects_object_id ON objects(object_id);
 CREATE INDEX IF NOT EXISTS idx_objects_field ON objects(field);
+
+CREATE TABLE IF NOT EXISTS object_photometry (
+    id INTEGER PRIMARY KEY,
+    object_id TEXT,
+    field TEXT,
+    catalog_name TEXT,
+    catalog_id TEXT,
+    match_distance_arcsec REAL,
+    photometry TEXT,
+    photo_z REAL,
+    photo_z_err_lo REAL,
+    photo_z_err_hi REAL,
+    has_pz INTEGER DEFAULT 0,
+    created_at TEXT,
+    updated_at TEXT,
+    _synced_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ophot_object_id ON object_photometry(object_id);
 
 CREATE TABLE IF NOT EXISTS spectra (
     spectra_id INTEGER PRIMARY KEY,
@@ -1156,9 +1195,10 @@ class LocalStore:
                      n_targets, n_spectra, programs, gratings,
                      max_snr, max_exposure_time,
                      best_redshift, best_redshift_quality,
+                     has_photometry, photo_z, photo_z_err_lo, photo_z_err_hi,
                      member_target_ids,
                      created_at, updated_at, _synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(object_id) DO UPDATE SET
                     field=excluded.field,
                     ra=excluded.ra, dec=excluded.dec,
@@ -1170,6 +1210,10 @@ class LocalStore:
                     max_exposure_time=excluded.max_exposure_time,
                     best_redshift=excluded.best_redshift,
                     best_redshift_quality=excluded.best_redshift_quality,
+                    has_photometry=excluded.has_photometry,
+                    photo_z=excluded.photo_z,
+                    photo_z_err_lo=excluded.photo_z_err_lo,
+                    photo_z_err_hi=excluded.photo_z_err_hi,
                     member_target_ids=excluded.member_target_ids,
                     updated_at=excluded.updated_at,
                     _synced_at=excluded._synced_at
@@ -1187,6 +1231,10 @@ class LocalStore:
                 obj.get("max_exposure_time"),
                 obj.get("best_redshift"),
                 obj.get("best_redshift_quality", 0),
+                1 if obj.get("has_photometry") else 0,
+                obj.get("photo_z"),
+                obj.get("photo_z_err_lo"),
+                obj.get("photo_z_err_hi"),
                 member_ids,
                 obj.get("created_at"),
                 obj.get("updated_at"),
@@ -1443,6 +1491,132 @@ class LocalStore:
         purged = cursor.rowcount
         self._conn.commit()
         return purged
+
+    # -------------------------------------------------------------------------
+    # Object photometry operations
+    # -------------------------------------------------------------------------
+
+    def upsert_photometry(self, records: List[dict]) -> int:
+        """Insert or update photometry records from the /sync/photometry endpoint.
+
+        Parameters
+        ----------
+        records : list of dict
+            Photometry records from the sync endpoint.
+
+        Returns
+        -------
+        int
+            Number of records upserted.
+        """
+        import json as _json
+
+        now = datetime.now(timezone.utc).isoformat()
+        count = 0
+
+        for rec in records:
+            phot = rec.get("photometry")
+            if isinstance(phot, dict):
+                phot = _json.dumps(phot)
+
+            self._conn.execute("""
+                INSERT INTO object_photometry
+                    (id, object_id, field, catalog_name, catalog_id,
+                     match_distance_arcsec, photometry,
+                     photo_z, photo_z_err_lo, photo_z_err_hi, has_pz,
+                     created_at, updated_at, _synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    object_id=excluded.object_id,
+                    field=excluded.field,
+                    catalog_name=excluded.catalog_name,
+                    catalog_id=excluded.catalog_id,
+                    match_distance_arcsec=excluded.match_distance_arcsec,
+                    photometry=excluded.photometry,
+                    photo_z=excluded.photo_z,
+                    photo_z_err_lo=excluded.photo_z_err_lo,
+                    photo_z_err_hi=excluded.photo_z_err_hi,
+                    has_pz=excluded.has_pz,
+                    updated_at=excluded.updated_at,
+                    _synced_at=excluded._synced_at
+            """, (
+                rec.get("id"),
+                rec.get("object_id"),
+                rec.get("field"),
+                rec.get("catalog_name"),
+                rec.get("catalog_id"),
+                rec.get("match_distance_arcsec"),
+                phot,
+                rec.get("photo_z"),
+                rec.get("photo_z_err_lo"),
+                rec.get("photo_z_err_hi"),
+                1 if rec.get("has_pz") else 0,
+                rec.get("created_at"),
+                rec.get("updated_at"),
+                now,
+            ))
+            count += 1
+
+        self._conn.commit()
+        return count
+
+    def get_max_photometry_updated_at(self) -> Optional[str]:
+        """Get the most recent server-side updated_at for photometry.
+
+        Used for incremental sync of the object_photometry table.
+        """
+        row = self._conn.execute(
+            "SELECT MAX(updated_at) FROM object_photometry"
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def purge_stale_photometry(self, sync_timestamp: str) -> int:
+        """Delete photometry records not seen in the latest full sync.
+
+        Parameters
+        ----------
+        sync_timestamp : str
+            ISO 8601 timestamp from the start of the sync.
+
+        Returns
+        -------
+        int
+            Number of records purged.
+        """
+        cursor = self._conn.execute(
+            "DELETE FROM object_photometry WHERE _synced_at < ?",
+            (sync_timestamp,),
+        )
+        purged = cursor.rowcount
+        self._conn.commit()
+        return purged
+
+    def query_photometry(self) -> List[dict]:
+        """Query all photometry records from local database.
+
+        Returns
+        -------
+        list of dict
+            Photometry records with deserialized JSONB.
+        """
+        import json as _json
+
+        rows = self._conn.execute(
+            "SELECT * FROM object_photometry ORDER BY object_id, catalog_name"
+        ).fetchall()
+
+        results = []
+        for row in rows:
+            rec = dict(row)
+            phot = rec.get("photometry")
+            if isinstance(phot, str):
+                try:
+                    rec["photometry"] = _json.loads(phot)
+                except (ValueError, TypeError):
+                    rec["photometry"] = None
+            results.append(rec)
+
+        return results
 
     # Deprecated aliases (old names → new names)
     upsert_objects = upsert_targets
