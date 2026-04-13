@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
     // Construct P(z) sidecar path using DB-derived field
     const pzPath = `photometry/${obj.field}/${objectId}_pz.json`;
 
-    // Generate signed URL (expires in 1 hour)
+    // Generate signed URL and fetch server-side (avoids CORS issues)
     const signedUrl = await generateDownloadUrl(pzPath, 3600);
 
     if (signedUrl.startsWith('#download-placeholder')) {
@@ -61,10 +61,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    return NextResponse.json({
-      url: signedUrl,
-      path: pzPath,
-    });
+    const r2Response = await fetch(signedUrl);
+    if (!r2Response.ok) {
+      return NextResponse.json(
+        { error: 'P(z) sidecar not found in storage' },
+        { status: 404 }
+      );
+    }
+
+    const pzData = await r2Response.json();
+    return NextResponse.json(pzData);
   } catch (error) {
     console.error('Error generating P(z) sidecar URL:', error);
     return NextResponse.json(
