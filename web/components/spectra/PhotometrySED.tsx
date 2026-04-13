@@ -4,6 +4,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { Loader2, BarChart3 } from 'lucide-react';
 import { useTheme } from '@/lib/contexts/ThemeContext';
+import { getPlotColors } from './plotting-utils';
 import type { ObjectPhotometry } from '@/lib/types';
 
 const Plot = dynamic(() => import('react-plotly.js'), {
@@ -56,7 +57,6 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
 }) => {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
-  const [showMagnitudes, setShowMagnitudes] = useState(false);
   const [pzData, setPzData] = useState<PzSidecarData | null>(null);
   const [pzLoading, setPzLoading] = useState(false);
 
@@ -71,11 +71,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
           `/api/photometry-pz?object_id=${encodeURIComponent(objectId)}`
         );
         if (resp.ok) {
-          const { url } = await resp.json();
-          const dataResp = await fetch(url);
-          if (dataResp.ok) {
-            setPzData(await dataResp.json());
-          }
+          setPzData(await resp.json());
         }
       } catch {
         // Silently fail — P(z) is optional
@@ -108,17 +104,8 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
     return entries;
   }, [bands]);
 
-  // Convert to AB magnitudes if needed
+  // Always AB magnitudes
   const plotData = useMemo(() => {
-    if (!showMagnitudes) {
-      return bandData.map(b => ({
-        ...b,
-        y: b.flux,
-        y_err: b.flux_err,
-        y_upper_limit: b.snr < 2 ? 2 * b.flux_err : undefined,
-      }));
-    }
-    // AB mag = -2.5 * log10(f_µJy) + 23.9
     return bandData.map(b => {
       if (b.snr < 2) {
         const upper_limit = -2.5 * Math.log10(2 * b.flux_err) + 23.9;
@@ -129,7 +116,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
       const mag_err_lo = Math.abs(-2.5 * Math.log10(b.flux + b.flux_err) + 23.9 - mag);
       return { ...b, y: mag, y_err: Math.max(mag_err_lo, mag_err_hi), y_upper_limit: undefined };
     });
-  }, [bandData, showMagnitudes]);
+  }, [bandData]);
 
   // Group by category for legend
   const categories = useMemo(() => {
@@ -142,7 +129,6 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
   const traces: Plotly.Data[] = useMemo(() => {
     const result: Plotly.Data[] = [];
 
-    // One trace per category for legend grouping
     for (const [category, color] of categories) {
       const catBands = plotData.filter(b => b.category === category);
       const detections = catBands.filter(b => !b.y_upper_limit);
@@ -171,7 +157,10 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
             thickness: 1,
           },
           marker: { color, size: 8, symbol: 'circle' },
-          text: detections.map(b => `${b.name}<br>flux: ${b.flux.toFixed(3)} µJy<br>err: ${b.flux_err.toFixed(3)} µJy<br>SNR: ${b.snr.toFixed(1)}`),
+          text: detections.map(b => {
+            const mag = -2.5 * Math.log10(b.flux) + 23.9;
+            return `${b.name}<br>mag: ${mag.toFixed(2)}<br>flux: ${b.flux.toFixed(3)} µJy<br>err: ${b.flux_err.toFixed(3)} µJy<br>SNR: ${b.snr.toFixed(1)}`;
+          }),
           hoverinfo: 'text',
         } as Plotly.Data);
       }
@@ -184,13 +173,21 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
           showlegend: false,
           x: limits.map(b => b.wav),
           y: limits.map(b => b.y),
+          error_x: {
+            type: 'data',
+            array: limits.map(b => b.wav_max - b.wav),
+            arrayminus: limits.map(b => b.wav - b.wav_min),
+            visible: true,
+            color: color,
+            thickness: 1,
+          },
           marker: {
             color: color,
             size: 8,
             symbol: 'triangle-down',
             opacity: 0.6,
           },
-          text: limits.map(b => `${b.name} (upper limit)<br>2σ: ${(2 * b.flux_err).toFixed(3)} µJy`),
+          text: limits.map(b => `${b.name} (2σ upper limit)<br>mag: ${b.y.toFixed(2)}<br>flux: ${(2 * b.flux_err).toFixed(3)} µJy`),
           hoverinfo: 'text',
         } as Plotly.Data);
       }
@@ -198,9 +195,9 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
 
     // Template SED overlay from P(z) data
     if (pzData?.template_wav && pzData?.template_flux_ujy) {
-      const templateY = showMagnitudes
-        ? pzData.template_flux_ujy.map(f => f > 0 ? -2.5 * Math.log10(f) + 23.9 : NaN)
-        : pzData.template_flux_ujy;
+      const templateY = pzData.template_flux_ujy.map(f =>
+        f > 0 ? -2.5 * Math.log10(f) + 23.9 : NaN
+      );
 
       result.push({
         type: 'scatter',
@@ -215,42 +212,41 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
     }
 
     return result;
-  }, [plotData, categories, pzData, showMagnitudes]);
+  }, [plotData, categories, pzData]);
 
-  // Layout
-  const bgColor = isDark ? '#1e293b' : '#ffffff';
-  const gridColor = isDark ? '#334155' : '#e2e8f0';
-  const textColor = isDark ? '#cbd5e1' : '#374151';
+  // Layout — use shared plot colors
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const plotColors = useMemo(() => getPlotColors(), [resolvedTheme]);
 
   const layout: Partial<Plotly.Layout> = useMemo(() => ({
     autosize: true,
     height: 400,
     margin: { l: 70, r: 20, t: 30, b: 50 },
-    paper_bgcolor: bgColor,
-    plot_bgcolor: bgColor,
-    font: { color: textColor, family: 'Inter, sans-serif', size: 12 },
+    paper_bgcolor: plotColors.paper,
+    plot_bgcolor: plotColors.bg,
+    font: { color: plotColors.text, family: 'Inter, sans-serif', size: 12 },
     xaxis: {
       title: { text: 'Wavelength (µm)' },
       type: 'log',
-      gridcolor: gridColor,
-      zerolinecolor: gridColor,
+      gridcolor: plotColors.grid,
+      zerolinecolor: plotColors.grid,
       tickformat: '.2f',
     },
     yaxis: {
-      title: { text: showMagnitudes ? 'AB Magnitude' : 'Flux (µJy)' },
-      type: showMagnitudes ? 'linear' : 'log',
-      autorange: showMagnitudes ? 'reversed' : true,
-      gridcolor: gridColor,
-      zerolinecolor: gridColor,
+      title: { text: 'AB Magnitude' },
+      type: 'linear',
+      autorange: 'reversed',
+      gridcolor: plotColors.grid,
+      zerolinecolor: plotColors.grid,
     },
     legend: {
       x: 0.02,
       y: 0.98,
       bgcolor: 'rgba(0,0,0,0)',
-      font: { size: 10, color: textColor },
+      font: { size: 10, color: plotColors.text },
     },
     hovermode: 'closest',
-  }), [bgColor, gridColor, textColor, showMagnitudes]);
+  }), [plotColors]);
 
   // P(z) traces for the inset panel
   const pzTraces: Plotly.Data[] = useMemo(() => {
@@ -289,29 +285,29 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
     autosize: true,
     height: 200,
     margin: { l: 50, r: 20, t: 10, b: 40 },
-    paper_bgcolor: bgColor,
-    plot_bgcolor: bgColor,
-    font: { color: textColor, family: 'Inter, sans-serif', size: 11 },
+    paper_bgcolor: plotColors.paper,
+    plot_bgcolor: plotColors.bg,
+    font: { color: plotColors.text, family: 'Inter, sans-serif', size: 11 },
     xaxis: {
       title: { text: 'Redshift' },
-      gridcolor: gridColor,
-      zerolinecolor: gridColor,
+      gridcolor: plotColors.grid,
+      zerolinecolor: plotColors.grid,
     },
     yaxis: {
       title: { text: 'P(z)' },
-      gridcolor: gridColor,
-      zerolinecolor: gridColor,
+      gridcolor: plotColors.grid,
+      zerolinecolor: plotColors.grid,
       range: [0, 1.1],
     },
     legend: {
       x: 0.6,
       y: 0.98,
       bgcolor: 'rgba(0,0,0,0)',
-      font: { size: 10, color: textColor },
+      font: { size: 10, color: plotColors.text },
     },
     showlegend: true,
     hovermode: 'closest',
-  }), [bgColor, gridColor, textColor]);
+  }), [plotColors]);
 
   if (bandData.length === 0) {
     return null;
@@ -327,22 +323,37 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
             Photometry
           </h3>
           <span className="text-sm text-text-secondary">
-            {photometry.catalog_name} &middot; {bandData.length} bands
+            {photometry.catalog_name} ID {photometry.catalog_id}
             {photometry.match_distance_arcsec != null && (
               <> &middot; match: {photometry.match_distance_arcsec.toFixed(2)}&quot;</>
             )}
           </span>
         </div>
-        <button
-          onClick={() => setShowMagnitudes(!showMagnitudes)}
-          className="text-sm px-3 py-1 rounded border border-border dark:border-slate-600 hover:bg-gray-50 dark:hover:bg-slate-700 text-text-primary dark:text-slate-200 transition-colors"
-        >
-          {showMagnitudes ? 'Show flux (µJy)' : 'Show magnitudes'}
-        </button>
       </div>
 
+      {/* Photo-z summary */}
+      {photometry.photo_z != null && (
+        <div className="text-sm text-text-secondary dark:text-slate-400 px-1">
+          Photo-z: <span className="font-mono text-text-primary dark:text-slate-200">
+            {photometry.photo_z.toFixed(4)}
+          </span>
+          {photometry.photo_z_err_lo != null && photometry.photo_z_err_hi != null && (
+            <span className="font-mono">
+              {' '}({photometry.photo_z_err_lo.toFixed(4)} &ndash; {photometry.photo_z_err_hi.toFixed(4)})
+            </span>
+          )}
+          {bestRedshift != null && (
+            <span>
+              {' '}&middot; Spec-z: <span className="font-mono text-text-primary dark:text-slate-200">
+                {bestRedshift.toFixed(4)}
+              </span>
+            </span>
+          )}
+        </div>
+      )}
+
       {/* SED Plot */}
-      <div className="border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+      <div className="bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
         <Plot
           data={traces}
           layout={layout}
@@ -353,7 +364,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
 
       {/* P(z) Panel */}
       {(pzData || pzLoading) && (
-        <div className="border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+        <div className="bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
           {pzLoading ? (
             <div className="flex items-center justify-center h-[200px]">
               <Loader2 className="w-5 h-5 animate-spin text-primary" />
@@ -374,27 +385,6 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
               />
             </>
           ) : null}
-        </div>
-      )}
-
-      {/* Photo-z summary */}
-      {photometry.photo_z != null && (
-        <div className="text-sm text-text-secondary dark:text-slate-400 px-1">
-          Photo-z: <span className="font-mono text-text-primary dark:text-slate-200">
-            {photometry.photo_z.toFixed(4)}
-          </span>
-          {photometry.photo_z_err_lo != null && photometry.photo_z_err_hi != null && (
-            <span className="font-mono">
-              {' '}({photometry.photo_z_err_lo.toFixed(4)} &ndash; {photometry.photo_z_err_hi.toFixed(4)})
-            </span>
-          )}
-          {bestRedshift != null && (
-            <span>
-              {' '}&middot; Spec-z: <span className="font-mono text-text-primary dark:text-slate-200">
-                {bestRedshift.toFixed(4)}
-              </span>
-            </span>
-          )}
         </div>
       )}
     </div>
