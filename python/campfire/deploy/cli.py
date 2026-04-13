@@ -30,7 +30,7 @@ import sys
 import click
 import requests
 
-from campfire.deploy.config import load_config, load_programs, resolve_imaging_config, resolve_tiles_dir
+from campfire.deploy.config import load_config, load_programs, resolve_imaging_config, resolve_photometry_config, resolve_tiles_dir
 
 
 class _VariadicOption(click.Option):
@@ -318,6 +318,57 @@ def objects(config_path, field, all_fields, dry_run, radius):
         refresh_programs_overview(sb)
 
     print("Done.")
+
+
+# ---------------------------------------------------------------------------
+# photometry subcommand
+# ---------------------------------------------------------------------------
+
+@deploy_group.command()
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--field', required=True, type=str,
+              help='Field name (e.g. cosmos).')
+@click.option('--photometry-config', default=None,
+              help='Path to photometry.toml.')
+@click.option('--dry-run', is_flag=True,
+              help='Show stats without making changes.')
+@click.option('--no-pz', is_flag=True,
+              help='Skip P(z) sidecar generation and upload.')
+def photometry(config_path, field, photometry_config, dry_run, no_pz):
+    """Deploy photometric catalog data for a field."""
+    from campfire.deploy.photometry import deploy_field_photometry
+
+    phot_config_path = resolve_photometry_config(photometry_config)
+    if phot_config_path is None:
+        print("Error: No photometry.toml found.")
+        print("  Use --photometry-config <path> or set $CAMPFIRE_ROOT")
+        sys.exit(1)
+
+    config = load_config(config_path)
+    sb = get_supabase_client(config)
+
+    print(f"\nDeploying photometry for field '{field}'...")
+    result = deploy_field_photometry(
+        sb, field, phot_config_path,
+        upload_pz=not no_pz,
+        dry_run=dry_run,
+    )
+
+    print(f"\n{'='*60}")
+    print(f"Photometry deployment summary")
+    print(f"{'='*60}")
+    print(f"  Objects in field:   {result['n_objects']}")
+    print(f"  Matched to catalog: {result['n_matched']}")
+    print(f"  Bands configured:   {result['n_bands']}")
+    if not no_pz:
+        print(f"  P(z) sidecars:      {result['n_pz']}")
+    print()
+
+    if dry_run:
+        print("Dry run — no changes made.")
+    else:
+        print("Done.")
 
 
 # ---------------------------------------------------------------------------

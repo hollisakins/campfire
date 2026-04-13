@@ -87,6 +87,23 @@ CREATE INDEX IF NOT EXISTS idx_objects_object_id_trgm
 CREATE INDEX IF NOT EXISTS idx_objects_max_exposure_time
     ON public.objects USING btree (max_exposure_time) WHERE (max_exposure_time IS NOT NULL);
 
+CREATE INDEX IF NOT EXISTS idx_objects_photo_z
+    ON public.objects USING btree (photo_z) WHERE (photo_z IS NOT NULL);
+
+
+-- =============================================================================
+-- object_photometry
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_object_photometry_field
+    ON public.object_photometry USING btree (field);
+
+CREATE INDEX IF NOT EXISTS idx_object_photometry_object_id
+    ON public.object_photometry USING btree (object_id) WHERE (object_id IS NOT NULL);
+
+CREATE INDEX IF NOT EXISTS idx_object_photometry_coords
+    ON public.object_photometry USING btree (ra, dec);
+
 
 -- =============================================================================
 -- object_lists

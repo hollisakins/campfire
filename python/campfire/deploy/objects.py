@@ -410,6 +410,31 @@ def _relink_list_members(client: Client, field: str) -> dict:
     return {'relinked': 0, 'orphaned': 0, 'orphaned_details': []}
 
 
+def _relink_photometry(client: Client, field: str) -> dict:
+    """Re-link object_photometry.object_id after object rebuild.
+
+    Photometry rows are keyed by (ra, dec) which survive rebuilds. This
+    updates the object_id FK by spatial cross-matching against the
+    newly created objects (within 0.3 arcsec tolerance).
+
+    Returns dict with keys: relinked, orphaned.
+    """
+    resp = client.rpc('relink_photometry_for_field', {
+        'p_field': field,
+    }).execute()
+    if isinstance(resp.data, dict):
+        return resp.data
+    return {'relinked': 0, 'orphaned': 0}
+
+
+def _sync_photometry(client: Client, field: str) -> int:
+    """Sync photo_z and has_photometry from object_photometry to objects."""
+    resp = client.rpc('sync_photometry_to_objects', {
+        'p_field': field,
+    }).execute()
+    return resp.data if isinstance(resp.data, int) else 0
+
+
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
@@ -516,6 +541,20 @@ def rebuild_field_objects(
         for detail in relink_result.get('orphaned_details', []):
             print(f"      - List \"{detail['list_name']}\": "
                   f"RA={detail['ra']:.6f}, Dec={detail['dec']:.6f}")
+
+    print(f"  Re-linking photometry FKs...")
+    phot_result = _relink_photometry(client, field)
+    n_phot_relinked = phot_result.get('relinked', 0)
+    n_phot_orphaned = phot_result.get('orphaned', 0)
+    if n_phot_relinked:
+        print(f"    Re-linked {n_phot_relinked} photometry rows")
+    if n_phot_orphaned:
+        print(f"    WARNING: {n_phot_orphaned} orphaned photometry rows")
+
+    if n_phot_relinked:
+        print(f"  Syncing photometry to objects...")
+        n_synced = _sync_photometry(client, field)
+        print(f"    Updated {n_synced} objects")
 
     print_rebuild_summary(objects, targets)
 

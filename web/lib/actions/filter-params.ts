@@ -38,6 +38,7 @@ export interface FilterOptions {
   list_ids: number[];
   dq_flags: number[];
   inspected_only: boolean | null;
+  has_photometry: boolean | null;
   search: string;
   search_scope: SearchScope;
   gratings_mode: FilterMode;
@@ -62,6 +63,7 @@ export const DEFAULT_FILTERS: FilterOptions = {
   list_ids: [],
   dq_flags: [],
   inspected_only: null,
+  has_photometry: null,
   search: '',
   search_scope: 'target_id',
   gratings_mode: 'any',
@@ -99,6 +101,7 @@ export interface FilterRpcParams {
   p_dq_flags_exclude: number | null;
   p_search: string | null;
   p_inspected_only: boolean | null;
+  p_has_photometry: boolean | null;
   p_coord_ra: number | null;
   p_coord_dec: number | null;
   p_radius_degrees: number | null;
@@ -181,6 +184,7 @@ export function buildFilterParams(
     p_dq_flags_exclude: dqMode === 'none' ? dqFlagsMask : null,
     p_search: targetIdSearch,
     p_inspected_only: filters?.inspected_only ?? null,
+    p_has_photometry: filters?.has_photometry ?? null,
     p_coord_ra: coordRa,
     p_coord_dec: coordDec,
     p_radius_degrees: radiusDegrees,

@@ -107,6 +107,7 @@ const OBJECTS_COLUMNS: ColumnDefinition[] = [
   { id: 'distance', label: 'Distance', defaultVisible: true },
   { id: 'redshift', label: 'Best Redshift', alwaysVisible: true },
   { id: 'redshift_quality', label: 'Best Quality', alwaysVisible: true },
+  { id: 'photo_z', label: 'Photo-z', defaultVisible: false },
   { id: 'n_targets', label: '# Targets', defaultVisible: true },
   { id: 'n_spectra', label: '# Spectra', defaultVisible: false },
   { id: 'obj_programs', label: 'Programs', defaultVisible: true },
@@ -129,6 +130,7 @@ const OBJECTS_COLUMN_TO_SERVER: Record<string, SortColumn> = {
   'n_spectra': 'n_spectra',
   'max_snr': 'max_snr',
   'max_exposure_time': 'max_exposure_time',
+  'photo_z': 'photo_z',
   'distance': 'distance',
 };
 
@@ -626,6 +628,21 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
           <span className="text-sm text-text-primary dark:text-slate-100 text-center block">
             {row.original.n_spectra ?? 0}
+          </span>
+        ),
+        sortingFn: 'basic' as const,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
+      // Objects mode: photo_z column
+      ...(isObjectsMode ? [{
+        id: 'photo_z',
+        minSize: 100,
+        accessorFn: (row: SpectrumTarget) => row.photo_z ?? null,
+        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
+          <SortableHeader column={column} className="justify-end">Photo-z</SortableHeader>
+        ),
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => (
+          <span className="text-sm font-mono text-text-primary dark:text-slate-100 text-right block">
+            {row.original.photo_z != null ? row.original.photo_z.toFixed(4) : '—'}
           </span>
         ),
         sortingFn: 'basic' as const,

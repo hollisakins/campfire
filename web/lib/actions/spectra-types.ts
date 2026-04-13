@@ -13,13 +13,13 @@ export const TARGET_SORT_COLUMNS = ['target_id', 'field', 'observation', 'ra', '
 export const SPECTRA_SORT_COLUMNS = ['target_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'signal_to_noise', 'exposure_time', 'grating', 'distance'] as const;
 
 // Objects-mode sort columns (must match get_filtered_objects_paginated whitelist)
-export const OBJECTS_SORT_COLUMNS = ['object_id', 'field', 'ra', 'dec', 'best_redshift', 'best_redshift_quality', 'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'distance'] as const;
+export const OBJECTS_SORT_COLUMNS = ['object_id', 'field', 'ra', 'dec', 'best_redshift', 'best_redshift_quality', 'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z', 'distance'] as const;
 
 // Union of all valid sort columns (all modes)
 export const VALID_SORT_COLUMNS = [
   'target_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality',
   'max_snr', 'max_exposure_time', 'signal_to_noise', 'exposure_time', 'grating', 'distance',
-  'object_id', 'best_redshift', 'best_redshift_quality', 'n_targets', 'n_spectra'
+  'object_id', 'best_redshift', 'best_redshift_quality', 'n_targets', 'n_spectra', 'photo_z'
 ] as const;
 export type SortColumn = typeof VALID_SORT_COLUMNS[number];
 

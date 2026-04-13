@@ -295,6 +295,8 @@ export interface SpectrumTarget extends DbTarget {
   n_spectra?: number;
   programs?: string[];
   gratings?: string[];
+  photo_z?: number | null;
+  has_photometry?: boolean;
   member_targets?: { target_id: string; program_slug: string; observation: string; redshift: number | null; redshift_quality: number }[];
   lists?: { id: number; name: string; slug: string; icon: string | null; color: string | null }[];
 }
@@ -322,6 +324,30 @@ export interface ObjectMemberTarget {
   spectra: Spectrum[];
 }
 
+// Photometry band measurement
+export interface PhotometryBand {
+  flux: number;
+  flux_err: number;
+  wav?: number;
+  wav_min?: number;
+  wav_max?: number;
+}
+
+// Photometric catalog cross-match data
+export interface ObjectPhotometry {
+  catalog_name: string;
+  catalog_id: string;
+  match_distance_arcsec: number;
+  photometry: {
+    flux_unit: string;
+    bands: Record<string, PhotometryBand>;
+  };
+  photo_z: number | null;
+  photo_z_err_lo: number | null;
+  photo_z_err_hi: number | null;
+  has_pz: boolean;
+}
+
 // Full object detail for object detail page
 export interface ObjectDetail {
   id: number;
@@ -337,8 +363,13 @@ export interface ObjectDetail {
   max_exposure_time: number | null;
   best_redshift: number | null;
   best_redshift_quality: number;
+  photo_z: number | null;
+  photo_z_err_lo: number | null;
+  photo_z_err_hi: number | null;
+  has_photometry: boolean;
   created_at: string;
   member_targets: ObjectMemberTarget[];
+  photometry: ObjectPhotometry | null;
 }
 
 // Comment with user profile info
