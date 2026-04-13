@@ -32,7 +32,7 @@ function getBandCategory(wav: number): string {
   return 'MIRI';
 }
 
-interface PzRunData {
+interface PzSidecarData {
   label: string;
   color: string;
   z_best: number;
@@ -41,10 +41,6 @@ interface PzRunData {
   pz?: number[];
   template_wav?: number[];
   template_flux_ujy?: number[];
-}
-
-interface PzSidecarData {
-  runs: Record<string, PzRunData>;
 }
 
 interface PhotometrySEDProps {
@@ -202,26 +198,22 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
       }
     }
 
-    // Template SED overlays from P(z) data
-    if (pzData?.runs) {
-      for (const [, run] of Object.entries(pzData.runs)) {
-        if (run.template_wav && run.template_flux_ujy) {
-          const templateY = showMagnitudes
-            ? run.template_flux_ujy.map(f => f > 0 ? -2.5 * Math.log10(f) + 23.9 : NaN)
-            : run.template_flux_ujy;
+    // Template SED overlay from P(z) data
+    if (pzData?.template_wav && pzData?.template_flux_ujy) {
+      const templateY = showMagnitudes
+        ? pzData.template_flux_ujy.map(f => f > 0 ? -2.5 * Math.log10(f) + 23.9 : NaN)
+        : pzData.template_flux_ujy;
 
-          result.push({
-            type: 'scatter',
-            mode: 'lines',
-            name: `${run.label} (z=${run.z_best.toFixed(3)})`,
-            x: run.template_wav,
-            y: templateY,
-            line: { color: run.color, width: 1.5 },
-            opacity: 0.8,
-            hoverinfo: 'name',
-          } as Plotly.Data);
-        }
-      }
+      result.push({
+        type: 'scatter',
+        mode: 'lines',
+        name: `${pzData.label} (z=${pzData.z_best.toFixed(3)})`,
+        x: pzData.template_wav,
+        y: templateY,
+        line: { color: pzData.color, width: 1.5 },
+        opacity: 0.8,
+        hoverinfo: 'name',
+      } as Plotly.Data);
     }
 
     return result;
@@ -264,24 +256,20 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
 
   // P(z) traces for the inset panel
   const pzTraces: Plotly.Data[] = useMemo(() => {
-    if (!pzData?.runs) return [];
+    if (!pzData?.z_grid || !pzData?.pz) return [];
     const result: Plotly.Data[] = [];
 
-    for (const [, run] of Object.entries(pzData.runs)) {
-      if (run.z_grid && run.pz) {
-        result.push({
-          type: 'scatter',
-          mode: 'lines',
-          name: run.label,
-          x: run.z_grid,
-          y: run.pz,
-          line: { color: run.color, width: 1.5 },
-          fill: 'tozeroy',
-          fillcolor: `${run.color}20`,
-          hoverinfo: 'name',
-        } as Plotly.Data);
-      }
-    }
+    result.push({
+      type: 'scatter',
+      mode: 'lines',
+      name: pzData.label,
+      x: pzData.z_grid,
+      y: pzData.pz,
+      line: { color: pzData.color, width: 1.5 },
+      fill: 'tozeroy',
+      fillcolor: `${pzData.color}20`,
+      hoverinfo: 'name',
+    } as Plotly.Data);
 
     // Spectroscopic redshift line
     if (bestRedshift !== null) {
@@ -366,7 +354,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
       </div>
 
       {/* P(z) Panel */}
-      {(pzData?.runs || pzLoading) && (
+      {(pzData || pzLoading) && (
         <div className="border border-border dark:border-slate-700 rounded-lg overflow-hidden">
           {pzLoading ? (
             <div className="flex items-center justify-center h-[200px]">

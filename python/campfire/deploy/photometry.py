@@ -7,10 +7,13 @@ JSON sidecars for upload to R2.
 
 Config-driven via $CAMPFIRE_ROOT/config/photometry.toml with per-field
 sections specifying catalog paths, column mappings, and flux units.
+Photo-z comes from a single Lazy.jl FITS file configured under
+[field.photoz].
 """
 
 import json
 import math
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +25,8 @@ from astropy.io import fits
 from astropy.table import Table
 import astropy.units as u
 from supabase import Client
+
+from campfire.deploy.r2 import UploadTask, upload_files_parallel
 
 
 BATCH_SIZE = 500
@@ -215,100 +220,127 @@ def build_photometry_payload(
 
 
 # ---------------------------------------------------------------------------
-# P(z) sidecar generation
+# Photo-z: Lazy.jl FITS reader
 # ---------------------------------------------------------------------------
 
-def generate_pz_sidecar(
-    catalog_id: int | str,
-    pz_runs: list[dict],
-) -> dict | None:
-    """Generate P(z) + template sidecar JSON for one object.
-
-    Reads Lazy.jl photo-z output files. Each pz_run dict has keys:
-    name, label, file, id_column, z_best_column, chi2_column,
-    coeffs_column, pz_ext, templates_ext, color.
+class PhotozData:
+    """Pre-loaded Lazy.jl photo-z data for efficient per-object lookups.
 
     Lazy.jl FITS structure:
       - Ext 1: main table (ID, z_best, chi2, coeffs per source)
       - Ext pz_ext: P(z) column where row 0 = z-grid, row N+1 = P(z) for source N
       - Ext templates_ext: template basis functions with z grid; rest-frame
         wavelength in Angstroms from template[0][0]
-
-    Returns dict ready for JSON serialization, or None if no runs match.
     """
-    runs = {}
 
-    for run_cfg in pz_runs:
-        run_file = run_cfg.get('file')
-        if not run_file or not Path(run_file).exists():
-            continue
+    def __init__(self, photoz_config: dict):
+        self.label = photoz_config.get('label', 'Photo-z')
+        self.color = photoz_config.get('color', '#999999')
 
-        id_col = run_cfg.get('id_column', 'ID')
-        z_best_col = run_cfg.get('z_best_column', 'z_best')
-        chi2_col = run_cfg.get('chi2_column', 'chi2')
-        coeffs_col = run_cfg.get('coeffs_column', 'coeffs')
-        pz_ext = run_cfg.get('pz_ext', 2)
-        templates_ext = run_cfg.get('templates_ext', 3)
+        pz_file = photoz_config['file']
+        id_col = photoz_config.get('id_column', 'ID')
+        pz_ext = photoz_config.get('pz_ext', 2)
+        templates_ext = photoz_config.get('templates_ext', 3)
 
-        try:
-            data = fits.getdata(run_file, ext=1)
-            idx_arr = np.where(data[id_col] == catalog_id)[0]
-            if len(idx_arr) == 0:
-                continue
-            idx = idx_arr[0]
+        self.z_best_col = photoz_config.get('z_best_column', 'z_best')
+        self.chi2_col = photoz_config.get('chi2_column', 'chi2')
+        self.coeffs_col = photoz_config.get('coeffs_column', 'coeffs')
 
-            z_best = float(data[z_best_col][idx])
-            chi2 = float(data[chi2_col][idx])
+        print(f"  Loading photo-z data: {pz_file}")
+        self.main = fits.getdata(pz_file, ext=1)
+        self.pz_table = fits.getdata(pz_file, ext=pz_ext)
+        self.z_grid = self.pz_table['Pz'][0].tolist()
+        self.templates = fits.getdata(pz_file, ext=templates_ext)
 
-            run_result: dict = {
-                'label': run_cfg.get('label', run_cfg['name']),
-                'color': run_cfg.get('color', '#999999'),
-                'z_best': z_best,
-                'chi2': chi2,
-            }
+        # Build ID → row index lookup
+        self._id_to_idx: dict[int | str, int] = {}
+        for i, v in enumerate(self.main[id_col]):
+            self._id_to_idx[int(v) if isinstance(v, (int, np.integer)) else v] = i
 
-            # P(z) grid
-            pz_data = fits.getdata(run_file, ext=pz_ext)
-            z_grid = pz_data['Pz'][0].tolist()
-            pz_vals = pz_data['Pz'][idx + 1]
-            pz_max = np.max(pz_vals)
-            if pz_max > 0:
-                pz_vals = (pz_vals / pz_max).tolist()
-            else:
-                pz_vals = pz_vals.tolist()
-            run_result['z_grid'] = z_grid
-            run_result['pz'] = pz_vals
+        template_names = [n for n in self.templates.dtype.names if n != 'z']
+        self._template_names = template_names
+        # Rest-frame wavelength grid in µm (same for all templates)
+        self._lam_rest = self.templates[template_names[0]][0] / 1e4  # Å → µm
 
-            # Best-fit template SED
-            if coeffs_col in data.dtype.names:
-                coeffs = data[coeffs_col][idx]
-                templates_data = fits.getdata(run_file, ext=templates_ext)
-                template_names = [n for n in templates_data.dtype.names if n != 'z']
-                iz_best = np.argmin(np.abs(z_best - templates_data['z']))
-                templates = np.array([
-                    templates_data[tn][iz_best] for tn in template_names
-                ])
-                lam_rest = templates_data[template_names[0]][0] / 1e4  # Angstrom → µm
-                lam_obs = lam_rest * (1 + z_best)
-                fnu = np.dot(templates.T, coeffs)
+        print(f"    {len(self._id_to_idx)} sources loaded")
 
-                # Filter to valid range
-                valid = np.isfinite(fnu) & (fnu > 0)
-                if np.any(valid):
-                    run_result['template_wav'] = lam_obs[valid].tolist()
-                    run_result['template_flux_ujy'] = (fnu[valid] * 1e6).tolist()  # Jy → µJy
+    def lookup(self, catalog_id: int | str) -> dict | None:
+        """Look up photo-z metadata for a catalog ID.
 
-            runs[run_cfg['name']] = run_result
+        Returns dict with z_best, chi2, z_err_lo, z_err_hi, or None if
+        the ID is not in the photo-z file.
+        """
+        idx = self._id_to_idx.get(catalog_id)
+        if idx is None:
+            return None
 
-        except Exception as e:
-            print(f"    WARNING: Failed to extract P(z) from {run_file} for "
-                  f"catalog_id={catalog_id}: {e}")
-            continue
+        z_best = float(self.main[self.z_best_col][idx])
+        if not np.isfinite(z_best):
+            return None
 
-    if not runs:
-        return None
+        result: dict = {
+            'z_best': z_best,
+            'chi2': float(self.main[self.chi2_col][idx]),
+        }
 
-    return {'runs': runs}
+        # Confidence intervals if available
+        if 'z_l68' in self.main.dtype.names:
+            v = float(self.main['z_l68'][idx])
+            if np.isfinite(v):
+                result['z_err_lo'] = v
+        if 'z_u68' in self.main.dtype.names:
+            v = float(self.main['z_u68'][idx])
+            if np.isfinite(v):
+                result['z_err_hi'] = v
+
+        return result
+
+    def generate_sidecar(self, catalog_id: int | str) -> dict | None:
+        """Generate P(z) + template sidecar JSON for one object.
+
+        Returns flat dict with label, color, z_best, chi2, z_grid, pz,
+        template_wav, template_flux_ujy. Returns None if ID not found.
+        """
+        idx = self._id_to_idx.get(catalog_id)
+        if idx is None:
+            return None
+
+        z_best = float(self.main[self.z_best_col][idx])
+        chi2 = float(self.main[self.chi2_col][idx])
+
+        result: dict = {
+            'label': self.label,
+            'color': self.color,
+            'z_best': z_best,
+            'chi2': chi2,
+        }
+
+        # P(z) distribution
+        pz_vals = self.pz_table['Pz'][idx + 1]
+        pz_max = np.max(pz_vals)
+        if pz_max > 0:
+            pz_vals = (pz_vals / pz_max).tolist()
+        else:
+            pz_vals = pz_vals.tolist()
+        result['z_grid'] = self.z_grid
+        result['pz'] = pz_vals
+
+        # Best-fit template SED
+        if self.coeffs_col in self.main.dtype.names:
+            coeffs = self.main[self.coeffs_col][idx]
+            iz_best = np.argmin(np.abs(z_best - self.templates['z']))
+            templates = np.array([
+                self.templates[tn][iz_best] for tn in self._template_names
+            ])
+            lam_obs = self._lam_rest * (1 + z_best)
+            fnu = np.dot(templates.T, coeffs)
+
+            valid = np.isfinite(fnu) & (fnu > 0)
+            if np.any(valid):
+                result['template_wav'] = lam_obs[valid].tolist()
+                result['template_flux_ujy'] = (fnu[valid] * 1e6).tolist()  # Jy → µJy
+
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -379,9 +411,9 @@ def deploy_field_photometry(
     client: Client,
     field: str,
     photometry_config_path: Path,
+    deploy_config: dict,
     *,
-    upload_pz: bool = True,
-    r2_uploader=None,
+    include_photoz: bool = True,
     dry_run: bool = False,
 ) -> dict:
     """
@@ -391,8 +423,8 @@ def deploy_field_photometry(
         client: Supabase client (service role)
         field: Field name
         photometry_config_path: Path to photometry.toml
-        upload_pz: Whether to generate and upload P(z) sidecars
-        r2_uploader: Callable(local_path, r2_key) for uploading sidecars
+        deploy_config: Deploy config dict (for R2 upload credentials)
+        include_photoz: Whether to extract photo-z and upload P(z) sidecars
         dry_run: Print stats without writing
 
     Returns:
@@ -413,12 +445,22 @@ def deploy_field_photometry(
     id_col = field_config.get('id_column', 'id')
     radius = field_config.get('match_radius_arcsec', 0.3)
     band_config = field_config.get('bands', {})
-    photo_z_config = field_config.get('photo_z', {})
-    pz_runs = field_config.get('pz_runs', [])
+    photoz_config = field_config.get('photoz')
 
     print(f"  Loading catalog: {catalog_path}")
     catalog = Table.read(catalog_path, format=fmt if fmt != 'fits' else None)
     print(f"    {len(catalog)} sources, {len(band_config)} bands configured")
+
+    # Pre-load photo-z data
+    photoz: PhotozData | None = None
+    if include_photoz and photoz_config:
+        photoz_file = photoz_config.get('file')
+        if photoz_file and Path(photoz_file).exists():
+            photoz = PhotozData(photoz_config)
+        else:
+            print(f"  WARNING: Photo-z file not found: {photoz_file}")
+    elif include_photoz and not photoz_config:
+        print(f"  No [photoz] config for field '{field}'. Skipping photo-z.")
 
     # Fetch objects
     print(f"  Fetching objects for field '{field}'...")
@@ -446,51 +488,49 @@ def deploy_field_photometry(
             'n_pz': 0,
         }
 
-    # Build records
+    # Build records + P(z) sidecars
     now = datetime.now(timezone.utc).isoformat()
     records = []
+    upload_tasks: list[UploadTask] = []
     n_pz = 0
+    tmpdir = tempfile.mkdtemp(prefix='campfire_pz_')
 
     for obj_idx, cat_idx, dist in matches:
         obj = objects[obj_idx]
         cat_row = {col: catalog[col][cat_idx] for col in catalog.colnames}
-        cat_id = str(cat_row.get(id_col, cat_idx))
+        # Catalog ID: use the raw value for photo-z lookup (usually int),
+        # stringify for the DB record
+        cat_id_raw = cat_row.get(id_col, cat_idx)
+        cat_id_int = int(cat_id_raw) if isinstance(cat_id_raw, (int, float, np.integer, np.floating)) else cat_id_raw
+        cat_id = str(cat_id_raw)
 
         # Build photometry payload
         payload = build_photometry_payload(cat_row, band_config, flux_unit)
 
-        # Extract photo-z
+        # Photo-z from Lazy.jl
         photo_z = None
         photo_z_err_lo = None
         photo_z_err_hi = None
-        if photo_z_config:
-            z_col = photo_z_config.get('column')
-            if z_col and z_col in cat_row:
-                z_val = float(cat_row[z_col])
-                if np.isfinite(z_val):
-                    photo_z = z_val
-                    lo_col = photo_z_config.get('err_lo_column')
-                    hi_col = photo_z_config.get('err_hi_column')
-                    if lo_col and lo_col in cat_row:
-                        v = float(cat_row[lo_col])
-                        if np.isfinite(v):
-                            photo_z_err_lo = v
-                    if hi_col and hi_col in cat_row:
-                        v = float(cat_row[hi_col])
-                        if np.isfinite(v):
-                            photo_z_err_hi = v
-
-        # Generate P(z) sidecar
         has_pz = False
-        if upload_pz and pz_runs:
-            sidecar = generate_pz_sidecar(cat_row.get(id_col, cat_idx), pz_runs)
-            if sidecar is not None:
-                has_pz = True
-                n_pz += 1
-                if r2_uploader:
+
+        if photoz is not None:
+            pz_meta = photoz.lookup(cat_id_int)
+            if pz_meta is not None:
+                photo_z = pz_meta['z_best']
+                photo_z_err_lo = pz_meta.get('z_err_lo')
+                photo_z_err_hi = pz_meta.get('z_err_hi')
+
+                # Generate P(z) sidecar
+                sidecar = photoz.generate_sidecar(cat_id_int)
+                if sidecar is not None:
+                    has_pz = True
+                    n_pz += 1
                     r2_key = f"photometry/{field}/{obj['object_id']}_pz.json"
-                    sidecar_json = json.dumps(sidecar, separators=(',', ':'))
-                    r2_uploader(sidecar_json.encode(), r2_key, 'application/json')
+                    local_path = Path(tmpdir) / f"{obj['object_id']}_pz.json"
+                    local_path.write_text(
+                        json.dumps(sidecar, separators=(',', ':')),
+                    )
+                    upload_tasks.append(UploadTask(local_path, r2_key, 'application/json'))
 
         record = {
             'object_id': obj['id'],
@@ -509,6 +549,17 @@ def deploy_field_photometry(
         }
         records.append(record)
 
+    # Upload P(z) sidecars to R2
+    if upload_tasks:
+        print(f"  Uploading {len(upload_tasks)} P(z) sidecars to R2...")
+        success, failed, errors = upload_files_parallel(
+            deploy_config, upload_tasks, desc="P(z) sidecars",
+        )
+        if failed:
+            print(f"    WARNING: {failed} sidecar uploads failed")
+            for err in errors[:5]:
+                print(f"      {err}")
+
     # Write to database
     print(f"  Clearing existing photometry for field '{field}'...")
     n_deleted = _clear_field_photometry(client, field)
@@ -523,6 +574,10 @@ def deploy_field_photometry(
     resp = client.rpc('sync_photometry_to_objects', {'p_field': field}).execute()
     n_synced = resp.data if isinstance(resp.data, int) else 0
     print(f"    Updated {n_synced} objects")
+
+    # Clean up temp files
+    import shutil
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
     return {
         'n_objects': len(objects),

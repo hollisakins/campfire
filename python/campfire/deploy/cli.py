@@ -333,9 +333,9 @@ def objects(config_path, field, all_fields, dry_run, radius):
               help='Path to photometry.toml.')
 @click.option('--dry-run', is_flag=True,
               help='Show stats without making changes.')
-@click.option('--no-pz', is_flag=True,
-              help='Skip P(z) sidecar generation and upload.')
-def photometry(config_path, field, photometry_config, dry_run, no_pz):
+@click.option('--no-photoz', is_flag=True,
+              help='Skip photo-z extraction and P(z) sidecar upload.')
+def photometry(config_path, field, photometry_config, dry_run, no_photoz):
     """Deploy photometric catalog data for a field."""
     from campfire.deploy.photometry import deploy_field_photometry
 
@@ -350,8 +350,8 @@ def photometry(config_path, field, photometry_config, dry_run, no_pz):
 
     print(f"\nDeploying photometry for field '{field}'...")
     result = deploy_field_photometry(
-        sb, field, phot_config_path,
-        upload_pz=not no_pz,
+        sb, field, phot_config_path, config,
+        include_photoz=not no_photoz,
         dry_run=dry_run,
     )
 
@@ -361,7 +361,7 @@ def photometry(config_path, field, photometry_config, dry_run, no_pz):
     print(f"  Objects in field:   {result['n_objects']}")
     print(f"  Matched to catalog: {result['n_matched']}")
     print(f"  Bands configured:   {result['n_bands']}")
-    if not no_pz:
+    if not no_photoz:
         print(f"  P(z) sidecars:      {result['n_pz']}")
     print()
 
