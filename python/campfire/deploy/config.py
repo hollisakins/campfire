@@ -340,3 +340,29 @@ def resolve_imaging_config(imaging_config: str | None = None) -> Path:
     print("Error: No imaging.toml found.")
     print("  Use --imaging-config <path> or set $CAMPFIRE_ROOT")
     sys.exit(1)
+
+
+def resolve_photometry_config(photometry_config: str | None = None) -> Path | None:
+    """
+    Resolve the photometry.toml config path.
+
+    Returns None if no config is found (photometry is optional).
+
+    Resolution order:
+      1. Explicit --photometry-config argument
+      2. $CAMPFIRE_ROOT/config/photometry.toml
+    """
+    if photometry_config:
+        p = Path(photometry_config)
+        if not p.exists():
+            print(f"Error: Photometry config not found: {p}")
+            sys.exit(1)
+        return p
+
+    root = os.environ.get('CAMPFIRE_ROOT')
+    if root:
+        p = Path(root) / 'config' / 'photometry.toml'
+        if p.exists():
+            return p
+
+    return None

@@ -1119,6 +1119,9 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
+  p_photo_z_min DOUBLE PRECISION DEFAULT NULL,
+  p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
   p_sort_column TEXT DEFAULT 'object_id',
   p_sort_direction TEXT DEFAULT 'asc',
   p_page INTEGER DEFAULT 1,
@@ -1149,7 +1152,7 @@ BEGIN
 
   IF NOT (p_sort_column IN (
     'object_id', 'field', 'ra', 'dec', 'best_redshift', 'best_redshift_quality',
-    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time'
+    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
   ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
     p_sort_column := 'object_id';
   END IF;
@@ -1219,7 +1222,10 @@ BEGIN
     AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
         SELECT olm.object_id FROM object_list_members olm
         WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-    ));
+    ))
+    AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
+    AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
+    AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max);
 
   -- Step 2: fetch page
   RETURN QUERY
@@ -1238,6 +1244,8 @@ BEGIN
       o.max_exposure_time,
       o.best_redshift,
       o.best_redshift_quality,
+      o.photo_z,
+      o.has_photometry,
       o.created_at,
       CASE
         WHEN v_coord_search_active THEN
@@ -1289,6 +1297,9 @@ BEGIN
           SELECT olm.object_id FROM object_list_members olm
           WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
+      AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
+      AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
+      AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
     ORDER BY
       CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'asc' THEN
         2 * DEGREES(ASIN(SQRT(
@@ -1322,6 +1333,8 @@ BEGIN
       CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN o.max_snr END DESC NULLS LAST,
       CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN o.max_exposure_time END ASC NULLS LAST,
       CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN o.max_exposure_time END DESC NULLS LAST,
+      CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'asc' THEN o.photo_z END ASC NULLS LAST,
+      CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'desc' THEN o.photo_z END DESC NULLS LAST,
       o.object_id ASC
     LIMIT p_page_size OFFSET v_offset
   ),
@@ -1341,6 +1354,8 @@ BEGIN
         'max_exposure_time', fo.max_exposure_time,
         'best_redshift', fo.best_redshift,
         'best_redshift_quality', fo.best_redshift_quality,
+        'photo_z', fo.photo_z,
+        'has_photometry', fo.has_photometry,
         'created_at', fo.created_at,
         'distance', fo.distance,
         'member_targets', COALESCE(
@@ -1413,7 +1428,10 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
-  p_radius_degrees DOUBLE PRECISION DEFAULT NULL
+  p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
+  p_photo_z_min DOUBLE PRECISION DEFAULT NULL,
+  p_photo_z_max DOUBLE PRECISION DEFAULT NULL
 )
 RETURNS TABLE(object_id TEXT)
 LANGUAGE plpgsql STABLE
@@ -1826,6 +1844,9 @@ BEGIN
           SELECT olm.object_id FROM object_list_members olm
           WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
+      AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
+      AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
+      AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
   ),
   distance_filtered AS MATERIALIZED (
     SELECT
@@ -2195,6 +2216,8 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
+  p_photo_z_min DOUBLE PRECISION DEFAULT NULL, p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
   p_sort_column TEXT DEFAULT 'object_id', p_sort_direction TEXT DEFAULT 'asc'
 )
 RETURNS TABLE(
@@ -2279,6 +2302,9 @@ BEGIN
           SELECT olm.object_id FROM object_list_members olm
           WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
+      AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
+      AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
+      AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
   ),
   distance_filtered AS (SELECT fo.* FROM filtered_objects fo WHERE NOT v_coord_search_active OR fo.distance <= p_radius_degrees)
   SELECT df.object_id, df.field, df.ra, df.dec,
@@ -3202,3 +3228,151 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.relink_list_members_for_field(TEXT) TO service_role;
+
+
+-- =============================================================================
+-- relink_photometry_for_field
+-- (re-link object_photometry.object_id after objects rebuild)
+-- =============================================================================
+
+DROP FUNCTION IF EXISTS public.relink_photometry_for_field(TEXT);
+
+CREATE OR REPLACE FUNCTION public.relink_photometry_for_field(p_field TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  n_relinked INTEGER := 0;
+  n_orphaned INTEGER := 0;
+  v_field_ra_min DOUBLE PRECISION;
+  v_field_ra_max DOUBLE PRECISION;
+  v_field_dec_min DOUBLE PRECISION;
+  v_field_dec_max DOUBLE PRECISION;
+  v_tolerance_deg DOUBLE PRECISION := 0.3 / 3600.0;  -- 0.3 arcsec in degrees
+BEGIN
+  -- Get bounding box of objects in this field (with padding)
+  SELECT MIN(o.ra) - v_tolerance_deg, MAX(o.ra) + v_tolerance_deg,
+         MIN(o.dec) - v_tolerance_deg, MAX(o.dec) + v_tolerance_deg
+  INTO v_field_ra_min, v_field_ra_max, v_field_dec_min, v_field_dec_max
+  FROM objects o WHERE o.field = p_field;
+
+  IF v_field_ra_min IS NULL THEN
+    RETURN jsonb_build_object('relinked', 0, 'orphaned', 0);
+  END IF;
+
+  -- Re-link: for each photometry row in this field,
+  -- find the nearest object within 0.3 arcsec tolerance.
+  WITH candidates AS (
+    SELECT op.id AS phot_id,
+           o.id AS obj_id,
+           SQRT(
+             POWER((op.ra - o.ra) * COS(RADIANS(op.dec)), 2) +
+             POWER(op.dec - o.dec, 2)
+           ) AS dist_deg,
+           ROW_NUMBER() OVER (
+             PARTITION BY op.id
+             ORDER BY SQRT(
+               POWER((op.ra - o.ra) * COS(RADIANS(op.dec)), 2) +
+               POWER(op.dec - o.dec, 2)
+             ) ASC
+           ) AS rn
+    FROM object_photometry op
+    CROSS JOIN LATERAL (
+      SELECT o.id, o.ra, o.dec
+      FROM objects o
+      WHERE o.field = p_field
+        AND o.ra BETWEEN op.ra - v_tolerance_deg AND op.ra + v_tolerance_deg
+        AND o.dec BETWEEN op.dec - v_tolerance_deg AND op.dec + v_tolerance_deg
+    ) o
+    WHERE op.field = p_field
+  ),
+  best_match AS (
+    SELECT phot_id, obj_id
+    FROM candidates
+    WHERE rn = 1 AND dist_deg <= v_tolerance_deg
+  ),
+  updated AS (
+    UPDATE object_photometry op
+    SET object_id = bm.obj_id
+    FROM best_match bm
+    WHERE op.id = bm.phot_id
+    RETURNING op.id
+  )
+  SELECT COUNT(*) INTO n_relinked FROM updated;
+
+  -- Set NULL for unmatched rows in this field
+  UPDATE object_photometry
+  SET object_id = NULL
+  WHERE field = p_field
+    AND id NOT IN (SELECT id FROM object_photometry WHERE field = p_field AND object_id IS NOT NULL);
+
+  -- Count orphaned
+  SELECT COUNT(*) INTO n_orphaned
+  FROM object_photometry
+  WHERE field = p_field AND object_id IS NULL;
+
+  RETURN jsonb_build_object(
+    'relinked', n_relinked,
+    'orphaned', n_orphaned
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.relink_photometry_for_field(TEXT) TO service_role;
+
+
+-- =============================================================================
+-- sync_photometry_to_objects
+-- (copy photo_z + has_photometry from object_photometry to objects)
+-- =============================================================================
+
+DROP FUNCTION IF EXISTS public.sync_photometry_to_objects(TEXT);
+
+CREATE OR REPLACE FUNCTION public.sync_photometry_to_objects(p_field TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  n_updated INTEGER;
+BEGIN
+  -- Update objects that have linked photometry
+  WITH phot AS (
+    SELECT DISTINCT ON (op.object_id)
+      op.object_id,
+      op.photo_z,
+      op.photo_z_err_lo,
+      op.photo_z_err_hi
+    FROM object_photometry op
+    WHERE op.field = p_field AND op.object_id IS NOT NULL
+    ORDER BY op.object_id, op.updated_at DESC
+  )
+  UPDATE objects o
+  SET photo_z = phot.photo_z,
+      photo_z_err_lo = phot.photo_z_err_lo,
+      photo_z_err_hi = phot.photo_z_err_hi,
+      has_photometry = TRUE
+  FROM phot
+  WHERE o.id = phot.object_id;
+
+  GET DIAGNOSTICS n_updated = ROW_COUNT;
+
+  -- Clear photometry flags for objects in this field that have no linked photometry
+  UPDATE objects o
+  SET photo_z = NULL,
+      photo_z_err_lo = NULL,
+      photo_z_err_hi = NULL,
+      has_photometry = FALSE
+  WHERE o.field = p_field
+    AND o.has_photometry = TRUE
+    AND NOT EXISTS (
+      SELECT 1 FROM object_photometry op
+      WHERE op.object_id = o.id
+    );
+
+  RETURN n_updated;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.sync_photometry_to_objects(TEXT) TO service_role;

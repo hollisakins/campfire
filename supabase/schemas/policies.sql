@@ -221,6 +221,43 @@ CREATE POLICY "admin_objects_delete"
 
 
 -- =============================================================================
+-- object_photometry
+-- =============================================================================
+
+ALTER TABLE object_photometry ENABLE ROW LEVEL SECURITY;
+
+-- Photometry visible if the linked object is accessible.
+DROP POLICY IF EXISTS "select_object_photometry_by_access" ON object_photometry;
+CREATE POLICY "select_object_photometry_by_access"
+  ON object_photometry FOR SELECT
+  USING (
+    object_id IN (
+      SELECT o.id FROM objects o
+      WHERE o.programs && public.accessible_program_slugs()
+    )
+  );
+
+-- Admins can insert photometry (deploy CLI).
+DROP POLICY IF EXISTS "admin_object_photometry_insert" ON object_photometry;
+CREATE POLICY "admin_object_photometry_insert"
+  ON object_photometry FOR INSERT TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Admins can update photometry (deploy CLI).
+DROP POLICY IF EXISTS "admin_object_photometry_update" ON object_photometry;
+CREATE POLICY "admin_object_photometry_update"
+  ON object_photometry FOR UPDATE TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- Admins can delete photometry (deploy CLI).
+DROP POLICY IF EXISTS "admin_object_photometry_delete" ON object_photometry;
+CREATE POLICY "admin_object_photometry_delete"
+  ON object_photometry FOR DELETE TO authenticated
+  USING (public.is_admin());
+
+
+-- =============================================================================
 -- object_lists
 -- =============================================================================
 

@@ -4,6 +4,7 @@ import React, { useState, useMemo } from 'react';
 import type { ObjectDetail, ObjectMemberTarget } from '@/lib/types';
 import { GRATINGS } from '@/lib/types';
 import { MultiSpectrumViewer, type SpectrumSource } from './MultiSpectrumViewer';
+import { PhotometrySED } from './PhotometrySED';
 import { NearbyObjects } from './NearbyObjects';
 import { ObjectComments } from './ObjectComments';
 
@@ -139,6 +140,17 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
           redshift={object.best_redshift}
         />
       </div>
+
+      {/* Photometry SED */}
+      {object.has_photometry && object.photometry && (
+        <div className="mb-6">
+          <PhotometrySED
+            photometry={object.photometry}
+            objectId={object.object_id}
+            bestRedshift={object.best_redshift}
+          />
+        </div>
+      )}
 
       {/* Object-level comments */}
       <div className="mb-6">

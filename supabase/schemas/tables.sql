@@ -392,6 +392,10 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "max_exposure_time" double precision,
     "best_redshift" double precision,
     "best_redshift_quality" integer DEFAULT 0,
+    "photo_z" double precision,
+    "photo_z_err_lo" double precision,
+    "photo_z_err_hi" double precision,
+    "has_photometry" boolean NOT NULL DEFAULT false,
     "updated_at" timestamp with time zone DEFAULT "now"()
 );
 
@@ -400,6 +404,32 @@ ALTER TABLE "public"."objects" OWNER TO "postgres";
 
 
 COMMENT ON TABLE "public"."objects" IS 'Unique sky positions cross-matched across programs. One object groups one or more targets observed within ~0.2 arcsec. Static properties recomputed at deploy time; best_redshift/quality maintained by trigger.';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."object_photometry" (
+    "id" integer NOT NULL,
+    "object_id" integer,
+    "field" "text" NOT NULL,
+    "ra" double precision NOT NULL,
+    "dec" double precision NOT NULL,
+    "catalog_name" "text" NOT NULL,
+    "catalog_id" "text",
+    "match_distance_arcsec" double precision,
+    "photometry" jsonb NOT NULL,
+    "photo_z" double precision,
+    "photo_z_err_lo" double precision,
+    "photo_z_err_hi" double precision,
+    "has_pz" boolean NOT NULL DEFAULT false,
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "updated_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."object_photometry" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."object_photometry" IS 'Photometric catalog cross-matches for objects. One row per object per catalog. Coordinates (ra, dec) are the durable positional key; object_id FK is refreshed after each objects rebuild via coordinate cross-matching.';
 
 
 
@@ -794,6 +824,20 @@ ALTER SEQUENCE "public"."object_list_members_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."object_list_members_id_seq" OWNED BY "public"."object_list_members"."id";
 
 
+CREATE SEQUENCE IF NOT EXISTS "public"."object_photometry_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."object_photometry_id_seq" OWNER TO "postgres";
+
+ALTER SEQUENCE "public"."object_photometry_id_seq" OWNED BY "public"."object_photometry"."id";
+
+
 
 CREATE SEQUENCE IF NOT EXISTS "public"."list_audit_log_id_seq"
     AS integer
@@ -895,6 +939,8 @@ ALTER TABLE ONLY "public"."object_lists" ALTER COLUMN "id" SET DEFAULT "nextval"
 
 
 ALTER TABLE ONLY "public"."object_list_members" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."object_list_members_id_seq"'::"regclass");
+
+ALTER TABLE ONLY "public"."object_photometry" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."object_photometry_id_seq"'::"regclass");
 
 
 
@@ -1100,6 +1146,14 @@ ALTER TABLE ONLY "public"."object_list_members"
     ADD CONSTRAINT "object_list_members_list_id_ra_dec_key" UNIQUE ("list_id", "ra", "dec");
 
 
+ALTER TABLE ONLY "public"."object_photometry"
+    ADD CONSTRAINT "object_photometry_pkey" PRIMARY KEY ("id");
+
+
+ALTER TABLE ONLY "public"."object_photometry"
+    ADD CONSTRAINT "object_photometry_field_catalog_name_catalog_id_key" UNIQUE ("field", "catalog_name", "catalog_id");
+
+
 
 ALTER TABLE ONLY "public"."list_audit_log"
     ADD CONSTRAINT "list_audit_log_pkey" PRIMARY KEY ("id");
@@ -1230,6 +1284,10 @@ ALTER TABLE ONLY "public"."object_list_members"
 
 ALTER TABLE ONLY "public"."object_list_members"
     ADD CONSTRAINT "object_list_members_added_by_fkey" FOREIGN KEY ("added_by") REFERENCES "auth"."users"("id");
+
+
+ALTER TABLE ONLY "public"."object_photometry"
+    ADD CONSTRAINT "object_photometry_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
 
 
 
@@ -1425,6 +1483,12 @@ GRANT ALL ON TABLE "public"."object_list_members" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."object_photometry" TO "anon";
+GRANT ALL ON TABLE "public"."object_photometry" TO "authenticated";
+GRANT ALL ON TABLE "public"."object_photometry" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."list_audit_log" TO "anon";
 GRANT ALL ON TABLE "public"."list_audit_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."list_audit_log" TO "service_role";
@@ -1576,6 +1640,12 @@ GRANT ALL ON SEQUENCE "public"."object_lists_id_seq" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "service_role";
 
 
 

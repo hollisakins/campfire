@@ -132,6 +132,7 @@ export async function getSpectra(
           p_max_exposure_time_max: rpcParams.p_max_exposure_time_max,
           p_search: rpcParams.p_search,
           p_inspected_only: rpcParams.p_inspected_only,
+          p_has_photometry: rpcParams.p_has_photometry,
           p_list_ids: rpcParams.p_list_ids,
           p_coord_ra: rpcParams.p_coord_ra,
           p_coord_dec: rpcParams.p_coord_dec,
@@ -195,6 +196,8 @@ export async function getSpectra(
           n_spectra: obj.n_spectra,
           programs: obj.programs,
           gratings: obj.gratings,
+          photo_z: obj.photo_z ?? null,
+          has_photometry: obj.has_photometry ?? false,
           member_targets: obj.member_targets,
           lists: obj.lists,
           num_gratings: obj.gratings?.length ?? 0,
@@ -480,16 +483,24 @@ export async function getObjectById(objectId: string): Promise<{
       };
     }
 
-    // Fetch member targets with their spectra, filtered to accessible programs
-    const { data: members, error: membersError } = await supabase
-      .from('targets')
-      .select(`
-        *,
-        programs:program_slug (program_name),
-        spectra (*)
-      `)
-      .eq('object_id', obj.id)
-      .in('program_slug', accessibleProgramSlugs);
+    // Fetch member targets and photometry in parallel
+    const [{ data: members, error: membersError }, { data: photData }] = await Promise.all([
+      supabase
+        .from('targets')
+        .select(`
+          *,
+          programs:program_slug (program_name),
+          spectra (*)
+        `)
+        .eq('object_id', obj.id)
+        .in('program_slug', accessibleProgramSlugs),
+      supabase
+        .from('object_photometry')
+        .select('*')
+        .eq('object_id', obj.id)
+        .limit(1)
+        .maybeSingle(),
+    ]);
 
     if (membersError) {
       return {
@@ -539,8 +550,22 @@ export async function getObjectById(objectId: string): Promise<{
       max_exposure_time: obj.max_exposure_time,
       best_redshift: obj.best_redshift,
       best_redshift_quality: obj.best_redshift_quality,
+      photo_z: obj.photo_z ?? null,
+      photo_z_err_lo: obj.photo_z_err_lo ?? null,
+      photo_z_err_hi: obj.photo_z_err_hi ?? null,
+      has_photometry: obj.has_photometry ?? false,
       created_at: obj.created_at,
       member_targets: memberTargets,
+      photometry: photData ? {
+        catalog_name: photData.catalog_name,
+        catalog_id: photData.catalog_id,
+        match_distance_arcsec: photData.match_distance_arcsec,
+        photometry: photData.photometry,
+        photo_z: photData.photo_z,
+        photo_z_err_lo: photData.photo_z_err_lo,
+        photo_z_err_hi: photData.photo_z_err_hi,
+        has_pz: photData.has_pz ?? false,
+      } : null,
     };
 
     return { object: objectDetail, isAuthenticated: true };
