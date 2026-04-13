@@ -83,7 +83,9 @@ export const TargetTab: React.FC<TargetTabProps> = ({
                 grating={spec.grating}
                 initialRedshift={initialRedshift}
               />
-              <GratingDetails spectrum={spec} />
+              <div className="mt-4">
+                <GratingDetails spectrum={spec} />
+              </div>
             </TabsContent>
           ))}
 
