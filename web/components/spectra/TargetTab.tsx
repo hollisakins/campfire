@@ -14,12 +14,14 @@ import { GRATINGS } from '@/lib/types';
 interface TargetTabProps {
   target: ObjectMemberTarget;
   initialGrating?: string;
+  color: string;
   inspection: InspectionState;
 }
 
 export const TargetTab: React.FC<TargetTabProps> = ({
   target,
   initialGrating,
+  color,
   inspection,
 }) => {
   // Sort spectra by standard grating order
@@ -47,8 +49,17 @@ export const TargetTab: React.FC<TargetTabProps> = ({
   return (
     <div>
       <Tabs defaultValue={defaultTab}>
-        {/* Grating sub-tabs */}
+        {/* Target header + grating sub-tabs */}
         <div className="mb-4">
+          <div className="flex items-center gap-2 mb-3">
+            <div
+              className="w-3 h-3 rounded-full flex-shrink-0"
+              style={{ backgroundColor: color }}
+            />
+            <h2 className="text-xl font-bold font-mono text-text-primary dark:text-slate-100">
+              {target.target_id}
+            </h2>
+          </div>
           <TabsList>
             {sortedSpectra.map(spec => (
               <TabsTrigger key={spec.grating} value={spec.grating.toLowerCase()}>

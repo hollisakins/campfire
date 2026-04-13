@@ -182,7 +182,7 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
                     }`}
                     title={member.target_id}
                   >
-                    {member.target_id}
+                    {member.observation}
                   </span>
                   {qualityDef && (
                     <span

@@ -285,7 +285,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
               <ShowOnMapLink ra={object.ra} dec={object.dec} field={object.field} objectId={object.object_id} />
             </div>
 
-            <div className="flex items-end justify-between gap-4 flex-wrap">
+            <div className="flex items-end justify-between gap-4 flex-wrap mb-4">
               <MetricCards
                 maxSnr={object.max_snr}
                 redshift={object.best_redshift}
@@ -345,6 +345,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
               key={activeTarget.target_id}
               target={activeTarget}
               initialGrating={grating}
+              color={colors[activeTarget.target_id]}
               inspection={inspection}
             />
           ) : null}
