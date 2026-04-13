@@ -71,8 +71,7 @@ export async function GET() {
 
     const userStats = statsData as { targets_inspected: number; comments_posted: number; last_activity: string | null } | null;
 
-    // Fetch recent comments with target info (for comment history)
-    // Note: comments.target_id is FK to targets.id (many-to-one), so Supabase returns single target
+    // Fetch recent comments with target/object info (for comment history)
     const { data: recentComments, count: totalComments } = await supabase
       .from('comments')
       .select(`
@@ -83,6 +82,10 @@ export async function GET() {
         targets (
           id,
           target_id
+        ),
+        objects (
+          id,
+          object_id
         )
       `, { count: 'exact' })
       .eq('user_id', user.id)
@@ -91,18 +94,20 @@ export async function GET() {
       .limit(5);
 
     // Transform comments to match CommentHistoryItem interface
-    // Supabase types infer targets as array, but runtime returns single target for many-to-one
+    // Supabase types infer FKs as array, but runtime returns single object for many-to-one
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const commentHistoryItems = (recentComments || []).map((comment: any) => {
-      // Handle both array (typed) and object (runtime) cases
-      const obj = Array.isArray(comment.targets) ? comment.targets[0] : comment.targets;
+      const target = Array.isArray(comment.targets) ? comment.targets[0] : comment.targets;
+      const obj = Array.isArray(comment.objects) ? comment.objects[0] : comment.objects;
       return {
         id: comment.id,
         content: comment.content,
         created_at: comment.created_at,
         edited_at: comment.edited_at,
-        target_db_id: obj?.id,
-        target_display_id: obj?.target_id,
+        target_db_id: target?.id ?? null,
+        target_display_id: target?.target_id ?? null,
+        object_db_id: obj?.id ?? null,
+        object_display_id: obj?.object_id ?? null,
       };
     });
 

@@ -239,16 +239,16 @@ class Observation:
             log(f'No nodded background override found, creating blank {file}')
             with open(file, 'w') as f:
                 docstring = dedent(f"""
-                # contaminated shutter list for {self.name}
+                # nodded background overrides for {self.name}
                 # format is like the stuck closed shutter list, e.g., there's
                 # a table for each "root" file name, which
                 # consists of obs/visit/config, e.g. "jw06368001001_03101"
-                # the contaminated shutters in each nod for a source ID should
-                # be given as a key-value pair in the table; for example:""" + """
+                # for each source ID, the background shutters to use for 
+                # each nod should be given as a key-value pair in the table; 
+                # for example:""" + """
                 # [jw06368001001_03101]
-                #     12345 = {3: [1]}
-                # (for source 12345, shutter 1 in nod 3 is contaminated and
-                #  should be considered closed)
+                #     12345 = {3=[1]}
+                # (for source 12345, only use nod 1 as background for nod 3)
                 """)
                 f.write(docstring)
 

@@ -24,8 +24,7 @@ export async function GET(request: NextRequest) {
     const limit = Math.min(50, Math.max(1, parseInt(searchParams.get('limit') || '10', 10)));
     const offset = (page - 1) * limit;
 
-    // Fetch comments with target info
-    // Note: comments.target_id is FK to targets.id (many-to-one), so Supabase returns single target
+    // Fetch comments with target/object info
     const { data: comments, count: totalCount, error } = await supabase
       .from('comments')
       .select(`
@@ -36,6 +35,10 @@ export async function GET(request: NextRequest) {
         targets (
           id,
           target_id
+        ),
+        objects (
+          id,
+          object_id
         )
       `, { count: 'exact' })
       .eq('user_id', user.id)
@@ -49,18 +52,20 @@ export async function GET(request: NextRequest) {
     }
 
     // Transform comments to match CommentHistoryItem interface
-    // Supabase types infer targets as array, but runtime returns single target for many-to-one
+    // Supabase types infer FKs as array, but runtime returns single object for many-to-one
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const commentHistoryItems = (comments || []).map((comment: any) => {
-      // Handle both array (typed) and object (runtime) cases
-      const obj = Array.isArray(comment.targets) ? comment.targets[0] : comment.targets;
+      const target = Array.isArray(comment.targets) ? comment.targets[0] : comment.targets;
+      const obj = Array.isArray(comment.objects) ? comment.objects[0] : comment.objects;
       return {
         id: comment.id,
         content: comment.content,
         created_at: comment.created_at,
         edited_at: comment.edited_at,
-        target_db_id: obj?.id,
-        target_display_id: obj?.target_id,
+        target_db_id: target?.id ?? null,
+        target_display_id: target?.target_id ?? null,
+        object_db_id: obj?.id ?? null,
+        object_display_id: obj?.object_id ?? null,
       };
     });
 

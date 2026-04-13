@@ -154,7 +154,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
 
       {/* Object-level comments */}
       <div className="mb-6">
-        <ObjectComments objectDbId={object.id} />
+        <ObjectComments objectDbId={object.id} memberTargets={object.member_targets} />
       </div>
 
       {/* Nearby Objects */}

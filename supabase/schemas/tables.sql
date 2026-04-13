@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS "public"."comments" (
     "created_at" timestamp without time zone DEFAULT "now"(),
     "edited_at" timestamp without time zone,
     "is_deleted" boolean DEFAULT false,
-    CONSTRAINT "comments_exactly_one_parent" CHECK (num_nonnulls(target_id, object_id) = 1)
+    CONSTRAINT "comments_at_most_one_parent" CHECK (num_nonnulls(target_id, object_id) <= 1)
 );
 
 
@@ -1209,7 +1209,7 @@ ALTER TABLE ONLY "public"."comments"
 
 
 ALTER TABLE ONLY "public"."comments"
-    ADD CONSTRAINT "comments_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE CASCADE;
+    ADD CONSTRAINT "comments_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
 
 
 ALTER TABLE ONLY "public"."comments"

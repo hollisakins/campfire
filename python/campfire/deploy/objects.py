@@ -435,6 +435,120 @@ def _sync_photometry(client: Client, field: str) -> int:
     return resp.data if isinstance(resp.data, int) else 0
 
 
+def _save_comment_coords(client: Client, field: str) -> list[dict]:
+    """Save (comment_id, ra, dec) for object-level comments before clear.
+
+    Comments don't carry their own coordinates, so we capture them from
+    the objects they're attached to before those objects are deleted.
+    """
+    # 1. Fetch objects in this field
+    resp = (
+        client.table('objects')
+        .select('id, ra, dec')
+        .eq('field', field)
+        .execute()
+    )
+    if not resp.data:
+        return []
+
+    obj_coords = {row['id']: (row['ra'], row['dec']) for row in resp.data}
+    obj_ids = list(obj_coords.keys())
+
+    # 2. Fetch object-level comments on those objects
+    all_comments = []
+    for i in range(0, len(obj_ids), BATCH_SIZE):
+        batch = obj_ids[i:i + BATCH_SIZE]
+        resp = (
+            client.table('comments')
+            .select('id, object_id')
+            .in_('object_id', batch)
+            .is_('target_id', 'null')
+            .eq('is_deleted', False)
+            .execute()
+        )
+        all_comments.extend(resp.data or [])
+
+    # 3. Join to get coordinates
+    return [
+        {
+            'comment_id': c['id'],
+            'ra': obj_coords[c['object_id']][0],
+            'dec': obj_coords[c['object_id']][1],
+        }
+        for c in all_comments
+        if c['object_id'] in obj_coords
+    ]
+
+
+def _relink_comments(
+    client: Client,
+    orphan_coords: list[dict],
+    objects: list[dict],
+    object_id_to_db_id: dict[str, int],
+) -> dict:
+    """Re-link orphaned object-level comments to new objects by position.
+
+    After a wipe-and-rebuild, object-level comments have object_id = NULL.
+    This matches each comment's saved (ra, dec) to the nearest new object
+    within 0.3 arcsec tolerance and restores the FK.
+    """
+    if not orphan_coords:
+        return {'relinked': 0, 'orphaned': 0}
+
+    if not objects:
+        # No new objects — soft-delete all orphaned comments
+        all_ids = [cc['comment_id'] for cc in orphan_coords]
+        for i in range(0, len(all_ids), BATCH_SIZE):
+            batch = all_ids[i:i + BATCH_SIZE]
+            client.table('comments').update(
+                {'is_deleted': True}
+            ).in_('id', batch).execute()
+        return {'relinked': 0, 'orphaned': len(orphan_coords)}
+
+    # Build arrays of new object positions
+    new_ra = np.array([o['ra'] for o in objects])
+    new_dec = np.array([o['dec'] for o in objects])
+    new_db_ids = [object_id_to_db_id[o['object_id']] for o in objects]
+    tolerance_deg = 0.3 / 3600.0
+
+    # Match each comment to nearest new object
+    updates: dict[int, list[int]] = {}  # new_object_db_id -> [comment_ids]
+    orphaned_ids: list[int] = []
+
+    for cc in orphan_coords:
+        cos_dec = np.cos(np.radians(cc['dec']))
+        dists = np.sqrt(
+            ((cc['ra'] - new_ra) * cos_dec) ** 2 +
+            (cc['dec'] - new_dec) ** 2
+        )
+        best_idx = int(np.argmin(dists))
+        if dists[best_idx] < tolerance_deg:
+            db_id = new_db_ids[best_idx]
+            updates.setdefault(db_id, []).append(cc['comment_id'])
+        else:
+            orphaned_ids.append(cc['comment_id'])
+
+    # Batch-update matched comments
+    n_relinked = 0
+    for new_obj_id, comment_ids in updates.items():
+        for i in range(0, len(comment_ids), BATCH_SIZE):
+            batch = comment_ids[i:i + BATCH_SIZE]
+            client.table('comments').update(
+                {'object_id': new_obj_id}
+            ).in_('id', batch).execute()
+            n_relinked += len(batch)
+
+    # Soft-delete unmatched comments — they'd be invisible via RLS
+    # with both FKs NULL, so mark them deleted rather than leaving limbo
+    for i in range(0, len(orphaned_ids), BATCH_SIZE):
+        batch = orphaned_ids[i:i + BATCH_SIZE]
+        client.table('comments').update(
+            {'is_deleted': True}
+        ).in_('id', batch).execute()
+
+    return {'relinked': n_relinked, 'orphaned': len(orphaned_ids)}
+
+
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
@@ -520,6 +634,11 @@ def rebuild_field_objects(
         return len(objects), len(multi)
 
     # Write to database
+    print(f"  Saving object comment coordinates...")
+    orphan_coords = _save_comment_coords(client, field)
+    if orphan_coords:
+        print(f"    {len(orphan_coords)} object-level comments to preserve")
+
     print(f"  Clearing existing objects for field '{field}'...")
     _clear_field_objects(client, field)
 
@@ -541,6 +660,16 @@ def rebuild_field_objects(
         for detail in relink_result.get('orphaned_details', []):
             print(f"      - List \"{detail['list_name']}\": "
                   f"RA={detail['ra']:.6f}, Dec={detail['dec']:.6f}")
+
+    if orphan_coords:
+        print(f"  Re-linking object comments...")
+        comment_result = _relink_comments(
+            client, orphan_coords, objects, object_id_to_db_id,
+        )
+        if comment_result['relinked']:
+            print(f"    Re-linked {comment_result['relinked']} object comments")
+        if comment_result['orphaned']:
+            print(f"    WARNING: {comment_result['orphaned']} orphaned object comments")
 
     print(f"  Re-linking photometry FKs...")
     phot_result = _relink_photometry(client, field)
