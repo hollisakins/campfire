@@ -20,8 +20,8 @@
 # === NIRSpec ===
 
 [nirspec.stage1]
-    do_clean_flicker_noise = false # handled by iterative bkg subtraction
-    mask_science_regions = false
+    do_clean_flicker_noise = true # handled by iterative bkg subtraction
+    mask_science_regions = true
     cleanup_uncal = true
     cleanup_rateints = true
     subtract_2d = false
