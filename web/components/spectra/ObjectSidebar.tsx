@@ -86,7 +86,7 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
   }, []);
 
   return (
-    <nav className="w-60 flex-shrink-0 border-r border-border dark:border-slate-700 pr-3 sticky top-4 max-h-[calc(100vh-6rem)] overflow-y-auto">
+    <nav>
       {/* Overview tab */}
       <button
         onClick={() => onTabChange('overview')}
