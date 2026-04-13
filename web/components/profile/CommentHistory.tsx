@@ -85,29 +85,37 @@ export const CommentHistory: React.FC<CommentHistoryProps> = ({
         </p>
       ) : (
         <div className="space-y-3">
-          {comments.map(comment => (
-            <Link
-              key={comment.id}
-              href={`/nirspec/targets/${comment.target_display_id}`}
-              className="block p-3 rounded-lg border border-border dark:border-slate-700
-                         hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-text-primary dark:text-slate-100 line-clamp-2">
-                    {comment.content}
-                  </p>
-                  <p className="mt-1 text-xs text-text-secondary dark:text-slate-400">
-                    on <span className="font-mono">{comment.target_display_id}</span>
-                    {comment.edited_at && ' (edited)'}
-                  </p>
+          {comments.map(comment => {
+            const href = comment.target_display_id
+              ? `/nirspec/targets/${comment.target_display_id}`
+              : comment.object_display_id
+                ? `/nirspec/objects/${comment.object_display_id}`
+                : '#';
+            const label = comment.target_display_id || comment.object_display_id || 'unknown';
+            return (
+              <Link
+                key={comment.id}
+                href={href}
+                className="block p-3 rounded-lg border border-border dark:border-slate-700
+                           hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-text-primary dark:text-slate-100 line-clamp-2">
+                      {comment.content}
+                    </p>
+                    <p className="mt-1 text-xs text-text-secondary dark:text-slate-400">
+                      on <span className="font-mono">{label}</span>
+                      {comment.edited_at && ' (edited)'}
+                    </p>
+                  </div>
+                  <span className="text-xs text-text-secondary dark:text-slate-400 whitespace-nowrap">
+                    {formatDate(comment.created_at)}
+                  </span>
                 </div>
-                <span className="text-xs text-text-secondary dark:text-slate-400 whitespace-nowrap">
-                  {formatDate(comment.created_at)}
-                </span>
-              </div>
-            </Link>
-          ))}
+              </Link>
+            );
+          })}
         </div>
       )}
 

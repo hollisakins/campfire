@@ -8,20 +8,47 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import type { CommentWithUser } from '@/lib/types';
 import { MessageSquare, Send } from 'lucide-react';
 
-interface ObjectCommentsProps {
-  objectDbId: number;
+interface MemberTarget {
+  id: number;
+  target_id: string;
 }
 
-export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId }) => {
+interface AggregatedComment extends CommentWithUser {
+  /** Display ID of the target this comment belongs to, or null for object-level */
+  source_target_display_id: string | null;
+}
+
+interface ObjectCommentsProps {
+  objectDbId: number;
+  memberTargets: MemberTarget[];
+}
+
+export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memberTargets }) => {
   const { user, userProfile } = useAuth();
   const supabase = useMemo(() => createClient(), []);
   const canEdit = user && userProfile?.can_comment;
 
-  const [comments, setComments] = useState<CommentWithUser[]>([]);
+  const [comments, setComments] = useState<AggregatedComment[]>([]);
   const [newComment, setNewComment] = useState('');
+  const [selectedTargetId, setSelectedTargetId] = useState<string>(
+    memberTargets.length === 1 ? String(memberTargets[0].id) : ''
+  );
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isSingleton = memberTargets.length === 1;
+
+  // Lookup map: target DB id -> display ID
+  const targetDisplayMap = useMemo(() => {
+    const map: Record<number, string> = {};
+    for (const m of memberTargets) {
+      map[m.id] = m.target_id;
+    }
+    return map;
+  }, [memberTargets]);
+
+  const memberDbIds = useMemo(() => memberTargets.map(m => m.id), [memberTargets]);
 
   const fetchComments = useCallback(async () => {
     if (!user) {
@@ -32,38 +59,60 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId }) =>
 
     try {
       setLoading(true);
-      const { data, error: fetchError } = await supabase
-        .from('comments')
-        .select('*')
-        .eq('object_id', objectDbId)
-        .is('target_id', null)
-        .eq('is_deleted', false)
-        .order('created_at', { ascending: true });
 
-      if (fetchError) throw fetchError;
+      // Fetch object-level and target-level comments in parallel
+      const [objectResult, targetResult] = await Promise.all([
+        supabase
+          .from('comments')
+          .select('*')
+          .eq('object_id', objectDbId)
+          .is('target_id', null)
+          .eq('is_deleted', false)
+          .order('created_at', { ascending: true }),
+        memberDbIds.length > 0
+          ? supabase
+              .from('comments')
+              .select('*')
+              .in('target_id', memberDbIds)
+              .eq('is_deleted', false)
+              .order('created_at', { ascending: true })
+          : Promise.resolve({ data: [], error: null }),
+      ]);
 
-      if (!data || data.length === 0) {
+      if (objectResult.error) throw objectResult.error;
+      if (targetResult.error) throw targetResult.error;
+
+      const allRaw = [...(objectResult.data || []), ...(targetResult.data || [])];
+
+      if (allRaw.length === 0) {
         setComments([]);
         return;
       }
 
-      const userIds = [...new Set(data.map(c => c.user_id))];
+      // Fetch user profiles
+      const userIds = [...new Set(allRaw.map(c => c.user_id))];
       const { data: profiles } = await supabase
         .from('user_profiles')
         .select('*')
         .in('user_id', userIds);
 
-      setComments(data.map(c => ({
-        ...c,
-        user_profile: profiles?.find(p => p.user_id === c.user_id) || null,
-      })));
+      // Annotate with source target display ID and sort chronologically
+      const aggregated: AggregatedComment[] = allRaw
+        .map(c => ({
+          ...c,
+          user_profile: profiles?.find(p => p.user_id === c.user_id) || null,
+          source_target_display_id: c.target_id ? (targetDisplayMap[c.target_id] || null) : null,
+        }))
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+      setComments(aggregated);
     } catch (err) {
-      console.error('Error fetching object comments:', err);
+      console.error('Error fetching comments:', err);
       setError('Failed to load comments');
     } finally {
       setLoading(false);
     }
-  }, [objectDbId, user, supabase]);
+  }, [objectDbId, memberDbIds, targetDisplayMap, user, supabase]);
 
   useEffect(() => {
     fetchComments();
@@ -77,11 +126,13 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId }) =>
     setError(null);
 
     try {
+      const targetId = selectedTargetId ? Number(selectedTargetId) : null;
+
       const { error: insertError } = await supabase
         .from('comments')
         .insert({
-          object_id: objectDbId,
-          target_id: null,
+          target_id: targetId,
+          object_id: targetId ? null : objectDbId,
           user_id: user.id,
           content: newComment.trim(),
         });
@@ -91,7 +142,7 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId }) =>
       setNewComment('');
       await fetchComments();
     } catch (err) {
-      console.error('Error posting object comment:', err);
+      console.error('Error posting comment:', err);
       setError('Failed to post comment');
     } finally {
       setSubmitting(false);
@@ -112,7 +163,7 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId }) =>
       <div className="flex items-center gap-2 mb-4">
         <MessageSquare className="w-5 h-5 text-primary" />
         <h4 className="font-medium text-text-primary dark:text-slate-100">
-          Object Discussion ({comments.length})
+          Discussion ({comments.length})
         </h4>
       </div>
 
@@ -127,12 +178,27 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId }) =>
           <textarea
             value={newComment}
             onChange={e => setNewComment(e.target.value)}
-            placeholder="Add a comment about this object..."
+            placeholder="Add a comment..."
             className="w-full px-4 py-2 border border-border dark:border-slate-600 rounded-lg bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary resize-none text-sm"
             rows={2}
             disabled={submitting}
           />
-          <div className="mt-2 flex justify-end">
+          <div className="mt-2 flex items-center justify-end gap-2">
+            {!isSingleton && (
+              <select
+                value={selectedTargetId}
+                onChange={e => setSelectedTargetId(e.target.value)}
+                className="px-3 py-1.5 border border-border dark:border-slate-600 rounded-lg bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary"
+                disabled={submitting}
+              >
+                <option value="">General</option>
+                {memberTargets.map(m => (
+                  <option key={m.id} value={String(m.id)}>
+                    {m.target_id}
+                  </option>
+                ))}
+              </select>
+            )}
             <Button
               type="submit"
               variant="secondary"
@@ -168,9 +234,16 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId }) =>
               className="p-3 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg"
             >
               <div className="flex items-start justify-between mb-1">
-                <span className="font-medium text-text-primary dark:text-slate-100 text-sm">
-                  {comment.user_profile?.full_name || 'Unknown User'}
-                </span>
+                <div className="flex items-baseline gap-2">
+                  <span className="font-medium text-text-primary dark:text-slate-100 text-sm">
+                    {comment.user_profile?.full_name || 'Unknown User'}
+                  </span>
+                  {comment.source_target_display_id && (
+                    <span className="text-xs font-mono text-text-secondary dark:text-slate-400">
+                      ({comment.source_target_display_id})
+                    </span>
+                  )}
+                </div>
                 <span className="text-xs text-text-secondary dark:text-slate-500">
                   {formatDate(comment.created_at)}
                 </span>
