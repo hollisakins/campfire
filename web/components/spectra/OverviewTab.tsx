@@ -132,7 +132,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
       </div>
 
       {/* Spectrum comparison viewer */}
-      <div className="mb-6">
+      <div className="mb-6 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
         <MultiSpectrumViewer
           sources={sources}
           grating={selectedGrating}
