@@ -1880,6 +1880,13 @@ class LocalStore:
         # Attach photometry records
         obj["photometry"] = self.get_photometry_for_object(object_id)
 
+        # Attach tag slugs
+        tag_rows = self._conn.execute(
+            "SELECT list_slug FROM object_list_memberships WHERE object_id = ?",
+            (object_id,),
+        ).fetchall()
+        obj["tags"] = [r[0] for r in tag_rows]
+
         return obj
 
     def get_targets_for_object(self, object_id: str) -> List[dict]:

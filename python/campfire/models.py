@@ -769,6 +769,8 @@ class Object:
         Total number of spectra.
     programs : list of str
         Program slugs with data for this object.
+    tags : list of str
+        Tag slugs this object belongs to (e.g. ``['lrd', 'blagn']``).
     targets : list of Target
         Member targets, each with their own spectra.
     spectra : SpectrumCollection
@@ -786,6 +788,7 @@ class Object:
     n_targets: int = 0
     n_spectra: int = 0
     programs: List[str] = dc_field(default_factory=list)
+    tags: List[str] = dc_field(default_factory=list)
     max_snr: Optional[float] = None
     max_exposure_time: Optional[float] = None
     has_photometry: bool = False

@@ -1238,6 +1238,7 @@ class Campfire:
             n_targets=raw.get("n_targets", 0),
             n_spectra=raw.get("n_spectra", 0),
             programs=raw.get("programs", []),
+            tags=raw.get("tags", []),
             max_snr=raw.get("max_snr"),
             max_exposure_time=raw.get("max_exposure_time"),
             has_photometry=bool(raw.get("has_photometry")),
