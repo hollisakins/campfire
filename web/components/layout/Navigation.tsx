@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Flame, LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown } from 'lucide-react';
+import { Flame, LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown, Github } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 
@@ -134,6 +134,18 @@ export const Navigation: React.FC = () => {
             >
               <ThemeIcon className="w-4 h-4" />
             </button>
+
+            {/* GitHub */}
+            <a
+              href="https://github.com/hollisakins/campfire"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center text-sm text-gray-300 hover:text-white transition-colors"
+              aria-label="View on GitHub"
+              title="View on GitHub"
+            >
+              <Github className="w-4 h-4" />
+            </a>
 
             {/* User Menu */}
             {user ? (
