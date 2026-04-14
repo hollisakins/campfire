@@ -692,18 +692,11 @@ def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
             spec_files = actual_spec_files
 
         logger.info(f"Starting redshift fitting for {len(spec_files)} objects using {ncores} cores")
-        if ncores > 1:
-            numba.set_num_threads(1)
-        else:
-            numba.set_num_threads(os.cpu_count() or 1)
+        numba.set_num_threads(ncores)
 
         start_time = time.time()
-        if ncores > 1:
-            with Pool(ncores) as pool:
-                _ = pool.starmap(fit_func, [fit_args_factory(sf) for sf in spec_files])
-        else:
-            for spec_file in spec_files:
-                fit_func(*fit_args_factory(spec_file))
+        for spec_file in spec_files:
+            fit_func(*fit_args_factory(spec_file))
         end_time = time.time()
         logger.info(f"Fit {len(spec_files)} redshifts in {end_time-start_time:.1f}s")
 

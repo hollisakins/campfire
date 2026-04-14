@@ -497,14 +497,14 @@ def opt_ext_single_source(
         ax_1d_fnu.step(wave, fnu, where='mid', color='k', linewidth=1)
         ax_1d_fnu.fill_between(wave, (fnu - fnu_err), (fnu + fnu_err),
             alpha=0.15, facecolor='k', edgecolor='none', step='mid')
-        ax_1d_fnu.set_ylabel(r'$f_{\nu}$ [μJy]')
+        ax_1d_fnu.set_ylabel(r'$f_{\nu}$ [$\mu$Jy]')
 
         # f_λ plot
         ax_1d_flam.step(wave, flam, where='mid', color='k', linewidth=1)
         ax_1d_flam.fill_between(wave, (flam - flam_err), (flam + flam_err),
             alpha=0.15, facecolor='k', edgecolor='none', step='mid')
         ax_1d_flam.set_ylabel(r'$f_{\lambda}$ [erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$]')
-        ax_1d_flam.set_xlabel('Observed Wavelength [μm]')
+        ax_1d_flam.set_xlabel(r'Observed Wavelength [$\mu$m]')
 
         # Advanced grid and tick styling
         ax_1d_fnu.grid(True, alpha=0.2, linewidth=1, zorder=-1000)
@@ -787,13 +787,13 @@ def combine_per_eg_spectra(
         ax_1d_fnu.step(wave, fnu, where='mid', color='k', linewidth=1)
         ax_1d_fnu.fill_between(wave, fnu - fnu_err, fnu + fnu_err,
             alpha=0.15, facecolor='k', edgecolor='none', step='mid')
-        ax_1d_fnu.set_ylabel(r'$f_{\nu}$ [μJy]')
+        ax_1d_fnu.set_ylabel(r'$f_{\nu}$ [$\mu$Jy]')
 
         ax_1d_flam.step(wave, flam, where='mid', color='k', linewidth=1)
         ax_1d_flam.fill_between(wave, flam - flam_err, flam + flam_err,
             alpha=0.15, facecolor='k', edgecolor='none', step='mid')
         ax_1d_flam.set_ylabel(r'$f_{\lambda}$ [erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$]')
-        ax_1d_flam.set_xlabel('Observed Wavelength [μm]')
+        ax_1d_flam.set_xlabel(r'Observed Wavelength [$\mu$m]')
 
         ax_1d_fnu.grid(True, alpha=0.2, linewidth=1, zorder=-1000)
         ax_1d_flam.grid(True, alpha=0.2, linewidth=1, zorder=-1000)

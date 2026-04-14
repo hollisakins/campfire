@@ -195,6 +195,9 @@ def mask_slits(
         meta_model.meta.wcs.bounding_box = generate_compound_bbox(meta_model, slits)
 
         for slitlet in slits:
+            
+            if slitlet.name in ["S200A1", "S200A2", "S400A1", "S1600A1", "S200B1"]:
+                continue #override if fixed slits are present, as these are auto-masked anyways
             bbox = meta_model.meta.wcs.bounding_box[slitlet.name]
             xmin, xmax, ymin, ymax = boundingbox_to_indices(processed_model.data.shape, bbox)
             y_indices, x_indices = np.mgrid[ymin:ymax, xmin:xmax]
