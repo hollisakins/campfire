@@ -5,6 +5,8 @@ NIRSpec stage-specific QA plotting.
 import os
 import warnings
 import numpy as np
+import matplotlib
+matplotlib.use('pdf')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from astropy.io import fits
