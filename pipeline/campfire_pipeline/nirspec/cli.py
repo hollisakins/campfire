@@ -19,6 +19,9 @@ Multiple observations are processed serially:
 Also available directly as: campfire-nirspec <command>
 """
 
+import matplotlib
+matplotlib.use('Agg')
+
 import click
 
 from campfire_pipeline.config import load_config, setup_environment, resolve_paths, get_stage_config, resolve_template_grid_paths

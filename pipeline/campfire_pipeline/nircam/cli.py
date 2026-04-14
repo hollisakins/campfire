@@ -12,6 +12,9 @@ Also available directly as: campfire-nircam <command>
 
 import os
 
+import matplotlib
+matplotlib.use('Agg')
+
 import click
 
 from campfire_pipeline.config import (
