@@ -658,7 +658,7 @@ class LocalStore:
 
         spectra_rows = self._conn.execute(
             """SELECT spectra_id as id, target_id, grating, fits_path,
-                      signal_to_noise, exposure_time, reduction_version
+                      signal_to_noise, exposure_time, reduction_version, local_path
                FROM spectra WHERE target_id = ?""",
             (target_id,),
         ).fetchall()

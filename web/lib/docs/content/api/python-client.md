@@ -18,7 +18,7 @@ results = cf.query_objects(
 
 # Open a spectrum directly
 spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
-print(spec.wavelength.shape, spec.flux.shape)
+print(spec.wavelength.shape, spec.fnu.shape)
 ```
 
 ---
@@ -262,11 +262,13 @@ spec = cf.open_spectrum(object_id, grating)
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `wavelength` | np.ndarray | Wavelength in microns |
-| `flux` | np.ndarray | Flux density f_nu in microjansky |
-| `flux_err` | np.ndarray | Flux error in microjansky |
+| `fnu` | np.ndarray | Flux density f_ν in microjansky (μJy) |
+| `fnu_err` | np.ndarray | Flux error f_ν in microjansky (μJy) |
+| `flam` | np.ndarray | Flux density f_λ in erg/s/cm²/Å (auto-computed from fnu if not in FITS) |
+| `flam_err` | np.ndarray | Flux error f_λ in erg/s/cm²/Å |
 | `header` | dict | FITS primary header |
 | `grating` | str | Grating name |
-| `object_id` | str | Object ID |
+| `target_id` | str | Target ID |
 | `fits_path` | str/None | Local file path if from disk |
 
 **Example:**
@@ -279,7 +281,7 @@ print(spec)
 
 # Access arrays directly
 import matplotlib.pyplot as plt
-plt.plot(spec.wavelength, spec.flux)
+plt.plot(spec.wavelength, spec.fnu)
 plt.xlabel('Wavelength (μm)')
 plt.ylabel('f_ν (μJy)')
 
