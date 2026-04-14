@@ -96,19 +96,17 @@ def load_config(config_path=None):
 # Environment and path resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_path(config_value, campfire_root, default_subdir, label):
-    """Resolve a single path from config value or $CAMPFIRE_ROOT.
+def _resolve_path(config_value, campfire_root, default_subdir):
+    """Resolve a single path from config value or CAMPFIRE_ROOT.
 
     Parameters
     ----------
     config_value : str or None
         Explicit path from config (takes priority).
-    campfire_root : str or None
-        Value of $CAMPFIRE_ROOT environment variable.
+    campfire_root : str
+        Resolved CAMPFIRE_ROOT (from ``_get_campfire_root()``).
     default_subdir : str
-        Subdirectory under $CAMPFIRE_ROOT (e.g. 'raw', 'products').
-    label : str
-        Human-readable label for error messages.
+        Subdirectory under CAMPFIRE_ROOT (e.g. 'raw', 'products').
 
     Returns
     -------
@@ -117,9 +115,7 @@ def _resolve_path(config_value, campfire_root, default_subdir, label):
     """
     if config_value:
         return config_value
-    if campfire_root:
-        return os.path.join(campfire_root, default_subdir)
-    return os.path.join(_get_campfire_root(), default_subdir)
+    return os.path.join(campfire_root, default_subdir)
 
 
 def setup_environment(config):
@@ -138,6 +134,8 @@ def setup_environment(config):
             env['CRDS_PATH'] = os.path.join(_get_campfire_root(), 'cache', 'crds')
 
         for key, value in env.items():
+            if key == 'CRDS_PATH' and 'CRDS_PATH' in os.environ:
+                continue
             os.environ[key] = str(value)
 
 
@@ -151,9 +149,9 @@ def resolve_paths(config):
 
     result = {
         'data_dir': _resolve_path(
-            paths.get('data_dir'), campfire_root, 'raw', 'data_dir'),
+            paths.get('data_dir'), campfire_root, 'raw'),
         'products_dir': _resolve_path(
-            paths.get('products_dir'), campfire_root, 'products', 'products_dir'),
+            paths.get('products_dir'), campfire_root, 'products'),
     }
     for d in result.values():
         if d:

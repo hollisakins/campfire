@@ -4,8 +4,6 @@ import os
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 from campfire_pipeline.config import (
     _get_campfire_root,
     _resolve_path,
@@ -25,22 +23,23 @@ class TestGetCampfireRoot:
 
 class TestResolvePath:
     def test_config_value_takes_priority(self):
-        result = _resolve_path("/explicit/path", "/root", "raw", "data_dir")
+        result = _resolve_path("/explicit/path", "/root", "raw")
         assert result == "/explicit/path"
 
     def test_campfire_root_used_when_no_config(self):
-        result = _resolve_path(None, "/root", "raw", "data_dir")
+        result = _resolve_path(None, "/root", "raw")
         assert result == "/root/raw"
-
-    def test_falls_back_to_default_root(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
-            result = _resolve_path(None, None, "raw", "data_dir")
-        assert result == os.path.join(str(Path.home() / "campfire"), "raw")
 
 
 class TestSetupEnvironmentCrdsPath:
     def test_respects_existing_crds_path(self):
         config = {"environment": {"CRDS_SERVER_URL": "https://example.com"}}
+        with mock.patch.dict(os.environ, {"CRDS_PATH": "/user/crds"}, clear=False):
+            setup_environment(config)
+            assert os.environ["CRDS_PATH"] == "/user/crds"
+
+    def test_env_crds_path_beats_config(self):
+        config = {"environment": {"CRDS_PATH": "/config/crds"}}
         with mock.patch.dict(os.environ, {"CRDS_PATH": "/user/crds"}, clear=False):
             setup_environment(config)
             assert os.environ["CRDS_PATH"] == "/user/crds"

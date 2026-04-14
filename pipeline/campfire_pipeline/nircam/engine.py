@@ -9,7 +9,7 @@ that existing scripts and interactive usage continue to work.
 import os
 
 from campfire_pipeline.config import (
-    load_config, setup_environment, get_nircam_stage_config,
+    _get_campfire_root, load_config, setup_environment, get_nircam_stage_config,
 )
 from campfire_pipeline.common.io import log
 from campfire_pipeline.nircam.field import Field
@@ -25,7 +25,6 @@ class ReductionEngine:
         self.config = load_config(config_path)
         self.config_path = config_path
         setup_environment(self.config)
-        from campfire_pipeline.config import _get_campfire_root
         self.campfire_root = _get_campfire_root()
         log("Initialized NIRCam ReductionEngine")
 
