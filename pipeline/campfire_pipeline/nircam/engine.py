@@ -25,7 +25,8 @@ class ReductionEngine:
         self.config = load_config(config_path)
         self.config_path = config_path
         setup_environment(self.config)
-        self.campfire_root = os.environ.get('CAMPFIRE_ROOT')
+        from campfire_pipeline.config import _get_campfire_root
+        self.campfire_root = _get_campfire_root()
         log("Initialized NIRCam ReductionEngine")
 
     def get_stage_config(self, stage_name, field):
