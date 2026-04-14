@@ -376,6 +376,47 @@ class APIClient:
             "/sync/objects", updated_since, on_page_complete,
         )
 
+    def fetch_all_photometry(
+        self,
+        updated_since: Optional[str] = None,
+        on_page_complete: Optional[Callable[[int, int], None]] = None,
+    ) -> Tuple[List[dict], int]:
+        """Fetch all photometry records via the /sync/photometry endpoint.
+
+        Parameters
+        ----------
+        updated_since : str, optional
+            ISO 8601 timestamp. Only fetch records updated after this time.
+        on_page_complete : callable, optional
+            Callback ``(fetched_so_far, total)`` called after each page.
+
+        Returns
+        -------
+        (records, total_count)
+            The fetched photometry records and the total count.
+        """
+        all_items: List[dict] = []
+        offset = 0
+        total_count = 0
+        while True:
+            self._session._ensure_valid_token()
+            params: dict = {"limit": 1000, "offset": offset}
+            if updated_since:
+                params["updated_since"] = updated_since
+            response = self._session.get("/sync/photometry", params=params, timeout=60)
+            _handle_response_error(response, "fetching photometry")
+            data = response.json()
+            items = data.get("data", [])
+            all_items.extend(items)
+            total = data.get("pagination", {}).get("total", 0)
+            total_count = total
+            offset += len(items)
+            if on_page_complete:
+                on_page_complete(offset, total)
+            if offset >= total or not items:
+                break
+        return all_items, total_count
+
     def fetch_tags(self) -> List[dict]:
         """Fetch all tag metadata via the /sync/lists endpoint.
 

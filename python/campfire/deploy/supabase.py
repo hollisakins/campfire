@@ -365,16 +365,13 @@ def batch_upsert_objects(
 def batch_upsert_spectra(
     client: Client,
     spectra: list[dict],
-    batch_size: int = 50,
+    batch_size: int = 100,
 ) -> int:
     """
     Upsert spectra in batches, keyed on the UNIQUE constraint (target_id, grating).
 
     Uses PostgreSQL ON CONFLICT (target_id, grating) for a single-pass upsert,
     eliminating the need to pre-fetch existing records.
-
-    Note: batch_size is kept small (default 50) because each row includes
-    inline SVG thumbnails that inflate payload size.
 
     Args:
         spectra: List of dicts from summary.get_spectra_records(), optionally

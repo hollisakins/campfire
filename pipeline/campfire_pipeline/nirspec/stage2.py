@@ -50,11 +50,8 @@ def build_empirical_wavecorr():
     from jwst.datamodels import WaveCorrModel
 
     # --- cache check ---
-    campfire_root = os.environ.get('CAMPFIRE_ROOT')
-    if not campfire_root:
-        raise RuntimeError(
-            "CAMPFIRE_ROOT must be set to build empirical wavecorr file"
-        )
+    from campfire_pipeline.config import _get_campfire_root
+    campfire_root = _get_campfire_root()
     cache_dir = os.path.join(campfire_root, 'cache')
     os.makedirs(cache_dir, exist_ok=True)
     out_path = os.path.join(cache_dir, 'jwst_nirspec_wavecorr_jades_dr4_empirical.asdf')

@@ -3,14 +3,22 @@ Configuration loading and environment setup.
 
 Resolves paths in order:
 1. Explicit paths in config
-2. $CAMPFIRE_ROOT/{raw,products,cache} if env var is set
-3. Raise a clear error
+2. $CAMPFIRE_ROOT/{raw,products,cache} (defaults to ~/campfire if unset)
 """
 
 import os
 from pathlib import Path
 
 import toml
+
+
+# ---------------------------------------------------------------------------
+# CAMPFIRE_ROOT resolution
+# ---------------------------------------------------------------------------
+
+def _get_campfire_root():
+    """Return $CAMPFIRE_ROOT, defaulting to ~/campfire if unset."""
+    return os.environ.get('CAMPFIRE_ROOT') or str(Path.home() / 'campfire')
 
 
 # ---------------------------------------------------------------------------
@@ -69,11 +77,10 @@ def load_config(config_path=None):
             raise FileNotFoundError(f"Config file not found: {config_path}")
         user_path = config_path
     else:
-        campfire_root = os.environ.get('CAMPFIRE_ROOT')
-        if campfire_root:
-            candidate = os.path.join(campfire_root, 'config', 'config.toml')
-            if os.path.isfile(candidate):
-                user_path = candidate
+        campfire_root = _get_campfire_root()
+        candidate = os.path.join(campfire_root, 'config', 'config.toml')
+        if os.path.isfile(candidate):
+            user_path = candidate
         if user_path is None and os.path.isfile('config.toml'):
             user_path = 'config.toml'
 
@@ -89,19 +96,17 @@ def load_config(config_path=None):
 # Environment and path resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_path(config_value, campfire_root, default_subdir, label):
-    """Resolve a single path from config value or $CAMPFIRE_ROOT.
+def _resolve_path(config_value, campfire_root, default_subdir):
+    """Resolve a single path from config value or CAMPFIRE_ROOT.
 
     Parameters
     ----------
     config_value : str or None
         Explicit path from config (takes priority).
-    campfire_root : str or None
-        Value of $CAMPFIRE_ROOT environment variable.
+    campfire_root : str
+        Resolved CAMPFIRE_ROOT (from ``_get_campfire_root()``).
     default_subdir : str
-        Subdirectory under $CAMPFIRE_ROOT (e.g. 'raw', 'products').
-    label : str
-        Human-readable label for error messages.
+        Subdirectory under CAMPFIRE_ROOT (e.g. 'raw', 'products').
 
     Returns
     -------
@@ -110,29 +115,27 @@ def _resolve_path(config_value, campfire_root, default_subdir, label):
     """
     if config_value:
         return config_value
-    if campfire_root:
-        return os.path.join(campfire_root, default_subdir)
-    raise RuntimeError(
-        f"{label}: set [paths].{label} in config.toml or export CAMPFIRE_ROOT"
-    )
+    return os.path.join(campfire_root, default_subdir)
 
 
 def setup_environment(config):
     """Set environment variables from config file.
 
-    For CRDS_PATH, falls back to $CAMPFIRE_ROOT/cache/crds if not specified
-    in config and $CAMPFIRE_ROOT is set.
+    For CRDS_PATH, priority is:
+    1. Existing $CRDS_PATH in the user's environment
+    2. [environment].CRDS_PATH in config
+    3. $CAMPFIRE_ROOT/cache/crds (CAMPFIRE_ROOT defaults to ~/campfire)
     """
-    campfire_root = os.environ.get('CAMPFIRE_ROOT')
-
     if 'environment' in config:
         env = config['environment']
 
-        # Handle CRDS_PATH fallback before setting env vars
-        if 'CRDS_PATH' not in env and campfire_root:
-            env['CRDS_PATH'] = os.path.join(campfire_root, 'cache', 'crds')
+        # Only set CRDS_PATH fallback if not in config and not already in env
+        if 'CRDS_PATH' not in env and 'CRDS_PATH' not in os.environ:
+            env['CRDS_PATH'] = os.path.join(_get_campfire_root(), 'cache', 'crds')
 
         for key, value in env.items():
+            if key == 'CRDS_PATH' and 'CRDS_PATH' in os.environ:
+                continue
             os.environ[key] = str(value)
 
 
@@ -142,13 +145,13 @@ def resolve_paths(config):
     Returns dict with keys: data_dir, products_dir.
     """
     paths = config.get('paths', {})
-    campfire_root = os.environ.get('CAMPFIRE_ROOT')
+    campfire_root = _get_campfire_root()
 
     result = {
         'data_dir': _resolve_path(
-            paths.get('data_dir'), campfire_root, 'raw', 'data_dir'),
+            paths.get('data_dir'), campfire_root, 'raw'),
         'products_dir': _resolve_path(
-            paths.get('products_dir'), campfire_root, 'products', 'products_dir'),
+            paths.get('products_dir'), campfire_root, 'products'),
     }
     for d in result.values():
         if d:
@@ -185,12 +188,11 @@ def resolve_observations_file(explicit_path=None):
     if explicit_path:
         tried.append(explicit_path)
 
-    campfire_root = os.environ.get('CAMPFIRE_ROOT')
-    if campfire_root:
-        candidate = os.path.join(campfire_root, 'config', 'observations.toml')
-        if os.path.isfile(candidate):
-            return candidate
-        tried.append(candidate)
+    campfire_root = _get_campfire_root()
+    candidate = os.path.join(campfire_root, 'config', 'observations.toml')
+    if os.path.isfile(candidate):
+        return candidate
+    tried.append(candidate)
 
     if os.path.isfile('observations.toml'):
         return 'observations.toml'
@@ -226,12 +228,11 @@ def resolve_fields_file(explicit_path=None):
     if explicit_path:
         tried.append(explicit_path)
 
-    campfire_root = os.environ.get('CAMPFIRE_ROOT')
-    if campfire_root:
-        candidate = os.path.join(campfire_root, 'config', 'fields.toml')
-        if os.path.isfile(candidate):
-            return candidate
-        tried.append(candidate)
+    campfire_root = _get_campfire_root()
+    candidate = os.path.join(campfire_root, 'config', 'fields.toml')
+    if os.path.isfile(candidate):
+        return candidate
+    tried.append(candidate)
 
     if os.path.isfile('fields.toml'):
         return 'fields.toml'
@@ -279,15 +280,14 @@ def resolve_template_grid_paths(config):
     If a path in template_grids.*.file is relative, resolve it relative
     to $CAMPFIRE_ROOT/cache/templates/. Absolute paths are used as-is.
     """
-    campfire_root = os.environ.get('CAMPFIRE_ROOT')
+    campfire_root = _get_campfire_root()
     template_grids = config.get('nirspec', {}).get('template_grids', {})
 
     for name, grid_config in template_grids.items():
         filepath = grid_config.get('file', '')
         if filepath and not os.path.isabs(filepath):
-            if campfire_root:
-                grid_config['file'] = os.path.join(
-                    campfire_root, 'cache', 'templates', filepath)
+            grid_config['file'] = os.path.join(
+                campfire_root, 'cache', 'templates', filepath)
 
     return template_grids
 

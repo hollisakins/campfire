@@ -77,7 +77,7 @@ def info(config_path):
 
     campfire_root = os.environ.get('CAMPFIRE_ROOT')
     click.echo()
-    click.echo(f"  CAMPFIRE_ROOT:  {campfire_root or '(not set)'}")
+    click.echo(f"  CAMPFIRE_ROOT:  {campfire_root or '~/campfire (default)'}")
 
     cfg = load_config(config_path)
     setup_environment(cfg)
@@ -128,7 +128,7 @@ INSTRUMENT_DEFAULTS = {
 @click.option('--exp-type', default=None,
               help='Exposure type (default: auto from instrument).')
 @click.option('--download-dir', default=None,
-              help='Download directory (default: $CAMPFIRE_ROOT/raw or ./data).')
+              help='Download directory (default: $CAMPFIRE_ROOT/raw, or ~/campfire/raw if unset).')
 @click.option('--dry-run', is_flag=True,
               help='List files without downloading.')
 @click.option('--token', default=None,
@@ -143,11 +143,8 @@ def download(program, instrument, obs_id, exp_type, download_dir, dry_run, token
         exp_type = INSTRUMENT_DEFAULTS.get(instrument_upper, 'NRS_MSASPEC')
 
     if download_dir is None:
-        campfire_root = os.environ.get('CAMPFIRE_ROOT')
-        if campfire_root:
-            download_dir = os.path.join(campfire_root, 'raw')
-        else:
-            download_dir = 'data'
+        from campfire_pipeline.config import _get_campfire_root
+        download_dir = os.path.join(_get_campfire_root(), 'raw')
 
     token = token or os.environ.get('MAST_API_TOKEN')
 

@@ -148,6 +148,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_target_ids(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -264,6 +265,7 @@ BEGIN
           OR (p_inspected_only = TRUE AND t.redshift_quality > 0)
           OR (p_inspected_only = FALSE AND t.redshift_quality = 0)
         )
+        AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
         AND (
           NOT v_comment_search_active
           OR EXISTS (
@@ -391,6 +393,7 @@ BEGIN
           OR (p_inspected_only = TRUE AND t.redshift_quality > 0)
           OR (p_inspected_only = FALSE AND t.redshift_quality = 0)
         )
+        AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
         AND (
           NOT v_comment_search_active
           OR EXISTS (
@@ -476,6 +479,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_targets_paginated(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -524,7 +528,8 @@ BEGIN
       v_sf_include_any, v_sf_include_all, v_sf_exclude,
       v_dq_include_any, v_dq_include_all, v_dq_exclude,
       p_list_ids,
-      p_search, p_inspected_only, p_comment_search, p_comment_search_scope, p_comment_user_id,
+      p_search, p_inspected_only, p_has_photometry,
+      p_comment_search, p_comment_search_scope, p_comment_user_id,
       p_coord_ra, p_coord_dec, p_radius_degrees,
       p_sort_column, p_sort_direction,
       p_page, p_page_size,
@@ -719,6 +724,7 @@ BEGIN
            o.n_targets, o.n_spectra, o.programs, o.gratings,
            o.max_snr, o.max_exposure_time,
            o.best_redshift, o.best_redshift_quality,
+           o.has_photometry, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi,
            o.created_at, o.updated_at
     FROM objects o
     WHERE o.programs && p_program_slugs
@@ -753,6 +759,10 @@ BEGIN
         'max_exposure_time', m.max_exposure_time,
         'best_redshift', m.best_redshift,
         'best_redshift_quality', m.best_redshift_quality,
+        'has_photometry', m.has_photometry,
+        'photo_z', m.photo_z,
+        'photo_z_err_lo', m.photo_z_err_lo,
+        'photo_z_err_hi', m.photo_z_err_hi,
         'created_at', m.created_at,
         'updated_at', m.updated_at,
         'member_target_ids', COALESCE(
@@ -780,6 +790,69 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER) TO service_role;
+
+
+-- =============================================================================
+-- get_photometry_for_sync
+-- (bulk fetch for Python client photometry sync)
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.get_photometry_for_sync(
+  p_program_slugs TEXT[],
+  p_updated_since TIMESTAMPTZ DEFAULT NULL,
+  p_limit INTEGER DEFAULT 1000,
+  p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE(photometry_records JSONB, total_count BIGINT)
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH matched AS (
+    SELECT op.id, o.object_id, op.field, op.catalog_name, op.catalog_id,
+           op.match_distance_arcsec, op.photometry, op.photo_z,
+           op.photo_z_err_lo, op.photo_z_err_hi, op.has_pz,
+           op.created_at, op.updated_at
+    FROM object_photometry op
+    JOIN objects o ON o.id = op.object_id
+    WHERE o.programs && p_program_slugs
+      AND (p_updated_since IS NULL OR op.updated_at > p_updated_since)
+    ORDER BY op.id
+    LIMIT p_limit OFFSET p_offset
+  ),
+  total AS (
+    SELECT COUNT(*) AS cnt
+    FROM object_photometry op
+    JOIN objects o ON o.id = op.object_id
+    WHERE o.programs && p_program_slugs
+      AND (p_updated_since IS NULL OR op.updated_at > p_updated_since)
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', m.id,
+        'object_id', m.object_id,
+        'field', m.field,
+        'catalog_name', m.catalog_name,
+        'catalog_id', m.catalog_id,
+        'match_distance_arcsec', m.match_distance_arcsec,
+        'photometry', m.photometry,
+        'photo_z', m.photo_z,
+        'photo_z_err_lo', m.photo_z_err_lo,
+        'photo_z_err_hi', m.photo_z_err_hi,
+        'has_pz', m.has_pz,
+        'created_at', m.created_at,
+        'updated_at', m.updated_at
+      )
+    ), '[]'::jsonb),
+    COALESCE((SELECT cnt FROM total), 0)::BIGINT
+  FROM matched m;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER) TO service_role;
 
 
 -- =============================================================================
@@ -847,6 +920,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -989,6 +1063,7 @@ BEGIN
         OR (p_inspected_only = TRUE AND t.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND t.redshift_quality = 0)
       )
+      AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
       AND (
         NOT v_comment_search_active
         OR EXISTS (
@@ -1545,6 +1620,7 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_targets(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -1647,6 +1723,7 @@ BEGIN
       AND (p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND t.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND t.redshift_quality = 0))
+      AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
       AND (NOT v_comment_search_active OR EXISTS (
         SELECT 1 FROM comments c WHERE c.target_id = t.id AND c.is_deleted = false
           AND c.content ILIKE '%' || p_comment_search || '%'
@@ -1945,6 +2022,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export(
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
@@ -1985,22 +2063,31 @@ BEGIN
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN RETURN; END IF;
 
   RETURN QUERY
-  WITH filtered_targets AS (
+  WITH spectra_counts AS (
+    SELECT s.target_id, COUNT(*)::INTEGER AS num_gratings
+    FROM spectra s GROUP BY s.target_id
+  ),
+  visible_lists AS (
+    SELECT olm.object_id, string_agg(ol.slug, ';' ORDER BY ol.slug) AS lists
+    FROM object_list_members olm
+    JOIN object_lists ol ON ol.id = olm.list_id
+    WHERE ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
+    GROUP BY olm.object_id
+  ),
+  filtered_targets AS (
     SELECT t.target_id, t.field, t.ra, t.dec, t.redshift, t.redshift_quality,
       t.max_snr, t.max_exposure_time,
-      (SELECT COUNT(*)::INTEGER FROM spectra s WHERE s.target_id = t.target_id) AS num_gratings,
+      COALESCE(sc.num_gratings, 0) AS num_gratings,
       t.program_slug, t.observation, t.last_inspected_at, t.last_inspected_by,
       CASE WHEN v_coord_search_active THEN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(t.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(t.dec)) * POWER(SIN(RADIANS(t.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
       COALESCE(t.spectral_features, 0) AS spectral_features,
       COALESCE(t.dq_flags, 0) AS dq_flags,
-      (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
-       FROM object_list_members olm
-       JOIN object_lists ol ON ol.id = olm.list_id
-       WHERE olm.object_id = t.object_id
-         AND (ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit'))) AS lists
+      vl.lists
     FROM targets t
+    LEFT JOIN spectra_counts sc ON sc.target_id = t.target_id
+    LEFT JOIN visible_lists vl ON vl.object_id = t.object_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (NOT v_grating_filter_active
         OR (v_gratings_mode = 'any' AND EXISTS (SELECT 1 FROM spectra gs WHERE gs.target_id = t.target_id AND gs.grating = ANY(p_gratings)))
@@ -2023,6 +2110,7 @@ BEGIN
       ))
       AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND t.redshift_quality > 0) OR (p_inspected_only = FALSE AND t.redshift_quality = 0))
+      AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
       AND (NOT v_comment_search_active OR EXISTS (
         SELECT 1 FROM comments c WHERE c.target_id = t.id AND c.is_deleted = false
           AND c.content ILIKE '%' || p_comment_search || '%'
@@ -2084,6 +2172,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
+  p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
@@ -2120,7 +2209,14 @@ BEGIN
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN RETURN; END IF;
 
   RETURN QUERY
-  WITH filtered_spectra AS (
+  WITH visible_lists AS (
+    SELECT olm.object_id, string_agg(ol.slug, ';' ORDER BY ol.slug) AS lists
+    FROM object_list_members olm
+    JOIN object_lists ol ON ol.id = olm.list_id
+    WHERE ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
+    GROUP BY olm.object_id
+  ),
+  filtered_spectra AS (
     SELECT t.target_id, s.grating, t.field, t.ra, t.dec, t.redshift, t.redshift_quality,
       s.signal_to_noise, s.exposure_time, s.fits_path, t.program_slug, t.observation,
       t.last_inspected_at, t.last_inspected_by,
@@ -2129,12 +2225,10 @@ BEGIN
       ELSE NULL END AS distance,
       COALESCE(t.spectral_features, 0) AS spectral_features,
       COALESCE(t.dq_flags, 0) AS dq_flags,
-      (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
-       FROM object_list_members olm
-       JOIN object_lists ol ON ol.id = olm.list_id
-       WHERE olm.object_id = t.object_id
-         AND (ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit'))) AS lists
-    FROM targets t JOIN spectra s ON s.target_id = t.target_id
+      vl.lists
+    FROM targets t
+    JOIN spectra s ON s.target_id = t.target_id
+    LEFT JOIN visible_lists vl ON vl.object_id = t.object_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (NOT v_grating_filter_active OR s.grating = ANY(p_gratings))
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR t.field = ANY(p_fields))
@@ -2154,6 +2248,7 @@ BEGIN
       ))
       AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND t.redshift_quality > 0) OR (p_inspected_only = FALSE AND t.redshift_quality = 0))
+      AND (p_has_photometry IS NULL OR EXISTS (SELECT 1 FROM objects o WHERE o.id = t.object_id AND o.has_photometry = p_has_photometry))
       AND (NOT v_comment_search_active OR EXISTS (
         SELECT 1 FROM comments c WHERE c.target_id = t.id AND c.is_deleted = false
           AND c.content ILIKE '%' || p_comment_search || '%'
@@ -2227,7 +2322,10 @@ RETURNS TABLE(
   programs TEXT, gratings TEXT,
   max_snr DOUBLE PRECISION, max_exposure_time DOUBLE PRECISION,
   member_target_ids TEXT, distance DOUBLE PRECISION,
-  lists TEXT
+  lists TEXT,
+  has_photometry BOOLEAN, photo_z DOUBLE PRECISION,
+  photo_z_err_lo DOUBLE PRECISION, photo_z_err_hi DOUBLE PRECISION,
+  photometry JSONB
 )
 LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
 AS $$
@@ -2244,7 +2342,7 @@ BEGIN
   IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
   IF NOT (p_sort_column IN (
     'object_id', 'field', 'ra', 'dec', 'best_redshift', 'best_redshift_quality',
-    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time'
+    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
   ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
     p_sort_column := 'object_id';
   END IF;
@@ -2255,27 +2353,40 @@ BEGIN
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN RETURN; END IF;
 
   RETURN QUERY
-  WITH filtered_objects AS (
+  WITH member_targets AS (
+    SELECT t.object_id, string_agg(t.target_id, ';' ORDER BY t.target_id) AS member_target_ids
+    FROM targets t
+    WHERE t.program_slug = ANY(v_filtered_program_slugs)
+    GROUP BY t.object_id
+  ),
+  visible_lists AS (
+    SELECT olm.object_id, string_agg(ol.slug, ';' ORDER BY ol.slug) AS lists
+    FROM object_list_members olm
+    JOIN object_lists ol ON ol.id = olm.list_id
+    WHERE ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
+    GROUP BY olm.object_id
+  ),
+  filtered_objects AS (
     SELECT o.object_id, o.field, o.ra, o.dec,
       o.best_redshift, o.best_redshift_quality,
       o.n_targets, o.n_spectra,
       array_to_string(o.programs, ';') AS programs,
       array_to_string(o.gratings, ';') AS gratings,
       o.max_snr, o.max_exposure_time,
-      (SELECT array_to_string(ARRAY(
-        SELECT t.target_id FROM targets t
-        WHERE t.object_id = o.id AND t.program_slug = ANY(v_filtered_program_slugs)
-        ORDER BY t.target_id
-      ), ';')) AS member_target_ids,
+      mt.member_target_ids,
       CASE WHEN v_coord_search_active THEN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) * POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
-      (SELECT string_agg(ol.slug, ';' ORDER BY ol.slug)
-       FROM object_list_members olm
-       JOIN object_lists ol ON ol.id = olm.list_id
-       WHERE olm.object_id = o.id
-         AND (ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit'))) AS lists
+      vl.lists,
+      o.has_photometry, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi,
+      phot.photometry
     FROM objects o
+    LEFT JOIN member_targets mt ON mt.object_id = o.id
+    LEFT JOIN visible_lists vl ON vl.object_id = o.id
+    LEFT JOIN LATERAL (
+      SELECT op.photometry FROM object_photometry op
+      WHERE op.object_id = o.id ORDER BY op.updated_at DESC LIMIT 1
+    ) phot ON true
     WHERE o.programs && v_filtered_program_slugs
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
@@ -2312,7 +2423,9 @@ BEGIN
     df.n_targets, df.n_spectra,
     df.programs, df.gratings,
     df.max_snr, df.max_exposure_time,
-    df.member_target_ids, df.distance, df.lists
+    df.member_target_ids, df.distance, df.lists,
+    df.has_photometry, df.photo_z, df.photo_z_err_lo, df.photo_z_err_hi,
+    df.photometry
   FROM distance_filtered df
   ORDER BY
     CASE WHEN v_coord_search_active THEN df.distance END ASC NULLS LAST,
@@ -2336,6 +2449,8 @@ BEGIN
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN df.max_snr END DESC NULLS LAST,
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN df.max_exposure_time END ASC NULLS LAST,
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN df.max_exposure_time END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'photo_z' AND p_sort_direction = 'asc' THEN df.photo_z END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'photo_z' AND p_sort_direction = 'desc' THEN df.photo_z END DESC NULLS LAST,
     df.object_id ASC;
 END;
 $$;

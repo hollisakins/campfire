@@ -110,6 +110,35 @@ def _sync_objects(api, store, full, show_progress):
     return obj_count, purged
 
 
+def _sync_photometry(api, store, full, show_progress):
+    """Sync object photometry from the server.
+
+    Returns (record_count, purged_count).
+    """
+    updated_since = None
+    if not full:
+        updated_since = store.get_max_photometry_updated_at()
+
+    sync_timestamp = datetime.now(timezone.utc).isoformat()
+
+    pbar, callback = _make_progress(show_progress, "rec", "Photometry")
+
+    all_records, total_count = api.fetch_all_photometry(
+        updated_since=updated_since,
+        on_page_complete=callback,
+    )
+    if pbar:
+        pbar.close()
+
+    rec_count = store.upsert_photometry(all_records)
+
+    purged = 0
+    if updated_since is None:
+        purged = store.purge_stale_photometry(sync_timestamp)
+
+    return rec_count, purged
+
+
 def _sync_tags(api, store, show_progress):
     """Sync tag metadata from the server.
 
@@ -164,13 +193,16 @@ def sync_metadata(
     # 2. Sync sky-objects
     obj_count, obj_purged = _sync_objects(api, store, full, show_progress)
 
-    # 3. Sync tag metadata
+    # 3. Sync photometry
+    phot_count, phot_purged = _sync_photometry(api, store, full, show_progress)
+
+    # 4. Sync tag metadata
     tags_count = _sync_tags(api, store, show_progress)
 
-    # 4. Export CSVs (always full export from SQLite)
+    # 5. Export CSVs (always full export from SQLite)
     export_catalogs(store, meta_dir)
 
-    # 4. Detect stale local files
+    # 6. Detect stale local files
     stale = store.get_stale_files()
 
     result = {
@@ -179,6 +211,8 @@ def sync_metadata(
         "spectra": spec_count,
         "sky_objects": obj_count,
         "sky_objects_purged": obj_purged,
+        "photometry": phot_count,
+        "photometry_purged": phot_purged,
         "tags": tags_count,
         "stale_count": len(stale),
         "stale_files": stale,

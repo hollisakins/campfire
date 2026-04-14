@@ -25,6 +25,16 @@ interface DownloadPayload {
   zipFilename: string;
 }
 
+interface PhotometryBands {
+  [band: string]: {
+    flux: number;
+    flux_err: number;
+    wav?: number;
+    wav_min?: number;
+    wav_max?: number;
+  };
+}
+
 interface ObjectsCsvRow {
   object_id: string;
   field: string;
@@ -41,6 +51,11 @@ interface ObjectsCsvRow {
   member_target_ids: string;   // semicolon-separated
   distance: number | null;
   lists: string | null;        // semicolon-separated list slugs
+  has_photometry: boolean;
+  photo_z: number | null;
+  photo_z_err_lo: number | null;
+  photo_z_err_hi: number | null;
+  photometry: { flux_unit: string; bands: PhotometryBands } | null;
 }
 
 interface CsvRow {
@@ -104,19 +119,13 @@ export async function generateCSV(
       return { csv: null, error: 'Not authenticated' };
     }
 
-    // Determine accessible programs (same logic as getSpectra)
-    const { data: accessData } = await supabase
-      .from('user_program_access')
-      .select('program_slug')
-      .eq('user_id', user.id);
+    // Determine accessible programs (parallel queries)
+    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
+      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+      supabase.from('programs').select('slug').eq('is_public', true),
+    ]);
 
     const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-
-    const { data: publicPrograms } = await supabase
-      .from('programs')
-      .select('slug')
-      .eq('is_public', true);
-
     const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
     const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
@@ -354,9 +363,31 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
 }
 
 /**
+ * Collect all unique band names from photometry rows, sorted by wavelength
+ */
+function collectSortedBands(rows: ObjectsCsvRow[]): string[] {
+  const bandWavs = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.photometry?.bands) continue;
+    for (const [band, data] of Object.entries(row.photometry.bands)) {
+      if (!bandWavs.has(band) && data.wav != null) {
+        bandWavs.set(band, data.wav);
+      } else if (!bandWavs.has(band)) {
+        bandWavs.set(band, Infinity);
+      }
+    }
+  }
+  return [...bandWavs.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+    .map(([band]) => band);
+}
+
+/**
  * Convert objects-mode CSV export rows to CSV string
  */
 function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): string {
+  const sortedBands = collectSortedBands(rows);
+
   const columns = [
     'object_id',
     'field',
@@ -372,6 +403,11 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
     'max_exposure_time',
     'member_target_ids',
     'tags',
+    'has_photometry',
+    'photo_z',
+    'photo_z_err_lo',
+    'photo_z_err_hi',
+    ...sortedBands.flatMap(b => [`f_${b}`, `e_${b}`]),
   ];
 
   if (includeDistance) {
@@ -403,7 +439,22 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
       row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
       escapeCsvValue(row.member_target_ids || ''),
       escapeCsvValue(row.lists || ''),
+      row.has_photometry ? 1 : 0,
+      row.photo_z != null ? row.photo_z.toFixed(6) : '',
+      row.photo_z_err_lo != null ? row.photo_z_err_lo.toFixed(6) : '',
+      row.photo_z_err_hi != null ? row.photo_z_err_hi.toFixed(6) : '',
     );
+
+    // Expand photometry bands
+    const bands = row.photometry?.bands;
+    for (const band of sortedBands) {
+      const data = bands?.[band];
+      if (data) {
+        values.push(data.flux.toFixed(6), data.flux_err.toFixed(6));
+      } else {
+        values.push('', '');
+      }
+    }
 
     csvRows.push(values.join(','));
   }
