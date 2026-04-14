@@ -25,7 +25,7 @@ from .flags import (
     DQFlags,
     parse_flag_input,
 )
-from .models import SpectrumData
+from .models import SpectrumData, Spectrum, SpectrumCollection, Photometry, Target, Object
 
 __version__ = "0.2.0"
 
@@ -703,13 +703,13 @@ class Campfire:
         Returns
         -------
         SpectrumData
-            Spectrum with .wavelength, .flux, .flux_err, .header attributes.
+            Spectrum with .wavelength, .fnu, .fnu_err, .flam, .flam_err, .header attributes.
 
         Examples
         --------
         >>> cf = Campfire()
         >>> spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
-        >>> print(spec.wavelength.shape, spec.flux.shape)
+        >>> print(spec.wavelength.shape, spec.fnu.shape)
         """
         # Check local store first
         if self._local and self._products_dir:
@@ -874,6 +874,9 @@ class Campfire:
         self,
         fields: Optional[List[str]] = None,
         programs: Optional[List[Union[int, str]]] = None,
+        gratings: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        has_photometry: Optional[bool] = None,
         redshift_range: Optional[Tuple[float, float]] = None,
         redshift_quality: Optional[List[Union[int, str]]] = None,
         max_snr_range: Optional[Tuple[float, float]] = None,
@@ -897,6 +900,14 @@ class Campfire:
             Field names to filter by.
         programs : list of str, optional
             Program slugs to filter by.
+        gratings : list of str, optional
+            Filter by grating availability (e.g. ['PRISM', 'G395M']).
+            Returns objects that have spectra in any of the given gratings.
+        tags : list of str, optional
+            Filter by tag membership (e.g. ['lrd', 'blagn']).
+            Returns objects in any of the given tags.
+        has_photometry : bool, optional
+            If True, only objects with photometry. If False, only without.
         redshift_range : tuple of (float, float), optional
             (min, max) best redshift range.
         redshift_quality : list of int or str, optional
@@ -927,6 +938,9 @@ class Campfire:
         >>> cf.sync()
         >>> objects = cf.query_objects(redshift_range=(2.0, 6.0))
         >>> print(objects['object_id', 'best_redshift', 'n_targets'])
+        >>>
+        >>> # Objects with PRISM spectra tagged as LRDs
+        >>> lrds = cf.query_objects(gratings=['PRISM'], tags=['lrd'])
         """
         if self._local is None:
             raise ValidationError(
@@ -939,6 +953,8 @@ class Campfire:
             fields = [f.lower() for f in fields]
         if programs:
             programs = [str(p) for p in programs]
+        if gratings:
+            gratings = [g.upper() for g in gratings]
         if redshift_quality:
             redshift_quality = [
                 int(RedshiftQuality(q)) if isinstance(q, str) else q
@@ -948,6 +964,9 @@ class Campfire:
         objects = self._local.query_sky_objects(
             fields=fields,
             programs=programs,
+            gratings=gratings,
+            tags=tags,
+            has_photometry=has_photometry,
             redshift_range=redshift_range,
             redshift_quality=redshift_quality,
             max_snr_range=max_snr_range,
@@ -963,6 +982,314 @@ class Campfire:
             return Table()
 
         return Table(rows=objects)
+
+    def query_spectra(
+        self,
+        target_ids: Optional[List[str]] = None,
+        gratings: Optional[List[str]] = None,
+        programs: Optional[List[str]] = None,
+        fields: Optional[List[str]] = None,
+        observations: Optional[List[str]] = None,
+        snr_range: Optional[Tuple[float, float]] = None,
+        downloaded_only: bool = False,
+        sort: str = "target_id",
+        sort_dir: str = "asc",
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> Table:
+        """
+        Query individual spectra with filters.
+
+        Unlike ``query_targets()`` which returns targets with nested spectra
+        dicts, this returns one row per spectrum — useful for filtering by
+        grating, SNR, or checking which files are locally available.
+
+        Requires a local sync (``cf.sync()``).
+
+        Parameters
+        ----------
+        target_ids : list of str, optional
+            Filter to specific target IDs.
+        gratings : list of str, optional
+            Filter by grating (e.g. ['PRISM', 'G395M']).
+        programs : list of str, optional
+            Filter by program slug.
+        fields : list of str, optional
+            Filter by field name.
+        observations : list of str, optional
+            Filter by observation name.
+        snr_range : tuple of (float, float), optional
+            Signal-to-noise range. Use None for open-ended, e.g. ``(10, None)``.
+        downloaded_only : bool, optional
+            If True, only return spectra with a local FITS file.
+        sort : str, optional
+            Sort column (default: 'target_id').
+        sort_dir : str, optional
+            Sort direction: 'asc' or 'desc'.
+        limit : int, optional
+            Maximum number of results.
+        offset : int, optional
+            Pagination offset.
+
+        Returns
+        -------
+        astropy.table.Table
+            Table with one row per spectrum, including target context columns
+            (program_slug, field, observation, ra, dec, redshift, redshift_quality).
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> # All PRISM spectra
+        >>> prism = cf.query_spectra(gratings=['PRISM'])
+        >>>
+        >>> # High-SNR spectra that are downloaded locally
+        >>> good = cf.query_spectra(snr_range=(10, None), downloaded_only=True)
+        >>>
+        >>> # PRISM spectra for specific targets
+        >>> specs = cf.query_spectra(
+        ...     target_ids=['ember_uds_p4_12345'],
+        ...     gratings=['PRISM'],
+        ... )
+        """
+        if self._local is None:
+            raise ValidationError(
+                "No local catalog. Run cf.sync() first to query spectra."
+            )
+
+        self._log_local_use()
+
+        if gratings:
+            gratings = [g.upper() for g in gratings]
+        if fields:
+            fields = [f.lower() for f in fields]
+        if observations:
+            observations = [o.lower() for o in observations]
+
+        rows = self._local.query_spectra(
+            target_ids=target_ids,
+            gratings=gratings,
+            programs=programs,
+            fields=fields,
+            observations=observations,
+            snr_range=snr_range,
+            downloaded_only=downloaded_only,
+            sort=sort,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+
+        if len(rows) == 0:
+            return Table()
+
+        return Table(rows=rows)
+
+    def query_photometry(
+        self,
+        object_ids: Optional[List[str]] = None,
+        fields: Optional[List[str]] = None,
+        catalogs: Optional[List[str]] = None,
+        has_photo_z: Optional[bool] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> Table:
+        """
+        Query photometric catalog cross-matches.
+
+        Returns one row per object-catalog combination. The ``photometry``
+        column contains the band-level flux data as a dict.
+
+        Requires a local sync (``cf.sync()``).
+
+        Parameters
+        ----------
+        object_ids : list of str, optional
+            Filter to specific sky-object IDs.
+        fields : list of str, optional
+            Filter by field name.
+        catalogs : list of str, optional
+            Filter by catalog name.
+        has_photo_z : bool, optional
+            If True, only records with a photometric redshift.
+        limit : int, optional
+            Maximum number of results.
+        offset : int, optional
+            Pagination offset.
+
+        Returns
+        -------
+        astropy.table.Table
+            Table of photometry records.
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> phot = cf.query_photometry(object_ids=['J100025.32+021520.1'])
+        >>> # All records with photo-z
+        >>> pz = cf.query_photometry(has_photo_z=True)
+        """
+        if self._local is None:
+            raise ValidationError(
+                "No local catalog. Run cf.sync() first to query photometry."
+            )
+
+        self._log_local_use()
+
+        if fields:
+            fields = [f.lower() for f in fields]
+
+        rows = self._local.query_photometry(
+            object_ids=object_ids,
+            fields=fields,
+            catalogs=catalogs,
+            has_photo_z=has_photo_z,
+            limit=limit,
+            offset=offset,
+        )
+
+        if len(rows) == 0:
+            return Table()
+
+        return Table(rows=rows)
+
+    def get_object(self, object_id: str) -> Object:
+        """
+        Get a single sky-object with its member targets, spectra, and photometry.
+
+        Returns an :class:`Object` with navigable attributes and
+        numpy-style filtering on spectra::
+
+            obj = cf.get_object('J100025.32+021520.1')
+            prism = obj.spectra[obj.spectra.grating == 'PRISM']
+            prism[0].open()  # -> SpectrumData with wavelength/flux arrays
+
+        Requires a local sync (``cf.sync()``).
+
+        Parameters
+        ----------
+        object_id : str
+            The sky-object ID.
+
+        Returns
+        -------
+        Object
+            Sky-object with ``.targets``, ``.spectra``, and ``.photometry``
+            attributes.
+
+        Raises
+        ------
+        NotFoundError
+            If the object ID is not in the local catalog.
+
+        Examples
+        --------
+        >>> obj = cf.get_object('J100025.32+021520.1')
+        >>> obj.best_redshift
+        3.42
+        >>> obj.spectra[obj.spectra.grating == 'PRISM']
+        SpectrumCollection(2 spectra: PRISM)
+        >>> obj.photometry['f444w']
+        Band(flux=0.42, flux_err=0.03, wavelength=4.44)
+        """
+        if self._local is None:
+            raise ValidationError(
+                "No local catalog. Run cf.sync() first."
+            )
+        self._log_local_use()
+
+        raw = self._local.get_sky_object(object_id)
+        if raw is None:
+            raise NotFoundError(f"Object '{object_id}' not found in local catalog.")
+
+        return self._build_object(raw)
+
+    def _build_object(self, raw: dict) -> Object:
+        """Construct an Object dataclass from a LocalStore dict."""
+        opener = self.open_spectrum
+
+        # Build Target instances
+        targets = [
+            Target.from_dict(t, opener=opener)
+            for t in raw.get("targets", [])
+        ]
+
+        # Flat spectra across all targets
+        all_spectra = [s for t in targets for s in t.spectra]
+        spectra = SpectrumCollection(all_spectra)
+
+        # Build Photometry from the best catalog (most bands)
+        phot_records = raw.get("photometry", [])
+        photometry = None
+        if phot_records:
+            best = max(
+                phot_records,
+                key=lambda r: len((r.get("photometry") or {}).get("bands", {})),
+            )
+            photometry = Photometry.from_record(best)
+
+        return Object(
+            object_id=raw.get("object_id", ""),
+            ra=raw.get("ra", 0.0),
+            dec=raw.get("dec", 0.0),
+            field=raw.get("field", ""),
+            best_redshift=raw.get("best_redshift"),
+            best_redshift_quality=raw.get("best_redshift_quality", 0),
+            n_targets=raw.get("n_targets", 0),
+            n_spectra=raw.get("n_spectra", 0),
+            programs=raw.get("programs", []),
+            max_snr=raw.get("max_snr"),
+            max_exposure_time=raw.get("max_exposure_time"),
+            has_photometry=bool(raw.get("has_photometry")),
+            photo_z=raw.get("photo_z"),
+            photo_z_err_lo=raw.get("photo_z_err_lo"),
+            photo_z_err_hi=raw.get("photo_z_err_hi"),
+            targets=targets,
+            spectra=spectra,
+            photometry=photometry,
+        )
+
+    def get_target(self, target_id: str) -> Target:
+        """
+        Get a single target with its spectra.
+
+        Returns a :class:`Target` with a ``.spectra`` :class:`SpectrumCollection`
+        supporting numpy-style filtering.
+
+        Parameters
+        ----------
+        target_id : str
+            The target ID (e.g. 'ember_uds_p4_12345').
+
+        Returns
+        -------
+        Target
+            Target with ``.spectra`` attribute.
+
+        Raises
+        ------
+        NotFoundError
+            If the target ID is not in the local catalog.
+
+        Examples
+        --------
+        >>> t = cf.get_target('ember_uds_p4_12345')
+        >>> t.redshift
+        3.42
+        >>> t.spectra[t.spectra.grating == 'PRISM'][0].open()
+        SpectrumData(ember_uds_p4_12345, PRISM, 489 pixels, 0.60-5.30 μm)
+        """
+        if self._local is None:
+            raise ValidationError(
+                "No local catalog. Run cf.sync() first."
+            )
+        self._log_local_use()
+
+        raw = self._local.get_object(target_id)
+        if raw is None:
+            raise NotFoundError(f"Target '{target_id}' not found in local catalog.")
+
+        return Target.from_dict(raw, opener=self.open_spectrum)
 
     # -------------------------------------------------------------------------
     # Imaging Methods (cutouts + shutters)

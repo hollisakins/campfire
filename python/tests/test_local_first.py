@@ -281,15 +281,15 @@ class TestSpectrumData:
 
         spec = SpectrumData(
             wavelength=wave,
-            flux=flux,
-            flux_err=flux_err,
+            fnu=flux,
+            fnu_err=flux_err,
             header={"OBJECT": "test"},
             grating="PRISM",
             target_id="test_123",
         )
 
         assert spec.wavelength.shape == (100,)
-        assert spec.flux.shape == (100,)
+        assert spec.fnu.shape == (100,)
         assert spec.grating == "PRISM"
         assert spec.target_id == "test_123"
         assert spec.fits_path is None
@@ -299,8 +299,8 @@ class TestSpectrumData:
         wave = np.linspace(0.6, 5.3, 100)
         spec = SpectrumData(
             wavelength=wave,
-            flux=np.ones(100),
-            flux_err=np.zeros(100),
+            fnu=np.ones(100),
+            fnu_err=np.zeros(100),
             header={},
             grating="G395M",
             target_id="obj_456",
@@ -334,8 +334,8 @@ class TestSpectrumData:
         spec = SpectrumData.from_fits(str(fits_path))
 
         assert spec.wavelength.shape == (50,)
-        assert spec.flux.shape == (50,)
-        assert spec.flux_err.shape == (50,)
+        assert spec.fnu.shape == (50,)
+        assert spec.fnu_err.shape == (50,)
         assert spec.target_id == "test_obj"
         assert spec.grating == "PRISM"
         assert spec.fits_path == str(fits_path)

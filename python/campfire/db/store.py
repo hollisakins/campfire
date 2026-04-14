@@ -1317,6 +1317,9 @@ class LocalStore:
         self,
         fields: Optional[List[str]] = None,
         programs: Optional[List[str]] = None,
+        gratings: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        has_photometry: Optional[bool] = None,
         redshift_range: Optional[Tuple[float, float]] = None,
         redshift_quality: Optional[List[int]] = None,
         max_snr_range: Optional[Tuple[float, float]] = None,
@@ -1336,6 +1339,14 @@ class LocalStore:
             Filter by field name.
         programs : list of str, optional
             Filter by program slug (semicolon-separated column).
+        gratings : list of str, optional
+            Filter by grating availability (e.g. ['PRISM']).
+            Matches objects that have any of the given gratings.
+        tags : list of str, optional
+            Filter by tag/list membership (e.g. ['lrd', 'blagn']).
+            Matches objects in any of the given tags.
+        has_photometry : bool, optional
+            If True, only objects with photometry. If False, only without.
         redshift_range : tuple of (min, max), optional
         redshift_quality : list of int, optional
         max_snr_range : tuple of (min, max), optional
@@ -1368,6 +1379,26 @@ class LocalStore:
                 prog_clauses.append("o.programs LIKE ?")
                 params.append(f"%{prog}%")
             where_clauses.append(f"({' OR '.join(prog_clauses)})")
+
+        if gratings:
+            # Gratings stored as semicolon-separated; match any
+            grat_clauses = []
+            for grat in gratings:
+                grat_clauses.append("o.gratings LIKE ?")
+                params.append(f"%{grat}%")
+            where_clauses.append(f"({' OR '.join(grat_clauses)})")
+
+        if tags:
+            placeholders = ",".join("?" * len(tags))
+            where_clauses.append(
+                f"o.object_id IN (SELECT object_id FROM object_list_memberships WHERE list_slug IN ({placeholders}))"
+            )
+            params.extend(tags)
+
+        if has_photometry is True:
+            where_clauses.append("o.has_photometry = 1")
+        elif has_photometry is False:
+            where_clauses.append("o.has_photometry = 0")
 
         if redshift_range:
             where_clauses.append("o.best_redshift >= ? AND o.best_redshift <= ?")
@@ -1456,6 +1487,9 @@ class LocalStore:
             for col in ("programs", "gratings", "member_target_ids"):
                 val = obj.get(col)
                 obj[col] = val.split(";") if val else []
+
+            # Convert has_photometry from int to bool
+            obj["has_photometry"] = bool(obj.get("has_photometry"))
 
             results.append(obj)
 
@@ -1591,23 +1625,333 @@ class LocalStore:
         self._conn.commit()
         return purged
 
-    def query_photometry(self) -> List[dict]:
-        """Query all photometry records from local database.
+    def query_photometry(
+        self,
+        object_ids: Optional[List[str]] = None,
+        fields: Optional[List[str]] = None,
+        catalogs: Optional[List[str]] = None,
+        has_photo_z: Optional[bool] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[dict]:
+        """Query photometry records from local database.
+
+        Parameters
+        ----------
+        object_ids : list of str, optional
+            Filter to specific sky-object IDs.
+        fields : list of str, optional
+            Filter by field name.
+        catalogs : list of str, optional
+            Filter by catalog name.
+        has_photo_z : bool, optional
+            If True, only records with a photometric redshift.
+            If False, only records without.
+        limit, offset : int
 
         Returns
         -------
         list of dict
-            Photometry records with deserialized JSONB.
+            Photometry records with deserialized JSONB photometry column.
+        """
+        import json as _json
+
+        where_clauses: list = []
+        params: list = []
+
+        if object_ids:
+            placeholders = ",".join("?" * len(object_ids))
+            where_clauses.append(f"object_id IN ({placeholders})")
+            params.extend(object_ids)
+
+        if fields:
+            placeholders = ",".join("?" * len(fields))
+            where_clauses.append(f"field IN ({placeholders})")
+            params.extend(fields)
+
+        if catalogs:
+            placeholders = ",".join("?" * len(catalogs))
+            where_clauses.append(f"catalog_name IN ({placeholders})")
+            params.extend(catalogs)
+
+        if has_photo_z is True:
+            where_clauses.append("has_pz = 1")
+        elif has_photo_z is False:
+            where_clauses.append("has_pz = 0")
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        sql = f"""
+            SELECT * FROM object_photometry
+            WHERE {where_sql}
+            ORDER BY object_id, catalog_name
+        """
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        elif offset:
+            sql += " LIMIT -1 OFFSET ?"
+            params.append(offset)
+
+        rows = self._conn.execute(sql, params).fetchall()
+
+        results = []
+        for row in rows:
+            rec = dict(row)
+            rec.pop("_synced_at", None)
+            phot = rec.get("photometry")
+            if isinstance(phot, str):
+                try:
+                    rec["photometry"] = _json.loads(phot)
+                except (ValueError, TypeError):
+                    rec["photometry"] = None
+            results.append(rec)
+
+        return results
+
+    # -------------------------------------------------------------------------
+    # Flat spectra queries
+    # -------------------------------------------------------------------------
+
+    def query_spectra(
+        self,
+        target_ids: Optional[List[str]] = None,
+        gratings: Optional[List[str]] = None,
+        programs: Optional[List[str]] = None,
+        fields: Optional[List[str]] = None,
+        observations: Optional[List[str]] = None,
+        snr_range: Optional[Tuple[float, float]] = None,
+        downloaded_only: bool = False,
+        sort: str = "target_id",
+        sort_dir: str = "asc",
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[dict]:
+        """Query spectra with filters, returning one row per spectrum.
+
+        Joins to targets for program/field/observation context.
+
+        Parameters
+        ----------
+        target_ids : list of str, optional
+            Filter to specific target IDs.
+        gratings : list of str, optional
+            Filter by grating (e.g. ['PRISM', 'G395M']).
+        programs : list of str, optional
+            Filter by program slug (via targets join).
+        fields : list of str, optional
+            Filter by field name (via targets join).
+        observations : list of str, optional
+            Filter by observation name (via targets join).
+        snr_range : tuple of (min, max), optional
+            Signal-to-noise range. Use None for open-ended, e.g. (10, None).
+        downloaded_only : bool
+            If True, only return spectra with a local file.
+        sort : str
+            Column to sort by.
+        sort_dir : str
+            'asc' or 'desc'.
+        limit, offset : int
+
+        Returns
+        -------
+        list of dict
+            Spectrum rows with target context columns.
+        """
+        where_clauses = []
+        params: list = []
+
+        if target_ids:
+            placeholders = ",".join("?" * len(target_ids))
+            where_clauses.append(f"s.target_id IN ({placeholders})")
+            params.extend(target_ids)
+
+        if gratings:
+            placeholders = ",".join("?" * len(gratings))
+            where_clauses.append(f"s.grating IN ({placeholders})")
+            params.extend(gratings)
+
+        if programs:
+            placeholders = ",".join("?" * len(programs))
+            where_clauses.append(f"t.program_slug IN ({placeholders})")
+            params.extend(programs)
+
+        if fields:
+            placeholders = ",".join("?" * len(fields))
+            where_clauses.append(f"t.field IN ({placeholders})")
+            params.extend(fields)
+
+        if observations:
+            placeholders = ",".join("?" * len(observations))
+            where_clauses.append(f"t.observation IN ({placeholders})")
+            params.extend(observations)
+
+        if snr_range:
+            lo, hi = snr_range
+            if lo is not None:
+                where_clauses.append("s.signal_to_noise >= ?")
+                params.append(lo)
+            if hi is not None:
+                where_clauses.append("s.signal_to_noise <= ?")
+                params.append(hi)
+
+        if downloaded_only:
+            where_clauses.append("s.local_path IS NOT NULL")
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        allowed_sorts = {
+            "target_id", "grating", "signal_to_noise", "exposure_time",
+            "spectra_id", "field", "observation", "program_slug",
+        }
+        if sort not in allowed_sorts:
+            sort = "target_id"
+        if sort_dir not in ("asc", "desc"):
+            sort_dir = "asc"
+
+        # Map sort columns to qualified names
+        sort_col = f"s.{sort}" if sort in (
+            "target_id", "grating", "signal_to_noise", "exposure_time", "spectra_id",
+        ) else f"t.{sort}"
+
+        sql = f"""
+            SELECT s.spectra_id, s.target_id, s.grating, s.fits_path,
+                   s.signal_to_noise, s.exposure_time, s.reduction_version,
+                   s.local_path,
+                   t.program_slug, t.field, t.observation,
+                   t.ra, t.dec, t.redshift, t.redshift_quality
+            FROM spectra s
+            JOIN targets t ON s.target_id = t.target_id
+            WHERE {where_sql}
+            ORDER BY {sort_col} {sort_dir}
+        """
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        elif offset:
+            sql += " LIMIT -1 OFFSET ?"
+            params.append(offset)
+
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    # -------------------------------------------------------------------------
+    # Object traversal helpers
+    # -------------------------------------------------------------------------
+
+    def get_sky_object(self, object_id: str) -> Optional[dict]:
+        """Get a single sky-object with its member targets, spectra, and photometry.
+
+        Parameters
+        ----------
+        object_id : str
+            The sky-object ID.
+
+        Returns
+        -------
+        dict or None
+            Object dict with:
+
+            - ``targets``: list of target dicts, each with a ``spectra`` list
+            - ``photometry``: list of photometry record dicts (with deserialized JSON)
+
+            None if not found.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM objects WHERE object_id = ?", (object_id,)
+        ).fetchone()
+        if not row:
+            return None
+
+        obj = dict(row)
+        obj.pop("_synced_at", None)
+
+        # Deserialize semicolon-separated fields
+        for col in ("programs", "gratings", "member_target_ids"):
+            val = obj.get(col)
+            obj[col] = val.split(";") if val else []
+
+        # Convert has_photometry from int to bool
+        obj["has_photometry"] = bool(obj.get("has_photometry"))
+
+        # Attach member targets with their spectra
+        obj["targets"] = self.get_targets_for_object(object_id)
+
+        # Attach photometry records
+        obj["photometry"] = self.get_photometry_for_object(object_id)
+
+        return obj
+
+    def get_targets_for_object(self, object_id: str) -> List[dict]:
+        """Get all member targets for a sky-object, with their spectra.
+
+        Uses the objects.member_target_ids column to find matching targets.
+
+        Parameters
+        ----------
+        object_id : str
+            The sky-object ID.
+
+        Returns
+        -------
+        list of dict
+            Target dicts, each with a 'spectra' key containing spectrum rows.
+        """
+        # Get target IDs from objects table
+        row = self._conn.execute(
+            "SELECT member_target_ids FROM objects WHERE object_id = ?",
+            (object_id,),
+        ).fetchone()
+        if not row or not row[0]:
+            return []
+
+        target_ids = row[0].split(";")
+        placeholders = ",".join("?" * len(target_ids))
+        target_rows = self._conn.execute(
+            f"SELECT * FROM targets WHERE target_id IN ({placeholders})",
+            target_ids,
+        ).fetchall()
+
+        results = []
+        for trow in target_rows:
+            target = dict(trow)
+            target.pop("_synced_at", None)
+
+            spectra_rows = self._conn.execute(
+                """SELECT spectra_id as id, target_id, grating, fits_path,
+                          signal_to_noise, exposure_time, reduction_version, local_path
+                   FROM spectra WHERE target_id = ?""",
+                (target["target_id"],),
+            ).fetchall()
+            target["spectra"] = [dict(s) for s in spectra_rows]
+            results.append(target)
+
+        return results
+
+    def get_photometry_for_object(self, object_id: str) -> List[dict]:
+        """Get photometry records for a sky-object.
+
+        Parameters
+        ----------
+        object_id : str
+            The sky-object ID.
+
+        Returns
+        -------
+        list of dict
+            Photometry records with deserialized JSON photometry column.
         """
         import json as _json
 
         rows = self._conn.execute(
-            "SELECT * FROM object_photometry ORDER BY object_id, catalog_name"
+            "SELECT * FROM object_photometry WHERE object_id = ? ORDER BY catalog_name",
+            (object_id,),
         ).fetchall()
 
         results = []
         for row in rows:
             rec = dict(row)
+            rec.pop("_synced_at", None)
             phot = rec.get("photometry")
             if isinstance(phot, str):
                 try:
