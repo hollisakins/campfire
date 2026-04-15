@@ -370,14 +370,17 @@ def deploy_observation(
                     from campfire.deploy.astrometry import correct_shutter_positions
 
                     imaging_path = resolve_imaging_config()
-                    with open(imaging_path, 'rb') as f:
-                        imaging_config = tomllib.load(f)
-                    n_corrected, n_matches = correct_shutter_positions(
-                        shutters_data, obs_dir, obs_name, field, imaging_config,
-                    )
-                    if n_corrected:
-                        print(f"  Astrometry: corrected {n_corrected} shutters "
-                              f"({n_matches} catalog cross-matches)")
+                    if imaging_path is None:
+                        print("  No imaging.toml found, skipping astrometry correction")
+                    else:
+                        with open(imaging_path, 'rb') as f:
+                            imaging_config = tomllib.load(f)
+                        n_corrected, n_matches = correct_shutter_positions(
+                            shutters_data, obs_dir, obs_name, field, imaging_config,
+                        )
+                        if n_corrected:
+                            print(f"  Astrometry: corrected {n_corrected} shutters "
+                                  f"({n_matches} catalog cross-matches)")
 
                 n_shutters = db_deploy_shutters(sb, obs_name, shutters_data)
                 print(f"  Deployed {n_shutters} shutter records")
@@ -802,14 +805,17 @@ def deploy_shutters(
             print("  Could not determine field, skipping astrometry")
         else:
             imaging_path = resolve_imaging_config()
-            with open(imaging_path, 'rb') as f:
-                imaging_config = tomllib.load(f)
-            n_corrected, n_matches = correct_shutter_positions(
-                shutters_data, obs_dir, obs_name, field, imaging_config,
-            )
-            if n_corrected:
-                print(f"  Astrometry: corrected {n_corrected} shutters "
-                      f"({n_matches} catalog cross-matches)")
+            if imaging_path is None:
+                print("  No imaging.toml found, skipping astrometry correction")
+            else:
+                with open(imaging_path, 'rb') as f:
+                    imaging_config = tomllib.load(f)
+                n_corrected, n_matches = correct_shutter_positions(
+                    shutters_data, obs_dir, obs_name, field, imaging_config,
+                )
+                if n_corrected:
+                    print(f"  Astrometry: corrected {n_corrected} shutters "
+                          f"({n_matches} catalog cross-matches)")
 
     if dry_run:
         print("=== DRY RUN ===")
