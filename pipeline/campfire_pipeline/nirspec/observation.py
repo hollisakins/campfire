@@ -243,12 +243,17 @@ class Observation:
                 # format is like the stuck closed shutter list, e.g., there's
                 # a table for each "root" file name, which
                 # consists of obs/visit/config, e.g. "jw06368001001_03101"
-                # for each source ID, the background shutters to use for 
-                # each nod should be given as a key-value pair in the table; 
+                # for each source ID, the background shutters to use for
+                # each nod should be given as a key-value pair in the table;
                 # for example:""" + """
                 # [jw06368001001_03101]
                 #     12345 = {3=[1]}
                 # (for source 12345, only use nod 1 as background for nod 3)
+                #
+                # NOTE: nod numbers are the exposure sequence numbers from the
+                # FITS filenames (the 3rd underscore-delimited segment), NOT
+                # sequential indices. If a TACONFIRM exposure is 00001, the
+                # first science nod will be 2, not 1.
                 """)
                 f.write(docstring)
 
