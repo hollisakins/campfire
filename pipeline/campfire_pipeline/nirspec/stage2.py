@@ -239,6 +239,9 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=False)
 
+    # Ensure the background override file exists so it can be edited before stage2b
+    _ = obs.bkg_overrides
+
     # Pre-fetch CRDS references to avoid multiprocessing race conditions
     if n_processes > 1 and obs.rate_files:
         _prefetch_crds_references(obs.rate_files)
