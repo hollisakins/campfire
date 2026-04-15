@@ -154,8 +154,11 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
             sys.exit(1)
 
         config = load_config(config_path)
+        multi = len(obs) > 1
+        fields_needing_rebuild: set[str] = set()
+
         for obs_name in obs:
-            deploy_observation(
+            result = deploy_observation(
                 obs_name,
                 config,
                 dry_run=dry_run,
@@ -167,7 +170,23 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                 skip_astrometry=skip_astrometry,
                 source_ids=list(source_ids) if source_ids else None,
                 auto_approve=auto_approve,
+                defer_rebuild=multi,
             )
+            if result and result.get('has_new_objects'):
+                fields_needing_rebuild.add(result['field'])
+
+        if multi and not dry_run and fields_needing_rebuild:
+            from campfire.deploy.objects import rebuild_field_objects
+
+            sb = get_supabase_client(config)
+            for field in sorted(fields_needing_rebuild):
+                print(f"\nRebuilding objects for field '{field}'...")
+                n_obj, n_multi = rebuild_field_objects(sb, field)
+                print(f"  {n_obj} objects ({n_multi} multi-target)")
+
+            print()
+            refresh_filter_options(sb)
+            refresh_programs_overview(sb)
 
 
 # ---------------------------------------------------------------------------

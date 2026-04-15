@@ -102,8 +102,17 @@ def deploy_observation(
     skip_astrometry: bool = False,
     source_ids: list[int] | None = None,
     auto_approve: bool = False,
-) -> None:
-    """Full deployment: ECSV -> generate content -> R2 upload -> Supabase upsert."""
+    defer_rebuild: bool = False,
+) -> dict:
+    """Full deployment: ECSV -> generate content -> R2 upload -> Supabase upsert.
+
+    When *defer_rebuild* is True, the per-field objects rebuild and
+    materialized-view refresh are skipped so the caller can batch them
+    after processing multiple observations.
+
+    Returns a dict with ``field`` and ``has_new_objects`` so the caller
+    knows which fields need a rebuild.
+    """
     obs_dir = resolve_obs_dir(obs_name)
     summary = load_summary(obs_dir, obs_name)
 
@@ -197,7 +206,7 @@ def deploy_observation(
             print(f"  - {obj['object_id']}")
         if len(objects) > 5:
             print(f"  ... and {len(objects) - 5} more")
-        return
+        return {'field': field, 'has_new_objects': False}
 
     # --- Live deployment ---
     programs_config = load_programs()
@@ -328,17 +337,24 @@ def deploy_observation(
 
         # Rebuild objects table for this field (only needed when new targets
         # change the clustering; skip when just updating existing targets)
-        if new_object_ids:
-            from campfire.deploy.objects import rebuild_field_objects
-            print("\nRebuilding objects...")
-            n_obj, n_multi = rebuild_field_objects(sb, field)
-            print(f"  {n_obj} objects ({n_multi} multi-target)")
+        has_new_objects = bool(new_object_ids)
+        if defer_rebuild:
+            if has_new_objects:
+                print(f"\nDeferred objects rebuild ({len(new_object_ids)} new targets)")
+            else:
+                print("\nNo new targets — objects rebuild not needed")
         else:
-            print("\nNo new targets — skipping objects rebuild")
+            if has_new_objects:
+                from campfire.deploy.objects import rebuild_field_objects
+                print("\nRebuilding objects...")
+                n_obj, n_multi = rebuild_field_objects(sb, field)
+                print(f"  {n_obj} objects ({n_multi} multi-target)")
+            else:
+                print("\nNo new targets — skipping objects rebuild")
 
-        print()
-        refresh_filter_options(sb)
-        refresh_programs_overview(sb)
+            print()
+            refresh_filter_options(sb)
+            refresh_programs_overview(sb)
 
         # Deploy shutters
         n_shutters = 0
@@ -406,6 +422,8 @@ def deploy_observation(
         if n_shutters:
             msg += f" + {n_shutters} shutters"
         print(msg)
+
+        return {'field': field, 'has_new_objects': has_new_objects}
 
     finally:
         if temp_dir.exists():
