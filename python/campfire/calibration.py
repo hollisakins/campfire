@@ -1007,7 +1007,7 @@ class StackResult:
 def calibrate_and_stack(
     spectra: Union[SpectrumCollection, List[Spectrum], List[SpectrumData]],
     photometry: Optional[Photometry] = None,
-    calibration_method: str = "chebyshev",
+    method: str = "chebyshev",
     stacking_method: str = "weighted_mean",
     wavelength_grid: Optional[np.ndarray] = None,
     **calibration_kwargs,
@@ -1025,7 +1025,7 @@ def calibrate_and_stack(
         Photometric measurements. Required unless *spectra* are already
         :class:`SpectrumData` (in which case stacking is done without
         calibration).
-    calibration_method : str
+    method : str
         Passed to :func:`calibrate_to_photometry` as ``method``.
     stacking_method : str
         Passed to :func:`stack_spectra` as ``method``.
@@ -1058,7 +1058,7 @@ def calibrate_and_stack(
         for s in spec_list:
             calib = calibrate_to_photometry(
                 s, photometry,
-                method=calibration_method,
+                method=method,
                 **calibration_kwargs,
             )
             calibrations.append(calib)
