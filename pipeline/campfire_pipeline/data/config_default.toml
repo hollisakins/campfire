@@ -6,7 +6,7 @@
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
-    # CRDS_CONTEXT = "jwst_1481.pmap"   # uncomment to pin
+    CRDS_CONTEXT = "jwst_1481.pmap"   # uncomment to pin
 
 [paths]
     # Resolved from $CAMPFIRE_ROOT by default. Uncomment to override:
