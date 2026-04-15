@@ -37,7 +37,7 @@ function NavDropdown({ link, isActive }: { link: NavLink; isActive: boolean }) {
         <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-2 w-44 bg-header dark:bg-slate-800 rounded-lg shadow-lg border border-gray-700 dark:border-slate-700 py-1 z-50">
+        <div className="absolute top-full left-0 mt-2 w-44 bg-header dark:bg-slate-800 rounded-lg shadow-lg border border-gray-700 dark:border-slate-700 py-1 z-[1100]">
           {link.children!.map((child) => (
             <Link
               key={child.href}
