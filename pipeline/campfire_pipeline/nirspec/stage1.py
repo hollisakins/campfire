@@ -55,7 +55,8 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     # Phase 1: Run Detector1Pipeline on all uncal files
     if n_processes > 1 and uncal_files:
         _prefetch_detector1_references(
-            [os.path.join(obs.workspace_dir, f) for f in uncal_files]
+            [os.path.join(obs.workspace_dir, f) for f in uncal_files],
+            mask_science_regions=stage_config['do_clean_flicker_noise'] and stage_config['mask_science_regions'],
         )
     dispatch(
         run_stage1_single_uncal,
@@ -77,10 +78,15 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         plot=stage_config.get('plot', True),
         save_backup=False,
     )
-    rate_files = [
+    expected_rate_files = [
         os.path.join(obs.workspace_dir, f.replace('_uncal.fits', '_rate.fits'))
         for f in uncal_files
     ]
+    rate_files = [f for f in expected_rate_files if os.path.exists(f)]
+    missing = set(expected_rate_files) - set(rate_files)
+    if missing:
+        for f in sorted(missing):
+            log(f"WARNING: Detector1Pipeline did not produce {os.path.basename(f)} — skipping background subtraction for this file")
     if n_processes > 1 and rate_files:
         _prefetch_crds_references(rate_files)
     dispatch(
@@ -269,7 +275,7 @@ def mask_slits(
         #     bkg_total += pedestal_model
 
 
-def _prefetch_detector1_references(uncal_files):
+def _prefetch_detector1_references(uncal_files, mask_science_regions=False):
     """Pre-cache CRDS reference files for Detector1Pipeline to avoid race conditions.
 
     Multiple workers downloading the same CRDS file simultaneously can cause
@@ -282,6 +288,11 @@ def _prefetch_detector1_references(uncal_files):
         'dark', 'gain', 'ipc', 'linearity', 'mask',
         'readnoise', 'refpix', 'saturation', 'superbias',
     ]
+    if mask_science_regions:
+        reftypes += [
+            'camera', 'collimator', 'disperser', 'fore', 'fpa',
+            'msa', 'ote', 'wavelengthrange', 'msaoper', 'flat',
+        ]
 
     seen_detectors = set()
     for uncal_file in uncal_files:
@@ -715,9 +726,9 @@ def run_stage1_single_uncal(
         return 1
 
     except Exception as e:
-        error_msg = f"Failed stage1 processing for {uncal_file}: {e}"
-        log(error_msg)
-        # logger.error(error_msg)
+        log(f"ERROR: Detector1Pipeline FAILED for {uncal_file}: {e}")
+        import traceback
+        log(traceback.format_exc())
         return 0
 
     finally:
