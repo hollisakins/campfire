@@ -231,9 +231,9 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
     from campfire_pipeline.nirspec.stage2 import resample_single_exposure
     from campfire_pipeline.nirspec.stuck_shutters import (
         detect_stuck_shutters, merge_stuck_shutters,
-        write_stuck_shutters_toml, plot_stuck_shutter_diagnostics,
-        _get_n_shutters,
+        write_stuck_shutters_toml, _get_n_shutters,
     )
+    from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
