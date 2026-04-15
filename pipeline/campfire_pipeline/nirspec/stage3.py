@@ -6,7 +6,6 @@ import os
 import glob
 import warnings
 import numpy as np
-import matplotlib.pyplot as plt
 from typing import List
 from datetime import datetime
 from astropy.io import fits
@@ -370,20 +369,13 @@ def opt_ext_single_source(
     fnu_5px, fnu_5px_err = extract_with_profile(profile_5px, s2d_sci, s2d_err, mask=s2d_mask, ivw=False)
 
     if plot_profiles:
-        fig, axes = plt.subplots(1,4,figsize=(10,2))
-        for ax, prof, label in zip(axes, [profile_opt, profile_3px, profile_4px, profile_5px], ['Optimal', '3px boxcar', '4px boxcar', '5px boxcar']):
-            ax.stairs(collapsed/np.nanmax(collapsed), np.arange(len(collapsed)+1), color='k', zorder=1000)
-            ax.set_ylim(*ax.get_ylim())
-            ax.stairs(prof/np.nanmax(prof), np.arange(len(collapsed)+1), color='tab:red')
-            ax.stairs(prof/np.nanmax(prof), np.arange(len(collapsed)+1), color='tab:red', fill=True, alpha=0.2)
-            ax.axhline(0, color='0.3', linewidth=0.5, linestyle='--')
-            ax.axvline(x1d_start, linewidth=0.5, color='b', linestyle=':')
-            ax.axvline(x1d_stop, linewidth=0.5, color='b', linestyle=':')
-            ax.axvline(cen, linewidth=0.5, color='b', linestyle=':')
-            ax.set_title(label)
-
-        plt.savefig(out_filename.replace('_spec.fits','_prof.pdf'))
-        plt.close()
+        from campfire_pipeline.nirspec.plots import plot_extraction_profiles
+        profiles = {'Optimal': profile_opt, '3px boxcar': profile_3px,
+                    '4px boxcar': profile_4px, '5px boxcar': profile_5px}
+        plot_extraction_profiles(
+            out_filename.replace('_spec.fits', '_prof.pdf'),
+            collapsed, profiles, x1d_start, x1d_stop, cen,
+        )
 
 
     wave = x1d['EXTRACT1D'].data['WAVELENGTH']
@@ -437,118 +429,18 @@ def opt_ext_single_source(
     spec.writeto(out_filename, overwrite=True)
 
 
-    # plt.step(x1d[1].data['WAVELENGTH'], fnu*1.2, where='mid', label='NEW')
-    # plt.step(msaexp['wave'], msaexp['flux'], label='msaexp')
-    # # plt.step(x1d[1].data['WAVELENGTH'], x1d[1].data['FLUX']*1e6*1.3, where='mid', label='pipeline default')
-    # plt.loglog()
-    # plt.show()
-
     if plot_optext:
-        import matplotlib as mpl
-        from astropy.stats import sigma_clipped_stats
-        from astropy.utils.exceptions import AstropyWarning
-
-
-        # Extract data
+        from campfire_pipeline.nirspec.plots import plot_spectrum_qa
         wave = spec1d.data['wave']
-        fnu = spec1d.data['fnu']
-        fnu_err = spec1d.data['fnu_err']
-        flam = spec1d.data['flam']
-        flam_err = spec1d.data['flam_err']
-
-        valid = np.isfinite(fnu) & np.isfinite(fnu_err) & (fnu_err > 0)
-
-        # Create figure with 3 rows: 2D spectrum, f_nu, f_lambda
-        fig = plt.figure(figsize=(8,6), constrained_layout=True, dpi=300)
-        gs = mpl.gridspec.GridSpec(nrows=3, ncols=2, width_ratios=[9,1],
-                                  height_ratios=[1,2.5,2.5], figure=fig)
-
-        ax_2d = plt.subplot(gs[0,0])
-        ax_1d_fnu = plt.subplot(gs[1,0])
-        ax_1d_flam = plt.subplot(gs[2,0])
-        ax_prof = plt.subplot(gs[0,1])
-
-        # 2D spectrum with S/N calculation
-        sci = s2d['SCI'].data
-        err = s2d['ERR'].data
-
-        nsci = sci/err
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=AstropyWarning)
-            std = sigma_clipped_stats(nsci, sigma=3)[2]
-        snr_2d = nsci / std
-
-        # S/N range and colormap
-        vmin, vmax = -3, 8
-        cmap = plt.colormaps['viridis']
-        cmap.set_bad('0.8')
-
-        im = ax_2d.pcolormesh(wave, prof1d.data['ypos']-cen, snr_2d,
-                             vmin=vmin, vmax=vmax, cmap=cmap, rasterized=True)
-        ax_2d.set_ylabel('$y$ [pix]')
-        ax_2d.set_ylim(-10, 10)
-        ax_2d.minorticks_on()
-        ax_2d.tick_params(direction='in', which='both', axis='y')
-
-        # Dual 1D spectrum plots
-        valid = np.isfinite(fnu) & np.isfinite(fnu_err)
-
-        # f_ν plot
-        ax_1d_fnu.step(wave, fnu, where='mid', color='k', linewidth=1)
-        ax_1d_fnu.fill_between(wave, (fnu - fnu_err), (fnu + fnu_err),
-            alpha=0.15, facecolor='k', edgecolor='none', step='mid')
-        ax_1d_fnu.set_ylabel(r'$f_{\nu}$ [$\mu$Jy]')
-
-        # f_λ plot
-        ax_1d_flam.step(wave, flam, where='mid', color='k', linewidth=1)
-        ax_1d_flam.fill_between(wave, (flam - flam_err), (flam + flam_err),
-            alpha=0.15, facecolor='k', edgecolor='none', step='mid')
-        ax_1d_flam.set_ylabel(r'$f_{\lambda}$ [erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$]')
-        ax_1d_flam.set_xlabel(r'Observed Wavelength [$\mu$m]')
-
-        # Advanced grid and tick styling
-        ax_1d_fnu.grid(True, alpha=0.2, linewidth=1, zorder=-1000)
-        ax_1d_flam.grid(True, alpha=0.2, linewidth=1, zorder=-1000)
-        ax_1d_fnu.minorticks_on()
-        ax_1d_flam.minorticks_on()
-        ax_1d_fnu.tick_params(direction='in', which='both')
-        ax_1d_flam.tick_params(direction='in', which='both')
-
-        # Spatial profile plot
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=RuntimeWarning)
-            p = np.nanmedian(sci, axis=1)
-            p /= np.nanmax(p[prof1d.data['opt']!=0])
-        ax_prof.step(p, prof1d.data['ypos']-cen, where='post', color='k')
-        ax_prof.fill_betweenx(prof1d.data['ypos']-cen, np.zeros_like(prof1d.data['ypos']), prof1d.data['opt']/np.nanmax(prof1d.data['opt']),
-                             facecolor='r', alpha=0.3, edgecolor='none', step='pre')
-        ax_prof.axvline(0, color='k', linewidth=1, zorder=-1000, alpha=0.2)
-        ax_prof.minorticks_on()
-        ax_prof.set_xlim(-0.3, 1.2)
-        ax_prof.set_ylim(-10, 10)
-        ax_prof.tick_params(labelbottom=False, bottom=False, labelleft=False,
-                           direction='in', which='both')
-
-        # Smart x and y limits
-        xmin = wave.min()
-        xmax = wave.max()
-        ax_2d.set_xlim(xmin, xmax)
-        ax_1d_fnu.set_xlim(xmin, xmax)
-        ax_1d_flam.set_xlim(xmin, xmax)
-
-        # Percentile-based y-limits
-        ymax = np.nanpercentile(fnu+fnu_err, 97)*1.2
-        if np.isfinite(ymax):
-            ax_1d_fnu.set_ylim(-0.1*ymax, ymax)
-
-        ymax = np.nanpercentile(flam+flam_err, 97)*1.2
-        if np.isfinite(ymax):
-            ax_1d_flam.set_ylim(-0.1*ymax, ymax)
-
-        fig.suptitle(product_name+'_spec', fontname='monospace')
-
-        plt.savefig(out_filename.replace('_spec.fits','_spec.pdf'))
-        plt.close()
+        plot_spectrum_qa(
+            out_filename.replace('_spec.fits', '_spec.pdf'),
+            wave=wave,
+            fnu=spec1d.data['fnu'], fnu_err=spec1d.data['fnu_err'],
+            flam=spec1d.data['flam'], flam_err=spec1d.data['flam_err'],
+            sci_2d=s2d['SCI'].data, err_2d=s2d['ERR'].data,
+            profile_ypos=prof1d.data['ypos'], profile_opt=prof1d.data['opt'],
+            cen=cen, product_name=product_name,
+        )
 
     s2d.close()
     x1d.close()
@@ -647,21 +539,12 @@ def combine_per_eg_spectra(
     profile_5px = boxcar_profile(cen - 2.5, cen + 2.5, len(collapsed))
 
     if plot_profiles:
-        fig, axes = plt.subplots(1, 4, figsize=(10, 2))
-        for ax, prof, label in zip(axes, [profile_opt, profile_3px, profile_4px, profile_5px],
-                                   ['Optimal', '3px boxcar', '4px boxcar', '5px boxcar']):
-            ax.stairs(collapsed / np.nanmax(collapsed), np.arange(len(collapsed) + 1), color='k', zorder=1000)
-            ax.set_ylim(*ax.get_ylim())
-            ax.stairs(prof / np.nanmax(prof), np.arange(len(collapsed) + 1), color='tab:red')
-            ax.stairs(prof / np.nanmax(prof), np.arange(len(collapsed) + 1), color='tab:red', fill=True, alpha=0.2)
-            ax.axhline(0, color='0.3', linewidth=0.5, linestyle='--')
-            ax.axvline(x1d_start, linewidth=0.5, color='b', linestyle=':')
-            ax.axvline(x1d_stop, linewidth=0.5, color='b', linestyle=':')
-            ax.axvline(cen, linewidth=0.5, color='b', linestyle=':')
-            ax.set_title(label)
-        out_filename = os.path.join(workspace_dir, f'{product_name}_spec.fits')
-        plt.savefig(out_filename.replace('_spec.fits', '_prof.pdf'))
-        plt.close()
+        from campfire_pipeline.nirspec.plots import plot_extraction_profiles
+        profiles = {'Optimal': profile_opt, '3px boxcar': profile_3px,
+                    '4px boxcar': profile_4px, '5px boxcar': profile_5px}
+        prof_path = os.path.join(workspace_dir, f'{product_name}_prof.pdf')
+        plot_extraction_profiles(prof_path, collapsed, profiles,
+                                x1d_start, x1d_stop, cen)
 
     # --- Step 6: Package final _spec.fits ---
     # PRIMARY header
@@ -743,99 +626,19 @@ def combine_per_eg_spectra(
     spec.writeto(out_filename, overwrite=True)
     log(f"Stage3 (1D combine): wrote {out_filename}")
 
-    # Diagnostic plot
     if plot_optext:
-        import matplotlib as mpl
-        from astropy.stats import sigma_clipped_stats
-        from astropy.utils.exceptions import AstropyWarning
-
-        wave = common_wave
-        fnu = fnu_opt
-        fnu_err = fnu_opt_err
-        flam = fnu_to_flam(fnu_opt, common_wave)
-        flam_err = fnu_to_flam(fnu_opt_err, common_wave)
-
-        fig = plt.figure(figsize=(8, 6), constrained_layout=True, dpi=300)
-        gs = mpl.gridspec.GridSpec(nrows=3, ncols=2, width_ratios=[9, 1],
-                                  height_ratios=[1, 2.5, 2.5], figure=fig)
-        ax_2d = plt.subplot(gs[0, 0])
-        ax_1d_fnu = plt.subplot(gs[1, 0])
-        ax_1d_flam = plt.subplot(gs[2, 0])
-        ax_prof = plt.subplot(gs[0, 1])
-
-        sci_data = s2d['SCI'].data
-        err_data = s2d['ERR'].data
-        nsci = sci_data / err_data
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=AstropyWarning)
-            std = sigma_clipped_stats(nsci, sigma=3)[2]
-        snr_2d = nsci / std
-
-        vmin, vmax = -3, 8
-        cmap = plt.colormaps['viridis']
-        cmap.set_bad('0.8')
-
-        im = ax_2d.pcolormesh(wave, prof1d['ypos'] - cen, snr_2d,
-                             vmin=vmin, vmax=vmax, cmap=cmap, rasterized=True)
-        ax_2d.set_ylabel('$y$ [pix]')
-        ax_2d.set_ylim(-10, 10)
-        ax_2d.minorticks_on()
-        ax_2d.tick_params(direction='in', which='both', axis='y')
-
-        valid = np.isfinite(fnu) & np.isfinite(fnu_err)
-
-        ax_1d_fnu.step(wave, fnu, where='mid', color='k', linewidth=1)
-        ax_1d_fnu.fill_between(wave, fnu - fnu_err, fnu + fnu_err,
-            alpha=0.15, facecolor='k', edgecolor='none', step='mid')
-        ax_1d_fnu.set_ylabel(r'$f_{\nu}$ [$\mu$Jy]')
-
-        ax_1d_flam.step(wave, flam, where='mid', color='k', linewidth=1)
-        ax_1d_flam.fill_between(wave, flam - flam_err, flam + flam_err,
-            alpha=0.15, facecolor='k', edgecolor='none', step='mid')
-        ax_1d_flam.set_ylabel(r'$f_{\lambda}$ [erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$]')
-        ax_1d_flam.set_xlabel(r'Observed Wavelength [$\mu$m]')
-
-        ax_1d_fnu.grid(True, alpha=0.2, linewidth=1, zorder=-1000)
-        ax_1d_flam.grid(True, alpha=0.2, linewidth=1, zorder=-1000)
-        ax_1d_fnu.minorticks_on()
-        ax_1d_flam.minorticks_on()
-        ax_1d_fnu.tick_params(direction='in', which='both')
-        ax_1d_flam.tick_params(direction='in', which='both')
-
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=RuntimeWarning)
-            p = np.nanmedian(sci_data, axis=1)
-            p /= np.nanmax(p[profile_opt != 0])
-        ax_prof.step(p, prof1d['ypos'] - cen, where='post', color='k')
-        ax_prof.fill_betweenx(prof1d['ypos'] - cen, np.zeros_like(prof1d['ypos']),
-                             profile_opt / np.nanmax(profile_opt),
-                             facecolor='r', alpha=0.3, edgecolor='none', step='pre')
-        ax_prof.axvline(0, color='k', linewidth=1, zorder=-1000, alpha=0.2)
-        ax_prof.minorticks_on()
-        ax_prof.set_xlim(-0.3, 1.2)
-        ax_prof.set_ylim(-10, 10)
-        ax_prof.tick_params(labelbottom=False, bottom=False, labelleft=False,
-                           direction='in', which='both')
-
-        xmin = wave.min()
-        xmax = wave.max()
-        ax_2d.set_xlim(xmin, xmax)
-        ax_1d_fnu.set_xlim(xmin, xmax)
-        ax_1d_flam.set_xlim(xmin, xmax)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=RuntimeWarning)
-            ymax = np.nanpercentile(fnu + fnu_err, 97) * 1.2
-            if np.isfinite(ymax):
-                ax_1d_fnu.set_ylim(-0.1 * ymax, ymax)
-            ymax = np.nanpercentile(flam + flam_err, 97) * 1.2
-            if np.isfinite(ymax):
-                ax_1d_flam.set_ylim(-0.1 * ymax, ymax)
-
-        fig.suptitle(product_name + '_spec (1D combine)', fontname='monospace')
-
-        plt.savefig(out_filename.replace('_spec.fits', '_spec.pdf'))
-        plt.close()
+        from campfire_pipeline.nirspec.plots import plot_spectrum_qa
+        plot_spectrum_qa(
+            out_filename.replace('_spec.fits', '_spec.pdf'),
+            wave=common_wave,
+            fnu=fnu_opt, fnu_err=fnu_opt_err,
+            flam=fnu_to_flam(fnu_opt, common_wave),
+            flam_err=fnu_to_flam(fnu_opt_err, common_wave),
+            sci_2d=s2d['SCI'].data, err_2d=s2d['ERR'].data,
+            profile_ypos=prof1d['ypos'], profile_opt=profile_opt,
+            cen=cen, product_name=product_name,
+            subtitle='(1D combine)',
+        )
 
     x1d.close()
     s2d.close()

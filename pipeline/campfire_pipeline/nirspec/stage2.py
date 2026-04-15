@@ -282,9 +282,9 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     if detect_enabled:
         from campfire_pipeline.nirspec.stuck_shutters import (
             detect_stuck_shutters, merge_stuck_shutters,
-            write_stuck_shutters_toml, plot_stuck_shutter_diagnostics,
-            _get_n_shutters,
+            write_stuck_shutters_toml, _get_n_shutters,
         )
+        from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
         import toml as _toml
 
         detected = detect_stuck_shutters(obs, files, stage_config,

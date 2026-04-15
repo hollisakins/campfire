@@ -6,10 +6,8 @@ import os
 import shutil
 import warnings
 import numpy as np
-import matplotlib.pyplot as plt
 from datetime import datetime
 from astropy.io import fits
-from astropy.visualization import ImageNormalize, ZScaleInterval
 
 from campfire_pipeline.common.io import log
 from campfire_pipeline.common.wcs import boundingbox_to_indices, wcs_to_dq
@@ -639,143 +637,15 @@ def subtract_background_from_rate_file(
             row_model = row_model_total
 
         if plot:
-            from astropy.visualization import ImageNormalize, ZScaleInterval
-            norm = ImageNormalize(model.data[mask], interval=ZScaleInterval())
-
-            # Build list of columns to plot
-            columns = []
-
-            # Column 0: Always show raw and mask
-            columns.append({
-                'top_title': 'Raw rate file',
-                'top_data': model.data,
-                'top_norm': norm,
-                'bottom_title': 'Slit mask (white=valid)',
-                'bottom_data': mask,
-                'bottom_norm': None,
-                'bottom_cmap': 'gray',
-                'bottom_vmin': 0,
-                'bottom_vmax': 1,
-            })
-
-            # Track cumulative background subtraction
-            bkg_cumulative = np.zeros_like(model.data)
-
-            # Picture frame column
-            if pictureframe_model is not None:
-                bkg_cumulative += pictureframe_model
-                columns.append({
-                    'top_title': 'Picture frame',
-                    'top_data': pictureframe_model,
-                    'top_norm': norm,
-                    'bottom_title': 'Raw - picture frame',
-                    'bottom_data': model.data - bkg_cumulative,
-                    'bottom_norm': norm,
-                })
-
-            # Pedestal quarters column
-            if pedestal_model is not None:
-                bkg_cumulative += pedestal_model
-                columns.append({
-                    'top_title': 'Pedestal quarters',
-                    'top_data': pedestal_model,
-                    'top_norm': norm,
-                    'bottom_title': 'Raw - picture frame - pedestal',
-                    'bottom_data': model.data - bkg_cumulative,
-                    'bottom_norm': norm,
-                })
-
-            # 2D background column
-            if bkg2d_model is not None:
-                bkg_cumulative += bkg2d_model
-                bottom_title = 'Raw'
-                if pictureframe_model is not None:
-                    bottom_title += ' - picture frame'
-                if pedestal_model is not None:
-                    bottom_title += ' - pedestal'
-                bottom_title += ' - 2D'
-
-                columns.append({
-                    'top_title': '2D background',
-                    'top_data': bkg2d_model,
-                    'top_norm': norm,
-                    'bottom_title': bottom_title,
-                    'bottom_data': model.data - bkg_cumulative,
-                    'bottom_norm': norm,
-                })
-
-            # Column 1/f
-            if col_model is not None:
-                bkg_cumulative += col_model
-                bottom_title = 'Raw'
-                if pictureframe_model is not None:
-                    bottom_title += ' - picture frame'
-                if pedestal_model is not None:
-                    bottom_title += ' - pedestal'
-                if bkg2d_model is not None:
-                    bottom_title += ' - 2D'
-                bottom_title += ' - col'
-
-                columns.append({
-                    'top_title': 'Column 1/f',
-                    'top_data': np.zeros_like(model.data) + col_model,
-                    'top_norm': norm,
-                    'bottom_title': bottom_title,
-                    'bottom_data': model.data - bkg_cumulative,
-                    'bottom_norm': norm,
-                })
-
-            # Row 1/f
-            if row_model is not None:
-                bkg_cumulative += row_model
-                bottom_title = 'Raw'
-                if pictureframe_model is not None:
-                    bottom_title += ' - picture frame'
-                if pedestal_model is not None:
-                    bottom_title += ' - pedestal'
-                if bkg2d_model is not None:
-                    bottom_title += ' - 2D'
-                if col_model is not None:
-                    bottom_title += ' - col'
-                bottom_title += ' - row'
-
-                columns.append({
-                    'top_title': 'Row 1/f',
-                    'top_data': np.zeros_like(model.data) + row_model,
-                    'top_norm': norm,
-                    'bottom_title': bottom_title,
-                    'bottom_data': model.data - bkg_cumulative,
-                    'bottom_norm': norm,
-                })
-
-            # Create the plot
-            n_cols = len(columns)
-            fig, ax = plt.subplots(2, n_cols, figsize=(4*n_cols, 8), sharex=True, sharey=True)
-
-            # Handle case where only 1 column (ax won't be 2D array)
-            if n_cols == 1:
-                ax = ax.reshape(2, 1)
-
-            for i, col in enumerate(columns):
-                # Top panel
-                ax[0, i].imshow(col['top_data'], norm=col['top_norm'])
-                ax[0, i].set_title(col['top_title'])
-
-                # Bottom panel
-                if col.get('bottom_cmap') is not None:
-                    ax[1, i].imshow(col['bottom_data'],
-                                   cmap=col['bottom_cmap'],
-                                   vmin=col.get('bottom_vmin'),
-                                   vmax=col.get('bottom_vmax'))
-                else:
-                    ax[1, i].imshow(col['bottom_data'], norm=col.get('bottom_norm', norm))
-                ax[1, i].set_title(col['bottom_title'])
-
-            plt.tight_layout()
-            plot_file = rate_file.replace('_rate.fits','_bkg.pdf')
-            log(f'Saving to {plot_file}')
-            plt.savefig(plot_file, dpi=300)
-            plt.close()
+            from campfire_pipeline.nirspec.plots import plot_bkg_subtraction
+            plot_bkg_subtraction(
+                rate_file, model.data, mask,
+                pictureframe_model=pictureframe_model,
+                pedestal_model=pedestal_model,
+                bkg2d_model=bkg2d_model,
+                col_model=col_model,
+                row_model=row_model,
+            )
 
         fits.writeto(rate_file.replace('_rate.fits','_mask.fits'), mask.astype(int), overwrite=True)
         fits.writeto(rate_file.replace('_rate.fits','_bkg.fits'), bkg_total, overwrite=True)
