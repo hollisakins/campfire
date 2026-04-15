@@ -519,6 +519,10 @@ def tiles(config_path, field, filter_names, dry_run, generate_only,
 
     tile_dir_path = resolve_tiles_dir(tile_dir)
     imaging_config_path = resolve_imaging_config(imaging_config)
+    if imaging_config_path is None:
+        print("Error: No imaging.toml found. Tiles deployment requires imaging.toml.")
+        print("  Use --imaging-config <path> or set $CAMPFIRE_ROOT")
+        raise SystemExit(1)
 
     # Determine which phases to run
     if generate_only:

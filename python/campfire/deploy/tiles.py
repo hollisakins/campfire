@@ -322,6 +322,10 @@ def generate_tiles(
     if imaging_config_path is None:
         from campfire.deploy.config import resolve_imaging_config
         imaging_config_path = resolve_imaging_config()
+    if imaging_config_path is None:
+        print("Error: No imaging.toml found. Tiles deployment requires imaging.toml.")
+        print("  Use --imaging-config <path> or set $CAMPFIRE_ROOT")
+        raise SystemExit(1)
 
     imaging_config = load_imaging_config(imaging_config_path)
 

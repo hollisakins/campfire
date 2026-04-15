@@ -310,7 +310,7 @@ def resolve_tiles_dir(tile_dir: str | None = None) -> Path:
     sys.exit(1)
 
 
-def resolve_imaging_config(imaging_config: str | None = None) -> Path:
+def resolve_imaging_config(imaging_config: str | None = None) -> Path | None:
     """
     Resolve the imaging.toml config path.
 
@@ -318,6 +318,9 @@ def resolve_imaging_config(imaging_config: str | None = None) -> Path:
       1. Explicit --imaging-config argument
       2. $CAMPFIRE_ROOT/config/imaging.toml
       3. ./pipeline/imaging.toml (repo fallback)
+
+    Returns None if no imaging config is found during auto-discovery.
+    Still exits if an explicit path is provided but does not exist.
     """
     if imaging_config:
         p = Path(imaging_config)
@@ -337,9 +340,7 @@ def resolve_imaging_config(imaging_config: str | None = None) -> Path:
     if p.exists():
         return p
 
-    print("Error: No imaging.toml found.")
-    print("  Use --imaging-config <path> or set $CAMPFIRE_ROOT")
-    sys.exit(1)
+    return None
 
 
 def resolve_photometry_config(photometry_config: str | None = None) -> Path | None:
