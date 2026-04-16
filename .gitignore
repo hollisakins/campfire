@@ -31,9 +31,6 @@ Thumbs.db
 campfire/config.toml
 scripts/config.toml
 
-# Supabase seed (generated from production, may contain full db dump)
-supabase/seed.sql
-
 # Data directories (large files)
 data/raw/
 data/preprocessed/

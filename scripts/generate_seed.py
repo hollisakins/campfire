@@ -2,8 +2,25 @@
 """
 Generate Supabase seed data from production database.
 
-Queries the production Supabase for a representative subset of real objects
-(with files already in R2) and generates supabase/seed.sql for local development.
+Queries the production Supabase for a representative subset of real targets
+(with files already in R2) and generates supabase/seed.sql for local dev
+and preview branch seeding.
+
+The output seed.sql is a committed artifact checked into the repo. Supabase's
+GitHub integration uses it to seed preview branches automatically when PRs are
+opened, and locally it's applied via `supabase db reset`. Because of this,
+seed.sql must stay compatible with the current migration state — if a migration
+changes the schema in a way that breaks seed inserts (e.g. renaming a table,
+adding a NOT NULL column without a default), regenerate the seed file.
+
+This script requires a live connection to the production Supabase instance
+(via $CAMPFIRE_ROOT/config/deploy.toml), but the generated seed.sql does not
+contain any production credentials or sensitive data — just a small stratified
+sample of scientific data and synthetic test user accounts.
+
+Targets are cross-matched into `objects` table entries in-process (per-field
+friends-of-friends via `campfire.deploy.objects`), so no `cfdeploy objects`
+follow-up is needed after `supabase db reset`.
 
 Usage:
     python scripts/generate_seed.py
@@ -13,6 +30,7 @@ Usage:
 import argparse
 import os
 import sys
+from collections import defaultdict
 from pathlib import Path
 from datetime import datetime
 
@@ -25,6 +43,13 @@ try:
     from supabase import create_client
 except ImportError:
     print("Error: supabase-py not installed. Install with: pip install supabase")
+    sys.exit(1)
+
+try:
+    from campfire.deploy.objects import cluster_targets, build_objects
+except ImportError:
+    print("Error: campfire package not installed. Install with: "
+          "pip install -e ./python[deploy]")
     sys.exit(1)
 
 
@@ -178,7 +203,7 @@ FLAG_DEFINITIONS = [
 
 # === Query Production Data ===
 
-def select_targets(supabase, targets_per_program: int) -> list[dict]:
+def select_targets(supabase, targets_per_program: int, program_slugs: list[str]) -> list[dict]:
     """
     Select a representative subset of targets from production.
 
@@ -188,11 +213,9 @@ def select_targets(supabase, targets_per_program: int) -> list[dict]:
     - 1 with quality 0 (uninspected)
     - 1 with quality 1 (impossible) if available
     """
-    # Get all distinct program_slugs from production
-    programs_resp = supabase.table('targets').select('program_slug').execute()
-    slugs = sorted(set(row['program_slug'] for row in programs_resp.data))
+    slugs = sorted(program_slugs)
 
-    print(f"Found {len(slugs)} programs in production: {slugs}")
+    print(f"Sampling from {len(slugs)} programs: {slugs}")
 
     all_targets = []
     seen_ids = set()
@@ -444,12 +467,17 @@ VALUES ({sql_escape(user['id'])}, {sql_escape(user['username'])}, {sql_escape(us
     return '\n'.join(lines)
 
 
-def generate_objects_sql(objects: list[dict]) -> str:
+def generate_objects_sql(
+    objects: list[dict],
+    target_to_object_db_id: dict[int, int] | None = None,
+) -> str:
     """Generate INSERT statements for targets (skipping generated columns: redshift, max_snr)."""
     lines = ['-- ============================================']
     lines.append('-- 5. Targets (from production)')
     lines.append('-- ============================================')
     lines.append('')
+
+    target_to_object_db_id = target_to_object_db_id or {}
 
     for obj in objects:
         # Remap last_inspected_by to admin test user if set
@@ -463,8 +491,76 @@ def generate_objects_sql(objects: list[dict]) -> str:
         else:
             redshift_inspected_sql = 'NULL'
 
-        lines.append(f"""INSERT INTO public.targets (id, target_id, program_slug, observation, field, ra, dec, redshift_auto, redshift_inspected, redshift_quality, spectral_features, dq_flags, last_inspected_at, last_inspected_by, has_sed_plot)
-VALUES ({obj['id']}, {sql_escape(obj['target_id'])}, {sql_escape(obj['program_slug'])}, {sql_escape(obj.get('observation', ''))}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {obj.get('spectral_features', 0)}, {obj.get('dq_flags', 0)}, {inspected_at}, {inspected_by}, {sql_escape(obj.get('has_sed_plot', False))});""")
+        object_fk = target_to_object_db_id.get(obj['id'])
+        object_fk_sql = str(object_fk) if object_fk else 'NULL'
+
+        lines.append(f"""INSERT INTO public.targets (id, target_id, program_slug, observation, field, ra, dec, redshift_auto, redshift_inspected, redshift_quality, spectral_features, dq_flags, last_inspected_at, last_inspected_by, has_sed_plot, object_id)
+VALUES ({obj['id']}, {sql_escape(obj['target_id'])}, {sql_escape(obj['program_slug'])}, {sql_escape(obj.get('observation', ''))}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {obj.get('spectral_features', 0)}, {obj.get('dq_flags', 0)}, {inspected_at}, {inspected_by}, {sql_escape(obj.get('has_sed_plot', False))}, {object_fk_sql});""")
+
+    lines.append('')
+    return '\n'.join(lines)
+
+
+# === Object Cross-Matching ===
+
+def build_seed_objects(
+    targets: list[dict],
+    spectra: list[dict],
+    radius_arcsec: float = 0.2,
+) -> tuple[list[dict], dict[int, int]]:
+    """Cluster seed targets into objects (per-field FoF) and assign synthetic ids.
+
+    Mirrors the production `cfdeploy objects` flow so that a fresh
+    `supabase db reset` yields a fully-populated `objects` table with
+    target FKs and list members linked.
+
+    Returns (objects, target_db_id -> object_db_id map). Each object dict
+    is augmented with a `_db_id` integer used when emitting SQL.
+    """
+    spectra_map: dict[str, list[dict]] = defaultdict(list)
+    for s in spectra:
+        tid = s.get('target_id') or s.get('object_id')
+        if tid is None:
+            continue
+        spectra_map[tid].append({
+            'target_id': tid,
+            'grating': s.get('grating'),
+            'signal_to_noise': s.get('signal_to_noise'),
+            'exposure_time': s.get('exposure_time'),
+        })
+
+    by_field: dict[str, list[dict]] = defaultdict(list)
+    for t in targets:
+        by_field[t['field']].append(t)
+
+    all_objects: list[dict] = []
+    target_to_object_db_id: dict[int, int] = {}
+    next_id = 1
+
+    for field in sorted(by_field):
+        field_targets = by_field[field]
+        groups = cluster_targets(field_targets, radius_arcsec)
+        field_objects = build_objects(field_targets, groups, spectra_map)
+        for obj in field_objects:
+            obj['_db_id'] = next_id
+            next_id += 1
+            for target_db_id in obj['_member_db_ids']:
+                target_to_object_db_id[target_db_id] = obj['_db_id']
+        all_objects.extend(field_objects)
+
+    return all_objects, target_to_object_db_id
+
+
+def generate_objects_table_sql(objects: list[dict]) -> str:
+    """Generate INSERT statements for the objects table."""
+    lines = ['-- ============================================']
+    lines.append('-- 4b. Objects (cross-matched from targets)')
+    lines.append('-- ============================================')
+    lines.append('')
+
+    for obj in objects:
+        lines.append(f"""INSERT INTO public.objects (id, object_id, field, ra, dec, n_targets, n_spectra, programs, gratings, observations, max_snr, max_exposure_time, best_redshift, best_redshift_quality)
+VALUES ({obj['_db_id']}, {sql_escape(obj['object_id'])}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {obj['n_targets']}, {obj['n_spectra']}, {sql_escape(obj['programs'])}, {sql_escape(obj['gratings'])}, {sql_escape(obj['observations'])}, {sql_escape(obj['max_snr'])}, {sql_escape(obj['max_exposure_time'])}, {sql_escape(obj['best_redshift'])}, {obj.get('best_redshift_quality', 0)});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -575,8 +671,16 @@ OBJECT_FLAG_TO_LIST_SLUG = [
 ]
 
 
-def generate_object_list_members_sql(objects: list[dict]) -> str:
-    """Generate INSERT statements for object_list_members from production object_flags."""
+def generate_object_list_members_sql(
+    targets: list[dict],
+    target_to_object_db_id: dict[int, int],
+    objects_by_db_id: dict[int, dict],
+) -> str:
+    """Generate INSERT statements for object_list_members from production object_flags.
+
+    List members key off the *object* centroid (not the target position), matching
+    production semantics where a flag applies to the cross-matched object.
+    """
     lines = ['-- ============================================']
     lines.append('-- 9b. Object List Members (from object_flags)')
     lines.append('-- ============================================')
@@ -585,15 +689,19 @@ def generate_object_list_members_sql(objects: list[dict]) -> str:
     lines.append('')
 
     count = 0
-    for obj in objects:
-        flags = obj.get('object_flags', 0) or 0
+    for target in targets:
+        flags = target.get('object_flags', 0) or 0
         if flags == 0:
             continue
+        obj_db_id = target_to_object_db_id.get(target['id'])
+        if obj_db_id is None:
+            continue
+        obj = objects_by_db_id[obj_db_id]
         for bit_value, slug in OBJECT_FLAG_TO_LIST_SLUG:
             if flags & bit_value:
                 lines.append(
-                    f"INSERT INTO public.object_list_members (list_id, ra, dec) "
-                    f"SELECT id, {obj['ra']}, {obj['dec']} FROM public.object_lists "
+                    f"INSERT INTO public.object_list_members (list_id, object_id, ra, dec) "
+                    f"SELECT id, {obj_db_id}, {obj['ra']}, {obj['dec']} FROM public.object_lists "
                     f"WHERE slug = {sql_escape(slug)} "
                     f"ON CONFLICT (list_id, ra, dec) DO NOTHING;"
                 )
@@ -608,7 +716,11 @@ def generate_object_list_members_sql(objects: list[dict]) -> str:
     return '\n'.join(lines)
 
 
-def generate_user_lists_sql(objects: list[dict]) -> str:
+def generate_user_lists_sql(
+    targets: list[dict],
+    target_to_object_db_id: dict[int, int],
+    objects_by_db_id: dict[int, dict],
+) -> str:
     """Generate INSERT statements for example user-created lists with sample members."""
     lines = ['-- ============================================']
     lines.append('-- 9c. User-Created Lists (example data)')
@@ -655,17 +767,23 @@ def generate_user_lists_sql(objects: list[dict]) -> str:
 
     lines.append('')
 
-    # Add a few sample members to each list from the first few seed objects
-    sample_objects = [o for o in objects if o.get('ra') is not None][:12]
-    if sample_objects:
+    # Add a few sample members to each list, using object centroids as the
+    # durable (ra, dec) key and setting object_id for fast query access.
+    sample_targets = [
+        t for t in targets
+        if t.get('ra') is not None and target_to_object_db_id.get(t['id'])
+    ][:12]
+    if sample_targets:
         for i, lst in enumerate(user_lists):
             # Each list gets 3-4 members from different parts of the sample
             start = i * 3
-            members = sample_objects[start:start + 4]
-            for obj in members:
+            members = sample_targets[start:start + 4]
+            for target in members:
+                obj_db_id = target_to_object_db_id[target['id']]
+                obj = objects_by_db_id[obj_db_id]
                 lines.append(
-                    f"INSERT INTO public.object_list_members (list_id, ra, dec, added_by) "
-                    f"SELECT id, {obj['ra']}, {obj['dec']}, {sql_escape(lst['created_by'])}::uuid "
+                    f"INSERT INTO public.object_list_members (list_id, object_id, ra, dec, added_by) "
+                    f"SELECT id, {obj_db_id}, {obj['ra']}, {obj['dec']}, {sql_escape(lst['created_by'])}::uuid "
                     f"FROM public.object_lists WHERE slug = {sql_escape(lst['slug'])} "
                     f"ON CONFLICT (list_id, ra, dec) DO NOTHING;"
                 )
@@ -692,7 +810,8 @@ VALUES ('EMBER-ACCESS', 'EMBER program access code', FALSE, ARRAY['ember'], TRUE
 
 
 def generate_sequence_resets(objects: list[dict], spectra: list[dict],
-                             comments: list[dict], flag_entries: list[dict]) -> str:
+                             comments: list[dict], flag_entries: list[dict],
+                             cross_matched_objects: list[dict]) -> str:
     """Generate sequence reset statements."""
     lines = ['-- ============================================']
     lines.append('-- 11. Materialized View Refresh')
@@ -709,6 +828,11 @@ def generate_sequence_resets(objects: list[dict], spectra: list[dict],
     # Targets
     max_obj_id = max((o['id'] for o in objects), default=0)
     lines.append(f"SELECT setval('public.targets_id_seq', {max_obj_id + 1}, false);")
+
+    # Objects (cross-matched)
+    max_objects_id = max((o['_db_id'] for o in cross_matched_objects), default=0)
+    if max_objects_id > 0:
+        lines.append(f"SELECT setval('public.objects_id_seq', {max_objects_id + 1}, false);")
 
     # Spectra
     max_spec_id = max((s['id'] for s in spectra), default=0)
@@ -758,7 +882,10 @@ def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_pa
     # Load configuration
     print("Loading configuration...")
     config = load_config()
-    programs = load_programs()
+    all_programs = load_programs()
+    programs = [p for p in all_programs if p.get('is_public', False)]
+    print(f"Filtered to {len(programs)} public programs "
+          f"(skipped {len(all_programs) - len(programs)} non-public)")
 
     # Connect to production Supabase
     print("Connecting to production Supabase...")
@@ -769,7 +896,8 @@ def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_pa
 
     # Select representative targets
     print(f"\nSelecting up to {args.objects_per_program} targets per program...")
-    targets = select_targets(supabase, args.objects_per_program)
+    program_slugs = [p['slug'] for p in programs]
+    targets = select_targets(supabase, args.objects_per_program, program_slugs)
     print(f"\nTotal targets selected: {len(targets)}")
 
     if not targets:
@@ -799,6 +927,16 @@ def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_pa
     flag_entries = fetch_flag_audit_log(supabase, target_int_ids)
     print(f"  Found {len(flag_entries)} audit entries")
 
+    # Cross-match targets into objects (per-field friends-of-friends)
+    print("\nCross-matching targets into objects...")
+    cross_matched_objects, target_to_object_db_id = build_seed_objects(
+        targets, spectra,
+    )
+    objects_by_db_id = {o['_db_id']: o for o in cross_matched_objects}
+    n_multi = sum(1 for o in cross_matched_objects if o['n_targets'] > 1)
+    print(f"  {len(cross_matched_objects)} objects "
+          f"({len(cross_matched_objects) - n_multi} singletons, {n_multi} multi-target)")
+
     # Generate SQL
     print(f"\nGenerating {output_path}...")
 
@@ -827,15 +965,22 @@ SET search_path TO public, auth, extensions;
     sql_parts.append(generate_observations_sql(observations))
     sql_parts.append(generate_flag_definitions_sql())
     sql_parts.append(generate_user_profiles_sql())
-    sql_parts.append(generate_objects_sql(targets))
+    sql_parts.append(generate_objects_table_sql(cross_matched_objects))
+    sql_parts.append(generate_objects_sql(targets, target_to_object_db_id))
     sql_parts.append(generate_spectra_sql(spectra))
     sql_parts.append(generate_user_program_access_sql(programs))
     sql_parts.append(generate_comments_sql(comments, target_id_map))
     sql_parts.append(generate_flag_audit_log_sql(flag_entries, target_id_map))
-    sql_parts.append(generate_object_list_members_sql(targets))
-    sql_parts.append(generate_user_lists_sql(targets))
+    sql_parts.append(generate_object_list_members_sql(
+        targets, target_to_object_db_id, objects_by_db_id,
+    ))
+    sql_parts.append(generate_user_lists_sql(
+        targets, target_to_object_db_id, objects_by_db_id,
+    ))
     sql_parts.append(generate_access_codes_sql())
-    sql_parts.append(generate_sequence_resets(targets, spectra, comments, flag_entries))
+    sql_parts.append(generate_sequence_resets(
+        targets, spectra, comments, flag_entries, cross_matched_objects,
+    ))
 
     # Write output
     full_sql = '\n'.join(sql_parts)

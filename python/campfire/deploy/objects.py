@@ -101,38 +101,41 @@ def fetch_field_targets(client: Client, field: str) -> list[dict]:
 
 def fetch_spectra_metadata(
     client: Client,
-    field: str,
+    target_ids: list[int],
 ) -> dict[str, list[dict]]:
-    """Fetch grating, S/N, exposure_time for all spectra in a field.
+    """Fetch grating, S/N, exposure_time for spectra belonging to the given targets.
 
-    Uses PostgREST embedding via the spectra→targets FK to filter
-    server-side by field, avoiding URI-length limits from large
-    target_id lists.
+    Queries spectra directly by target_id in batches to avoid both
+    PostgREST FK embedding timeouts and URI-length limits.
     """
-    select = 'target_id, grating, signal_to_noise, exposure_time, targets!inner(field)'
+    select = 'target_id, grating, signal_to_noise, exposure_time'
     result: dict[str, list[dict]] = defaultdict(list)
-    page_size = 1000
-    offset = 0
+    batch_size = 200
 
-    while True:
-        resp = (
-            client.table('spectra')
-            .select(select)
-            .eq('targets.field', field)
-            .order('id')
-            .range(offset, offset + page_size - 1)
-            .execute()
-        )
-        for row in resp.data:
-            result[row['target_id']].append({
-                'target_id': row['target_id'],
-                'grating': row['grating'],
-                'signal_to_noise': row['signal_to_noise'],
-                'exposure_time': row['exposure_time'],
-            })
-        if len(resp.data) < page_size:
-            break
-        offset += page_size
+    for i in range(0, len(target_ids), batch_size):
+        batch = target_ids[i : i + batch_size]
+        page_size = 1000
+        offset = 0
+
+        while True:
+            resp = (
+                client.table('spectra')
+                .select(select)
+                .in_('target_id', batch)
+                .order('id')
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            for row in resp.data:
+                result[row['target_id']].append({
+                    'target_id': row['target_id'],
+                    'grating': row['grating'],
+                    'signal_to_noise': row['signal_to_noise'],
+                    'exposure_time': row['exposure_time'],
+                })
+            if len(resp.data) < page_size:
+                break
+            offset += page_size
 
     return result
 
@@ -617,7 +620,8 @@ def rebuild_field_objects(
         return 0, 0
 
     print(f"  Fetching spectra metadata...")
-    spectra_map = fetch_spectra_metadata(client, field)
+    target_db_ids = [t['id'] for t in targets]
+    spectra_map = fetch_spectra_metadata(client, target_db_ids)
     n_spectra = sum(len(v) for v in spectra_map.values())
     print(f"    {n_spectra} spectra for {len(spectra_map)} targets")
 
