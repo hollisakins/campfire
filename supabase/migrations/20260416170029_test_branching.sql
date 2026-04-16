@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS _branching_test (id int primary key);
