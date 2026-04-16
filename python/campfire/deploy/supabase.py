@@ -169,20 +169,20 @@ def update_latest_deployment(
 
 def check_existing_objects(client: Client, target_ids: list[str]) -> dict[str, dict]:
     """
-    Return existing targets as a dict keyed by target_id.
+    Return existing target_ids as a dict keyed by target_id.
 
-    Each value contains inspection-relevant fields needed for the
-    redshift drift check during upsert.
+    Phase D: targets carry no inspection state any more, so this collapses to a
+    membership check used by batch_upsert_objects to route each row to the
+    insert vs. update path.
     """
     if not target_ids:
         return {}
 
-    fields = 'target_id, redshift_auto, redshift_inspected, redshift_quality'
     existing = {}
     batch_size = 500
     for i in range(0, len(target_ids), batch_size):
         batch = target_ids[i:i + batch_size]
-        resp = client.table('targets').select(fields).in_('target_id', batch).execute()
+        resp = client.table('targets').select('target_id').in_('target_id', batch).execute()
         for row in resp.data:
             existing[row['target_id']] = row
     return existing
@@ -270,82 +270,32 @@ def batch_upsert_objects(
 
     new_records = []
     update_records = []
-    n_quality_reset = 0
 
+    # Phase D: targets are stateless provenance now. Only write pipeline-derived
+    # fields here — inspection state lives on the parent object and is owned by
+    # the user, never the deploy pipeline. force_overwrite is preserved as a
+    # signal but no longer carries any field-level effect at the target level
+    # (the legacy escape hatch wipes object inspection state in
+    # rebuild_field_objects, not here).
     for obj in objects:
         oid = obj['object_id']
         is_existing = oid in existing
         has_sed = oid in objects_with_sed
 
-        if is_existing and not force_overwrite:
-            # Update pipeline fields only
-            data = {
-                'target_id': oid,
-                'program_slug': obj['program_slug'],
-                'observation': obj['observation'],
-                'field': field,
-                'ra': obj['ra'],
-                'dec': obj['dec'],
-                'redshift_auto': obj['redshift_best'],
-                'has_sed_plot': has_sed,
-            }
+        data = {
+            'target_id': oid,
+            'program_slug': obj['program_slug'],
+            'observation': obj['observation'],
+            'field': field,
+            'ra': obj['ra'],
+            'dec': obj['dec'],
+            'redshift_auto': obj['redshift_best'],
+            'has_sed_plot': has_sed,
+        }
 
-            # Reset Secure quality if redshift_auto drifted and there's
-            # no manual override anchoring the redshift
-            old = existing[oid]
-            if (
-                old['redshift_quality'] == 4
-                and old['redshift_inspected'] is None
-                and old['redshift_auto'] is not None
-                and obj['redshift_best'] is not None
-                and abs(float(old['redshift_auto']) - float(obj['redshift_best'])) > REDSHIFT_DRIFT_THRESHOLD
-            ):
-                data['redshift_quality'] = 0
-                data['last_inspected_at'] = None
-                data['last_inspected_by'] = None
-                n_quality_reset += 1
-                print(f"    quality reset: {oid} z_auto {old['redshift_auto']:.4f} → {obj['redshift_best']:.4f}")
-
-            update_records.append(data)
-        elif is_existing and force_overwrite:
-            # Reset everything
-            data = {
-                'target_id': oid,
-                'program_slug': obj['program_slug'],
-                'observation': obj['observation'],
-                'field': field,
-                'ra': obj['ra'],
-                'dec': obj['dec'],
-                'redshift_auto': obj['redshift_best'],
-                'has_sed_plot': has_sed,
-                'redshift_inspected': None,
-                'redshift_quality': 0,
-                'spectral_features': 0,
-
-                'dq_flags': 0,
-                'last_inspected_at': None,
-                'last_inspected_by': None,
-            }
+        if is_existing:
             update_records.append(data)
         else:
-            # New target
-            data = {
-                'target_id': oid,
-                'program_slug': obj['program_slug'],
-                'observation': obj['observation'],
-                'field': field,
-                'ra': obj['ra'],
-                'dec': obj['dec'],
-                'redshift_auto': obj['redshift_best'],
-                'has_sed_plot': has_sed,
-                'redshift_inspected': None,
-                'redshift_quality': 0,
-                'spectral_features': 0,
-
-                'dq_flags': 0,
-                'last_inspected_at': None,
-                'last_inspected_by': None,
-            }
             new_records.append(data)
 
     # Batch insert new records
@@ -359,19 +309,26 @@ def batch_upsert_objects(
         client.table('targets').upsert(batch, on_conflict='target_id').execute()
 
     new_ids = [r['target_id'] for r in new_records]
-    return len(objects), new_ids, n_quality_reset
+    return len(objects), new_ids, 0
 
 
 def batch_upsert_spectra(
     client: Client,
     spectra: list[dict],
     batch_size: int = 100,
-) -> int:
+) -> tuple[int, set[tuple[str, str]]]:
     """
     Upsert spectra in batches, keyed on the UNIQUE constraint (target_id, grating).
 
     Uses PostgreSQL ON CONFLICT (target_id, grating) for a single-pass upsert,
     eliminating the need to pre-fetch existing records.
+
+    Phase C: also returns the set of (target_id, grating) pairs whose
+    `file_hash` differs from the existing DB row — i.e. spectra that were
+    re-reduced or re-uploaded. `reconcile_field_objects()` uses this to set
+    `staleness_reason='reprocessed'` on affected objects. New rows (no
+    existing hash) are NOT included; their parent object instead picks up
+    the membership-based staleness signal.
 
     Args:
         spectra: List of dicts from summary.get_spectra_records(), optionally
@@ -379,10 +336,34 @@ def batch_upsert_spectra(
         batch_size: Records per batch
 
     Returns:
-        Number of spectra upserted
+        Tuple of (n_upserted, changed_hash_pairs).
     """
     if not spectra:
-        return 0
+        return 0, set()
+
+    new_hashes: dict[tuple[str, str], str | None] = {
+        (s['target_id'], s['grating']): s.get('file_hash') for s in spectra
+    }
+
+    # Pre-fetch existing file_hashes for these (target_id, grating) pairs.
+    # PostgREST can't filter on tuples, so we fetch by target_id IN (...) and
+    # filter Python-side. Gratings per target are few (<6), so the over-fetch
+    # is small.
+    target_ids = sorted({tid for (tid, _) in new_hashes.keys()})
+    existing_hashes: dict[tuple[str, str], str | None] = {}
+    fetch_batch = 200
+    for i in range(0, len(target_ids), fetch_batch):
+        batch = target_ids[i:i + fetch_batch]
+        resp = (
+            client.table('spectra')
+            .select('target_id, grating, file_hash')
+            .in_('target_id', batch)
+            .execute()
+        )
+        for row in resp.data or []:
+            key = (row['target_id'], row['grating'])
+            if key in new_hashes:
+                existing_hashes[key] = row['file_hash']
 
     for i in range(0, len(spectra), batch_size):
         batch = spectra[i:i + batch_size]
@@ -390,7 +371,16 @@ def batch_upsert_spectra(
             batch, on_conflict='target_id,grating'
         ).execute()
 
-    return len(spectra)
+    changed: set[tuple[str, str]] = set()
+    for key, new_hash in new_hashes.items():
+        old_hash = existing_hashes.get(key)
+        # Only flag "reprocessed" when the row existed before with a different
+        # hash. Brand-new rows (no old_hash) are membership signals, not
+        # reprocessing signals.
+        if old_hash is not None and old_hash != new_hash:
+            changed.add(key)
+
+    return len(spectra), changed
 
 
 def recompute_target_aggregates(
@@ -421,52 +411,6 @@ def recompute_target_aggregates(
             'p_target_ids': batch,
         }).execute()
         total += result.data or 0
-
-    return total
-
-
-def propagate_crossmatches(
-    client: Client,
-    target_ids: list[str],
-    batch_size: int = 500,
-) -> int:
-    """
-    Check new targets against existing inspected cross-matches.
-
-    For each new target (quality=0), calls the DB function to check if
-    a nearby Secure (quality=4) target with matching redshift exists.
-    If so, the new target is automatically marked Secure.
-
-    Args:
-        target_ids: String target_ids of newly inserted targets
-        batch_size: Records per batch for ID lookups
-
-    Returns:
-        Number of targets auto-secured
-    """
-    if not target_ids:
-        return 0
-
-    # Batch-fetch integer IDs for the new targets
-    id_map: dict[str, int] = {}
-    for i in range(0, len(target_ids), batch_size):
-        batch = target_ids[i:i + batch_size]
-        resp = client.table('targets').select('id, target_id').in_('target_id', batch).execute()
-        for row in resp.data:
-            id_map[row['target_id']] = row['id']
-
-    total = 0
-    for oid in target_ids:
-        db_id = id_map.get(oid)
-        if db_id is None:
-            continue
-        try:
-            result = client.rpc('propagate_crossmatch_inspection', {
-                'p_target_id': db_id,
-            }).execute()
-            total += result.data or 0
-        except Exception as e:
-            print(f"  Warning: cross-match check failed for {oid}: {e}")
 
     return total
 

@@ -495,7 +495,9 @@ export async function getObjectById(objectId: string): Promise<{
       };
     }
 
-    // Transform member targets, sorted by max_snr desc
+    // Phase D: member targets are stateless provenance — keep redshift_auto
+    // for transitional display, drop the inspection fields (they live on the
+    // parent object now).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const memberTargets: ObjectMemberTarget[] = (members || []).map((m: any) => ({
       id: m.id,
@@ -505,14 +507,7 @@ export async function getObjectById(objectId: string): Promise<{
       observation: m.observation,
       ra: m.ra,
       dec: m.dec,
-      redshift: m.redshift,
       redshift_auto: m.redshift_auto,
-      redshift_inspected: m.redshift_inspected,
-      redshift_quality: m.redshift_quality,
-      spectral_features: m.spectral_features,
-      dq_flags: m.dq_flags,
-      last_inspected_at: m.last_inspected_at,
-      last_inspected_by: m.last_inspected_by,
       has_sed_plot: m.has_sed_plot ?? false,
       max_snr: m.max_snr,
       max_exposure_time: m.max_exposure_time,
@@ -533,8 +528,17 @@ export async function getObjectById(objectId: string): Promise<{
       gratings: obj.gratings,
       max_snr: obj.max_snr,
       max_exposure_time: obj.max_exposure_time,
-      best_redshift: obj.best_redshift,
-      best_redshift_quality: obj.best_redshift_quality,
+      // Phase D: object owns its inspection state
+      redshift: obj.redshift ?? null,
+      redshift_quality: obj.redshift_quality ?? 0,
+      redshift_inspected: obj.redshift_inspected ?? null,
+      redshift_auto: obj.redshift_auto ?? null,
+      last_inspected_at: obj.last_inspected_at ?? null,
+      last_inspected_by: obj.last_inspected_by ?? null,
+      last_data_change_at: obj.last_data_change_at ?? null,
+      staleness_reason: obj.staleness_reason ?? null,
+      version: obj.version ?? 1,
+      is_active: obj.is_active ?? true,
       photo_z: obj.photo_z ?? null,
       photo_z_err_lo: obj.photo_z_err_lo ?? null,
       photo_z_err_hi: obj.photo_z_err_hi ?? null,
@@ -570,7 +574,7 @@ export async function getObjectById(objectId: string): Promise<{
  */
 export async function getObjectMetadata(objectId: string): Promise<{
   object_id: string;
-  best_redshift: number | null;
+  redshift: number | null;
   field: string;
 } | null> {
   try {
@@ -578,7 +582,7 @@ export async function getObjectMetadata(objectId: string): Promise<{
 
     const { data, error } = await supabase
       .from('objects')
-      .select('object_id, best_redshift, field')
+      .select('object_id, redshift, field')
       .eq('object_id', objectId)
       .single();
 
@@ -588,7 +592,7 @@ export async function getObjectMetadata(objectId: string): Promise<{
 
     return {
       object_id: data.object_id,
-      best_redshift: data.best_redshift,
+      redshift: data.redshift,
       field: data.field,
     };
   } catch {

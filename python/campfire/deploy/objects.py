@@ -76,7 +76,8 @@ def fetch_field_targets(client: Client, field: str) -> list[dict]:
     """Fetch all targets for a field, with pagination."""
     fields = (
         'id, target_id, ra, dec, field, program_slug, observation, '
-        'redshift, redshift_quality, max_snr, max_exposure_time'
+        'redshift, redshift_quality, max_snr, max_exposure_time, '
+        'object_id'  # Phase C: needed for reconcile's membership matching
     )
     all_targets = []
     page_size = 1000

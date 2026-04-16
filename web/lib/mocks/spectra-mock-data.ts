@@ -265,11 +265,11 @@ export function applyFiltersToMockData(
       const mode = filters.spectral_features_mode || 'any';
 
       if (mode === 'any') {
-        if ((obj.spectral_features & mask) === 0) return false;
+        if (((obj.spectral_features ?? 0) & mask) === 0) return false;
       } else if (mode === 'all') {
-        if ((obj.spectral_features & mask) !== mask) return false;
+        if (((obj.spectral_features ?? 0) & mask) !== mask) return false;
       } else if (mode === 'none') {
-        if ((obj.spectral_features & mask) !== 0) return false;
+        if (((obj.spectral_features ?? 0) & mask) !== 0) return false;
       }
     }
 
@@ -279,11 +279,11 @@ export function applyFiltersToMockData(
       const mode = filters.dq_flags_mode || 'any';
 
       if (mode === 'any') {
-        if ((obj.dq_flags & mask) === 0) return false;
+        if (((obj.dq_flags ?? 0) & mask) === 0) return false;
       } else if (mode === 'all') {
-        if ((obj.dq_flags & mask) !== mask) return false;
+        if (((obj.dq_flags ?? 0) & mask) !== mask) return false;
       } else if (mode === 'none') {
-        if ((obj.dq_flags & mask) !== 0) return false;
+        if (((obj.dq_flags ?? 0) & mask) !== 0) return false;
       }
     }
 

@@ -66,6 +66,17 @@ CREATE INDEX IF NOT EXISTS idx_objects_gratings
 CREATE INDEX IF NOT EXISTS idx_objects_object_id_trgm
     ON public.objects USING gin (object_id public.gin_trgm_ops);
 
+-- Phase A: support filtering/sorting by the new object-level inspection fields.
+CREATE INDEX IF NOT EXISTS idx_objects_redshift_quality
+    ON public.objects USING btree (redshift_quality);
+
+CREATE INDEX IF NOT EXISTS idx_objects_redshift
+    ON public.objects USING btree (redshift);
+
+-- Soft-deleted objects are the rare case; partial index keeps it cheap.
+CREATE INDEX IF NOT EXISTS idx_objects_is_active
+    ON public.objects USING btree (is_active) WHERE (is_active = false);
+
 -- =============================================================================
 -- object_photometry
 -- =============================================================================
@@ -138,6 +149,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_fits_path
 CREATE INDEX IF NOT EXISTS idx_spectra_grating
     ON public.spectra USING btree (grating);
 
+-- Phase A: filter spectra by DQ flag presence (rare, partial keeps it small).
+CREATE INDEX IF NOT EXISTS idx_spectra_dq_flags
+    ON public.spectra USING btree (dq_flags) WHERE (dq_flags != 0);
+
 
 -- =============================================================================
 -- deployments
@@ -168,8 +183,19 @@ CREATE INDEX IF NOT EXISTS idx_comments_object_id
 -- flag_audit_log
 -- =============================================================================
 
+-- target_id is now nullable (Phase D); keep the index but make it partial so
+-- it only covers rows that still target a target (mostly pre-migration).
 CREATE INDEX IF NOT EXISTS idx_audit_target
-    ON public.flag_audit_log USING btree (target_id);
+    ON public.flag_audit_log USING btree (target_id) WHERE (target_id IS NOT NULL);
+
+-- New (Phase D): object-level audit lookups for "history of inspection on
+-- this object" panels.
+CREATE INDEX IF NOT EXISTS idx_audit_object
+    ON public.flag_audit_log USING btree (object_id) WHERE (object_id IS NOT NULL);
+
+-- New (Phase D): per-spectrum DQ audit lookups.
+CREATE INDEX IF NOT EXISTS idx_audit_spectrum
+    ON public.flag_audit_log USING btree (spectrum_id) WHERE (spectrum_id IS NOT NULL);
 
 
 -- =============================================================================

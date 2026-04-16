@@ -20,6 +20,10 @@ Usage (as subcommand of campfire):
     campfire deploy slits --obs ember_uds_p4
     campfire deploy fetch-config --obs ember_uds_p4 --output-dir ./config
 
+    campfire deploy objects                    # reconcile (default)
+    campfire deploy objects reconcile --field cosmos
+    campfire deploy objects rebuild --field cosmos --force  # escape hatch
+
 Multiple observations are processed serially:
     campfire deploy --obs ember_uds_p4 ember_uds_p5 ember_uds_p6
     campfire deploy rgb --obs ember_uds_p4 ember_uds_p5
@@ -189,17 +193,21 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                 auto_approve=auto_approve,
                 defer_rebuild=multi,
             )
-            if result and result.get('has_new_objects'):
+            if result and result.get('needs_reconcile'):
                 fields_needing_rebuild.add(result['field'])
 
         if multi and not dry_run and fields_needing_rebuild:
-            from campfire.deploy.objects import rebuild_field_objects
+            # Deferred multi-obs path: run reconcile once per field at the end.
+            # Trade-off: changed_hashes from each observation's upsert aren't
+            # threaded through here, so 'reprocessed' staleness won't be
+            # detected for multi-obs deploys. Acceptable — per-obs deploys
+            # (the common case) get full detection via deploy_observation.
+            from campfire.deploy.reconcile import reconcile_field_objects
 
             sb = get_supabase_client(config)
             for field in sorted(fields_needing_rebuild):
-                print(f"\nRebuilding objects for field '{field}'...")
-                n_obj, n_multi = rebuild_field_objects(sb, field)
-                print(f"  {n_obj} objects ({n_multi} multi-target)")
+                print(f"\nReconciling objects for field '{field}'...")
+                reconcile_field_objects(sb, field, abort_on_split_merge=True)
 
             print()
             refresh_filter_options(sb)
@@ -310,10 +318,71 @@ def shutters(config_path, obs, dry_run, skip_astrometry):
 
 
 # ---------------------------------------------------------------------------
-# objects subcommand
+# objects subgroup (Phase C: persistent reconciliation)
 # ---------------------------------------------------------------------------
 
-@deploy_group.command()
+@deploy_group.group(invoke_without_command=True)
+@click.pass_context
+def objects(ctx):
+    """Manage the objects table (reconcile / rebuild).
+
+    Bare `campfire deploy objects` defaults to `reconcile`.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(objects_reconcile)
+
+
+@objects.command('reconcile')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--field', type=str, default=None,
+              help='Reconcile objects for a single field.')
+@click.option('--all', 'all_fields', is_flag=True,
+              help='Reconcile objects for all fields.')
+@click.option('--dry-run', is_flag=True,
+              help='Show plan without making changes.')
+@click.option('--radius', type=float, default=0.2,
+              help='FoF clustering radius in arcseconds (default: 0.2).')
+@click.option('--yes', is_flag=True,
+              help='Skip interactive confirmation for splits/merges.')
+def objects_reconcile(config_path, field, all_fields, dry_run, radius, yes):
+    """Incrementally reconcile the objects table (Phase C).
+
+    Preserves inspection state, comments, list memberships, and photometry
+    on existing objects. Inserts new objects for new clusters, soft-deletes
+    orphaned objects (is_active=false), and surfaces splits/merges for
+    interactive confirmation. This is the default behavior on every deploy.
+    """
+    if not field and not all_fields:
+        raise click.UsageError("Specify --field <name> or --all.")
+
+    from campfire.deploy.objects import fetch_distinct_fields
+    from campfire.deploy.reconcile import reconcile_field_objects
+
+    config = load_config(config_path)
+    sb = get_supabase_client(config)
+
+    if all_fields:
+        fields = fetch_distinct_fields(sb)
+        print(f"Found {len(fields)} fields: {', '.join(fields)}")
+    else:
+        fields = [field]
+
+    for f in fields:
+        print(f"\nReconciling objects for field '{f}'...")
+        reconcile_field_objects(
+            sb, f, radius=radius, dry_run=dry_run, yes=yes,
+        )
+
+    if not dry_run:
+        print()
+        refresh_filter_options(sb)
+        refresh_programs_overview(sb)
+
+    print("Done.")
+
+
+@objects.command('rebuild')
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', type=str, default=None,
@@ -324,8 +393,14 @@ def shutters(config_path, obs, dry_run, skip_astrometry):
               help='Show stats without making changes.')
 @click.option('--radius', type=float, default=0.2,
               help='Cross-match radius in arcseconds (default: 0.2).')
-def objects(config_path, field, all_fields, dry_run, radius):
-    """Rebuild the objects table via position cross-matching."""
+@click.option('--force', is_flag=True,
+              help='Required to actually run; this WIPES inspection state.')
+def objects_rebuild(config_path, field, all_fields, dry_run, radius, force):
+    """Legacy wipe-and-rebuild escape hatch — destroys inspection state.
+
+    Use only when reconcile produces structurally wrong results that
+    warrant starting over. Requires --force AND a typed confirmation.
+    """
     if not field and not all_fields:
         raise click.UsageError("Specify --field <name> or --all.")
 
@@ -339,6 +414,25 @@ def objects(config_path, field, all_fields, dry_run, radius):
         print(f"Found {len(fields)} fields: {', '.join(fields)}")
     else:
         fields = [field]
+
+    if not dry_run:
+        if not force:
+            raise click.UsageError(
+                "--force is required for rebuild. This WIPES inspection state, "
+                "comments, list memberships, and photometry; they are then "
+                "re-linked by spatial proximity (0.3\") with possible loss. "
+                "Use `campfire deploy objects reconcile` instead unless you "
+                "have a specific reason to start over."
+            )
+        click.echo(
+            f"\nWARNING: about to wipe and rebuild objects for "
+            f"{len(fields)} field(s): {', '.join(fields)}"
+        )
+        click.echo("Inspection state, comments, lists, and photometry will be re-linked")
+        click.echo("by spatial proximity. Type DESTROY to confirm.")
+        if click.prompt("> ", type=str) != "DESTROY":
+            click.echo("Aborted.")
+            sys.exit(1)
 
     for f in fields:
         print(f"\nRebuilding objects for field '{f}'...")

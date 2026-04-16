@@ -1,26 +1,39 @@
 'use client';
 
 import { useState, useCallback, useRef, useMemo } from 'react';
-import {
-  SPECTRAL_FEATURES,
-  DQ_FLAGS,
-  decodeBitmask,
-  encodeBitmask,
-} from '@/lib/flags';
+
+/**
+ * Phase D: object-level inspection state.
+ *
+ * - `objectDbId` is the parent object's DB id, not a target id.
+ * - Saves go to PATCH /api/objects/[id]/inspect with `expected_version`.
+ * - Quality + override are the only writable fields here; per-spectrum DQ
+ *   flags get their own dedicated PATCH (/api/spectra/[id]/dq) and aren't
+ *   tracked by this hook.
+ * - 409 from the server is surfaced via `saveError` as a refresh prompt;
+ *   the design rejects merge UI in favour of a hard reload.
+ */
 
 export interface InspectionInitialData {
   redshift_auto: number | null;
   redshift_inspected: number | null;
   redshift_quality: number;
-  spectral_features: number;
-  dq_flags: number;
   last_inspected_at: string | null;
   last_inspected_by: string | null;
+  // Phase D: required for the optimistic-locking save path. Default to 1
+  // (initial column default) when callers don't yet thread it through.
+  version?: number;
+  // Phase D transitional shims — accepted but ignored. Drop in Phase E once
+  // the legacy panel UI is fully replaced.
+  spectral_features?: number;
+  dq_flags?: number;
 }
 
 export interface SaveIfDirtyResult {
   saved: boolean;
-  reason?: 'no-changes' | 'quality-zero' | 'save-failed' | 'already-saving';
+  reason?: 'no-changes' | 'quality-zero' | 'save-failed' | 'already-saving' | 'version-conflict';
+  version?: number;
+  /** Phase D shim — always 0 (cross-match propagation no longer happens). */
   propagated?: number;
 }
 
@@ -29,65 +42,66 @@ export interface InspectionState {
   setRedshiftInspected: (value: string) => void;
   redshiftQuality: number;
   setRedshiftQuality: (value: number) => void;
-  spectralFeatures: (string | number)[];
-  setSpectralFeatures: (value: (string | number)[]) => void;
-  dqFlags: (string | number)[];
-  setDqFlags: (value: (string | number)[]) => void;
   hasChanges: boolean;
   saving: boolean;
   saveError: string | null;
   saveSuccess: boolean;
-  propagatedCount: number;
+  /** True if the last save returned 409 — UI should prompt full refresh. */
+  versionConflict: boolean;
   currentRedshift: number | null;
-  save: () => Promise<{ success: boolean; propagated: number }>;
+  /** Latest known object version (server-of-record). */
+  version: number;
+  save: () => Promise<{ success: boolean; conflict?: boolean; version?: number }>;
   isDirty: () => boolean;
   saveIfDirty: () => Promise<SaveIfDirtyResult>;
-  toggleFlag: (category: 'spectralFeatures' | 'dqFlags', value: number) => void;
   resetState: (newData: InspectionInitialData) => void;
   /** Counter that increments on every resetState call, used to force effect re-runs */
   resetKey: number;
+
+  // ----------------------------------------------------------------------
+  // Phase D transitional shims. The legacy panel renders DQ flag / spectral
+  // feature pills tied to the per-target write path — that path is gone
+  // (Phase E drops the columns, this hook no longer writes them). Until the
+  // full single-page redesign lands, these expose empty arrays and no-op
+  // setters so the existing components keep compiling. Callers should not
+  // rely on them; per-spectrum DQ writes go to PATCH /api/spectra/[id]/dq.
+  spectralFeatures: (string | number)[];
+  setSpectralFeatures: (value: (string | number)[]) => void;
+  dqFlags: (string | number)[];
+  setDqFlags: (value: (string | number)[]) => void;
+  propagatedCount: number;
+  toggleFlag: (category: 'spectralFeatures' | 'dqFlags', value: number) => void;
 }
 
 export function useInspectionState(
   objectDbId: number,
   initialData: InspectionInitialData,
 ): InspectionState {
-  // === State (for React rendering) ===
   const [redshiftInspected, _setRedshiftInspected] = useState<string>(
     initialData.redshift_inspected?.toString() ?? ''
   );
   const [redshiftQuality, _setRedshiftQuality] = useState(initialData.redshift_quality);
-  const [spectralFeatures, _setSpectralFeatures] = useState<(string | number)[]>(
-    decodeBitmask(initialData.spectral_features, SPECTRAL_FEATURES)
-  );
-  const [dqFlags, _setDqFlags] = useState<(string | number)[]>(
-    decodeBitmask(initialData.dq_flags, DQ_FLAGS)
-  );
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [propagatedCount, setPropagatedCount] = useState(0);
-  // Bumped after each save to force useMemo recomputation of hasChanges
+  const [versionConflict, setVersionConflict] = useState(false);
+  const [version, setVersion] = useState((initialData.version ?? 1));
   const [saveCount, setSaveCount] = useState(0);
-  // Bumped on every resetState to force dependent effects to re-run
   const [resetKey, setResetKey] = useState(0);
 
-  // === Refs (always-current values for synchronous access) ===
+  // Refs hold the always-current values (state lags by a render).
   const valuesRef = useRef({
     redshiftInspected: initialData.redshift_inspected?.toString() ?? '',
     redshiftQuality: initialData.redshift_quality,
-    spectralFeatures: decodeBitmask(initialData.spectral_features, SPECTRAL_FEATURES) as (string | number)[],
-    dqFlags: decodeBitmask(initialData.dq_flags, DQ_FLAGS) as (string | number)[],
   });
   const initialDataRef = useRef(initialData);
   const objectDbIdRef = useRef(objectDbId);
+  const versionRef = useRef((initialData.version ?? 1));
   const savingRef = useRef(false);
 
-  // Keep objectDbId ref in sync
   objectDbIdRef.current = objectDbId;
 
-  // === Setters (update both ref and state) ===
   const setRedshiftInspected = useCallback((value: string) => {
     valuesRef.current.redshiftInspected = value;
     _setRedshiftInspected(value);
@@ -98,42 +112,23 @@ export function useInspectionState(
     _setRedshiftQuality(value);
   }, []);
 
-  const setSpectralFeatures = useCallback((value: (string | number)[]) => {
-    valuesRef.current.spectralFeatures = value;
-    _setSpectralFeatures(value);
-  }, []);
-
-  const setDqFlags = useCallback((value: (string | number)[]) => {
-    valuesRef.current.dqFlags = value;
-    _setDqFlags(value);
-  }, []);
-
-  // === Computed: hasChanges (for display, uses state so React re-renders) ===
-  // saveCount is included to force recomputation after save updates initialDataRef
   const hasChanges = useMemo(() => {
     const currentRedshiftInspected = redshiftInspected === '' ? null : parseFloat(redshiftInspected);
     const init = initialDataRef.current;
-
     return (
       currentRedshiftInspected !== init.redshift_inspected ||
-      redshiftQuality !== init.redshift_quality ||
-      encodeBitmask(spectralFeatures) !== init.spectral_features ||
-      encodeBitmask(dqFlags) !== init.dq_flags
+      redshiftQuality !== init.redshift_quality
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [redshiftInspected, redshiftQuality, spectralFeatures, dqFlags, saveCount]);
+  }, [redshiftInspected, redshiftQuality, saveCount]);
 
-  // === isDirty: synchronous check using refs (always current, no render lag) ===
   const isDirty = useCallback((): boolean => {
     const v = valuesRef.current;
     const init = initialDataRef.current;
     const currentRI = v.redshiftInspected === '' ? null : parseFloat(v.redshiftInspected);
-
     return (
       currentRI !== init.redshift_inspected ||
-      v.redshiftQuality !== init.redshift_quality ||
-      encodeBitmask(v.spectralFeatures) !== init.spectral_features ||
-      encodeBitmask(v.dqFlags) !== init.dq_flags
+      v.redshiftQuality !== init.redshift_quality
     );
   }, []);
 
@@ -141,70 +136,73 @@ export function useInspectionState(
     ? parseFloat(redshiftInspected)
     : initialData.redshift_auto;
 
-  // === Save: reads from refs, always sends current values ===
-  const save = useCallback(async (): Promise<{ success: boolean; propagated: number }> => {
+  const save = useCallback(async (): Promise<{ success: boolean; conflict?: boolean; version?: number }> => {
     if (savingRef.current) {
-      console.log('[Inspection] Save already in progress, skipping duplicate');
-      return { success: true, propagated: 0 };
+      return { success: true };
     }
 
     savingRef.current = true;
     setSaving(true);
     setSaveError(null);
     setSaveSuccess(false);
+    setVersionConflict(false);
 
     const v = valuesRef.current;
     const id = objectDbIdRef.current;
+    const expected = versionRef.current;
 
     try {
-      const response = await fetch(`/api/targets/${id}`, {
+      const response = await fetch(`/api/objects/${id}/inspect`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           redshift_inspected: v.redshiftInspected === '' ? null : v.redshiftInspected,
           redshift_quality: v.redshiftQuality,
-          spectral_features: encodeBitmask(v.spectralFeatures),
-          dq_flags: encodeBitmask(v.dqFlags),
+          expected_version: expected,
         }),
       });
 
       const data = await response.json();
 
+      if (response.status === 409) {
+        setVersionConflict(true);
+        setSaveError(data.message || 'Inspection state has been changed, please refresh.');
+        return { success: false, conflict: true, version: data.current_version };
+      }
+
       if (!response.ok) {
         const errorMsg = data.details
-          ? `${data.error}: ${data.details}${data.code ? ` (${data.code})` : ''}`
+          ? `${data.error}: ${data.details}`
           : data.error || 'Failed to save changes';
         throw new Error(errorMsg);
       }
 
-      // Update initialDataRef to reflect the saved state
+      const newVersion = data.object?.version ?? expected + 1;
+      versionRef.current = newVersion;
+      setVersion(newVersion);
+
       initialDataRef.current = {
         ...initialDataRef.current,
         redshift_inspected: v.redshiftInspected === '' ? null : parseFloat(v.redshiftInspected),
         redshift_quality: v.redshiftQuality,
-        spectral_features: encodeBitmask(v.spectralFeatures),
-        dq_flags: encodeBitmask(v.dqFlags),
+        version: newVersion,
       };
 
-      const propagated = data.propagated || 0;
-      setPropagatedCount(propagated);
       setSaveSuccess(true);
-      setSaveCount(c => c + 1); // Force hasChanges useMemo recomputation
+      setSaveCount(c => c + 1);
       setTimeout(() => setSaveSuccess(false), 3000);
-      return { success: true, propagated };
+      return { success: true, version: newVersion };
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Failed to save changes');
-      return { success: false, propagated: 0 };
+      return { success: false };
     } finally {
       savingRef.current = false;
       setSaving(false);
     }
   }, []);
 
-  // === saveIfDirty: auto-save with all checks, reads from refs ===
   const saveIfDirty = useCallback(async (): Promise<SaveIfDirtyResult> => {
     if (savingRef.current) {
-      console.log('[Inspection] saveIfDirty: already saving');
       return { saved: false, reason: 'already-saving' };
     }
 
@@ -213,77 +211,64 @@ export function useInspectionState(
     }
 
     if (valuesRef.current.redshiftQuality === 0) {
-      console.log('[Inspection] saveIfDirty: quality is 0, skipping');
       return { saved: false, reason: 'quality-zero' };
     }
 
-    console.log('[Inspection] saveIfDirty: saving changes...');
     const result = await save();
+    if (result.conflict) {
+      return { saved: false, reason: 'version-conflict', version: result.version };
+    }
     return result.success
-      ? { saved: true, propagated: result.propagated }
+      ? { saved: true, version: result.version }
       : { saved: false, reason: 'save-failed' };
   }, [isDirty, save]);
 
-  const toggleFlag = useCallback((category: 'spectralFeatures' | 'dqFlags', value: number) => {
-    const currentFlags = valuesRef.current[category];
-    const numFlags = currentFlags.map(v => typeof v === 'number' ? v : parseInt(String(v)));
-
-    let newFlags: (string | number)[];
-    if (numFlags.includes(value)) {
-      newFlags = numFlags.filter(v => v !== value);
-    } else {
-      newFlags = [...numFlags, value];
-    }
-
-    // Update ref and state
-    valuesRef.current[category] = newFlags;
-    const setters = {
-      spectralFeatures: _setSpectralFeatures,
-      dqFlags: _setDqFlags,
-    };
-    setters[category](newFlags);
-  }, []);
-
   const resetState = useCallback((newData: InspectionInitialData) => {
-    // Update refs first (synchronous)
     initialDataRef.current = newData;
     valuesRef.current = {
       redshiftInspected: newData.redshift_inspected?.toString() ?? '',
       redshiftQuality: newData.redshift_quality,
-      spectralFeatures: decodeBitmask(newData.spectral_features, SPECTRAL_FEATURES),
-      dqFlags: decodeBitmask(newData.dq_flags, DQ_FLAGS),
     };
-
-    // Update state (async, for rendering)
+    versionRef.current = newData.version ?? 1;
     _setRedshiftInspected(newData.redshift_inspected?.toString() ?? '');
     _setRedshiftQuality(newData.redshift_quality);
-    _setSpectralFeatures(decodeBitmask(newData.spectral_features, SPECTRAL_FEATURES));
-    _setDqFlags(decodeBitmask(newData.dq_flags, DQ_FLAGS));
+    setVersion(newData.version ?? 1);
     setSaveSuccess(false);
     setSaveError(null);
+    setVersionConflict(false);
     setResetKey(k => k + 1);
   }, []);
+
+  // Phase D transitional shims: empty arrays + no-op setters
+  const noopFlagSetter = useCallback((_value: (string | number)[]) => { /* removed in Phase D */ }, []);
+  const noopToggleFlag = useCallback(
+    (_cat: 'spectralFeatures' | 'dqFlags', _val: number) => { /* removed in Phase D */ },
+    []
+  );
 
   return {
     redshiftInspected,
     setRedshiftInspected,
     redshiftQuality,
     setRedshiftQuality,
-    spectralFeatures,
-    setSpectralFeatures,
-    dqFlags,
-    setDqFlags,
     hasChanges,
     saving,
     saveError,
     saveSuccess,
-    propagatedCount,
+    versionConflict,
     currentRedshift,
+    version,
     save,
     isDirty,
     saveIfDirty,
-    toggleFlag,
     resetState,
     resetKey,
+    // Phase D shims — see the InspectionState interface comment.
+    spectralFeatures: [],
+    setSpectralFeatures: noopFlagSetter,
+    dqFlags: [],
+    setDqFlags: noopFlagSetter,
+    propagatedCount: 0,
+    toggleFlag: noopToggleFlag,
   };
 }

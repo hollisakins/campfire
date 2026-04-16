@@ -137,7 +137,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
         <MultiSpectrumViewer
           sources={sources}
           grating={selectedGrating}
-          redshift={object.best_redshift}
+          redshift={object.redshift}
         />
       </div>
 
@@ -147,7 +147,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
           <PhotometrySED
             photometry={object.photometry}
             objectId={object.object_id}
-            bestRedshift={object.best_redshift}
+            bestRedshift={object.redshift}
           />
         </div>
       )}

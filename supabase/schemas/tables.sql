@@ -208,12 +208,24 @@ ALTER TABLE "public"."download_log" OWNER TO "postgres";
 
 CREATE TABLE IF NOT EXISTS "public"."flag_audit_log" (
     "id" integer NOT NULL,
-    "target_id" integer NOT NULL,
+    -- Phase D: target_id was the original (and only) subject column. Now nullable
+    -- so rows can attribute changes to either an object (object-level inspection)
+    -- or a single spectrum (per-spectrum DQ flag edits) instead. Existing
+    -- pre-Phase-D rows keep their target_id; new writes set exactly one of the
+    -- three subject columns (enforced by the flag_audit_log_subject_check).
+    "target_id" integer,
+    "object_id" integer,
+    "spectrum_id" integer,
     "user_id" "uuid",
     "field_name" "text" NOT NULL,
     "old_value" integer,
     "new_value" integer,
-    "changed_at" timestamp without time zone DEFAULT "now"()
+    "changed_at" timestamp without time zone DEFAULT "now"(),
+    CONSTRAINT "flag_audit_log_subject_check" CHECK (
+        (target_id IS NOT NULL)::int +
+        (object_id IS NOT NULL)::int +
+        (spectrum_id IS NOT NULL)::int = 1
+    )
 );
 
 
@@ -309,7 +321,10 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "crds_context" "text",
     "jwst_version" "text",
     "cfpipe_version" "text",
-    "date_obs" "text"
+    "date_obs" "text",
+    -- Phase A: per-spectrum auto-fit and DQ (populated in Phase B by deploy pipeline; backfilled in Phase D)
+    "redshift_auto" double precision,
+    "dq_flags" integer NOT NULL DEFAULT 0
 );
 
 
@@ -333,6 +348,14 @@ COMMENT ON COLUMN "public"."spectra"."file_size" IS 'Size of the FITS file in by
 
 
 COMMENT ON COLUMN "public"."spectra"."exposure_time" IS 'Effective exposure time in seconds, from EFFEXPTM FITS header.';
+
+
+
+COMMENT ON COLUMN "public"."spectra"."redshift_auto" IS 'Phase A: per-grating zfit redshift_auto from the pipeline ECSV. Populated in Phase B by deploy pipeline; backfilled to per-target value by Phase D.1b migration.';
+
+
+
+COMMENT ON COLUMN "public"."spectra"."dq_flags" IS 'Phase A: per-spectrum DQ bitmask. Populated in Phase B by deploy pipeline; backfilled from targets.dq_flags by Phase D.1c migration.';
 
 
 
@@ -396,14 +419,51 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "photo_z_err_lo" double precision,
     "photo_z_err_hi" double precision,
     "has_photometry" boolean NOT NULL DEFAULT false,
-    "updated_at" timestamp with time zone DEFAULT "now"()
+    "updated_at" timestamp with time zone DEFAULT "now"(),
+    -- Phase A: inspection state (populated in Phase D migration; see docs/design-objects-migration.md)
+    "redshift_auto" double precision,
+    "redshift_inspected" numeric(10,6),
+    "redshift_quality" integer NOT NULL DEFAULT 0,
+    "redshift" numeric(10,6) GENERATED ALWAYS AS (
+        CASE
+            WHEN ("redshift_quality" = 1) THEN NULL::double precision
+            ELSE COALESCE(("redshift_inspected")::double precision, "redshift_auto")
+        END
+    ) STORED,
+    "last_inspected_at" timestamp with time zone,
+    "last_inspected_by" "uuid",
+    "last_data_change_at" timestamp with time zone,
+    "staleness_reason" "text",
+    "version" integer NOT NULL DEFAULT 1,
+    "is_active" boolean NOT NULL DEFAULT true
 );
 
 
 ALTER TABLE "public"."objects" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."objects" IS 'Unique sky positions cross-matched across programs. One object groups one or more targets observed within ~0.2 arcsec. Static properties recomputed at deploy time; best_redshift/quality maintained by trigger.';
+COMMENT ON TABLE "public"."objects" IS 'Unique sky positions cross-matched across programs. One object groups one or more targets observed within ~0.2 arcsec. Aggregate columns (n_targets, programs, max_snr, etc.) refreshed by reconcile_field_objects() at deploy time; redshift / redshift_quality / inspection state are user-editable and persist across reconciliation.';
+
+
+COMMENT ON COLUMN "public"."objects"."redshift_auto" IS 'Phase A: per-object auto-fit redshift, computed post-reconciliation as the redshift_auto of the highest-SNR member spectrum. Empty until Phase D migration.';
+
+
+COMMENT ON COLUMN "public"."objects"."redshift_inspected" IS 'Phase A: user-set redshift override at the object level. Empty until Phase D migration.';
+
+
+COMMENT ON COLUMN "public"."objects"."redshift_quality" IS 'Phase A: 0=uninspected, 1=Impossible, 2=Tentative, 3=Probable, 4=Secure. Default 0. Empty until Phase D migration.';
+
+
+COMMENT ON COLUMN "public"."objects"."redshift" IS 'Generated column: NULL when redshift_quality = 1 (Impossible), otherwise COALESCE(redshift_inspected, redshift_auto). Mirrors targets.redshift semantics at object level.';
+
+
+COMMENT ON COLUMN "public"."objects"."staleness_reason" IS 'Phase A: one of new_target | reprocessed | membership_changed | migration_conflict. Set by reconcile_field_objects() (Phase C) when last_data_change_at advances past last_inspected_at.';
+
+
+COMMENT ON COLUMN "public"."objects"."version" IS 'Phase A: optimistic-locking counter. Incremented by trigger only when redshift_inspected or redshift_quality changes. Clients pass expected_version on PATCH; mismatch → 409 Conflict.';
+
+
+COMMENT ON COLUMN "public"."objects"."is_active" IS 'Phase A: false = soft-deleted (orphaned by reconciliation). Hidden from list/map/queue/CSV; reachable via direct URL with banner; admin endpoint reactivates.';
 
 
 
@@ -1348,6 +1408,11 @@ ALTER TABLE ONLY "public"."spectra"
 
 ALTER TABLE ONLY "public"."targets"
     ADD CONSTRAINT "targets_last_inspected_by_fkey" FOREIGN KEY ("last_inspected_by") REFERENCES "auth"."users"("id");
+
+
+
+ALTER TABLE ONLY "public"."objects"
+    ADD CONSTRAINT "objects_last_inspected_by_fkey" FOREIGN KEY ("last_inspected_by") REFERENCES "auth"."users"("id");
 
 
 

@@ -120,7 +120,12 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Fetch audit logs if included (paginate to avoid PostgREST max-rows truncation)
+    // Fetch audit logs if included (paginate to avoid PostgREST max-rows truncation).
+    // Phase D: target_id is nullable now; rows can attribute changes to a
+    // target (legacy), an object (new inspection writes), or a spectrum
+    // (per-spectrum DQ edits). Resolve the display label per-row from
+    // whichever subject is set. Spectrum rows borrow their parent target's
+    // display label (closest analogue to the old target_display_id).
     if (includeInspections) {
       const { data: auditLogs, error: auditError } = await paginateQuery(
         () => {
@@ -129,12 +134,16 @@ export async function GET(request: NextRequest) {
             .select(`
               id,
               target_id,
+              object_id,
+              spectrum_id,
               user_id,
               field_name,
               old_value,
               new_value,
               changed_at,
-              targets!inner(target_id)
+              targets:target_id(target_id),
+              objects:object_id(id, object_id),
+              spectra:spectrum_id(id, target_id, grating)
             `)
             .order('changed_at', { ascending: false })
             .order('id', { ascending: false });
@@ -154,12 +163,22 @@ export async function GET(request: NextRequest) {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       inspectionActivities = auditLogs.map((a: any) => {
-        const targetData = Array.isArray(a.targets) ? a.targets[0] : a.targets;
+        const targetRow = Array.isArray(a.targets) ? a.targets[0] : a.targets;
+        const objectRow = Array.isArray(a.objects) ? a.objects[0] : a.objects;
+        const spectrumRow = Array.isArray(a.spectra) ? a.spectra[0] : a.spectra;
+        // Display label preference: explicit target → object IAU name → parent
+        // target of the spectrum → empty string.
+        const display =
+          targetRow?.target_id ||
+          objectRow?.object_id ||
+          (spectrumRow ? `${spectrumRow.target_id}/${spectrumRow.grating}` : '') ||
+          '';
+        const dbId = a.target_id ?? a.object_id ?? a.spectrum_id ?? 0;
         return {
           id: `audit-${a.id}`,
           type: 'inspection' as const,
-          target_db_id: a.target_id,
-          target_display_id: targetData?.target_id || '',
+          target_db_id: dbId,
+          target_display_id: display,
           user_id: a.user_id,
           timestamp: a.changed_at,
           field_name: a.field_name,

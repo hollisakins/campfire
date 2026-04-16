@@ -148,6 +148,12 @@ export interface AccountRequest {
   rejection_reason: string | null;
 }
 
+// Phase D: most of these fields are now read from the parent object. The type
+// is preserved so spectra-mode rows (which embed redshift/redshift_quality
+// pulled from the parent object via the spectra RPC) can still be typed as
+// `DbTarget`-shaped for the table renderer. spectral_features is gone (Phase
+// E drop); dq_flags moves to Spectrum. last_inspected_* still appears on the
+// row but reflects object state.
 export interface DbTarget {
   id: number;
   target_id: string;
@@ -156,13 +162,11 @@ export interface DbTarget {
   observation: string;
   ra: number;
   dec: number;
-  redshift: number | null;           // Computed: COALESCE(redshift_inspected, redshift_auto)
-  redshift_auto: number | null;      // From pipeline
-  redshift_inspected: number | null; // Manual override
-  redshift_quality: number;
-  spectral_features: number;
-  dq_flags: number;
-  last_inspected_at: string | null;
+  redshift: number | null;           // From parent object
+  redshift_auto: number | null;      // From spectra (per-grating) or transitional target value
+  redshift_inspected: number | null; // From parent object
+  redshift_quality: number;          // From parent object
+  last_inspected_at: string | null;  // From parent object
   last_inspected_by: string | null;
   created_at: string;
   updated_at: string;
@@ -178,6 +182,9 @@ export interface Spectrum {
   signal_to_noise: number | null;
   exposure_time: number | null;
   created_at: string;
+  // Phase D: per-spectrum auto-fit and DQ
+  redshift_auto?: number | null;
+  dq_flags?: number;
   // Pre-generated SVG thumbnails (included when p_include_thumbnails=true in RPC)
   thumbnail_svg_fnu?: string | null;
   thumbnail_svg_flambda?: string | null;
@@ -236,8 +243,8 @@ export interface ObjectListMemberWithObject extends ObjectListMember {
     field: string;
     ra: number;
     dec: number;
-    best_redshift: number | null;
-    best_redshift_quality: number;
+    redshift: number | null;
+    redshift_quality: number;
     n_spectra: number;
     max_snr: number | null;
   } | null;
@@ -245,7 +252,10 @@ export interface ObjectListMemberWithObject extends ObjectListMember {
 
 export interface FlagAuditLog {
   id: number;
-  target_id: number;
+  // Phase D: exactly one of these three is non-null.
+  target_id: number | null;
+  object_id: number | null;
+  spectrum_id: number | null;
   user_id: string;
   field_name: string;
   old_value: number | null;
@@ -297,11 +307,23 @@ export interface SpectrumTarget extends DbTarget {
   gratings?: string[];
   photo_z?: number | null;
   has_photometry?: boolean;
-  member_targets?: { target_id: string; program_slug: string; observation: string; redshift: number | null; redshift_quality: number }[];
+  member_targets?: { target_id: string; program_slug: string; observation: string; redshift_auto: number | null }[];
   lists?: { id: number; name: string; slug: string; icon: string | null; color: string | null }[];
+  // Phase D transitional shims — kept on the row type for legacy components.
+  // spectral_features is a target-level bitmask that's about to disappear; the
+  // DQ flag bitmask now lives per-spectrum (spectra[i].dq_flags).
+  spectral_features?: number;
+  dq_flags?: number;
 }
 
-// Member target with full spectra for object detail page
+// Phase D: member targets are stateless provenance — inspection state
+// belongs to the parent object. We retain redshift_auto on the target during
+// the transition (until Phase E) for display only.
+//
+// The optional inspection fields below are transitional shims for the legacy
+// per-target inspection UI (TargetTab, InspectionPanel, OverviewTab) that
+// hasn't been replaced yet by the single-page object detail redesign. They
+// reflect the deprecated targets.* columns and disappear in Phase E.
 export interface ObjectMemberTarget {
   id: number;
   target_id: string;
@@ -310,18 +332,19 @@ export interface ObjectMemberTarget {
   observation: string;
   ra: number;
   dec: number;
-  redshift: number | null;
   redshift_auto: number | null;
-  redshift_inspected: number | null;
-  redshift_quality: number;
-  spectral_features: number;
-  dq_flags: number;
-  last_inspected_at: string | null;
-  last_inspected_by: string | null;
   has_sed_plot: boolean;
   max_snr: number | null;
   max_exposure_time: number | null;
   spectra: Spectrum[];
+  // Phase D transitional shims (reflect legacy targets.* columns; not authoritative)
+  redshift?: number | null;
+  redshift_inspected?: number | null;
+  redshift_quality?: number;
+  spectral_features?: number;
+  dq_flags?: number;
+  last_inspected_at?: string | null;
+  last_inspected_by?: string | null;
 }
 
 // Photometry band measurement
@@ -348,7 +371,11 @@ export interface ObjectPhotometry {
   has_pz: boolean;
 }
 
-// Full object detail for object detail page
+// Phase D: ObjectDetail owns its inspection state. `redshift` and
+// `redshift_quality` are the canonical fields now (read from the new generated
+// + persisted columns on objects). `best_redshift` / `best_redshift_quality`
+// remain as optional transitional aliases until Phase E drops the underlying
+// columns and the legacy display sites are migrated.
 export interface ObjectDetail {
   id: number;
   object_id: string;
@@ -361,8 +388,16 @@ export interface ObjectDetail {
   gratings: string[];
   max_snr: number | null;
   max_exposure_time: number | null;
-  best_redshift: number | null;
-  best_redshift_quality: number;
+  redshift: number | null;
+  redshift_quality: number;
+  redshift_inspected: number | null;
+  redshift_auto: number | null;
+  last_inspected_at: string | null;
+  last_inspected_by: string | null;
+  last_data_change_at: string | null;
+  staleness_reason: 'new_target' | 'reprocessed' | 'membership_changed' | 'migration_conflict' | null;
+  version: number;
+  is_active: boolean;
   photo_z: number | null;
   photo_z_err_lo: number | null;
   photo_z_err_hi: number | null;
@@ -370,6 +405,10 @@ export interface ObjectDetail {
   created_at: string;
   member_targets: ObjectMemberTarget[];
   photometry: ObjectPhotometry | null;
+  // Phase D transitional aliases — equal to redshift / redshift_quality.
+  // Drop in Phase E.
+  best_redshift?: number | null;
+  best_redshift_quality?: number;
 }
 
 // Comment with user profile info
@@ -505,9 +544,8 @@ export function formatActivityField(fieldName: string, value: number | null): st
     case 'redshift_inspected':
       return value.toFixed(4);
 
-    // For bitmask fields, just show the numeric value (decoding would be complex)
-    case 'spectral_features':
     case 'dq_flags':
+      // Bitmask — display the numeric value; the badge UI decodes per-bit
       return `${value}`;
 
     default:
@@ -519,7 +557,6 @@ export function formatFieldName(fieldName: string): string {
   const names: Record<string, string> = {
     'redshift_quality': 'Redshift Quality',
     'redshift_inspected': 'Redshift (Manual)',
-    'spectral_features': 'Spectral Features',
     'dq_flags': 'Data Quality',
   };
   return names[fieldName] || fieldName;

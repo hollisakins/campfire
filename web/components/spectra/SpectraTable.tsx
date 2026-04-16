@@ -117,15 +117,16 @@ const OBJECTS_COLUMNS: ColumnDefinition[] = [
   { id: 'max_exposure_time', label: 'Max Exp. Time', defaultVisible: false },
 ];
 
-// Map TanStack Table column IDs to server column names — objects mode
-// target_id → object_id, redshift → best_redshift, etc. (server uses different names)
+// Map TanStack Table column IDs to server column names — objects mode.
+// Phase D: best_redshift / best_redshift_quality renamed to redshift /
+// redshift_quality (the new generated column on objects).
 const OBJECTS_COLUMN_TO_SERVER: Record<string, SortColumn> = {
   'target_id': 'object_id',
   'field': 'field',
   'ra': 'ra',
   'dec': 'dec',
-  'redshift': 'best_redshift',
-  'redshift_quality': 'best_redshift_quality',
+  'redshift': 'redshift',
+  'redshift_quality': 'redshift_quality',
   'n_targets': 'n_targets',
   'n_spectra': 'n_spectra',
   'max_snr': 'max_snr',

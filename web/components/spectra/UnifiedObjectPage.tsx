@@ -113,50 +113,29 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
   }, [activeTarget, isSingleton, object.member_targets]);
 
   // === Lifted inspection state ===
-  const emptyInitial: InspectionInitialData = {
-    redshift_auto: null, redshift_inspected: null, redshift_quality: 0,
-    spectral_features: 0, dq_flags: 0, last_inspected_at: null, last_inspected_by: null,
-  };
+  // Phase D: inspection state lives on the parent object now, not on the
+  // active target. We feed the hook the object's id + state so save() lands
+  // in PATCH /api/objects/[id]/inspect with optimistic locking.
+  const initialDataForObject = useMemo((): InspectionInitialData => ({
+    redshift_auto: object.redshift_auto,
+    redshift_inspected: object.redshift_inspected,
+    redshift_quality: object.redshift_quality,
+    last_inspected_at: object.last_inspected_at,
+    last_inspected_by: object.last_inspected_by,
+    version: object.version,
+  }), [object.id, object.version, object.redshift_quality, object.redshift_inspected, object.redshift_auto, object.last_inspected_at, object.last_inspected_by]);
 
-  const initialDataForTarget = useMemo((): InspectionInitialData => {
-    if (!resolvedTarget) return emptyInitial;
-    return {
-      redshift_auto: resolvedTarget.redshift_auto,
-      redshift_inspected: resolvedTarget.redshift_inspected,
-      redshift_quality: resolvedTarget.redshift_quality,
-      spectral_features: resolvedTarget.spectral_features,
-      dq_flags: resolvedTarget.dq_flags,
-      last_inspected_at: resolvedTarget.last_inspected_at,
-      last_inspected_by: resolvedTarget.last_inspected_by,
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedTarget?.id]);
+  const inspection = useInspectionState(object.id, initialDataForObject);
 
-  const inspection = useInspectionState(
-    resolvedTarget?.id ?? -1,
-    initialDataForTarget,
-  );
-
-  // Reset inspection state when the resolved target changes
-  const prevTargetIdRef = useRef(resolvedTarget?.id ?? -1);
+  // Reset inspection state when the object id changes (e.g. SPA navigation)
+  const prevObjectIdRef = useRef(object.id);
   useEffect(() => {
-    const newId = resolvedTarget?.id ?? -1;
-    if (newId !== prevTargetIdRef.current) {
-      prevTargetIdRef.current = newId;
-      if (resolvedTarget) {
-        inspection.resetState({
-          redshift_auto: resolvedTarget.redshift_auto,
-          redshift_inspected: resolvedTarget.redshift_inspected,
-          redshift_quality: resolvedTarget.redshift_quality,
-          spectral_features: resolvedTarget.spectral_features,
-          dq_flags: resolvedTarget.dq_flags,
-          last_inspected_at: resolvedTarget.last_inspected_at,
-          last_inspected_by: resolvedTarget.last_inspected_by,
-        });
-      }
+    if (object.id !== prevObjectIdRef.current) {
+      prevObjectIdRef.current = object.id;
+      inspection.resetState(initialDataForObject);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedTarget?.id]);
+  }, [object.id]);
 
   // Protect against browser back/forward/close when dirty
   useEffect(() => {
@@ -271,8 +250,8 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
             <div className="flex items-end justify-between gap-4 flex-wrap mb-4">
               <MetricCards
                 maxSnr={object.max_snr}
-                redshift={object.best_redshift}
-                redshiftQuality={object.best_redshift_quality}
+                redshift={object.redshift}
+                redshiftQuality={object.redshift_quality}
                 numGratings={object.gratings.length}
               />
               <div className="flex gap-4">

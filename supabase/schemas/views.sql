@@ -78,48 +78,27 @@ GRANT SELECT ON public.mv_programs_overview TO authenticated;
 -- VIEWS
 -- ============================================================
 
--- 3. target_flag_summary
---    Expands bitmask flag columns into label arrays via cross join
---    with flag_definitions.
+-- 3. spectrum_flag_summary
+--    Expands per-spectrum dq_flags bitmask into a label array via cross join
+--    with flag_definitions. Replaces the Phase-D-deprecated target_flag_summary
+--    (which also covered spectral_features — that flag category is dropped).
+DROP VIEW IF EXISTS public.spectrum_flag_summary;
 DROP VIEW IF EXISTS public.target_flag_summary;
-CREATE VIEW public.target_flag_summary AS
+CREATE VIEW public.spectrum_flag_summary AS
 SELECT
-    t.id,
-    t.target_id,
-    array_agg(DISTINCT fd.label) FILTER (WHERE fd.category = 'spectral_features' AND (t.spectral_features & fd.value) > 0) AS spectral_features_labels,
-    array_agg(DISTINCT fd.label) FILTER (WHERE fd.category = 'dq_flags' AND (t.dq_flags & fd.value) > 0) AS dq_flags_labels
-FROM public.targets t
+    s.id,
+    s.target_id,
+    s.grating,
+    array_agg(DISTINCT fd.label) FILTER (WHERE fd.category = 'dq_flags' AND (s.dq_flags & fd.value) > 0) AS dq_flags_labels
+FROM public.spectra s
 CROSS JOIN public.flag_definitions fd
-GROUP BY t.id, t.target_id;
+GROUP BY s.id, s.target_id, s.grating;
 
-GRANT ALL ON TABLE public.target_flag_summary TO anon;
-GRANT ALL ON TABLE public.target_flag_summary TO authenticated;
-GRANT ALL ON TABLE public.target_flag_summary TO service_role;
+GRANT ALL ON TABLE public.spectrum_flag_summary TO anon;
+GRANT ALL ON TABLE public.spectrum_flag_summary TO authenticated;
+GRANT ALL ON TABLE public.spectrum_flag_summary TO service_role;
 
 
--- 4. targets_with_flags
---    Joins targets with redshift quality label/icon/color from flag_definitions.
+-- 4. targets_with_flags — dropped in Phase D (no consumers after the
+-- targets-list view was removed).
 DROP VIEW IF EXISTS public.targets_with_flags;
-CREATE VIEW public.targets_with_flags AS
-SELECT
-    t.id,
-    t.target_id,
-    t.program_slug,
-    t.field,
-    t.ra,
-    t.dec,
-    t.redshift_auto AS redshift,
-    t.redshift_quality,
-    t.spectral_features,
-    t.dq_flags,
-    t.created_at,
-    t.updated_at,
-    rq.label AS redshift_quality_label,
-    rq.icon AS redshift_quality_icon,
-    rq.color AS redshift_quality_color
-FROM public.targets t
-LEFT JOIN public.flag_definitions rq ON (rq.category = 'redshift_quality' AND rq.value = t.redshift_quality);
-
-GRANT ALL ON TABLE public.targets_with_flags TO anon;
-GRANT ALL ON TABLE public.targets_with_flags TO authenticated;
-GRANT ALL ON TABLE public.targets_with_flags TO service_role;
