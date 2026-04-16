@@ -52,6 +52,20 @@ class _VariadicOption(click.Option):
         opt.process = _eat_remaining
 
 
+def _parse_source_ids(ctx, param, value):
+    """Convert space-separated, comma-separated, or repeated flag values to int tuple."""
+    if not value:
+        return None
+    result = []
+    for item in value:
+        for part in item.replace(',', ' ').split():
+            try:
+                result.append(int(part))
+            except ValueError:
+                raise click.BadParameter(f"'{part}' is not a valid integer.")
+    return tuple(result) if result else None
+
+
 from campfire.deploy.deploy import (
     deploy_json,
     deploy_observation,
@@ -115,7 +129,8 @@ def shared_options(f):
 
 def source_ids_option(f):
     """Decorator: --source-ids."""
-    f = click.option('--source-ids', multiple=True, type=int, default=None,
+    f = click.option('--source-ids', multiple=True, type=str, default=None,
+                     cls=_VariadicOption, callback=_parse_source_ids,
                      help='Deploy only specific source IDs.')(f)
     return f
 
@@ -129,7 +144,9 @@ def source_ids_option(f):
 @click.option('--obs', default=None, multiple=True, type=str, cls=_VariadicOption,
               help='Observation name(s) (e.g. ember_uds_p4).')
 @click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
-@click.option('--source-ids', multiple=True, type=int, default=None, help='Deploy only specific source IDs.')
+@click.option('--source-ids', multiple=True, type=str, default=None,
+              cls=_VariadicOption, callback=_parse_source_ids,
+              help='Deploy only specific source IDs.')
 @click.option('--supabase-only', is_flag=True, help='Skip R2 uploads, only update Supabase.')
 @click.option('--force-overwrite', is_flag=True, help='Reset inspection data for existing objects.')
 @click.option('--auto-approve', is_flag=True, help='Skip confirmation prompts.')
