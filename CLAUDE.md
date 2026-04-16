@@ -80,7 +80,8 @@ Files (applied in this order via `schema_paths` in `config.toml`):
 3. Generate migration: `supabase db diff -f <description>`
 4. Review the generated migration SQL
 5. Commit both the schema file change and the generated migration
-6. Push to remote: `supabase db push --linked`
+6. Open a PR — Supabase runs migrations on a preview branch automatically
+7. On merge to `main`, migrations are applied to production via the GitHub integration (`supabase db push --linked` only if necessary)
 
 **Caveats (migra limitations):** Materialized views, comments, and partitions are not tracked by the diff engine. Changes to these require manual migration authoring after editing the schema file.
 
@@ -101,14 +102,20 @@ python scripts/generate_seed.py --objects-per-program 10  # more targets per pro
 supabase db reset                        # applies migrations + seed locally (or automatic on PR)
 ```
 
+Because `seed.sql` is applied automatically on preview branches, it must stay compatible
+with the current migration state. If a migration adds/removes/renames columns or tables,
+regenerate the seed file. Seed failures will show up as a failed Supabase check on the PR.
+
 Test users: `admin@campfire.dev`, `user@campfire.dev`, `viewer@campfire.dev` (password: `password123`)
 
 ## Deployment
 
 ### Git Workflow
 
-- **`main`** → production (auto-deploys via Vercel)
-- Feature/fix branches off `main` → preview deployments, merge back to `main` via PR
+- **`main`** → production (auto-deploys via Vercel + Supabase migration push)
+- Feature/fix branches off `main` → preview deployments with branched Supabase instances, merge back to `main` via PR
+- On PR open: Supabase creates a preview branch (isolated DB + Auth), runs migrations, seeds from `supabase/seed.sql`, and injects credentials into the Vercel preview deployment
+- On PR merge to `main`: Supabase automatically runs new migrations against production
 
 ### Build Verification
 
@@ -123,6 +130,7 @@ cd web && npm run build && cd ..
 - **Database**: Supabase PostgreSQL
 - **Storage**: Cloudflare R2 for FITS files
 - **Auth**: Supabase Auth with email/password
+- **CI/CD**: Supabase GitHub integration (branching + migration checks) + Vercel (preview deploys)
 
 ### Deploy CLI
 
