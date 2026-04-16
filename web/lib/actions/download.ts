@@ -107,9 +107,9 @@ interface SpectraCsvRow {
  */
 export async function generateCSV(
   filters: FilterOptions,
-  sortColumn: SortColumn = 'target_id',
+  sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc',
-  viewMode: ViewMode = 'targets'
+  viewMode: ViewMode = 'objects'
 ): Promise<{ csv: string | null; error: string | null }> {
   try {
     const supabase = await createClient();
@@ -175,44 +175,20 @@ export async function generateCSV(
       return { csv, error: null };
     }
 
-    if (viewMode === 'spectra') {
-      // Spectra mode: one row per (target_id, grating)
-      const { data: rows, error: rpcError } = await paginateRpc<SpectraCsvRow>(
-        supabase, 'get_csv_export_spectra', rpcParams,
-      );
-
-      if (rpcError) {
-        console.error('Error fetching spectra CSV data:', rpcError);
-        return { csv: null, error: rpcError.message };
-      }
-      const csv = spectraRowsToCsv(rows, includeDistance);
-
-      const targetIds = [...new Set(rows.map(r => r.target_id))];
-      trackDownload({
-        userId: user.id,
-        downloadType: 'csv',
-        targetIds,
-        targetCount: targetIds.length,
-        fileCount: 1,
-        filterSnapshot: filters as unknown as Record<string, unknown>,
-      });
-
-      return { csv, error: null };
-    }
-
-    // Targets mode: one row per target
-    const { data: rows, error: rpcError } = await paginateRpc<CsvRow>(
-      supabase, 'get_csv_export', rpcParams,
+    // Spectra mode: one row per (target_id, grating).
+    // Phase D: targets-mode CSV (get_csv_export) was dropped; spectra is the
+    // only remaining per-row export.
+    const { data: rows, error: rpcError } = await paginateRpc<SpectraCsvRow>(
+      supabase, 'get_csv_export_spectra', rpcParams,
     );
 
     if (rpcError) {
-      console.error('Error fetching CSV data:', rpcError);
+      console.error('Error fetching spectra CSV data:', rpcError);
       return { csv: null, error: rpcError.message };
     }
-    const csv = rowsToCsv(rows, includeDistance);
+    const csv = spectraRowsToCsv(rows, includeDistance);
 
-    // Track CSV download (fire-and-forget)
-    const targetIds = rows.map(r => r.target_id);
+    const targetIds = [...new Set(rows.map(r => r.target_id))];
     trackDownload({
       userId: user.id,
       downloadType: 'csv',
@@ -483,7 +459,7 @@ function escapeCsvValue(value: string | null | undefined): string {
 /**
  * Generate filename for CSV download
  */
-export async function generateCsvFilename(viewMode: string = 'targets'): Promise<string> {
+export async function generateCsvFilename(viewMode: string = 'objects'): Promise<string> {
   const now = new Date();
   const timestamp = now
     .toISOString()
@@ -499,9 +475,9 @@ export async function generateCsvFilename(viewMode: string = 'targets'): Promise
  */
 export async function generateFitsDownloadUrl(
   filters: FilterOptions,
-  sortColumn: SortColumn = 'target_id',
+  sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc',
-  viewMode: ViewMode = 'targets'
+  viewMode: ViewMode = 'objects'
 ): Promise<{
   files: DownloadFile[] | null;
   token: string | null;
@@ -518,17 +494,16 @@ export async function generateFitsDownloadUrl(
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    // Fetch filtered results (limit to 200 items)
-    // For objects mode, fetch as targets to get actual FITS paths —
-    // objects are metadata aggregations, FITS files live on spectra.
-    const fetchMode = viewMode === 'objects' ? 'targets' : viewMode;
+    // Fetch filtered results (limit to 200 items).
+    // Phase D: targets mode is gone, so always fetch via spectra mode — that
+    // RPC returns one row per (target, grating) with the FITS path attached.
     const result = await getSpectra(
       filters,
       1, // page
-      200, // pageSize - limit to 200 targets
+      200, // pageSize
       sortColumn === 'object_id' ? 'target_id' : sortColumn,
       sortDirection,
-      fetchMode
+      'spectra'
     );
 
     if (result.error) {

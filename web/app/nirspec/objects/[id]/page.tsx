@@ -135,7 +135,6 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
           sortColumn={sortColumn}
           sortDirection={sortDirection}
           filterStr={filterStr}
-          viewMode="objects"
         />
       </div>
 

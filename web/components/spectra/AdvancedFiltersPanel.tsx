@@ -46,7 +46,7 @@ export function AdvancedFiltersPanel({
   showBasicFilters = false,
   availablePrograms = [],
   availableObservations = [],
-  viewMode = 'targets',
+  viewMode = 'objects',
 }: AdvancedFiltersPanelProps) {
   // Fetch available lists for the list filter
   const [listOptions, setListOptions] = useState<FilterOption[]>([]);

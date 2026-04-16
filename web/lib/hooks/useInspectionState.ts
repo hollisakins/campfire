@@ -20,21 +20,14 @@ export interface InspectionInitialData {
   redshift_quality: number;
   last_inspected_at: string | null;
   last_inspected_by: string | null;
-  // Phase D: required for the optimistic-locking save path. Default to 1
-  // (initial column default) when callers don't yet thread it through.
+  /** Required for the optimistic-locking save path. Defaults to 1. */
   version?: number;
-  // Phase D transitional shims — accepted but ignored. Drop in Phase E once
-  // the legacy panel UI is fully replaced.
-  spectral_features?: number;
-  dq_flags?: number;
 }
 
 export interface SaveIfDirtyResult {
   saved: boolean;
   reason?: 'no-changes' | 'quality-zero' | 'save-failed' | 'already-saving' | 'version-conflict';
   version?: number;
-  /** Phase D shim — always 0 (cross-match propagation no longer happens). */
-  propagated?: number;
 }
 
 export interface InspectionState {
@@ -57,20 +50,6 @@ export interface InspectionState {
   resetState: (newData: InspectionInitialData) => void;
   /** Counter that increments on every resetState call, used to force effect re-runs */
   resetKey: number;
-
-  // ----------------------------------------------------------------------
-  // Phase D transitional shims. The legacy panel renders DQ flag / spectral
-  // feature pills tied to the per-target write path — that path is gone
-  // (Phase E drops the columns, this hook no longer writes them). Until the
-  // full single-page redesign lands, these expose empty arrays and no-op
-  // setters so the existing components keep compiling. Callers should not
-  // rely on them; per-spectrum DQ writes go to PATCH /api/spectra/[id]/dq.
-  spectralFeatures: (string | number)[];
-  setSpectralFeatures: (value: (string | number)[]) => void;
-  dqFlags: (string | number)[];
-  setDqFlags: (value: (string | number)[]) => void;
-  propagatedCount: number;
-  toggleFlag: (category: 'spectralFeatures' | 'dqFlags', value: number) => void;
 }
 
 export function useInspectionState(
@@ -239,13 +218,6 @@ export function useInspectionState(
     setResetKey(k => k + 1);
   }, []);
 
-  // Phase D transitional shims: empty arrays + no-op setters
-  const noopFlagSetter = useCallback((_value: (string | number)[]) => { /* removed in Phase D */ }, []);
-  const noopToggleFlag = useCallback(
-    (_cat: 'spectralFeatures' | 'dqFlags', _val: number) => { /* removed in Phase D */ },
-    []
-  );
-
   return {
     redshiftInspected,
     setRedshiftInspected,
@@ -263,12 +235,5 @@ export function useInspectionState(
     saveIfDirty,
     resetState,
     resetKey,
-    // Phase D shims — see the InspectionState interface comment.
-    spectralFeatures: [],
-    setSpectralFeatures: noopFlagSetter,
-    dqFlags: [],
-    setDqFlags: noopFlagSetter,
-    propagatedCount: 0,
-    toggleFlag: noopToggleFlag,
   };
 }

@@ -41,9 +41,10 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
             },
           },
           1, // page
-          10, // pageSize (limit to 10 results)
-          'target_id', // sortColumn (will be overridden by distance sorting in RPC)
-          'asc' // sortDirection
+          10, // pageSize
+          'object_id', // server overrides this with distance when coord search is active
+          'asc',
+          'objects',
         );
 
         if (result.error) {
@@ -153,7 +154,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
                   >
                     <td className="py-3 px-4">
                       <Link
-                        href={`/nirspec/targets/${encodeURIComponent(obj.target_id)}`}
+                        href={`/nirspec/objects/${encodeURIComponent(obj.target_id)}`}
                         className="text-sm font-mono text-primary hover:underline"
                       >
                         {obj.target_id}

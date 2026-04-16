@@ -5,9 +5,9 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 import { InspectionModeOverlay } from '@/components/spectra/inspection/InspectionModeOverlay';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import { getSpectrumById } from '@/lib/actions/spectra';
-import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
-import type { SpectrumTarget } from '@/lib/types';
+import { getObjectById } from '@/lib/actions/spectra';
+import { parseFiltersFromURL } from '@/lib/utils/url-params';
+import type { ObjectDetail } from '@/lib/types';
 
 function InspectPageInner() {
   const searchParams = useSearchParams();
@@ -16,58 +16,47 @@ function InspectPageInner() {
 
   const startId = searchParams.get('start');
 
-  // Parse filter/sort params
+  // Filter params (all URL params except `start`).
   const urlParams = new URLSearchParams(searchParams.toString());
   urlParams.delete('start');
   const filterStr = urlParams.toString();
   const filters = parseFiltersFromURL(urlParams);
-  const { sortColumn, sortDirection } = parseSortingFromURL(urlParams);
 
-  // Data state
-  const [spectrum, setSpectrum] = useState<SpectrumTarget | null>(null);
+  const [object, setObject] = useState<ObjectDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fetchedRef = useRef(false);
 
-  // Redirect if no start param
   useEffect(() => {
-    if (!startId) {
-      router.replace('/nirspec');
-    }
+    if (!startId) router.replace('/nirspec');
   }, [startId, router]);
 
-  // Redirect if not authenticated (after auth loads)
   useEffect(() => {
-    if (!authLoading && !user) {
-      router.replace('/login');
-    }
+    if (!authLoading && !user) router.replace('/login');
   }, [authLoading, user, router]);
 
-  // Fetch initial data
   useEffect(() => {
     if (!startId || authLoading || !user || fetchedRef.current) return;
     fetchedRef.current = true;
 
     (async () => {
       try {
-        const result = await getSpectrumById(startId);
-        if (!result.spectrum) {
+        const result = await getObjectById(startId);
+        if (!result.object) {
           setError('Object not found');
           setLoading(false);
           return;
         }
-
-        setSpectrum(result.spectrum);
+        setObject(result.object);
         setLoading(false);
       } catch (err) {
         console.error('[InspectPage] Failed to load data:', err);
-        setError('Failed to load spectrum data');
+        setError('Failed to load object data');
         setLoading(false);
       }
     })();
   }, [startId, authLoading, user]);
 
-  // Loading / error / redirect states
   if (!startId || authLoading || !user) {
     return (
       <div className="fixed inset-0 z-[200] bg-background dark:bg-slate-900 flex items-center justify-center">
@@ -92,7 +81,7 @@ function InspectPageInner() {
     );
   }
 
-  if (loading || !spectrum) {
+  if (loading || !object) {
     return (
       <div className="fixed inset-0 z-[200] bg-background dark:bg-slate-900 flex items-center justify-center">
         <div className="text-center text-text-secondary dark:text-slate-400">
@@ -105,11 +94,9 @@ function InspectPageInner() {
 
   return (
     <InspectionModeOverlay
-      spectrum={spectrum}
+      object={object}
       filterStr={filterStr}
       filters={filters}
-      sortColumn={sortColumn}
-      sortDirection={sortDirection}
     />
   );
 }

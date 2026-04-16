@@ -2,9 +2,8 @@
 
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import type { ObjectDetail, ObjectMemberTarget, Spectrum } from '@/lib/types';
-import { MEMBER_COLORS } from '@/lib/types';
+import { MEMBER_COLORS, GRATINGS } from '@/lib/types';
 import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
 import { MetricCards } from '@/components/spectra/MetricCards';
 import { DownloadButtons } from '@/components/spectra/DownloadButtons';
@@ -14,24 +13,19 @@ import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
 import { FloatingInspectionPanel } from './FloatingInspectionPanel';
 import { TileThumbnailWithToggle } from './TileThumbnailWithToggle';
 import { ObjectSidebar } from './ObjectSidebar';
-import { OverviewTab } from './OverviewTab';
-import { TargetTab } from './TargetTab';
+import { MultiSpectrumViewer, type SpectrumSource } from './MultiSpectrumViewer';
+import { SpectraDetailSection } from './SpectraDetailSection';
+import { RedshiftFitSummary } from './RedshiftFitSummary';
+import { PhotometrySED } from './PhotometrySED';
+import { ObjectComments } from './ObjectComments';
+import { NearbyObjects } from './NearbyObjects';
+import { StalenessBadge } from './StalenessBadge';
 
 interface UnifiedObjectPageProps {
   object: ObjectDetail;
 }
 
-export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
-  object,
-}) => {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-
-  const activeTab = searchParams.get('tab') || 'overview';
-  const grating = searchParams.get('grating') || undefined;
-
-  // Stable color assignment
+export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) => {
   const colors = useMemo(() => {
     const c: Record<string, string> = {};
     object.member_targets.forEach((m, i) => {
@@ -40,28 +34,22 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
     return c;
   }, [object.member_targets]);
 
-  // Program slug → human-readable name
   const programNames = useMemo(() => {
     const names: Record<string, string> = {};
     for (const m of object.member_targets) {
-      if (!names[m.program_slug]) {
-        names[m.program_slug] = m.program_name;
-      }
+      if (!names[m.program_slug]) names[m.program_slug] = m.program_name;
     }
     return names;
   }, [object.member_targets]);
 
-  // === Shared visibility + order state (used by sidebar + overview spectrum viewer) ===
   const [memberOrder, setMemberOrder] = useState<string[]>(
     () => object.member_targets.map(m => m.target_id)
   );
 
   const [visibility, setVisibility] = useState<Record<string, boolean>>(() => {
-    const vis: Record<string, boolean> = {};
-    object.member_targets.forEach((m) => {
-      vis[m.target_id] = true;
-    });
-    return vis;
+    const v: Record<string, boolean> = {};
+    object.member_targets.forEach(m => { v[m.target_id] = true; });
+    return v;
   });
 
   const handleVisibilityChange = useCallback((targetId: string, visible: boolean) => {
@@ -71,9 +59,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
   const handleToggleAll = useCallback((visible: boolean) => {
     setVisibility(prev => {
       const next = { ...prev };
-      for (const m of object.member_targets) {
-        next[m.target_id] = visible;
-      }
+      for (const m of object.member_targets) next[m.target_id] = visible;
       return next;
     });
   }, [object.member_targets]);
@@ -82,120 +68,161 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
     setMemberOrder(newOrder);
   }, []);
 
-  // Ordered + filtered members
   const orderedMembers = useMemo(() => {
-    const memberMap = new Map<string, ObjectMemberTarget>(
+    const map = new Map<string, ObjectMemberTarget>(
       object.member_targets.map(m => [m.target_id, m])
     );
     return memberOrder
-      .map(id => memberMap.get(id))
+      .map(id => map.get(id))
       .filter((m): m is ObjectMemberTarget => m != null);
   }, [object.member_targets, memberOrder]);
 
-  // === Tab + target resolution ===
-  const activeTarget = useMemo(() => {
-    if (activeTab === 'overview') return null;
-    return object.member_targets.find(m => m.target_id === activeTab) || null;
-  }, [activeTab, object.member_targets]);
+  // The spectrum whose redshift_auto sets objects.redshift_auto = highest SNR.
+  const selectedSpectrumId = useMemo(() => {
+    let best: { id: number; snr: number } | null = null;
+    for (const m of object.member_targets) {
+      for (const s of m.spectra) {
+        if (s.signal_to_noise == null) continue;
+        if (!best || s.signal_to_noise > best.snr) {
+          best = { id: s.id, snr: s.signal_to_noise };
+        }
+      }
+    }
+    return best?.id ?? null;
+  }, [object.member_targets]);
 
-  const resolvedTab = activeTarget ? activeTab : 'overview';
+  // Section 2 expansion state — default to highest-SNR card expanded.
+  const [expandedSpectra, setExpandedSpectra] = useState<Set<number>>(() => {
+    const s = new Set<number>();
+    if (selectedSpectrumId != null) s.add(selectedSpectrumId);
+    return s;
+  });
 
-  const isSingleton = object.member_targets.length === 1;
+  const handleToggleExpand = useCallback((spectrumId: number) => {
+    setExpandedSpectra(prev => {
+      const next = new Set(prev);
+      if (next.has(spectrumId)) next.delete(spectrumId);
+      else next.add(spectrumId);
+      return next;
+    });
+  }, []);
 
-  // The target whose inspection state is active:
-  // - on a target tab: that target
-  // - on overview with a singleton: the only target
-  // - on overview with multiple targets: null (inspection disabled)
-  const resolvedTarget = useMemo(() => {
-    if (activeTarget) return activeTarget;
-    if (isSingleton) return object.member_targets[0];
-    return null;
-  }, [activeTarget, isSingleton, object.member_targets]);
+  const handleExpandAll = useCallback(() => {
+    const all = new Set<number>();
+    for (const m of object.member_targets) for (const s of m.spectra) all.add(s.id);
+    setExpandedSpectra(all);
+  }, [object.member_targets]);
 
-  // === Lifted inspection state ===
-  // Phase D: inspection state lives on the parent object now, not on the
-  // active target. We feed the hook the object's id + state so save() lands
-  // in PATCH /api/objects/[id]/inspect with optimistic locking.
-  const initialDataForObject = useMemo((): InspectionInitialData => ({
+  const handleCollapseAll = useCallback(() => {
+    setExpandedSpectra(new Set());
+  }, []);
+
+  // Section 1 filter pills.
+  const sortedGratings = useMemo(() =>
+    GRATINGS.filter(g => object.gratings.includes(g)),
+    [object.gratings]
+  );
+  const [selectedGrating, setSelectedGrating] = useState<string | null>(null);
+  const [selectedProgram, setSelectedProgram] = useState<string | null>(null);
+
+  const filteredMembers = useMemo(() =>
+    selectedProgram
+      ? orderedMembers.filter(m => m.program_slug === selectedProgram)
+      : orderedMembers,
+    [orderedMembers, selectedProgram]
+  );
+
+  // MultiSpectrumViewer source list.
+  // Reversed so top sidebar entry = last trace = topmost in Plotly draw order.
+  const sources: SpectrumSource[] = useMemo(() =>
+    [...filteredMembers]
+      .reverse()
+      .filter(m => visibility[m.target_id])
+      .flatMap(m =>
+        m.spectra
+          .filter(s => !selectedGrating || s.grating === selectedGrating)
+          .map(s => ({
+            fitsPath: s.fits_path,
+            label: selectedGrating ? m.target_id : `${m.target_id} (${s.grating})`,
+            color: colors[m.target_id],
+            visible: true,
+          }))
+      ),
+    [filteredMembers, visibility, selectedGrating, colors]
+  );
+
+  // Section 3 — flat list of all member spectra for object-level redshift fit summary.
+  const allMemberSpectra: Spectrum[] = useMemo(
+    () => object.member_targets.flatMap(m => m.spectra),
+    [object.member_targets]
+  );
+
+  // Section 6 — exclude object's own member targets from nearby search.
+  const excludeTargetIds = useMemo(
+    () => object.member_targets.map(m => m.target_id),
+    [object.member_targets]
+  );
+
+  // Inspection state lives on the parent object (Phase D).
+  const initialInspection = useMemo((): InspectionInitialData => ({
     redshift_auto: object.redshift_auto,
     redshift_inspected: object.redshift_inspected,
     redshift_quality: object.redshift_quality,
     last_inspected_at: object.last_inspected_at,
     last_inspected_by: object.last_inspected_by,
     version: object.version,
-  }), [object.id, object.version, object.redshift_quality, object.redshift_inspected, object.redshift_auto, object.last_inspected_at, object.last_inspected_by]);
+  }), [object.redshift_auto, object.redshift_inspected, object.redshift_quality, object.last_inspected_at, object.last_inspected_by, object.version]);
 
-  const inspection = useInspectionState(object.id, initialDataForObject);
+  const inspection = useInspectionState(object.id, initialInspection);
 
-  // Reset inspection state when the object id changes (e.g. SPA navigation)
+  // Reset inspection + expansion when navigating between objects.
   const prevObjectIdRef = useRef(object.id);
   useEffect(() => {
     if (object.id !== prevObjectIdRef.current) {
       prevObjectIdRef.current = object.id;
-      inspection.resetState(initialDataForObject);
+      inspection.resetState(initialInspection);
+      const next = new Set<number>();
+      if (selectedSpectrumId != null) next.add(selectedSpectrumId);
+      setExpandedSpectra(next);
+      setMemberOrder(object.member_targets.map(m => m.target_id));
+      const v: Record<string, boolean> = {};
+      object.member_targets.forEach(m => { v[m.target_id] = true; });
+      setVisibility(v);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [object.id]);
 
-  // Protect against browser back/forward/close when dirty
+  // Block accidental nav with unsaved inspection state.
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (resolvedTarget && inspection.isDirty()) {
-        e.preventDefault();
-      }
+      if (inspection.isDirty()) e.preventDefault();
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [resolvedTarget, inspection.isDirty]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // === Tab navigation ===
-  const handleTabChange = useCallback((tab: string) => {
-    // Check for unsaved inspection changes before switching away
-    if (resolvedTarget && inspection.isDirty()) {
-      const confirmed = window.confirm(
-        'You have unsaved inspection changes. Discard and switch targets?'
-      );
-      if (!confirmed) return;
-    }
-
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('tab', tab);
-    // Grating is only meaningful on initial mount of a specific target tab;
-    // clear it on any tab switch to avoid stale/invalid values in the URL
-    params.delete('grating');
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  }, [router, pathname, searchParams, resolvedTarget, inspection]);
-
-  // === Cutout shutter colors: reactive to current state ===
+  // Cutout shutter colors: all visible members.
   const cutoutMemberColors = useMemo(() => {
-    if (activeTarget) {
-      // On a target tab: highlight just that target
-      return { [activeTarget.target_id]: colors[activeTarget.target_id] };
-    }
-    // On overview: show all visible members
     const mc: Record<string, string> = {};
     for (const m of orderedMembers) {
-      if (visibility[m.target_id]) {
-        mc[m.target_id] = colors[m.target_id];
-      }
+      if (visibility[m.target_id]) mc[m.target_id] = colors[m.target_id];
     }
     return mc;
-  }, [activeTarget, orderedMembers, visibility, colors]);
+  }, [orderedMembers, visibility, colors]);
 
-  // Flatten all member spectra for download button
-  const allSpectra: Spectrum[] = useMemo(() =>
-    object.member_targets.flatMap(m => m.spectra),
+  // Flatten all spectra for the object-level download button.
+  const allSpectra: Spectrum[] = useMemo(
+    () => object.member_targets.flatMap(m => m.spectra),
     [object.member_targets]
   );
 
   return (
     <div>
-      {/* Sidebar (with cutout) + Header + Main Panel */}
       <div className="flex gap-6 pb-24">
-        {/* Desktop sidebar — spans full height from header to bottom */}
+        {/* Desktop sidebar: cutout + members control panel */}
         <div className="hidden lg:block">
           <div className="w-[260px] flex-shrink-0 sticky top-4 max-h-[calc(100vh-6rem)] overflow-y-auto border-r border-border dark:border-slate-700 pr-3">
-            {/* Cutout — reactive to sidebar/tab state */}
             <div className="mb-3">
               <TileThumbnailWithToggle
                 targetId={object.object_id}
@@ -209,11 +236,8 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
                 memberColors={cutoutMemberColors}
               />
             </div>
-
             <ObjectSidebar
               members={orderedMembers}
-              activeTab={resolvedTab}
-              onTabChange={handleTabChange}
               colors={colors}
               visibility={visibility}
               onVisibilityChange={handleVisibilityChange}
@@ -224,11 +248,38 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
         </div>
 
         <div className="flex-1 min-w-0">
-          {/* Object Header */}
-          <div className="mb-4">
-            <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100 mb-2">
-              {object.object_id}
-            </h1>
+          {/* Mobile: cutout above content */}
+          <div className="lg:hidden mb-4">
+            <TileThumbnailWithToggle
+              targetId={object.object_id}
+              size={600}
+              displaySize={200}
+              fov={3.2}
+              ra={object.ra}
+              dec={object.dec}
+              field={object.field}
+              linkToMap={{ field: object.field, ra: object.ra, dec: object.dec }}
+              memberColors={cutoutMemberColors}
+            />
+          </div>
+
+          {/* === Header === */}
+          <div className="mb-6">
+            <div className="flex items-center gap-3 mb-2 flex-wrap">
+              <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100">
+                {object.object_id}
+              </h1>
+              <StalenessBadge
+                reason={object.staleness_reason}
+                lastInspectedAt={object.last_inspected_at}
+                lastDataChangeAt={object.last_data_change_at}
+              />
+              {!object.is_active && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-200 dark:bg-slate-700 text-text-secondary dark:text-slate-300">
+                  Inactive
+                </span>
+              )}
+            </div>
             <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
               <span>Field:</span>
               <Link
@@ -246,8 +297,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
               <CoordinateDisplay ra={object.ra} dec={object.dec} />
               <ShowOnMapLink ra={object.ra} dec={object.dec} field={object.field} objectId={object.object_id} />
             </div>
-
-            <div className="flex items-end justify-between gap-4 flex-wrap mb-4">
+            <div className="flex items-end justify-between gap-4 flex-wrap">
               <MetricCards
                 maxSnr={object.max_snr}
                 redshift={object.redshift}
@@ -264,62 +314,137 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
             </div>
           </div>
 
-          {/* Mobile: cutout + target selector (replaces sidebar on small screens) */}
-          <div className="lg:hidden mb-4">
-            <div className="mb-3">
-              <TileThumbnailWithToggle
-                targetId={object.object_id}
-                size={600}
-                displaySize={200}
-                fov={3.2}
-                ra={object.ra}
-                dec={object.dec}
-                field={object.field}
-                linkToMap={{ field: object.field, ra: object.ra, dec: object.dec }}
-                memberColors={cutoutMemberColors}
+          {/* === Section 1: Spectrum Comparison === */}
+          <section className="mb-8">
+            <div className="flex flex-wrap gap-5 items-center mb-4">
+              <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+                Spectrum Comparison{selectedGrating ? ` — ${selectedGrating}` : ''}
+              </h2>
+              {object.programs.length > 1 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-text-secondary dark:text-slate-400">Program:</span>
+                  <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">
+                    <button
+                      onClick={() => setSelectedProgram(null)}
+                      className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                        selectedProgram === null
+                          ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
+                          : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                      }`}
+                    >
+                      All
+                    </button>
+                    {object.programs.map(p => (
+                      <button
+                        key={p}
+                        onClick={() => setSelectedProgram(selectedProgram === p ? null : p)}
+                        className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                          selectedProgram === p
+                            ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
+                            : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                        }`}
+                      >
+                        {programNames[p] || p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-text-secondary dark:text-slate-400">Grating:</span>
+                <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">
+                  <button
+                    onClick={() => setSelectedGrating(null)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                      selectedGrating === null
+                        ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
+                        : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {sortedGratings.map(g => (
+                    <button
+                      key={g}
+                      onClick={() => setSelectedGrating(selectedGrating === g ? null : g)}
+                      className={`px-2.5 py-1 text-xs font-medium font-mono rounded transition-colors ${
+                        g === selectedGrating
+                          ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
+                          : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {g}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+              <MultiSpectrumViewer
+                sources={sources}
+                grating={selectedGrating}
+                redshift={object.redshift}
               />
             </div>
-            <select
-              value={resolvedTab}
-              onChange={(e) => handleTabChange(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-lg bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
-            >
-              <option value="overview">Overview</option>
-              {orderedMembers.map(m => (
-                <option key={m.target_id} value={m.target_id}>
-                  {m.target_id} — {m.program_name}
-                </option>
-              ))}
-            </select>
-          </div>
+          </section>
 
-          {/* Main content */}
-          {resolvedTab === 'overview' ? (
-            <OverviewTab
-              object={object}
-              colors={colors}
+          {/* === Section 2: Spectra Detail Cards === */}
+          <section className="mb-8">
+            <SpectraDetailSection
               orderedMembers={orderedMembers}
               visibility={visibility}
+              colors={colors}
               programNames={programNames}
+              selectedSpectrumId={selectedSpectrumId}
+              objectRedshift={object.redshift}
+              expanded={expandedSpectra}
+              onToggleExpand={handleToggleExpand}
+              onExpandAll={handleExpandAll}
+              onCollapseAll={handleCollapseAll}
             />
-          ) : activeTarget ? (
-            <TargetTab
-              key={activeTarget.target_id}
-              target={activeTarget}
-              initialGrating={grating}
-              color={colors[activeTarget.target_id]}
-              inspection={inspection}
+          </section>
+
+          {/* === Section 3: Redshift Fits === */}
+          <section className="mb-8">
+            <RedshiftFitSummary
+              spectra={allMemberSpectra}
+              redshift_auto={object.redshift_auto}
             />
-          ) : null}
+          </section>
+
+          {/* === Section 4: Photometry & SED === */}
+          {object.has_photometry && object.photometry && (
+            <section className="mb-8">
+              <PhotometrySED
+                photometry={object.photometry}
+                objectId={object.object_id}
+                bestRedshift={object.redshift}
+              />
+            </section>
+          )}
+
+          {/* === Section 5: Discussion === */}
+          <section className="mb-8">
+            <ObjectComments objectDbId={object.id} memberTargets={object.member_targets} />
+          </section>
+
+          {/* === Section 6: Nearby Objects === */}
+          <section className="mb-8">
+            <NearbyObjects
+              ra={object.ra}
+              dec={object.dec}
+              currentTargetId={object.object_id}
+              excludeTargetIds={excludeTargetIds}
+            />
+          </section>
         </div>
       </div>
 
-      {/* Floating inspection panel — always visible */}
       <FloatingInspectionPanel
         objectId={object.id}
         ra={object.ra}
         dec={object.dec}
-        inspection={resolvedTarget ? inspection : null}
+        inspection={inspection}
       />
     </div>
   );

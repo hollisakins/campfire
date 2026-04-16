@@ -309,6 +309,9 @@ export interface SpectrumTarget extends DbTarget {
   has_photometry?: boolean;
   member_targets?: { target_id: string; program_slug: string; observation: string; redshift_auto: number | null }[];
   lists?: { id: number; name: string; slug: string; icon: string | null; color: string | null }[];
+  // Phase D: staleness fields on the object row (objects mode only).
+  staleness_reason?: 'new_target' | 'reprocessed' | 'membership_changed' | 'migration_conflict' | null;
+  last_data_change_at?: string | null;
   // Phase D transitional shims — kept on the row type for legacy components.
   // spectral_features is a target-level bitmask that's about to disappear; the
   // DQ flag bitmask now lives per-spectrum (spectra[i].dq_flags).

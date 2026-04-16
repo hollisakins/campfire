@@ -4,16 +4,16 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { lookupInCache, isAtCacheBoundary } from '@/lib/navigation-cache';
-import { getAdjacentTargetIds, getAdjacentObjectIds, type FilterOptions } from '@/lib/actions/spectra';
-import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
+import { getAdjacentObjectIds, type FilterOptions } from '@/lib/actions/spectra';
+import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 
 interface ObjectNavigationProps {
+  /** IAU object_id of the current object. */
   targetId: string;
   filters: Partial<FilterOptions>;
   sortColumn: SortColumn;
   sortDirection: SortDirection;
   filterStr: string; // URL params string for navigation links
-  viewMode?: ViewMode;
   className?: string;
 }
 
@@ -30,7 +30,7 @@ interface NavState {
  * Client component for detail page navigation.
  * Uses hybrid approach: sessionStorage cache for instant lookup,
  * falls back to server query when cache misses.
- * Supports both targets and objects view modes.
+ * Phase D: objects-only.
  */
 export function ObjectNavigation({
   targetId,
@@ -38,7 +38,6 @@ export function ObjectNavigation({
   sortColumn,
   sortDirection,
   filterStr,
-  viewMode = 'targets',
   className = '',
 }: ObjectNavigationProps) {
   const [nav, setNav] = useState<NavState>({
@@ -50,8 +49,7 @@ export function ObjectNavigation({
     source: 'none',
   });
 
-  const isObjectsMode = viewMode === 'objects';
-  const basePath = isObjectsMode ? '/nirspec/objects' : '/nirspec/targets';
+  const basePath = '/nirspec/objects';
 
   useEffect(() => {
     let cancelled = false;
@@ -95,9 +93,7 @@ export function ObjectNavigation({
 
       // Fall back to server query
       try {
-        const result = isObjectsMode
-          ? await getAdjacentObjectIds(targetId, filters, sortColumn, sortDirection)
-          : await getAdjacentTargetIds(targetId, filters, sortColumn, sortDirection);
+        const result = await getAdjacentObjectIds(targetId, filters, sortColumn, sortDirection);
 
         if (!cancelled) {
           setNav({
@@ -127,7 +123,7 @@ export function ObjectNavigation({
     return () => {
       cancelled = true;
     };
-  }, [targetId, filters, sortColumn, sortDirection, filterStr, isObjectsMode]);
+  }, [targetId, filters, sortColumn, sortDirection, filterStr]);
 
   // Build navigation URLs
   const prevHref = nav.prev

@@ -106,25 +106,27 @@ export function parsePaginationFromURL(searchParams: URLSearchParams): { page: n
 }
 
 /**
- * Parse view mode from URL search parameters
+ * Parse view mode from URL search parameters.
+ * Phase D: targets view is gone — `view=targets` collapses to `objects` so
+ * old bookmarks keep working.
  */
 export function parseViewModeFromURL(searchParams: URLSearchParams): ViewMode {
   const view = searchParams.get('view');
   if (view === 'spectra') return 'spectra';
-  if (view === 'objects') return 'objects';
-  return 'targets';
+  return 'objects';
 }
 
 /**
  * Parse sorting parameters from URL search parameters.
  * Validates the sort column against the current view mode.
  */
-export function parseSortingFromURL(searchParams: URLSearchParams, viewMode: ViewMode = 'targets'): { sortColumn: SortColumn; sortDirection: SortDirection } {
-  const sort = searchParams.get('sort') || 'target_id';
+export function parseSortingFromURL(searchParams: URLSearchParams, viewMode: ViewMode = 'objects'): { sortColumn: SortColumn; sortDirection: SortDirection } {
+  const fallback: SortColumn = viewMode === 'objects' ? 'object_id' : 'target_id';
+  const sort = searchParams.get('sort') || fallback;
   const dir = searchParams.get('dir') || 'asc';
   const isValid = VALID_SORT_COLUMNS.includes(sort as SortColumn) && isValidSortColumn(sort, viewMode);
   return {
-    sortColumn: isValid ? (sort as SortColumn) : 'target_id',
+    sortColumn: isValid ? (sort as SortColumn) : fallback,
     sortDirection: dir === 'desc' ? 'desc' : 'asc',
   };
 }
@@ -136,9 +138,9 @@ export function filtersToURLParams(
   filters: AdvancedFilterOptions,
   page: number = 1,
   pageSize: number = DEFAULT_PAGE_SIZE,
-  sortColumn: SortColumn = 'target_id',
+  sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc',
-  viewMode: ViewMode = 'targets'
+  viewMode: ViewMode = 'objects'
 ): URLSearchParams {
   const params = new URLSearchParams();
 
@@ -220,12 +222,13 @@ export function filtersToURLParams(
   if (pageSize !== DEFAULT_PAGE_SIZE) {
     params.set('pageSize', pageSize.toString());
   }
-  // Only include view mode when non-default
-  if (viewMode !== 'targets') {
+  // Only include view mode when non-default (objects)
+  if (viewMode !== 'objects') {
     params.set('view', viewMode);
   }
   // Only include sorting params when non-default
-  if (sortColumn !== 'target_id') {
+  const defaultSort: SortColumn = viewMode === 'objects' ? 'object_id' : 'target_id';
+  if (sortColumn !== defaultSort) {
     params.set('sort', sortColumn);
   }
   if (sortDirection !== 'asc') {

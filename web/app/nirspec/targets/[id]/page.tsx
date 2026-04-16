@@ -68,20 +68,16 @@ export default async function TargetRedirectPage({ params, searchParams }: Targe
     notFound();
   }
 
-  // Preserve relevant search params (filter/sort state)
+  // Phase D: drop ?tab= and ?grating= — the object detail page no longer
+  // uses tabs or per-grating sub-tabs. Forward only filter/sort params so
+  // bookmarked nav state still resolves.
   const redirectParams = new URLSearchParams();
-  redirectParams.set('tab', targetId);
-  // Forward grating param if present
-  const grating = typeof searchParamsObj.grating === 'string' ? searchParamsObj.grating : null;
-  if (grating) {
-    redirectParams.set('grating', grating);
-  }
-  // Forward filter/sort params
   Object.entries(searchParamsObj).forEach(([key, value]) => {
     if (value && key !== 'grating' && key !== 'tab') {
       redirectParams.set(key, Array.isArray(value) ? value.join(',') : value);
     }
   });
 
-  redirect(`/nirspec/objects/${encodeURIComponent(objectId)}?${redirectParams.toString()}`);
+  const qs = redirectParams.toString();
+  redirect(`/nirspec/objects/${encodeURIComponent(objectId)}${qs ? `?${qs}` : ''}`);
 }

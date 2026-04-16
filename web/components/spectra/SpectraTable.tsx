@@ -18,6 +18,8 @@ import { SpectrumTarget, QUALITY_LABELS } from '@/lib/types';
 import { TileThumbnail } from './TileThumbnail';
 import { SpectrumThumbnailInline } from './SpectrumThumbnailInline';
 import { SpectraTableRow } from './SpectraTableRow';
+import { StalenessBadge } from './StalenessBadge';
+import { DQ_FLAGS, decodeBitmask } from '@/lib/flags';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
@@ -31,24 +33,6 @@ import {
 import { DownloadDropdown } from './DownloadTableButtons';
 import type { AdvancedFilterOptions } from './SpectraFilterBar';
 
-// Column visibility configuration — targets mode
-const TARGETS_COLUMNS: ColumnDefinition[] = [
-  { id: 'rgb_thumbnail', label: 'RGB Image', defaultVisible: true },
-  { id: 'target_id', label: 'Target ID', alwaysVisible: true },
-  { id: 'field', label: 'Field', defaultVisible: true },
-  { id: 'program', label: 'Program', defaultVisible: false },
-  { id: 'ra', label: 'RA', defaultVisible: true },
-  { id: 'dec', label: 'Dec', defaultVisible: true },
-  { id: 'distance', label: 'Distance', defaultVisible: true },  // Only shown when coord search active
-  { id: 'redshift', label: 'Redshift', alwaysVisible: true },
-  { id: 'redshift_quality', label: 'Quality', alwaysVisible: true },
-  { id: 'spectrum_thumbnail', label: 'Spectrum', defaultVisible: true },
-  { id: 'num_gratings', label: 'Gratings', defaultVisible: true },
-  { id: 'max_snr', label: 'Max S/N', defaultVisible: true },
-  { id: 'max_exposure_time', label: 'Max Exp. Time', defaultVisible: false },
-  { id: 'observation', label: 'Observation', defaultVisible: false },
-];
-
 // Column visibility configuration — spectra mode (per-grating rows)
 const SPECTRA_MODE_COLUMNS: ColumnDefinition[] = [
   { id: 'rgb_thumbnail', label: 'RGB Image', defaultVisible: true },
@@ -61,25 +45,13 @@ const SPECTRA_MODE_COLUMNS: ColumnDefinition[] = [
   { id: 'distance', label: 'Distance', defaultVisible: true },
   { id: 'redshift', label: 'Redshift', alwaysVisible: true },
   { id: 'redshift_quality', label: 'Quality', alwaysVisible: true },
+  { id: 'redshift_auto', label: 'z_auto', defaultVisible: false },
+  { id: 'dq_flags', label: 'DQ', defaultVisible: true },
   { id: 'spectrum_thumbnail', label: 'Spectrum', defaultVisible: true },
   { id: 'signal_to_noise', label: 'S/N', defaultVisible: true },
   { id: 'exposure_time', label: 'Exp. Time', defaultVisible: false },
   { id: 'observation', label: 'Observation', defaultVisible: false },
 ];
-
-// Map TanStack Table column IDs to server column names — targets mode
-const TARGETS_COLUMN_TO_SERVER: Record<string, SortColumn> = {
-  'target_id': 'target_id',
-  'field': 'field',
-  'observation': 'observation',
-  'ra': 'ra',
-  'dec': 'dec',
-  'redshift': 'redshift',
-  'redshift_quality': 'redshift_quality',
-  'max_snr': 'max_snr',
-  'max_exposure_time': 'max_exposure_time',
-  'distance': 'distance',
-};
 
 // Map TanStack Table column IDs to server column names — spectra mode
 const SPECTRA_COLUMN_TO_SERVER: Record<string, SortColumn> = {
@@ -90,23 +62,24 @@ const SPECTRA_COLUMN_TO_SERVER: Record<string, SortColumn> = {
   'dec': 'dec',
   'redshift': 'redshift',
   'redshift_quality': 'redshift_quality',
+  'redshift_auto': 'redshift_auto',
+  'dq_flags': 'dq_flags',
   'signal_to_noise': 'signal_to_noise',
   'exposure_time': 'exposure_time',
   'grating': 'grating',
   'distance': 'distance',
 };
 
-// Column visibility configuration — objects mode (unique sky positions)
-// Reuses IDs from targets mode where possible (target_id, redshift, etc.)
-// so that existing TanStack column defs can be shared.
+// Column visibility configuration — objects mode (unique sky positions).
 const OBJECTS_COLUMNS: ColumnDefinition[] = [
   { id: 'target_id', label: 'Object ID', alwaysVisible: true },
+  { id: 'staleness', label: 'Review', defaultVisible: true },
   { id: 'field', label: 'Field', defaultVisible: true },
   { id: 'ra', label: 'RA', defaultVisible: true },
   { id: 'dec', label: 'Dec', defaultVisible: true },
   { id: 'distance', label: 'Distance', defaultVisible: true },
-  { id: 'redshift', label: 'Best Redshift', alwaysVisible: true },
-  { id: 'redshift_quality', label: 'Best Quality', alwaysVisible: true },
+  { id: 'redshift', label: 'Redshift', alwaysVisible: true },
+  { id: 'redshift_quality', label: 'Quality', alwaysVisible: true },
   { id: 'photo_z', label: 'Photo-z', defaultVisible: false },
   { id: 'n_targets', label: '# Targets', defaultVisible: true },
   { id: 'n_spectra', label: '# Spectra', defaultVisible: false },
@@ -118,8 +91,6 @@ const OBJECTS_COLUMNS: ColumnDefinition[] = [
 ];
 
 // Map TanStack Table column IDs to server column names — objects mode.
-// Phase D: best_redshift / best_redshift_quality renamed to redshift /
-// redshift_quality (the new generated column on objects).
 const OBJECTS_COLUMN_TO_SERVER: Record<string, SortColumn> = {
   'target_id': 'object_id',
   'field': 'field',
@@ -249,7 +220,6 @@ const ViewModeTooltip: React.FC = () => {
       {open && (
         <div className="absolute left-0 top-full mt-1.5 z-50 w-64 px-3 py-2 text-xs text-text-secondary dark:text-slate-400 bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
           <p><span className="font-medium text-text-primary dark:text-slate-200">Objects</span> = unique sources across programs</p>
-          <p><span className="font-medium text-text-primary dark:text-slate-200">Targets</span> = per-program observations</p>
           <p><span className="font-medium text-text-primary dark:text-slate-200">Spectra</span> = individual grating exposures</p>
         </div>
       )}
@@ -269,7 +239,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   sortColumn,
   sortDirection,
   onSortChange,
-  viewMode = 'targets',
+  viewMode = 'objects',
   onViewModeChange,
   hasCoordinateSearch = false,
   currentFilterParams,
@@ -282,9 +252,9 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   const isSpectraMode = viewMode === 'spectra';
   const isObjectsMode = viewMode === 'objects';
 
-  // Column config and server-name mapping depend on view mode
-  const columnConfig = isObjectsMode ? OBJECTS_COLUMNS : isSpectraMode ? SPECTRA_MODE_COLUMNS : TARGETS_COLUMNS;
-  const COLUMN_TO_SERVER_NAME = isObjectsMode ? OBJECTS_COLUMN_TO_SERVER : isSpectraMode ? SPECTRA_COLUMN_TO_SERVER : TARGETS_COLUMN_TO_SERVER;
+  // Column config and server-name mapping depend on view mode (Objects | Spectra).
+  const columnConfig = isObjectsMode ? OBJECTS_COLUMNS : SPECTRA_MODE_COLUMNS;
+  const COLUMN_TO_SERVER_NAME = isObjectsMode ? OBJECTS_COLUMN_TO_SERVER : SPECTRA_COLUMN_TO_SERVER;
 
   // Reverse mapping: server column name → TanStack column ID (needed for effectiveSorting)
   const SERVER_TO_COLUMN_NAME = useMemo(() => {
@@ -298,9 +268,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   // Column visibility state with localStorage persistence (separate keys per mode)
   const visibilityKey = isObjectsMode
     ? 'campfire-spectra-columns-objects'
-    : isSpectraMode
-      ? 'campfire-spectra-columns-spectra'
-      : 'campfire-spectra-columns';
+    : 'campfire-spectra-columns-spectra';
   const [columnVisibility, setColumnVisibility] = useColumnVisibility(
     columnConfig,
     visibilityKey
@@ -371,7 +339,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           onSortChange(serverColumn, newSorting[0].desc ? 'desc' : 'asc');
         }
       } else {
-        onSortChange('target_id', 'asc');
+        onSortChange(isObjectsMode ? 'object_id' : 'target_id', 'asc');
       }
     }
   };
@@ -409,6 +377,21 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         ),
         enableSorting: false,
       },
+      // Phase D: Needs Review staleness column (objects mode only).
+      ...(isObjectsMode ? [{
+        id: 'staleness',
+        minSize: 110,
+        header: () => <span className="normal-case">Review</span>,
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => (
+          <StalenessBadge
+            reason={row.original.staleness_reason ?? null}
+            lastInspectedAt={row.original.last_inspected_at ?? null}
+            lastDataChangeAt={row.original.last_data_change_at ?? null}
+            compact
+          />
+        ),
+        enableSorting: false,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
       {
         accessorKey: 'target_id',
         minSize: 260,
@@ -603,6 +586,56 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         ),
         enableSorting: false,
       } satisfies ColumnDef<SpectrumTarget>] : []),
+      // Spectra mode: per-spectrum redshift_auto column
+      ...(isSpectraMode ? [{
+        id: 'redshift_auto',
+        minSize: 90,
+        accessorFn: (row: SpectrumTarget) => row.spectra[0]?.redshift_auto ?? null,
+        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
+          <SortableHeader column={column}>z_auto</SortableHeader>
+        ),
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => {
+          const z = row.original.spectra[0]?.redshift_auto;
+          return (
+            <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+              {z != null ? z.toFixed(4) : '—'}
+            </span>
+          );
+        },
+        sortingFn: (a, b) => ((a.original.spectra[0]?.redshift_auto ?? -1) - (b.original.spectra[0]?.redshift_auto ?? -1)),
+      } satisfies ColumnDef<SpectrumTarget>] : []),
+      // Spectra mode: per-spectrum DQ flags column
+      ...(isSpectraMode ? [{
+        id: 'dq_flags',
+        minSize: 130,
+        accessorFn: (row: SpectrumTarget) => row.spectra[0]?.dq_flags ?? 0,
+        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
+          <SortableHeader column={column}>DQ</SortableHeader>
+        ),
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => {
+          const mask = row.original.spectra[0]?.dq_flags ?? 0;
+          if (mask === 0) {
+            return <span className="text-xs text-text-secondary dark:text-slate-500">—</span>;
+          }
+          const active = decodeBitmask(mask, DQ_FLAGS);
+          const defs = DQ_FLAGS.filter(f => active.includes(f.value));
+          return (
+            <div className="flex flex-wrap gap-1 max-w-[180px]">
+              {defs.map(f => (
+                <span
+                  key={f.key}
+                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium"
+                  style={{ backgroundColor: f.color, color: '#1a1a1a' }}
+                  title={f.description}
+                >
+                  {f.icon} {f.short}
+                </span>
+              ))}
+            </div>
+          );
+        },
+        sortingFn: 'basic' as const,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
       // Objects mode: n_targets column
       ...(isObjectsMode ? [{
         id: 'n_targets',
@@ -716,23 +749,6 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         },
         enableSorting: false,
       } satisfies ColumnDef<SpectrumTarget>] : []),
-      // Targets mode: num_gratings column
-      ...(isSpectraMode || isObjectsMode ? [] : [{
-        id: 'num_gratings',
-        minSize: 80,
-        accessorFn: (row: SpectrumTarget) => row.num_gratings || row.spectra.length,
-        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
-          <SortableHeader column={column} className="justify-center">
-            Gratings
-          </SortableHeader>
-        ),
-        cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <span className="text-sm text-text-primary dark:text-slate-100 text-center block">
-            {row.original.num_gratings || row.original.spectra.length}
-          </span>
-        ),
-        sortingFn: 'basic' as const,
-      } satisfies ColumnDef<SpectrumTarget>]),
       // Objects mode: max_snr column
       ...(isSpectraMode ? [] : [{
         id: 'max_snr',
@@ -881,13 +897,13 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       <div className="flex items-center justify-between px-4 py-2 bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
         <div className="flex items-center gap-3">
           <span className="text-sm text-text-secondary dark:text-slate-400">
-            {loading ? 'Loading...' : `${total.toLocaleString()} ${isObjectsMode ? 'unique objects' : isSpectraMode ? 'spectra' : 'targets'}`}
+            {loading ? 'Loading...' : `${total.toLocaleString()} ${isObjectsMode ? 'unique objects' : 'spectra'}`}
           </span>
-          {/* View mode toggle */}
+          {/* View mode toggle (Phase D: Objects | Spectra only) */}
           {onViewModeChange && (
             <>
               <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">
-                {(['objects', 'targets', 'spectra'] as const).map((mode) => (
+                {(['objects', 'spectra'] as const).map((mode) => (
                   <button
                     key={mode}
                     onClick={() => onViewModeChange(mode)}
@@ -906,7 +922,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           )}
         </div>
         <div className="flex items-center gap-1">
-          {canInspect && spectra.length > 0 && viewMode !== 'objects' && (
+          {canInspect && isObjectsMode && spectra.length > 0 && (
             <Link
               href={`/inspect?start=${encodeURIComponent(spectra[0].target_id)}&${currentFilterParams?.toString() || ''}`}
               onClick={() => {
