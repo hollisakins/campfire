@@ -319,6 +319,11 @@ def _prefetch_detector1_references(uncal_files, mask_science_regions=False):
             "DATE-OBS": hdr.get('DATE-OBS', '2023-01-01'),
             "TIME-OBS": hdr.get('TIME-OBS', '00:00:00'),
         }
+        if mask_science_regions:
+            params.update({
+                "FILTER": hdr.get('FILTER', 'CLEAR'),
+                "GRATING": hdr.get('GRATING', 'G140M'),
+            })
 
         try:
             refs = crds.getreferences(params, reftypes=reftypes, observatory='jwst')
