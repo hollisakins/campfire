@@ -145,3 +145,4 @@ Credentials via env vars (`CAMPFIRE_SUPABASE_URL`, `CAMPFIRE_R2_*`) or gitignore
 - Large files (FITS, raw data) are gitignored and stored in R2
 - Secrets are never committed — use Vercel env vars or gitignored config files
 - Database schema definitions live in `supabase/schemas/` (source of truth); migrations in `supabase/migrations/` (deployment)
+
