@@ -228,13 +228,13 @@ class TestOpenSpectrum:
 class TestSpectrumData:
     def test_basic_creation(self):
         wave = np.linspace(0.6, 5.3, 100)
-        flux = np.random.normal(1.0, 0.1, 100)
-        flux_err = np.abs(np.random.normal(0.05, 0.01, 100))
+        fnu = np.random.normal(1.0, 0.1, 100)
+        fnu_err = np.abs(np.random.normal(0.05, 0.01, 100))
 
         spec = SpectrumData(
             wavelength=wave,
-            flux=flux,
-            flux_err=flux_err,
+            fnu=fnu,
+            fnu_err=fnu_err,
             header={"OBJECT": "test"},
             grating="PRISM",
             spectrum_id="test_prism_123",
@@ -242,13 +242,16 @@ class TestSpectrumData:
         assert spec.wavelength.shape == (100,)
         assert spec.grating == "PRISM"
         assert spec.spectrum_id == "test_prism_123"
+        # flam is auto-computed in __post_init__
+        assert spec.flam is not None
+        assert spec.flam.shape == (100,)
 
     def test_repr(self):
         wave = np.linspace(0.6, 5.3, 100)
         spec = SpectrumData(
             wavelength=wave,
-            flux=np.ones(100),
-            flux_err=np.zeros(100),
+            fnu=np.ones(100),
+            fnu_err=np.zeros(100),
             header={},
             grating="G395M",
             spectrum_id="obj_g395m_456",
