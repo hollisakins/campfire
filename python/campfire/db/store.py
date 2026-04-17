@@ -575,7 +575,7 @@ class LocalStore:
         return len(self.query_objects(**filters))
 
     def get_object(self, object_id: str) -> Optional[dict]:
-        """Single object with embedded spectra (list of spectrum dicts)."""
+        """Single object with embedded spectra (list of spectrum dicts) and tags."""
         row = self._conn.execute(
             "SELECT * FROM objects WHERE object_id = ?", (object_id,)
         ).fetchone()
@@ -595,7 +595,33 @@ class LocalStore:
             "SELECT * FROM spectra WHERE object_id = ? ORDER BY spectrum_id", (object_id,)
         ).fetchall()
         obj["spectra"] = [dict(s) for s in spec_rows]
+
+        tag_rows = self._conn.execute(
+            "SELECT list_slug FROM object_list_memberships WHERE object_id = ? ORDER BY list_slug",
+            (object_id,),
+        ).fetchall()
+        obj["tags"] = [r["list_slug"] for r in tag_rows]
+
         return obj
+
+    def get_photometry_for_object(self, object_id: str) -> Optional[dict]:
+        """Return the (first) photometry record for an object, with photometry JSON deserialised."""
+        import json as _json
+
+        row = self._conn.execute(
+            "SELECT * FROM object_photometry WHERE object_id = ? ORDER BY catalog_name LIMIT 1",
+            (object_id,),
+        ).fetchone()
+        if not row:
+            return None
+        rec = dict(row)
+        phot = rec.get("photometry")
+        if isinstance(phot, str):
+            try:
+                rec["photometry"] = _json.loads(phot)
+            except (ValueError, TypeError):
+                rec["photometry"] = None
+        return rec
 
     def get_max_objects_updated_at(self) -> Optional[str]:
         row = self._conn.execute(

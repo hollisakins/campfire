@@ -17,7 +17,7 @@ from .flags import (
     RedshiftQuality,
     parse_flag_input,
 )
-from .models import SpectrumData
+from .models import Object, SpectrumData
 
 __version__ = "0.4.0"
 
@@ -375,18 +375,36 @@ class Campfire:
 
         yield from self._api.iter_objects(**filters)
 
-    def get_object(self, object_id: str) -> Optional[dict]:
-        """Return a single object (with embedded spectra) by object_id."""
+    def get_object(self, object_id: str) -> Optional[Object]:
+        """Return a single :class:`Object` (with spectra + photometry) by object_id.
+
+        Returns ``None`` if no object matches. The returned object's
+        :attr:`Object.spectra` have ``.open()`` wired to this client for
+        lazy FITS loading.
+        """
         if self._local is not None:
-            obj = self._local.get_object(object_id)
-            if obj:
-                return obj
-        # Remote fallback: search on object_id
+            raw = self._local.get_object(object_id)
+            if raw:
+                return self._build_object(raw)
+        # Remote fallback: search on object_id (no spectra embedded, no photometry)
         objects, _ = self._api.query_objects(search=object_id, limit=1)
-        for obj in objects:
-            if obj.get("object_id") == object_id:
-                return obj
+        for raw in objects:
+            if raw.get("object_id") == object_id:
+                return self._build_object(raw)
         return None
+
+    def _build_object(self, raw: dict) -> Object:
+        """Construct an :class:`Object` from a store dict, wiring opener + photometry."""
+        photometry_record = None
+        if self._local is not None:
+            object_id = raw.get("object_id")
+            if object_id:
+                photometry_record = self._local.get_photometry_for_object(object_id)
+        return Object.from_dict(
+            raw,
+            opener=self.open_spectrum,
+            photometry_record=photometry_record,
+        )
 
     # -------------------------------------------------------------------------
     # Spectra
