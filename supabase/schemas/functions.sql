@@ -251,6 +251,92 @@ GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 
 
 -- =============================================================================
+-- get_spectra_for_sync
+-- (bulk fetch of per-spectrum download-relevant metadata for the Python
+-- client; complements get_objects_for_sync which carries display-level
+-- spectra fields only)
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
+  p_program_slugs TEXT[],
+  p_user_id UUID DEFAULT NULL,
+  p_updated_since TIMESTAMPTZ DEFAULT NULL,
+  p_limit INTEGER DEFAULT 1000,
+  p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT)
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH matched AS (
+    SELECT s.id, s.spectrum_id, s.target_id, o.object_id AS object_id,
+           s.grating, s.fits_path, s.file_hash, s.file_size,
+           s.signal_to_noise, s.exposure_time, s.reduction_version,
+           s.redshift_auto, s.dq_flags,
+           t.program_slug, t.observation, t.field,
+           s.created_at, s.updated_at
+    FROM spectra s
+    JOIN targets t ON t.target_id = s.target_id
+    LEFT JOIN objects o ON o.id = t.object_id
+    WHERE t.program_slug = ANY(p_program_slugs)
+      AND (o.id IS NULL OR o.is_active = true)
+      AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
+    ORDER BY s.spectrum_id
+    LIMIT p_limit OFFSET p_offset
+  ),
+  total AS (
+    SELECT COUNT(*) AS cnt
+    FROM spectra s
+    JOIN targets t ON t.target_id = s.target_id
+    LEFT JOIN objects o ON o.id = t.object_id
+    WHERE t.program_slug = ANY(p_program_slugs)
+      AND (o.id IS NULL OR o.is_active = true)
+      AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
+  ),
+  accessible AS (
+    SELECT COUNT(*) AS cnt
+    FROM spectra s
+    JOIN targets t ON t.target_id = s.target_id
+    LEFT JOIN objects o ON o.id = t.object_id
+    WHERE t.program_slug = ANY(p_program_slugs)
+      AND (o.id IS NULL OR o.is_active = true)
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', m.id,
+        'spectrum_id', m.spectrum_id,
+        'target_id', m.target_id,
+        'object_id', m.object_id,
+        'grating', m.grating,
+        'fits_path', m.fits_path,
+        'file_hash', m.file_hash,
+        'file_size', m.file_size,
+        'signal_to_noise', m.signal_to_noise,
+        'exposure_time', m.exposure_time,
+        'reduction_version', m.reduction_version,
+        'redshift_auto', m.redshift_auto,
+        'dq_flags', m.dq_flags,
+        'program_slug', m.program_slug,
+        'observation', m.observation,
+        'field', m.field,
+        'created_at', m.created_at,
+        'updated_at', m.updated_at
+      )
+    ), '[]'::jsonb),
+    COALESCE((SELECT cnt FROM total), 0)::BIGINT,
+    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
+  FROM matched m;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER) TO service_role;
+
+
+-- =============================================================================
 -- get_photometry_for_sync
 -- (bulk fetch for Python client photometry sync)
 -- =============================================================================
@@ -1704,19 +1790,21 @@ GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
 -- get_observation_manifest
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_observation_manifest(TEXT, TEXT[]);
+
 CREATE OR REPLACE FUNCTION public.get_observation_manifest(p_obs_name text, p_program_slugs text[])
 RETURNS TABLE(
-  spectra_id integer, target_id text, grating text, fits_path text,
+  spectra_id integer, spectrum_id text, target_id text, grating text, fits_path text,
   file_hash text, file_size bigint, signal_to_noise double precision, reduction_version text
 ) LANGUAGE plpgsql STABLE AS $$
 BEGIN
   RETURN QUERY
-  SELECT s.id, s.target_id, s.grating, s.fits_path, s.file_hash, s.file_size,
+  SELECT s.id, s.spectrum_id, s.target_id, s.grating, s.fits_path, s.file_hash, s.file_size,
          s.signal_to_noise, s.reduction_version
   FROM spectra s
   JOIN targets t ON t.target_id = s.target_id
   WHERE t.observation = p_obs_name AND t.program_slug = ANY(p_program_slugs)
-  ORDER BY s.target_id, s.grating;
+  ORDER BY s.spectrum_id;
 END;
 $$;
 

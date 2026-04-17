@@ -31,8 +31,9 @@ class SpectrumData:
         FITS primary header as a dict.
     grating : str
         Grating name (e.g., 'PRISM', 'G395M').
-    target_id : str
-        CAMPFIRE target ID (e.g., 'ember_cosmos_p1_920424').
+    spectrum_id : str
+        Stable per-spectrum identifier derived from the FITS path
+        (e.g., 'ember_cosmos_p1_prism_clear_920424').
     fits_path : str or None
         Local file path if loaded from disk, None if from API.
     """
@@ -42,7 +43,7 @@ class SpectrumData:
     flux_err: np.ndarray
     header: dict
     grating: str
-    target_id: str
+    spectrum_id: str
     flam: Optional[np.ndarray] = field(default=None, repr=False)
     flam_err: Optional[np.ndarray] = field(default=None, repr=False)
     fits_path: Optional[str] = None
@@ -52,37 +53,29 @@ class SpectrumData:
         wmin = self.wavelength.min() if n > 0 else 0
         wmax = self.wavelength.max() if n > 0 else 0
         return (
-            f"SpectrumData({self.target_id}, {self.grating}, "
+            f"SpectrumData({self.spectrum_id}, {self.grating}, "
             f"{n} pixels, {wmin:.2f}-{wmax:.2f} μm)"
         )
 
     @staticmethod
-    def _parse_target_id_from_filename(filename: str) -> str:
-        """Extract target_id from a CAMPFIRE FITS filename.
+    def _parse_spectrum_id_from_filename(filename: str) -> str:
+        """Extract spectrum_id from a CAMPFIRE FITS filename.
 
-        Filename pattern: {obs}_{grating}_{filter}_{source_id}_spec.fits
-        Target ID pattern: {obs}_{source_id}
+        Mirrors the server-side generated `spectra.spectrum_id` column:
+        strips the leading directory and the trailing `_spec.fits` suffix.
 
         Examples
         --------
-        >>> SpectrumData._parse_target_id_from_filename(
+        >>> SpectrumData._parse_spectrum_id_from_filename(
         ...     'ember_cosmos_p1_prism_clear_920424_spec.fits')
-        'ember_cosmos_p1_920424'
+        'ember_cosmos_p1_prism_clear_920424'
         """
-        stem = Path(filename).stem  # strip .fits
-        # Remove _spec/_x1d/_s2d/_zfit suffix
-        stem = re.sub(r'_(spec|x1d|s2d|zfit)$', '', stem)
-        # Pattern: {obs}_{grating}_{filter}_{source_id}
-        # The source_id is always numeric and at the end
-        match = re.match(r'^(.+?)_(prism|g\d+[a-z])_([a-z0-9]+)_(\d+)$', stem, re.IGNORECASE)
-        if match:
-            obs_name = match.group(1)
-            source_id = match.group(4)
-            return f"{obs_name}_{source_id}"
-        return ""
+        stem = Path(filename).name  # drop directory
+        stem = re.sub(r'_spec\.fits$', '', stem, flags=re.IGNORECASE)
+        return stem
 
     @classmethod
-    def from_fits(cls, fits_path: str, object_id: str = "", grating: str = "") -> "SpectrumData":
+    def from_fits(cls, fits_path: str, spectrum_id: str = "", grating: str = "") -> "SpectrumData":
         """Create a SpectrumData from a local FITS file.
 
         Reads the SPEC1D extension (HDU 1) from a CAMPFIRE pipeline
@@ -93,9 +86,8 @@ class SpectrumData:
         ----------
         fits_path : str
             Path to the FITS file.
-        object_id : str, optional
-            Target ID. If not provided, parsed from the FILENAME header
-            keyword (e.g., 'ember_cosmos_p1_920424').
+        spectrum_id : str, optional
+            Spectrum ID. If not provided, parsed from the FITS filename.
         grating : str, optional
             Grating name. If not provided, read from the GRATING header.
 
@@ -116,7 +108,6 @@ class SpectrumData:
             if hasattr(data, "columns"):
                 col_names = [c.name.lower() for c in data.columns]
 
-                # Wavelength
                 if "wave" in col_names:
                     wavelength = np.array(data["wave"], dtype=float)
                 elif "wavelength" in col_names:
@@ -124,7 +115,6 @@ class SpectrumData:
                 else:
                     wavelength = np.array(data.field(0), dtype=float)
 
-                # Flux (f_nu)
                 if "fnu" in col_names:
                     flux = np.array(data["fnu"], dtype=float)
                 elif "flux" in col_names:
@@ -132,7 +122,6 @@ class SpectrumData:
                 else:
                     flux = np.array(data.field(1), dtype=float)
 
-                # Flux error (f_nu)
                 if "fnu_err" in col_names:
                     flux_err = np.array(data["fnu_err"], dtype=float)
                 elif "flux_err" in col_names:
@@ -142,7 +131,6 @@ class SpectrumData:
                 else:
                     flux_err = np.zeros_like(flux)
 
-                # Flux (f_lambda) — optional
                 flam = None
                 if "flam" in col_names:
                     flam = np.array(data["flam"], dtype=float)
@@ -152,7 +140,6 @@ class SpectrumData:
                     flam_err = np.array(data["flam_err"], dtype=float)
 
             else:
-                # Image HDU fallback — assume rows are [wave, flux, err]
                 if data.ndim == 2 and data.shape[0] >= 2:
                     wavelength = np.array(data[0], dtype=float)
                     flux = np.array(data[1], dtype=float)
@@ -164,12 +151,9 @@ class SpectrumData:
                 flam = None
                 flam_err = None
 
-            # Infer metadata from header if not provided
-            if not object_id:
-                filename = header.get("FILENAME", "")
-                object_id = cls._parse_target_id_from_filename(filename)
-                if not object_id:
-                    object_id = header.get("OBJECT", header.get("SRCNAME", "unknown"))
+            if not spectrum_id:
+                filename = header.get("FILENAME", Path(fits_path).name)
+                spectrum_id = cls._parse_spectrum_id_from_filename(filename)
             if not grating:
                 grating = header.get("GRATING", "unknown")
 
@@ -181,6 +165,6 @@ class SpectrumData:
             flam_err=flam_err,
             header=header,
             grating=grating,
-            target_id=object_id,
+            spectrum_id=spectrum_id,
             fits_path=fits_path,
         )

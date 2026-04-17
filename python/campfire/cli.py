@@ -91,7 +91,7 @@ def _check_client_version(base_url: str) -> None:
 
 
 @click.group()
-@click.version_option(version="0.3.0", prog_name="campfire")
+@click.version_option(version="0.4.0", prog_name="campfire")
 def cli():
     """CAMPFIRE — Python client and deployment tools for NIRSpec spectroscopic data."""
     pass
@@ -458,7 +458,7 @@ def sync_cmd(full: bool, base_url: Optional[str]):
     store = _open_store()
 
     try:
-        is_incremental = not full and store.get_max_updated_at() is not None
+        is_incremental = not full and store.get_max_objects_updated_at() is not None
         if is_incremental:
             click.echo("Syncing catalog (updating existing)...")
         else:
@@ -472,18 +472,15 @@ def sync_cmd(full: bool, base_url: Optional[str]):
 
         if result.get("incremental"):
             click.echo(f"✓ Incremental sync complete: {result['observations']} observations, "
-                        f"{result['targets']} targets, {result['spectra']} spectra, "
-                        f"{result['sky_objects']} sky objects updated.")
+                        f"{result['objects']} objects, {result['spectra']} spectra updated.")
         else:
             click.echo(f"✓ Full sync complete: {result['observations']} observations, "
-                        f"{result['targets']} targets, {result['spectra']} spectra, "
-                        f"{result['sky_objects']} sky objects.")
+                        f"{result['objects']} objects, {result['spectra']} spectra.")
 
-        if result.get("purged_objects") or result.get("purged_spectra"):
-            click.echo(f"  Removed {result['purged_objects']} targets and "
-                        f"{result['purged_spectra']} spectra deleted from server.")
-        if result.get("sky_objects_purged"):
-            click.echo(f"  Removed {result['sky_objects_purged']} sky objects deleted from server.")
+        if result.get("objects_purged"):
+            click.echo(f"  Removed {result['objects_purged']} objects deleted from server.")
+        if result.get("purged_spectra"):
+            click.echo(f"  Removed {result['purged_spectra']} spectra deleted from server.")
 
         # Verify local files so status reports correct counts immediately
         pd = _products_dir()
@@ -585,7 +582,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
 
     # Auto-sync catalog before download
     try:
-        is_first_sync = store.get_max_updated_at() is None
+        is_first_sync = store.get_max_objects_updated_at() is None
         if is_first_sync:
             click.echo("Syncing catalog for the first time...")
         else:
@@ -598,10 +595,12 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             result = sync_metadata(api, store, _meta_dir(), show_progress=True, full=True)
 
         parts = []
-        if result["targets"]:
-            parts.append(f"{result['targets']} targets updated")
-        if result.get("purged_objects"):
-            parts.append(f"{result['purged_objects']} removed")
+        if result.get("objects"):
+            parts.append(f"{result['objects']} objects updated")
+        if result.get("spectra"):
+            parts.append(f"{result['spectra']} spectra updated")
+        if result.get("objects_purged"):
+            parts.append(f"{result['objects_purged']} removed")
         if parts:
             click.echo(f"  {', '.join(parts)}")
         else:
@@ -682,10 +681,8 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
 
         if program_filter:
             for prog in program_filter:
-                matching = store.get_distinct_values("observation")
-                # Query store for observations matching this program
-                results = store.query_targets(programs=[prog], limit=999999)
-                obs_for_prog = set(r["observation"] for r in results)
+                spectra = store.query_spectra(programs=[prog], limit=999999)
+                obs_for_prog = set(s["observation"] for s in spectra if s.get("observation"))
                 if not obs_for_prog:
                     click.echo(f"✗ No observations found for program '{prog}'", err=True)
                     store.close()
@@ -694,8 +691,8 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
 
         if field_filter:
             for fld in field_filter:
-                results = store.query_targets(fields=[fld], limit=999999)
-                obs_for_field = set(r["observation"] for r in results)
+                spectra = store.query_spectra(fields=[fld], limit=999999)
+                obs_for_field = set(s["observation"] for s in spectra if s.get("observation"))
                 if not obs_for_field:
                     click.echo(f"✗ No observations found for field '{fld}'", err=True)
                     store.close()

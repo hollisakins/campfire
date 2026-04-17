@@ -11,8 +11,8 @@ import { NextResponse } from 'next/server';
  */
 export async function GET() {
   const response = NextResponse.json({
-    latest: '0.2.0',
-    minimum: '0.2.0',
+    latest: '0.4.0',
+    minimum: '0.4.0',
   });
 
   // Cache for 1 hour — version changes are infrequent

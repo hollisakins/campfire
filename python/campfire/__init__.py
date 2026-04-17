@@ -17,7 +17,6 @@ from .exceptions import (
 )
 from .flags import (
     RedshiftQuality,
-    SpectralFeatures,
     DQFlags,
     FlagQuery,
     list_flags,
@@ -37,7 +36,7 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "Campfire",
     "SpectrumData",
@@ -50,7 +49,6 @@ __all__ = [
     "APIError",
     # Flags
     "RedshiftQuality",
-    "SpectralFeatures",
     "DQFlags",
     "FlagQuery",
     "list_flags",

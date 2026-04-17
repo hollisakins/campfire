@@ -129,7 +129,23 @@ END;
 $$;
 
 
--- 5. log_list_membership_change
+-- 5. bump_spectra_updated_at
+--    Sets spectra.updated_at = NOW() on any UPDATE so incremental sync
+--    (p_updated_since) can pick up per-spectrum changes regardless of
+--    which column was touched.
+DROP FUNCTION IF EXISTS public.bump_spectra_updated_at CASCADE;
+
+CREATE OR REPLACE FUNCTION public.bump_spectra_updated_at() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
+
+-- 6. log_list_membership_change
 --    Logs additions and removals from object lists into list_audit_log.
 DROP FUNCTION IF EXISTS public.log_list_membership_change CASCADE;
 
@@ -197,6 +213,14 @@ DROP TRIGGER IF EXISTS track_spectrum_dq_changes ON public.spectra;
 CREATE TRIGGER track_spectrum_dq_changes
   AFTER UPDATE OF dq_flags ON public.spectra
   FOR EACH ROW EXECUTE FUNCTION public.log_spectrum_dq_changes();
+
+
+-- Keep spectra.updated_at fresh on every UPDATE so incremental sync can
+-- pick up changes via p_updated_since regardless of which column changed.
+DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
+CREATE TRIGGER bump_spectra_updated_at_trigger
+  BEFORE UPDATE ON public.spectra
+  FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();
 
 
 -- List membership audit (unchanged from pre-Phase-D)

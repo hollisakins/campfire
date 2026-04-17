@@ -68,40 +68,60 @@ cf = Campfire()
 # Sync the catalog (same as CLI)
 cf.sync()
 
-# Query locally — instant, no network
-results = cf.query_targets(
+# Query objects (one row per sky position; inspection state lives here)
+objects = cf.query_objects(
     redshift_range=(3.0, 6.0),
     redshift_quality=[2, 3],
-    inspected_only=True
+    inspected_only=True,
 )
 
-# Filter by tags
-lrds = cf.query_targets(tags=['lrd', 'blagn'])
+# Query spectra (flat, one row per spectrum; includes dq_flags per spectrum)
+spectra = cf.query_spectra(gratings=['PRISM'])
+
+# Filter by tags (object-level)
+lrds = cf.query_objects(tags=['lrd', 'blagn'])
 
 # Download FITS files
 cf.download(observations=['ember_uds_p4'], gratings=['PRISM'])
 
-# Open a spectrum (local FITS if downloaded, API fallback otherwise)
-spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
+# Open a spectrum by spectrum_id (local FITS if downloaded, API fallback otherwise)
+spec = cf.open_spectrum('ember_uds_p4_prism_clear_123456')
 print(spec.wavelength.shape, spec.flux.shape)
 
-# Iterate over all matching targets (auto-pagination)
-for obj in cf.iter_targets(tags=['lrd']):
-    print(obj['target_id'], obj['redshift'])
+# Iterate over all matching objects (auto-pagination)
+for obj in cf.iter_objects(tags=['lrd']):
+    print(obj['object_id'], obj['redshift'])
+```
+
+### Spectra view
+
+`query_spectra` is the flat per-spectrum query. Each row has
+`spectrum_id`, `target_id`, `object_id`, `grating`, `fits_path`,
+`dq_flags`, and `redshift_auto`. Inspection filters
+(`redshift_range`, `redshift_quality`, `inspected_only`) join through
+the parent object.
+
+```python
+from campfire.flags import DQFlags
+
+# Clean PRISM spectra with inspected redshifts
+good = cf.query_spectra(
+    gratings=['PRISM'],
+    inspected_only=True,
+    dq_flags=~DQFlags.CONTAMINATION & ~DQFlags.LOW_SNR,
+)
+
+# Open one
+spec = cf.open_spectrum(good[0]['spectrum_id'])
 ```
 
 ### Flag Filtering
 
 ```python
-from campfire.flags import DQFlags, SpectralFeatures
+from campfire.flags import DQFlags
 
-# Numpy-style operators for bitmask flags
-results = cf.query_targets(
-    spectral_features=SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION
-)
-
-# Exclude contaminated or low-SNR spectra
-results = cf.query_targets(dq_flags=~DQFlags.CONTAMINATION & ~DQFlags.LOW_SNR)
+# Numpy-style operators for per-spectrum DQ bitmask flags
+clean = cf.query_spectra(dq_flags=~DQFlags.CONTAMINATION & ~DQFlags.LOW_SNR)
 ```
 
 ### Spectrum Access
@@ -109,7 +129,7 @@ results = cf.query_targets(dq_flags=~DQFlags.CONTAMINATION & ~DQFlags.LOW_SNR)
 ```python
 from campfire import SpectrumData
 
-spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
+spec = cf.open_spectrum('ember_uds_p4_prism_clear_123456')
 spec.wavelength   # np.ndarray, microns
 spec.flux         # np.ndarray, microjansky
 spec.flux_err     # np.ndarray
@@ -135,7 +155,7 @@ if result['stale_count'] > 0:
 ```python
 from campfire import plot_spectrum, plot_redshift_fit
 
-data = cf.get_spectrum_data('ember_uds_p4_123456', 'PRISM')
+data = cf.get_spectrum_data('ember_uds_p4_prism_clear_123456')
 fig = plot_spectrum(data, redshift=2.5, show_emission_lines=True)
 fig.show()
 ```
@@ -186,8 +206,9 @@ campfire download   → downloads FITS files by obs/program/field/grating
 
 Campfire.sync()         → same as campfire sync
 Campfire.download()     → same as campfire download
-Campfire.query_objects()→ queries local SQLite (or API fallback)
-Campfire.open_spectrum()→ opens local FITS (or downloads on demand)
+Campfire.query_objects()→ object-level queries (local SQLite or API fallback)
+Campfire.query_spectra()→ spectrum-level queries (local SQLite or API fallback)
+Campfire.open_spectrum()→ opens local FITS by spectrum_id (or downloads on demand)
 Campfire.plot_cutout()  → RGB cutout with vector shutter overlay
 Campfire.get_cutout()   → cached PNG cutout
 Campfire.get_shutters() → cached shutter geometry JSON

@@ -312,6 +312,7 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "reduction_version" "text" DEFAULT 'v1.0'::"text",
     "signal_to_noise" double precision,
     "created_at" timestamp without time zone DEFAULT "now"(),
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "target_id" "text" NOT NULL,
     "thumbnail_svg_fnu" "text",
     "thumbnail_svg_flambda" "text",

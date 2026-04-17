@@ -17,15 +17,14 @@ export interface SpectrumData {
 }
 
 /**
- * GET /api/v1/spectrum?target_id=X&grating=Y
+ * GET /api/v1/spectrum?spectrum_id=X
  * GET /api/v1/spectrum?path=<fits_path>
  *
  * Fetches the JSON spectrum data for plotting.
  * Requires API key authentication.
  *
  * Query parameters:
- * - target_id: Target ID to fetch spectrum for
- * - grating: Grating type (e.g., PRISM, G395M)
+ * - spectrum_id: Stable per-spectrum identifier (from spectra.spectrum_id)
  * OR
  * - path: Direct FITS path (from query results)
  */
@@ -58,54 +57,42 @@ export async function GET(request: NextRequest) {
 
     // Parse query parameters
     const searchParams = request.nextUrl.searchParams;
-    const targetId = searchParams.get('target_id');
-    const grating = searchParams.get('grating');
+    const spectrumId = searchParams.get('spectrum_id');
     let fitsPath = searchParams.get('path');
 
-    // If target_id and grating provided, look up the fits_path
-    if (targetId && grating && !fitsPath) {
-      // First verify the target exists and user has access
-      const { data: targetData, error: targetError } = await supabase
-        .from('targets')
-        .select('program_slug')
-        .eq('target_id', targetId)
+    // If spectrum_id provided, look up the fits_path
+    if (spectrumId && !fitsPath) {
+      const { data: spectrumRow, error: spectrumRowError } = await supabase
+        .from('spectra')
+        .select('fits_path, target_id, targets!inner(program_slug)')
+        .eq('spectrum_id', spectrumId)
         .single();
 
-      if (targetError || !targetData) {
+      if (spectrumRowError || !spectrumRow) {
         return NextResponse.json(
-          { error: 'Object not found' },
+          { error: `No spectrum found for ${spectrumId}` },
           { status: 404 }
         );
       }
 
-      if (!accessibleProgramSlugs.includes(targetData.program_slug)) {
+      // PostgREST embeds the joined row as an object (or array depending on
+      // cardinality); handle both shapes defensively.
+      const joined = (spectrumRow as { targets?: { program_slug: string } | { program_slug: string }[] }).targets;
+      const programSlug = Array.isArray(joined) ? joined[0]?.program_slug : joined?.program_slug;
+
+      if (!programSlug || !accessibleProgramSlugs.includes(programSlug)) {
         return NextResponse.json(
-          { error: 'Access denied to this object' },
+          { error: 'Access denied to this spectrum' },
           { status: 403 }
         );
       }
 
-      // Look up the spectrum
-      const { data: spectrumData, error: spectrumError } = await supabase
-        .from('spectra')
-        .select('fits_path')
-        .eq('target_id', targetId)
-        .eq('grating', grating)
-        .single();
-
-      if (spectrumError || !spectrumData) {
-        return NextResponse.json(
-          { error: `No ${grating} spectrum found for ${targetId}` },
-          { status: 404 }
-        );
-      }
-
-      fitsPath = spectrumData.fits_path;
+      fitsPath = spectrumRow.fits_path;
     }
 
     if (!fitsPath) {
       return NextResponse.json(
-        { error: 'Missing required parameters: either (target_id, grating) or path' },
+        { error: 'Missing required parameters: either spectrum_id or path' },
         { status: 400 }
       );
     }

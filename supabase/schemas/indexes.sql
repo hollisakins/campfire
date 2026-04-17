@@ -163,6 +163,10 @@ CREATE INDEX IF NOT EXISTS idx_spectra_grating
 CREATE INDEX IF NOT EXISTS idx_spectra_dq_flags
     ON public.spectra USING btree (dq_flags) WHERE (dq_flags != 0);
 
+-- Phase E: incremental spectra sync keys on updated_at.
+CREATE INDEX IF NOT EXISTS idx_spectra_updated_at
+    ON public.spectra USING btree (updated_at);
+
 
 -- =============================================================================
 -- deployments

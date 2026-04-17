@@ -3,13 +3,13 @@ CAMPFIRE flag definitions and query builders.
 
 Provides numpy-style operators for filtering by bitmask flags:
 
-    from campfire.flags import DQFlags, SpectralFeatures
+    from campfire.flags import DQFlags
 
     # Exclude contaminated or low-SNR spectra
-    cf.query_targets(dq_flags=~DQFlags.CONTAMINATION & ~DQFlags.LOW_SNR)
+    cf.query_spectra(dq_flags=~DQFlags.CONTAMINATION & ~DQFlags.LOW_SNR)
 
-    # Has Lyman break OR multiple emission lines
-    cf.query_targets(spectral_features=SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION)
+    # Must have both chip gap and low SNR
+    cf.query_spectra(dq_flags=DQFlags.CHIP_GAP & DQFlags.LOW_SNR)
 
 Operators:
     |  : OR  (match any of these flags)
@@ -109,9 +109,9 @@ def queryable(cls):
     Example
     -------
     @queryable
-    class SpectralFeatures(QueryableFlag):
-        CONTINUUM_BREAK = 1
-        LYMAN_BREAK = 2
+    class DQFlags(QueryableFlag):
+        CHIP_GAP = 1
+        CONTAMINATION = 2
     """
 
     def _or(self, other):
@@ -212,34 +212,6 @@ class RedshiftQuality(IntEnum):
 
 
 @queryable
-class SpectralFeatures(QueryableFlag):
-    """
-    Spectral features used for redshift determination.
-
-    These flags indicate which spectral features were used to
-    constrain or determine the redshift of an object.
-    """
-
-    CONTINUUM_BREAK = 1
-    """Redshift constrained by overall continuum shape."""
-
-    LYMAN_BREAK = 2
-    """Clear Lyman break detected."""
-
-    BALMER_BREAK = 4
-    """Clear Balmer break detected."""
-
-    ABSORPTION_FEATURES = 8
-    """Absorption lines/features identified."""
-
-    SINGLE_EMISSION = 16
-    """Single emission line detected."""
-
-    MULTI_EMISSION = 32
-    """Multiple emission lines detected."""
-
-
-@queryable
 class DQFlags(QueryableFlag):
     """
     Data quality flags.
@@ -278,7 +250,6 @@ class DQFlags(QueryableFlag):
 
 # Registry of flag classes by parameter name
 _FLAG_REGISTRY: Dict[str, Type[QueryableFlag]] = {
-    "spectral_features": SpectralFeatures,
     "dq_flags": DQFlags,
 }
 
@@ -290,15 +261,14 @@ def list_flags(flag_type: Optional[str] = None) -> None:
     Parameters
     ----------
     flag_type : str, optional
-        One of 'spectral_features', 'dq_flags'.
-        If None, prints all flag types.
+        Currently only 'dq_flags'. If None, prints all flag types.
 
     Examples
     --------
-    >>> list_flags('spectral_features')
-    SpectralFeatures:
-      CONTINUUM_BREAK        = 1
-      LYMAN_BREAK            = 2
+    >>> list_flags('dq_flags')
+    DQFlags:
+      CHIP_GAP              = 1
+      CONTAMINATION         = 2
       ...
     """
     if flag_type is not None:
@@ -330,7 +300,7 @@ def decode_flags(value: int, flag_type: str) -> List[str]:
     value : int
         Bitmask integer value.
     flag_type : str
-        One of 'spectral_features', 'dq_flags'.
+        Currently only 'dq_flags'.
 
     Returns
     -------
@@ -339,8 +309,8 @@ def decode_flags(value: int, flag_type: str) -> List[str]:
 
     Examples
     --------
-    >>> decode_flags(3, 'spectral_features')
-    ['CONTINUUM_BREAK', 'LYMAN_BREAK']
+    >>> decode_flags(3, 'dq_flags')
+    ['CHIP_GAP', 'CONTAMINATION']
     """
     if flag_type not in _FLAG_REGISTRY:
         raise ValueError(
@@ -361,7 +331,7 @@ def encode_flags(names: List[str], flag_type: str) -> int:
     names : list of str
         List of flag names (case-insensitive).
     flag_type : str
-        One of 'spectral_features', 'dq_flags'.
+        Currently only 'dq_flags'.
 
     Returns
     -------
@@ -370,7 +340,7 @@ def encode_flags(names: List[str], flag_type: str) -> int:
 
     Examples
     --------
-    >>> encode_flags(['CONTINUUM_BREAK', 'LYMAN_BREAK'], 'spectral_features')
+    >>> encode_flags(['CHIP_GAP', 'CONTAMINATION'], 'dq_flags')
     3
     """
     if flag_type not in _FLAG_REGISTRY:
