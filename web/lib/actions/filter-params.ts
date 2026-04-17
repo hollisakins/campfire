@@ -73,7 +73,8 @@ export const DEFAULT_FILTERS: FilterOptions = {
 
 /**
  * Typed RPC params shared by all filter-based Supabase RPCs
- * (get_filtered_targets_paginated, get_csv_export, get_adjacent_targets).
+ * (get_filtered_objects_paginated, get_filtered_spectra_paginated,
+ * get_csv_export_objects, get_csv_export_spectra, get_adjacent_objects).
  *
  * Consumer-specific params (pagination, sorting, thumbnails) are NOT included —
  * each caller spreads these base params and adds its own.

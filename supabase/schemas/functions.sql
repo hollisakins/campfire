@@ -437,7 +437,7 @@ BEGIN
 
   IF NOT (p_sort_column IN (
     'target_id', 'spectrum_id', 'field', 'observation', 'ra', 'dec', 'redshift',
-    'redshift_quality', 'signal_to_noise', 'exposure_time', 'grating'
+    'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating'
   ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
     p_sort_column := 'spectrum_id';
   END IF;
@@ -592,6 +592,8 @@ BEGIN
         CASE WHEN p_sort_column = 'redshift' AND p_sort_direction = 'desc' THEN redshift END DESC NULLS LAST,
         CASE WHEN p_sort_column = 'redshift_quality' AND p_sort_direction = 'asc' THEN redshift_quality END ASC NULLS LAST,
         CASE WHEN p_sort_column = 'redshift_quality' AND p_sort_direction = 'desc' THEN redshift_quality END DESC NULLS LAST,
+        CASE WHEN p_sort_column = 'redshift_auto' AND p_sort_direction = 'asc' THEN redshift_auto END ASC NULLS LAST,
+        CASE WHEN p_sort_column = 'redshift_auto' AND p_sort_direction = 'desc' THEN redshift_auto END DESC NULLS LAST,
         CASE WHEN p_sort_column = 'signal_to_noise' AND p_sort_direction = 'asc' THEN signal_to_noise END ASC NULLS LAST,
         CASE WHEN p_sort_column = 'signal_to_noise' AND p_sort_direction = 'desc' THEN signal_to_noise END DESC NULLS LAST,
         CASE WHEN p_sort_column = 'exposure_time' AND p_sort_direction = 'asc' THEN exposure_time END ASC NULLS LAST,
@@ -1352,7 +1354,7 @@ BEGIN
   v_comment_search_active := (p_comment_search IS NOT NULL AND p_comment_search != '' AND p_comment_search_scope IN ('just_me', 'everyone'));
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
-  IF NOT (p_sort_column IN ('target_id', 'spectrum_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'signal_to_noise', 'exposure_time', 'grating')
+  IF NOT (p_sort_column IN ('target_id', 'spectrum_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating')
        OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
     p_sort_column := 'spectrum_id';
   END IF;
@@ -1438,6 +1440,8 @@ BEGIN
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift' AND p_sort_direction = 'desc' THEN df.redshift END DESC NULLS LAST,
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_quality' AND p_sort_direction = 'asc' THEN df.redshift_quality END ASC NULLS LAST,
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_quality' AND p_sort_direction = 'desc' THEN df.redshift_quality END DESC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_auto' AND p_sort_direction = 'asc' THEN df.redshift_auto END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_auto' AND p_sort_direction = 'desc' THEN df.redshift_auto END DESC NULLS LAST,
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'signal_to_noise' AND p_sort_direction = 'asc' THEN df.signal_to_noise END ASC NULLS LAST,
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'signal_to_noise' AND p_sort_direction = 'desc' THEN df.signal_to_noise END DESC NULLS LAST,
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'exposure_time' AND p_sort_direction = 'asc' THEN df.exposure_time END ASC NULLS LAST,

@@ -7,7 +7,7 @@ import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { paginateRpc } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
-import { SPECTRAL_FEATURES, DQ_FLAGS } from '@/lib/flags';
+import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
 
 // JWT signing using Web Crypto API
@@ -58,27 +58,8 @@ interface ObjectsCsvRow {
   photometry: { flux_unit: string; bands: PhotometryBands } | null;
 }
 
-interface CsvRow {
-  target_id: string;
-  field: string;
-  ra: number;
-  dec: number;
-  redshift: number | null;
-  redshift_quality: number;
-  max_snr: number | null;
-  max_exposure_time: number | null;
-  num_gratings: number;
-  program_slug: string;
-  program_name: string | null;
-  last_inspected_at: string | null;
-  last_inspected_by: string | null;
-  distance: number | null;
-  spectral_features: number;
-  dq_flags: number;
-  lists: string | null;        // semicolon-separated list slugs
-}
-
 interface SpectraCsvRow {
+  spectrum_id?: string;
   target_id: string;
   grating: string;
   field: string;
@@ -94,7 +75,6 @@ interface SpectraCsvRow {
   last_inspected_at: string | null;
   last_inspected_by: string | null;
   distance: number | null;
-  spectral_features: number;
   dq_flags: number;
   lists: string | null;        // semicolon-separated list slugs
 }
@@ -211,68 +191,6 @@ function expandBitmask(bitmask: number, flags: FlagDef[]): number[] {
 }
 
 /**
- * Convert flat CSV export rows to CSV string
- */
-function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
-  const columns = [
-    'target_id',
-    'field',
-    'ra',
-    'dec',
-    'redshift',
-    'redshift_quality',
-    'max_snr',
-    'max_exposure_time',
-    'num_gratings',
-    'program_slug',
-    'program_name',
-    'last_inspected_at',
-    'last_inspected_by',
-    ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
-    ...DQ_FLAGS.map(f => `dq_${f.key}`),
-    'tags',
-  ];
-
-  if (includeDistance) {
-    columns.splice(4, 0, 'distance_degrees');
-  }
-
-  const csvRows: string[] = [columns.join(',')];
-
-  for (const row of rows) {
-    const values: (string | number)[] = [
-      escapeCsvValue(row.target_id),
-      escapeCsvValue(row.field),
-      row.ra.toFixed(8),
-      row.dec.toFixed(8),
-    ];
-
-    if (includeDistance) {
-      values.push(row.distance != null ? row.distance.toFixed(8) : '');
-    }
-
-    values.push(
-      row.redshift != null ? row.redshift.toFixed(6) : '',
-      row.redshift_quality,
-      row.max_snr != null ? row.max_snr.toFixed(2) : '',
-      row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
-      row.num_gratings ?? 0,
-      escapeCsvValue(row.program_slug),
-      escapeCsvValue(row.program_name || ''),
-      escapeCsvValue(row.last_inspected_at || ''),
-      escapeCsvValue(row.last_inspected_by || ''),
-      ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
-      ...expandBitmask(row.dq_flags, DQ_FLAGS),
-      escapeCsvValue(row.lists || ''),
-    );
-
-    csvRows.push(values.join(','));
-  }
-
-  return csvRows.join('\n');
-}
-
-/**
  * Convert spectra-mode CSV export rows to CSV string (one row per spectrum)
  */
 function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): string {
@@ -291,7 +209,6 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
     'program_name',
     'last_inspected_at',
     'last_inspected_by',
-    ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
     ...DQ_FLAGS.map(f => `dq_${f.key}`),
     'tags',
   ];
@@ -325,7 +242,6 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
       escapeCsvValue(row.program_name || ''),
       escapeCsvValue(row.last_inspected_at || ''),
       escapeCsvValue(row.last_inspected_by || ''),
-      ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
       ...expandBitmask(row.dq_flags, DQ_FLAGS),
       escapeCsvValue(row.lists || ''),
     );

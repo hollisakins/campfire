@@ -64,7 +64,6 @@ const SPECTRA_COLUMN_TO_SERVER: Record<string, SortColumn> = {
   'redshift': 'redshift',
   'redshift_quality': 'redshift_quality',
   'redshift_auto': 'redshift_auto',
-  'dq_flags': 'dq_flags',
   'signal_to_noise': 'signal_to_noise',
   'exposure_time': 'exposure_time',
   'grating': 'grating',
@@ -597,9 +596,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         id: 'dq_flags',
         minSize: 130,
         accessorFn: (row: SpectrumTarget) => row.spectra[0]?.dq_flags ?? 0,
-        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
-          <SortableHeader column={column}>DQ</SortableHeader>
-        ),
+        header: () => <span>DQ</span>,
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const mask = row.original.spectra[0]?.dq_flags ?? 0;
           if (mask === 0) {
@@ -622,7 +619,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
             </div>
           );
         },
-        sortingFn: 'basic' as const,
+        enableSorting: false,
       } satisfies ColumnDef<SpectrumTarget>] : []),
       // Objects mode: n_targets column
       ...(isObjectsMode ? [{

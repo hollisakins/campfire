@@ -72,9 +72,6 @@ def get_supabase_client(config: dict):
     )
 
 
-REDSHIFT_DRIFT_THRESHOLD = 0.03
-
-
 def get_user_id_from_token(config: dict) -> str | None:
     """Extract user_id (sub claim) from the stored Supabase token."""
     token = config.get('supabase', {}).get('supabase_token')

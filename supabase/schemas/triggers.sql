@@ -72,7 +72,64 @@ END;
 $$;
 
 
--- 4. log_list_membership_change
+-- 4. enforce_object_user_update_scope
+--    Non-admin users (via `update_objects_by_access` RLS) can legitimately
+--    write inspection fields. The RLS policy has no WITH CHECK and no
+--    column-level filter, so without this trigger a user with can_comment
+--    can hit PostgREST directly and rewrite anything on objects
+--    (programs, is_active, aggregates, etc.). This trigger enforces the
+--    column scope at the DB level: anything except the inspection set
+--    raises an exception for non-admin callers. Admins and service-role
+--    writes (auth.uid() IS NULL) pass through.
+DROP FUNCTION IF EXISTS public.enforce_object_user_update_scope CASCADE;
+
+CREATE OR REPLACE FUNCTION public.enforce_object_user_update_scope() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+BEGIN
+    -- Service role (no JWT) and admins can write any column.
+    IF auth.uid() IS NULL OR public.is_admin() THEN
+        RETURN NEW;
+    END IF;
+
+    -- Non-admin users may only touch the inspection set:
+    --   redshift_inspected, redshift_quality, last_inspected_at,
+    --   last_inspected_by. version and updated_at are maintained by sibling
+    --   triggers; we explicitly allow them to change so this trigger
+    --   doesn't reject writes that went through the legitimate path.
+    IF OLD.object_id IS DISTINCT FROM NEW.object_id
+       OR OLD.field IS DISTINCT FROM NEW.field
+       OR OLD.ra IS DISTINCT FROM NEW.ra
+       OR OLD.dec IS DISTINCT FROM NEW.dec
+       OR OLD.n_targets IS DISTINCT FROM NEW.n_targets
+       OR OLD.n_spectra IS DISTINCT FROM NEW.n_spectra
+       OR OLD.programs IS DISTINCT FROM NEW.programs
+       OR OLD.gratings IS DISTINCT FROM NEW.gratings
+       OR OLD.observations IS DISTINCT FROM NEW.observations
+       OR OLD.max_snr IS DISTINCT FROM NEW.max_snr
+       OR OLD.max_exposure_time IS DISTINCT FROM NEW.max_exposure_time
+       OR OLD.best_redshift IS DISTINCT FROM NEW.best_redshift
+       OR OLD.best_redshift_quality IS DISTINCT FROM NEW.best_redshift_quality
+       OR OLD.photo_z IS DISTINCT FROM NEW.photo_z
+       OR OLD.photo_z_err_lo IS DISTINCT FROM NEW.photo_z_err_lo
+       OR OLD.photo_z_err_hi IS DISTINCT FROM NEW.photo_z_err_hi
+       OR OLD.has_photometry IS DISTINCT FROM NEW.has_photometry
+       OR OLD.redshift_auto IS DISTINCT FROM NEW.redshift_auto
+       OR OLD.last_data_change_at IS DISTINCT FROM NEW.last_data_change_at
+       OR OLD.staleness_reason IS DISTINCT FROM NEW.staleness_reason
+       OR OLD.is_active IS DISTINCT FROM NEW.is_active
+       OR OLD.created_at IS DISTINCT FROM NEW.created_at
+    THEN
+        RAISE EXCEPTION 'Non-admin updates to objects may only change inspection fields (redshift_inspected, redshift_quality, last_inspected_at, last_inspected_by)'
+            USING ERRCODE = '42501';  -- insufficient_privilege
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+-- 5. log_list_membership_change
 --    Logs additions and removals from object lists into list_audit_log.
 DROP FUNCTION IF EXISTS public.log_list_membership_change CASCADE;
 
@@ -123,6 +180,16 @@ DROP TRIGGER IF EXISTS track_object_inspection_trigger ON public.objects;
 CREATE TRIGGER track_object_inspection_trigger
   BEFORE UPDATE OF redshift_quality ON public.objects
   FOR EACH ROW EXECUTE FUNCTION public.log_object_inspection_changes();
+
+-- Belt-and-suspenders: the `update_objects_by_access` RLS policy has no
+-- WITH CHECK clause, so this trigger enforces the column scope at the
+-- row level. Must run AFTER bump_object_version so the version bump
+-- from the legitimate inspection write isn't misclassified as a
+-- forbidden aggregate change.
+DROP TRIGGER IF EXISTS enforce_object_user_update_scope_trigger ON public.objects;
+CREATE TRIGGER enforce_object_user_update_scope_trigger
+  BEFORE UPDATE ON public.objects
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_object_user_update_scope();
 
 
 -- Per-spectrum DQ flag changes

@@ -1376,6 +1376,16 @@ ALTER TABLE ONLY "public"."flag_audit_log"
 
 
 ALTER TABLE ONLY "public"."flag_audit_log"
+    ADD CONSTRAINT "flag_audit_log_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."flag_audit_log"
+    ADD CONSTRAINT "flag_audit_log_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectra"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."flag_audit_log"
     ADD CONSTRAINT "flag_audit_log_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id");
 
 

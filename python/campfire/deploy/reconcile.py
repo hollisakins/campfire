@@ -667,6 +667,14 @@ def apply_proposals(
         if u.staleness_reason is not None:
             patch['last_data_change_at'] = now
             patch['staleness_reason'] = u.staleness_reason
+        # Membership-based match won an inactive object back — reactivate so
+        # the UI stops treating it as soft-deleted. Signal the reactivation
+        # via staleness so the operator sees it.
+        if not u.object.get('is_active'):
+            patch['is_active'] = True
+            patch['last_data_change_at'] = now
+            patch['staleness_reason'] = 'membership_changed'
+            stats['reactivated'] += 1
         client.table('objects').update(patch).eq('id', u.object['id']).execute()
         cluster_to_object_db_id[u.cluster_idx] = u.object['id']
         stats['updated'] += 1

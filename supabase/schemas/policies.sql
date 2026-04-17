@@ -216,12 +216,19 @@ CREATE POLICY "admin_objects_update"
 -- Phase A: users with can_comment permission can update objects whose
 -- programs[] overlaps their accessible programs. Mirrors the targets
 -- update_targets_by_access policy. Field-level restriction (only allow
--- writing redshift_inspected, redshift_quality) is enforced at the API
--- layer — Postgres RLS does not support per-column UPDATE policies.
+-- writing redshift_inspected, redshift_quality, last_inspected_*) is
+-- enforced by the `enforce_object_user_update_scope` trigger in
+-- triggers.sql — Postgres RLS does not support per-column UPDATE policies.
+-- WITH CHECK mirrors USING so a row can't be moved out of the caller's
+-- program access.
 DROP POLICY IF EXISTS "update_objects_by_access" ON objects;
 CREATE POLICY "update_objects_by_access"
   ON objects FOR UPDATE
   USING (
+    programs && public.accessible_program_slugs()
+    AND public.can_comment()
+  )
+  WITH CHECK (
     programs && public.accessible_program_slugs()
     AND public.can_comment()
   );
