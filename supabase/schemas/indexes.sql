@@ -146,6 +146,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_target_grating
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_fits_path
     ON public.spectra USING btree (fits_path);
 
+-- Generated spectrum_id (filename basename) — unique because fits_path is unique
+-- and the regex is deterministic. Btree supports both equality lookups (search)
+-- and ORDER BY (sort) for the spectra table view.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_spectrum_id
+    ON public.spectra USING btree (spectrum_id);
+
+-- Trigram index for substring (ILIKE) search on the search bar.
+CREATE INDEX IF NOT EXISTS idx_spectra_spectrum_id_trgm
+    ON public.spectra USING gin (spectrum_id public.gin_trgm_ops);
+
 CREATE INDEX IF NOT EXISTS idx_spectra_grating
     ON public.spectra USING btree (grating);
 

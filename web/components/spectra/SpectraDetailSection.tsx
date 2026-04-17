@@ -3,18 +3,17 @@
 import React, { useEffect, useMemo } from 'react';
 import { ChevronsDown, ChevronsUp } from 'lucide-react';
 import { SpectrumDetailCard } from './SpectrumDetailCard';
+import { getSpectrumShade } from './plotting-utils';
 import type { ObjectMemberTarget, Spectrum } from '@/lib/types';
 
 interface SpectraDetailSectionProps {
-  orderedMembers: ObjectMemberTarget[];
-  /** target_id → visible? (sidebar checkboxes) */
-  visibility: Record<string, boolean>;
+  members: ObjectMemberTarget[];
+  /** Spectrum.id → visible? (sidebar checkboxes). */
+  spectrumVisibility: Record<number, boolean>;
   /** target_id → hex color (member palette) */
   colors: Record<string, string>;
   /** program_slug → display name */
   programNames: Record<string, string>;
-  /** Spectrum.id matching objects.redshift_auto, marked "← selected". */
-  selectedSpectrumId: number | null;
   /** Object-level redshift used to overlay emission lines on each plot. */
   objectRedshift: number | null;
   /** Controlled expansion state, owned by UnifiedObjectPage. */
@@ -27,14 +26,15 @@ interface SpectraDetailSectionProps {
 interface FlatCard {
   member: ObjectMemberTarget;
   spectrum: Spectrum;
+  /** Spectrum's index within member.spectra — drives the shade. */
+  memberIndex: number;
 }
 
 export const SpectraDetailSection: React.FC<SpectraDetailSectionProps> = ({
-  orderedMembers,
-  visibility,
+  members,
+  spectrumVisibility,
   colors,
   programNames,
-  selectedSpectrumId,
   objectRedshift,
   expanded,
   onToggleExpand,
@@ -43,10 +43,12 @@ export const SpectraDetailSection: React.FC<SpectraDetailSectionProps> = ({
 }) => {
   const cards: FlatCard[] = useMemo(
     () =>
-      orderedMembers
-        .filter(m => visibility[m.target_id])
-        .flatMap(m => m.spectra.map(spectrum => ({ member: m, spectrum }))),
-    [orderedMembers, visibility]
+      members.flatMap(m =>
+        m.spectra
+          .map((spectrum, memberIndex) => ({ member: m, spectrum, memberIndex }))
+          .filter(({ spectrum }) => spectrumVisibility[spectrum.id] ?? true)
+      ),
+    [members, spectrumVisibility]
   );
 
   // J/K stepping: scroll to next/previous card by viewport position.
@@ -122,7 +124,7 @@ export const SpectraDetailSection: React.FC<SpectraDetailSectionProps> = ({
       </div>
 
       <div className="space-y-3">
-        {cards.map(({ member, spectrum }) => (
+        {cards.map(({ member, spectrum, memberIndex }) => (
           <SpectrumDetailCard
             key={spectrum.id}
             cardId={`spec-card-${spectrum.id}`}
@@ -130,10 +132,9 @@ export const SpectraDetailSection: React.FC<SpectraDetailSectionProps> = ({
             targetId={member.target_id}
             observation={member.observation}
             programName={programNames[member.program_slug] || member.program_slug}
-            color={colors[member.target_id]}
+            color={getSpectrumShade(colors[member.target_id], memberIndex)}
             expanded={expanded.has(spectrum.id)}
             onToggle={() => onToggleExpand(spectrum.id)}
-            isSelected={selectedSpectrumId === spectrum.id}
             objectRedshift={objectRedshift}
           />
         ))}

@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import type { ObjectDetail, ObjectMemberTarget, Spectrum } from '@/lib/types';
 import { MEMBER_COLORS, GRATINGS } from '@/lib/types';
 import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
@@ -14,6 +15,7 @@ import { FloatingInspectionPanel } from './FloatingInspectionPanel';
 import { TileThumbnailWithToggle } from './TileThumbnailWithToggle';
 import { ObjectSidebar } from './ObjectSidebar';
 import { MultiSpectrumViewer, type SpectrumSource } from './MultiSpectrumViewer';
+import { getSpectrumShade } from './plotting-utils';
 import { SpectraDetailSection } from './SpectraDetailSection';
 import { RedshiftFitSummary } from './RedshiftFitSummary';
 import { PhotometrySED } from './PhotometrySED';
@@ -42,61 +44,32 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
     return names;
   }, [object.member_targets]);
 
-  const [memberOrder, setMemberOrder] = useState<string[]>(
-    () => object.member_targets.map(m => m.target_id)
-  );
-
-  const [visibility, setVisibility] = useState<Record<string, boolean>>(() => {
-    const v: Record<string, boolean> = {};
-    object.member_targets.forEach(m => { v[m.target_id] = true; });
+  // Per-spectrum visibility — drives both the comparison plot and Section 2 cards.
+  // Target-level visibility (and shutter visibility) is derived: a target is "off" when
+  // ALL of its child spectra are off, "on" when all are on, "partial" otherwise.
+  const [spectrumVisibility, setSpectrumVisibility] = useState<Record<number, boolean>>(() => {
+    const v: Record<number, boolean> = {};
+    for (const m of object.member_targets) for (const s of m.spectra) v[s.id] = true;
     return v;
   });
 
-  const handleVisibilityChange = useCallback((targetId: string, visible: boolean) => {
-    setVisibility(prev => ({ ...prev, [targetId]: visible }));
+  const handleSpectrumVisibility = useCallback((spectrumId: number, visible: boolean) => {
+    setSpectrumVisibility(prev => ({ ...prev, [spectrumId]: visible }));
   }, []);
 
-  const handleToggleAll = useCallback((visible: boolean) => {
-    setVisibility(prev => {
+  const handleTargetVisibility = useCallback((targetId: string, visible: boolean) => {
+    const member = object.member_targets.find(m => m.target_id === targetId);
+    if (!member) return;
+    setSpectrumVisibility(prev => {
       const next = { ...prev };
-      for (const m of object.member_targets) next[m.target_id] = visible;
+      for (const s of member.spectra) next[s.id] = visible;
       return next;
     });
   }, [object.member_targets]);
 
-  const handleReorder = useCallback((newOrder: string[]) => {
-    setMemberOrder(newOrder);
-  }, []);
-
-  const orderedMembers = useMemo(() => {
-    const map = new Map<string, ObjectMemberTarget>(
-      object.member_targets.map(m => [m.target_id, m])
-    );
-    return memberOrder
-      .map(id => map.get(id))
-      .filter((m): m is ObjectMemberTarget => m != null);
-  }, [object.member_targets, memberOrder]);
-
-  // The spectrum whose redshift_auto sets objects.redshift_auto = highest SNR.
-  const selectedSpectrumId = useMemo(() => {
-    let best: { id: number; snr: number } | null = null;
-    for (const m of object.member_targets) {
-      for (const s of m.spectra) {
-        if (s.signal_to_noise == null) continue;
-        if (!best || s.signal_to_noise > best.snr) {
-          best = { id: s.id, snr: s.signal_to_noise };
-        }
-      }
-    }
-    return best?.id ?? null;
-  }, [object.member_targets]);
-
-  // Section 2 expansion state — default to highest-SNR card expanded.
-  const [expandedSpectra, setExpandedSpectra] = useState<Set<number>>(() => {
-    const s = new Set<number>();
-    if (selectedSpectrumId != null) s.add(selectedSpectrumId);
-    return s;
-  });
+  // Section 2 expansion state — all cards collapsed by default; user opens via
+  // sidebar jump links, the card header, or the Expand-all toggle.
+  const [expandedSpectra, setExpandedSpectra] = useState<Set<number>>(() => new Set());
 
   const handleToggleExpand = useCallback((spectrumId: number) => {
     setExpandedSpectra(prev => {
@@ -117,6 +90,38 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
     setExpandedSpectra(new Set());
   }, []);
 
+  // Sidebar → Section 2: jump to (and auto-expand) a specific spectrum card.
+  const handleJumpToSpectrum = useCallback((spectrumId: number) => {
+    setExpandedSpectra(prev => {
+      if (prev.has(spectrumId)) return prev;
+      const next = new Set(prev);
+      next.add(spectrumId);
+      return next;
+    });
+    // Wait a tick so the freshly-expanded card has a height before scrolling.
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`spec-card-${spectrumId}`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, []);
+
+  // Deep-link from the spectra table: ?spectrum=<spectrum_id> auto-opens that
+  // card on first paint. Fires once per (object, spectrum_id) pair.
+  const searchParams = useSearchParams();
+  const spectrumParam = searchParams?.get('spectrum') ?? null;
+  const jumpedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!spectrumParam) return;
+    const key = `${object.id}:${spectrumParam}`;
+    if (jumpedRef.current === key) return;
+    const match = object.member_targets
+      .flatMap(m => m.spectra)
+      .find(s => s.spectrum_id === spectrumParam);
+    if (!match) return;
+    jumpedRef.current = key;
+    handleJumpToSpectrum(match.id);
+  }, [spectrumParam, object.id, object.member_targets, handleJumpToSpectrum]);
+
   // Section 1 filter pills.
   const sortedGratings = useMemo(() =>
     GRATINGS.filter(g => object.gratings.includes(g)),
@@ -127,28 +132,29 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
 
   const filteredMembers = useMemo(() =>
     selectedProgram
-      ? orderedMembers.filter(m => m.program_slug === selectedProgram)
-      : orderedMembers,
-    [orderedMembers, selectedProgram]
+      ? object.member_targets.filter(m => m.program_slug === selectedProgram)
+      : object.member_targets,
+    [object.member_targets, selectedProgram]
   );
 
-  // MultiSpectrumViewer source list.
-  // Reversed so top sidebar entry = last trace = topmost in Plotly draw order.
+  // MultiSpectrumViewer source list — driven by per-spectrum visibility.
+  // Each spectrum trace uses the same shade as its sidebar checkbox so the sidebar
+  // doubles as a legend. Index is the spectrum's position in the member's FULL
+  // list (not the filtered list) so a grating filter doesn't reshuffle shades.
   const sources: SpectrumSource[] = useMemo(() =>
-    [...filteredMembers]
-      .reverse()
-      .filter(m => visibility[m.target_id])
-      .flatMap(m =>
-        m.spectra
-          .filter(s => !selectedGrating || s.grating === selectedGrating)
-          .map(s => ({
-            fitsPath: s.fits_path,
-            label: selectedGrating ? m.target_id : `${m.target_id} (${s.grating})`,
-            color: colors[m.target_id],
-            visible: true,
-          }))
-      ),
-    [filteredMembers, visibility, selectedGrating, colors]
+    filteredMembers.flatMap(m =>
+      m.spectra
+        .map((s, i) => ({ s, i }))
+        .filter(({ s }) => !selectedGrating || s.grating === selectedGrating)
+        .filter(({ s }) => spectrumVisibility[s.id] ?? true)
+        .map(({ s, i }) => ({
+          fitsPath: s.fits_path,
+          label: selectedGrating ? m.target_id : `${m.target_id} (${s.grating})`,
+          color: getSpectrumShade(colors[m.target_id], i),
+          visible: true,
+        }))
+    ),
+    [filteredMembers, spectrumVisibility, selectedGrating, colors]
   );
 
   // Section 3 — flat list of all member spectra for object-level redshift fit summary.
@@ -181,13 +187,10 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
     if (object.id !== prevObjectIdRef.current) {
       prevObjectIdRef.current = object.id;
       inspection.resetState(initialInspection);
-      const next = new Set<number>();
-      if (selectedSpectrumId != null) next.add(selectedSpectrumId);
-      setExpandedSpectra(next);
-      setMemberOrder(object.member_targets.map(m => m.target_id));
-      const v: Record<string, boolean> = {};
-      object.member_targets.forEach(m => { v[m.target_id] = true; });
-      setVisibility(v);
+      setExpandedSpectra(new Set());
+      const v: Record<number, boolean> = {};
+      for (const m of object.member_targets) for (const s of m.spectra) v[s.id] = true;
+      setSpectrumVisibility(v);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [object.id]);
@@ -202,14 +205,15 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Cutout shutter colors: all visible members.
+  // Cutout shutter colors: include any member with at least one visible spectrum.
   const cutoutMemberColors = useMemo(() => {
     const mc: Record<string, string> = {};
-    for (const m of orderedMembers) {
-      if (visibility[m.target_id]) mc[m.target_id] = colors[m.target_id];
+    for (const m of object.member_targets) {
+      const anyVisible = m.spectra.some(s => spectrumVisibility[s.id] ?? true);
+      if (anyVisible) mc[m.target_id] = colors[m.target_id];
     }
     return mc;
-  }, [orderedMembers, visibility, colors]);
+  }, [object.member_targets, spectrumVisibility, colors]);
 
   // Flatten all spectra for the object-level download button.
   const allSpectra: Spectrum[] = useMemo(
@@ -237,12 +241,12 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
               />
             </div>
             <ObjectSidebar
-              members={orderedMembers}
+              members={object.member_targets}
               colors={colors}
-              visibility={visibility}
-              onVisibilityChange={handleVisibilityChange}
-              onToggleAll={handleToggleAll}
-              onReorder={handleReorder}
+              spectrumVisibility={spectrumVisibility}
+              onSpectrumVisibility={handleSpectrumVisibility}
+              onTargetVisibility={handleTargetVisibility}
+              onJumpToSpectrum={handleJumpToSpectrum}
             />
           </div>
         </div>
@@ -391,11 +395,10 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
           {/* === Section 2: Spectra Detail Cards === */}
           <section className="mb-8">
             <SpectraDetailSection
-              orderedMembers={orderedMembers}
-              visibility={visibility}
+              members={object.member_targets}
+              spectrumVisibility={spectrumVisibility}
               colors={colors}
               programNames={programNames}
-              selectedSpectrumId={selectedSpectrumId}
               objectRedshift={object.redshift}
               expanded={expandedSpectra}
               onToggleExpand={handleToggleExpand}

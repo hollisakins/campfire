@@ -324,7 +324,16 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "date_obs" "text",
     -- Phase A: per-spectrum auto-fit and DQ (populated in Phase B by deploy pipeline; backfilled in Phase D)
     "redshift_auto" double precision,
-    "dq_flags" integer NOT NULL DEFAULT 0
+    "dq_flags" integer NOT NULL DEFAULT 0,
+    -- Stable per-spectrum identifier derived from fits_path: strips the leading
+    -- directory and the trailing "_spec.fits" suffix (e.g. ember_cosmos_p1_prism_clear_12345).
+    -- Generated/stored so it stays in sync with fits_path with no application code path.
+    "spectrum_id" "text" GENERATED ALWAYS AS (
+      regexp_replace(
+        regexp_replace("fits_path", '^.*/', ''),
+        '_spec\.fits$', '', 'i'
+      )
+    ) STORED
 );
 
 

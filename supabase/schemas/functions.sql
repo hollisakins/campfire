@@ -436,13 +436,13 @@ BEGIN
   END IF;
 
   IF NOT (p_sort_column IN (
-    'target_id', 'field', 'observation', 'ra', 'dec', 'redshift',
+    'target_id', 'spectrum_id', 'field', 'observation', 'ra', 'dec', 'redshift',
     'redshift_quality', 'signal_to_noise', 'exposure_time', 'grating'
   ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
-    p_sort_column := 'target_id';
+    p_sort_column := 'spectrum_id';
   END IF;
 
-  IF v_coord_search_active AND p_sort_column = 'target_id' AND p_sort_direction = 'asc' THEN
+  IF v_coord_search_active AND p_sort_column IN ('target_id', 'spectrum_id') AND p_sort_direction = 'asc' THEN
     p_sort_column := 'distance';
   END IF;
 
@@ -485,11 +485,13 @@ BEGIN
       o.last_inspected_by,
       o.is_active AS object_is_active,
       o.has_photometry AS object_has_photometry,
+      o.object_id AS parent_object_id,
       t.max_snr,
       t.max_exposure_time,
       t.created_at,
       t.updated_at,
-      s.id AS spectrum_id,
+      s.id AS spectrum_pk,
+      s.spectrum_id,
       s.grating,
       s.fits_path,
       s.signal_to_noise,
@@ -532,7 +534,9 @@ BEGIN
       AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
           SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
-      AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
+      AND (p_search IS NULL
+           OR t.target_id ILIKE '%' || p_search || '%'
+           OR s.spectrum_id ILIKE '%' || p_search || '%')
       AND (
         p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -574,6 +578,8 @@ BEGIN
         CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'desc' THEN distance END DESC NULLS LAST,
         CASE WHEN p_sort_column = 'target_id' AND p_sort_direction = 'asc' THEN target_id END ASC NULLS LAST,
         CASE WHEN p_sort_column = 'target_id' AND p_sort_direction = 'desc' THEN target_id END DESC NULLS LAST,
+        CASE WHEN p_sort_column = 'spectrum_id' AND p_sort_direction = 'asc' THEN spectrum_id END ASC NULLS LAST,
+        CASE WHEN p_sort_column = 'spectrum_id' AND p_sort_direction = 'desc' THEN spectrum_id END DESC NULLS LAST,
         CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc' THEN field END ASC NULLS LAST,
         CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN field END DESC NULLS LAST,
         CASE WHEN p_sort_column = 'observation' AND p_sort_direction = 'asc' THEN observation END ASC NULLS LAST,
@@ -600,6 +606,7 @@ BEGIN
     COALESCE(jsonb_agg(jsonb_build_object(
       'id', r.tgt_db_id,
       'target_id', r.target_id,
+      'parent_object_id', r.parent_object_id,
       'program_slug', r.program_slug,
       'program_name', pr.program_name,
       'field', r.field,
@@ -618,7 +625,8 @@ BEGIN
       'updated_at', r.updated_at,
       'distance', CASE WHEN v_coord_search_active THEN r.distance ELSE NULL END,
       'spectra', jsonb_build_array(jsonb_build_object(
-        'id', r.spectrum_id,
+        'id', r.spectrum_pk,
+        'spectrum_id', r.spectrum_id,
         'target_id', r.target_id,
         'grating', r.grating,
         'fits_path', r.fits_path,
@@ -1114,7 +1122,10 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
   p_sort_column TEXT DEFAULT 'object_id',
-  p_sort_direction TEXT DEFAULT 'asc'
+  p_sort_direction TEXT DEFAULT 'asc',
+  p_has_photometry BOOLEAN DEFAULT NULL,
+  p_photo_z_min DOUBLE PRECISION DEFAULT NULL,
+  p_photo_z_max DOUBLE PRECISION DEFAULT NULL
 )
 RETURNS TABLE(prev_object_id TEXT, next_object_id TEXT, current_index BIGINT, total_count BIGINT)
 LANGUAGE plpgsql STABLE
@@ -1321,7 +1332,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_sort_column TEXT DEFAULT 'target_id', p_sort_direction TEXT DEFAULT 'asc'
 )
 RETURNS TABLE(
-  target_id TEXT, grating TEXT, field TEXT, ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
+  spectrum_id TEXT, target_id TEXT, grating TEXT, field TEXT, ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
   redshift NUMERIC, redshift_quality INTEGER, redshift_auto DOUBLE PRECISION,
   signal_to_noise DOUBLE PRECISION,
   exposure_time DOUBLE PRECISION, fits_path TEXT, program_slug TEXT, program_name TEXT,
@@ -1341,9 +1352,9 @@ BEGIN
   v_comment_search_active := (p_comment_search IS NOT NULL AND p_comment_search != '' AND p_comment_search_scope IN ('just_me', 'everyone'));
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
-  IF NOT (p_sort_column IN ('target_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'signal_to_noise', 'exposure_time', 'grating')
+  IF NOT (p_sort_column IN ('target_id', 'spectrum_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'signal_to_noise', 'exposure_time', 'grating')
        OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
-    p_sort_column := 'target_id';
+    p_sort_column := 'spectrum_id';
   END IF;
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
@@ -1359,7 +1370,7 @@ BEGIN
     GROUP BY olm.object_id
   ),
   filtered_spectra AS (
-    SELECT t.target_id, s.grating, t.field, t.ra, t.dec,
+    SELECT s.spectrum_id, t.target_id, s.grating, t.field, t.ra, t.dec,
       o.redshift, o.redshift_quality,
       s.redshift_auto,
       s.signal_to_noise, s.exposure_time, s.fits_path, t.program_slug, t.observation,
@@ -1388,7 +1399,9 @@ BEGIN
       AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
           SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
-      AND (p_search IS NULL OR t.target_id ILIKE '%' || p_search || '%')
+      AND (p_search IS NULL
+           OR t.target_id ILIKE '%' || p_search || '%'
+           OR s.spectrum_id ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND COALESCE(o.redshift_quality, 0) = 0))
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (NOT v_comment_search_active OR EXISTS (
@@ -1400,7 +1413,7 @@ BEGIN
         AND t.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)))
   ),
   distance_filtered AS (SELECT fs.* FROM filtered_spectra fs WHERE NOT v_coord_search_active OR fs.distance <= p_radius_degrees)
-  SELECT df.target_id, df.grating, df.field, df.ra, df.dec, df.redshift, df.redshift_quality, df.redshift_auto,
+  SELECT df.spectrum_id, df.target_id, df.grating, df.field, df.ra, df.dec, df.redshift, df.redshift_quality, df.redshift_auto,
     df.signal_to_noise, df.exposure_time, df.fits_path, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
     df.distance, df.dq_flags, df.lists
@@ -1409,6 +1422,8 @@ BEGIN
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
   ORDER BY
     CASE WHEN v_coord_search_active THEN df.distance END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'spectrum_id' AND p_sort_direction = 'asc' THEN df.spectrum_id END ASC NULLS LAST,
+    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'spectrum_id' AND p_sort_direction = 'desc' THEN df.spectrum_id END DESC NULLS LAST,
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'target_id' AND p_sort_direction = 'asc' THEN df.target_id END ASC NULLS LAST,
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'target_id' AND p_sort_direction = 'desc' THEN df.target_id END DESC NULLS LAST,
     CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'asc' THEN df.field END ASC NULLS LAST,

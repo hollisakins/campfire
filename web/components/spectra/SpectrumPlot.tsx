@@ -91,6 +91,9 @@ interface SpectrumPlotProps {
   inspectionMode?: boolean;
   getCachedData?: (fitsPath: string) => CachedSpectrumData | undefined;
   onRedshiftChange?: (value: number) => void;
+  /** When true, drop the outer rounded-card wrapper so the plot can be embedded
+   *  directly inside another container (e.g. SpectrumDetailCard). */
+  bare?: boolean;
 }
 
 export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
@@ -100,6 +103,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   inspectionMode = false,
   getCachedData,
   onRedshiftChange,
+  bare = false,
 }) => {
   const { spectrumPreferences, accentColorHex } = usePreferences();
   const { resolvedTheme } = useTheme();
@@ -111,6 +115,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   const [fluxUnit, setFluxUnit] = useState<FluxUnit>(spectrumPreferences.fluxUnit);
   const [colorscale, setColorscale] = useState<Colorscale2D>(spectrumPreferences.colorscale2D);
   const [showEmissionLines, setShowEmissionLines] = useState(inspectionMode);
+  // Show best-fit model overlay + χ²(z) panel. Defaults on in inspection mode.
+  const [showModel, setShowModel] = useState(inspectionMode);
   const [redshift, setRedshift] = useState(initialRedshift ?? 0);
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
   const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);
@@ -153,56 +159,41 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
   useEffect(() => {
     async function fetchData() {
-      console.log(`[SpectrumPlot] Loading ${grating}, inspection=${inspectionMode}, hasCache=${!!getCachedData}`);
       setLoading(true);
       setError(null);
+      setFitData(null);
 
       try {
         // In inspection mode, check cache first
         if (inspectionMode && getCachedData) {
           const cached = getCachedData(fitsPath);
           if (cached) {
-            console.log(`[SpectrumPlot] ✓ Using cached data for ${grating}`);
             setData(cached.spectrum);
             setFitData(cached.fitData);
             setLoading(false);
             return;
           }
-          console.log(`[SpectrumPlot] Cache miss for ${grating}, fetching...`);
         }
 
-        // Fallback to normal fetch (existing code)
-        if (inspectionMode) {
-          const [spectrumResponse, fitResponse] = await Promise.all([
-            fetch(`/api/spectrum?path=${encodeURIComponent(fitsPath)}`),
-            fetch(`/api/redshift-fit?path=${encodeURIComponent(fitsPath)}`),
-          ]);
+        // Fetch spectrum + fit in parallel; fit is optional (404 → null).
+        const [spectrumResponse, fitResponse] = await Promise.all([
+          fetch(`/api/spectrum?path=${encodeURIComponent(fitsPath)}`),
+          fetch(`/api/redshift-fit?path=${encodeURIComponent(fitsPath)}`),
+        ]);
 
-          if (!spectrumResponse.ok) {
-            const errorData = await spectrumResponse.json();
-            throw new Error(errorData.error || 'Failed to load spectrum');
-          }
+        if (!spectrumResponse.ok) {
+          const errorData = await spectrumResponse.json();
+          throw new Error(errorData.error || 'Failed to load spectrum');
+        }
 
-          const spectrumData: SpectrumData = await spectrumResponse.json();
-          setData(spectrumData);
+        const spectrumData: SpectrumData = await spectrumResponse.json();
+        setData(spectrumData);
 
-          if (fitResponse.ok) {
-            const fit: RedshiftFitData = await fitResponse.json();
-            setFitData(fit);
-          } else if (fitResponse.status !== 404) {
-            console.warn('Failed to fetch redshift fit data:', fitResponse.status);
-          }
-        } else {
-          // Normal mode: just fetch spectrum
-          const response = await fetch(`/api/spectrum?path=${encodeURIComponent(fitsPath)}`);
-
-          if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || 'Failed to load spectrum');
-          }
-
-          const spectrumData: SpectrumData = await response.json();
-          setData(spectrumData);
+        if (fitResponse.ok) {
+          const fit: RedshiftFitData = await fitResponse.json();
+          setFitData(fit);
+        } else if (fitResponse.status !== 404) {
+          console.warn('Failed to fetch redshift fit data:', fitResponse.status);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load spectrum');
@@ -409,8 +400,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       });
     }
 
-    // Add best-fit model trace if available (inspection mode)
-    if (inspectionMode && modelWave && modelFlux) {
+    // Add best-fit model trace if user toggled "Model" on and zfit is available.
+    if (showModel && modelWave && modelFlux) {
       traces.push({
         x: modelWave,
         y: modelFlux,
@@ -576,7 +567,67 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     };
 
     return { traces, layout };
-  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating, inspectionMode, obsRange]);
+  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating, showModel, obsRange]);
+
+  // χ²(z) panel data — only built when the user toggles the Model overlay on.
+  const chi2PlotData = useMemo(() => {
+    if (!showModel || !fitData) return null;
+    const chi2Min = Math.min(...fitData.chi2_grid);
+    const chi2Max = Math.max(...fitData.chi2_grid);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const traces: any[] = [
+      {
+        x: fitData.z_grid,
+        y: fitData.chi2_grid,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: 'χ²(z)',
+        line: { color: '#3b82f6', width: 2 },
+        hovertemplate: 'z: %{x:.4f}<br>χ²: %{y:.2f}<extra></extra>',
+        showlegend: false,
+      },
+      {
+        x: [fitData.redshift, fitData.redshift],
+        y: [chi2Min * 0.5, chi2Max * 2],
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: 'Best fit',
+        line: { color: '#f97316', width: 2, dash: 'dash' },
+        hovertemplate: `Best fit<br>z: ${fitData.redshift.toFixed(4)}<br>χ²_min: ${fitData.chi2_min.toFixed(2)}<extra></extra>`,
+        showlegend: false,
+      },
+    ];
+
+    return {
+      traces,
+      layout: {
+        title: {
+          text: `Redshift fit · z = ${fitData.redshift.toFixed(4)}, χ²_min = ${fitData.chi2_min.toFixed(2)}, conf = ${fitData.confidence.toFixed(1)}%`,
+          font: { size: 12, color: plotColors.text },
+        },
+        font: { family: 'Roboto, sans-serif', color: plotColors.text },
+        xaxis: {
+          title: { text: 'Redshift', font: { color: plotColors.text } },
+          tickfont: { color: plotColors.textSecondary },
+          gridcolor: plotColors.grid,
+          zerolinecolor: plotColors.grid,
+        },
+        yaxis: {
+          title: { text: 'χ²', font: { color: plotColors.text } },
+          tickfont: { color: plotColors.textSecondary },
+          type: 'log' as const,
+          gridcolor: plotColors.grid,
+          zerolinecolor: plotColors.grid,
+        },
+        margin: { l: 80, r: 20, t: 40, b: 40 },
+        paper_bgcolor: plotColors.paper,
+        plot_bgcolor: plotColors.bg,
+        hovermode: 'closest' as const,
+        showlegend: false,
+      },
+    };
+  }, [showModel, fitData, plotColors]);
 
   // Capture observed wavelength range from user zoom/pan/reset events.
   // Purely updates React state — no imperative Plotly calls. The next render
@@ -634,7 +685,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   }
 
   return (
-    <div className="bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+    <div className={bare ? '' : 'bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden'}>
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border dark:border-slate-700 bg-gray-50 dark:bg-slate-900">
         {/* Flux unit toggle */}
@@ -724,6 +775,23 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           </label>
         </div>
 
+        {/* Model + chi²(z) toggle — disabled if no zfit data is available. */}
+        <div className="flex items-center gap-2">
+          <label
+            className={`flex items-center gap-2 ${fitData ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
+            title={fitData ? 'Show best-fit model + χ²(z)' : 'No redshift fit available for this spectrum'}
+          >
+            <input
+              type="checkbox"
+              checked={showModel && !!fitData}
+              disabled={!fitData}
+              onChange={(e) => setShowModel(e.target.checked)}
+              className="w-4 h-4 rounded border-border dark:border-slate-600 text-primary focus:ring-primary"
+            />
+            <span className="text-sm text-text-secondary dark:text-slate-400">Model</span>
+          </label>
+        </div>
+
         {/* Redshift slider (only shown when emission lines are enabled) */}
         {showEmissionLines && (
           <RedshiftSliderControl
@@ -755,6 +823,22 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         style={{ width: '100%', height: '700px' }}
         onRelayout={handleRelayout}
       />
+
+      {/* χ²(z) panel — appears below the spectrum when Model is on. */}
+      {chi2PlotData && (
+        <div className="border-t border-border dark:border-slate-700">
+          <Plot
+            data={chi2PlotData.traces}
+            layout={chi2PlotData.layout}
+            config={{
+              responsive: true,
+              displayModeBar: false,
+              displaylogo: false,
+            }}
+            style={{ width: '100%', height: '220px' }}
+          />
+        </div>
+      )}
     </div>
   );
 };

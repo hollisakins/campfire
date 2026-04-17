@@ -175,6 +175,8 @@ export interface DbTarget {
 
 export interface Spectrum {
   id: number;
+  /** Stable filename-derived identifier (basename of fits_path with `_spec.fits` stripped). */
+  spectrum_id: string;
   target_id: string;  // FK to targets.target_id (text)
   grating: string;
   fits_path: string;

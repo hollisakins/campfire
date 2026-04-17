@@ -104,44 +104,55 @@ export async function getSpectra(
 
     // Build final params for the chosen RPC
     // Objects RPC has a smaller parameter set (no bitmask flags, comments, thumbnails)
-    const callParams = viewMode === 'objects'
-      ? {
-          p_program_slugs: rpcParams.p_program_slugs,
-          p_filter_programs: rpcParams.p_filter_programs,
-          p_fields: rpcParams.p_fields,
-          p_gratings: rpcParams.p_gratings,
-          p_gratings_mode: rpcParams.p_gratings_mode,
-          p_observations: rpcParams.p_observations,
-          p_redshift_quality: rpcParams.p_redshift_quality,
-          p_redshift_min: rpcParams.p_redshift_min,
-          p_redshift_max: rpcParams.p_redshift_max,
-          p_max_snr_min: rpcParams.p_max_snr_min,
-          p_max_snr_max: rpcParams.p_max_snr_max,
-          p_max_exposure_time_min: rpcParams.p_max_exposure_time_min,
-          p_max_exposure_time_max: rpcParams.p_max_exposure_time_max,
-          p_search: rpcParams.p_search,
-          p_inspected_only: rpcParams.p_inspected_only,
-          p_has_photometry: rpcParams.p_has_photometry,
-          p_list_ids: rpcParams.p_list_ids,
-          p_coord_ra: rpcParams.p_coord_ra,
-          p_coord_dec: rpcParams.p_coord_dec,
-          p_radius_degrees: rpcParams.p_radius_degrees,
-          p_sort_column: sortColumn,
-          p_sort_direction: sortDirection,
-          p_page: page,
-          p_page_size: pageSize,
-        }
-      : {
-          ...rpcParams,
-          p_has_photometry: undefined,
-          p_photo_z_min: undefined,
-          p_photo_z_max: undefined,
-          p_sort_column: sortColumn,
-          p_sort_direction: sortDirection,
-          p_page: page,
-          p_page_size: pageSize,
-          p_include_thumbnails: true,
-        };
+    let callParams: Record<string, unknown>;
+    if (viewMode === 'objects') {
+      callParams = {
+        p_program_slugs: rpcParams.p_program_slugs,
+        p_filter_programs: rpcParams.p_filter_programs,
+        p_fields: rpcParams.p_fields,
+        p_gratings: rpcParams.p_gratings,
+        p_gratings_mode: rpcParams.p_gratings_mode,
+        p_observations: rpcParams.p_observations,
+        p_redshift_quality: rpcParams.p_redshift_quality,
+        p_redshift_min: rpcParams.p_redshift_min,
+        p_redshift_max: rpcParams.p_redshift_max,
+        p_max_snr_min: rpcParams.p_max_snr_min,
+        p_max_snr_max: rpcParams.p_max_snr_max,
+        p_max_exposure_time_min: rpcParams.p_max_exposure_time_min,
+        p_max_exposure_time_max: rpcParams.p_max_exposure_time_max,
+        p_search: rpcParams.p_search,
+        p_inspected_only: rpcParams.p_inspected_only,
+        p_has_photometry: rpcParams.p_has_photometry,
+        p_list_ids: rpcParams.p_list_ids,
+        p_coord_ra: rpcParams.p_coord_ra,
+        p_coord_dec: rpcParams.p_coord_dec,
+        p_radius_degrees: rpcParams.p_radius_degrees,
+        p_sort_column: sortColumn,
+        p_sort_direction: sortDirection,
+        p_page: page,
+        p_page_size: pageSize,
+      };
+    } else {
+      // Phase D dropped spectral_features filtering from get_filtered_spectra_paginated.
+      // PostgREST resolves RPCs by exact param-name match, so we must omit the dropped
+      // params or the call fails with "function not found in schema cache".
+      /* eslint-disable @typescript-eslint/no-unused-vars */
+      const {
+        p_spectral_features_include_any: _sfa,
+        p_spectral_features_include_all: _sfb,
+        p_spectral_features_exclude: _sfc,
+        ...spectraParams
+      } = rpcParams;
+      /* eslint-enable @typescript-eslint/no-unused-vars */
+      callParams = {
+        ...spectraParams,
+        p_sort_column: sortColumn,
+        p_sort_direction: sortDirection,
+        p_page: page,
+        p_page_size: pageSize,
+        p_include_thumbnails: true,
+      };
+    }
 
     // Call the RPC function for server-side filtering, sorting, and pagination
     const { data, error } = await supabase.rpc(rpcName, callParams);
@@ -215,6 +226,7 @@ export async function getSpectra(
       return {
         id: obj.id,
         target_id: obj.target_id,
+        parent_object_id: obj.parent_object_id ?? undefined,
         program_slug: obj.program_slug,
         program_name: obj.program_name || null,
         field: obj.field,

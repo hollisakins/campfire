@@ -36,8 +36,7 @@ import type { AdvancedFilterOptions } from './SpectraFilterBar';
 // Column visibility configuration — spectra mode (per-grating rows)
 const SPECTRA_MODE_COLUMNS: ColumnDefinition[] = [
   { id: 'rgb_thumbnail', label: 'RGB Image', defaultVisible: true },
-  { id: 'target_id', label: 'Target ID', alwaysVisible: true },
-  { id: 'grating', label: 'Grating', defaultVisible: true },
+  { id: 'spectrum_id', label: 'Spectrum ID', alwaysVisible: true },
   { id: 'field', label: 'Field', defaultVisible: true },
   { id: 'program', label: 'Program', defaultVisible: false },
   { id: 'ra', label: 'RA', defaultVisible: true },
@@ -50,12 +49,13 @@ const SPECTRA_MODE_COLUMNS: ColumnDefinition[] = [
   { id: 'spectrum_thumbnail', label: 'Spectrum', defaultVisible: true },
   { id: 'signal_to_noise', label: 'S/N', defaultVisible: true },
   { id: 'exposure_time', label: 'Exp. Time', defaultVisible: false },
+  { id: 'grating', label: 'Grating', defaultVisible: true },
   { id: 'observation', label: 'Observation', defaultVisible: false },
 ];
 
 // Map TanStack Table column IDs to server column names — spectra mode
 const SPECTRA_COLUMN_TO_SERVER: Record<string, SortColumn> = {
-  'target_id': 'target_id',
+  'spectrum_id': 'spectrum_id',
   'field': 'field',
   'observation': 'observation',
   'ra': 'ra',
@@ -339,7 +339,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           onSortChange(serverColumn, newSorting[0].desc ? 'desc' : 'asc');
         }
       } else {
-        onSortChange(isObjectsMode ? 'object_id' : 'target_id', 'asc');
+        onSortChange(isObjectsMode ? 'object_id' : 'spectrum_id', 'asc');
       }
     }
   };
@@ -392,94 +392,88 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         ),
         enableSorting: false,
       } satisfies ColumnDef<SpectrumTarget>] : []),
-      {
-        accessorKey: 'target_id',
+      // Objects mode: Object ID column (links to object detail page).
+      ...(isObjectsMode ? [{
+        accessorKey: 'target_id' as const,
+        id: 'target_id',
         minSize: 260,
-        header: ({ column }) => (
-          <SortableHeader column={column}>{isObjectsMode ? 'Object ID' : 'Target ID'}</SortableHeader>
+        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
+          <SortableHeader column={column}>Object ID</SortableHeader>
         ),
-        cell: ({ row, table }) => {
-          // In objects mode, link to object detail page
-          if (isObjectsMode) {
-            const filterStr = currentFilterParams?.toString() || '';
-            return (
-              <Link
-                href={`/nirspec/objects/${encodeURIComponent(row.original.target_id)}${filterStr ? `?${filterStr}` : ''}`}
-                className="text-sm font-mono text-primary hover:underline"
-                onClick={() => {
-                  const rows = table.getRowModel().rows;
-                  const visibleIds = rows.map(r => r.original.target_id);
-                  const pageIndex = table.getState().pagination.pageIndex;
-                  const ps = table.getState().pagination.pageSize;
-                  setNavCache({
-                    ids: visibleIds,
-                    filters: filterStr,
-                    sort: `${sortColumn}_${sortDirection}`,
-                    pageStart: pageIndex * ps,
-                    total,
-                  });
-                }}
-              >
-                {row.original.target_id}
-              </Link>
-            );
-          }
-
-          // Get all visible object IDs for navigation cache
-          const rows = table.getRowModel().rows;
-          // In spectra mode, deduplicate target_ids (multiple rows per target)
-          const allIds = rows.map(r => r.original.target_id);
-          const visibleIds = isSpectraMode ? [...new Set(allIds)] : allIds;
-
-          // Calculate page start for absolute positioning
-          const pageIndex = table.getState().pagination.pageIndex;
-          const pageSize = table.getState().pagination.pageSize;
-          const pageStart = pageIndex * pageSize;
-
-          // Build filter params string for URL
+        cell: ({ row, table }: { row: { original: SpectrumTarget }; table: ReturnType<typeof useReactTable<SpectrumTarget>> }) => {
           const filterStr = currentFilterParams?.toString() || '';
-
-          // In spectra mode, append grating param to link
-          const grating = isSpectraMode ? row.original.spectra[0]?.grating?.toLowerCase() : null;
-          const gratingParam = grating ? `grating=${grating}` : '';
-          const linkParams = [filterStr, gratingParam].filter(Boolean).join('&');
-
-          // Store navigation cache on click for instant prev/next lookup
-          const handleClick = () => {
-            setNavCache({
-              ids: visibleIds,
-              filters: filterStr,
-              sort: `${sortColumn}_${sortDirection}`,
-              pageStart,
-              total,
-            });
-          };
-
           return (
             <Link
-              href={`/nirspec/targets/${encodeURIComponent(row.original.target_id)}${linkParams ? `?${linkParams}` : ''}`}
-              onClick={handleClick}
+              href={`/nirspec/objects/${encodeURIComponent(row.original.target_id)}${filterStr ? `?${filterStr}` : ''}`}
               className="text-sm font-mono text-primary hover:underline"
+              onClick={() => {
+                const rows = table.getRowModel().rows;
+                const visibleIds = rows.map(r => r.original.target_id);
+                const pageIndex = table.getState().pagination.pageIndex;
+                const ps = table.getState().pagination.pageSize;
+                setNavCache({
+                  ids: visibleIds,
+                  filters: filterStr,
+                  sort: `${sortColumn}_${sortDirection}`,
+                  pageStart: pageIndex * ps,
+                  total,
+                });
+              }}
             >
               {row.original.target_id}
             </Link>
           );
         },
-        sortingFn: 'alphanumeric',
-      },
-      // Spectra mode: grating column (right after Target ID)
+        sortingFn: 'alphanumeric' as const,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
+      // Spectra mode: Spectrum ID column. Server-stored generated column, so
+      // we display + sort + search by it directly (no derivation from fits_path).
+      // Link goes straight to the parent object page with ?spectrum=<id> so the
+      // matching detail card is auto-expanded and scrolled into view (same
+      // behavior as the sidebar's onJumpToSpectrum).
       ...(isSpectraMode ? [{
-        id: 'grating',
-        minSize: 90,
-        accessorFn: (row: SpectrumTarget) => row.spectra[0]?.grating ?? '',
+        id: 'spectrum_id',
+        minSize: 320,
+        accessorFn: (row: SpectrumTarget) => row.spectra[0]?.spectrum_id ?? '',
         header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
-          <SortableHeader column={column}>Grating</SortableHeader>
+          <SortableHeader column={column}>Spectrum ID</SortableHeader>
         ),
-        cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
-            {row.original.spectra[0]?.grating ?? 'N/A'}
-          </span>
-        ),
+        cell: ({ row, table }: { row: { original: SpectrumTarget }; table: ReturnType<typeof useReactTable<SpectrumTarget>> }) => {
+          const rows = table.getRowModel().rows;
+          const visibleIds = [...new Set(rows.map(r => r.original.target_id))];
+          const pageIndex = table.getState().pagination.pageIndex;
+          const ps = table.getState().pagination.pageSize;
+          const filterStr = currentFilterParams?.toString() || '';
+          const spectrumId = row.original.spectra[0]?.spectrum_id ?? row.original.target_id;
+          const fitsPath = row.original.spectra[0]?.fits_path;
+          const parentObjectId = row.original.parent_object_id;
+
+          // Prefer direct object link when we have parent_object_id; fall back to
+          // the targets redirect for any rows missing it (older RPC responses).
+          const linkParams = [filterStr, spectrumId ? `spectrum=${encodeURIComponent(spectrumId)}` : '']
+            .filter(Boolean)
+            .join('&');
+          const href = parentObjectId
+            ? `/nirspec/objects/${encodeURIComponent(parentObjectId)}${linkParams ? `?${linkParams}` : ''}`
+            : `/nirspec/targets/${encodeURIComponent(row.original.target_id)}${linkParams ? `?${linkParams}` : ''}`;
+
+          return (
+            <Link
+              href={href}
+              onClick={() => setNavCache({
+                ids: visibleIds,
+                filters: filterStr,
+                sort: `${sortColumn}_${sortDirection}`,
+                pageStart: pageIndex * ps,
+                total,
+              })}
+              className="text-sm font-mono text-primary hover:underline"
+              title={fitsPath}
+            >
+              {spectrumId}
+            </Link>
+          );
+        },
         sortingFn: 'alphanumeric' as const,
       } satisfies ColumnDef<SpectrumTarget>] : []),
       {
@@ -814,6 +808,22 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           );
         },
         sortingFn: 'basic' as const,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
+      // Grating column (spectra mode only) — sits next to Observation since
+      // both describe the exposure setup.
+      ...(isSpectraMode ? [{
+        id: 'grating',
+        minSize: 90,
+        accessorFn: (row: SpectrumTarget) => row.spectra[0]?.grating ?? '',
+        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
+          <SortableHeader column={column}>Grating</SortableHeader>
+        ),
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => (
+          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+            {row.original.spectra[0]?.grating ?? 'N/A'}
+          </span>
+        ),
+        sortingFn: 'alphanumeric' as const,
       } satisfies ColumnDef<SpectrumTarget>] : []),
       // Observation column (hidden in objects mode — objects span observations)
       ...(!isObjectsMode ? [{
