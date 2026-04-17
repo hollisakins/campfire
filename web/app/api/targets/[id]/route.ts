@@ -64,9 +64,8 @@ export async function GET(
 /**
  * PATCH /api/targets/[id]
  *
- * Phase D: removed. Target-level inspection state was lifted to objects;
- * write to PATCH /api/objects/[id]/inspect (with expected_version) instead,
- * or PATCH /api/spectra/[id]/dq for per-spectrum DQ flags.
+ * Removed — inspection state lives on objects now. Use PATCH
+ * /api/objects/[id]/inspect or PATCH /api/spectra/[id]/dq.
  */
 export async function PATCH() {
   return NextResponse.json(

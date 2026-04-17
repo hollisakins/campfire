@@ -176,8 +176,6 @@ export async function generateCSV(
     }
 
     // Spectra mode: one row per (target_id, grating).
-    // Phase D: targets-mode CSV (get_csv_export) was dropped; spectra is the
-    // only remaining per-row export.
     const { data: rows, error: rpcError } = await paginateRpc<SpectraCsvRow>(
       supabase, 'get_csv_export_spectra', rpcParams,
     );
@@ -494,9 +492,8 @@ export async function generateFitsDownloadUrl(
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    // Fetch filtered results (limit to 200 items).
-    // Phase D: targets mode is gone, so always fetch via spectra mode — that
-    // RPC returns one row per (target, grating) with the FITS path attached.
+    // Fetch filtered results (limit to 200 items) via spectra mode — that RPC
+    // returns one row per (target, grating) with the FITS path attached.
     const result = await getSpectra(
       filters,
       1, // page

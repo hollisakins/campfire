@@ -21,6 +21,7 @@ import { SpectraTableRow } from './SpectraTableRow';
 import { StalenessBadge } from './StalenessBadge';
 import { DQ_FLAGS, decodeBitmask } from '@/lib/flags';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
+import { defaultSortColumn } from '@/lib/actions/spectra-types';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
 import { formatDistance } from '@/lib/utils/coordinate-parser';
@@ -339,7 +340,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           onSortChange(serverColumn, newSorting[0].desc ? 'desc' : 'asc');
         }
       } else {
-        onSortChange(isObjectsMode ? 'object_id' : 'spectrum_id', 'asc');
+        onSortChange(defaultSortColumn(viewMode), 'asc');
       }
     }
   };
@@ -377,7 +378,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         ),
         enableSorting: false,
       },
-      // Phase D: Needs Review staleness column (objects mode only).
+      // Needs Review staleness column (objects mode only).
       ...(isObjectsMode ? [{
         id: 'staleness',
         minSize: 110,
@@ -426,11 +427,6 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         },
         sortingFn: 'alphanumeric' as const,
       } satisfies ColumnDef<SpectrumTarget>] : []),
-      // Spectra mode: Spectrum ID column. Server-stored generated column, so
-      // we display + sort + search by it directly (no derivation from fits_path).
-      // Link goes straight to the parent object page with ?spectrum=<id> so the
-      // matching detail card is auto-expanded and scrolled into view (same
-      // behavior as the sidebar's onJumpToSpectrum).
       ...(isSpectraMode ? [{
         id: 'spectrum_id',
         minSize: 320,
@@ -448,8 +444,6 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           const fitsPath = row.original.spectra[0]?.fits_path;
           const parentObjectId = row.original.parent_object_id;
 
-          // Prefer direct object link when we have parent_object_id; fall back to
-          // the targets redirect for any rows missing it (older RPC responses).
           const linkParams = [filterStr, spectrumId ? `spectrum=${encodeURIComponent(spectrumId)}` : '']
             .filter(Boolean)
             .join('&');
@@ -909,7 +903,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <span className="text-sm text-text-secondary dark:text-slate-400">
             {loading ? 'Loading...' : `${total.toLocaleString()} ${isObjectsMode ? 'unique objects' : 'spectra'}`}
           </span>
-          {/* View mode toggle (Phase D: Objects | Spectra only) */}
+          {/* View mode toggle */}
           {onViewModeChange && (
             <>
               <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">

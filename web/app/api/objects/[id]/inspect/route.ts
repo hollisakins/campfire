@@ -4,9 +4,8 @@ import { createClient } from '@/lib/supabase/server';
 /**
  * PATCH /api/objects/[id]/inspect
  *
- * Phase D: object-level inspection writes. Replaces PATCH /api/targets/[id]
- * for redshift_inspected / redshift_quality. Per-spectrum DQ flags go to
- * /api/spectra/[id]/dq instead.
+ * Object-level inspection writes (redshift_inspected / redshift_quality).
+ * Per-spectrum DQ flags go to /api/spectra/[id]/dq instead.
  *
  * Body:
  *   { redshift_inspected?: number | null,

@@ -4,7 +4,7 @@ import { createClient, createServiceClient } from '@/lib/supabase/server';
 /**
  * /api/admin/objects/inactive
  *
- * Phase D admin surface for soft-deleted objects (is_active = false).
+ * Admin surface for soft-deleted objects (is_active = false).
  *
  * - GET:    list inactive objects (paginated). Also returns a count so the
  *           admin UI can badge "N inactive objects".

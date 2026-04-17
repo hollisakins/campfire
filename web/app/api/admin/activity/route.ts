@@ -121,11 +121,9 @@ export async function GET(request: NextRequest) {
     }
 
     // Fetch audit logs if included (paginate to avoid PostgREST max-rows truncation).
-    // Phase D: target_id is nullable now; rows can attribute changes to a
-    // target (legacy), an object (new inspection writes), or a spectrum
-    // (per-spectrum DQ edits). Resolve the display label per-row from
-    // whichever subject is set. Spectrum rows borrow their parent target's
-    // display label (closest analogue to the old target_display_id).
+    // Audit rows attribute changes to a target, object, or spectrum (exactly
+    // one subject FK is set). Spectrum rows borrow their parent target's
+    // display label.
     if (includeInspections) {
       const { data: auditLogs, error: auditError } = await paginateQuery(
         () => {

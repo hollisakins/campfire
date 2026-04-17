@@ -148,12 +148,9 @@ export interface AccountRequest {
   rejection_reason: string | null;
 }
 
-// Phase D: most of these fields are now read from the parent object. The type
-// is preserved so spectra-mode rows (which embed redshift/redshift_quality
-// pulled from the parent object via the spectra RPC) can still be typed as
-// `DbTarget`-shaped for the table renderer. spectral_features is gone (Phase
-// E drop); dq_flags moves to Spectrum. last_inspected_* still appears on the
-// row but reflects object state.
+// Spectra-mode rows: redshift / redshift_quality / last_inspected_* fields
+// are pulled from the parent object by the spectra RPC and surfaced here so
+// the table renderer can type them as `DbTarget`.
 export interface DbTarget {
   id: number;
   target_id: string;
@@ -184,7 +181,6 @@ export interface Spectrum {
   signal_to_noise: number | null;
   exposure_time: number | null;
   created_at: string;
-  // Phase D: per-spectrum auto-fit and DQ
   redshift_auto?: number | null;
   dq_flags?: number;
   // Pre-generated SVG thumbnails (included when p_include_thumbnails=true in RPC)
@@ -254,7 +250,7 @@ export interface ObjectListMemberWithObject extends ObjectListMember {
 
 export interface FlagAuditLog {
   id: number;
-  // Phase D: exactly one of these three is non-null.
+  // Exactly one of these three is non-null (check constraint).
   target_id: number | null;
   object_id: number | null;
   spectrum_id: number | null;
@@ -311,24 +307,18 @@ export interface SpectrumTarget extends DbTarget {
   has_photometry?: boolean;
   member_targets?: { target_id: string; program_slug: string; observation: string; redshift_auto: number | null }[];
   lists?: { id: number; name: string; slug: string; icon: string | null; color: string | null }[];
-  // Phase D: staleness fields on the object row (objects mode only).
+  // Staleness fields surfaced in objects mode only.
   staleness_reason?: 'new_target' | 'reprocessed' | 'membership_changed' | 'migration_conflict' | null;
   last_data_change_at?: string | null;
-  // Phase D transitional shims — kept on the row type for legacy components.
-  // spectral_features is a target-level bitmask that's about to disappear; the
-  // DQ flag bitmask now lives per-spectrum (spectra[i].dq_flags).
+  // Legacy shims for components that still read per-target flags; DQ flags
+  // now live per-spectrum (spectra[i].dq_flags) and spectral_features is gone.
   spectral_features?: number;
   dq_flags?: number;
 }
 
-// Phase D: member targets are stateless provenance — inspection state
-// belongs to the parent object. We retain redshift_auto on the target during
-// the transition (until Phase E) for display only.
-//
-// The optional inspection fields below are transitional shims for the legacy
-// per-target inspection UI (TargetTab, InspectionPanel, OverviewTab) that
-// hasn't been replaced yet by the single-page object detail redesign. They
-// reflect the deprecated targets.* columns and disappear in Phase E.
+// Member targets are stateless provenance — inspection state lives on the
+// parent object. The optional inspection fields are legacy shims for UI
+// surfaces still reading per-target columns.
 export interface ObjectMemberTarget {
   id: number;
   target_id: string;
@@ -342,7 +332,7 @@ export interface ObjectMemberTarget {
   max_snr: number | null;
   max_exposure_time: number | null;
   spectra: Spectrum[];
-  // Phase D transitional shims (reflect legacy targets.* columns; not authoritative)
+  // Legacy shims reflecting deprecated targets.* columns — not authoritative.
   redshift?: number | null;
   redshift_inspected?: number | null;
   redshift_quality?: number;
@@ -376,11 +366,8 @@ export interface ObjectPhotometry {
   has_pz: boolean;
 }
 
-// Phase D: ObjectDetail owns its inspection state. `redshift` and
-// `redshift_quality` are the canonical fields now (read from the new generated
-// + persisted columns on objects). `best_redshift` / `best_redshift_quality`
-// remain as optional transitional aliases until Phase E drops the underlying
-// columns and the legacy display sites are migrated.
+// `redshift` / `redshift_quality` are authoritative; `best_redshift` /
+// `best_redshift_quality` are legacy aliases retained for unmigrated display sites.
 export interface ObjectDetail {
   id: number;
   object_id: string;
@@ -410,8 +397,7 @@ export interface ObjectDetail {
   created_at: string;
   member_targets: ObjectMemberTarget[];
   photometry: ObjectPhotometry | null;
-  // Phase D transitional aliases — equal to redshift / redshift_quality.
-  // Drop in Phase E.
+  // Legacy aliases equal to redshift / redshift_quality.
   best_redshift?: number | null;
   best_redshift_quality?: number;
 }

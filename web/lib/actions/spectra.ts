@@ -97,7 +97,6 @@ export async function getSpectra(
 
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
-    // Choose RPC based on view mode (Phase D: targets view is gone).
     const rpcName = viewMode === 'spectra'
       ? 'get_filtered_spectra_paginated'
       : 'get_filtered_objects_paginated';
@@ -133,17 +132,17 @@ export async function getSpectra(
         p_page_size: pageSize,
       };
     } else {
-      // Phase D dropped spectral_features filtering from get_filtered_spectra_paginated.
-      // PostgREST resolves RPCs by exact param-name match, so we must omit the dropped
-      // params or the call fails with "function not found in schema cache".
-      /* eslint-disable @typescript-eslint/no-unused-vars */
+      // get_filtered_spectra_paginated doesn't accept spectral_features params;
+      // PostgREST resolves RPCs by exact param-name match, so strip them.
       const {
-        p_spectral_features_include_any: _sfa,
-        p_spectral_features_include_all: _sfb,
-        p_spectral_features_exclude: _sfc,
+        p_spectral_features_include_any,
+        p_spectral_features_include_all,
+        p_spectral_features_exclude,
         ...spectraParams
       } = rpcParams;
-      /* eslint-enable @typescript-eslint/no-unused-vars */
+      void p_spectral_features_include_any;
+      void p_spectral_features_include_all;
+      void p_spectral_features_exclude;
       callParams = {
         ...spectraParams,
         p_sort_column: sortColumn,
@@ -205,7 +204,6 @@ export async function getSpectra(
           member_targets: obj.member_targets,
           lists: obj.lists,
           num_gratings: obj.gratings?.length ?? 0,
-          // Phase D inspection / staleness fields
           last_inspected_at: obj.last_inspected_at ?? null,
           last_inspected_by: obj.last_inspected_by ?? null,
           last_data_change_at: obj.last_data_change_at ?? null,
@@ -508,9 +506,7 @@ export async function getObjectById(objectId: string): Promise<{
       };
     }
 
-    // Phase D: member targets are stateless provenance — keep redshift_auto
-    // for transitional display, drop the inspection fields (they live on the
-    // parent object now).
+    // Member targets are stateless provenance — inspection lives on the parent object.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const memberTargets: ObjectMemberTarget[] = (members || []).map((m: any) => ({
       id: m.id,
@@ -541,7 +537,6 @@ export async function getObjectById(objectId: string): Promise<{
       gratings: obj.gratings,
       max_snr: obj.max_snr,
       max_exposure_time: obj.max_exposure_time,
-      // Phase D: object owns its inspection state
       redshift: obj.redshift ?? null,
       redshift_quality: obj.redshift_quality ?? 0,
       redshift_inspected: obj.redshift_inspected ?? null,
@@ -727,9 +722,8 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
  * Returns a stable snapshot ordered by object_id.
  * If no redshift_quality filter is set, implicitly filters to quality=0 (uninspected).
  *
- * Phase D: backed by `get_filtered_object_ids` (was: `get_filtered_target_ids`).
- * The objects RPC returns only object_id strings — sort/observation/feature/DQ
- * filters aren't supported at this lightweight tier.
+ * Backed by `get_filtered_object_ids`; sort/observation/feature/DQ filters
+ * aren't supported at this lightweight tier.
  */
 export async function getInspectionQueueIds(
   filters?: Partial<FilterOptions>,

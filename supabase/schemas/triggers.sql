@@ -116,7 +116,7 @@ DROP TRIGGER IF EXISTS update_max_exposure_time_trigger ON public.spectra;
 -- updated_at.
 DROP TRIGGER IF EXISTS bump_object_version_trigger ON public.objects;
 CREATE TRIGGER bump_object_version_trigger
-  BEFORE UPDATE ON public.objects
+  BEFORE UPDATE OF redshift_inspected, redshift_quality ON public.objects
   FOR EACH ROW EXECUTE FUNCTION public.bump_object_version();
 
 DROP TRIGGER IF EXISTS track_object_inspection_trigger ON public.objects;

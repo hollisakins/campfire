@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { DQ_FLAGS, decodeBitmask } from '@/lib/flags';
+import { DQ_FLAGS } from '@/lib/flags';
 import type { ObjectDetail } from '@/lib/types';
 
 interface MemberSpectraTableProps {
@@ -49,9 +49,7 @@ export const MemberSpectraTable: React.FC<MemberSpectraTableProps> = ({ object }
           </thead>
           <tbody>
             {rows.map(r => {
-              const dqDefs = r.dqMask !== 0
-                ? DQ_FLAGS.filter(f => decodeBitmask(r.dqMask, DQ_FLAGS).includes(f.value))
-                : [];
+              const dqDefs = DQ_FLAGS.filter(f => (r.dqMask & f.value) !== 0);
               return (
                 <tr key={r.key} className="border-t border-border/30 dark:border-slate-700/40">
                   <td className="py-1 pr-2 font-mono text-text-primary dark:text-slate-200">

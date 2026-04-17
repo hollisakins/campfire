@@ -109,7 +109,6 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
   }, [spectrum.fits_path]);
 
   const dqSelected = decodeBitmask(dqBitmask, DQ_FLAGS);
-  const fitsFilename = spectrum.spectrum_id || spectrum.fits_path.split('/').pop() || spectrum.fits_path;
 
   return (
     <div
@@ -199,7 +198,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
             >
               <span className="opacity-70 uppercase tracking-wide">FITS:</span>
               <span className="font-mono text-text-primary dark:text-slate-200 truncate">
-                {fitsFilename}
+                {spectrum.spectrum_id}
               </span>
             </span>
 

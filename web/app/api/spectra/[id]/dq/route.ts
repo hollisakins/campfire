@@ -4,9 +4,8 @@ import { createClient } from '@/lib/supabase/server';
 /**
  * PATCH /api/spectra/[id]/dq
  *
- * Phase D: writes dq_flags to a single spectrum. DQ flags are per-spectrum
- * now (they were per-target before the migration); this lets the UI mark a
- * single grating as compromised without broadcasting to its siblings.
+ * Writes dq_flags to a single spectrum (flags are per-spectrum, so marking
+ * one grating doesn't affect siblings).
  *
  * Body:
  *   { dq_flags: number }   // bitmask

@@ -11,8 +11,7 @@ export interface ObjectNavigationData {
 }
 
 /**
- * Phase D: navigation in inspection mode is object-keyed (IAU object_id).
- * This hook fetches object data; queue ordering is handled by useInspectionQueue.
+ * Fetches object data by IAU object_id. Queue ordering is handled by useInspectionQueue.
  */
 export function useObjectNavigation() {
   const router = useRouter();

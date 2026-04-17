@@ -11,7 +11,7 @@ interface CachedObjectData {
 }
 
 // Module-level cache (persists across renders, shared within session).
-// Phase D: keyed by IAU object_id — inspection mode navigates by object now.
+// Keyed by IAU object_id.
 const objectCache = new Map<string, CachedObjectData>();
 const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 const MAX_CACHE_SIZE = 10;

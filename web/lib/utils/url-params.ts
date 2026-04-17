@@ -5,7 +5,7 @@
 
 import type { AdvancedFilterOptions, SearchScope, FilterMode } from '@/components/spectra/SpectraFilterBar';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
-import { VALID_SORT_COLUMNS, isValidSortColumn } from '@/lib/actions/spectra-types';
+import { VALID_SORT_COLUMNS, isValidSortColumn, defaultSortColumn } from '@/lib/actions/spectra-types';
 
 // Valid search scope values
 const VALID_SEARCH_SCOPES: SearchScope[] = ['target_id', 'my_comments', 'all_comments'];
@@ -107,8 +107,7 @@ export function parsePaginationFromURL(searchParams: URLSearchParams): { page: n
 
 /**
  * Parse view mode from URL search parameters.
- * Phase D: targets view is gone — `view=targets` collapses to `objects` so
- * old bookmarks keep working.
+ * Legacy `view=targets` collapses to `objects` so old bookmarks keep working.
  */
 export function parseViewModeFromURL(searchParams: URLSearchParams): ViewMode {
   const view = searchParams.get('view');
@@ -121,7 +120,7 @@ export function parseViewModeFromURL(searchParams: URLSearchParams): ViewMode {
  * Validates the sort column against the current view mode.
  */
 export function parseSortingFromURL(searchParams: URLSearchParams, viewMode: ViewMode = 'objects'): { sortColumn: SortColumn; sortDirection: SortDirection } {
-  const fallback: SortColumn = viewMode === 'objects' ? 'object_id' : 'target_id';
+  const fallback = defaultSortColumn(viewMode);
   const sort = searchParams.get('sort') || fallback;
   const dir = searchParams.get('dir') || 'asc';
   const isValid = VALID_SORT_COLUMNS.includes(sort as SortColumn) && isValidSortColumn(sort, viewMode);
@@ -227,7 +226,7 @@ export function filtersToURLParams(
     params.set('view', viewMode);
   }
   // Only include sorting params when non-default
-  const defaultSort: SortColumn = viewMode === 'objects' ? 'object_id' : 'target_id';
+  const defaultSort = defaultSortColumn(viewMode);
   if (sortColumn !== defaultSort) {
     params.set('sort', sortColumn);
   }

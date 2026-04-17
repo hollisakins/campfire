@@ -68,9 +68,8 @@ export default async function TargetRedirectPage({ params, searchParams }: Targe
     notFound();
   }
 
-  // Phase D: drop ?tab= and ?grating= — the object detail page no longer
-  // uses tabs or per-grating sub-tabs. Forward only filter/sort params so
-  // bookmarked nav state still resolves.
+  // Object detail page has no tabs or per-grating sub-tabs; drop those params
+  // and forward only filter/sort so bookmarked nav state still resolves.
   const redirectParams = new URLSearchParams();
   Object.entries(searchParamsObj).forEach(([key, value]) => {
     if (value && key !== 'grating' && key !== 'tab') {

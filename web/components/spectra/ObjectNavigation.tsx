@@ -28,9 +28,7 @@ interface NavState {
 
 /**
  * Client component for detail page navigation.
- * Uses hybrid approach: sessionStorage cache for instant lookup,
- * falls back to server query when cache misses.
- * Phase D: objects-only.
+ * Uses sessionStorage cache for instant lookup, falls back to server query on miss.
  */
 export function ObjectNavigation({
   targetId,

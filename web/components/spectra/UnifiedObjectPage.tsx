@@ -27,6 +27,12 @@ interface UnifiedObjectPageProps {
   object: ObjectDetail;
 }
 
+function buildInitialVisibility(members: ObjectMemberTarget[]): Record<number, boolean> {
+  const v: Record<number, boolean> = {};
+  for (const m of members) for (const s of m.spectra) v[s.id] = true;
+  return v;
+}
+
 export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) => {
   const colors = useMemo(() => {
     const c: Record<string, string> = {};
@@ -47,11 +53,9 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
   // Per-spectrum visibility — drives both the comparison plot and Section 2 cards.
   // Target-level visibility (and shutter visibility) is derived: a target is "off" when
   // ALL of its child spectra are off, "on" when all are on, "partial" otherwise.
-  const [spectrumVisibility, setSpectrumVisibility] = useState<Record<number, boolean>>(() => {
-    const v: Record<number, boolean> = {};
-    for (const m of object.member_targets) for (const s of m.spectra) v[s.id] = true;
-    return v;
-  });
+  const [spectrumVisibility, setSpectrumVisibility] = useState<Record<number, boolean>>(
+    () => buildInitialVisibility(object.member_targets)
+  );
 
   const handleSpectrumVisibility = useCallback((spectrumId: number, visible: boolean) => {
     setSpectrumVisibility(prev => ({ ...prev, [spectrumId]: visible }));
@@ -169,7 +173,6 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
     [object.member_targets]
   );
 
-  // Inspection state lives on the parent object (Phase D).
   const initialInspection = useMemo((): InspectionInitialData => ({
     redshift_auto: object.redshift_auto,
     redshift_inspected: object.redshift_inspected,
@@ -188,9 +191,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
       prevObjectIdRef.current = object.id;
       inspection.resetState(initialInspection);
       setExpandedSpectra(new Set());
-      const v: Record<number, boolean> = {};
-      for (const m of object.member_targets) for (const s of m.spectra) v[s.id] = true;
-      setSpectrumVisibility(v);
+      setSpectrumVisibility(buildInitialVisibility(object.member_targets));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [object.id]);
@@ -214,12 +215,6 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
     }
     return mc;
   }, [object.member_targets, spectrumVisibility, colors]);
-
-  // Flatten all spectra for the object-level download button.
-  const allSpectra: Spectrum[] = useMemo(
-    () => object.member_targets.flatMap(m => m.spectra),
-    [object.member_targets]
-  );
 
   return (
     <div>
@@ -309,7 +304,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                 numGratings={object.gratings.length}
               />
               <div className="flex gap-4">
-                <DownloadButtons spectra={allSpectra} targetId={object.object_id} />
+                <DownloadButtons spectra={allMemberSpectra} targetId={object.object_id} />
                 <CopyLinkButton
                   targetId={object.object_id}
                   url={`/nirspec/objects/${encodeURIComponent(object.object_id)}`}

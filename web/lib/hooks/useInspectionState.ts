@@ -3,15 +3,12 @@
 import { useState, useCallback, useRef, useMemo } from 'react';
 
 /**
- * Phase D: object-level inspection state.
+ * Object-level inspection state.
  *
- * - `objectDbId` is the parent object's DB id, not a target id.
  * - Saves go to PATCH /api/objects/[id]/inspect with `expected_version`.
- * - Quality + override are the only writable fields here; per-spectrum DQ
- *   flags get their own dedicated PATCH (/api/spectra/[id]/dq) and aren't
- *   tracked by this hook.
- * - 409 from the server is surfaced via `saveError` as a refresh prompt;
- *   the design rejects merge UI in favour of a hard reload.
+ * - Quality + redshift override are the only writable fields; per-spectrum
+ *   DQ flags get their own PATCH (/api/spectra/[id]/dq).
+ * - 409 surfaces via `saveError` as a refresh prompt (no merge UI).
  */
 
 export interface InspectionInitialData {
@@ -82,11 +79,13 @@ export function useInspectionState(
   objectDbIdRef.current = objectDbId;
 
   const setRedshiftInspected = useCallback((value: string) => {
+    if (valuesRef.current.redshiftInspected === value) return;
     valuesRef.current.redshiftInspected = value;
     _setRedshiftInspected(value);
   }, []);
 
   const setRedshiftQuality = useCallback((value: number) => {
+    if (valuesRef.current.redshiftQuality === value) return;
     valuesRef.current.redshiftQuality = value;
     _setRedshiftQuality(value);
   }, []);

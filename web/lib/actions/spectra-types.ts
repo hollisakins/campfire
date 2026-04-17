@@ -3,7 +3,6 @@
 
 export type SortDirection = 'asc' | 'desc';
 
-// Phase D: targets list view is gone. Toggle is Objects | Spectra only.
 export type ViewMode = 'spectra' | 'objects';
 
 // Spectra-mode sort columns (must match get_filtered_spectra_paginated whitelist)

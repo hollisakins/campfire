@@ -164,7 +164,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       setFitData(null);
 
       try {
-        // In inspection mode, check cache first
         if (inspectionMode && getCachedData) {
           const cached = getCachedData(fitsPath);
           if (cached) {
@@ -175,7 +174,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           }
         }
 
-        // Fetch spectrum + fit in parallel; fit is optional (404 → null).
         const [spectrumResponse, fitResponse] = await Promise.all([
           fetch(`/api/spectrum?path=${encodeURIComponent(fitsPath)}`),
           fetch(`/api/redshift-fit?path=${encodeURIComponent(fitsPath)}`),
@@ -263,9 +261,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     });
 
     // Get wavelength range from non-NaN values
-    const finiteWave = wave.filter(w => isFinite(w));
-    const waveMin = Math.min(...finiteWave);
-    const waveMax = Math.max(...finiteWave);
+    let waveMin = Infinity;
+    let waveMax = -Infinity;
+    for (const w of wave) {
+      if (!isFinite(w)) continue;
+      if (w < waveMin) waveMin = w;
+      if (w > waveMax) waveMax = w;
+    }
 
     // Rest-frame wavelength conversion factor: μm → Å in rest frame
     const restFrameFactor = 10000 / (1 + redshift);
@@ -572,8 +574,12 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // χ²(z) panel data — only built when the user toggles the Model overlay on.
   const chi2PlotData = useMemo(() => {
     if (!showModel || !fitData) return null;
-    const chi2Min = Math.min(...fitData.chi2_grid);
-    const chi2Max = Math.max(...fitData.chi2_grid);
+    let chi2Min = Infinity;
+    let chi2Max = -Infinity;
+    for (const v of fitData.chi2_grid) {
+      if (v < chi2Min) chi2Min = v;
+      if (v > chi2Max) chi2Max = v;
+    }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const traces: any[] = [
