@@ -16,9 +16,9 @@ results = cf.query_objects(
     limit=100
 )
 
-# Open a spectrum directly
-spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
-print(spec.wavelength.shape, spec.flux.shape)
+# Open a spectrum directly (spectrum_id from the catalog)
+spec = cf.open_spectrum('ember_uds_p4_prism_clear_123456')
+print(spec.wavelength.shape, spec.fnu.shape)
 ```
 
 ---
@@ -254,7 +254,7 @@ encode_flags(['CONTINUUM_BREAK', 'LYMAN_BREAK'], 'spectral_features') # 3
 Open a spectrum as a `SpectrumData` object with wavelength, flux, and error arrays. Checks for locally downloaded FITS files first. If not found locally, downloads from the API and caches in the managed data directory so subsequent calls are instant.
 
 ```python
-spec = cf.open_spectrum(object_id, grating)
+spec = cf.open_spectrum(spectrum_id)
 ```
 
 **Returns:** `SpectrumData` with attributes:
@@ -262,24 +262,30 @@ spec = cf.open_spectrum(object_id, grating)
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `wavelength` | np.ndarray | Wavelength in microns |
-| `flux` | np.ndarray | Flux density f_nu in microjansky |
-| `flux_err` | np.ndarray | Flux error in microjansky |
+| `fnu` | np.ndarray | Flux density f_ν in microjansky (μJy) |
+| `fnu_err` | np.ndarray | Flux error f_ν in microjansky (μJy) |
+| `flam` | np.ndarray | Flux density f_λ in erg/s/cm²/Å (auto-computed from fnu if not in FITS) |
+| `flam_err` | np.ndarray | Flux error f_λ in erg/s/cm²/Å |
+| `fnu_units` / `flam_units` / `wave_units` | str | Unit strings |
 | `header` | dict | FITS primary header |
 | `grating` | str | Grating name |
-| `object_id` | str | Object ID |
+| `spectrum_id` | str | Stable per-spectrum identifier |
 | `fits_path` | str/None | Local file path if from disk |
 
 **Example:**
 
 ```python
-spec = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
+spec = cf.open_spectrum('ember_uds_p4_prism_clear_123456')
 
 print(spec)
-# SpectrumData(ember_uds_p4_123456, PRISM, 1024 pixels, 0.60-5.30 μm)
+# SpectrumData(ember_uds_p4_prism_clear_123456, PRISM, 1024 pixels, 0.60-5.30 μm)
 
-# Access arrays directly
+# Access arrays directly (fnu in μJy; flam auto-computed in erg/s/cm²/Å)
 import matplotlib.pyplot as plt
-plt.plot(spec.wavelength, spec.flux)
+spec.plot(flux_unit='fnu')   # or flux_unit='flam'
+
+# Or plot by hand
+plt.step(spec.wavelength, spec.fnu, where='mid')
 plt.xlabel('Wavelength (μm)')
 plt.ylabel('f_ν (μJy)')
 
@@ -287,7 +293,7 @@ plt.ylabel('f_ν (μJy)')
 print(spec.header.get('EXPTIME'))
 
 # Second call is instant — file is cached locally
-spec2 = cf.open_spectrum('ember_uds_p4_123456', 'PRISM')
+spec2 = cf.open_spectrum('ember_uds_p4_prism_clear_123456')
 ```
 
 You can also create a `SpectrumData` from any FITS file:

@@ -86,7 +86,7 @@ cf.download(observations=['ember_uds_p4'], gratings=['PRISM'])
 
 # Open a spectrum by spectrum_id (local FITS if downloaded, API fallback otherwise)
 spec = cf.open_spectrum('ember_uds_p4_prism_clear_123456')
-print(spec.wavelength.shape, spec.flux.shape)
+print(spec.wavelength.shape, spec.fnu.shape)
 
 # Iterate over all matching objects (auto-pagination)
 for obj in cf.iter_objects(tags=['lrd']):
@@ -131,9 +131,14 @@ from campfire import SpectrumData
 
 spec = cf.open_spectrum('ember_uds_p4_prism_clear_123456')
 spec.wavelength   # np.ndarray, microns
-spec.flux         # np.ndarray, microjansky
-spec.flux_err     # np.ndarray
+spec.fnu          # np.ndarray, microjansky (f_ν)
+spec.fnu_err      # np.ndarray
+spec.flam         # np.ndarray, erg/s/cm²/Å (auto-computed from fnu if not in FITS)
+spec.flam_err     # np.ndarray
 spec.header       # FITS header as dict
+
+spec.plot()                     # quick-look f_ν plot (matplotlib)
+spec.plot(flux_unit='flam')     # or in f_λ
 
 # Or open any FITS file directly
 spec = SpectrumData.from_fits('/path/to/file.fits')
