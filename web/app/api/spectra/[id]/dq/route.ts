@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 
 /**
  * PATCH /api/spectra/[id]/dq
@@ -81,7 +81,6 @@ export async function PATCH(
   // the access check above. The trigger logs the change with spectrum_id
   // (subject = spectrum) and the audit row's RLS policy ensures only users
   // who can read the parent target can read it back.
-  const { createServiceClient } = await import('@/lib/supabase/server');
   const service = createServiceClient();
 
   const { data: updated, error: updateError } = await service

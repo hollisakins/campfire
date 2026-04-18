@@ -128,12 +128,15 @@ GRANT ALL ON FUNCTION public.check_device_code_status(text) TO service_role;
 -- (lightweight bulk fetch for Python client objects catalog sync)
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER);
+
 CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_program_slugs TEXT[],
   p_user_id UUID DEFAULT NULL,
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
-  p_offset INTEGER DEFAULT 0
+  p_offset INTEGER DEFAULT 0,
+  p_include_counts BOOLEAN DEFAULT TRUE
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
@@ -141,7 +144,9 @@ SET plan_cache_mode = 'force_custom_plan'
 AS $$
 BEGIN
   RETURN QUERY
-  WITH matched AS (
+  -- matched is MATERIALIZED so the three aggregate CTEs below each see the
+  -- same ~p_limit-row set without re-evaluating the WHERE/ORDER/LIMIT.
+  WITH matched AS MATERIALIZED (
     SELECT o.id, o.object_id, o.field, o.ra, o.dec,
            o.n_targets, o.n_spectra, o.programs, o.gratings,
            o.max_snr, o.max_exposure_time,
@@ -161,17 +166,59 @@ BEGIN
     ORDER BY o.object_id
     LIMIT p_limit OFFSET p_offset
   ),
+  member_targets_agg AS (
+    SELECT t.object_id,
+           jsonb_agg(t.target_id ORDER BY t.target_id) AS target_ids
+    FROM targets t
+    WHERE t.object_id IN (SELECT id FROM matched)
+      AND t.program_slug = ANY(p_program_slugs)
+    GROUP BY t.object_id
+  ),
+  -- Phase D: per-spectrum payload (per design doc) so the Python client
+  -- can render redshift_auto and dq_flags per grating without a second
+  -- round-trip.
+  spectra_agg AS (
+    SELECT t.object_id,
+           jsonb_agg(jsonb_build_object(
+             'id', s.id,
+             'target_id', s.target_id,
+             'grating', s.grating,
+             'signal_to_noise', s.signal_to_noise,
+             'exposure_time', s.exposure_time,
+             'redshift_auto', s.redshift_auto,
+             'dq_flags', s.dq_flags
+           ) ORDER BY s.target_id, s.grating) AS spectra
+    FROM spectra s
+    JOIN targets t ON t.target_id = s.target_id
+    WHERE t.object_id IN (SELECT id FROM matched)
+      AND t.program_slug = ANY(p_program_slugs)
+    GROUP BY t.object_id
+  ),
+  lists_agg AS (
+    SELECT olm.object_id,
+           jsonb_agg(ol.slug ORDER BY ol.slug) AS list_slugs
+    FROM object_list_members olm
+    JOIN object_lists ol ON ol.id = olm.list_id
+    WHERE olm.object_id IN (SELECT id FROM matched)
+      AND (ol.created_by = p_user_id
+           OR ol.visibility IN ('public_read', 'public_edit'))
+    GROUP BY olm.object_id
+  ),
+  -- Count CTEs are gated on p_include_counts; when FALSE the planner
+  -- collapses them to One-Time Filter: false and skips the scan.
   total AS (
     SELECT COUNT(*) AS cnt
     FROM objects o
-    WHERE o.programs && p_program_slugs
+    WHERE p_include_counts
+      AND o.programs && p_program_slugs
       AND o.is_active = true
       AND (p_updated_since IS NULL OR o.updated_at > p_updated_since)
   ),
   accessible AS (
     SELECT COUNT(*) AS cnt
     FROM objects o
-    WHERE o.programs && p_program_slugs
+    WHERE p_include_counts
+      AND o.programs && p_program_slugs
       AND o.is_active = true
   )
   SELECT
@@ -204,50 +251,22 @@ BEGIN
         'photo_z_err_hi', m.photo_z_err_hi,
         'created_at', m.created_at,
         'updated_at', m.updated_at,
-        'member_target_ids', COALESCE(
-          (SELECT jsonb_agg(t.target_id ORDER BY t.target_id)
-           FROM targets t
-           WHERE t.object_id = m.id
-             AND t.program_slug = ANY(p_program_slugs)),
-          '[]'::jsonb
-        ),
-        -- Phase D: per-spectrum payload (per design doc) so the Python client
-        -- can render redshift_auto and dq_flags per grating without a second
-        -- round-trip.
-        'spectra', COALESCE(
-          (SELECT jsonb_agg(jsonb_build_object(
-             'id', s.id,
-             'target_id', s.target_id,
-             'grating', s.grating,
-             'signal_to_noise', s.signal_to_noise,
-             'exposure_time', s.exposure_time,
-             'redshift_auto', s.redshift_auto,
-             'dq_flags', s.dq_flags
-           ) ORDER BY s.target_id, s.grating)
-           FROM spectra s
-           JOIN targets t ON t.target_id = s.target_id
-           WHERE t.object_id = m.id
-             AND t.program_slug = ANY(p_program_slugs)),
-          '[]'::jsonb
-        ),
-        'lists', COALESCE(
-          (SELECT jsonb_agg(ol.slug ORDER BY ol.slug)
-           FROM object_list_members olm
-           JOIN object_lists ol ON ol.id = olm.list_id
-           WHERE olm.object_id = m.id
-             AND (ol.created_by = p_user_id OR ol.visibility IN ('public_read', 'public_edit'))),
-          '[]'::jsonb
-        )
+        'member_target_ids', COALESCE(mt.target_ids, '[]'::jsonb),
+        'spectra',           COALESCE(sp.spectra,    '[]'::jsonb),
+        'lists',             COALESCE(la.list_slugs, '[]'::jsonb)
       )
     ), '[]'::jsonb),
     COALESCE((SELECT cnt FROM total), 0)::BIGINT,
     COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
-  FROM matched m;
+  FROM matched m
+  LEFT JOIN member_targets_agg mt ON mt.object_id = m.id
+  LEFT JOIN spectra_agg         sp ON sp.object_id = m.id
+  LEFT JOIN lists_agg           la ON la.object_id = m.id;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO service_role;
 
 
 -- =============================================================================
@@ -257,12 +276,15 @@ GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 -- spectra fields only)
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER);
+
 CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   p_program_slugs TEXT[],
   p_user_id UUID DEFAULT NULL,
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
-  p_offset INTEGER DEFAULT 0
+  p_offset INTEGER DEFAULT 0,
+  p_include_counts BOOLEAN DEFAULT TRUE
 )
 RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
@@ -270,7 +292,7 @@ SET plan_cache_mode = 'force_custom_plan'
 AS $$
 BEGIN
   RETURN QUERY
-  WITH matched AS (
+  WITH matched AS MATERIALIZED (
     SELECT s.id, s.spectrum_id, s.target_id, o.object_id AS object_id,
            s.grating, s.fits_path, s.file_hash, s.file_size,
            s.signal_to_noise, s.exposure_time, s.reduction_version,
@@ -286,12 +308,15 @@ BEGIN
     ORDER BY s.spectrum_id
     LIMIT p_limit OFFSET p_offset
   ),
+  -- Count CTEs are gated on p_include_counts; when FALSE the planner
+  -- collapses them to One-Time Filter: false and skips the scan/join.
   total AS (
     SELECT COUNT(*) AS cnt
     FROM spectra s
     JOIN targets t ON t.target_id = s.target_id
     LEFT JOIN objects o ON o.id = t.object_id
-    WHERE t.program_slug = ANY(p_program_slugs)
+    WHERE p_include_counts
+      AND t.program_slug = ANY(p_program_slugs)
       AND (o.id IS NULL OR o.is_active = true)
       AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
   ),
@@ -300,7 +325,8 @@ BEGIN
     FROM spectra s
     JOIN targets t ON t.target_id = s.target_id
     LEFT JOIN objects o ON o.id = t.object_id
-    WHERE t.program_slug = ANY(p_program_slugs)
+    WHERE p_include_counts
+      AND t.program_slug = ANY(p_program_slugs)
       AND (o.id IS NULL OR o.is_active = true)
   )
   SELECT
@@ -332,8 +358,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO service_role;
 
 
 -- =============================================================================

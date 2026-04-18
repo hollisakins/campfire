@@ -165,6 +165,17 @@ export function withLightness(hex: string, lightness: number): string {
   return `#${hexByte(nr)}${hexByte(ng)}${hexByte(nb)}`;
 }
 
+/**
+ * Format an exposure time in seconds as a short human-readable string.
+ * Thresholds pick the coarsest useful unit: hours for ≥1h, minutes for ≥1m.
+ */
+export function formatExposureTime(seconds: number | null | undefined): string {
+  if (seconds == null) return '—';
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)}hr`;
+  if (seconds >= 60) return `${Math.round(seconds / 60)}min`;
+  return `${Math.round(seconds)}s`;
+}
+
 /** Per-spectrum lightness rungs around the target color. Index 0 = base color
  *  unmodified; subsequent rungs alternate lighter / darker so siblings stay
  *  visually distinct against any background. Used by the sidebar checkboxes

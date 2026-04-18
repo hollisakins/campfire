@@ -1,4 +1,34 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+
+/** Parse a comma-separated query-string value into a non-empty string list, or null. */
+export function parseCSV(value: string | null): string[] | null {
+  if (!value) return null;
+  const items = value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  return items.length > 0 ? items : null;
+}
+
+/** Parse a comma-separated query-string value into a non-empty int list, or null. */
+export function parseIntCSV(value: string | null): number[] | null {
+  if (!value) return null;
+  const items = value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+  return items.length > 0 ? items : null;
+}
+
+/**
+ * Resolve a list of object-list slugs to DB IDs. Returns null if no slugs were
+ * supplied (meaning: don't filter by list); returns [] if none match.
+ */
+export async function resolveListIds(
+  supabase: SupabaseClient,
+  slugs: string[] | null,
+): Promise<number[] | null> {
+  if (!slugs || slugs.length === 0) return null;
+  const { data } = await supabase
+    .from('object_lists')
+    .select('id')
+    .in('slug', slugs);
+  return (data ?? []).map((r: { id: number }) => r.id);
+}
 
 /**
  * Get all program slugs accessible to a user (public + explicit access)

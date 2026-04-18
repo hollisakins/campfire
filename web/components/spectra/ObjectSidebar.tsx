@@ -2,7 +2,7 @@
 
 import React from 'react';
 import type { ObjectMemberTarget } from '@/lib/types';
-import { getSpectrumShade } from './plotting-utils';
+import { formatExposureTime, getSpectrumShade } from './plotting-utils';
 
 interface ObjectSidebarProps {
   members: ObjectMemberTarget[];
@@ -16,13 +16,6 @@ interface ObjectSidebarProps {
   onTargetVisibility: (targetId: string, visible: boolean) => void;
   /** Click on a child spectrum row jumps to its detail card (auto-expands + scrolls). */
   onJumpToSpectrum: (spectrumId: number) => void;
-}
-
-function formatExposureTime(seconds: number | null): string {
-  if (seconds == null) return '—';
-  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)}hr`;
-  if (seconds >= 60) return `${Math.round(seconds / 60)}min`;
-  return `${Math.round(seconds)}s`;
 }
 
 type TargetState = 'on' | 'off' | 'partial';

@@ -425,7 +425,9 @@ def calibrate_to_photometry(
     flux_err = spec_data.fnu_err
 
     if bands is None:
-        bands = _auto_select_bands(wave, flux, flux_err, photometry, min_snr)
+        bands, synth_cache = _auto_select_bands(
+            wave, flux, flux_err, photometry, min_snr,
+        )
     else:
         for b in bands:
             if b not in photometry.bands:
@@ -433,6 +435,7 @@ def calibrate_to_photometry(
                     f"Band '{b}' not found in photometry. "
                     f"Available: {', '.join(photometry.bands)}"
                 )
+        synth_cache = {}
 
     if len(bands) == 0:
         raise ValueError(
@@ -447,7 +450,10 @@ def calibrate_to_photometry(
     band_waves = []
 
     for b in bands:
-        sf, se = synthetic_photometry(wave, flux, flux_err, b)
+        if b in synth_cache:
+            sf, se = synth_cache[b]
+        else:
+            sf, se = synthetic_photometry(wave, flux, flux_err, b)
         band_info = photometry[b]
         synth_fluxes.append(sf)
         synth_errs.append(se)
@@ -539,12 +545,17 @@ def _auto_select_bands(
     flux_err: np.ndarray,
     photometry: Photometry,
     min_snr: float,
-) -> List[str]:
-    """Select photometry bands that overlap the spectrum with sufficient SNR."""
+) -> tuple[List[str], dict[str, tuple[float, float]]]:
+    """Select photometry bands that overlap the spectrum with sufficient SNR.
+
+    Also returns a cache of synthetic-photometry values for each selected
+    band so the caller can skip recomputing them.
+    """
     wmin = wave[np.isfinite(flux)].min()
     wmax = wave[np.isfinite(flux)].max()
 
-    selected = []
+    selected: List[str] = []
+    synth_cache: dict[str, tuple[float, float]] = {}
     for b in photometry.bands:
         if b in _FILTER_EDGES:
             blue, red = _FILTER_EDGES[b]
@@ -569,8 +580,9 @@ def _auto_select_bands(
             continue
 
         selected.append(b)
+        synth_cache[b] = (sf, se)
 
-    return selected
+    return selected, synth_cache
 
 
 def _fit_chebyshev(
@@ -745,23 +757,6 @@ def stack_spectra(
             f"Use 'weighted_mean', 'median', or 'mean'."
         )
 
-    flam_cube = np.full((n_spec, n_pix), np.nan)
-    flam_err_cube = np.full((n_spec, n_pix), np.nan)
-    for i, s in enumerate(spectra):
-        if np.array_equal(s.wavelength, wavelength_grid):
-            flam_cube[i] = s.flam
-            flam_err_cube[i] = s.flam_err
-        else:
-            flam_cube[i], flam_err_cube[i] = _resample(
-                wavelength_grid, s.wavelength, s.flam, s.flam_err,
-            )
-    if method == "weighted_mean":
-        stacked_flam, stacked_flam_err = _stack_weighted_mean(flam_cube, flam_err_cube)
-    elif method == "median":
-        stacked_flam, stacked_flam_err = _stack_median(flam_cube)
-    else:
-        stacked_flam, stacked_flam_err = _stack_mean(flam_cube, flam_err_cube)
-
     header = dict(spectra[0].header)
     header["NSTACK"] = n_spec
     header["STACKMTH"] = method
@@ -772,6 +767,10 @@ def stack_spectra(
     else:
         stacked_id = f"stack:{grating}:{n_spec}spectra"
 
+    # flam/flam_err derive deterministically from fnu via SpectrumData.__post_init__
+    # (f_λ = f_ν · c / λ²); resampling fnu once and letting the conversion
+    # run on the stacked output is cheaper than stacking flam independently
+    # and also more self-consistent.
     return SpectrumData(
         wavelength=wavelength_grid,
         fnu=stacked_flux,
@@ -779,8 +778,6 @@ def stack_spectra(
         header=header,
         grating=grating,
         spectrum_id=stacked_id,
-        flam=stacked_flam,
-        flam_err=stacked_flam_err,
     )
 
 

@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, AlertCircle, Loader2, Download } from 'lucid
 import { FilterChip, type FilterOption } from '@/components/ui/FilterChip';
 import { SpectrumPlot } from './SpectrumPlot';
 import { downloadSingleFile } from './DownloadButtons';
+import { formatExposureTime } from './plotting-utils';
 import { DQ_FLAGS, decodeBitmask, encodeBitmask } from '@/lib/flags';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import type { Spectrum } from '@/lib/types';
@@ -15,13 +16,6 @@ const DQ_OPTIONS: FilterOption[] = DQ_FLAGS.map(f => ({
   icon: f.icon,
   color: f.color,
 }));
-
-function formatExposureTime(seconds: number | null): string {
-  if (seconds == null) return '—';
-  if (seconds > 3600) return `${(seconds / 3600).toFixed(2)}h`;
-  if (seconds > 60) return `${(seconds / 60).toFixed(1)}m`;
-  return `${seconds.toFixed(0)}s`;
-}
 
 interface SpectrumDetailCardProps {
   spectrum: Spectrum;

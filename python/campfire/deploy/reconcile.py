@@ -39,6 +39,7 @@ from campfire.deploy.objects import (
     BATCH_SIZE,
     cluster_targets,
     fetch_field_targets,
+    fetch_spectra_metadata,
     generate_iau_name,
 )
 
@@ -191,35 +192,6 @@ def fetch_existing_objects(
         offset += page_size
 
     return objects, dict(members), dict(member_db_ids)
-
-
-def fetch_spectra_metadata(
-    client: Client, target_ids: list[str]
-) -> dict[str, list[dict]]:
-    """Per-target spectra: grating, signal_to_noise, exposure_time."""
-    result: dict[str, list[dict]] = defaultdict(list)
-    batch = 200
-    page_size = 1000
-    select = 'target_id, grating, signal_to_noise, exposure_time'
-    for i in range(0, len(target_ids), batch):
-        chunk = target_ids[i:i + batch]
-        offset = 0
-        while True:
-            resp = (
-                client.table('spectra')
-                .select(select)
-                .in_('target_id', chunk)
-                .order('id')
-                .range(offset, offset + page_size - 1)
-                .execute()
-            )
-            rows = resp.data or []
-            for row in rows:
-                result[row['target_id']].append(row)
-            if len(rows) < page_size:
-                break
-            offset += page_size
-    return dict(result)
 
 
 # ---------------------------------------------------------------------------

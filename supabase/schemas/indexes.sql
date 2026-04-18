@@ -77,6 +77,12 @@ CREATE INDEX IF NOT EXISTS idx_objects_redshift
 CREATE INDEX IF NOT EXISTS idx_objects_is_active
     ON public.objects USING btree (is_active) WHERE (is_active = false);
 
+-- Backs the incremental-sync path: get_objects_for_sync filters on
+-- updated_at > p_updated_since, and the total count CTE uses the same
+-- predicate.
+CREATE INDEX IF NOT EXISTS idx_objects_updated_at
+    ON public.objects USING btree (updated_at);
+
 -- =============================================================================
 -- object_photometry
 -- =============================================================================

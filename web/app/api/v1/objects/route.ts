@@ -1,20 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms } from '@/lib/api-helpers';
+import { getAccessiblePrograms, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
+import { createServiceClient } from '@/lib/supabase/server';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
-
-function parseCSV(value: string | null): string[] | null {
-  if (!value) return null;
-  const items = value.split(',').map(s => s.trim()).filter(s => s.length > 0);
-  return items.length > 0 ? items : null;
-}
-
-function parseIntCSV(value: string | null): number[] | null {
-  if (!value) return null;
-  const items = value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
-  return items.length > 0 ? items : null;
-}
 
 /**
  * GET /api/v1/objects
@@ -44,10 +32,7 @@ export async function GET(request: NextRequest) {
     }
 
     const searchParams = request.nextUrl.searchParams;
-
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const supabase = createServiceClient();
 
     // Programs filter (intersect with accessible)
     const programsParam = parseCSV(searchParams.get('programs'));
@@ -68,16 +53,7 @@ export async function GET(request: NextRequest) {
       radiusDegrees = convertRadiusToDegrees(parseFloat(radius), 'arcsec');
     }
 
-    // List slugs → IDs
-    const listSlugs = parseCSV(searchParams.get('lists'));
-    let listIds: number[] | null = null;
-    if (listSlugs && listSlugs.length > 0) {
-      const { data: listRows } = await supabase
-        .from('object_lists')
-        .select('id')
-        .in('slug', listSlugs);
-      listIds = (listRows ?? []).map(r => r.id);
-    }
+    const listIds = await resolveListIds(supabase, parseCSV(searchParams.get('lists')));
 
     const inspectedOnlyParam = searchParams.get('inspected_only');
     const inspectedOnly = inspectedOnlyParam

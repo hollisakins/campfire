@@ -1,6 +1,8 @@
 // TypeScript type definitions for CAMPFIRE
 // Matches the Supabase database schema
 
+import { REDSHIFT_QUALITY } from '@/lib/flags';
+
 // ============================================
 // Database Tables
 // ============================================
@@ -366,8 +368,6 @@ export interface ObjectPhotometry {
   has_pz: boolean;
 }
 
-// `redshift` / `redshift_quality` are authoritative; `best_redshift` /
-// `best_redshift_quality` are legacy aliases retained for unmigrated display sites.
 export interface ObjectDetail {
   id: number;
   object_id: string;
@@ -397,9 +397,6 @@ export interface ObjectDetail {
   created_at: string;
   member_targets: ObjectMemberTarget[];
   photometry: ObjectPhotometry | null;
-  // Legacy aliases equal to redshift / redshift_quality.
-  best_redshift?: number | null;
-  best_redshift_quality?: number;
 }
 
 // Comment with user profile info
@@ -446,13 +443,19 @@ export interface ProfileRecentComments {
 // Constants
 // ============================================
 
-export const QUALITY_LABELS: FlagDefinition[] = [
-  { category: 'redshift_quality', bit_position: null, value: 0, label: 'Not Inspected', short_label: 'None', icon: '⚪', color: '#e0e0e0', description: 'Not yet visually inspected' },
-  { category: 'redshift_quality', bit_position: null, value: 1, label: 'Impossible', short_label: 'Bad', icon: '🔴', color: '#dc3545', description: 'Impossible to determine redshift from available data' },
-  { category: 'redshift_quality', bit_position: null, value: 2, label: 'Tentative', short_label: 'Tent.', icon: '🟠', color: '#ffc107', description: 'Redshift uncertain but plausible (~50% confidence)' },
-  { category: 'redshift_quality', bit_position: null, value: 3, label: 'Probable', short_label: 'Prob.', icon: '🟡', color: '#ff9800', description: 'Redshift likely correct (~80% confidence)' },
-  { category: 'redshift_quality', bit_position: null, value: 4, label: 'Secure', short_label: 'Secure', icon: '🟢', color: '#28a745', description: 'Redshift definitely correct (>95% confidence)' },
-];
+// Derived from REDSHIFT_QUALITY so the two exports can't drift apart.
+// Consumers of QUALITY_LABELS expect the FlagDefinition shape (`short_label`,
+// nullable fields); REDSHIFT_QUALITY uses `short` with non-nullable fields.
+export const QUALITY_LABELS: FlagDefinition[] = REDSHIFT_QUALITY.map(q => ({
+  category: 'redshift_quality',
+  bit_position: null,
+  value: q.value,
+  label: q.label,
+  short_label: q.short,
+  icon: q.icon,
+  color: q.color,
+  description: q.description,
+}));
 
 export const GRATINGS = ['PRISM', 'G140H', 'G140M', 'G235H', 'G235M', 'G395H', 'G395M'] as const;
 

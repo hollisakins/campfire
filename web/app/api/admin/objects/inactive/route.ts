@@ -42,10 +42,25 @@ export async function GET(request: NextRequest) {
   const pageSize = Math.min(200, Math.max(1, parseInt(params.get('page_size') || '50', 10)));
   const offset = (page - 1) * pageSize;
 
-  const { count, error: countError } = await service
-    .from('objects')
-    .select('id', { count: 'exact', head: true })
-    .eq('is_active', false);
+  const [
+    { count, error: countError },
+    { data: rows, error: rowsError },
+  ] = await Promise.all([
+    service
+      .from('objects')
+      .select('id', { count: 'exact', head: true })
+      .eq('is_active', false),
+    service
+      .from('objects')
+      .select(
+        'id, object_id, field, ra, dec, programs, gratings, ' +
+        'redshift, redshift_quality, last_inspected_at, last_data_change_at, ' +
+        'staleness_reason, updated_at'
+      )
+      .eq('is_active', false)
+      .order('updated_at', { ascending: false })
+      .range(offset, offset + pageSize - 1),
+  ]);
 
   if (countError) {
     return NextResponse.json(
@@ -53,17 +68,6 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
-
-  const { data: rows, error: rowsError } = await service
-    .from('objects')
-    .select(
-      'id, object_id, field, ra, dec, programs, gratings, ' +
-      'redshift, redshift_quality, last_inspected_at, last_data_change_at, ' +
-      'staleness_reason, updated_at'
-    )
-    .eq('is_active', false)
-    .order('updated_at', { ascending: false })
-    .range(offset, offset + pageSize - 1);
 
   if (rowsError) {
     return NextResponse.json(

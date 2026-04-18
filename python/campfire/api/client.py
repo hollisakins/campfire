@@ -236,10 +236,19 @@ class APIClient:
         """
         all_items: List[dict] = []
         total_accessible_count = 0
+        total = 0
         offset = 0
+        first_page = True
         while True:
             self._session._ensure_valid_token()
-            params: dict = {"limit": 1000, "offset": offset}
+            # Only request counts on the first page; the server skips the
+            # count CTEs when include_counts=false, saving a full scan per
+            # subsequent page.
+            params: dict = {
+                "limit": 1000,
+                "offset": offset,
+                "include_counts": "true" if first_page else "false",
+            }
             if updated_since:
                 params["updated_since"] = updated_since
             response = self._session.get(path, params=params, timeout=60)
@@ -247,8 +256,10 @@ class APIClient:
             data = response.json()
             items = data.get("data", [])
             all_items.extend(items)
-            total = data.get("pagination", {}).get("total", 0)
-            total_accessible_count = data.get("total_accessible_count", 0)
+            if first_page:
+                total = data.get("pagination", {}).get("total", 0)
+                total_accessible_count = data.get("total_accessible_count", 0)
+                first_page = False
             offset += len(items)
             if on_page_complete:
                 on_page_complete(offset, total)

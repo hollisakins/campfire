@@ -7,7 +7,6 @@ import type { ObjectDetail } from '@/lib/types';
 
 export interface ObjectNavigationData {
   object: ObjectDetail;
-  rgbImageUrl: string | null;
 }
 
 /**
@@ -30,7 +29,6 @@ export function useObjectNavigation() {
 
     try {
       const result = await getObjectById(objectId);
-      const rgbUrl = `/api/tile-thumbnail?target_id=${encodeURIComponent(objectId)}`;
 
       if (controller.signal.aborted) return null;
 
@@ -45,7 +43,7 @@ export function useObjectNavigation() {
       }
 
       setNavigationError(null);
-      return { object: result.object, rgbImageUrl: rgbUrl };
+      return { object: result.object };
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return null;
       console.error('[Navigation] Fetch failed:', error);
@@ -82,8 +80,7 @@ export function useObjectNavigation() {
     try {
       const result = await getObjectById(objectId);
       if (!result.isAuthenticated || !result.object) return null;
-      const rgbUrl = `/api/tile-thumbnail?target_id=${encodeURIComponent(objectId)}`;
-      return { object: result.object, rgbImageUrl: rgbUrl };
+      return { object: result.object };
     } catch {
       return null;
     }

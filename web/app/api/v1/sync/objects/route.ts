@@ -15,6 +15,7 @@ import { getAccessiblePrograms } from '@/lib/api-helpers';
  * - updated_since: ISO 8601 timestamp (only return objects updated after this)
  * - limit: page size (default 1000)
  * - offset: pagination offset (default 0)
+ * - include_counts: 'false' to skip total_count / total_accessible_count (default true)
  */
 export async function GET(request: NextRequest) {
   const userId = await validateAuth(request);
@@ -40,6 +41,7 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '1000', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
     const updatedSince = searchParams.get('updated_since') || null;
+    const includeCounts = searchParams.get('include_counts') !== 'false';
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -51,6 +53,7 @@ export async function GET(request: NextRequest) {
       p_updated_since: updatedSince,
       p_limit: limit,
       p_offset: offset,
+      p_include_counts: includeCounts,
     });
 
     if (error) {
