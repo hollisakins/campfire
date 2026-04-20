@@ -96,15 +96,17 @@ UPDATE public.objects o SET redshift_auto = bs.redshift_auto
 FROM best_spectrum bs WHERE o.id = bs.object_id;
 
 
--- D.1c — Copy DQ flags from targets to all their member spectra.
--- Conservative: a target with dq_flags=4 marks all of its spectra dq_flags=4,
+-- D.1c — OR target DQ flags into member spectra (union, not assignment) so
+-- per-grating flags Phase B already wrote to spectra.dq_flags aren't clobbered.
+-- Conservative: a target with dq_flags=4 marks all of its spectra with bit 4,
 -- even if only one grating is actually compromised. Inspectors refine
 -- per-spectrum after migration.
-UPDATE public.spectra s SET dq_flags = t.dq_flags
+UPDATE public.spectra s SET dq_flags = s.dq_flags | t.dq_flags
 FROM public.targets t
 WHERE s.target_id = t.target_id
   AND t.dq_flags IS NOT NULL
-  AND t.dq_flags != 0;
+  AND t.dq_flags != 0
+  AND (s.dq_flags & t.dq_flags) <> t.dq_flags;
 
 
 -- D.1d — Seed last_data_change_at on already-inspected objects so the

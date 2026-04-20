@@ -426,6 +426,11 @@ class Spectrum:
         Total exposure time in seconds.
     reduction_version : str or None
         Pipeline reduction version.
+    redshift_auto : float or None
+        Automatic (zfit) redshift for this grating. May differ between
+        gratings of the same object.
+    dq_flags : int
+        Per-spectrum data-quality bitmask. See :class:`campfire.flags.DQFlags`.
     fits_path : str or None
         Remote FITS path.
     local_path : str or None
@@ -438,6 +443,8 @@ class Spectrum:
     signal_to_noise: Optional[float] = None
     exposure_time: Optional[float] = None
     reduction_version: Optional[str] = None
+    redshift_auto: Optional[float] = None
+    dq_flags: int = 0
     fits_path: Optional[str] = None
     local_path: Optional[str] = None
     _opener: Optional[Callable] = dc_field(default=None, repr=False, compare=False)
@@ -720,6 +727,8 @@ class Object:
                 signal_to_noise=s.get("signal_to_noise"),
                 exposure_time=s.get("exposure_time"),
                 reduction_version=s.get("reduction_version"),
+                redshift_auto=s.get("redshift_auto"),
+                dq_flags=s.get("dq_flags") or 0,
                 fits_path=s.get("fits_path"),
                 local_path=s.get("local_path"),
                 _opener=opener,

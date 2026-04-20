@@ -551,6 +551,102 @@ def build_seed_objects(
     return all_objects, target_to_object_db_id
 
 
+def backfill_spectra_from_targets(
+    spectra: list[dict],
+    targets: list[dict],
+) -> None:
+    """In-process equivalent of Phase D.1b/D.1c spectra backfill.
+
+    Production (pre-merge) has no spectra.redshift_auto / dq_flags columns, so
+    `fetch_spectra` returns rows missing those keys. The Phase A migration
+    adds the columns and D.1b/D.1c backfills from the parent target. Mirror
+    that here so seeded spectra land with realistic values, matching what
+    post-migration production will look like.
+
+    Mutates spectra in-place.
+    """
+    t_by_target_id = {t['target_id']: t for t in targets}
+    for spec in spectra:
+        tgt = t_by_target_id.get(spec.get('target_id'))
+        if tgt is None:
+            continue
+        # D.1b: fill redshift_auto from target if spec doesn't have one
+        if spec.get('redshift_auto') is None and tgt.get('redshift_auto') is not None:
+            spec['redshift_auto'] = tgt['redshift_auto']
+        # D.1c: OR target dq_flags into spec dq_flags (union)
+        tgt_dq = tgt.get('dq_flags') or 0
+        if tgt_dq:
+            spec['dq_flags'] = (spec.get('dq_flags') or 0) | tgt_dq
+
+
+def lift_inspection_state_to_objects(
+    objects: list[dict],
+    targets: list[dict],
+    spectra: list[dict],
+) -> None:
+    """In-process equivalent of the Phase D.1 data migration.
+
+    For each cross-matched object, copy inspection state from the best-quality
+    member target (ties broken by max_snr), and set redshift_auto from the
+    highest-S/N member spectrum. Mirrors D.1a/D.1b logic so seeded objects
+    land in the same post-migration state the production D.1 migration
+    produces on real data.
+
+    Mutates objects in-place.
+    """
+    targets_by_id = {t['id']: t for t in targets}
+    spectra_by_target: dict[str, list[dict]] = defaultdict(list)
+    for s in spectra:
+        tid = s.get('target_id')
+        if tid is not None:
+            spectra_by_target[tid].append(s)
+
+    for obj in objects:
+        member_targets = [
+            targets_by_id[tid] for tid in obj['_member_db_ids']
+            if tid in targets_by_id
+        ]
+
+        # D.1a: best inspected target (quality > 0), tiebreak by max_snr
+        inspected = [
+            t for t in member_targets if (t.get('redshift_quality') or 0) > 0
+        ]
+        if inspected:
+            best = max(
+                inspected,
+                key=lambda t: (
+                    t.get('redshift_quality') or 0,
+                    t.get('max_snr') or 0,
+                ),
+            )
+            obj['redshift_inspected'] = best.get('redshift_inspected')
+            obj['redshift_quality'] = best.get('redshift_quality') or 0
+            obj['last_inspected_at'] = best.get('last_inspected_at')
+            obj['last_inspected_by'] = best.get('last_inspected_by')
+            obj['last_data_change_at'] = best.get('updated_at') or best.get('last_inspected_at')
+        else:
+            obj['redshift_inspected'] = None
+            obj['redshift_quality'] = 0
+            obj['last_inspected_at'] = None
+            obj['last_inspected_by'] = None
+            obj['last_data_change_at'] = None
+
+        # D.1b: object.redshift_auto = redshift_auto of highest-SNR member spectrum
+        candidate_specs = [
+            s for m in member_targets
+            for s in spectra_by_target.get(m['target_id'], [])
+            if s.get('redshift_auto') is not None
+        ]
+        if candidate_specs:
+            best_spec = max(
+                candidate_specs,
+                key=lambda s: (s.get('signal_to_noise') or 0),
+            )
+            obj['redshift_auto'] = best_spec.get('redshift_auto')
+        else:
+            obj['redshift_auto'] = None
+
+
 def generate_objects_table_sql(objects: list[dict]) -> str:
     """Generate INSERT statements for the objects table."""
     lines = ['-- ============================================']
@@ -559,8 +655,14 @@ def generate_objects_table_sql(objects: list[dict]) -> str:
     lines.append('')
 
     for obj in objects:
-        lines.append(f"""INSERT INTO public.objects (id, object_id, field, ra, dec, n_targets, n_spectra, programs, gratings, observations, max_snr, max_exposure_time, best_redshift, best_redshift_quality)
-VALUES ({obj['_db_id']}, {sql_escape(obj['object_id'])}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {obj['n_targets']}, {obj['n_spectra']}, {sql_escape(obj['programs'])}, {sql_escape(obj['gratings'])}, {sql_escape(obj['observations'])}, {sql_escape(obj['max_snr'])}, {sql_escape(obj['max_exposure_time'])}, {sql_escape(obj['best_redshift'])}, {obj.get('best_redshift_quality', 0)});""")
+        inspected_by = sql_escape(ADMIN_UUID) if obj.get('last_inspected_by') else 'NULL'
+        inspected_at = sql_escape(obj.get('last_inspected_at')) if obj.get('last_inspected_at') else 'NULL'
+        last_data_change_at = sql_escape(obj.get('last_data_change_at')) if obj.get('last_data_change_at') else 'NULL'
+        redshift_inspected = obj.get('redshift_inspected')
+        redshift_inspected_sql = str(redshift_inspected) if redshift_inspected is not None else 'NULL'
+
+        lines.append(f"""INSERT INTO public.objects (id, object_id, field, ra, dec, n_targets, n_spectra, programs, gratings, observations, max_snr, max_exposure_time, best_redshift, best_redshift_quality, redshift_auto, redshift_inspected, redshift_quality, last_inspected_at, last_inspected_by, last_data_change_at)
+VALUES ({obj['_db_id']}, {sql_escape(obj['object_id'])}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {obj['n_targets']}, {obj['n_spectra']}, {sql_escape(obj['programs'])}, {sql_escape(obj['gratings'])}, {sql_escape(obj['observations'])}, {sql_escape(obj['max_snr'])}, {sql_escape(obj['max_exposure_time'])}, {sql_escape(obj['best_redshift'])}, {obj.get('best_redshift_quality', 0)}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {inspected_at}, {inspected_by}, {last_data_change_at});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -574,8 +676,8 @@ def generate_spectra_sql(spectra: list[dict]) -> str:
     lines.append('')
 
     for spec in spectra:
-        lines.append(f"""INSERT INTO public.spectra (id, target_id, grating, fits_path, reduction_version, signal_to_noise, exposure_time, thumbnail_svg_fnu, thumbnail_svg_flambda)
-VALUES ({spec['id']}, {sql_escape(spec.get('target_id') or spec.get('object_id'))}, {sql_escape(spec['grating'])}, {sql_escape(spec['fits_path'])}, {sql_escape(spec.get('reduction_version', 'v0.1'))}, {sql_escape(spec.get('signal_to_noise'))}, {sql_escape(spec.get('exposure_time'))}, {sql_escape(spec.get('thumbnail_svg_fnu'))}, {sql_escape(spec.get('thumbnail_svg_flambda'))});""")
+        lines.append(f"""INSERT INTO public.spectra (id, target_id, grating, fits_path, reduction_version, signal_to_noise, exposure_time, thumbnail_svg_fnu, thumbnail_svg_flambda, redshift_auto, dq_flags)
+VALUES ({spec['id']}, {sql_escape(spec.get('target_id') or spec.get('object_id'))}, {sql_escape(spec['grating'])}, {sql_escape(spec['fits_path'])}, {sql_escape(spec.get('reduction_version', 'v0.1'))}, {sql_escape(spec.get('signal_to_noise'))}, {sql_escape(spec.get('exposure_time'))}, {sql_escape(spec.get('thumbnail_svg_fnu'))}, {sql_escape(spec.get('thumbnail_svg_flambda'))}, {sql_escape(spec.get('redshift_auto'))}, {spec.get('dq_flags') or 0});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -936,6 +1038,12 @@ def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_pa
     n_multi = sum(1 for o in cross_matched_objects if o['n_targets'] > 1)
     print(f"  {len(cross_matched_objects)} objects "
           f"({len(cross_matched_objects) - n_multi} singletons, {n_multi} multi-target)")
+
+    # Mirror Phase D.1 in-process so seed data matches post-migration shape
+    backfill_spectra_from_targets(spectra, targets)
+    lift_inspection_state_to_objects(cross_matched_objects, targets, spectra)
+    n_inspected = sum(1 for o in cross_matched_objects if o.get('redshift_quality', 0) > 0)
+    print(f"  {n_inspected} objects carry lifted inspection state")
 
     # Generate SQL
     print(f"\nGenerating {output_path}...")
