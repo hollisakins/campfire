@@ -183,6 +183,12 @@ CREATE POLICY "admin_targets_update"
   USING (public.is_admin())
   WITH CHECK (public.is_admin());
 
+-- Admins can delete targets (deploy CLI: remove/un-deploy observation).
+DROP POLICY IF EXISTS "admin_targets_delete" ON targets;
+CREATE POLICY "admin_targets_delete"
+  ON targets FOR DELETE TO authenticated
+  USING (public.is_admin());
+
 
 -- =============================================================================
 -- objects
@@ -444,6 +450,12 @@ CREATE POLICY "admin_spectra_update"
   ON spectra FOR UPDATE TO authenticated
   USING (public.is_admin())
   WITH CHECK (public.is_admin());
+
+-- Admins can delete spectra (deploy CLI: remove/un-deploy observation).
+DROP POLICY IF EXISTS "admin_spectra_delete" ON spectra;
+CREATE POLICY "admin_spectra_delete"
+  ON spectra FOR DELETE TO authenticated
+  USING (public.is_admin());
 
 
 -- =============================================================================

@@ -18,6 +18,7 @@ Usage (as subcommand of campfire):
     campfire deploy zfit  --obs ember_uds_p4 --force-overwrite
     campfire deploy thumbnails --obs ember_uds_p4
     campfire deploy slits --obs ember_uds_p4
+    campfire deploy remove --obs ember_uds_p4 --dry-run
     campfire deploy fetch-config --obs ember_uds_p4 --output-dir ./config
 
 Multiple observations are processed serially:
@@ -307,6 +308,45 @@ def shutters(config_path, obs, dry_run, skip_astrometry):
     for obs_name in obs:
         deploy_shutters(obs_name, config, dry_run=dry_run,
                         skip_astrometry=skip_astrometry)
+
+
+# ---------------------------------------------------------------------------
+# remove subcommand
+# ---------------------------------------------------------------------------
+
+@deploy_group.command()
+@shared_options
+@click.option('--force', is_flag=True,
+              help='Proceed even if targets have user inspection data.')
+@click.option('--supabase-only', is_flag=True,
+              help='Skip R2 deletion, only clean up Supabase.')
+@click.option('--auto-approve', is_flag=True,
+              help='Skip confirmation prompts.')
+@click.option('--skip-rebuild', is_flag=True,
+              help='Skip objects table rebuild after deletion.')
+def remove(config_path, obs, dry_run, force, supabase_only,
+           auto_approve, skip_rebuild):
+    """Un-deploy observation data from Supabase + R2.
+
+    Wipes targets, spectra, shutters, slit_regions for the observation and
+    the matching R2 prefixes (spectra/, rgb/, sed/), then rebuilds the
+    objects table for the affected field. Preserves the observations row
+    and deployments history.
+
+    Refuses if any target has user inspection data unless --force.
+    """
+    from campfire.deploy.remove import remove_observation
+
+    config = load_config(config_path)
+    for obs_name in obs:
+        remove_observation(
+            obs_name, config,
+            dry_run=dry_run,
+            force=force,
+            supabase_only=supabase_only,
+            auto_approve=auto_approve,
+            skip_rebuild=skip_rebuild,
+        )
 
 
 # ---------------------------------------------------------------------------
