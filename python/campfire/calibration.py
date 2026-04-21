@@ -249,11 +249,11 @@ def synthetic_photometry(
     flux_v = np.where(valid, flux, 0.0)
     err_v = np.where(valid, flux_err, 0.0)
 
-    denom = np.trapz(T_v * wavelength, wavelength)
+    denom = np.trapezoid(T_v * wavelength, wavelength)
     if denom == 0:
         return np.nan, np.nan
 
-    synth_flux = np.trapz(flux_v * T_v * wavelength, wavelength) / denom
+    synth_flux = np.trapezoid(flux_v * T_v * wavelength, wavelength) / denom
     dw = np.zeros_like(wavelength)
     dw[1:-1] = (wavelength[2:] - wavelength[:-2]) / 2.0
     dw[0] = (wavelength[1] - wavelength[0]) / 2.0
