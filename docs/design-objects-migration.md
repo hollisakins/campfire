@@ -515,28 +515,40 @@ FROM conflict_objects c
 WHERE o.id = c.object_id;
 ```
 
-**D.1b. Backfill `spectra.redshift_auto` (placeholder, overwritten on next deploy):**
+**D.1b. Seed `objects.redshift_auto` without touching `spectra.redshift_auto`:**
+
+We intentionally do NOT backfill `spectra.redshift_auto` from
+`targets.redshift_auto`. The target column is a cross-grating consensus, not
+a per-spectrum zfit — copying it onto each member spectrum would lie about
+the column's semantics and collapse the new object page's per-grating
+narrative to identical numbers. Pre-Phase-B spectra stay NULL until
+re-deploy, at which point the pipeline writes real per-grating values from
+the ECSV.
+
+At the object level the aggregate is honest, so we seed `objects.redshift_auto`
+with a preference for real per-spectrum values and a fallback to the target
+aggregate:
 
 ```sql
-UPDATE spectra s SET redshift_auto = t.redshift_auto
-FROM targets t
-WHERE s.target_id = t.target_id;
-```
-
-Set `objects.redshift_auto` from best member spectrum:
-
-```sql
-WITH best_spectrum AS (
+WITH best AS (
     SELECT DISTINCT ON (t.object_id)
-        t.object_id, s.redshift_auto
-    FROM spectra s
-    JOIN targets t ON s.target_id = t.target_id
-    WHERE t.object_id IS NOT NULL AND s.redshift_auto IS NOT NULL
-    ORDER BY t.object_id, s.signal_to_noise DESC NULLS LAST
+        t.object_id,
+        COALESCE(s.redshift_auto, t.redshift_auto) AS z_auto
+    FROM targets t
+    LEFT JOIN spectra s ON s.target_id = t.target_id
+    WHERE t.object_id IS NOT NULL
+      AND (s.redshift_auto IS NOT NULL OR t.redshift_auto IS NOT NULL)
+    ORDER BY t.object_id,
+             (s.redshift_auto IS NOT NULL) DESC,   -- prefer real per-spectrum
+             s.signal_to_noise DESC NULLS LAST
 )
-UPDATE objects o SET redshift_auto = bs.redshift_auto
-FROM best_spectrum bs WHERE o.id = bs.object_id;
+UPDATE objects o SET redshift_auto = best.z_auto
+FROM best WHERE o.id = best.object_id;
 ```
+
+First post-migration `campfire deploy objects` per field recomputes
+`objects.redshift_auto` under the PRISM-priority hierarchy once real
+per-spectrum values are present.
 
 **D.1c. Copy DQ flags from targets to spectra:**
 

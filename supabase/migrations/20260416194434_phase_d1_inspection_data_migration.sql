@@ -69,31 +69,39 @@ FROM conflict_objects c
 WHERE o.id = c.object_id;
 
 
--- D.1b — Backfill spectra.redshift_auto from targets.redshift_auto for any
--- spectrum that wasn't already populated by Phase B (e.g., observations that
--- haven't been re-deployed since Phase B shipped). Conditional on NULL so we
--- don't clobber per-grating values the pipeline already wrote.
-UPDATE public.spectra s SET redshift_auto = t.redshift_auto
-FROM public.targets t
-WHERE s.target_id = t.target_id
-  AND s.redshift_auto IS NULL
-  AND t.redshift_auto IS NOT NULL;
-
-
--- D.1b (cont) — Compute objects.redshift_auto = redshift_auto of the
--- highest-S/N member spectrum. This is the same logic as
--- compute_object_redshift_auto() but applied across all fields at once.
--- Future deploys re-run it per-field via reconcile_field_objects().
-WITH best_spectrum AS (
+-- D.1b — Seed objects.redshift_auto without touching spectra.redshift_auto.
+--
+-- We intentionally do NOT backfill spectra.redshift_auto from
+-- targets.redshift_auto. targets.redshift_auto is a cross-grating consensus
+-- value, not a per-spectrum zfit — stamping it onto every member spectrum
+-- would falsely claim "this spectrum's per-grating auto-z is X" for every
+-- grating in the target, collapsing the new object page's per-spectrum
+-- narrative to identical numbers.
+--
+-- Instead: pre-Phase-B observations leave spectra.redshift_auto NULL until
+-- they're re-deployed (at which point the pipeline writes real per-grating
+-- values from the ECSV). For the object-level aggregate, we prefer a real
+-- per-spectrum value when one exists; otherwise we fall back to the target
+-- aggregate, which IS legitimately an aggregate at the object level.
+--
+-- Future deploys recompute objects.redshift_auto per-field via
+-- compute_object_redshift_auto() using the PRISM-priority hierarchy once
+-- real per-spectrum values are present.
+WITH best AS (
     SELECT DISTINCT ON (t.object_id)
-        t.object_id, s.redshift_auto
-    FROM public.spectra s
-    JOIN public.targets t ON s.target_id = t.target_id
-    WHERE t.object_id IS NOT NULL AND s.redshift_auto IS NOT NULL
-    ORDER BY t.object_id, s.signal_to_noise DESC NULLS LAST, s.id ASC
+        t.object_id,
+        COALESCE(s.redshift_auto, t.redshift_auto) AS z_auto
+    FROM public.targets t
+    LEFT JOIN public.spectra s ON s.target_id = t.target_id
+    WHERE t.object_id IS NOT NULL
+      AND (s.redshift_auto IS NOT NULL OR t.redshift_auto IS NOT NULL)
+    ORDER BY t.object_id,
+             (s.redshift_auto IS NOT NULL) DESC,   -- prefer real per-spectrum
+             s.signal_to_noise DESC NULLS LAST,
+             s.id ASC
 )
-UPDATE public.objects o SET redshift_auto = bs.redshift_auto
-FROM best_spectrum bs WHERE o.id = bs.object_id;
+UPDATE public.objects o SET redshift_auto = best.z_auto
+FROM best WHERE o.id = best.object_id;
 
 
 -- D.1c — OR target DQ flags into member spectra (union, not assignment) so
