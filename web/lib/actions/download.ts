@@ -65,15 +65,12 @@ interface SpectraCsvRow {
   field: string;
   ra: number;
   dec: number;
-  redshift: number | null;
-  redshift_quality: number;
+  redshift_auto: number | null;
   signal_to_noise: number | null;
   exposure_time: number | null;
   fits_path: string;
   program_slug: string;
   program_name: string | null;
-  last_inspected_at: string | null;
-  last_inspected_by: string | null;
   distance: number | null;
   dq_flags: number;
   lists: string | null;        // semicolon-separated list slugs
@@ -194,21 +191,22 @@ function expandBitmask(bitmask: number, flags: FlagDef[]): number[] {
  * Convert spectra-mode CSV export rows to CSV string (one row per spectrum)
  */
 function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): string {
+  // Spectra-mode CSV contains only per-spectrum info. redshift /
+  // redshift_quality / last_inspected_* are parent-object state and belong in
+  // the objects CSV. The per-spectrum auto-fit redshift is surfaced as
+  // redshift_auto.
   const columns = [
     'target_id',
     'grating',
     'field',
     'ra',
     'dec',
-    'redshift',
-    'redshift_quality',
+    'redshift_auto',
     'signal_to_noise',
     'exposure_time',
     'fits_path',
     'program_slug',
     'program_name',
-    'last_inspected_at',
-    'last_inspected_by',
     ...DQ_FLAGS.map(f => `dq_${f.key}`),
     'tags',
   ];
@@ -233,15 +231,12 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
     }
 
     values.push(
-      row.redshift != null ? row.redshift.toFixed(6) : '',
-      row.redshift_quality,
+      row.redshift_auto != null ? row.redshift_auto.toFixed(6) : '',
       row.signal_to_noise != null ? row.signal_to_noise.toFixed(2) : '',
       row.exposure_time != null ? row.exposure_time.toFixed(0) : '',
       escapeCsvValue(row.fits_path),
       escapeCsvValue(row.program_slug),
       escapeCsvValue(row.program_name || ''),
-      escapeCsvValue(row.last_inspected_at || ''),
-      escapeCsvValue(row.last_inspected_by || ''),
       ...expandBitmask(row.dq_flags, DQ_FLAGS),
       escapeCsvValue(row.lists || ''),
     );

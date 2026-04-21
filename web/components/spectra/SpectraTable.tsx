@@ -34,7 +34,10 @@ import {
 import { DownloadDropdown } from './DownloadTableButtons';
 import type { AdvancedFilterOptions } from './SpectraFilterBar';
 
-// Column visibility configuration — spectra mode (per-grating rows)
+// Column visibility configuration — spectra mode (per-grating rows).
+// Only per-spectrum info belongs here; inherited object fields (redshift,
+// redshift_quality) live in objects mode. Spectrum thumbnail is rendered
+// last to avoid squeezing textual columns when the table is narrow.
 const SPECTRA_MODE_COLUMNS: ColumnDefinition[] = [
   { id: 'rgb_thumbnail', label: 'RGB Image', defaultVisible: true },
   { id: 'spectrum_id', label: 'Spectrum ID', alwaysVisible: true },
@@ -42,15 +45,14 @@ const SPECTRA_MODE_COLUMNS: ColumnDefinition[] = [
   { id: 'ra', label: 'RA', defaultVisible: true },
   { id: 'dec', label: 'Dec', defaultVisible: true },
   { id: 'distance', label: 'Distance', defaultVisible: true },
-  { id: 'redshift', label: 'Redshift', alwaysVisible: true },
   { id: 'program', label: 'Program', defaultVisible: true },
-  { id: 'redshift_auto', label: 'z_auto', defaultVisible: false },
-  { id: 'dq_flags', label: 'DQ', defaultVisible: true },
-  { id: 'spectrum_thumbnail', label: 'Spectrum', defaultVisible: true },
-  { id: 'signal_to_noise', label: 'S/N', defaultVisible: true },
-  { id: 'exposure_time', label: 'Exp. Time', defaultVisible: false },
   { id: 'grating', label: 'Grating', defaultVisible: true },
+  { id: 'redshift_auto', label: 'Redshift (auto)', defaultVisible: true },
+  { id: 'signal_to_noise', label: 'S/N', defaultVisible: true },
+  { id: 'exposure_time', label: 'Exp. Time', defaultVisible: true },
+  { id: 'dq_flags', label: 'DQ', defaultVisible: true },
   { id: 'observation', label: 'Observation', defaultVisible: false },
+  { id: 'spectrum_thumbnail', label: 'Spectrum', defaultVisible: true },
 ];
 
 // Map TanStack Table column IDs to server column names — spectra mode
@@ -508,23 +510,27 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       },
       // Distance column (only shown when coordinate search is active)
       ...(hasCoordinateSearch ? [distanceColumn] : []),
-      {
-        accessorKey: 'redshift',
+      // Redshift column: objects mode only. In spectra mode this value is
+      // inherited from the parent object (all spectra of the same object share
+      // it), so showing it per-row is duplicated; the per-spectrum auto-fit
+      // redshift lives in the `redshift_auto` column instead.
+      ...(isObjectsMode ? [{
+        accessorKey: 'redshift' as const,
         minSize: 90,
-        header: ({ column }) => (
+        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
           <SortableHeader column={column}>Redshift</SortableHeader>
         ),
-        cell: ({ row }) => (
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => (
           <span className="text-sm font-mono text-text-primary dark:text-slate-100">
             {row.original.redshift !== null ? row.original.redshift.toFixed(4) : 'N/A'}
           </span>
         ),
-        sortingFn: (rowA, rowB) => {
+        sortingFn: (rowA: { original: SpectrumTarget }, rowB: { original: SpectrumTarget }) => {
           const a = rowA.original.redshift ?? -1;
           const b = rowB.original.redshift ?? -1;
           return a - b;
         },
-      },
+      } satisfies ColumnDef<SpectrumTarget>] : []),
       // Program column (spectra mode only — objects mode uses obj_programs).
       // `normal-case` opts out of the table's uppercase header style since
       // program slugs read awkwardly in all-caps.
@@ -565,27 +571,13 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         },
         sortingFn: 'basic' as const,
       } satisfies ColumnDef<SpectrumTarget>] : []),
-      // Spectrum thumbnail (hidden in objects mode — no per-object thumbnails)
-      ...(!isObjectsMode ? [{
-        id: 'spectrum_thumbnail',
-        minSize: 130,
-        header: () => <span className="normal-case">Spectrum</span>,
-        cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <SpectrumThumbnailInline
-            spectra={isSpectraMode ? row.original.spectra.slice(0, 1) : row.original.spectra}
-            width={120}
-            height={40}
-          />
-        ),
-        enableSorting: false,
-      } satisfies ColumnDef<SpectrumTarget>] : []),
       // Spectra mode: per-spectrum redshift_auto column
       ...(isSpectraMode ? [{
         id: 'redshift_auto',
-        minSize: 90,
+        minSize: 120,
         accessorFn: (row: SpectrumTarget) => row.spectra[0]?.redshift_auto ?? null,
         header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
-          <SortableHeader column={column}>z_auto</SortableHeader>
+          <SortableHeader column={column} className="normal-case">Redshift (auto)</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const z = row.original.spectra[0]?.redshift_auto;
@@ -835,6 +827,22 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           </span>
         ),
         sortingFn: 'alphanumeric' as const,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
+      // Spectrum thumbnail (spectra mode only — no per-object thumbnails in
+      // objects mode). Rendered last so the wide image cell doesn't squeeze
+      // the textual columns when the viewport is narrow.
+      ...(!isObjectsMode ? [{
+        id: 'spectrum_thumbnail',
+        minSize: 130,
+        header: () => <span className="normal-case">Spectrum</span>,
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => (
+          <SpectrumThumbnailInline
+            spectra={isSpectraMode ? row.original.spectra.slice(0, 1) : row.original.spectra}
+            width={120}
+            height={40}
+          />
+        ),
+        enableSorting: false,
       } satisfies ColumnDef<SpectrumTarget>] : []),
     ],
     [hasCoordinateSearch, currentFilterParams, isSpectraMode, isObjectsMode]
