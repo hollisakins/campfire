@@ -121,13 +121,14 @@ export async function generateCSV(
     if (viewMode === 'objects') {
       // Objects mode: one row per sky-object (cross-program grouped position)
       // Strip target-only params that the objects RPC doesn't accept
+      /* eslint-disable @typescript-eslint/no-unused-vars */
       const {
         p_observations: _obs,
-        p_spectral_features_include_any: _sf1, p_spectral_features_include_all: _sf2, p_spectral_features_exclude: _sf3,
         p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
         p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
         ...objectsParams
       } = { ...rpcParams, p_sort_column: sortColumn, p_sort_direction: sortDirection };
+      /* eslint-enable @typescript-eslint/no-unused-vars */
 
       const { data: rows, error: rpcError } = await paginateRpc<ObjectsCsvRow>(
         supabase, 'get_csv_export_objects', objectsParams,

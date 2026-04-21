@@ -34,7 +34,6 @@ export interface FilterOptions {
   max_snr_max: number | null;
   max_exposure_time_min: number | null;
   max_exposure_time_max: number | null;
-  spectral_features: number[];
   list_ids: number[];
   dq_flags: number[];
   inspected_only: boolean | null;
@@ -42,7 +41,6 @@ export interface FilterOptions {
   search: string;
   search_scope: SearchScope;
   gratings_mode: FilterMode;
-  spectral_features_mode: FilterMode;
   dq_flags_mode: FilterMode;
 }
 
@@ -59,7 +57,6 @@ export const DEFAULT_FILTERS: FilterOptions = {
   max_snr_max: null,
   max_exposure_time_min: null,
   max_exposure_time_max: null,
-  spectral_features: [],
   list_ids: [],
   dq_flags: [],
   inspected_only: null,
@@ -67,7 +64,6 @@ export const DEFAULT_FILTERS: FilterOptions = {
   search: '',
   search_scope: 'target_id',
   gratings_mode: 'any',
-  spectral_features_mode: 'any',
   dq_flags_mode: 'any',
 };
 
@@ -93,9 +89,6 @@ export interface FilterRpcParams {
   p_max_snr_max: number | null;
   p_max_exposure_time_min: number | null;
   p_max_exposure_time_max: number | null;
-  p_spectral_features_include_any: number | null;
-  p_spectral_features_include_all: number | null;
-  p_spectral_features_exclude: number | null;
   p_list_ids: number[] | null;
   p_dq_flags_include_any: number | null;
   p_dq_flags_include_all: number | null;
@@ -124,16 +117,11 @@ export function buildFilterParams(
   userId?: string
 ): FilterRpcParams {
   // Bitmask combining: OR individual flag values into a single mask
-  const spectralFeaturesMask = filters?.spectral_features && filters.spectral_features.length > 0
-    ? filters.spectral_features.reduce((acc, val) => acc | val, 0)
-    : null;
-
   const dqFlagsMask = filters?.dq_flags && filters.dq_flags.length > 0
     ? filters.dq_flags.reduce((acc, val) => acc | val, 0)
     : null;
 
   // Route bitmask to include_any / include_all / exclude based on mode
-  const sfMode = filters?.spectral_features_mode || 'any';
   const dqMode = filters?.dq_flags_mode || 'any';
 
   // Coordinate search conversion
@@ -176,9 +164,6 @@ export function buildFilterParams(
     p_max_snr_max: filters?.max_snr_max ?? null,
     p_max_exposure_time_min: filters?.max_exposure_time_min ?? null,
     p_max_exposure_time_max: filters?.max_exposure_time_max ?? null,
-    p_spectral_features_include_any: sfMode === 'any' ? spectralFeaturesMask : null,
-    p_spectral_features_include_all: sfMode === 'all' ? spectralFeaturesMask : null,
-    p_spectral_features_exclude: sfMode === 'none' ? spectralFeaturesMask : null,
     p_list_ids: filters?.list_ids?.length ? filters.list_ids : null,
     p_dq_flags_include_any: dqMode === 'any' ? dqFlagsMask : null,
     p_dq_flags_include_all: dqMode === 'all' ? dqFlagsMask : null,

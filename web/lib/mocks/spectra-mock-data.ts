@@ -151,7 +151,6 @@ function generateMockSpectra(): SpectrumTarget[] {
       redshift_auto: config.z,
       redshift_inspected: config.quality > 0 ? config.z : null,
       redshift_quality: config.quality,
-      spectral_features: config.features,
       dq_flags: config.dqFlags,
       last_inspected_at: config.quality > 0 ? '2024-10-15T14:30:00Z' : null,
       last_inspected_by: config.quality > 0 ? 'user-123' : null,
@@ -186,8 +185,6 @@ export interface MockFilterOptions {
   max_snr_max?: number | null;
   max_exposure_time_min?: number | null;
   max_exposure_time_max?: number | null;
-  spectral_features?: number[];
-  spectral_features_mode?: FilterMode;
   dq_flags?: number[];
   dq_flags_mode?: FilterMode;
   inspected_only?: boolean | null;
@@ -258,20 +255,6 @@ export function applyFiltersToMockData(
     }
     if (filters.max_exposure_time_max !== undefined && filters.max_exposure_time_max !== null) {
       if (!obj.max_exposure_time || obj.max_exposure_time > filters.max_exposure_time_max) return false;
-    }
-
-    // Spectral features bitmask with mode
-    if (filters.spectral_features && filters.spectral_features.length > 0) {
-      const mask = filters.spectral_features.reduce((acc, v) => acc | v, 0);
-      const mode = filters.spectral_features_mode || 'any';
-
-      if (mode === 'any') {
-        if (((obj.spectral_features ?? 0) & mask) === 0) return false;
-      } else if (mode === 'all') {
-        if (((obj.spectral_features ?? 0) & mask) !== mask) return false;
-      } else if (mode === 'none') {
-        if (((obj.spectral_features ?? 0) & mask) !== 0) return false;
-      }
     }
 
     // DQ flags bitmask with mode

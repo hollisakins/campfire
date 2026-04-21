@@ -312,9 +312,8 @@ export interface SpectrumTarget extends DbTarget {
   // Staleness fields surfaced in objects mode only.
   staleness_reason?: 'new_target' | 'reprocessed' | 'membership_changed' | 'migration_conflict' | null;
   last_data_change_at?: string | null;
-  // Legacy shims for components that still read per-target flags; DQ flags
-  // now live per-spectrum (spectra[i].dq_flags) and spectral_features is gone.
-  spectral_features?: number;
+  // Legacy shim — DQ flags now live per-spectrum (spectra[i].dq_flags);
+  // a few UI surfaces still read a per-target summary.
   dq_flags?: number;
 }
 
@@ -338,7 +337,6 @@ export interface ObjectMemberTarget {
   redshift?: number | null;
   redshift_inspected?: number | null;
   redshift_quality?: number;
-  spectral_features?: number;
   dq_flags?: number;
   last_inspected_at?: string | null;
   last_inspected_by?: string | null;

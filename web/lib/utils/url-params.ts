@@ -79,7 +79,6 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     max_snr_max: parseNumber('snr_max'),
     max_exposure_time_min: parseNumber('exp_min'),
     max_exposure_time_max: parseNumber('exp_max'),
-    spectral_features: parseNumberArray('features'),
     list_ids: parseNumberArray('tags'),
     dq_flags: parseNumberArray('dq_flags'),
     inspected_only: parseBoolean('inspected'),
@@ -88,7 +87,6 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     search_scope: searchScope,
     // Filter modes (default to 'any')
     gratings_mode: parseMode('gratings_mode'),
-    spectral_features_mode: parseMode('features_mode'),
     dq_flags_mode: parseMode('dq_flags_mode'),
   };
 }
@@ -182,9 +180,6 @@ export function filtersToURLParams(
   if (filters.max_exposure_time_max !== null) {
     params.set('exp_max', filters.max_exposure_time_max.toString());
   }
-  if (filters.spectral_features.length > 0) {
-    params.set('features', filters.spectral_features.join(','));
-  }
   if (filters.list_ids.length > 0) {
     params.set('tags', filters.list_ids.join(','));
   }
@@ -207,9 +202,6 @@ export function filtersToURLParams(
   // Only include filter modes if not default ('any') and filter is active
   if (filters.gratings.length > 0 && filters.gratings_mode && filters.gratings_mode !== 'any') {
     params.set('gratings_mode', filters.gratings_mode);
-  }
-  if (filters.spectral_features.length > 0 && filters.spectral_features_mode && filters.spectral_features_mode !== 'any') {
-    params.set('features_mode', filters.spectral_features_mode);
   }
   if (filters.dq_flags.length > 0 && filters.dq_flags_mode && filters.dq_flags_mode !== 'any') {
     params.set('dq_flags_mode', filters.dq_flags_mode);

@@ -81,7 +81,7 @@ class FlagQuery:
         Parameters
         ----------
         prefix : str
-            Parameter name prefix (e.g., 'spectral_features')
+            Parameter name prefix (e.g., 'dq_flags')
 
         Returns
         -------

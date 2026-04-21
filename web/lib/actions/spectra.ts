@@ -132,19 +132,8 @@ export async function getSpectra(
         p_page_size: pageSize,
       };
     } else {
-      // get_filtered_spectra_paginated doesn't accept spectral_features params;
-      // PostgREST resolves RPCs by exact param-name match, so strip them.
-      const {
-        p_spectral_features_include_any,
-        p_spectral_features_include_all,
-        p_spectral_features_exclude,
-        ...spectraParams
-      } = rpcParams;
-      void p_spectral_features_include_any;
-      void p_spectral_features_include_all;
-      void p_spectral_features_exclude;
       callParams = {
-        ...spectraParams,
+        ...rpcParams,
         p_sort_column: sortColumn,
         p_sort_direction: sortDirection,
         p_page: page,
@@ -213,7 +202,6 @@ export async function getSpectra(
           program_name: undefined,
           observation: '',
           redshift_auto: obj.redshift_auto ?? null,
-          spectral_features: 0,
           dq_flags: 0,
           updated_at: '',
         } as unknown as SpectrumTarget;
@@ -235,7 +223,6 @@ export async function getSpectra(
         redshift_auto: obj.redshift_auto,
         redshift_inspected: obj.redshift_inspected,
         redshift_quality: obj.redshift_quality,
-        spectral_features: obj.spectral_features,
         dq_flags: obj.dq_flags,
         last_inspected_at: obj.last_inspected_at,
         last_inspected_by: obj.last_inspected_by,
@@ -358,7 +345,6 @@ export async function getSpectrumById(targetId: string): Promise<{
       redshift_auto: data.redshift_auto,
       redshift_inspected: data.redshift_inspected,
       redshift_quality: data.redshift_quality,
-      spectral_features: data.spectral_features,
       dq_flags: data.dq_flags,
       last_inspected_at: data.last_inspected_at,
       last_inspected_by: data.last_inspected_by,
@@ -760,9 +746,6 @@ export async function getInspectionQueueIds(
     /* eslint-disable @typescript-eslint/no-unused-vars */
     const {
       p_observations: _obs,
-      p_spectral_features_include_any: _sfa,
-      p_spectral_features_include_all: _sfb,
-      p_spectral_features_exclude: _sfc,
       p_dq_flags_include_any: _dqa,
       p_dq_flags_include_all: _dqb,
       p_dq_flags_exclude: _dqc,
@@ -834,12 +817,13 @@ export async function getAdjacentObjectIds(
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     // Strip target-only params that the objects RPC doesn't accept
+    /* eslint-disable @typescript-eslint/no-unused-vars */
     const {
-      p_spectral_features_include_any: _sf1, p_spectral_features_include_all: _sf2, p_spectral_features_exclude: _sf3,
       p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
       p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
       ...objectsParams
     } = rpcParams;
+    /* eslint-enable @typescript-eslint/no-unused-vars */
 
     const { data, error } = await supabase.rpc('get_adjacent_objects', {
       p_current_object_id: currentObjectId,

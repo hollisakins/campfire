@@ -107,7 +107,6 @@ cf.query_targets(
     redshift_range=None,     # tuple[float, float]: (min, max)
     redshift_quality=None,   # list[int]: Quality codes
     max_snr_range=None,      # tuple[float, float]: (min, max) SNR
-    spectral_features=None,  # Flag filter (see Flag Filtering)
     dq_flags=None,           # Flag filter (see Flag Filtering)
     tags=None,               # list[str]: Tag slugs (e.g., ['lrd', 'blagn'])
     inspected_only=None,     # bool: Only inspected targets
@@ -196,34 +195,26 @@ System tags (e.g., `lrd`, `blagn`, `lae`) are available to all users. Users can 
 
 ## Flag Filtering
 
-CAMPFIRE uses bitmask flags for spectral features and data quality. The Python client provides numpy-style operators for intuitive filtering.
+CAMPFIRE uses bitmask flags for data quality. The Python client provides numpy-style operators for intuitive filtering.
 
 ### Operators
 
 ```python
-from campfire.flags import DQFlags, SpectralFeatures
+from campfire.flags import DQFlags
 
 # OR: Match any of these flags
-SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION
+DQFlags.CHIP_GAP | DQFlags.LOW_SNR
 
 # AND: Must have all these flags
-SpectralFeatures.LYMAN_BREAK & SpectralFeatures.BALMER_BREAK
+DQFlags.CHIP_GAP & DQFlags.LOW_SNR
 
 # NOT: Exclude this flag
 ~DQFlags.CONTAMINATION
-
-# Complex expressions
-(SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION) & ~DQFlags.LOW_SNR
 ```
 
 ### Examples
 
 ```python
-# Targets with Lyman break or multiple emission lines
-results = cf.query_targets(
-    spectral_features=SpectralFeatures.LYMAN_BREAK | SpectralFeatures.MULTI_EMISSION
-)
-
 # Clean data only
 results = cf.query_targets(
     dq_flags=~(DQFlags.CONTAMINATION | DQFlags.LOW_SNR)
@@ -239,10 +230,10 @@ See the [Flags documentation](/docs/inspection/flags) for full flag definitions 
 ```python
 from campfire import list_flags, decode_flags, encode_flags
 
-list_flags()                                                          # Print all flags
-list_flags('spectral_features')                                       # Print specific type
-decode_flags(3, 'spectral_features')                                  # ['CONTINUUM_BREAK', 'LYMAN_BREAK']
-encode_flags(['CONTINUUM_BREAK', 'LYMAN_BREAK'], 'spectral_features') # 3
+list_flags()                                          # Print all flags
+list_flags('dq_flags')                                # Print specific type
+decode_flags(3, 'dq_flags')                           # ['CHIP_GAP', 'CONTAMINATION']
+encode_flags(['CHIP_GAP', 'CONTAMINATION'], 'dq_flags') # 3
 ```
 
 ---

@@ -6,7 +6,6 @@ import { InlineMultiFilter } from '@/components/ui/InlineMultiFilter';
 import { InlineRange } from '@/components/ui/InlineRange';
 import { parseCoordinates, convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import {
-  SPECTRAL_FEATURES,
   DQ_FLAGS,
   REDSHIFT_QUALITY,
 } from '@/lib/flags';
@@ -174,13 +173,6 @@ export function AdvancedFiltersPanel({
   // Filter options
   const gratingOptions: FilterOption[] = GRATINGS.map(g => ({ value: g, label: g }));
 
-  const spectralFeatureOptions: FilterOption[] = SPECTRAL_FEATURES.map(f => ({
-    value: f.value,
-    label: f.label,
-    icon: f.icon,
-    color: f.color,
-  }));
-
   const dqFlagOptions: FilterOption[] = DQ_FLAGS.map(f => ({
     value: f.value,
     label: f.label,
@@ -205,7 +197,6 @@ export function AdvancedFiltersPanel({
     (filters.max_snr_max !== null ? 1 : 0) +
     (filters.max_exposure_time_min !== null ? 1 : 0) +
     (filters.max_exposure_time_max !== null ? 1 : 0) +
-    (filters.spectral_features?.length ?? 0) +
     (filters.list_ids?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
@@ -253,8 +244,6 @@ export function AdvancedFiltersPanel({
       max_snr_max: null,
       max_exposure_time_min: null,
       max_exposure_time_max: null,
-      spectral_features: [],
-      spectral_features_mode: 'any',
       list_ids: [],
       dq_flags: [],
       dq_flags_mode: 'any',
@@ -559,21 +548,6 @@ export function AdvancedFiltersPanel({
               />
             </div>
           )}
-
-          {/* Spectral Features Section */}
-          <div className="p-4 border-b border-border dark:border-slate-700">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 mb-4">
-              Object Classification
-            </h3>
-            <InlineMultiFilter
-              label="Spectral Features"
-              options={spectralFeatureOptions}
-              selected={filters.spectral_features ?? []}
-              onChange={(s) => onFiltersChange({ ...filters, spectral_features: s as number[] })}
-              mode={filters.spectral_features_mode}
-              onModeChange={(m) => onFiltersChange({ ...filters, spectral_features_mode: m })}
-            />
-          </div>
 
           {/* Data Quality Section */}
           <div className="p-4">
