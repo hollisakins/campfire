@@ -38,24 +38,25 @@ class AutoRefreshClient:
 def get_supabase_client(config: dict):
     """Create a Supabase client from deploy config.
 
-    Requires user JWT authentication via ``campfire login``. The caller's
-    Supabase-compatible JWT (from the OAuth device flow) and anon key are
-    used to create a client that operates through RLS policies.
+    Two authentication paths:
 
-    When a ``TokenManager`` is available (from ``campfire login``), the
-    returned client auto-refreshes the JWT before it expires so that
-    long-running deployments don't fail with ``PGRST303 JWT expired``.
-
-    The config dict should contain::
-
-        config['supabase']['url']                  # always required
-        config['supabase']['anon_key']             # from campfire login
-        config['supabase']['supabase_token']       # from campfire login
-        config['supabase']['_token_manager']       # optional, enables auto-refresh
+    1. **Service role** (``config['supabase']['service_role_key']``) — used
+       for ``--local`` deploys and env-var-driven CI. Bypasses RLS; no
+       refresh needed.
+    2. **User JWT** (``config['supabase']['supabase_token']`` +
+       ``anon_key``) — used for remote deploys authenticated via
+       ``campfire login``. Operates through RLS policies. When a
+       ``_token_manager`` is present, wraps the client in
+       ``AutoRefreshClient`` so long-running deploys survive the ~1 hour
+       JWT expiry.
     """
     url = config['supabase']['url']
+    service_role_key = config['supabase'].get('service_role_key')
     supabase_token = config['supabase'].get('supabase_token')
     anon_key = config['supabase'].get('anon_key')
+
+    if service_role_key:
+        return create_client(url, service_role_key)
 
     if supabase_token and anon_key:
         client = create_client(url, anon_key)
@@ -68,7 +69,8 @@ def get_supabase_client(config: dict):
 
     raise ValueError(
         "No Supabase credentials available. "
-        "Run 'campfire login' to authenticate."
+        "Run 'campfire login' to authenticate, or pass --local for a "
+        "local Supabase instance."
     )
 
 
@@ -370,11 +372,15 @@ def batch_upsert_spectra(
 
     changed: set[tuple[str, str]] = set()
     for key, new_hash in new_hashes.items():
-        old_hash = existing_hashes.get(key)
-        # Only flag "reprocessed" when the row existed before with a different
-        # hash. Brand-new rows (no old_hash) are membership signals, not
-        # reprocessing signals.
-        if old_hash is not None and old_hash != new_hash:
+        if key not in existing_hashes:
+            # Brand-new row. Membership signal, not a reprocessing signal.
+            continue
+        old_hash = existing_hashes[key]
+        # Flag any delta — including NULL→hash, which occurs on the first
+        # upload after the file_hash field was added. Without this branch,
+        # pre-hash-rollout rows are silently treated as clean on their first
+        # re-upload, losing a real "data changed" signal.
+        if old_hash != new_hash:
             changed.add(key)
 
     return len(spectra), changed

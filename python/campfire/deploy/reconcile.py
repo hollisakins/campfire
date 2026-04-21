@@ -119,6 +119,25 @@ class Orphan:
 
 
 @dataclass
+class ComplexOverlap:
+    """A cluster that is simultaneously a split-daughter and a merge-sink.
+
+    Topologically ambiguous: the cluster inherits (part of) one object via a
+    split while also absorbing (all or part of) one or more additional objects
+    via a merge. An id-reuse policy that favors one model silently drops data
+    from the other, so these cases must be resolved by the operator.
+    """
+    cluster_idx: int
+    aggregates: ClusterAggregates
+    # Object whose members were split across this cluster and others.
+    split_source: dict
+    # Other sibling cluster indices from the same split.
+    split_sibling_cluster_indices: list[int]
+    # Additional existing objects whose members landed in this cluster.
+    merge_sources: list[dict]
+
+
+@dataclass
 class Proposals:
     updates: list[Update] = dc_field(default_factory=list)
     inserts: list[Insert] = dc_field(default_factory=list)
@@ -126,6 +145,7 @@ class Proposals:
     splits: list[Split] = dc_field(default_factory=list)
     merges: list[Merge] = dc_field(default_factory=list)
     orphans: list[Orphan] = dc_field(default_factory=list)
+    complex_overlaps: list[ComplexOverlap] = dc_field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -317,10 +337,50 @@ def classify(
     handled_objects: set[int] = set()
     handled_clusters: set[int] = set()
 
+    # 0) Complex overlaps — a cluster that is BOTH a split-daughter and a
+    #    merge-sink. The two id-reuse models are incompatible, so auto-
+    #    applying either one silently drops data from the other. Surface
+    #    these to the operator and exclude them + their related objects
+    #    from the split/merge passes below.
+    overlap_cluster_indices: set[int] = set()
+    for ci, oset in cluster_objects.items():
+        if len(oset) <= 1:
+            continue
+        # Cluster is a merge-sink candidate. Is any origin object ALSO being
+        # split across multiple clusters?
+        split_origins = [oid for oid in oset if len(obj_clusters.get(oid, set())) > 1]
+        if not split_origins:
+            continue
+        # Record one ComplexOverlap per split origin so the operator sees the
+        # full topology. Typically there's exactly one split origin; more is
+        # rare but possible.
+        for split_oid in split_origins:
+            sibling_clusters = sorted(obj_clusters[split_oid])
+            merge_sources = [
+                obj_by_id[oid] for oid in sorted(oset) if oid != split_oid
+            ]
+            proposals.complex_overlaps.append(ComplexOverlap(
+                cluster_idx=ci,
+                aggregates=aggs[ci],
+                split_source=obj_by_id[split_oid],
+                split_sibling_cluster_indices=sibling_clusters,
+                merge_sources=merge_sources,
+            ))
+        overlap_cluster_indices.add(ci)
+        # Mark every object involved (split origin + merge sources + all
+        # sibling daughter clusters) as handled so downstream steps don't
+        # second-guess the topology. The operator resolves it post-hoc.
+        for oid in oset:
+            handled_objects.add(oid)
+            overlap_cluster_indices.update(obj_clusters.get(oid, set()))
+    handled_clusters.update(overlap_cluster_indices)
+
     # 1) Splits — an existing object's members spread across multiple clusters.
     for obj_id, cset in obj_clusters.items():
         if len(cset) <= 1:
             continue
+        if obj_id in handled_objects:
+            continue  # claimed by a complex_overlaps entry above
         cluster_idx_list = sorted(cset)
         daughters = [aggs[ci] for ci in cluster_idx_list]
         # Inheritor: daughter with highest max_snr among those with ≥50%
@@ -549,7 +609,34 @@ def confirm_proposals(
     `abort_on_changes` is set by the in-deploy caller: rather than prompting
     in the middle of a deploy run, we abort hard and tell the operator to
     resolve interactively via `campfire deploy objects reconcile`.
+
+    ``complex_overlaps`` are ALWAYS fatal: the split+merge ambiguity cannot
+    be auto-resolved without silently dropping inspection state from one
+    side. They force the operator into `campfire deploy objects split` /
+    `merge` resolution (or `rebuild --force` as an escape hatch).
     """
+    if proposals.complex_overlaps:
+        print()
+        print(f"  ERROR: {len(proposals.complex_overlaps)} split+merge overlap(s):")
+        for ov in proposals.complex_overlaps:
+            print(f"    OVERLAP → cluster {ov.aggregates.object_id} "
+                  f"({ov.aggregates.n_targets} targets)")
+            print(f"      • split source: {ov.split_source['object_id']} "
+                  f"(id={ov.split_source['id']}) — also spreads to "
+                  f"{len(ov.split_sibling_cluster_indices) - 1} other cluster(s)")
+            for src in ov.merge_sources:
+                print(f"      • merge source: {src['object_id']} (id={src['id']}, "
+                      f"q={src.get('redshift_quality')}, max_snr={src.get('max_snr')})")
+        raise click.ClickException(
+            "Split+merge overlap detected. These topologies cannot be safely "
+            "auto-resolved — inspection state on one side would be silently "
+            "dropped. Resolve manually with:\n"
+            "    campfire deploy objects split --object <id>\n"
+            "    campfire deploy objects merge --into <id> --from <id>\n"
+            "Or, if the old topology is unrecoverable, use:\n"
+            "    campfire deploy objects rebuild --field <name> --force"
+        )
+
     if not proposals.splits and not proposals.merges:
         return
     print()
@@ -591,6 +678,12 @@ def apply_proposals(
     client: Client, field: str, proposals: Proposals,
 ) -> dict[str, int]:
     """Execute the reconciliation against Supabase. Returns a stats dict."""
+    if proposals.complex_overlaps:
+        raise RuntimeError(
+            f"apply_proposals called with {len(proposals.complex_overlaps)} "
+            "unresolved complex_overlaps. confirm_proposals should have "
+            "aborted before reaching this point."
+        )
     now = datetime.now(timezone.utc).isoformat()
     stats = defaultdict(int)
 
@@ -895,6 +988,316 @@ def compute_object_redshift_auto(client: Client, field: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Operator-driven split / merge (post-hoc resolution of ambiguous topologies)
+# ---------------------------------------------------------------------------
+
+
+def resolve_object_ref(client: Client, ref: str) -> dict:
+    """Look up an object by either integer DB id or IAU ``object_id``.
+
+    Returns the full row. Raises ``click.ClickException`` on miss / ambiguity.
+    """
+    fields = (
+        'id, object_id, field, ra, dec, is_active, '
+        'redshift_quality, last_inspected_at, max_snr, '
+        'redshift_inspected, redshift_auto, last_inspected_by, '
+        'last_data_change_at, staleness_reason, version'
+    )
+    q = client.table('objects').select(fields)
+    try:
+        db_id = int(ref)
+        resp = q.eq('id', db_id).execute()
+    except ValueError:
+        resp = q.eq('object_id', ref).execute()
+    rows = resp.data or []
+    if not rows:
+        raise click.ClickException(f"No object found for ref '{ref}'.")
+    if len(rows) > 1:
+        raise click.ClickException(
+            f"Object ref '{ref}' is ambiguous ({len(rows)} matches). "
+            "Use the integer DB id instead."
+        )
+    return rows[0]
+
+
+def _fetch_targets_for_object(client: Client, object_db_id: int) -> list[dict]:
+    """Return all currently-linked targets for an object."""
+    fields = 'id, target_id, ra, dec, program_slug, observation, field'
+    rows: list[dict] = []
+    offset = 0
+    page_size = 500
+    while True:
+        resp = (
+            client.table('targets').select(fields)
+            .eq('object_id', object_db_id)
+            .order('id')
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        chunk = resp.data or []
+        rows.extend(chunk)
+        if len(chunk) < page_size:
+            break
+        offset += page_size
+    return rows
+
+
+def _aggregates_from_targets(
+    targets_subset: list[dict], spectra_map: dict[str, list[dict]],
+) -> ClusterAggregates:
+    """Recompute ClusterAggregates for an explicit subset of targets.
+
+    Shared shape with ``build_cluster_aggregates`` but driven by concrete
+    target rows (not FoF groups).
+    """
+    if not targets_subset:
+        raise ValueError("Cannot aggregate an empty target set.")
+    ra_centroid = float(np.mean([t['ra'] for t in targets_subset]))
+    dec_centroid = float(np.mean([t['dec'] for t in targets_subset]))
+    all_gratings: set[str] = set()
+    all_snr: list[float] = []
+    all_exp: list[float] = []
+    n_spectra = 0
+    for t in targets_subset:
+        for s in spectra_map.get(t['target_id'], []):
+            n_spectra += 1
+            if s.get('grating'):
+                all_gratings.add(s['grating'])
+            if s.get('signal_to_noise') is not None:
+                all_snr.append(float(s['signal_to_noise']))
+            if s.get('exposure_time') is not None:
+                all_exp.append(float(s['exposure_time']))
+    return ClusterAggregates(
+        object_id=generate_iau_name(ra_centroid, dec_centroid),
+        ra=ra_centroid,
+        dec=dec_centroid,
+        n_targets=len(targets_subset),
+        n_spectra=n_spectra,
+        programs=sorted({t['program_slug'] for t in targets_subset}),
+        gratings=sorted(all_gratings),
+        observations=sorted({t['observation'] for t in targets_subset}),
+        max_snr=max(all_snr) if all_snr else None,
+        max_exposure_time=max(all_exp) if all_exp else None,
+        member_target_db_ids=[t['id'] for t in targets_subset],
+        member_target_ids={t['target_id'] for t in targets_subset},
+    )
+
+
+def _disambiguate_iau_against_field(
+    client: Client, field: str, candidate: str,
+) -> str:
+    """Suffix ``_1``, ``_2``, ... onto the candidate IAU name until it's
+    unique within the field."""
+    resp = (
+        client.table('objects').select('object_id')
+        .eq('field', field)
+        .ilike('object_id', f"{candidate}%")
+        .execute()
+    )
+    taken = {r['object_id'] for r in resp.data or []}
+    if candidate not in taken:
+        return candidate
+    i = 1
+    while f"{candidate}_{i}" in taken:
+        i += 1
+    return f"{candidate}_{i}"
+
+
+def split_object(
+    client: Client,
+    object_ref: str,
+    move_target_ids: list[str],
+    *,
+    dry_run: bool = False,
+    yes: bool = False,
+) -> dict[str, int]:
+    """Split ``object_ref`` into two objects: the moved target set and the
+    remainder. The remainder keeps the original DB id (and thus all
+    inspection state, comments, list memberships, and photometry).
+
+    The new object starts with a fresh row, a coordinate-derived IAU name,
+    and no inspection state. Photometry attached to the original object is
+    re-linked by spatial proximity to the closer of the two new centroids.
+    """
+    obj = resolve_object_ref(client, object_ref)
+    if not obj.get('is_active'):
+        raise click.ClickException(
+            f"Object {obj['object_id']} (id={obj['id']}) is inactive. "
+            "Reactivate it via reconcile before splitting."
+        )
+
+    targets = _fetch_targets_for_object(client, obj['id'])
+    target_by_tid = {t['target_id']: t for t in targets}
+
+    missing = [tid for tid in move_target_ids if tid not in target_by_tid]
+    if missing:
+        raise click.ClickException(
+            f"Target(s) not linked to {obj['object_id']}: {', '.join(missing)}"
+        )
+    if len(move_target_ids) == 0:
+        raise click.ClickException("Nothing to move (--move is empty).")
+    if len(move_target_ids) >= len(targets):
+        raise click.ClickException(
+            "Cannot split off every target — the remainder would be empty."
+        )
+
+    move_set = {tid for tid in move_target_ids}
+    moved_targets = [t for t in targets if t['target_id'] in move_set]
+    keep_targets = [t for t in targets if t['target_id'] not in move_set]
+
+    target_ids_str = [t['target_id'] for t in targets]
+    spectra_map = fetch_spectra_metadata(client, target_ids_str)
+
+    moved_agg = _aggregates_from_targets(moved_targets, spectra_map)
+    keep_agg = _aggregates_from_targets(keep_targets, spectra_map)
+    moved_agg.object_id = _disambiguate_iau_against_field(
+        client, obj['field'], moved_agg.object_id,
+    )
+
+    print(f"  Splitting {obj['object_id']} (id={obj['id']}):")
+    print(f"    Keep ({len(keep_targets)} targets) → remains id={obj['id']}, "
+          f"new name {keep_agg.object_id}")
+    print(f"    Move ({len(moved_targets)} targets) → new object "
+          f"{moved_agg.object_id}")
+
+    if dry_run:
+        print("  Dry run — no changes.")
+        return {'kept': len(keep_targets), 'moved': len(moved_targets)}
+    if not yes and sys.stdin.isatty():
+        click.confirm("Apply split?", abort=True)
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # 1) Insert the new object for moved targets.
+    new_rec = _aggregate_to_insert_dict(moved_agg, obj['field'], now)
+    resp = client.table('objects').insert(new_rec).execute()
+    new_id = resp.data[0]['id']
+
+    # 2) Update original with its new aggregates (kept subset).
+    patch = _aggregate_to_update_dict(keep_agg, now)
+    patch['last_data_change_at'] = now
+    patch['staleness_reason'] = 'membership_changed'
+    client.table('objects').update(patch).eq('id', obj['id']).execute()
+
+    # 3) Re-point moved target FKs to the new object.
+    pairs = [{'target_id': t['id'], 'object_id': new_id} for t in moved_targets]
+    for i in range(0, len(pairs), BATCH_SIZE):
+        chunk = pairs[i:i + BATCH_SIZE]
+        client.rpc('bulk_set_target_object_fks', {
+            'p_pairs': chunk, 'p_updated_at': now,
+        }).execute()
+
+    # 4) Re-link photometry by proximity to the closer centroid.
+    _migrate_split_photometry(
+        client, obj['id'], (obj['ra'], obj['dec']),
+        [(obj['id'], (keep_agg.ra, keep_agg.dec)),
+         (new_id, (moved_agg.ra, moved_agg.dec))],
+    )
+
+    # 5) Recompute objects.redshift_auto for the field.
+    compute_object_redshift_auto(client, obj['field'])
+
+    print(f"  Done. new_id={new_id}")
+    return {'kept': len(keep_targets), 'moved': len(moved_targets),
+            'new_object_db_id': new_id}
+
+
+def merge_objects(
+    client: Client,
+    survivor_ref: str,
+    source_refs: list[str],
+    *,
+    dry_run: bool = False,
+    yes: bool = False,
+) -> dict[str, int]:
+    """Merge each ``source_refs`` object into ``survivor_ref``.
+
+    The survivor keeps its DB id (and inspection state). Each source's
+    comments, list memberships, and photometry are absorbed via
+    ``_absorb_loser_state`` and its targets re-pointed; the source is
+    then soft-deleted.
+    """
+    survivor = resolve_object_ref(client, survivor_ref)
+    if not survivor.get('is_active'):
+        raise click.ClickException(
+            f"Survivor {survivor['object_id']} (id={survivor['id']}) is "
+            "inactive. Reactivate it via reconcile before merging into it."
+        )
+    if not source_refs:
+        raise click.ClickException("No --from sources given.")
+
+    sources = [resolve_object_ref(client, r) for r in source_refs]
+    for s in sources:
+        if s['id'] == survivor['id']:
+            raise click.ClickException(
+                f"--from {s['object_id']} is the same as --into; "
+                "cannot merge an object into itself."
+            )
+        if s['field'] != survivor['field']:
+            raise click.ClickException(
+                f"Cross-field merge rejected: {s['object_id']} is in "
+                f"{s['field']} but survivor is in {survivor['field']}."
+            )
+
+    # Recompute combined aggregates.
+    all_object_db_ids = [survivor['id']] + [s['id'] for s in sources]
+    targets: list[dict] = []
+    for oid in all_object_db_ids:
+        targets.extend(_fetch_targets_for_object(client, oid))
+    target_ids_str = [t['target_id'] for t in targets]
+    spectra_map = fetch_spectra_metadata(client, target_ids_str)
+    combined_agg = _aggregates_from_targets(targets, spectra_map)
+    # Keep the survivor's existing object_id to avoid renaming URLs.
+    combined_agg.object_id = survivor['object_id']
+
+    print(f"  Merging into survivor {survivor['object_id']} (id={survivor['id']}):")
+    for s in sources:
+        print(f"    + {s['object_id']} (id={s['id']}, q={s.get('redshift_quality')})")
+    print(f"    Combined: {combined_agg.n_targets} targets, "
+          f"{combined_agg.n_spectra} spectra, centroid "
+          f"({combined_agg.ra:.6f}, {combined_agg.dec:.6f})")
+
+    if dry_run:
+        print("  Dry run — no changes.")
+        return {'survivor_id': survivor['id'], 'absorbed': len(sources)}
+    if not yes and sys.stdin.isatty():
+        click.confirm("Apply merge?", abort=True)
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # 1) Update survivor with combined aggregates + staleness.
+    patch = _aggregate_to_update_dict(combined_agg, now)
+    patch['last_data_change_at'] = now
+    patch['staleness_reason'] = 'membership_changed'
+    client.table('objects').update(patch).eq('id', survivor['id']).execute()
+
+    # 2) For each source: absorb state, re-point targets, soft-delete.
+    for src in sources:
+        _absorb_loser_state(client, loser_id=src['id'], survivor_id=survivor['id'])
+        src_targets = _fetch_targets_for_object(client, src['id'])
+        if src_targets:
+            pairs = [{'target_id': t['id'], 'object_id': survivor['id']}
+                     for t in src_targets]
+            for i in range(0, len(pairs), BATCH_SIZE):
+                chunk = pairs[i:i + BATCH_SIZE]
+                client.rpc('bulk_set_target_object_fks', {
+                    'p_pairs': chunk, 'p_updated_at': now,
+                }).execute()
+        client.table('objects').update({
+            'is_active': False,
+            'last_data_change_at': now,
+            'staleness_reason': 'membership_changed',
+            'updated_at': now,
+        }).eq('id', src['id']).execute()
+
+    # 3) Recompute objects.redshift_auto for the field.
+    compute_object_redshift_auto(client, survivor['field'])
+
+    print(f"  Done. survivor_id={survivor['id']}")
+    return {'survivor_id': survivor['id'], 'absorbed': len(sources)}
+
+
+# ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
 
@@ -914,6 +1317,8 @@ def print_summary(field: str, proposals: Proposals, stats: dict[str, int] | None
     print(f"    Splits:          {len(proposals.splits)}")
     print(f"    Merges:          {len(proposals.merges)}")
     print(f"    Orphans:         {len(proposals.orphans)}")
+    if proposals.complex_overlaps:
+        print(f"    Overlaps:        {len(proposals.complex_overlaps)} (split+merge — operator must resolve)")
     if stats:
         for k in (
             'staleness_new_target',

@@ -3,10 +3,11 @@
 import React from 'react';
 import { Button } from '@/components/ui/Button';
 import { ObjectListsSection } from '@/components/spectra/ObjectListsSection';
+import { ConflictBanner } from '@/components/spectra/inspection/ConflictBanner';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { REDSHIFT_QUALITY, getQualityDef } from '@/lib/flags';
 import type { InspectionState } from '@/lib/hooks/useInspectionState';
-import { Save, Loader2, AlertCircle, CheckCircle, RotateCcw } from 'lucide-react';
+import { Save, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 
 interface FloatingInspectionPanelProps {
   objectId: number;
@@ -30,19 +31,14 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
 
   return (
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-xl shadow-xl px-5 py-3 max-w-5xl w-auto">
-      {inspection.versionConflict && (
-        <div className="mb-2 p-2 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded flex items-center gap-2 text-sm">
-          <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 flex-shrink-0" />
-          <span className="text-red-800 dark:text-red-400 flex-1">
-            Inspection state has been changed by someone else. Refresh to see the latest values before saving again.
-          </span>
-          <button
-            onClick={() => window.location.reload()}
-            className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40 rounded"
-          >
-            <RotateCcw className="w-3 h-3" />
-            Refresh
-          </button>
+      {inspection.versionConflict && inspection.conflictInfo && (
+        <div className="mb-2">
+          <ConflictBanner
+            conflict={inspection.conflictInfo}
+            pendingRedshiftInspected={inspection.redshiftInspected}
+            pendingRedshiftQuality={inspection.redshiftQuality}
+            onDiscard={() => window.location.reload()}
+          />
         </div>
       )}
 

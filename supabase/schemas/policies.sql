@@ -465,6 +465,29 @@ CREATE POLICY "admin_spectra_update"
   USING (public.is_admin())
   WITH CHECK (public.is_admin());
 
+-- Users with can_comment may update spectra whose parent target is in an
+-- accessible program. Column scope is restricted to dq_flags (and the
+-- trigger-maintained updated_at) by enforce_spectra_dq_user_update_scope
+-- in triggers.sql — Postgres RLS does not support per-column UPDATE
+-- policies. Mirrors update_objects_by_access.
+DROP POLICY IF EXISTS "update_spectra_dq_by_access" ON spectra;
+CREATE POLICY "update_spectra_dq_by_access"
+  ON spectra FOR UPDATE TO authenticated
+  USING (
+    public.can_comment()
+    AND target_id IN (
+      SELECT t.target_id FROM targets t
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    )
+  )
+  WITH CHECK (
+    public.can_comment()
+    AND target_id IN (
+      SELECT t.target_id FROM targets t
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    )
+  );
+
 
 -- =============================================================================
 -- comments

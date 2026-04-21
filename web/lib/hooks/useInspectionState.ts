@@ -27,6 +27,20 @@ export interface SaveIfDirtyResult {
   version?: number;
 }
 
+/** Details about who/when/what caused a 409 — populated from the API body. */
+export interface ConflictInfo {
+  /** Display name (username or email) of the user who beat us to the save. */
+  conflictingUser: string | null;
+  /** Server's current last_inspected_at (ISO string). */
+  lastInspectedAt: string | null;
+  /** Server's current redshift_inspected value. */
+  theirRedshiftInspected: number | null;
+  /** Server's current redshift_quality value. */
+  theirRedshiftQuality: number | null;
+  /** Server's current version (for the user to re-try with). */
+  theirVersion: number | null;
+}
+
 export interface InspectionState {
   redshiftInspected: string;
   setRedshiftInspected: (value: string) => void;
@@ -38,6 +52,8 @@ export interface InspectionState {
   saveSuccess: boolean;
   /** True if the last save returned 409 — UI should prompt full refresh. */
   versionConflict: boolean;
+  /** Set when versionConflict is true; carries the server's current values. */
+  conflictInfo: ConflictInfo | null;
   currentRedshift: number | null;
   /** Latest known object version (server-of-record). */
   version: number;
@@ -62,6 +78,7 @@ export function useInspectionState(
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [versionConflict, setVersionConflict] = useState(false);
+  const [conflictInfo, setConflictInfo] = useState<ConflictInfo | null>(null);
   const [version, setVersion] = useState((initialData.version ?? 1));
   const [saveCount, setSaveCount] = useState(0);
   const [resetKey, setResetKey] = useState(0);
@@ -124,6 +141,7 @@ export function useInspectionState(
     setSaveError(null);
     setSaveSuccess(false);
     setVersionConflict(false);
+    setConflictInfo(null);
 
     const v = valuesRef.current;
     const id = objectDbIdRef.current;
@@ -145,6 +163,13 @@ export function useInspectionState(
       if (response.status === 409) {
         setVersionConflict(true);
         setSaveError(data.message || 'Inspection state has been changed, please refresh.');
+        setConflictInfo({
+          conflictingUser: data.conflicting_user ?? null,
+          lastInspectedAt: data.last_inspected_at ?? null,
+          theirRedshiftInspected: data.current_redshift_inspected ?? null,
+          theirRedshiftQuality: data.current_redshift_quality ?? null,
+          theirVersion: data.current_version ?? null,
+        });
         return { success: false, conflict: true, version: data.current_version };
       }
 
@@ -214,6 +239,7 @@ export function useInspectionState(
     setSaveSuccess(false);
     setSaveError(null);
     setVersionConflict(false);
+    setConflictInfo(null);
     setResetKey(k => k + 1);
   }, []);
 
@@ -227,6 +253,7 @@ export function useInspectionState(
     saveError,
     saveSuccess,
     versionConflict,
+    conflictInfo,
     currentRedshift,
     version,
     save,

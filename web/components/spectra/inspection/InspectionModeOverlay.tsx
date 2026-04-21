@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { InspectionHeader } from './InspectionHeader';
 import { DashboardPanel } from './DashboardPanel';
 import { KeyboardShortcutSheet } from './KeyboardShortcutSheet';
+import { ConflictBanner } from './ConflictBanner';
 import type { RedshiftSectionHandle } from './RedshiftSection';
 import { SpectrumPlot } from '../SpectrumPlot';
 import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
@@ -213,6 +214,12 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
     redshiftSectionRef.current?.flushPendingChanges();
     const saveResult = await inspectionState.saveIfDirty();
+    // 409 blocks navigation: the queue must not advance past an object
+    // whose pending edits didn't apply. The ConflictBanner stays visible
+    // until the user clicks "Discard & refresh".
+    if (saveResult.reason === 'version-conflict') {
+      return;
+    }
     if (saveResult.saved) {
       deleteCachedObject(currentObject.object_id);
     }
@@ -237,6 +244,18 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       setActiveKey(`${newTabs[0].targetId}::${newTabs[0].spectrum.grating}`);
     }
   }, [navigateTo, inspectionState, queue, getCachedObject, setCachedObject, deleteCachedObject, currentObject.object_id]);
+
+  /** Discard the local draft and refetch the object from the server. Used
+   *  from the ConflictBanner's "Discard & refresh" button. Stays on the
+   *  same object — no queue advance, no page reload. */
+  const handleDiscardAndRefresh = useCallback(async () => {
+    const fresh = await fetchObject(currentObject.object_id);
+    if (!fresh) return;
+    deleteCachedObject(currentObject.object_id);
+    setCachedObject(currentObject.object_id, fresh);
+    setCurrentObject(fresh.object);
+    inspectionState.resetState(inspectionInitialFromObject(fresh.object));
+  }, [fetchObject, currentObject.object_id, deleteCachedObject, setCachedObject, inspectionState]);
 
   const handlePrev = useCallback(() => handleNavigate(queue.prev), [handleNavigate, queue.prev]);
   const handleNext = useCallback(() => handleNavigate(queue.next), [handleNavigate, queue.next]);
@@ -405,6 +424,17 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
           >
             Dismiss
           </button>
+        </div>
+      )}
+
+      {queueReady && inspectionState.versionConflict && inspectionState.conflictInfo && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 w-[640px] max-w-[calc(100vw-2rem)] z-20">
+          <ConflictBanner
+            conflict={inspectionState.conflictInfo}
+            pendingRedshiftInspected={inspectionState.redshiftInspected}
+            pendingRedshiftQuality={inspectionState.redshiftQuality}
+            onDiscard={handleDiscardAndRefresh}
+          />
         </div>
       )}
 

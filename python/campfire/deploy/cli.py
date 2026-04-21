@@ -120,7 +120,7 @@ def _check_admin() -> None:
 # ---------------------------------------------------------------------------
 
 def shared_options(f):
-    """Decorator: --config, --obs, --dry-run."""
+    """Decorator: --config, --obs, --dry-run, --local."""
     f = click.option('--config', 'config_path', default=None,
                      help='Path to deploy config TOML.')(f)
     f = click.option('--obs', required=True, multiple=True, type=str,
@@ -128,7 +128,18 @@ def shared_options(f):
                      help='Observation name(s) (e.g. ember_uds_p4).')(f)
     f = click.option('--dry-run', is_flag=True,
                      help='Show what would happen without making changes.')(f)
+    f = click.option('--local', is_flag=True,
+                     help='Use local Supabase (127.0.0.1:54321).')(f)
     return f
+
+
+def _resolve_local(ctx, local: bool) -> bool:
+    """Let top-level ``deploy --local`` propagate into subcommands.
+
+    Accepts either ``campfire deploy --local <sub>`` (stored in ctx.obj)
+    or ``campfire deploy <sub> --local`` (subcommand flag).
+    """
+    return bool(local) or bool((ctx.obj or {}).get('local', False))
 
 
 def source_ids_option(f):
@@ -159,13 +170,17 @@ def source_ids_option(f):
 @click.option('--no-shutters', is_flag=True, help='Skip shutter deployment.')
 @click.option('--skip-astrometry', is_flag=True,
               help='Skip astrometric correction for shutters (deploy raw MSA positions).')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
 @click.pass_context
 def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                  force_overwrite, auto_approve, rgb, no_sed, no_shutters,
-                 skip_astrometry):
+                 skip_astrometry, local):
     """Deploy CAMPFIRE pipeline products to Supabase + R2."""
     ctx.ensure_object(dict)
-    _check_admin()
+    ctx.obj['local'] = local
+    if not local:
+        _check_admin()
 
     # When invoked without a subcommand, --obs is required
     if ctx.invoked_subcommand is None:
@@ -174,7 +189,7 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
             print("Usage: campfire deploy --obs <observation_name>")
             sys.exit(1)
 
-        config = load_config(config_path)
+        config = load_config(config_path, local=local)
         multi = len(obs) > 1
         fields_needing_rebuild: set[str] = set()
 
@@ -222,9 +237,10 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
 @shared_options
 @source_ids_option
 @click.option('--overwrite', is_flag=True, help='Regenerate files even if they exist.')
-def rgb(config_path, obs, dry_run, source_ids, overwrite):
+@click.pass_context
+def rgb(ctx, config_path, obs, dry_run, local, source_ids, overwrite):
     """Generate and deploy RGB images to R2."""
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
         deploy_rgb(
             obs_name, config,
@@ -238,9 +254,10 @@ def rgb(config_path, obs, dry_run, source_ids, overwrite):
 @shared_options
 @source_ids_option
 @click.option('--overwrite', is_flag=True, help='Regenerate files even if they exist.')
-def sed(config_path, obs, dry_run, source_ids, overwrite):
+@click.pass_context
+def sed(ctx, config_path, obs, dry_run, local, source_ids, overwrite):
     """Generate and deploy SED plots to R2 and update has_sed_plot."""
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
         deploy_sed(
             obs_name, config,
@@ -253,9 +270,10 @@ def sed(config_path, obs, dry_run, source_ids, overwrite):
 @deploy_group.command('json')
 @shared_options
 @source_ids_option
-def json_cmd(config_path, obs, dry_run, source_ids):
+@click.pass_context
+def json_cmd(ctx, config_path, obs, dry_run, local, source_ids):
     """Regenerate and upload spectrum JSON files."""
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
         deploy_json(
             obs_name, config,
@@ -269,9 +287,10 @@ def json_cmd(config_path, obs, dry_run, source_ids):
 @source_ids_option
 @click.option('--force-overwrite', is_flag=True, help='Reset inspection data.')
 @click.option('--auto-approve', is_flag=True, help='Skip confirmation prompts.')
-def zfit(config_path, obs, dry_run, source_ids, force_overwrite, auto_approve):
+@click.pass_context
+def zfit(ctx, config_path, obs, dry_run, local, source_ids, force_overwrite, auto_approve):
     """Deploy zfit JSON files and update redshift_auto."""
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
         deploy_zfit(
             obs_name, config,
@@ -285,9 +304,10 @@ def zfit(config_path, obs, dry_run, source_ids, force_overwrite, auto_approve):
 @deploy_group.command()
 @shared_options
 @source_ids_option
-def thumbnails(config_path, obs, dry_run, source_ids):
+@click.pass_context
+def thumbnails(ctx, config_path, obs, dry_run, local, source_ids):
     """Regenerate spectrum thumbnail SVGs in Supabase."""
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
         deploy_thumbnails(
             obs_name, config,
@@ -298,9 +318,10 @@ def thumbnails(config_path, obs, dry_run, source_ids):
 
 @deploy_group.command()
 @shared_options
-def slits(config_path, obs, dry_run):
+@click.pass_context
+def slits(ctx, config_path, obs, dry_run, local):
     """Deploy slit geometry data to Supabase (legacy)."""
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
         deploy_slits(obs_name, config, dry_run=dry_run)
 
@@ -309,9 +330,10 @@ def slits(config_path, obs, dry_run):
 @shared_options
 @click.option('--skip-astrometry', is_flag=True,
               help='Skip astrometric correction (deploy raw MSA positions).')
-def shutters(config_path, obs, dry_run, skip_astrometry):
+@click.pass_context
+def shutters(ctx, config_path, obs, dry_run, local, skip_astrometry):
     """Deploy shutters ECSV data to Supabase."""
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
         deploy_shutters(obs_name, config, dry_run=dry_run,
                         skip_astrometry=skip_astrometry)
@@ -345,7 +367,10 @@ def objects(ctx):
               help='FoF clustering radius in arcseconds (default: 0.2).')
 @click.option('--yes', is_flag=True,
               help='Skip interactive confirmation for splits/merges.')
-def objects_reconcile(config_path, field, all_fields, dry_run, radius, yes):
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def objects_reconcile(ctx, config_path, field, all_fields, dry_run, radius, yes, local):
     """Incrementally reconcile the objects table (Phase C).
 
     Preserves inspection state, comments, list memberships, and photometry
@@ -359,7 +384,7 @@ def objects_reconcile(config_path, field, all_fields, dry_run, radius, yes):
     from campfire.deploy.objects import fetch_distinct_fields
     from campfire.deploy.reconcile import reconcile_field_objects
 
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
 
     if all_fields:
@@ -382,6 +407,77 @@ def objects_reconcile(config_path, field, all_fields, dry_run, radius, yes):
     print("Done.")
 
 
+@objects.command('split')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--object', 'object_ref', required=True, type=str,
+              help='Object to split (IAU object_id or integer DB id).')
+@click.option('--move', 'move_target_ids', multiple=True, type=str,
+              cls=_VariadicOption, required=True,
+              help='Target ID(s) to move to a new object (repeat or space-separate).')
+@click.option('--dry-run', is_flag=True, help='Show plan without making changes.')
+@click.option('--yes', is_flag=True, help='Skip interactive confirmation.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def objects_split(ctx, config_path, object_ref, move_target_ids, dry_run, yes, local):
+    """Manually split an object by moving a subset of its targets to a new row.
+
+    The original object keeps its DB id, inspection state, comments, and list
+    memberships; the moved targets get a fresh object with a coordinate-
+    derived IAU name. Photometry is re-linked by proximity to the closer
+    centroid.
+
+    Example:
+
+        campfire deploy objects split --object J100033.42+022054.8 \\
+            --move 12345 67890
+    """
+    from campfire.deploy.reconcile import split_object
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    sb = get_supabase_client(config)
+    split_object(
+        sb, object_ref, list(move_target_ids),
+        dry_run=dry_run, yes=yes,
+    )
+
+
+@objects.command('merge')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--into', 'survivor_ref', required=True, type=str,
+              help='Survivor object (IAU object_id or integer DB id).')
+@click.option('--from', 'source_refs', multiple=True, type=str,
+              cls=_VariadicOption, required=True,
+              help='Source object(s) to fold in (repeat or space-separate).')
+@click.option('--dry-run', is_flag=True, help='Show plan without making changes.')
+@click.option('--yes', is_flag=True, help='Skip interactive confirmation.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def objects_merge(ctx, config_path, survivor_ref, source_refs, dry_run, yes, local):
+    """Manually merge one or more source objects into a survivor.
+
+    The survivor keeps its DB id and all inspection state. Each source's
+    comments, list memberships, and photometry are absorbed; its targets
+    re-point to the survivor; and the source is soft-deleted (is_active=false).
+
+    Example:
+
+        campfire deploy objects merge --into J100033.42+022054.8 \\
+            --from J100033.43+022054.9
+    """
+    from campfire.deploy.reconcile import merge_objects
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    sb = get_supabase_client(config)
+    merge_objects(
+        sb, survivor_ref, list(source_refs),
+        dry_run=dry_run, yes=yes,
+    )
+
+
 @objects.command('rebuild')
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
@@ -395,7 +491,10 @@ def objects_reconcile(config_path, field, all_fields, dry_run, radius, yes):
               help='Cross-match radius in arcseconds (default: 0.2).')
 @click.option('--force', is_flag=True,
               help='Required to actually run; this WIPES inspection state.')
-def objects_rebuild(config_path, field, all_fields, dry_run, radius, force):
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def objects_rebuild(ctx, config_path, field, all_fields, dry_run, radius, force, local):
     """Legacy wipe-and-rebuild escape hatch — destroys inspection state.
 
     Use only when reconcile produces structurally wrong results that
@@ -406,7 +505,7 @@ def objects_rebuild(config_path, field, all_fields, dry_run, radius, force):
 
     from campfire.deploy.objects import fetch_distinct_fields, rebuild_field_objects
 
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
 
     if all_fields:
@@ -465,7 +564,10 @@ def objects_rebuild(config_path, field, all_fields, dry_run, radius, force):
               help='Show stats without making changes.')
 @click.option('--no-photoz', is_flag=True,
               help='Skip photo-z extraction and P(z) sidecar upload.')
-def photometry(config_path, field, photometry_config, dry_run, no_photoz):
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz, local):
     """Deploy photometric catalog data for a field."""
     from campfire.deploy.photometry import deploy_field_photometry
 
@@ -475,7 +577,7 @@ def photometry(config_path, field, photometry_config, dry_run, no_photoz):
         print("  Use --photometry-config <path> or set $CAMPFIRE_ROOT")
         sys.exit(1)
 
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
 
     print(f"\nDeploying photometry for field '{field}'...")
@@ -508,7 +610,10 @@ def photometry(config_path, field, photometry_config, dry_run, no_photoz):
 @deploy_group.command('sync-programs')
 @click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
 @click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
-def sync_programs(config_path, dry_run):
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def sync_programs(ctx, config_path, dry_run, local):
     """Upsert all programs from $CAMPFIRE_ROOT/config/programs.toml."""
     programs_config = load_programs()
     program_slugs = list(programs_config.keys())
@@ -521,7 +626,7 @@ def sync_programs(config_path, dry_run):
         print("\nDry run — no changes made.")
         return
 
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
 
     print("\nUpserting programs...")
@@ -542,7 +647,10 @@ def sync_programs(config_path, dry_run):
 @click.option('--obs', required=True, type=str, help='Observation name.')
 @click.option('--output-dir', default=None, type=click.Path(),
               help='Output directory (default: current directory).')
-def fetch_config_cmd(config_path, obs, output_dir):
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
     """Fetch reduction config from the database for reproducibility.
 
     Retrieves the latest deployment record for the observation and writes:
@@ -553,7 +661,7 @@ def fetch_config_cmd(config_path, obs, output_dir):
     from pathlib import Path
     from campfire.deploy.deploy import fetch_config
 
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     out = Path(output_dir) if output_dir else None
     fetch_config(obs, config, output_dir=out)
 
@@ -612,10 +720,13 @@ def _parse_zoom(ctx, param, value):
               help='Dec for preview center (degrees).')
 @click.option('--verbose', '-v', is_flag=True,
               help='Enable debug logging.')
-def tiles(config_path, field, filter_names, dry_run, generate_only,
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def tiles(ctx, config_path, field, filter_names, dry_run, generate_only,
           upload_only, register_only, no_register, clean, pixel_scale, zoom,
           workers, overwrite, tile_dir, imaging_config, preview, preview_ra,
-          preview_dec, verbose):
+          preview_dec, verbose, local):
     """Generate, upload, and register map tiles for a field."""
     import logging
 
@@ -648,7 +759,7 @@ def tiles(config_path, field, filter_names, dry_run, generate_only,
 
     # Only load deploy config if we need cloud operations
     if do_upload or do_register or clean:
-        config = load_config(config_path)
+        config = load_config(config_path, local=_resolve_local(ctx, local))
     else:
         config = {}
 

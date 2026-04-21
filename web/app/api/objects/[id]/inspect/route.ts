@@ -67,9 +67,11 @@ export async function PATCH(
   }
 
   // Fetch the current row to (a) verify access and (b) check the version.
+  // Include last_inspected_* so conflict responses can tell the user WHO
+  // else edited and what values they wrote.
   const { data: current, error: fetchError } = await supabase
     .from('objects')
-    .select('id, version, redshift_inspected, redshift_quality, is_active')
+    .select('id, version, redshift_inspected, redshift_quality, is_active, last_inspected_at, last_inspected_by')
     .eq('id', objectDbId)
     .single();
 
@@ -85,11 +87,27 @@ export async function PATCH(
   }
 
   if (current.version !== expected_version) {
+    // Resolve the conflicting user's display name for the UI's attribution
+    // line. last_inspected_by is nullable for never-inspected objects —
+    // rare on the conflict path but safe-guarded.
+    let conflicting_user: string | null = null;
+    if (current.last_inspected_by) {
+      const { data: p } = await supabase
+        .from('user_profiles')
+        .select('username, email')
+        .eq('user_id', current.last_inspected_by)
+        .maybeSingle();
+      conflicting_user = p?.username || p?.email || null;
+    }
     return NextResponse.json(
       {
         error: 'version_conflict',
-        message: 'Inspection state has been changed, please refresh.',
+        message: 'Another user changed this object while you were editing.',
         current_version: current.version,
+        current_redshift_inspected: current.redshift_inspected,
+        current_redshift_quality: current.redshift_quality,
+        last_inspected_at: current.last_inspected_at,
+        conflicting_user,
       },
       { status: 409 }
     );
@@ -151,11 +169,31 @@ export async function PATCH(
 
   if (!updated) {
     // The .eq('version', expected_version) clause didn't match → someone
-    // raced us between the read above and this UPDATE.
+    // raced us between the read above and this UPDATE. Re-fetch so the UI
+    // can attribute the conflict consistently with the first-check path.
+    const { data: latest } = await supabase
+      .from('objects')
+      .select('version, redshift_inspected, redshift_quality, last_inspected_at, last_inspected_by')
+      .eq('id', objectDbId)
+      .maybeSingle();
+    let conflicting_user: string | null = null;
+    if (latest?.last_inspected_by) {
+      const { data: p } = await supabase
+        .from('user_profiles')
+        .select('username, email')
+        .eq('user_id', latest.last_inspected_by)
+        .maybeSingle();
+      conflicting_user = p?.username || p?.email || null;
+    }
     return NextResponse.json(
       {
         error: 'version_conflict',
-        message: 'Inspection state has been changed, please refresh.',
+        message: 'Another user changed this object while you were editing.',
+        current_version: latest?.version,
+        current_redshift_inspected: latest?.redshift_inspected,
+        current_redshift_quality: latest?.redshift_quality,
+        last_inspected_at: latest?.last_inspected_at,
+        conflicting_user,
       },
       { status: 409 }
     );
