@@ -221,10 +221,16 @@ CREATE TABLE IF NOT EXISTS "public"."flag_audit_log" (
     "old_value" integer,
     "new_value" integer,
     "changed_at" timestamp without time zone DEFAULT "now"(),
+    -- At-most-one subject (not exactly-one) so ON DELETE SET NULL on the
+    -- subject FKs doesn't violate the constraint when a spectrum/target/object
+    -- is deleted (e.g. pipeline delete-and-reinsert of a reprocessed spectrum).
+    -- The audit row survives with degraded subject info instead of cascading
+    -- away the history.  INSERT still requires exactly one subject — enforced
+    -- by the trigger functions that write these rows.
     CONSTRAINT "flag_audit_log_subject_check" CHECK (
         (target_id IS NOT NULL)::int +
         (object_id IS NOT NULL)::int +
-        (spectrum_id IS NOT NULL)::int = 1
+        (spectrum_id IS NOT NULL)::int <= 1
     )
 );
 
@@ -401,11 +407,38 @@ END) STORED,
 ALTER TABLE "public"."targets" OWNER TO "postgres";
 
 
-COMMENT ON COLUMN "public"."targets"."redshift" IS 'Generated column: NULL when redshift_quality = 1 (Impossible), otherwise COALESCE(redshift_inspected, redshift_auto). This allows "Impossible" objects to be excluded from redshift range filters.';
-
-
-
 COMMENT ON COLUMN "public"."targets"."has_sed_plot" IS 'Indicates whether an SED plot PDF exists in R2. Set during deployment to avoid runtime R2 HeadObject calls.';
+
+-- ---------------------------------------------------------------------------
+-- DEPRECATED target-tier inspection columns
+-- ---------------------------------------------------------------------------
+-- Phase D promoted inspection state to objects.  The columns below are kept
+-- transitionally to satisfy (a) pre-Phase-D migration provenance and (b) the
+-- member_targets payload in get_filtered_objects_paginated, which still reads
+-- targets.redshift_auto for display of per-target auto-z.  Remove in Phase E
+-- after the reader is swapped to spectra.redshift_auto.
+--
+-- Until removal:
+--   - UI must not surface these as current inspection state.
+--   - Writes go to objects (user inspection) or spectra (per-spectrum DQ).
+--   - admin_targets_update policy still allows admin writes — needed so the
+--     deploy CLI can touch targets during Phase E backfill scripts.
+
+COMMENT ON COLUMN "public"."targets"."redshift_auto" IS 'DEPRECATED (Phase D): per-target auto-z moved to spectra.redshift_auto + objects.redshift_auto aggregate. Still read by get_filtered_objects_paginated member_targets payload for transitional UI. Remove in Phase E.';
+
+COMMENT ON COLUMN "public"."targets"."redshift_quality" IS 'DEPRECATED (Phase D): inspection state moved to objects.redshift_quality. No-op — no consumer reads this. Remove in Phase E.';
+
+COMMENT ON COLUMN "public"."targets"."spectral_features" IS 'DEPRECATED (Phase D): spectral-feature flags moved to objects.spectral_features (pending Phase E feature) and/or per-spectrum comments. No-op. Remove in Phase E.';
+
+COMMENT ON COLUMN "public"."targets"."dq_flags" IS 'DEPRECATED (Phase D): DQ flags moved to spectra.dq_flags (per-spectrum). No-op — no consumer reads this. Remove in Phase E.';
+
+COMMENT ON COLUMN "public"."targets"."redshift_inspected" IS 'DEPRECATED (Phase D): user override moved to objects.redshift_inspected. No-op. Remove in Phase E.';
+
+COMMENT ON COLUMN "public"."targets"."last_inspected_at" IS 'DEPRECATED (Phase D): inspection attribution moved to objects.last_inspected_at. No-op. Remove in Phase E.';
+
+COMMENT ON COLUMN "public"."targets"."last_inspected_by" IS 'DEPRECATED (Phase D): inspection attribution moved to objects.last_inspected_by. No-op. Remove in Phase E.';
+
+COMMENT ON COLUMN "public"."targets"."redshift" IS 'DEPRECATED (Phase D): generated column derived from targets.redshift_inspected/_auto/_quality, all of which are now no-op state. Object-level equivalent lives at objects.redshift. Remove in Phase E with its inputs.';
 
 
 
@@ -1371,18 +1404,21 @@ ALTER TABLE ONLY "public"."list_audit_log"
 
 
 
+-- Subject FKs use ON DELETE SET NULL (not CASCADE) so pipeline churn
+-- (delete-then-reinsert of a reprocessed spectrum, object rebuild) doesn't
+-- wipe the audit trail.  Paired with the relaxed <= 1 subject-check above.
 ALTER TABLE ONLY "public"."flag_audit_log"
-    ADD CONSTRAINT "flag_audit_log_target_id_fkey" FOREIGN KEY ("target_id") REFERENCES "public"."targets"("id") ON DELETE CASCADE;
-
-
-
-ALTER TABLE ONLY "public"."flag_audit_log"
-    ADD CONSTRAINT "flag_audit_log_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE CASCADE;
+    ADD CONSTRAINT "flag_audit_log_target_id_fkey" FOREIGN KEY ("target_id") REFERENCES "public"."targets"("id") ON DELETE SET NULL;
 
 
 
 ALTER TABLE ONLY "public"."flag_audit_log"
-    ADD CONSTRAINT "flag_audit_log_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectra"("id") ON DELETE CASCADE;
+    ADD CONSTRAINT "flag_audit_log_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "public"."flag_audit_log"
+    ADD CONSTRAINT "flag_audit_log_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectra"("id") ON DELETE SET NULL;
 
 
 

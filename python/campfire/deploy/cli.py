@@ -517,18 +517,21 @@ def objects_rebuild(ctx, config_path, field, all_fields, dry_run, radius, force,
     if not dry_run:
         if not force:
             raise click.UsageError(
-                "--force is required for rebuild. This WIPES inspection state, "
-                "comments, list memberships, and photometry; they are then "
-                "re-linked by spatial proximity (0.3\") with possible loss. "
-                "Use `campfire deploy objects reconcile` instead unless you "
-                "have a specific reason to start over."
+                "--force is required for rebuild. This WIPES all object-level "
+                "inspection state (redshift_inspected, redshift_quality, "
+                "last_inspected_*) unrecoverably; comments, list memberships, "
+                "and photometry are re-linked by spatial proximity (0.3\") "
+                "with possible loss.  Use `campfire deploy objects reconcile` "
+                "instead unless you have a specific reason to start over."
             )
         click.echo(
             f"\nWARNING: about to wipe and rebuild objects for "
             f"{len(fields)} field(s): {', '.join(fields)}"
         )
-        click.echo("Inspection state, comments, lists, and photometry will be re-linked")
-        click.echo("by spatial proximity. Type DESTROY to confirm.")
+        click.echo("Inspection state (redshift, quality) will be LOST — not re-linked.")
+        click.echo("Comments, list memberships, and photometry will be re-linked by")
+        click.echo("spatial proximity (0.3\"); anything farther is orphaned/soft-deleted.")
+        click.echo("Type DESTROY to confirm.")
         if click.prompt("> ", type=str) != "DESTROY":
             click.echo("Aborted.")
             sys.exit(1)

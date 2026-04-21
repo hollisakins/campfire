@@ -13,9 +13,14 @@
 -- ============================================================
 
 -- 1. log_object_inspection_changes
---    Logs object-level redshift_quality changes into flag_audit_log
---    (now subject = object_id) and bumps updated_at. Replaces the targets
---    flavor of log_flag_changes for inspection state.
+--    Logs object-level redshift_quality and redshift_inspected changes into
+--    flag_audit_log (subject = object_id) and bumps updated_at. Replaces the
+--    targets flavor of log_flag_changes for inspection state.
+--    Redshift_inspected is numeric; flag_audit_log.old/new_value are integers,
+--    so we scale by 1e6 (matching numeric(10,6) precision) for lossless
+--    storage. No downstream consumer reverses the scale — audit rows exist
+--    purely to attribute edits (count_distinct_inspected_objects just counts
+--    DISTINCT object_id, field_name disambiguates in the UI).
 DROP FUNCTION IF EXISTS public.log_object_inspection_changes CASCADE;
 
 CREATE OR REPLACE FUNCTION public.log_object_inspection_changes() RETURNS trigger
@@ -25,6 +30,14 @@ BEGIN
     IF OLD.redshift_quality IS DISTINCT FROM NEW.redshift_quality THEN
         INSERT INTO flag_audit_log (object_id, user_id, field_name, old_value, new_value)
         VALUES (NEW.id, auth.uid(), 'redshift_quality', OLD.redshift_quality, NEW.redshift_quality);
+    END IF;
+    IF OLD.redshift_inspected IS DISTINCT FROM NEW.redshift_inspected THEN
+        INSERT INTO flag_audit_log (object_id, user_id, field_name, old_value, new_value)
+        VALUES (
+            NEW.id, auth.uid(), 'redshift_inspected',
+            (OLD.redshift_inspected * 1000000)::integer,
+            (NEW.redshift_inspected * 1000000)::integer
+        );
     END IF;
     NEW.updated_at = NOW();
     RETURN NEW;
@@ -251,7 +264,7 @@ CREATE TRIGGER bump_object_version_trigger
 
 DROP TRIGGER IF EXISTS track_object_inspection_trigger ON public.objects;
 CREATE TRIGGER track_object_inspection_trigger
-  BEFORE UPDATE OF redshift_quality ON public.objects
+  BEFORE UPDATE OF redshift_quality, redshift_inspected ON public.objects
   FOR EACH ROW EXECUTE FUNCTION public.log_object_inspection_changes();
 
 -- Belt-and-suspenders: the `update_objects_by_access` RLS policy has no
@@ -272,11 +285,22 @@ CREATE TRIGGER track_spectrum_dq_changes
   FOR EACH ROW EXECUTE FUNCTION public.log_spectrum_dq_changes();
 
 
--- Keep spectra.updated_at fresh on every UPDATE so incremental sync can
--- pick up changes via p_updated_since regardless of which column changed.
+-- Keep spectra.updated_at fresh only when user-visible columns change, so
+-- incremental sync (get_spectra_for_sync p_updated_since) doesn't force a
+-- full re-sync on every pipeline provenance touch (crds_context bumps,
+-- reduction_version bumps, etc.).  Scope matches what clients actually
+-- need to re-fetch for: flags, redshift, SNR, thumbnails, file identity.
 DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
 CREATE TRIGGER bump_spectra_updated_at_trigger
-  BEFORE UPDATE ON public.spectra
+  BEFORE UPDATE OF
+    dq_flags,
+    redshift_auto,
+    signal_to_noise,
+    thumbnail_svg_fnu,
+    thumbnail_svg_flambda,
+    fits_path,
+    file_hash
+  ON public.spectra
   FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();
 
 -- Belt-and-suspenders for update_spectra_dq_by_access — restricts non-admin
