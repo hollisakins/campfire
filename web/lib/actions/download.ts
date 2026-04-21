@@ -285,7 +285,7 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
     'dec',
     'best_redshift',
     'best_redshift_quality',
-    'n_targets',
+    'n_observations',
     'n_spectra',
     'programs',
     'gratings',

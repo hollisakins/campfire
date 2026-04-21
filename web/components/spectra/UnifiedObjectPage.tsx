@@ -288,9 +288,11 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                 {object.field}
               </Link>
               <span>&middot;</span>
-              <span>{object.n_targets} targets</span>
-              <span>&middot;</span>
-              <span>{object.n_spectra} spectra</span>
+              <span>
+                {object.n_spectra === 1 ? '1 spectrum' : `${object.n_spectra} spectra`}
+                {' across '}
+                {object.n_targets === 1 ? '1 observation' : `${object.n_targets} observations`}
+              </span>
             </div>
             <div className="flex items-center gap-4 mb-3">
               <CoordinateDisplay ra={object.ra} dec={object.dec} />
@@ -393,7 +395,6 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
               members={object.member_targets}
               spectrumVisibility={spectrumVisibility}
               colors={colors}
-              programNames={programNames}
               objectRedshift={object.redshift}
               expanded={expandedSpectra}
               onToggleExpand={handleToggleExpand}

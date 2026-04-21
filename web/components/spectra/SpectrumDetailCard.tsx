@@ -20,8 +20,6 @@ const DQ_OPTIONS: FilterOption[] = DQ_FLAGS.map(f => ({
 interface SpectrumDetailCardProps {
   spectrum: Spectrum;
   targetId: string;
-  observation: string;
-  programName: string;
   expanded: boolean;
   onToggle: () => void;
   /** Color dot keyed to member target (sidebar palette). */
@@ -35,8 +33,6 @@ interface SpectrumDetailCardProps {
 export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
   spectrum,
   targetId,
-  observation,
-  programName,
   expanded,
   onToggle,
   color,
@@ -134,25 +130,21 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
           {targetId}
         </span>
 
-        <span className="text-xs text-text-secondary dark:text-slate-400">
-          {programName} · {observation}
-        </span>
-
-        <div className="flex items-center gap-3 text-xs text-text-secondary dark:text-slate-400 ml-auto">
+        <div className="flex items-center gap-3 text-sm text-text-secondary dark:text-slate-400 ml-auto">
           <span>
-            <span className="opacity-70">z</span>{' '}
+            <span className="opacity-70">z=</span>
             <span className="font-mono text-text-primary dark:text-slate-200">
               {spectrum.redshift_auto != null ? spectrum.redshift_auto.toFixed(4) : '—'}
             </span>
           </span>
           <span>
-            <span className="opacity-70">S/N</span>{' '}
+            <span className="opacity-70">S/N=</span>
             <span className="font-mono text-text-primary dark:text-slate-200">
               {spectrum.signal_to_noise != null ? spectrum.signal_to_noise.toFixed(1) : '—'}
             </span>
           </span>
           <span>
-            <span className="opacity-70">t</span>{' '}
+            <span className="opacity-70">t=</span>
             <span className="font-mono text-text-primary dark:text-slate-200">
               {formatExposureTime(spectrum.exposure_time)}
             </span>

@@ -12,8 +12,6 @@ interface SpectraDetailSectionProps {
   spectrumVisibility: Record<number, boolean>;
   /** target_id → hex color (member palette) */
   colors: Record<string, string>;
-  /** program_slug → display name */
-  programNames: Record<string, string>;
   /** Object-level redshift used to overlay emission lines on each plot. */
   objectRedshift: number | null;
   /** Controlled expansion state, owned by UnifiedObjectPage. */
@@ -34,7 +32,6 @@ export const SpectraDetailSection: React.FC<SpectraDetailSectionProps> = ({
   members,
   spectrumVisibility,
   colors,
-  programNames,
   objectRedshift,
   expanded,
   onToggleExpand,
@@ -130,8 +127,6 @@ export const SpectraDetailSection: React.FC<SpectraDetailSectionProps> = ({
             cardId={`spec-card-${spectrum.id}`}
             spectrum={spectrum}
             targetId={member.target_id}
-            observation={member.observation}
-            programName={programNames[member.program_slug] || member.program_slug}
             color={getSpectrumShade(colors[member.target_id], memberIndex)}
             expanded={expanded.has(spectrum.id)}
             onToggle={() => onToggleExpand(spectrum.id)}

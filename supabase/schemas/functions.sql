@@ -548,7 +548,7 @@ BEGIN
   END IF;
 
   IF NOT (p_sort_column IN (
-    'target_id', 'spectrum_id', 'field', 'observation', 'ra', 'dec', 'redshift',
+    'target_id', 'spectrum_id', 'field', 'observation', 'program_slug', 'ra', 'dec', 'redshift',
     'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating'
   ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
     p_sort_column := 'spectrum_id';
@@ -696,6 +696,8 @@ BEGIN
         CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN field END DESC NULLS LAST,
         CASE WHEN p_sort_column = 'observation' AND p_sort_direction = 'asc' THEN observation END ASC NULLS LAST,
         CASE WHEN p_sort_column = 'observation' AND p_sort_direction = 'desc' THEN observation END DESC NULLS LAST,
+        CASE WHEN p_sort_column = 'program_slug' AND p_sort_direction = 'asc' THEN program_slug END ASC NULLS LAST,
+        CASE WHEN p_sort_column = 'program_slug' AND p_sort_direction = 'desc' THEN program_slug END DESC NULLS LAST,
         CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN ra END ASC NULLS LAST,
         CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN ra END DESC NULLS LAST,
         CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN "dec" END ASC NULLS LAST,

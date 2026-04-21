@@ -82,7 +82,7 @@ export async function GET(request: NextRequest) {
     const page = Math.floor(offset / limit) + 1;
 
     const validSortColumns = [
-      'target_id', 'spectrum_id', 'field', 'observation', 'ra', 'dec',
+      'target_id', 'spectrum_id', 'field', 'observation', 'program_slug', 'ra', 'dec',
       'redshift', 'redshift_quality', 'redshift_auto', 'signal_to_noise',
       'exposure_time', 'grating', 'distance',
     ];

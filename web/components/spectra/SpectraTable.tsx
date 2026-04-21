@@ -39,12 +39,11 @@ const SPECTRA_MODE_COLUMNS: ColumnDefinition[] = [
   { id: 'rgb_thumbnail', label: 'RGB Image', defaultVisible: true },
   { id: 'spectrum_id', label: 'Spectrum ID', alwaysVisible: true },
   { id: 'field', label: 'Field', defaultVisible: true },
-  { id: 'program', label: 'Program', defaultVisible: false },
   { id: 'ra', label: 'RA', defaultVisible: true },
   { id: 'dec', label: 'Dec', defaultVisible: true },
   { id: 'distance', label: 'Distance', defaultVisible: true },
   { id: 'redshift', label: 'Redshift', alwaysVisible: true },
-  { id: 'redshift_quality', label: 'Quality', alwaysVisible: true },
+  { id: 'program', label: 'Program', defaultVisible: true },
   { id: 'redshift_auto', label: 'z_auto', defaultVisible: false },
   { id: 'dq_flags', label: 'DQ', defaultVisible: true },
   { id: 'spectrum_thumbnail', label: 'Spectrum', defaultVisible: true },
@@ -59,6 +58,7 @@ const SPECTRA_COLUMN_TO_SERVER: Record<string, SortColumn> = {
   'spectrum_id': 'spectrum_id',
   'field': 'field',
   'observation': 'observation',
+  'program': 'program_slug',
   'ra': 'ra',
   'dec': 'dec',
   'redshift': 'redshift',
@@ -81,7 +81,7 @@ const OBJECTS_COLUMNS: ColumnDefinition[] = [
   { id: 'redshift', label: 'Redshift', alwaysVisible: true },
   { id: 'redshift_quality', label: 'Quality', alwaysVisible: true },
   { id: 'photo_z', label: 'Photo-z', defaultVisible: false },
-  { id: 'n_targets', label: '# Targets', defaultVisible: true },
+  { id: 'n_targets', label: '# Observations', defaultVisible: true },
   { id: 'n_spectra', label: '# Spectra', defaultVisible: false },
   { id: 'obj_programs', label: 'Programs', defaultVisible: true },
   { id: 'obj_gratings', label: 'Gratings', defaultVisible: true },
@@ -480,23 +480,6 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         ),
         sortingFn: 'alphanumeric',
       },
-      // Single-program column (hidden in objects mode — use obj_programs instead)
-      ...(!isObjectsMode ? [{
-        id: 'program',
-        minSize: 120,
-        accessorFn: (row: SpectrumTarget) => row.program_name || row.program_slug,
-        header: () => <span>Program</span>,
-        cell: ({ row }: { row: { original: SpectrumTarget } }) => {
-          const name = row.original.program_name;
-          return (
-            <span className="text-sm text-text-primary dark:text-slate-100">
-              {name || row.original.program_slug}
-            </span>
-          );
-        },
-        sortingFn: 'alphanumeric' as const,
-        enableSorting: false,
-      } satisfies ColumnDef<SpectrumTarget>] : []),
       {
         accessorKey: 'ra',
         minSize: 110,
@@ -542,13 +525,36 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           return a - b;
         },
       },
-      {
-        accessorKey: 'redshift_quality',
+      // Program column (spectra mode only — objects mode uses obj_programs).
+      // `normal-case` opts out of the table's uppercase header style since
+      // program slugs read awkwardly in all-caps.
+      ...(!isObjectsMode ? [{
+        id: 'program',
+        minSize: 120,
+        accessorFn: (row: SpectrumTarget) => row.program_name || row.program_slug,
+        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
+          <SortableHeader column={column} className="normal-case">Program</SortableHeader>
+        ),
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => {
+          const name = row.original.program_name;
+          return (
+            <span className="text-sm text-text-primary dark:text-slate-100">
+              {name || row.original.program_slug}
+            </span>
+          );
+        },
+        sortingFn: 'alphanumeric' as const,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
+      // Quality column: objects mode only. Spectra inherit redshift_quality
+      // from their parent object (we don't inspect spectra individually), so
+      // showing it per-row in spectra mode is duplicated and confusing.
+      ...(isObjectsMode ? [{
+        accessorKey: 'redshift_quality' as const,
         minSize: 90,
-        header: ({ column }) => (
+        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
           <SortableHeader column={column}>Quality</SortableHeader>
         ),
-        cell: ({ row }) => {
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const quality = getQualityInfo(row.original.redshift_quality);
           return (
             <div className="flex items-center gap-1.5">
@@ -557,8 +563,8 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
             </div>
           );
         },
-        sortingFn: 'basic',
-      },
+        sortingFn: 'basic' as const,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
       // Spectrum thumbnail (hidden in objects mode — no per-object thumbnails)
       ...(!isObjectsMode ? [{
         id: 'spectrum_thumbnail',
@@ -627,7 +633,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         minSize: 90,
         accessorFn: (row: SpectrumTarget) => row.n_targets ?? 0,
         header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
-          <SortableHeader column={column} className="justify-center"># Targets</SortableHeader>
+          <SortableHeader column={column} className="justify-center"># Observations</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
           <span className="text-sm text-text-primary dark:text-slate-100 text-center block">
