@@ -488,7 +488,7 @@ ALTER TABLE "public"."objects" OWNER TO "postgres";
 COMMENT ON TABLE "public"."objects" IS 'Unique sky positions cross-matched across programs. One object groups one or more targets observed within ~0.2 arcsec. Aggregate columns (n_targets, programs, max_snr, etc.) refreshed by reconcile_field_objects() at deploy time; redshift / redshift_quality / inspection state are user-editable and persist across reconciliation.';
 
 
-COMMENT ON COLUMN "public"."objects"."redshift_auto" IS 'Phase A: per-object auto-fit redshift, computed post-reconciliation as the redshift_auto of the highest-SNR member spectrum. Empty until Phase D migration.';
+COMMENT ON COLUMN "public"."objects"."redshift_auto" IS 'Phase A: per-object auto-fit redshift, computed post-reconciliation by compute_object_redshift_auto() from the best member spectrum under a grating-priority hierarchy (PRISM > medium > high-res, tiebreak on exposure_time). Empty until Phase D migration.';
 
 
 COMMENT ON COLUMN "public"."objects"."redshift_inspected" IS 'Phase A: user-set redshift override at the object level. Empty until Phase D migration.';

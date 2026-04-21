@@ -2476,12 +2476,19 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO authenti
 GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_role;
 
 -- =============================================================================
--- Compute objects.redshift_auto from highest-SNR member spectrum (Phase C)
+-- Compute objects.redshift_auto from best member spectrum (grating-priority)
 -- =============================================================================
 -- For each object in the field, set redshift_auto to the redshift_auto of
--- its member spectrum with the highest signal_to_noise. Objects whose
--- members all have NULL redshift_auto are nulled out. Called by
--- reconcile_field_objects() after membership/aggregate updates.
+-- its best member spectrum under a grating-priority hierarchy:
+--   1. PRISM (3x wavelength coverage, highest z-confirmation efficiency)
+--   2. Medium-resolution gratings (G140M, G235M, G395M)
+--   3. High-resolution gratings (G140H, G235H, G395H)
+-- Ties within a tier are broken by longest exposure_time, then lowest id.
+-- SNR is intentionally not used: contamination can inflate SNR and PRISM's
+-- wavelength coverage makes it the most reliable discriminator even at
+-- modest SNR. Objects whose members all have NULL redshift_auto are nulled
+-- out. Called by reconcile_field_objects() after membership/aggregate
+-- updates.
 --
 -- Replaces the old two-hop path (pipeline → target.redshift_auto → object
 -- via update_object_best_redshift trigger) with a direct one-hop path
@@ -2501,7 +2508,15 @@ BEGIN
     JOIN spectra s ON s.target_id = t.target_id
     WHERE t.object_id = o.id
       AND s.redshift_auto IS NOT NULL
-    ORDER BY s.signal_to_noise DESC NULLS LAST, s.id ASC
+    ORDER BY
+      CASE
+        WHEN s.grating = 'PRISM' THEN 0
+        WHEN s.grating IN ('G140M', 'G235M', 'G395M') THEN 1
+        WHEN s.grating IN ('G140H', 'G235H', 'G395H') THEN 2
+        ELSE 3
+      END ASC,
+      s.exposure_time DESC NULLS LAST,
+      s.id ASC
     LIMIT 1
   )
   WHERE o.field = p_field;

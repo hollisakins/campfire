@@ -978,10 +978,12 @@ def _migrate_split_photometry(
 
 
 def compute_object_redshift_auto(client: Client, field: str) -> int:
-    """Set objects.redshift_auto = highest-SNR member spectrum's redshift_auto.
+    """Set objects.redshift_auto from best member spectrum under grating priority.
 
-    Wraps the SQL function of the same name. Objects whose members have no
-    spectra with redshift_auto are nulled out.
+    Wraps the SQL function of the same name. Priority tiers: PRISM > medium
+    (G140M/G235M/G395M) > high-res (G140H/G235H/G395H); tiebreak on longest
+    exposure_time. Objects whose members have no spectra with redshift_auto
+    are nulled out.
     """
     resp = client.rpc('compute_object_redshift_auto', {'p_field': field}).execute()
     return int(resp.data) if resp.data is not None else 0
