@@ -2496,6 +2496,12 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 -- via update_object_best_redshift trigger) with a direct one-hop path
 -- (spectra.redshift_auto → objects.redshift_auto at reconciliation time).
 
+-- The CTE + IS DISTINCT FROM guard ensures we only rewrite rows whose
+-- redshift_auto actually changed, and updated_at is bumped in the same
+-- statement so get_objects_for_sync (which uses updated_at as its delta
+-- cursor) picks the change up on the next client sync. Without the bump,
+-- clients would silently miss redshift_auto changes from pipeline reruns.
+-- ROW_COUNT is then the true number of objects whose value changed.
 CREATE OR REPLACE FUNCTION public.compute_object_redshift_auto(p_field TEXT)
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -2503,25 +2509,34 @@ AS $$
 DECLARE
   n INTEGER;
 BEGIN
-  UPDATE objects o
-  SET redshift_auto = (
-    SELECT s.redshift_auto
-    FROM targets t
-    JOIN spectra s ON s.target_id = t.target_id
-    WHERE t.object_id = o.id
-      AND s.redshift_auto IS NOT NULL
-    ORDER BY
-      CASE
-        WHEN s.grating = 'PRISM' THEN 0
-        WHEN s.grating IN ('G140M', 'G235M', 'G395M') THEN 1
-        WHEN s.grating IN ('G140H', 'G235H', 'G395H') THEN 2
-        ELSE 3
-      END ASC,
-      s.exposure_time DESC NULLS LAST,
-      s.id ASC
-    LIMIT 1
+  WITH computed AS (
+    SELECT o.id,
+           (
+             SELECT s.redshift_auto
+             FROM targets t
+             JOIN spectra s ON s.target_id = t.target_id
+             WHERE t.object_id = o.id
+               AND s.redshift_auto IS NOT NULL
+             ORDER BY
+               CASE
+                 WHEN s.grating = 'PRISM' THEN 0
+                 WHEN s.grating IN ('G140M', 'G235M', 'G395M') THEN 1
+                 WHEN s.grating IN ('G140H', 'G235H', 'G395H') THEN 2
+                 ELSE 3
+               END ASC,
+               s.exposure_time DESC NULLS LAST,
+               s.id ASC
+             LIMIT 1
+           ) AS new_val
+    FROM objects o
+    WHERE o.field = p_field
   )
-  WHERE o.field = p_field;
+  UPDATE objects o
+  SET redshift_auto = c.new_val,
+      updated_at = NOW()
+  FROM computed c
+  WHERE o.id = c.id
+    AND o.redshift_auto IS DISTINCT FROM c.new_val;
 
   GET DIAGNOSTICS n = ROW_COUNT;
   RETURN n;

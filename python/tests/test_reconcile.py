@@ -184,6 +184,85 @@ def test_batch_upsert_spectra_flags_hash_change():
     assert changed == {('t1', 'prism')}
 
 
+def test_unchanged_1to1_match_is_skipped_not_updated():
+    # Regression: a 1:1 match whose aggregates equal the existing object's
+    # stored aggregates and whose membership is unchanged must NOT be added
+    # to proposals.updates. Otherwise every reconcile run rewrites every
+    # object and bumps updated_at, which bloats incremental sync cursors
+    # downstream.
+    targets = [_target(1, 't1', 150.0, 2.0, 100)]
+    groups = [[0]]
+    obj = _obj(100, 'OBJ-A', 150.0, 2.0)
+    obj.update({
+        'n_targets': 1, 'n_spectra': 0,
+        'programs': ['prog'], 'gratings': [], 'observations': ['obs'],
+        'max_snr': None, 'max_exposure_time': None,
+    })
+    # object_id has to match the IAU name build_cluster_aggregates() will
+    # generate from the centroid, since that is one of the compared fields.
+    from campfire.deploy.objects import generate_iau_name
+    obj['object_id'] = generate_iau_name(150.0, 2.0)
+
+    p = classify(
+        groups=groups, targets=targets, existing_objects=[obj],
+        members_by_obj={100: {'t1'}}, spectra_map={},
+        changed_hashes=set(),
+    )
+
+    assert p.unchanged == 1
+    assert p.updates == []
+    assert p.inserts == []
+
+
+def test_changed_aggregates_still_classified_as_update():
+    # Flip side of the skip: if the aggregates differ (e.g. stored n_spectra
+    # is stale), the cluster must be appended to proposals.updates so the
+    # row gets rewritten. Guards against the skip-helper being too permissive.
+    targets = [_target(1, 't1', 150.0, 2.0, 100)]
+    groups = [[0]]
+    obj = _obj(100, 'OBJ-A', 150.0, 2.0)
+    obj.update({
+        'n_targets': 1, 'n_spectra': 5,  # stale — cluster has 0 spectra
+        'programs': ['prog'], 'gratings': [], 'observations': ['obs'],
+        'max_snr': None, 'max_exposure_time': None,
+    })
+    from campfire.deploy.objects import generate_iau_name
+    obj['object_id'] = generate_iau_name(150.0, 2.0)
+
+    p = classify(
+        groups=groups, targets=targets, existing_objects=[obj],
+        members_by_obj={100: {'t1'}}, spectra_map={},
+        changed_hashes=set(),
+    )
+
+    assert p.unchanged == 0
+    assert len(p.updates) == 1
+
+
+def test_inactive_1to1_match_is_not_skipped():
+    # Inactive 1:1 matches need a reactivation write; they must always
+    # land on proposals.updates regardless of aggregate equality.
+    targets = [_target(1, 't1', 150.0, 2.0, 100)]
+    groups = [[0]]
+    obj = _obj(100, 'OBJ-A', 150.0, 2.0, active=False)
+    obj.update({
+        'n_targets': 1, 'n_spectra': 0,
+        'programs': ['prog'], 'gratings': [], 'observations': ['obs'],
+        'max_snr': None, 'max_exposure_time': None,
+    })
+    from campfire.deploy.objects import generate_iau_name
+    obj['object_id'] = generate_iau_name(150.0, 2.0)
+
+    p = classify(
+        groups=groups, targets=targets, existing_objects=[obj],
+        members_by_obj={100: {'t1'}}, spectra_map={},
+        changed_hashes=set(),
+    )
+
+    assert p.unchanged == 0
+    assert len(p.updates) == 1
+
+
 def test_independent_split_and_merge_both_apply():
     # A → {X, Y} (split), Z ← {B, C} (merge). No cluster overlap.
     targets = [
