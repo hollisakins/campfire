@@ -108,6 +108,9 @@ def fetch_spectra_metadata(
 
     Queries spectra directly by target_id in batches to avoid both
     PostgREST FK embedding timeouts and URI-length limits.
+
+    ``target_ids`` must be the text ``targets.target_id`` values, since
+    ``spectra.target_id`` is a TEXT FK to that column (not to ``targets.id``).
     """
     select = 'target_id, grating, signal_to_noise, exposure_time'
     result: dict[str, list[dict]] = defaultdict(list)
@@ -616,8 +619,8 @@ def rebuild_field_objects(
         return 0, 0
 
     print(f"  Fetching spectra metadata...")
-    target_db_ids = [t['id'] for t in targets]
-    spectra_map = fetch_spectra_metadata(client, target_db_ids)
+    target_text_ids = [t['target_id'] for t in targets]
+    spectra_map = fetch_spectra_metadata(client, target_text_ids)
     n_spectra = sum(len(v) for v in spectra_map.values())
     print(f"    {n_spectra} spectra for {len(spectra_map)} targets")
 
