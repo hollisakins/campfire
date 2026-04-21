@@ -6,18 +6,22 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(npm:*), Bash(pnpm:*), Bash(ruff:*),
 
 ## Context
 
-- PR metadata: !`gh pr view $ARGUMENTS --json number,title,body,baseRefName,headRefName,files,additions,deletions 2>/dev/null || gh pr view --json number,title,body,baseRefName,headRefName,files,additions,deletions`
-- Full diff: !`gh pr diff $ARGUMENTS 2>/dev/null || gh pr diff`
-- Issue comments (conversation tab): !`gh pr view $ARGUMENTS --json comments 2>/dev/null || gh pr view --json comments`
-- Reviews (approve/request-changes/comment): !`gh pr view $ARGUMENTS --json reviews 2>/dev/null || gh pr view --json reviews`
-- Inline review comments: !`PR_NUM=$(gh pr view $ARGUMENTS --json number -q .number 2>/dev/null || gh pr view --json number -q .number); REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner); gh api "repos/$REPO/pulls/$PR_NUM/comments"`
+- PR metadata: !`gh pr view $ARGUMENTS --json number,title,body,baseRefName,headRefName,files,additions,deletions 2>/dev/null || ([ -n "$ARGUMENTS" ] && echo '{"error":"PR not found"}') || git log main...HEAD --oneline | head -20`
+- Full diff: !`gh pr diff $ARGUMENTS 2>/dev/null || git diff main...HEAD`
+- Issue comments: !`gh pr view $ARGUMENTS --json comments 2>/dev/null || echo '[]'`
+- Reviews: !`gh pr view $ARGUMENTS --json reviews 2>/dev/null || echo '[]'`
+- Inline review comments: !`PR_NUM=$(gh pr view $ARGUMENTS --json number -q .number 2>/dev/null); if [ -n "$PR_NUM" ]; then REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner); gh api "repos/$REPO/pulls/$PR_NUM/comments"; else echo '[]'; fi`
 - Repo guide: @CLAUDE.md
 
 ## Task
 
-You are reviewing a CAMPFIRE PR. The goal is a **short, high-signal** report — not a long list of everything wrong. Most trivial issues should be fixed in place; most nitpicks should be dropped entirely. Only things that genuinely need the User's judgment belong in the final report.
+You are reviewing a CAMPFIRE PR or branch. If no PR exists yet (pre-PR review), skip the "Prior discussion" section and note that this is a pre-PR review against `main`.
+
+The goal is a **short, high-signal** report — not a long list of everything wrong. Most trivial issues should be fixed in place; most nitpicks should be dropped entirely. Only things that genuinely need the User's judgment belong in the final report.
 
 ### Step 0 — Read the existing discussion
+
+If there is no existing PR (pre-PR review), skip this step entirely.
 
 Before reviewing, read through any existing comments, reviews, and inline review comments. Respect what's already been discussed:
 

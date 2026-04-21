@@ -8,13 +8,13 @@ import {
 } from '@/lib/utils/shutter-overlay';
 
 /**
- * GET /api/v1/shutters?target_id=<id>&fov=<arcsec>
+ * GET /api/v1/shutters?object_id=<id>&fov=<arcsec>
  *
  * Returns nearby NIRSpec shutter geometry as JSON for client-side rendering.
- * Looks up the target's position and field, then queries for nearby shutters.
+ * Looks up the object's position and field, then queries for nearby shutters.
  *
  * Query parameters:
- * - target_id (required): Target identifier
+ * - object_id (required): Object identifier (IAU name from objects.object_id)
  * - fov (optional, default 5): Search radius in arcseconds, clamped to 1–30
  */
 export async function GET(request: NextRequest) {
@@ -42,11 +42,11 @@ export async function GET(request: NextRequest) {
     }
 
     const params = request.nextUrl.searchParams;
-    const targetId = params.get('target_id');
+    const objectId = params.get('object_id');
 
-    if (!targetId) {
+    if (!objectId) {
       return NextResponse.json(
-        { error: 'Missing required parameter: target_id' },
+        { error: 'Missing required parameter: object_id' },
         { status: 400 }
       );
     }
@@ -60,11 +60,11 @@ export async function GET(request: NextRequest) {
     }
     const radiusArcsec = Math.min(30, Math.max(1, parsedFov));
 
-    // Look up target
+    // Look up object
     const { data: obj, error: objErr } = await supabase
-      .from('targets')
-      .select('ra, dec, field, program_slug')
-      .eq('target_id', targetId)
+      .from('objects')
+      .select('ra, dec, field, programs')
+      .eq('object_id', objectId)
       .single();
 
     if (objErr || !obj) {
@@ -74,7 +74,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    if (!accessibleProgramSlugs.includes(obj.program_slug)) {
+    const objectPrograms: string[] = obj.programs ?? [];
+    if (!objectPrograms.some(p => accessibleProgramSlugs.includes(p))) {
       return NextResponse.json(
         { error: 'Access denied to this object' },
         { status: 403 }

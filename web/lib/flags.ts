@@ -32,16 +32,6 @@ export const REDSHIFT_QUALITY: QualityDef[] = [
   { value: 4, label: 'Secure', short: 'Secure', icon: '🟢', color: '#28a745', description: 'Redshift definitely correct (>95% confidence)' },
 ];
 
-// Spectral features used for redshift determination (bitmask)
-export const SPECTRAL_FEATURES: FlagDef[] = [
-  { key: 'continuum_break', bit: 0, value: 1, label: 'Continuum Shape', short: 'Cont', icon: '📊', color: '#e8f5e9', description: 'Redshift constrained by the overall continuum shape' },
-  { key: 'lyman_break', bit: 1, value: 2, label: 'Lyman Break', short: 'LB', icon: '💧', color: '#e3f2fd', description: 'Clear Lyman break' },
-  { key: 'balmer_break', bit: 2, value: 4, label: 'Balmer Break', short: 'BB', icon: '📈', color: '#f3e5f5', description: 'Clear Balmer break' },
-  { key: 'absorption_features', bit: 3, value: 8, label: 'Absorption Features', short: 'ABS', icon: '〰️', color: '#f1f8e9', description: 'Absorption lines/features identified' },
-  { key: 'single_emission', bit: 4, value: 16, label: 'Single Emission Line', short: '1EM', icon: '☝️', color: '#fff3e0', description: 'Single emission line' },
-  { key: 'multi_emission', bit: 5, value: 32, label: 'Multiple Emission Lines', short: 'MEM', icon: '✌️', color: '#ffebee', description: 'Multiple emission lines' },
-];
-
 // Data quality issues (bitmask)
 export const DQ_FLAGS: FlagDef[] = [
   { key: 'chip_gap', bit: 0, value: 1, label: 'Chip Gap', short: 'GAP', icon: '⚠️', color: '#fff9c4', description: 'Spectrum affected by detector chip gap' },

@@ -40,74 +40,71 @@ def _make_progress(show, unit, desc):
     return pbar, callback
 
 
-def _sync_targets(api, store, full, show_progress):
-    """Sync targets + spectra from the server.
-
-    Returns (target_count, spectra_count, server_total, incremental,
-    needs_full_sync, purge_result, obs_set, sync_timestamp).
-    """
-    updated_since = None
-    if not full:
-        updated_since = store.get_max_updated_at()
-    incremental = updated_since is not None
-
-    sync_timestamp = datetime.now(timezone.utc).isoformat()
-
-    pbar, callback = _make_progress(show_progress, "target", "Targets")
-
-    all_targets, server_total = api.fetch_all_targets(
-        updated_since=updated_since,
-        on_page_complete=callback,
-    )
-    if pbar:
-        pbar.close()
-
-    target_count, spec_count = store.upsert_targets(all_targets)
-
-    needs_full_sync = False
-    if incremental and server_total > 0:
-        local_total = store._conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
-        if local_total != server_total:
-            needs_full_sync = True
-
-    purge_result = None
-    if not incremental:
-        purge_result = store.purge_stale_rows(sync_timestamp)
-
-    obs_set = set(o.get("observation") for o in all_targets if o.get("observation"))
-
-    return (target_count, spec_count, server_total, incremental,
-            needs_full_sync, purge_result, obs_set, sync_timestamp)
-
-
 def _sync_objects(api, store, full, show_progress):
-    """Sync sky-objects from the server.
+    """Sync objects from the server.
 
-    Returns (object_count, purged_count).
+    Returns (object_count, purged_count, incremental, needs_full_sync,
+    server_total, sync_timestamp).
     """
     updated_since = None
     if not full:
         updated_since = store.get_max_objects_updated_at()
+    incremental = updated_since is not None
 
     sync_timestamp = datetime.now(timezone.utc).isoformat()
 
     pbar, callback = _make_progress(show_progress, "obj", "Objects")
 
-    all_objects, server_total = api.fetch_all_sky_objects(
+    all_objects, server_total = api.fetch_all_objects(
         updated_since=updated_since,
         on_page_complete=callback,
     )
     if pbar:
         pbar.close()
 
-    obj_count = store.upsert_sky_objects(all_objects)
+    obj_count = store.upsert_objects(all_objects)
+
+    needs_full_sync = False
+    if incremental and server_total > 0:
+        local_total = store._conn.execute("SELECT COUNT(*) FROM objects").fetchone()[0]
+        if local_total != server_total:
+            needs_full_sync = True
 
     purged = 0
-    if updated_since is None:
-        # Full sync — purge objects not seen
+    if not incremental:
         purged = store.purge_stale_objects(sync_timestamp)
 
-    return obj_count, purged
+    return obj_count, purged, incremental, needs_full_sync, server_total, sync_timestamp
+
+
+def _sync_spectra(api, store, full, show_progress):
+    """Sync spectra from the server.
+
+    Returns (spectra_count, purge_result, incremental, sync_timestamp).
+    """
+    updated_since = None
+    if not full:
+        updated_since = store.get_max_spectra_updated_at()
+    incremental = updated_since is not None
+
+    sync_timestamp = datetime.now(timezone.utc).isoformat()
+
+    pbar, callback = _make_progress(show_progress, "spec", "Spectra")
+
+    all_spectra, _server_total = api.fetch_all_spectra(
+        updated_since=updated_since,
+        on_page_complete=callback,
+    )
+    if pbar:
+        pbar.close()
+
+    spec_count = store.upsert_spectra(all_spectra)
+
+    purge_result = None
+    if not incremental:
+        purge_result = store.purge_stale_spectra(sync_timestamp)
+
+    return spec_count, purge_result, incremental, sync_timestamp
 
 
 def _sync_photometry(api, store, full, show_progress):
@@ -123,7 +120,7 @@ def _sync_photometry(api, store, full, show_progress):
 
     pbar, callback = _make_progress(show_progress, "rec", "Photometry")
 
-    all_records, total_count = api.fetch_all_photometry(
+    all_records, _total_count = api.fetch_all_photometry(
         updated_since=updated_since,
         on_page_complete=callback,
     )
@@ -140,15 +137,11 @@ def _sync_photometry(api, store, full, show_progress):
 
 
 def _sync_tags(api, store, show_progress):
-    """Sync tag metadata from the server.
-
-    Returns the number of tags upserted.
-    """
+    """Sync tag metadata from the server."""
     try:
         tags_data = api.fetch_tags()
         return store.upsert_tags(tags_data)
     except requests.RequestException:
-        # Transient network errors are non-critical — don't fail the whole sync
         return 0
 
 
@@ -157,41 +150,28 @@ def sync_metadata(
     show_progress: bool = False,
     full: bool = False,
 ) -> dict:
-    """Sync the target/spectra/objects catalog from the server.
+    """Sync the objects + spectra catalog from the server.
 
     On first sync (or ``full=True``), fetches the entire catalog.
     On subsequent syncs, only fetches records modified since the last
     sync (incremental), using the server-side ``updated_at`` timestamp.
 
-    Parameters
-    ----------
-    api : APIClient
-        Authenticated API client.
-    store : LocalStore
-        Local database to update.
-    meta_dir : Path
-        Meta directory for CSV export (e.g., ``data_dir/meta/``).
-    show_progress : bool
-        Show a tqdm progress bar during fetch.
-    full : bool
-        Force a full sync, ignoring incremental cache.
-
     Returns
     -------
     dict
-        Summary with keys: observations, targets, spectra, sky_objects,
+        Summary with keys: observations, objects, spectra, photometry,
         tags, stale_count, stale_files, incremental.
     """
     from .db.export import export_catalogs
 
-    # 1. Sync targets + spectra
-    (target_count, spec_count, server_total, incremental,
-     needs_full_sync, purge_result, obs_set, sync_timestamp) = (
-        _sync_targets(api, store, full, show_progress)
-    )
+    # 1. Sync objects
+    (obj_count, obj_purged, incremental, needs_full_sync,
+     server_total, _obj_ts) = _sync_objects(api, store, full, show_progress)
 
-    # 2. Sync sky-objects
-    obj_count, obj_purged = _sync_objects(api, store, full, show_progress)
+    # 2. Sync spectra
+    spec_count, spec_purge, spec_incremental, _spec_ts = _sync_spectra(
+        api, store, full, show_progress
+    )
 
     # 3. Sync photometry
     phot_count, phot_purged = _sync_photometry(api, store, full, show_progress)
@@ -199,30 +179,30 @@ def sync_metadata(
     # 4. Sync tag metadata
     tags_count = _sync_tags(api, store, show_progress)
 
-    # 5. Export CSVs (always full export from SQLite)
+    # 5. Export CSVs
     export_catalogs(store, meta_dir)
 
     # 6. Detect stale local files
     stale = store.get_stale_files()
 
+    obs_set = set(store.get_synced_observations())
+
     result = {
         "observations": len(obs_set),
-        "targets": target_count,
+        "objects": obj_count,
+        "objects_purged": obj_purged,
         "spectra": spec_count,
-        "sky_objects": obj_count,
-        "sky_objects_purged": obj_purged,
         "photometry": phot_count,
         "photometry_purged": phot_purged,
         "tags": tags_count,
         "stale_count": len(stale),
         "stale_files": stale,
-        "incremental": incremental,
+        "incremental": incremental and spec_incremental,
         "needs_full_sync": needs_full_sync,
     }
-    if purge_result:
-        result["purged_objects"] = purge_result["purged_objects"]
-        result["purged_spectra"] = purge_result["purged_spectra"]
-        result["orphaned_files"] = purge_result["orphaned_files"]
+    if spec_purge:
+        result["purged_spectra"] = spec_purge["purged_spectra"]
+        result["orphaned_files"] = spec_purge["orphaned_files"]
 
     return result
 
@@ -233,13 +213,9 @@ def compute_download_plan(
 ) -> Tuple[List[dict], List[dict], List[dict]]:
     """Compare manifest against local state to determine what needs downloading.
 
-    The ``synced_files`` dict should have ``file_hash`` set to the local
-    download hash (``local_file_hash`` from the store). This is compared
-    against the manifest's server-side ``file_hash``.
-
-    Returns
-    -------
-    (new_files, updated_files, up_to_date_files)
+    The ``synced_files`` dict is keyed by the integer PK (``spectra_id``);
+    ``synced_files[id]["file_hash"]`` is the locally hashed value (the server
+    hash lives in the manifest entry).
     """
     new_files = []
     updated_files = []
@@ -265,12 +241,7 @@ def download_and_verify(
     products_dir: Path,
     download_session: requests.Session,
 ) -> dict:
-    """Download a single file, verify checksum, return result dict.
-
-    Uses .tmp file pattern for atomic writes - partial downloads never
-    appear as complete files. Retries are handled by the session's
-    urllib3 Retry adapter.
-    """
+    """Download a single file, verify checksum, return result dict."""
     filename = Path(spec["fits_path"]).name
     local_path = obs_dir / filename
     tmp_path = local_path.with_suffix(".tmp")
@@ -288,7 +259,6 @@ def download_and_verify(
 
         computed_hash = f"sha256:{hasher.hexdigest()}"
 
-        # Verify hash (skip if server hash is NULL - not yet backfilled)
         if spec.get("file_hash") and computed_hash != spec["file_hash"]:
             tmp_path.unlink()
             raise DownloadError(
@@ -296,13 +266,13 @@ def download_and_verify(
                 f"expected {spec['file_hash']}, got {computed_hash}"
             )
 
-        # Atomic rename
         tmp_path.rename(local_path)
 
         st = local_path.stat()
         return {
-            "spectra_id": spec["spectra_id"],
-            "target_id": spec.get("target_id") or spec.get("object_id"),
+            "id": spec.get("spectra_id"),
+            "spectrum_id": spec.get("spectrum_id"),
+            "target_id": spec.get("target_id"),
             "observation": spec.get("observation", obs_dir.name),
             "grating": spec["grating"],
             "fits_path": spec["fits_path"],
@@ -314,7 +284,7 @@ def download_and_verify(
         }
 
     except DownloadError:
-        raise  # Don't retry hash mismatches
+        raise
     except requests.RequestException as e:
         if tmp_path.exists():
             tmp_path.unlink()
@@ -332,41 +302,13 @@ def download_observation(
     manifest: Optional[dict] = None,
     grating_filter: Optional[List[str]] = None,
 ) -> dict:
-    """Download FITS files for a single observation.
-
-    Parameters
-    ----------
-    api_client : APIClient
-        Authenticated API client for fetching manifests.
-    obs_name : str
-        Observation name.
-    products_dir : Path
-        Products directory (contains ``<obs>/`` subdirs).
-    store : LocalStore
-        Database for tracking downloaded files.
-    max_workers : int
-        Parallel download workers.
-    dry_run : bool
-        If True, compute plan but don't download.
-    download_session : requests.Session, optional
-        Reusable download session for presigned URLs.
-    manifest : dict, optional
-        Pre-fetched manifest (avoids re-fetching if caller already has it).
-    grating_filter : list of str, optional
-        Only download spectra matching these gratings.
-
-    Returns
-    -------
-    dict
-        Stats with counts of new/updated/skipped/failed files.
-    """
+    """Download FITS files for a single observation."""
     if manifest is None:
         manifest = api_client.fetch_manifest(obs_name)
 
-    # Apply grating filter to manifest entries
     if grating_filter:
         grating_set = set(g.upper() for g in grating_filter)
-        manifest = dict(manifest)  # shallow copy
+        manifest = dict(manifest)
         manifest["spectra"] = [
             s for s in manifest.get("spectra", [])
             if s.get("grating", "").upper() in grating_set
@@ -392,11 +334,9 @@ def download_observation(
     if dry_run or not to_download:
         return stats
 
-    # Create observation directory
     obs_dir = products_dir / obs_name
     obs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use provided download session or create one
     dl_session = download_session or create_download_session(max_workers)
 
     log_id = store.log_sync_start(obs_name)
@@ -414,14 +354,10 @@ def download_observation(
                 try:
                     result = future.result()
                     store.mark_synced(
-                        result["spectra_id"],
-                        result["target_id"],
-                        obs_name,
-                        result["grating"],
-                        result["fits_path"],
-                        result["local_path"],
-                        result["file_hash"],
-                        result["file_size"],
+                        spectrum_id=result["spectrum_id"],
+                        local_path=result["local_path"],
+                        file_hash=result["file_hash"],
+                        file_size=result["file_size"],
                         local_file_mtime=result.get("local_file_mtime"),
                         local_file_size=result.get("local_file_size"),
                     )
@@ -434,10 +370,6 @@ def download_observation(
 
     store.log_sync_complete(log_id, stats["downloaded"], stats["skipped"], bytes_downloaded)
     return stats
-
-
-# Keep old name as alias for backward compatibility
-sync_observation = download_observation
 
 
 def format_size(size_bytes: int) -> str:

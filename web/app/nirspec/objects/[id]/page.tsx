@@ -24,8 +24,8 @@ export async function generateMetadata({ params }: ObjectDetailPageProps): Promi
     return { title: 'Object Not Found - CAMPFIRE' };
   }
 
-  const redshiftText = metadata.best_redshift !== null
-    ? `z = ${metadata.best_redshift.toFixed(4)}`
+  const redshiftText = metadata.redshift !== null
+    ? `z = ${Number(metadata.redshift).toFixed(4)}`
     : 'z = unknown';
 
   return {
@@ -135,7 +135,6 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
           sortColumn={sortColumn}
           sortDirection={sortDirection}
           filterStr={filterStr}
-          viewMode="objects"
         />
       </div>
 

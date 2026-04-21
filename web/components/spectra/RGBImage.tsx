@@ -16,9 +16,7 @@ export const RGBImage: React.FC<RGBImageProps> = ({
 }) => {
   const [imageError, setImageError] = useState(false);
 
-  // Reset error state when URL or object changes
   useEffect(() => {
-    console.log('[RGBImage] Props updated - targetId:', targetId, 'URL:', rgbImageUrl?.substring(0, 80) + '...');
     setImageError(false);
   }, [rgbImageUrl, targetId]);
 
@@ -46,13 +44,7 @@ export const RGBImage: React.FC<RGBImageProps> = ({
         alt={`RGB image for ${targetId}`}
         fill
         className="object-cover"
-        onError={() => {
-          console.log('[RGBImage] Image load error for:', targetId);
-          setImageError(true);
-        }}
-        onLoad={() => {
-          console.log('[RGBImage] Image loaded successfully for:', targetId);
-        }}
+        onError={() => setImageError(true)}
         unoptimized // For R2 signed URLs
       />
     </div>

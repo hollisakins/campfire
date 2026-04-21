@@ -89,7 +89,13 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     Returns list of dicts with keys:
         target_id, grating, fits_path (R2 key), reduction_version,
         signal_to_noise, exposure_time, file_hash, file_size,
-        date_obs, cfpipe_version, jwst_version, crds_context
+        date_obs, cfpipe_version, jwst_version, crds_context,
+        redshift_auto (per-grating zfit; Phase B)
+
+    `dq_flags` is intentionally absent: the pipeline does not produce
+    per-spectrum DQ. New rows pick up the column default (0); existing rows
+    keep whatever the inspection API has set (PostgREST upsert only updates
+    columns present in the request body).
     """
     # cfpipe_version is a package version, same for all rows
     cfpipe_version = summary.meta.get('cfpipe_version')
@@ -98,6 +104,8 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     has_jwst_version = 'jwst_version' in summary.colnames
     has_crds_context = 'crds_context' in summary.colnames
     has_date_obs = 'date_obs' in summary.colnames
+    # Phase B: per-grating redshift_auto from zfit. Older ECSVs may not have it.
+    has_redshift_auto = 'redshift_auto' in summary.colnames
 
     # Fallback to metadata for old ECSVs that lack per-row columns
     meta_jwst_version = summary.meta.get('jwst_version')
@@ -129,6 +137,19 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
             rec['crds_context'] = crds_context
         if date_obs:
             rec['date_obs'] = date_obs
+
+        # Phase B: per-grating redshift_auto. Always include (even when null) so
+        # the pipeline value is authoritative — a re-fit producing NULL clears
+        # the previous value rather than silently keeping it.
+        if has_redshift_auto:
+            raw = row['redshift_auto']
+            if raw is None:
+                rec['redshift_auto'] = None
+            else:
+                val = float(raw)
+                # zfit may emit NaN for failed fits; store as NULL.
+                rec['redshift_auto'] = None if val != val else val
+
         records.append(rec)
     return records
 

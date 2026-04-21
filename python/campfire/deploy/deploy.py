@@ -32,7 +32,6 @@ from campfire.deploy.generate import (
 )
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
-    REDSHIFT_DRIFT_THRESHOLD,
     batch_upsert_objects,
     batch_upsert_spectra,
     check_existing_objects,
@@ -42,7 +41,6 @@ from campfire.deploy.supabase import (
     get_supabase_client,
     get_user_id_from_token,
     insert_deployment,
-    propagate_crossmatches,
     recompute_target_aggregates,
     refresh_filter_options,
     refresh_programs_overview,
@@ -106,12 +104,13 @@ def deploy_observation(
 ) -> dict:
     """Full deployment: ECSV -> generate content -> R2 upload -> Supabase upsert.
 
-    When *defer_rebuild* is True, the per-field objects rebuild and
-    materialized-view refresh are skipped so the caller can batch them
-    after processing multiple observations.
+    When *defer_rebuild* is True, the per-field objects reconciliation
+    (and materialized-view refresh) is skipped so the caller can batch
+    them after processing multiple observations of the same field.
 
-    Returns a dict with ``field`` and ``has_new_objects`` so the caller
-    knows which fields need a rebuild.
+    Returns a dict with ``field`` and ``needs_reconcile`` (always True
+    for completed deploys; the no-op return at the dry-run / nothing-
+    to-do branch above sets it False).
     """
     obs_dir = resolve_obs_dir(obs_name)
     summary = load_summary(obs_dir, obs_name)
@@ -206,7 +205,7 @@ def deploy_observation(
             print(f"  - {obj['object_id']}")
         if len(objects) > 5:
             print(f"  ... and {len(objects) - 5} more")
-        return {'field': field, 'has_new_objects': False}
+        return {'field': field, 'needs_reconcile': False}
 
     # --- Live deployment ---
     programs_config = load_programs()
@@ -312,45 +311,37 @@ def deploy_observation(
 
         # Supabase upserts
         print("Upserting objects...")
-        n_obj, new_object_ids, n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
+        n_obj, new_object_ids, _n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
         print(f"  {n_obj} objects")
-        if n_quality_reset:
-            print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift > {REDSHIFT_DRIFT_THRESHOLD}, no manual override)")
 
         print("Upserting spectra...")
-        n_spec = batch_upsert_spectra(sb, spectra)
-        print(f"  {n_spec} spectra")
+        n_spec, changed_hashes = batch_upsert_spectra(sb, spectra)
+        print(f"  {n_spec} spectra ({len(changed_hashes)} with hash changes)")
 
         # Recompute aggregate columns (max_snr, max_exposure_time) in bulk
         target_ids = [o['object_id'] for o in objects]
         n_agg = recompute_target_aggregates(sb, target_ids)
         print(f"  Recomputed aggregates for {n_agg} targets")
 
-        # Cross-match propagation for new objects
-        if new_object_ids:
-            print("Checking cross-matches...")
-            n_propagated = propagate_crossmatches(sb, new_object_ids)
-            if n_propagated:
-                print(f"  Auto-secured {n_propagated} objects via cross-match")
-            else:
-                print("  No cross-matches found")
-
-        # Rebuild objects table for this field (only needed when new targets
-        # change the clustering; skip when just updating existing targets)
-        has_new_objects = bool(new_object_ids)
+        # Phase C: incremental object reconciliation. Preserves inspection
+        # state on existing objects, inserts only when new clusters appear,
+        # soft-deletes orphans (is_active=false), and aborts hard if a
+        # split/merge is detected (operator must resolve interactively via
+        # `campfire deploy objects reconcile`). `propagate_crossmatches` is
+        # gone — its job is now done by object-level inspection ownership.
+        # `defer_rebuild` defers reconciliation to the multi-obs caller so
+        # the same field isn't reconciled N times for N observations.
         if defer_rebuild:
-            if has_new_objects:
-                print(f"\nDeferred objects rebuild ({len(new_object_ids)} new targets)")
-            else:
-                print("\nNo new targets — objects rebuild not needed")
+            print(f"\nDeferred objects reconciliation (--defer-rebuild set)")
         else:
-            if has_new_objects:
-                from campfire.deploy.objects import rebuild_field_objects
-                print("\nRebuilding objects...")
-                n_obj, n_multi = rebuild_field_objects(sb, field)
-                print(f"  {n_obj} objects ({n_multi} multi-target)")
-            else:
-                print("\nNo new targets — skipping objects rebuild")
+            from campfire.deploy.reconcile import reconcile_field_objects
+            print("\nReconciling objects...")
+            n_clusters, _stats = reconcile_field_objects(
+                sb, field,
+                changed_hashes=changed_hashes,
+                abort_on_split_merge=True,
+            )
+            print(f"  {n_clusters} clusters")
 
             print()
             refresh_filter_options(sb)
@@ -426,7 +417,9 @@ def deploy_observation(
             msg += f" + {n_shutters} shutters"
         print(msg)
 
-        return {'field': field, 'has_new_objects': has_new_objects}
+        # Phase C: any successful deploy potentially affected member spectra
+        # or membership; the deferred multi-obs path always wants to reconcile.
+        return {'field': field, 'needs_reconcile': True}
 
     finally:
         if temp_dir.exists():
@@ -671,10 +664,8 @@ def deploy_zfit(
                 return
 
     print("Updating objects...")
-    n, _, n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite)
+    n, _, _ = batch_upsert_objects(sb, objects, field, force_overwrite)
     print(f"  Updated {n} objects")
-    if n_quality_reset:
-        print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift)")
 
     refresh_filter_options(sb)
     refresh_programs_overview(sb)

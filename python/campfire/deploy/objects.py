@@ -76,7 +76,8 @@ def fetch_field_targets(client: Client, field: str) -> list[dict]:
     """Fetch all targets for a field, with pagination."""
     fields = (
         'id, target_id, ra, dec, field, program_slug, observation, '
-        'redshift, redshift_quality, max_snr, max_exposure_time'
+        'redshift, redshift_quality, max_snr, max_exposure_time, '
+        'object_id'  # Phase C: needed for reconcile's membership matching
     )
     all_targets = []
     page_size = 1000
@@ -114,12 +115,11 @@ def fetch_spectra_metadata(
     select = 'target_id, grating, signal_to_noise, exposure_time'
     result: dict[str, list[dict]] = defaultdict(list)
     batch_size = 200
+    page_size = 1000
 
     for i in range(0, len(target_ids), batch_size):
         batch = target_ids[i : i + batch_size]
-        page_size = 1000
         offset = 0
-
         while True:
             resp = (
                 client.table('spectra')
@@ -129,18 +129,14 @@ def fetch_spectra_metadata(
                 .range(offset, offset + page_size - 1)
                 .execute()
             )
-            for row in resp.data:
-                result[row['target_id']].append({
-                    'target_id': row['target_id'],
-                    'grating': row['grating'],
-                    'signal_to_noise': row['signal_to_noise'],
-                    'exposure_time': row['exposure_time'],
-                })
-            if len(resp.data) < page_size:
+            rows = resp.data or []
+            for row in rows:
+                result[row['target_id']].append(row)
+            if len(rows) < page_size:
                 break
             offset += page_size
 
-    return result
+    return dict(result)
 
 
 def fetch_distinct_fields(client: Client) -> list[str]:

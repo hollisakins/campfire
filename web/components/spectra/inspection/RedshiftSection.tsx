@@ -83,7 +83,6 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
     flushPendingChanges: () => {
       clearTimeout(debounceTimerRef.current);
       if (localRedshift !== state.redshiftInspected) {
-        console.log('[RedshiftSection] Flushing pending redshift:', localRedshift);
         state.setRedshiftInspected(localRedshift);
       }
     },

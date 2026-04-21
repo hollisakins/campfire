@@ -219,6 +219,26 @@ CREATE POLICY "admin_objects_update"
   USING (public.is_admin())
   WITH CHECK (public.is_admin());
 
+-- Phase A: users with can_comment permission can update objects whose
+-- programs[] overlaps their accessible programs. Mirrors the targets
+-- update_targets_by_access policy. Field-level restriction (only allow
+-- writing redshift_inspected, redshift_quality, last_inspected_*) is
+-- enforced by the `enforce_object_user_update_scope` trigger in
+-- triggers.sql — Postgres RLS does not support per-column UPDATE policies.
+-- WITH CHECK mirrors USING so a row can't be moved out of the caller's
+-- program access.
+DROP POLICY IF EXISTS "update_objects_by_access" ON objects;
+CREATE POLICY "update_objects_by_access"
+  ON objects FOR UPDATE
+  USING (
+    programs && public.accessible_program_slugs()
+    AND public.can_comment()
+  )
+  WITH CHECK (
+    programs && public.accessible_program_slugs()
+    AND public.can_comment()
+  );
+
 -- Admins can delete objects (deploy CLI: objects rebuild wipes before re-insert).
 DROP POLICY IF EXISTS "admin_objects_delete" ON objects;
 CREATE POLICY "admin_objects_delete"
@@ -457,6 +477,29 @@ CREATE POLICY "admin_spectra_delete"
   ON spectra FOR DELETE TO authenticated
   USING (public.is_admin());
 
+-- Users with can_comment may update spectra whose parent target is in an
+-- accessible program. Column scope is restricted to dq_flags (and the
+-- trigger-maintained updated_at) by enforce_spectra_dq_user_update_scope
+-- in triggers.sql — Postgres RLS does not support per-column UPDATE
+-- policies. Mirrors update_objects_by_access.
+DROP POLICY IF EXISTS "update_spectra_dq_by_access" ON spectra;
+CREATE POLICY "update_spectra_dq_by_access"
+  ON spectra FOR UPDATE TO authenticated
+  USING (
+    public.can_comment()
+    AND target_id IN (
+      SELECT t.target_id FROM targets t
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    )
+  )
+  WITH CHECK (
+    public.can_comment()
+    AND target_id IN (
+      SELECT t.target_id FROM targets t
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    )
+  );
+
 
 -- =============================================================================
 -- comments
@@ -510,26 +553,49 @@ CREATE POLICY "insert_comments_by_access"
 
 ALTER TABLE flag_audit_log ENABLE ROW LEVEL SECURITY;
 
--- Audit log visible if the parent target is in an accessible program.
+-- Audit log visible if the parent target/object/spectrum is in an accessible
+-- program. Rows now point at exactly one of the three subject columns
+-- (enforced by the table check constraint), so we OR across them.
 DROP POLICY IF EXISTS "select_audit_by_access" ON flag_audit_log;
 CREATE POLICY "select_audit_by_access"
   ON flag_audit_log FOR SELECT
   USING (
-    target_id IN (
+    (target_id IS NOT NULL AND target_id IN (
       SELECT t.id FROM targets t
       WHERE t.program_slug = ANY(public.accessible_program_slugs())
-    )
+    ))
+    OR (object_id IS NOT NULL AND object_id IN (
+      SELECT o.id FROM objects o
+      WHERE o.programs && public.accessible_program_slugs()
+    ))
+    OR (spectrum_id IS NOT NULL AND spectrum_id IN (
+      SELECT s.id FROM spectra s
+      JOIN targets t ON t.target_id = s.target_id
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    ))
   );
 
--- Authenticated users can insert audit entries for targets in accessible programs.
+-- Authenticated users can insert audit entries when they have access to the
+-- subject. New writes set object_id (object inspection) or spectrum_id
+-- (per-spectrum DQ); legacy writes targeting target_id are still permitted
+-- so the audit history table can hold pre-Phase-D rows.
 DROP POLICY IF EXISTS "insert_audit_by_access" ON flag_audit_log;
 CREATE POLICY "insert_audit_by_access"
   ON flag_audit_log FOR INSERT TO authenticated
   WITH CHECK (
-    target_id IN (
+    (target_id IS NOT NULL AND target_id IN (
       SELECT t.id FROM targets t
       WHERE t.program_slug = ANY(public.accessible_program_slugs())
-    )
+    ))
+    OR (object_id IS NOT NULL AND object_id IN (
+      SELECT o.id FROM objects o
+      WHERE o.programs && public.accessible_program_slugs()
+    ))
+    OR (spectrum_id IS NOT NULL AND spectrum_id IN (
+      SELECT s.id FROM spectra s
+      JOIN targets t ON t.target_id = s.target_id
+      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+    ))
   );
 
 

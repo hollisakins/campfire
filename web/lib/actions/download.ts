@@ -7,7 +7,7 @@ import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { paginateRpc } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
-import { SPECTRAL_FEATURES, DQ_FLAGS } from '@/lib/flags';
+import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
 
 // JWT signing using Web Crypto API
@@ -58,43 +58,20 @@ interface ObjectsCsvRow {
   photometry: { flux_unit: string; bands: PhotometryBands } | null;
 }
 
-interface CsvRow {
-  target_id: string;
-  field: string;
-  ra: number;
-  dec: number;
-  redshift: number | null;
-  redshift_quality: number;
-  max_snr: number | null;
-  max_exposure_time: number | null;
-  num_gratings: number;
-  program_slug: string;
-  program_name: string | null;
-  last_inspected_at: string | null;
-  last_inspected_by: string | null;
-  distance: number | null;
-  spectral_features: number;
-  dq_flags: number;
-  lists: string | null;        // semicolon-separated list slugs
-}
-
 interface SpectraCsvRow {
+  spectrum_id?: string;
   target_id: string;
   grating: string;
   field: string;
   ra: number;
   dec: number;
-  redshift: number | null;
-  redshift_quality: number;
+  redshift_auto: number | null;
   signal_to_noise: number | null;
   exposure_time: number | null;
   fits_path: string;
   program_slug: string;
   program_name: string | null;
-  last_inspected_at: string | null;
-  last_inspected_by: string | null;
   distance: number | null;
-  spectral_features: number;
   dq_flags: number;
   lists: string | null;        // semicolon-separated list slugs
 }
@@ -107,9 +84,9 @@ interface SpectraCsvRow {
  */
 export async function generateCSV(
   filters: FilterOptions,
-  sortColumn: SortColumn = 'target_id',
+  sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc',
-  viewMode: ViewMode = 'targets'
+  viewMode: ViewMode = 'objects'
 ): Promise<{ csv: string | null; error: string | null }> {
   try {
     const supabase = await createClient();
@@ -144,13 +121,14 @@ export async function generateCSV(
     if (viewMode === 'objects') {
       // Objects mode: one row per sky-object (cross-program grouped position)
       // Strip target-only params that the objects RPC doesn't accept
+      /* eslint-disable @typescript-eslint/no-unused-vars */
       const {
         p_observations: _obs,
-        p_spectral_features_include_any: _sf1, p_spectral_features_include_all: _sf2, p_spectral_features_exclude: _sf3,
         p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
         p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
         ...objectsParams
       } = { ...rpcParams, p_sort_column: sortColumn, p_sort_direction: sortDirection };
+      /* eslint-enable @typescript-eslint/no-unused-vars */
 
       const { data: rows, error: rpcError } = await paginateRpc<ObjectsCsvRow>(
         supabase, 'get_csv_export_objects', objectsParams,
@@ -175,44 +153,18 @@ export async function generateCSV(
       return { csv, error: null };
     }
 
-    if (viewMode === 'spectra') {
-      // Spectra mode: one row per (target_id, grating)
-      const { data: rows, error: rpcError } = await paginateRpc<SpectraCsvRow>(
-        supabase, 'get_csv_export_spectra', rpcParams,
-      );
-
-      if (rpcError) {
-        console.error('Error fetching spectra CSV data:', rpcError);
-        return { csv: null, error: rpcError.message };
-      }
-      const csv = spectraRowsToCsv(rows, includeDistance);
-
-      const targetIds = [...new Set(rows.map(r => r.target_id))];
-      trackDownload({
-        userId: user.id,
-        downloadType: 'csv',
-        targetIds,
-        targetCount: targetIds.length,
-        fileCount: 1,
-        filterSnapshot: filters as unknown as Record<string, unknown>,
-      });
-
-      return { csv, error: null };
-    }
-
-    // Targets mode: one row per target
-    const { data: rows, error: rpcError } = await paginateRpc<CsvRow>(
-      supabase, 'get_csv_export', rpcParams,
+    // Spectra mode: one row per (target_id, grating).
+    const { data: rows, error: rpcError } = await paginateRpc<SpectraCsvRow>(
+      supabase, 'get_csv_export_spectra', rpcParams,
     );
 
     if (rpcError) {
-      console.error('Error fetching CSV data:', rpcError);
+      console.error('Error fetching spectra CSV data:', rpcError);
       return { csv: null, error: rpcError.message };
     }
-    const csv = rowsToCsv(rows, includeDistance);
+    const csv = spectraRowsToCsv(rows, includeDistance);
 
-    // Track CSV download (fire-and-forget)
-    const targetIds = rows.map(r => r.target_id);
+    const targetIds = [...new Set(rows.map(r => r.target_id))];
     trackDownload({
       userId: user.id,
       downloadType: 'csv',
@@ -237,87 +189,25 @@ function expandBitmask(bitmask: number, flags: FlagDef[]): number[] {
 }
 
 /**
- * Convert flat CSV export rows to CSV string
- */
-function rowsToCsv(rows: CsvRow[], includeDistance: boolean): string {
-  const columns = [
-    'target_id',
-    'field',
-    'ra',
-    'dec',
-    'redshift',
-    'redshift_quality',
-    'max_snr',
-    'max_exposure_time',
-    'num_gratings',
-    'program_slug',
-    'program_name',
-    'last_inspected_at',
-    'last_inspected_by',
-    ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
-    ...DQ_FLAGS.map(f => `dq_${f.key}`),
-    'tags',
-  ];
-
-  if (includeDistance) {
-    columns.splice(4, 0, 'distance_degrees');
-  }
-
-  const csvRows: string[] = [columns.join(',')];
-
-  for (const row of rows) {
-    const values: (string | number)[] = [
-      escapeCsvValue(row.target_id),
-      escapeCsvValue(row.field),
-      row.ra.toFixed(8),
-      row.dec.toFixed(8),
-    ];
-
-    if (includeDistance) {
-      values.push(row.distance != null ? row.distance.toFixed(8) : '');
-    }
-
-    values.push(
-      row.redshift != null ? row.redshift.toFixed(6) : '',
-      row.redshift_quality,
-      row.max_snr != null ? row.max_snr.toFixed(2) : '',
-      row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
-      row.num_gratings ?? 0,
-      escapeCsvValue(row.program_slug),
-      escapeCsvValue(row.program_name || ''),
-      escapeCsvValue(row.last_inspected_at || ''),
-      escapeCsvValue(row.last_inspected_by || ''),
-      ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
-      ...expandBitmask(row.dq_flags, DQ_FLAGS),
-      escapeCsvValue(row.lists || ''),
-    );
-
-    csvRows.push(values.join(','));
-  }
-
-  return csvRows.join('\n');
-}
-
-/**
  * Convert spectra-mode CSV export rows to CSV string (one row per spectrum)
  */
 function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): string {
+  // Spectra-mode CSV contains only per-spectrum info. redshift /
+  // redshift_quality / last_inspected_* are parent-object state and belong in
+  // the objects CSV. The per-spectrum auto-fit redshift is surfaced as
+  // redshift_auto.
   const columns = [
     'target_id',
     'grating',
     'field',
     'ra',
     'dec',
-    'redshift',
-    'redshift_quality',
+    'redshift_auto',
     'signal_to_noise',
     'exposure_time',
     'fits_path',
     'program_slug',
     'program_name',
-    'last_inspected_at',
-    'last_inspected_by',
-    ...SPECTRAL_FEATURES.map(f => `sf_${f.key}`),
     ...DQ_FLAGS.map(f => `dq_${f.key}`),
     'tags',
   ];
@@ -342,16 +232,12 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean): stri
     }
 
     values.push(
-      row.redshift != null ? row.redshift.toFixed(6) : '',
-      row.redshift_quality,
+      row.redshift_auto != null ? row.redshift_auto.toFixed(6) : '',
       row.signal_to_noise != null ? row.signal_to_noise.toFixed(2) : '',
       row.exposure_time != null ? row.exposure_time.toFixed(0) : '',
       escapeCsvValue(row.fits_path),
       escapeCsvValue(row.program_slug),
       escapeCsvValue(row.program_name || ''),
-      escapeCsvValue(row.last_inspected_at || ''),
-      escapeCsvValue(row.last_inspected_by || ''),
-      ...expandBitmask(row.spectral_features, SPECTRAL_FEATURES),
       ...expandBitmask(row.dq_flags, DQ_FLAGS),
       escapeCsvValue(row.lists || ''),
     );
@@ -395,7 +281,7 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
     'dec',
     'best_redshift',
     'best_redshift_quality',
-    'n_targets',
+    'n_observations',
     'n_spectra',
     'programs',
     'gratings',
@@ -483,7 +369,7 @@ function escapeCsvValue(value: string | null | undefined): string {
 /**
  * Generate filename for CSV download
  */
-export async function generateCsvFilename(viewMode: string = 'targets'): Promise<string> {
+export async function generateCsvFilename(viewMode: string = 'objects'): Promise<string> {
   const now = new Date();
   const timestamp = now
     .toISOString()
@@ -499,9 +385,9 @@ export async function generateCsvFilename(viewMode: string = 'targets'): Promise
  */
 export async function generateFitsDownloadUrl(
   filters: FilterOptions,
-  sortColumn: SortColumn = 'target_id',
+  sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc',
-  viewMode: ViewMode = 'targets'
+  viewMode: ViewMode = 'objects'
 ): Promise<{
   files: DownloadFile[] | null;
   token: string | null;
@@ -518,17 +404,15 @@ export async function generateFitsDownloadUrl(
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    // Fetch filtered results (limit to 200 items)
-    // For objects mode, fetch as targets to get actual FITS paths —
-    // objects are metadata aggregations, FITS files live on spectra.
-    const fetchMode = viewMode === 'objects' ? 'targets' : viewMode;
+    // Fetch filtered results (limit to 200 items) via spectra mode — that RPC
+    // returns one row per (target, grating) with the FITS path attached.
     const result = await getSpectra(
       filters,
       1, // page
-      200, // pageSize - limit to 200 targets
+      200, // pageSize
       sortColumn === 'object_id' ? 'target_id' : sortColumn,
       sortDirection,
-      fetchMode
+      'spectra'
     );
 
     if (result.error) {

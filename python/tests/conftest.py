@@ -12,39 +12,87 @@ def sample_api_key():
 
 @pytest.fixture
 def sample_objects_response():
-    """Sample response from /api/v1/objects endpoint."""
+    """Sample response from /api/v1/objects endpoint.
+
+    One object with inspection state + embedded spectra (each with
+    spectrum_id, dq_flags, and per-spectrum redshift_auto).
+    """
     return {
         "data": [
             {
-                "target_id": "ember_uds_p4_123456",
-                "program_id": 1,
-                "program_name": "EMBER-UDS",
-                "field": "UDS",
-                "observation": "ember_uds_p4",
+                "id": 1,
+                "object_id": "CAMPFIRE-J023629.63-053243.2",
+                "field": "uds",
                 "ra": 34.12345,
                 "dec": -5.67890,
                 "redshift": 2.5432,
                 "redshift_auto": 2.5400,
                 "redshift_inspected": 2.5432,
                 "redshift_quality": 3,
-                "spectral_features": 0,
-                "dq_flags": 0,
+                "n_targets": 1,
+                "n_spectra": 2,
+                "programs": ["ember-uds"],
+                "gratings": ["PRISM", "G395M"],
+                "observations": ["ember_uds_p4"],
+                "max_snr": 15.5,
+                "max_exposure_time": 3600.0,
+                "has_photometry": False,
+                "is_active": True,
+                "member_targets": [
+                    {"target_id": "ember_uds_p4_123456", "program_slug": "ember-uds", "observation": "ember_uds_p4"}
+                ],
+                "member_target_ids": ["ember_uds_p4_123456"],
                 "spectra": [
                     {
                         "id": 1,
+                        "spectrum_id": "ember_uds_p4_prism_clear_123456",
                         "target_id": "ember_uds_p4_123456",
                         "grating": "PRISM",
-                        "fits_path": "spectra/ember_uds_p4/ember_uds_p4_PRISM_CLEAR_123456_spec.fits",
+                        "fits_path": "ember_uds_p4/ember_uds_p4_PRISM_CLEAR_123456_spec.fits",
                         "signal_to_noise": 15.5,
+                        "redshift_auto": 2.5400,
+                        "dq_flags": 0,
                     },
                     {
                         "id": 2,
+                        "spectrum_id": "ember_uds_p4_g395m_f290lp_123456",
                         "target_id": "ember_uds_p4_123456",
                         "grating": "G395M",
-                        "fits_path": "spectra/ember_uds_p4/ember_uds_p4_G395M_F290LP_123456_spec.fits",
+                        "fits_path": "ember_uds_p4/ember_uds_p4_G395M_F290LP_123456_spec.fits",
                         "signal_to_noise": 8.2,
+                        "redshift_auto": 2.5400,
+                        "dq_flags": 0,
                     },
                 ],
+            },
+        ],
+        "pagination": {
+            "total": 1,
+            "limit": 1000,
+            "offset": 0,
+        },
+    }
+
+
+@pytest.fixture
+def sample_spectra_response():
+    """Sample response from /api/v1/spectra/list endpoint (flat list)."""
+    return {
+        "data": [
+            {
+                "id": 1,
+                "spectrum_id": "ember_uds_p4_prism_clear_123456",
+                "target_id": "ember_uds_p4_123456",
+                "object_id": "CAMPFIRE-J023629.63-053243.2",
+                "grating": "PRISM",
+                "fits_path": "ember_uds_p4/ember_uds_p4_PRISM_CLEAR_123456_spec.fits",
+                "signal_to_noise": 15.5,
+                "exposure_time": 3600.0,
+                "redshift_auto": 2.5400,
+                "dq_flags": 0,
+                "program_slug": "ember-uds",
+                "observation": "ember_uds_p4",
+                "field": "uds",
             },
         ],
         "pagination": {

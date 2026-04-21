@@ -5,6 +5,8 @@ import { ChevronLeft, ChevronRight, HelpCircle, X, Loader2, MessageSquare } from
 
 interface GratingInfo {
   grating: string;
+  /** Optional tooltip shown on the tab button. */
+  title?: string;
 }
 
 interface InspectionHeaderProps {
@@ -96,8 +98,9 @@ export const InspectionHeader: React.FC<InspectionHeaderProps> = ({
         <div className="flex items-center gap-1">
           {gratings.map((spec, idx) => (
             <button
-              key={spec.grating}
+              key={`${spec.grating}-${idx}`}
               onClick={() => onGratingChange(idx)}
+              title={spec.title}
               className={`px-3 py-1 text-xs font-medium rounded transition-colors
                 ${idx === activeGratingIdx
                   ? 'bg-primary text-white'

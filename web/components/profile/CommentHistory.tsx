@@ -86,10 +86,13 @@ export const CommentHistory: React.FC<CommentHistoryProps> = ({
       ) : (
         <div className="space-y-3">
           {comments.map(comment => {
-            const href = comment.target_display_id
-              ? `/nirspec/targets/${comment.target_display_id}`
-              : comment.object_display_id
-                ? `/nirspec/objects/${comment.object_display_id}`
+            // Prefer the parent object route — target detail pages are now
+            // redirect-only. Fall back to the targets route only when no
+            // object is linked (legacy comments).
+            const href = comment.object_display_id
+              ? `/nirspec/objects/${comment.object_display_id}`
+              : comment.target_display_id
+                ? `/nirspec/targets/${comment.target_display_id}`
                 : '#';
             const label = comment.target_display_id || comment.object_display_id || 'unknown';
             return (

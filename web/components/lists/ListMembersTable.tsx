@@ -94,10 +94,10 @@ export function ListMembersTable({ members, totalMembers, page, pageSize, onPage
                       {formatCoord(hasObject ? obj.dec : member.dec)}
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-xs text-text-primary dark:text-slate-200">
-                      {hasObject && obj.best_redshift != null ? obj.best_redshift.toFixed(4) : '—'}
+                      {hasObject && obj.redshift != null ? obj.redshift.toFixed(4) : '—'}
                     </td>
                     <td className="px-4 py-3">
-                      {hasObject ? <QualityBadge quality={obj.best_redshift_quality} /> : '—'}
+                      {hasObject ? <QualityBadge quality={obj.redshift_quality} /> : '—'}
                     </td>
                     <td className="px-4 py-3 text-right text-text-primary dark:text-slate-200">
                       {hasObject ? obj.n_spectra : '—'}
