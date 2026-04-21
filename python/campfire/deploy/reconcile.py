@@ -146,6 +146,10 @@ class Proposals:
     merges: list[Merge] = dc_field(default_factory=list)
     orphans: list[Orphan] = dc_field(default_factory=list)
     complex_overlaps: list[ComplexOverlap] = dc_field(default_factory=list)
+    # No-op 1:1 matches: cluster and existing object have identical aggregates
+    # and no staleness signal. Skipped in apply_proposals to avoid bumping
+    # updated_at on every row (which would bloat incremental sync cursors).
+    unchanged: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -171,9 +175,13 @@ def fetch_existing_objects(
     offset = 0
     select = (
         'id, object_id, field, ra, dec, is_active, '
-        'redshift_quality, last_inspected_at, max_snr, '
+        'redshift_quality, last_inspected_at, '
         'redshift_inspected, redshift_auto, last_inspected_by, '
-        'last_data_change_at, staleness_reason, version'
+        'last_data_change_at, staleness_reason, version, '
+        # Aggregate columns — used by classify() to detect no-op 1:1 matches
+        # and skip redundant updates (avoids bumping updated_at on every row).
+        'n_targets, n_spectra, programs, gratings, observations, '
+        'max_snr, max_exposure_time'
     )
     while True:
         resp = (
@@ -256,6 +264,32 @@ def build_cluster_aggregates(
         max_exposure_time=max(all_exp) if all_exp else None,
         member_target_db_ids=[m['id'] for m in members],
         member_target_ids={m['target_id'] for m in members},
+    )
+
+
+def _aggregates_match_object(agg: ClusterAggregates, obj: dict) -> bool:
+    """True if the cluster's aggregates equal the existing object's stored aggregates.
+
+    Used by classify() to detect no-op 1:1 matches: the cluster has identical
+    membership AND identical per-spectrum aggregates to the existing object,
+    so there is nothing to write. Skipping these rows avoids bumping
+    objects.updated_at (which is the cursor for incremental sync) on every
+    object in the field just because one observation was redeployed.
+
+    Array columns (programs/gratings/observations) are always sorted by
+    build_cluster_aggregates() before write, so list equality is valid.
+    """
+    return (
+        agg.object_id == obj.get('object_id')
+        and agg.ra == obj.get('ra')
+        and agg.dec == obj.get('dec')
+        and agg.n_targets == obj.get('n_targets')
+        and agg.n_spectra == obj.get('n_spectra')
+        and list(agg.programs) == list(obj.get('programs') or [])
+        and list(agg.gratings) == list(obj.get('gratings') or [])
+        and list(agg.observations) == list(obj.get('observations') or [])
+        and agg.max_snr == obj.get('max_snr')
+        and agg.max_exposure_time == obj.get('max_exposure_time')
     )
 
 
@@ -435,6 +469,21 @@ def classify(
             changed_hashes=changed_hashes,
             spectra_map=spectra_map,
         )
+        # Skip no-op updates: same member set (enforced by the 1:1 guard
+        # above), no reprocessed spectra (staleness is None), and identical
+        # aggregates. Writing these would bump updated_at on every row and
+        # cause every incremental sync to re-pull the full field.
+        # The object must already be active (inactive 1:1 matches need a
+        # reactivation write in apply_proposals).
+        if (
+            staleness is None
+            and obj.get('is_active')
+            and _aggregates_match_object(agg, obj)
+        ):
+            proposals.unchanged += 1
+            handled_clusters.add(ci)
+            handled_objects.add(oid)
+            continue
         proposals.updates.append(
             Update(
                 cluster_idx=ci,
@@ -1306,13 +1355,15 @@ def merge_objects(
 
 def print_summary(field: str, proposals: Proposals, stats: dict[str, int] | None) -> None:
     n_clusters = (
-        len(proposals.updates) + len(proposals.inserts) + len(proposals.revivals)
+        proposals.unchanged
+        + len(proposals.updates) + len(proposals.inserts) + len(proposals.revivals)
         + sum(len(s.daughters) for s in proposals.splits)
         + len(proposals.merges)
     )
     print()
     print(f"  Reconciliation summary ({field}):")
     print(f"    Clusters:        {n_clusters}")
+    print(f"    Unchanged:       {proposals.unchanged}")
     print(f"    Updates:         {len(proposals.updates)}")
     print(f"    Inserts:         {len(proposals.inserts)}")
     print(f"    Revivals:        {len(proposals.revivals)}")
