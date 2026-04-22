@@ -258,6 +258,7 @@ export async function getFilteredObjectIds(
       p_max_exposure_time_max: baseParams.p_max_exposure_time_max,
       p_search: baseParams.p_search,
       p_inspected_only: baseParams.p_inspected_only,
+      p_needs_review: baseParams.p_needs_review,
       p_has_photometry: baseParams.p_has_photometry,
       p_list_ids: baseParams.p_list_ids,
       p_coord_ra: baseParams.p_coord_ra,

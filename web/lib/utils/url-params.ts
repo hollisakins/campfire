@@ -82,6 +82,7 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     list_ids: parseNumberArray('tags'),
     dq_flags: parseNumberArray('dq_flags'),
     inspected_only: parseBoolean('inspected'),
+    needs_review: parseBoolean('needs_review'),
     has_photometry: parseBoolean('has_photometry'),
     search: searchParams.get('search') || '',
     search_scope: searchScope,
@@ -188,6 +189,9 @@ export function filtersToURLParams(
   }
   if (filters.inspected_only !== null) {
     params.set('inspected', filters.inspected_only.toString());
+  }
+  if (filters.needs_review !== null) {
+    params.set('needs_review', filters.needs_review.toString());
   }
   if (filters.has_photometry !== null) {
     params.set('has_photometry', filters.has_photometry.toString());
