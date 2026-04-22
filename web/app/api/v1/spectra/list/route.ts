@@ -70,6 +70,11 @@ export async function GET(request: NextRequest) {
       ? inspectedOnlyParam.toLowerCase() === 'true'
       : null;
 
+    const needsReviewParam = searchParams.get('needs_review');
+    const needsReview = needsReviewParam
+      ? needsReviewParam.toLowerCase() === 'true'
+      : null;
+
     const hasPhotometryParam = searchParams.get('has_photometry');
     const hasPhotometry = hasPhotometryParam
       ? hasPhotometryParam.toLowerCase() === 'true'
@@ -110,6 +115,7 @@ export async function GET(request: NextRequest) {
       p_list_ids: listIds,
       p_search: searchParams.get('search') || null,
       p_inspected_only: inspectedOnly,
+      p_needs_review: needsReview,
       p_has_photometry: hasPhotometry,
       p_comment_search: null,
       p_comment_search_scope: null,

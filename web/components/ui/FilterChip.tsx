@@ -84,6 +84,12 @@ interface FooterLink {
   href: string;
 }
 
+interface ExtraCheckbox {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}
+
 interface FilterChipProps {
   label: string;
   options: FilterOption[];
@@ -97,6 +103,9 @@ interface FilterChipProps {
   footerLink?: FooterLink;
   /** Direction dropdown opens. Default 'bottom'. Use 'top' when chip is near bottom of viewport. */
   dropdownPlacement?: 'bottom' | 'top';
+  /** Optional toggleable checkbox rendered below the options list, for filters that are
+   *  conceptually related to the main filter but aren't one of its discrete values. */
+  extraCheckbox?: ExtraCheckbox;
 }
 
 export const FilterChip: React.FC<FilterChipProps> = ({
@@ -111,6 +120,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   searchable = false,
   footerLink,
   dropdownPlacement = 'bottom',
+  extraCheckbox,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -167,11 +177,13 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   const handleClear = (e: React.MouseEvent) => {
     e.stopPropagation();
     onChange([]);
+    if (extraCheckbox?.checked) extraCheckbox.onChange(false);
   };
 
-  const isActive = selected.length > 0;
+  const activeCount = selected.length + (extraCheckbox?.checked ? 1 : 0);
+  const isActive = activeCount > 0;
   const displayText = isActive
-    ? `${label} (${selected.length})`
+    ? `${label} (${activeCount})`
     : label;
 
   return (
@@ -276,6 +288,28 @@ export const FilterChip: React.FC<FilterChipProps> = ({
             </div>
           </div>
 
+          {/* Extra checkbox (e.g., "Needs review only" for the Quality filter) */}
+          {extraCheckbox && (
+            <div className="border-t border-border dark:border-slate-700 p-1">
+              <button
+                onClick={() => extraCheckbox.onChange(!extraCheckbox.checked)}
+                className="w-full flex items-center gap-3 px-3 py-2 text-sm text-left hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors"
+              >
+                <div
+                  className={`
+                    w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all duration-200
+                    ${extraCheckbox.checked ? 'bg-primary border-primary scale-110' : 'border-border dark:border-slate-600'}
+                  `}
+                >
+                  {extraCheckbox.checked && <Check className="w-3 h-3 text-white" />}
+                </div>
+                <span className={extraCheckbox.checked ? 'text-text-primary dark:text-slate-100' : 'text-text-secondary dark:text-slate-400'}>
+                  {extraCheckbox.label}
+                </span>
+              </button>
+            </div>
+          )}
+
           {/* Shortcut button */}
           {shortcut && (
             <div className="border-t border-border dark:border-slate-700 p-2">
@@ -291,11 +325,12 @@ export const FilterChip: React.FC<FilterChipProps> = ({
           )}
 
           {/* Clear all button */}
-          {multiSelect && selected.length > 0 && (
+          {multiSelect && (selected.length > 0 || extraCheckbox?.checked) && (
             <div className={`${shortcut ? 'px-2 pb-2' : 'border-t border-border dark:border-slate-700 p-2'}`}>
               <button
                 onClick={() => {
                   onChange([]);
+                  if (extraCheckbox?.checked) extraCheckbox.onChange(false);
                   setIsOpen(false);
                 }}
                 className="w-full px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card dark:hover:bg-slate-700 rounded-md text-left transition-colors"

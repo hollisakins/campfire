@@ -22,6 +22,7 @@ import { PhotometrySED } from './PhotometrySED';
 import { ObjectComments } from './ObjectComments';
 import { NearbyObjects } from './NearbyObjects';
 import { StalenessBadge } from './StalenessBadge';
+import { useAuth } from '@/lib/contexts/AuthContext';
 
 interface UnifiedObjectPageProps {
   object: ObjectDetail;
@@ -34,6 +35,12 @@ function buildInitialVisibility(members: ObjectMemberTarget[]): Record<number, b
 }
 
 export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) => {
+  const { userProfile } = useAuth();
+  // Local override for last_inspected_at so the "Mark as reviewed" action in
+  // the StalenessBadge can hide the badge without a full refetch. Reset on
+  // object change (see navigation effect below).
+  const [lastInspectedOverride, setLastInspectedOverride] = useState<string | null>(null);
+
   const colors = useMemo(() => {
     const c: Record<string, string> = {};
     object.member_targets.forEach((m, i) => {
@@ -192,6 +199,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
       inspection.resetState(initialInspection);
       setExpandedSpectra(new Set());
       setSpectrumVisibility(buildInitialVisibility(object.member_targets));
+      setLastInspectedOverride(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [object.id]);
@@ -270,8 +278,12 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
               </h1>
               <StalenessBadge
                 reason={object.staleness_reason}
-                lastInspectedAt={object.last_inspected_at}
+                lastInspectedAt={lastInspectedOverride ?? object.last_inspected_at}
                 lastDataChangeAt={object.last_data_change_at}
+                objectId={object.id}
+                version={inspection.version}
+                canMarkReviewed={!!userProfile?.can_comment}
+                onReviewed={({ last_inspected_at }) => setLastInspectedOverride(last_inspected_at)}
               />
               {!object.is_active && (
                 <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-200 dark:bg-slate-700 text-text-secondary dark:text-slate-300">

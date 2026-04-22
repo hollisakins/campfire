@@ -75,7 +75,6 @@ const SPECTRA_COLUMN_TO_SERVER: Record<string, SortColumn> = {
 // Column visibility configuration — objects mode (unique sky positions).
 const OBJECTS_COLUMNS: ColumnDefinition[] = [
   { id: 'target_id', label: 'Object ID', alwaysVisible: true },
-  { id: 'staleness', label: 'Review', defaultVisible: true },
   { id: 'field', label: 'Field', defaultVisible: true },
   { id: 'ra', label: 'RA', defaultVisible: true },
   { id: 'dec', label: 'Dec', defaultVisible: true },
@@ -90,6 +89,7 @@ const OBJECTS_COLUMNS: ColumnDefinition[] = [
   { id: 'obj_lists', label: 'Tags', defaultVisible: false },
   { id: 'max_snr', label: 'Max S/N', defaultVisible: true },
   { id: 'max_exposure_time', label: 'Max Exp. Time', defaultVisible: false },
+  { id: 'staleness', label: 'Status', defaultVisible: false },
 ];
 
 // Map TanStack Table column IDs to server column names — objects mode.
@@ -379,21 +379,6 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         ),
         enableSorting: false,
       },
-      // Needs Review staleness column (objects mode only).
-      ...(isObjectsMode ? [{
-        id: 'staleness',
-        minSize: 110,
-        header: () => <span className="normal-case">Review</span>,
-        cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <StalenessBadge
-            reason={row.original.staleness_reason ?? null}
-            lastInspectedAt={row.original.last_inspected_at ?? null}
-            lastDataChangeAt={row.original.last_data_change_at ?? null}
-            compact
-          />
-        ),
-        enableSorting: false,
-      } satisfies ColumnDef<SpectrumTarget>] : []),
       // Objects mode: Object ID column (links to object detail page).
       ...(isObjectsMode ? [{
         accessorKey: 'target_id' as const,
@@ -844,13 +829,33 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         ),
         enableSorting: false,
       } satisfies ColumnDef<SpectrumTarget>] : []),
+      // Status column (objects mode only). Hidden by default; auto-revealed
+      // when the "Needs review only" filter is on.
+      ...(isObjectsMode ? [{
+        id: 'staleness',
+        minSize: 110,
+        header: () => <>Status</>,
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => (
+          <StalenessBadge
+            reason={row.original.staleness_reason ?? null}
+            lastInspectedAt={row.original.last_inspected_at ?? null}
+            lastDataChangeAt={row.original.last_data_change_at ?? null}
+            compact
+          />
+        ),
+        enableSorting: false,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
     ],
     [hasCoordinateSearch, currentFilterParams, isSpectraMode, isObjectsMode]
   );
 
-  // Convert column visibility state to TanStack Table format
+  // Convert column visibility state to TanStack Table format.
+  // When the "Needs review only" filter is on, force-show the Status column
+  // regardless of the user's saved preference — otherwise filtering down to
+  // a queue of needs-review objects would hide the reason for the filter.
   const tableColumnVisibility = useMemo<VisibilityState>(() => {
     const visibility: VisibilityState = {};
+    const forceStatusVisible = filters?.needs_review === true;
     columnConfig.forEach(col => {
       // Distance column is special - only include in visibility state when coordinate search is active
       // (avoids TanStack Table warning about referencing a non-existent column)
@@ -858,12 +863,14 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         if (hasCoordinateSearch) {
           visibility[col.id] = columnVisibility[col.id] !== false;
         }
+      } else if (col.id === 'staleness' && forceStatusVisible) {
+        visibility[col.id] = true;
       } else {
         visibility[col.id] = columnVisibility[col.id] !== false;
       }
     });
     return visibility;
-  }, [columnVisibility, hasCoordinateSearch, columnConfig]);
+  }, [columnVisibility, hasCoordinateSearch, columnConfig, filters?.needs_review]);
 
   // Internal pagination state for client-side mode
   const [internalPagination, setInternalPagination] = useState({

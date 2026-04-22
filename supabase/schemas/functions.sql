@@ -141,6 +141,14 @@ CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- OFFSET-based pagination is linear in offset: a deep-page request
+-- (e.g. OFFSET 29000 on a 30k-row catalog) must materialize the ordered
+-- scan up to that point plus run three aggregate CTEs, and started
+-- tipping past the default service_role timeout around page ~29 of a
+-- --full sync. Bumped to 120s so deep pages finish while the paginator
+-- is still offset-based; a future change should switch this RPC to
+-- keyset pagination (WHERE object_id > cursor) and then drop this SET.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -289,6 +297,9 @@ CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
 RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Mirrors get_objects_for_sync: offset-based pagination is linear in
+-- offset, so deep --full-sync pages can tip past the default timeout.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -376,6 +387,9 @@ CREATE OR REPLACE FUNCTION public.get_photometry_for_sync(
 RETURNS TABLE(photometry_records JSONB, total_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Mirrors get_objects_for_sync: offset-based pagination is linear in
+-- offset, so deep --full-sync pages can tip past the default timeout.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -503,6 +517,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_needs_review BOOLEAN DEFAULT NULL,
   p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
@@ -654,6 +669,17 @@ BEGIN
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND COALESCE(o.redshift_quality, 0) = 0)
       )
+      AND (
+        p_needs_review IS NULL
+        OR (p_needs_review = TRUE
+            AND o.staleness_reason IS NOT NULL
+            AND o.last_inspected_at IS NOT NULL
+            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
+        OR (p_needs_review = FALSE
+            AND (o.staleness_reason IS NULL
+                 OR o.last_inspected_at IS NULL
+                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at)))
+      )
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (
         NOT v_comment_search_active
@@ -790,6 +816,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
@@ -884,6 +911,17 @@ BEGIN
       OR (p_inspected_only = FALSE AND o.redshift_quality = 0)
     )
     AND (
+      p_needs_review IS NULL
+      OR (p_needs_review = TRUE
+          AND o.staleness_reason IS NOT NULL
+          AND o.last_inspected_at IS NOT NULL
+          AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
+      OR (p_needs_review = FALSE
+          AND (o.staleness_reason IS NULL
+               OR o.last_inspected_at IS NULL
+               OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at)))
+    )
+    AND (
       NOT v_coord_search_active
       OR (
         o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
@@ -965,6 +1003,17 @@ BEGIN
         p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND o.redshift_quality = 0)
+      )
+      AND (
+        p_needs_review IS NULL
+        OR (p_needs_review = TRUE
+            AND o.staleness_reason IS NOT NULL
+            AND o.last_inspected_at IS NOT NULL
+            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
+        OR (p_needs_review = FALSE
+            AND (o.staleness_reason IS NULL
+                 OR o.last_inspected_at IS NULL
+                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at)))
       )
       AND (
         NOT v_coord_search_active
@@ -1120,6 +1169,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
@@ -1188,6 +1238,17 @@ BEGIN
       OR (p_inspected_only = FALSE AND o.redshift_quality = 0)
     )
     AND (
+      p_needs_review IS NULL
+      OR (p_needs_review = TRUE
+          AND o.staleness_reason IS NOT NULL
+          AND o.last_inspected_at IS NOT NULL
+          AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
+      OR (p_needs_review = FALSE
+          AND (o.staleness_reason IS NULL
+               OR o.last_inspected_at IS NULL
+               OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at)))
+    )
+    AND (
       NOT v_coord_search_active
       OR (
         o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
@@ -1233,6 +1294,7 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
+  p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
@@ -1319,6 +1381,15 @@ BEGIN
       AND (p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
+      AND (p_needs_review IS NULL
+        OR (p_needs_review = TRUE
+            AND o.staleness_reason IS NOT NULL
+            AND o.last_inspected_at IS NOT NULL
+            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
+        OR (p_needs_review = FALSE
+            AND (o.staleness_reason IS NULL
+                 OR o.last_inspected_at IS NULL
+                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at))))
       AND (NOT v_coord_search_active OR (
         o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
         AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
@@ -1440,6 +1511,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
+  p_needs_review BOOLEAN DEFAULT NULL,
   p_has_photometry BOOLEAN DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
@@ -1519,6 +1591,15 @@ BEGIN
            OR t.target_id ILIKE '%' || p_search || '%'
            OR s.spectrum_id ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND COALESCE(o.redshift_quality, 0) = 0))
+      AND (p_needs_review IS NULL
+        OR (p_needs_review = TRUE
+            AND o.staleness_reason IS NOT NULL
+            AND o.last_inspected_at IS NOT NULL
+            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
+        OR (p_needs_review = FALSE
+            AND (o.staleness_reason IS NULL
+                 OR o.last_inspected_at IS NULL
+                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at))))
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (NOT v_comment_search_active OR EXISTS (
         SELECT 1 FROM comments c WHERE c.target_id = t.id AND c.is_deleted = false
@@ -1594,6 +1675,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_max_snr_min DOUBLE PRECISION DEFAULT NULL, p_max_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_max_exposure_time_min DOUBLE PRECISION DEFAULT NULL, p_max_exposure_time_max DOUBLE PRECISION DEFAULT NULL,
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
+  p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
@@ -1699,6 +1781,15 @@ BEGIN
       AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
       OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
+      AND (p_needs_review IS NULL
+        OR (p_needs_review = TRUE
+            AND o.staleness_reason IS NOT NULL
+            AND o.last_inspected_at IS NOT NULL
+            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
+        OR (p_needs_review = FALSE
+            AND (o.staleness_reason IS NULL
+                 OR o.last_inspected_at IS NULL
+                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at))))
       AND (NOT v_coord_search_active OR (
         o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
         AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
@@ -2502,6 +2593,18 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 -- cursor) picks the change up on the next client sync. Without the bump,
 -- clients would silently miss redshift_auto changes from pipeline reruns.
 -- ROW_COUNT is then the true number of objects whose value changed.
+--
+-- Implicit sign-off preservation: when an inspector committed a quality flag
+-- (redshift_quality >= 2) without entering a numeric override
+-- (redshift_inspected IS NULL), the generated ``redshift`` column resolves to
+-- whatever ``redshift_auto`` currently holds. Letting this function silently
+-- overwrite redshift_auto would silently move the object's displayed redshift
+-- out from under the sign-off. Instead, for any such object whose redshift_auto
+-- is about to change, we promote the OLD redshift_auto into redshift_inspected
+-- (pinning the generated redshift to what the inspector actually reviewed) and
+-- flag ``staleness_reason = 'reprocessed'`` so the UI surfaces a "Needs Review"
+-- badge. Inspectors can then reaffirm (no-op) or clear redshift_inspected to
+-- accept the new auto-fit.
 CREATE OR REPLACE FUNCTION public.compute_object_redshift_auto(p_field TEXT)
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -2511,6 +2614,9 @@ DECLARE
 BEGIN
   WITH computed AS (
     SELECT o.id,
+           o.redshift_auto AS old_auto,
+           o.redshift_inspected AS old_inspected,
+           o.redshift_quality AS quality,
            (
              SELECT s.redshift_auto
              FROM targets t
@@ -2533,6 +2639,30 @@ BEGIN
   )
   UPDATE objects o
   SET redshift_auto = c.new_val,
+      redshift_inspected = CASE
+        WHEN c.quality >= 2
+             AND c.old_inspected IS NULL
+             AND c.old_auto IS NOT NULL
+             AND c.new_val IS DISTINCT FROM c.old_auto
+        THEN c.old_auto::numeric
+        ELSE o.redshift_inspected
+      END,
+      staleness_reason = CASE
+        WHEN c.quality >= 2
+             AND c.old_inspected IS NULL
+             AND c.old_auto IS NOT NULL
+             AND c.new_val IS DISTINCT FROM c.old_auto
+        THEN 'reprocessed'
+        ELSE o.staleness_reason
+      END,
+      last_data_change_at = CASE
+        WHEN c.quality >= 2
+             AND c.old_inspected IS NULL
+             AND c.old_auto IS NOT NULL
+             AND c.new_val IS DISTINCT FROM c.old_auto
+        THEN NOW()
+        ELSE o.last_data_change_at
+      END,
       updated_at = NOW()
   FROM computed c
   WHERE o.id = c.id
