@@ -2,6 +2,13 @@
 
 The `Campfire` class provides an interactive interface for querying metadata, accessing spectra, and plotting. When locally synced data is available (from `campfire sync`), queries run against your local SQLite database for instant results.
 
+The API has two primary query surfaces:
+
+- **`query_objects`** — one row per sky position. Carries inspection state (`redshift`, `redshift_quality`, `tags`) and cross-program aggregates (`max_snr`, `n_spectra`). Use this for science selection.
+- **`query_spectra`** — one row per spectrum. Carries per-spectrum metadata (`spectrum_id`, `grating`, `fits_path`, `dq_flags`, `redshift_auto`). Use this when you need to reach individual FITS files.
+
+For a single object with its spectra and photometry attached, use `cf.get_object(object_id)`, which returns a typed [`Object`](#working-with-objects) dataclass.
+
 ## Quick Start
 
 ```python
@@ -9,15 +16,17 @@ from campfire import Campfire
 
 cf = Campfire()
 
-# Query objects
+# Query objects (sky positions)
 results = cf.query_objects(
     redshift_range=(3.0, 6.0),
     redshift_quality=[2, 3],
-    limit=100
+    limit=100,
 )
 
-# Open a spectrum directly (spectrum_id from the catalog)
-spec = cf.open_spectrum('ember_uds_p4_prism_clear_123456')
+# Load one object with its spectra + photometry
+obj = cf.get_object('ember_uds_p4_123456')
+print(obj)                       # repr shows gratings, tags, photometry
+spec = obj.spectra[0].open()     # SpectrumData with wavelength, fnu, flam
 print(spec.wavelength.shape, spec.fnu.shape)
 ```
 
@@ -96,25 +105,27 @@ if result['stale_count'] > 0:
 
 ### `query_objects()`
 
-Query the spectroscopic database with filters. Returns an `astropy.table.Table`.
+Query sky-objects — one row per unique (ra, dec) grouping. Returns an `astropy.table.Table`. Inspection state (redshift, quality, tags) lives at this level.
 
 ```python
-cf.query_targets(
+cf.query_objects(
+    fields=None,             # list[str]: e.g., ['cosmos', 'uds']
     programs=None,           # list[int|str]: Program IDs or slugs
-    fields=None,             # list[str]: e.g., ['COSMOS', 'UDS']
     gratings=None,           # list[str]: e.g., ['PRISM', 'G395M']
     observations=None,       # list[str]: Observation names
     redshift_range=None,     # tuple[float, float]: (min, max)
-    redshift_quality=None,   # list[int]: Quality codes
-    max_snr_range=None,      # tuple[float, float]: (min, max) SNR
-    dq_flags=None,           # Flag filter (see Flag Filtering)
+    redshift_quality=None,   # list[int]: Quality codes (0, 1, 2, 3, 4)
+    max_snr_range=None,      # tuple[float, float]: (min, max) best-SNR
+    dq_flags=None,           # Per-spectrum DQ bitmask filter (see Flag Filtering)
     tags=None,               # list[str]: Tag slugs (e.g., ['lrd', 'blagn'])
-    inspected_only=None,     # bool: Only inspected targets
-    search=None,             # str: Text search on target_id
+    inspected_only=None,     # bool: Only inspected objects
+    staleness=None,          # bool: Only objects with stale spectra
+    has_photometry=None,     # bool: Only objects with matched photometry
+    search=None,             # str: Text search on object_id
     cone_search=None,        # tuple[float, float, float]: (ra, dec, radius_arcsec)
-    limit=1000,              # int: Max results
+    limit=None,              # int: Max results (default: unlimited locally, 1000 remote)
     offset=0,                # int: Pagination offset
-    sort='target_id',        # str: Sort column
+    sort='object_id',        # str: Sort column
     sort_dir='asc',          # str: 'asc' or 'desc'
     remote=False,            # bool: Force remote API (skip local)
 )
@@ -123,46 +134,110 @@ cf.query_targets(
 **Examples:**
 
 ```python
-# High-z galaxies in COSMOS with good redshifts
-results = cf.query_targets(
-    fields=['COSMOS'],
+# High-z galaxies in COSMOS with inspected redshifts
+results = cf.query_objects(
+    fields=['cosmos'],
     redshift_range=(4.0, 8.0),
     redshift_quality=[2, 3],
-    inspected_only=True
+    inspected_only=True,
 )
 
 # Filter by tags
-lrds = cf.query_targets(tags=['lrd', 'blagn'])
+lrds = cf.query_objects(tags=['lrd', 'blagn'])
 
 # Cone search around a coordinate
-results = cf.query_targets(
+results = cf.query_objects(
     cone_search=(150.0832, 2.3511, 30.0)  # RA, Dec, radius in arcsec
 )
 
 # Force remote API (bypass local data)
-results = cf.query_targets(remote=True)
+results = cf.query_objects(remote=True)
 ```
 
-### `iter_targets()`
+### `iter_objects()`
 
-Auto-paginating iterator over all matching targets. Accepts the same filters as `query_targets()`.
+Auto-paginating iterator over all matching objects. Accepts the same filters as `query_objects()`.
 
 ```python
-# Iterate over ALL matching targets without worrying about pagination
-for obj in cf.iter_targets(redshift_range=(2.0, 4.0)):
-    print(obj['target_id'], obj['redshift'])
+# Iterate over ALL matching objects without pagination bookkeeping
+for row in cf.iter_objects(redshift_range=(2.0, 4.0)):
+    print(row['object_id'], row['redshift'])
 
 # Collect into a list
-all_lrds = list(cf.iter_targets(tags=['lrd']))
+all_lrds = list(cf.iter_objects(tags=['lrd']))
 ```
 
-When local data is available, `iter_targets()` queries SQLite directly. Otherwise, it auto-paginates through the remote API.
+When local data is available, `iter_objects()` queries SQLite directly. Otherwise, it auto-paginates through the remote API.
+
+---
+
+## Querying Spectra
+
+### `query_spectra()`
+
+Query the flat per-spectrum view — one row per spectrum. Each row has a unique `spectrum_id` plus its parent `object_id`. Per-spectrum `dq_flags` live here, and inspection filters (`redshift_range`, `redshift_quality`, `inspected_only`) join through the parent object.
+
+```python
+cf.query_spectra(
+    fields=None,             # list[str]
+    programs=None,           # list[int|str]
+    gratings=None,           # list[str]: e.g., ['PRISM']
+    observations=None,       # list[str]
+    redshift_range=None,     # tuple[float, float]  (object-level)
+    redshift_quality=None,   # list[int]            (object-level)
+    max_snr_range=None,      # tuple[float, float]
+    dq_flags=None,           # Per-spectrum DQ bitmask filter
+    tags=None,               # list[str]            (object-level)
+    inspected_only=None,     # bool                 (object-level)
+    has_photometry=None,     # bool
+    search=None,             # str: on spectrum_id
+    cone_search=None,        # tuple[float, float, float]
+    limit=None,
+    offset=0,
+    sort='spectrum_id',
+    sort_dir='asc',
+    remote=False,
+)
+```
+
+**Returned columns** include: `spectrum_id`, `target_id`, `object_id`, `grating`, `fits_path`, `signal_to_noise`, `exposure_time`, `reduction_version`, `redshift_auto`, `dq_flags`, `local_path`.
+
+```python
+from campfire.flags import DQFlags
+
+# Clean PRISM spectra belonging to inspected objects
+good = cf.query_spectra(
+    gratings=['PRISM'],
+    inspected_only=True,
+    dq_flags=~DQFlags.CONTAMINATION & ~DQFlags.LOW_SNR,
+)
+
+# Open the first one
+spec = cf.open_spectrum(good[0]['spectrum_id'])
+```
+
+### `iter_spectra()`
+
+Auto-paginating iterator over the spectra view. Accepts the same filters as `query_spectra()`.
+
+```python
+for row in cf.iter_spectra(gratings=['G395M']):
+    print(row['spectrum_id'], row['signal_to_noise'])
+```
+
+### `get_spectrum()`
+
+Return a single spectrum catalog row by ID (or `None`).
+
+```python
+row = cf.get_spectrum('ember_uds_p4_prism_clear_123456')
+```
 
 ---
 
 ## Tags
 
-Targets can be tagged with user-defined or system-seeded tags. Tags replace the old `object_flags` bitmask system.
+Objects can be tagged with user-defined or system-seeded tags. Tags replace the old `object_flags` bitmask system.
 
 ### `get_tags()`
 
@@ -182,12 +257,14 @@ blagn  Broad Line AGN              87
 
 ```python
 # Filter by tag slugs
-results = cf.query_targets(tags=['lrd', 'blagn'])
+results = cf.query_objects(tags=['lrd', 'blagn'])
 
-# Iterate over tagged targets
-for obj in cf.iter_targets(tags=['lrd']):
-    print(obj['target_id'], obj['redshift'])
+# Iterate over tagged objects
+for row in cf.iter_objects(tags=['lrd']):
+    print(row['object_id'], row['redshift'])
 ```
+
+Tags also surface as `Object.tags` on the dataclass returned by `cf.get_object()`.
 
 System tags (e.g., `lrd`, `blagn`, `lae`) are available to all users. Users can also create private or shared tags via the [web portal](/nirspec/tags).
 
@@ -215,9 +292,14 @@ DQFlags.CHIP_GAP & DQFlags.LOW_SNR
 ### Examples
 
 ```python
-# Clean data only
-results = cf.query_targets(
-    dq_flags=~(DQFlags.CONTAMINATION | DQFlags.LOW_SNR)
+# Clean spectra only (dq_flags is per-spectrum)
+results = cf.query_spectra(
+    dq_flags=~(DQFlags.CONTAMINATION | DQFlags.LOW_SNR),
+)
+
+# Or, filter objects by their spectra's DQ flags
+objects = cf.query_objects(
+    dq_flags=~(DQFlags.CONTAMINATION | DQFlags.LOW_SNR),
 )
 ```
 
@@ -234,6 +316,100 @@ list_flags()                                          # Print all flags
 list_flags('dq_flags')                                # Print specific type
 decode_flags(3, 'dq_flags')                           # ['CHIP_GAP', 'CONTAMINATION']
 encode_flags(['CHIP_GAP', 'CONTAMINATION'], 'dq_flags') # 3
+```
+
+---
+
+## Working with Objects
+
+### `get_object()`
+
+Return a single `Object` dataclass, with its spectra and photometry attached. Returns `None` if not found.
+
+```python
+obj = cf.get_object('ember_uds_p4_123456')
+
+print(obj)
+# Object(ember_uds_p4_123456, z=3.4210, cosmos)
+#   3 spectra (G140M, G395M, PRISM)
+#   tags: lrd
+#   Photometry(8 bands, UVCANDELS, photo_z=3.51)
+```
+
+Attributes available on `Object`:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `object_id`, `field`, `ra`, `dec` | — | Identification and position |
+| `redshift`, `redshift_auto`, `redshift_inspected` | float | Best, automated, and inspected redshifts |
+| `redshift_quality` | int | 0 (none) – 4 (secure) |
+| `programs`, `tags` | list[str] | Program slugs and tag slugs |
+| `n_spectra`, `max_snr`, `max_exposure_time` | — | Cross-spectrum aggregates |
+| `has_photometry`, `photo_z`, `photo_z_err_lo/hi` | — | Photometry summary |
+| `spectra` | `SpectrumCollection` | All spectra for this object |
+| `photometry` | `Photometry` or `None` | Broadband photometric measurements |
+
+### `SpectrumCollection`
+
+`Object.spectra` is a `SpectrumCollection` — a filterable, numpy-style container of `Spectrum` objects.
+
+```python
+# Integer indexing → single Spectrum
+first = obj.spectra[0]
+
+# Numpy-style boolean masking
+prism = obj.spectra[obj.spectra.grating == 'PRISM']
+high_snr = obj.spectra[obj.spectra.signal_to_noise > 10]
+
+# Properties return numpy arrays
+obj.spectra.spectrum_id      # np.ndarray[str]
+obj.spectra.signal_to_noise  # np.ndarray[float]
+obj.spectra.gratings         # sorted list of unique gratings
+
+# Convert to astropy Table
+tbl = obj.spectra.to_table()
+
+# Iterate
+for s in obj.spectra:
+    print(s.spectrum_id, s.grating, s.downloaded)
+```
+
+### `Spectrum`
+
+Each entry in a `SpectrumCollection` is a `Spectrum` — the catalog row for one spectrum. Call `.open()` (or use `.data`) to load the FITS arrays as a [`SpectrumData`](#accessing-spectra).
+
+```python
+s = obj.spectra[0]
+
+s.spectrum_id         # stable per-spectrum ID
+s.grating             # 'PRISM', 'G395M', …
+s.signal_to_noise     # peak SNR
+s.dq_flags            # per-spectrum DQ bitmask
+s.downloaded          # True if local FITS is available
+
+spec = s.open()       # SpectrumData — reads local FITS, falls back to API
+s.plot()              # shortcut: quick-look matplotlib plot
+```
+
+### `Photometry`
+
+`Object.photometry` exposes broadband photometry for the object (`None` if unmatched).
+
+```python
+phot = obj.photometry
+phot.bands                 # ['f115w', 'f150w', 'f277w', 'f444w', ...]
+phot.flux                  # np.ndarray[float], μJy
+phot.flux_err              # np.ndarray[float], μJy
+phot.wavelength            # np.ndarray[float], μm
+phot.catalog               # source catalog name
+phot.photo_z               # photometric redshift (or None)
+
+# Access a single band
+band = phot['f444w']
+band.flux, band.flux_err, band.wavelength
+
+# Convert to astropy Table
+phot.to_table()
 ```
 
 ---
@@ -333,18 +509,18 @@ These methods return JSON data for visualization, without downloading FITS files
 ### `get_spectrum_data()`
 
 ```python
-data = cf.get_spectrum_data('ember_uds_p4_123456', 'PRISM')
+data = cf.get_spectrum_data('ember_uds_p4_prism_clear_123456')
 ```
 
-Returns a dict with: `wave`, `fnu`, `fnu_err`, `snr_2d`, `n_spatial`, `n_wave`, `profile`, `profile_fit`, `profile_pix`.
+Takes a `spectrum_id`. Returns a dict with: `wave`, `fnu`, `fnu_err`, `snr_2d`, `n_spatial`, `n_wave`, `profile`, `profile_fit`, `profile_pix`.
 
 ### `get_redshift_fit_data()`
 
 ```python
-fit = cf.get_redshift_fit_data('ember_uds_p4_123456', 'PRISM')
+fit = cf.get_redshift_fit_data('ember_uds_p4_prism_clear_123456')
 ```
 
-Returns a dict with: `redshift`, `chi2_min`, `confidence`, `z_grid`, `chi2_grid`, `model_wave`, `model_fnu`.
+Takes a `spectrum_id`. Returns a dict with: `redshift`, `chi2_min`, `confidence`, `z_grid`, `chi2_grid`, `model_wave`, `model_fnu`.
 
 ---
 
@@ -356,14 +532,15 @@ CAMPFIRE includes Plotly-based plotting functions. Requires installing with the 
 from campfire import plot_spectrum, plot_redshift_fit, plot_spectrum_simple
 
 cf = Campfire()
-data = cf.get_spectrum_data('ember_uds_p4_123456', 'PRISM')
+spectrum_id = 'ember_uds_p4_prism_clear_123456'
+data = cf.get_spectrum_data(spectrum_id)
 
 # Multi-panel plot (2D heatmap + profile + 1D spectrum)
 fig = plot_spectrum(data, redshift=2.5, show_emission_lines=True)
 fig.show()
 
 # Redshift fit visualization
-fit = cf.get_redshift_fit_data('ember_uds_p4_123456', 'PRISM')
+fit = cf.get_redshift_fit_data(spectrum_id)
 fig = plot_redshift_fit(fit, spectrum_data=data)
 fig.show()
 
@@ -431,6 +608,93 @@ lines = get_emission_lines(redshift=2.5, wave_min=1.0, wave_max=5.0)
 
 ---
 
+## Calibration & Stacking
+
+`campfire.calibration` provides flux-calibration of spectra against broadband photometry and multi-spectrum stacking. These routines require the extras from `pip install "campfire[deploy]"` (scipy, matplotlib).
+
+### `calibrate_to_photometry()`
+
+Flux-calibrate a spectrum against broadband photometry by fitting a smooth correction curve (Chebyshev polynomial or a single scalar) so that synthetic photometry from the spectrum matches the observed bands.
+
+```python
+from campfire import calibrate_to_photometry
+
+obj = cf.get_object('ember_uds_p4_123456')
+spec = obj.spectra[obj.spectra.grating == 'PRISM'][0]
+
+result = calibrate_to_photometry(
+    spec,                     # Spectrum or SpectrumData
+    obj.photometry,           # Photometry
+    method='chebyshev',       # 'chebyshev' (default) or 'flat'
+    # bands=['f150w', 'f277w', 'f444w'],  # optional; auto-selected by default
+    # degree=3,                            # Chebyshev degree
+    # min_snr=0.5,                         # per-band SNR threshold
+)
+
+result.spectrum      # SpectrumData, calibrated
+result.original      # SpectrumData, uncalibrated input
+result.multiplier    # correction curve (same length as wavelength)
+result.bands_used    # bands that contributed to the fit
+result.plot()        # diagnostic matplotlib plot
+```
+
+### `stack_spectra()`
+
+Resample multiple spectra onto a common wavelength grid and combine them.
+
+```python
+from campfire import stack_spectra
+
+obj = cf.get_object('ember_uds_p4_123456')
+prism = [s.open() for s in obj.spectra[obj.spectra.grating == 'PRISM']]
+
+stacked = stack_spectra(
+    prism,
+    method='weighted_mean',   # 'weighted_mean' | 'median' | 'mean'
+    # wavelength_grid=None,   # default: grid from the input with the most pixels
+    object_id=obj.object_id,  # sets stacked.spectrum_id = f'stack:{object_id}:{grating}'
+)
+
+stacked.plot()
+```
+
+### `calibrate_and_stack()`
+
+Convenience wrapper: per-spectrum calibration → resample → stack, in one call. Accepts a `SpectrumCollection`, a list of `Spectrum`, or a list of `SpectrumData`.
+
+```python
+from campfire import calibrate_and_stack
+
+obj = cf.get_object('ember_uds_p4_123456')
+
+result = calibrate_and_stack(
+    obj.spectra[obj.spectra.grating == 'PRISM'],
+    photometry=obj.photometry,
+    method='chebyshev',
+    stacking_method='weighted_mean',
+    object_id=obj.object_id,
+)
+
+result.spectrum         # SpectrumData, final stacked spectrum
+result.calibrations     # list[CalibrationResult], per-input
+result.input_spectra    # list[SpectrumData], calibrated inputs before stacking
+result.plot()           # 3-panel diagnostic
+```
+
+### `synthetic_photometry()`
+
+Compute AB synthetic photometry for a single band from a spectrum.
+
+```python
+from campfire import synthetic_photometry
+
+flux, err = synthetic_photometry(
+    spec.wavelength, spec.fnu, spec.fnu_err, 'f444w',
+)
+```
+
+---
+
 ## Error Handling
 
 ```python
@@ -444,7 +708,11 @@ from campfire import (
 )
 
 try:
-    results = cf.query_objects()
+    obj = cf.get_object('ember_uds_p4_123456')
+    if obj is None:
+        print("No such object")
+    else:
+        spec = obj.spectra[0].open()
 except AuthenticationError:
     print("Run: campfire login")
 except NotFoundError as e:
