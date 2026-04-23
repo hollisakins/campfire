@@ -40,8 +40,8 @@ interface ObjectsCsvRow {
   field: string;
   ra: number;
   dec: number;
-  best_redshift: number | null;
-  best_redshift_quality: number;
+  redshift: number | null;
+  redshift_quality: number;
   n_targets: number;
   n_spectra: number;
   programs: string;            // semicolon-separated
@@ -279,8 +279,8 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
     'field',
     'ra',
     'dec',
-    'best_redshift',
-    'best_redshift_quality',
+    'redshift',
+    'redshift_quality',
     'n_observations',
     'n_spectra',
     'programs',
@@ -315,8 +315,8 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean): stri
     }
 
     values.push(
-      row.best_redshift != null ? row.best_redshift.toFixed(6) : '',
-      row.best_redshift_quality,
+      row.redshift != null ? row.redshift.toFixed(6) : '',
+      row.redshift_quality,
       row.n_targets,
       row.n_spectra,
       escapeCsvValue(row.programs || ''),
