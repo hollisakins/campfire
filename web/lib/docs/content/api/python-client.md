@@ -19,7 +19,7 @@ cf = Campfire()
 # Query objects (sky positions)
 results = cf.query_objects(
     redshift_range=(3.0, 6.0),
-    redshift_quality=[2, 3],
+    redshift_quality=[3, 4],
     limit=100,
 )
 
@@ -138,7 +138,7 @@ cf.query_objects(
 results = cf.query_objects(
     fields=['cosmos'],
     redshift_range=(4.0, 8.0),
-    redshift_quality=[2, 3],
+    redshift_quality=[3, 4],
     inspected_only=True,
 )
 
@@ -342,7 +342,7 @@ Attributes available on `Object`:
 |-----------|------|-------------|
 | `object_id`, `field`, `ra`, `dec` | — | Identification and position |
 | `redshift`, `redshift_auto`, `redshift_inspected` | float | Best, automated, and inspected redshifts |
-| `redshift_quality` | int | 0 (none) – 4 (secure) |
+| `redshift_quality` | int | 0 (not inspected), 1 (impossible), 2 (tentative), 3 (probable), 4 (secure) |
 | `programs`, `tags` | list[str] | Program slugs and tag slugs |
 | `n_spectra`, `max_snr`, `max_exposure_time` | — | Cross-spectrum aggregates |
 | `has_photometry`, `photo_z`, `photo_z_err_lo/hi` | — | Photometry summary |

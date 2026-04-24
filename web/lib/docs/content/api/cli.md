@@ -213,7 +213,7 @@ Three CSVs are generated: `objects.csv` (one row per sky-object, with inspection
 | `redshift` | float | Best redshift (inspected > auto) |
 | `redshift_auto` | float | Automated (zfit) redshift |
 | `redshift_inspected` | float | Manually inspected redshift |
-| `redshift_quality` | int | 0 (none), 1 (tentative), 2 (probable), 3 (secure), 4 (gold) |
+| `redshift_quality` | int | 0 (not inspected), 1 (impossible), 2 (tentative), 3 (probable), 4 (secure) |
 | `n_targets`, `n_spectra` | int | Cross-program counts |
 | `programs`, `gratings`, `observations` | str | Semicolon-separated lists |
 | `member_target_ids` | str | Semicolon-separated per-program target IDs |

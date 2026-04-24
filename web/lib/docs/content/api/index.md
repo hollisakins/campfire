@@ -77,7 +77,7 @@ cf.sync()  # Pull full catalog
 # Query locally — instant, no network
 results = cf.query_objects(
     redshift_range=(3.0, 6.0),
-    redshift_quality=[2, 3],  # 0 none, 1 tentative, 2 probable, 3 secure, 4 gold
+    redshift_quality=[3, 4],  # 0 not inspected, 1 impossible, 2 tentative, 3 probable, 4 secure
 )
 
 # Download FITS for specific observations
