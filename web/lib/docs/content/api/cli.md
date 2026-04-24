@@ -201,34 +201,48 @@ spectra = Table.read('~/campfire/meta/spectra.csv')
 high_z = objects[objects['redshift'] > 3.0]
 ```
 
+Three CSVs are generated: `objects.csv` (one row per sky-object, with inspection state), `spectra.csv` (one row per spectrum, with FITS paths), and `photometry.csv` (wide-format broadband photometry).
+
 **objects.csv columns:**
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `object_id` | str | Unique identifier |
-| `program_slug` | str | Program identifier |
-| `program_name` | str | Program display name |
-| `field` | str | Field name (COSMOS, UDS, EGS) |
-| `observation` | str | Observation name |
+| `object_id` | str | Unique sky-object identifier |
+| `field` | str | Field name (cosmos, uds, egs, …) |
 | `ra`, `dec` | float | Coordinates (J2000, degrees) |
-| `redshift` | float | Best redshift (inspected or auto) |
-| `redshift_auto` | float | Pipeline redshift |
+| `redshift` | float | Best redshift (inspected > auto) |
+| `redshift_auto` | float | Automated (zfit) redshift |
 | `redshift_inspected` | float | Manually inspected redshift |
-| `redshift_quality` | int | Quality (0=none, 1=impossible, 2=tentative, 3=probable) |
-| `dq_flags` | int | Bitmask (see [Flags](/docs/inspection/flags)) |
-| `lists` | str | Semicolon-separated tag slugs |
-| `max_snr` | float | Maximum signal-to-noise ratio |
+| `redshift_quality` | int | 0 (not inspected), 1 (impossible), 2 (tentative), 3 (probable), 4 (secure) |
+| `n_targets`, `n_spectra` | int | Cross-program counts |
+| `programs`, `gratings`, `observations` | str | Semicolon-separated lists |
+| `member_target_ids` | str | Semicolon-separated per-program target IDs |
+| `max_snr`, `max_exposure_time` | float | Aggregates across spectra |
+| `has_photometry` | bool | Whether a photometry match exists |
+| `photo_z`, `photo_z_err_lo`, `photo_z_err_hi` | float | Photo-z (if matched) |
+| `last_inspected_at`, `last_inspected_by` | str | Inspection metadata |
+| `last_data_change_at`, `staleness_reason` | str | Staleness tracking |
+
+Tags are not denormalized into `objects.csv` — use `cf.query_objects(tags=[...])` or `cf.get_tags()` from the Python client.
 
 **spectra.csv columns:**
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `spectra_id` | int | Unique spectrum ID |
-| `object_id` | str | Parent object ID |
-| `grating` | str | Grating (PRISM, G140M, G235M, G395M, etc.) |
+| `spectrum_id` | str | Stable per-spectrum identifier |
+| `target_id` | str | Per-program target ID |
+| `object_id` | str | Parent sky-object ID |
+| `grating` | str | Grating (PRISM, G140M, G235M, G395M, …) |
 | `fits_path` | str | Remote FITS file path |
-| `signal_to_noise` | float | Spectrum S/N |
-| `local_path` | str | Relative path to local FITS file |
+| `file_hash`, `file_size` | — | Remote file metadata |
+| `signal_to_noise`, `exposure_time` | float | Per-spectrum quality |
+| `reduction_version` | str | Pipeline version |
+| `redshift_auto` | float | Per-spectrum automated redshift |
+| `dq_flags` | int | Per-spectrum DQ bitmask (see [Flags](/docs/inspection/flags)) |
+| `program_slug`, `observation`, `field` | str | Provenance |
+| `local_path` | str | Relative path to downloaded FITS |
+
+**photometry.csv** is wide-format: one row per `(object_id, catalog_name)` with identification columns (`object_id`, `field`, `catalog_name`, `catalog_id`, `match_distance_arcsec`), photo-z columns (`photo_z`, `photo_z_err_lo`, `photo_z_err_hi`), and per-band `f_<band>` / `e_<band>` pairs in μJy.
 
 ---
 
@@ -239,3 +253,16 @@ high_z = objects[objects['redshift'] > 3.0]
 | `--base-url URL` | Override API URL (for development) |
 | `--version` | Show version |
 | `--help` | Show help |
+
+---
+
+## Admin Commands
+
+The `campfire deploy` subgroup provides archive-maintainer tooling — deploying reduced products to Supabase + R2, generating RGB cutouts and map tiles, and reconciling object associations. These commands are intended for archive maintainers only and are gated behind the `deploy` extra:
+
+```bash
+pip install -e ".[deploy]"
+campfire deploy --help
+```
+
+If you're not a maintainer, you can ignore this subgroup.
