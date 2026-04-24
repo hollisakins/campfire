@@ -29,6 +29,7 @@
     sigma_clip = true
     bkg_estimator = "median"
     do_col_1f = true
+    col_1f_method = "template" # "median" (flat per-column) or "template" (per-column PF template fit)
     do_row_1f = true # only used for PRISM
     plot = true
     

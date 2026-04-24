@@ -75,6 +75,7 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         bkg_estimator=stage_config.get('bkg_estimator', 'median'),
         do_col_1f=stage_config.get('do_col_1f', True),
         do_row_1f=stage_config.get('do_row_1f', True),
+        col_1f_method=stage_config.get('col_1f_method', 'template'),
         plot=stage_config.get('plot', True),
         save_backup=False,
     )
@@ -405,6 +406,55 @@ def _get_pictureframe_file(rate_file):
     return None
 
 
+def _fit_col_template(residual, mask, template, sigma_clip=True,
+                      min_valid=20, n_clip_iter=5):
+    """Per-column fit of residual[:,j] = alpha_j * template[:,j] + beta_j.
+
+    Alternative to the flat per-column median used in the default col_1f step.
+    Captures column-wise mismatches in the picture-frame template that the
+    coarser per-quarter PF fit cannot correct. Returns an ndarray same shape
+    as `residual`, with 0 in columns that have fewer than `min_valid` unmasked
+    pixels.
+    """
+    from astropy.stats import median_absolute_deviation
+
+    col_model = np.zeros_like(residual)
+    _, n_cols = residual.shape
+
+    for j in range(n_cols):
+        col_mask = mask[:, j]
+        if col_mask.sum() < min_valid:
+            continue
+        d = residual[col_mask, j]
+        t = template[col_mask, j]
+
+        # Degenerate: if the template column is essentially flat, only a
+        # constant shift is identifiable — fall back to the column median.
+        if np.ptp(t) == 0:
+            col_model[:, j] = np.median(d)
+            continue
+
+        A = np.column_stack([t, np.ones_like(t)])
+        (alpha, beta), _, _, _ = np.linalg.lstsq(A, d, rcond=None)
+
+        if sigma_clip:
+            for _ in range(n_clip_iter):
+                resid = d - (alpha * t + beta)
+                sigma_mad = median_absolute_deviation(resid)
+                if sigma_mad == 0:
+                    break
+                keep = np.abs(resid - np.median(resid)) < 3.0 * sigma_mad
+                if keep.sum() == len(d) or keep.sum() < min_valid:
+                    break
+                d, t = d[keep], t[keep]
+                A = np.column_stack([t, np.ones_like(t)])
+                (alpha, beta), _, _, _ = np.linalg.lstsq(A, d, rcond=None)
+
+        col_model[:, j] = alpha * template[:, j] + beta
+
+    return col_model
+
+
 def subtract_background_from_rate_file(
         rate_file: str,
         override_wavelength_range: dict = {},
@@ -415,6 +465,7 @@ def subtract_background_from_rate_file(
         bkg_estimator: str = 'median',
         do_col_1f: str = True,
         do_row_1f: str = True,
+        col_1f_method: str = 'template',
         plot: bool = True,
         save_backup: bool = False,
     ):
@@ -615,13 +666,23 @@ def subtract_background_from_rate_file(
 
 
             if do_col_1f:
-                rate_masked = (model.data - bkg_total).copy()
-                rate_masked[~mask] = np.nan
+                if col_1f_method == 'template' and use_pictureframe:
+                    log(f'Subtracting column 1/f via per-column PF template fit')
+                    col_model = _fit_col_template(
+                        model.data - bkg_total, mask, pictureframe_template,
+                        sigma_clip=sigma_clip,
+                    )
+                else:
+                    if col_1f_method == 'template' and not use_pictureframe:
+                        log(f'WARNING: col_1f_method="template" requested but no PF template '
+                            f'available; falling back to per-column median')
+                    rate_masked = (model.data - bkg_total).copy()
+                    rate_masked[~mask] = np.nan
 
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    col_model = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
-                col_model[~np.isfinite(col_model)] = 0.0
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        col_model = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
+                    col_model[~np.isfinite(col_model)] = 0.0
 
                 bkg_total += col_model
                 col_model_total += col_model
