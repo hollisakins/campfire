@@ -325,7 +325,8 @@ def _run_summary(cfg, obs_obj):
         write_shutters_ecsv,
     )
 
-    version = cfg.get('pipeline', {}).get('version', 'unknown')
+    from campfire_pipeline.common.version import get_reduction_version
+    version = get_reduction_version(cfg)
     consensus_config = cfg.get('nirspec', {}).get('redshift_consensus', {})
     obs_dir = Path(obs_obj.workspace_dir)
     summary_table = generate_observation_summary(obs_obj.name, obs_dir,

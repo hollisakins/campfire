@@ -85,7 +85,8 @@ def info(config_path):
     cfg = load_config(config_path)
     setup_environment(cfg)
 
-    version = cfg.get('pipeline', {}).get('version', 'unknown')
+    from campfire_pipeline.common.version import get_reduction_version
+    version = get_reduction_version(cfg)
     click.echo(f"  Pipeline ver:   {version}")
 
     # CRDS settings
