@@ -41,7 +41,8 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec.observation import Observation
 
-    version = config.get('pipeline', {}).get('version', 'unknown')
+    from campfire_pipeline.common.version import get_reduction_version
+    version = get_reduction_version(config)
     log(f"Stage 3 config for {obs.name}: {stage_config}")
 
     bkg_subtraction_method = stage_config.get('method', 'nodded')
@@ -338,7 +339,7 @@ def opt_ext_single_source(
             continue
 
     ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
-    ph['CMPFRVER'] = (version, 'Version of CAMPFIRE reduction')
+    ph['CMPFRVER'] = (version, 'CAMPFIRE git commit (or pinned version)')
 
     primary = fits.PrimaryHDU(header=ph)
 
@@ -568,7 +569,7 @@ def combine_per_eg_spectra(
         except KeyError:
             continue
     ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
-    ph['CMPFRVER'] = (version, 'Version of CAMPFIRE reduction')
+    ph['CMPFRVER'] = (version, 'CAMPFIRE git commit (or pinned version)')
     ph['CMPFRSTG'] = ('stage3-1d', 'CAMPFIRE stage that produced this file')
     ph['NCOMBINE'] = (len(per_eg_spec_files), 'Number of per-exp_group spectra combined')
     primary = fits.PrimaryHDU(header=ph)

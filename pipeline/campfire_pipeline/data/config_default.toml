@@ -2,7 +2,10 @@
 # Export with: cfpipe config > my_config.toml
 
 [pipeline]
-    version = "v0.3"
+    # Reduction version is auto-computed as the campfire git commit hash
+    # (with '-dirty' suffix if the working tree has uncommitted changes).
+    # Uncomment to pin a specific version string instead:
+    # version = "v0.3"
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
