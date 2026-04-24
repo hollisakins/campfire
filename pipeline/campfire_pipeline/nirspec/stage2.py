@@ -872,7 +872,14 @@ def run_stage2b_single_slitlet(
                     nods = [int(os.path.basename(cal_file).split('_')[2]) for cal_file in cal_files]
                     if str(nods[i]) in bkg_overrides:
                         nods_to_use = bkg_overrides[str(nods[i])]
-                        print(nods_to_use)
+                        if len(nods_to_use) == 0:
+                            log(f'{os.path.basename(cal_files[i])}: Override empty for nod {nods[i]}, skipping bkgsub output (nod excluded from science combination)')
+                            cal_file_out = cal_files[i].replace('_cal.fits', '_cal_bkgsub.fits')
+                            s2d_file_out = cal_file_out.replace('_cal_bkgsub.fits', '_s2d_bkgsub.fits')
+                            for stale in (cal_file_out, s2d_file_out):
+                                if os.path.exists(stale):
+                                    os.remove(stale)
+                            continue
                         log(f'{os.path.basename(cal_files[i])}: Only using nods {nods_to_use} for bkg subtraction for nod {nods[i]}')
                         bkg = [b[0] for n,b in zip(nods,models) if n in nods_to_use]
 
