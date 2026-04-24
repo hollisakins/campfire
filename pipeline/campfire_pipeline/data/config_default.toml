@@ -4,8 +4,8 @@
 [pipeline]
     # Reduction version is auto-computed as the campfire git commit hash
     # (with '-dirty' suffix if the working tree has uncommitted changes).
-    # Uncomment to pin a specific version string instead:
-    # version = "v0.3"
+    # Uncomment to pin a specific version string instead, e.g.:
+    # version = "release-v1.0"
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
