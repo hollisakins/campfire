@@ -119,16 +119,18 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
             )}
           </div>
 
-          <input
-            ref={overrideInputRef}
-            type="number"
-            step="0.0001"
-            value={inspection.redshiftInspected}
-            onChange={e => inspection.setRedshiftInspected(e.target.value)}
-            placeholder="Override"
-            title="Override redshift (O)"
-            className="w-36 px-2.5 py-1.5 text-sm font-mono border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
-          />
+          <div className="flex items-center gap-1.5">
+            <input
+              ref={overrideInputRef}
+              type="number"
+              step="0.0001"
+              value={inspection.redshiftInspected}
+              onChange={e => inspection.setRedshiftInspected(e.target.value)}
+              placeholder="Override"
+              className="w-36 px-2.5 py-1.5 text-sm font-mono border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            <kbd className="font-mono text-xs text-text-secondary dark:text-slate-400 opacity-60">O</kbd>
+          </div>
 
           <div role="radiogroup" aria-label="Redshift quality" className="flex items-center gap-1.5">
             {qualityOptions.map(q => {
@@ -146,7 +148,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
                       : 'border border-border dark:border-slate-600 hover:bg-background dark:hover:bg-slate-700 text-text-primary dark:text-slate-100'
                     }`}
                   style={isSelected ? { backgroundColor: q.color, color: getContrastColor(q.color) } : undefined}
-                  title={`${q.label} \u2014 ${q.description} (${q.value})`}
+                  title={`${q.label} \u2014 ${q.description}`}
                 >
                   <kbd className="font-mono text-xs opacity-60 mr-1">{q.value}</kbd>
                   {q.short}
@@ -172,7 +174,6 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
             size="sm"
             onClick={() => inspection.save()}
             disabled={!inspection.hasChanges || inspection.saving || inspection.redshiftQuality === 0}
-            title="Save (S)"
           >
             {inspection.saving ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -180,6 +181,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
               <>
                 <Save className="w-4 h-4 mr-1" />
                 Save
+                <kbd className="ml-1.5 font-mono text-xs opacity-70">S</kbd>
               </>
             )}
           </Button>

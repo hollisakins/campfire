@@ -261,10 +261,10 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
             <button
               onClick={() => setShowDropdown(!showDropdown)}
               className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border border-dashed border-border dark:border-slate-600 text-text-secondary dark:text-slate-400 hover:border-primary hover:text-primary transition-colors"
-              title="Add tag (T)"
             >
               <Plus className="w-3 h-3" />
               Add tag
+              <kbd className="ml-0.5 font-mono opacity-60">T</kbd>
             </button>
 
             {showDropdown && (
