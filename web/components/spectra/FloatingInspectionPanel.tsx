@@ -119,7 +119,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
             )}
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="relative">
             <input
               ref={overrideInputRef}
               type="number"
@@ -127,9 +127,9 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
               value={inspection.redshiftInspected}
               onChange={e => inspection.setRedshiftInspected(e.target.value)}
               placeholder="Override"
-              className="w-36 px-2.5 py-1.5 text-sm font-mono border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+              className="w-36 pl-2.5 pr-7 py-1.5 text-sm font-mono border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
             />
-            <kbd className="font-mono text-xs text-text-secondary dark:text-slate-400 opacity-60">O</kbd>
+            <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-xs text-text-secondary dark:text-slate-400 opacity-60">O</kbd>
           </div>
 
           <div role="radiogroup" aria-label="Redshift quality" className="flex items-center gap-1.5">
