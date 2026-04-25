@@ -385,36 +385,95 @@ def _upsert_photometry(client: Client, records: list[dict]) -> int:
     return total
 
 
-def _delete_photometry_for_objects(
-    client: Client, field: str, object_db_ids: set[int],
-) -> int:
-    """Delete photometry rows for the given object DB ids in a field.
+def _reconcile_existing_rows(
+    client: Client,
+    field: str,
+    catalog_name: str,
+    restricted_object_db_ids: set[int],
+    upsert_keys: set[tuple[int, str]],
+    key_to_obj: dict[tuple[str, str], tuple[int, float, float]],
+    now: str,
+) -> tuple[int, int]:
+    """Reconcile existing photometry rows owned by restricted objects against
+    the current deduped match set.
 
-    Used for orphan cleanup when a changed object no longer matches any
-    catalog source (e.g., centroid drifted out of match radius).
+    For each existing DB row whose `object_id` is in *restricted_object_db_ids*:
+
+    - If the row's catalog source is being re-upserted by the current run
+      (key in *upsert_keys*) → no action; the upsert handles it.
+    - Else if the row's catalog source is matched to a different object now
+      (key in *key_to_obj* but points elsewhere) → re-route: update the FK
+      in place. No R2 upload — photo_z and payload are unchanged.
+    - Else (catalog source absent from current match set) → delete. Genuine
+      orphan: catalog source removed upstream, or all candidate centroids
+      drifted out of match radius.
+
+    Scoped to a single catalog_name so multi-catalog fields are not
+    cross-contaminated.
+
+    Returns (n_deleted, n_rerouted).
     """
-    if not object_db_ids:
-        return 0
-    ids = list(object_db_ids)
-    total = 0
+    if not restricted_object_db_ids:
+        return 0, 0
+
+    ids = list(restricted_object_db_ids)
+    existing: list[dict] = []
     for i in range(0, len(ids), BATCH_SIZE):
         chunk = ids[i:i + BATCH_SIZE]
         resp = (
             client.table('object_photometry')
-            .delete()
+            .select('id, object_id, catalog_name, catalog_id')
             .eq('field', field)
+            .eq('catalog_name', catalog_name)
             .in_('object_id', chunk)
             .execute()
         )
-        total += len(resp.data) if resp.data else 0
-    return total
+        if resp.data:
+            existing.extend(resp.data)
+
+    rows_to_delete: list[int] = []
+    reroutes: list[tuple[int, int, float, float]] = []
+    for r in existing:
+        if (r['object_id'], r['catalog_id']) in upsert_keys:
+            continue  # current run will upsert this row
+        new = key_to_obj.get((r['catalog_name'], r['catalog_id']))
+        if new is None:
+            rows_to_delete.append(r['id'])
+            continue
+        new_id, new_ra, new_dec = new
+        if new_id != r['object_id']:
+            reroutes.append((r['id'], new_id, new_ra, new_dec))
+        # else: dedup still points to same object but row isn't in upsert_keys.
+        # Shouldn't happen in normal flow, but harmless — leave as-is.
+
+    for row_id, new_id, new_ra, new_dec in reroutes:
+        client.table('object_photometry').update({
+            'object_id': new_id,
+            'ra': new_ra,
+            'dec': new_dec,
+            'updated_at': now,
+        }).eq('id', row_id).execute()
+
+    n_deleted = 0
+    for i in range(0, len(rows_to_delete), BATCH_SIZE):
+        chunk = rows_to_delete[i:i + BATCH_SIZE]
+        client.table('object_photometry').delete().in_('id', chunk).execute()
+        n_deleted += len(chunk)
+
+    return n_deleted, len(reroutes)
 
 
 def _prune_photometry(
-    client: Client, field: str, kept_keys: set[tuple[str, str]],
+    client: Client,
+    field: str,
+    catalog_name: str,
+    kept_catalog_ids: set[str],
 ) -> int:
-    """Delete photometry rows whose (catalog_name, catalog_id) is not in
-    *kept_keys*. Used for upstream catalog regeneration cleanup.
+    """Delete photometry rows for *catalog_name* in *field* whose
+    catalog_id is not in *kept_catalog_ids*.
+
+    Scoped to a single catalog so other catalogs deployed to the same
+    field are untouched.
     """
     total = 0
     page_size = 1000
@@ -423,8 +482,9 @@ def _prune_photometry(
     while True:
         resp = (
             client.table('object_photometry')
-            .select('id, catalog_name, catalog_id')
+            .select('id, catalog_id')
             .eq('field', field)
+            .eq('catalog_name', catalog_name)
             .order('id')
             .range(offset, offset + page_size - 1)
             .execute()
@@ -433,7 +493,7 @@ def _prune_photometry(
         if not rows:
             break
         for r in rows:
-            if (r['catalog_name'], r['catalog_id']) not in kept_keys:
+            if r['catalog_id'] not in kept_catalog_ids:
                 to_delete.append(r['id'])
         if len(rows) < page_size:
             break
@@ -580,12 +640,6 @@ def deploy_field_photometry(
     else:
         kept_matches = matches
 
-    # Track which restricted objects produced no match — orphan cleanup target.
-    matched_restricted_ids: set[int] = (
-        {objects[m[0]]['id'] for m in kept_matches}
-        if restrict_to_object_db_ids is not None else set()
-    )
-
     # Lazy photo-z load: only pay the FITS load if we actually have rows to
     # process. Skipped entirely when kept_matches is empty.
     photoz: PhotozData | None = None
@@ -670,16 +724,36 @@ def deploy_field_photometry(
             for err in errors[:5]:
                 print(f"      {err}")
 
-    # Orphan cleanup: changed objects that no longer match any catalog source
-    # need their existing photometry rows removed. (Only meaningful in the
-    # restricted path; the full-field path uses --prune for sweeps instead.)
-    if restrict_to_object_db_ids is not None:
-        orphan_ids = restrict_to_object_db_ids - matched_restricted_ids
-        if orphan_ids:
-            print(f"  Removing photometry for {len(orphan_ids)} unmatched objects...")
-            n_orphans = _delete_photometry_for_objects(client, field, orphan_ids)
-            if n_orphans:
-                print(f"    Deleted {n_orphans} orphaned rows")
+    # Build a (catalog_name, catalog_id) → (obj_db_id, ra, dec) map from the
+    # *full* deduped match set. Used both for existing-row reconciliation
+    # (re-route vs. delete) and for --prune (which catalog_ids are still
+    # present).
+    key_to_obj: dict[tuple[str, str], tuple[int, float, float]] = {}
+    for obj_idx, cat_idx, _ in matches:
+        cat_id_raw = catalog[id_col][cat_idx] if id_col in catalog.colnames else cat_idx
+        cat_id_str = str(cat_id_raw)
+        obj = objects[obj_idx]
+        key_to_obj[(catalog_name, cat_id_str)] = (obj['id'], obj['ra'], obj['dec'])
+
+    # Reconcile existing rows owned by restricted objects against the new
+    # match set. This catches three cases that pure upsert misses:
+    #   1. Object lost a catalog source it used to own (centroid drift) and
+    #      no other object now owns it → delete.
+    #   2. Object lost a source that dedup re-assigned to an unchanged object
+    #      → re-route the FK in place (no R2 upload).
+    #   3. Object's prior row is being re-upserted by this run → no action.
+    if restrict_to_object_db_ids is not None and restrict_to_object_db_ids:
+        upsert_keys: set[tuple[int, str]] = {
+            (rec['object_id'], rec['catalog_id']) for rec in records
+        }
+        n_deleted, n_rerouted = _reconcile_existing_rows(
+            client, field, catalog_name,
+            restrict_to_object_db_ids, upsert_keys, key_to_obj, now,
+        )
+        if n_rerouted:
+            print(f"    Re-routed {n_rerouted} photometry rows to new owners")
+        if n_deleted:
+            print(f"    Deleted {n_deleted} orphaned rows (no catalog match)")
 
     if records:
         print(f"  Upserting {len(records)} photometry rows...")
@@ -688,14 +762,9 @@ def deploy_field_photometry(
         print(f"  No photometry rows to upsert.")
 
     if prune and restrict_to_object_db_ids is None:
-        # Build kept_keys from the *full* match set, not just kept_matches.
-        kept_keys: set[tuple[str, str]] = set()
-        for obj_idx, cat_idx, _ in matches:
-            cat_id_raw = catalog[id_col][cat_idx] if id_col in catalog.colnames else cat_idx
-            cat_id_str = str(cat_id_raw)
-            kept_keys.add((catalog_name, cat_id_str))
-        print(f"  Pruning rows not in current catalog match set...")
-        n_pruned = _prune_photometry(client, field, kept_keys)
+        kept_catalog_ids = {cat_id for (_cn, cat_id) in key_to_obj.keys()}
+        print(f"  Pruning rows in catalog '{catalog_name}' not in current match set...")
+        n_pruned = _prune_photometry(client, field, catalog_name, kept_catalog_ids)
         if n_pruned:
             print(f"    Pruned {n_pruned} stale rows")
 
