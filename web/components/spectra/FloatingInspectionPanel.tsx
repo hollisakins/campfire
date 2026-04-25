@@ -1,20 +1,13 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/Button';
-import { ObjectListsSection } from '@/components/spectra/ObjectListsSection';
+import { ObjectListsSection, type ObjectListsSectionHandle } from '@/components/spectra/ObjectListsSection';
 import { ConflictBanner } from '@/components/spectra/inspection/ConflictBanner';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { REDSHIFT_QUALITY, getContrastColor } from '@/lib/flags';
 import type { InspectionState } from '@/lib/hooks/useInspectionState';
 import { Save, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
-
-const QUALITY_LETTER_KEYS: Record<string, number> = {
-  i: 1, // Impossible
-  t: 2, // Tentative
-  p: 3, // Probable
-  s: 4, // Secure
-};
 
 interface FloatingInspectionPanelProps {
   objectId: number;
@@ -33,6 +26,11 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
   const canEdit = user && userProfile?.can_comment;
 
   const setRedshiftQuality = inspection.setRedshiftQuality;
+  const save = inspection.save;
+  const { hasChanges, saving, redshiftQuality } = inspection;
+
+  const overrideInputRef = useRef<HTMLInputElement>(null);
+  const listsRef = useRef<ObjectListsSectionHandle>(null);
 
   useEffect(() => {
     if (!canEdit) return;
@@ -47,19 +45,31 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
         setRedshiftQuality(parseInt(e.key));
         return;
       }
-      const letterValue = QUALITY_LETTER_KEYS[e.key.toLowerCase()];
-      if (letterValue !== undefined) {
-        setRedshiftQuality(letterValue);
+      switch (e.key.toLowerCase()) {
+        case 'o':
+          e.preventDefault();
+          overrideInputRef.current?.focus();
+          overrideInputRef.current?.select();
+          break;
+        case 't':
+          e.preventDefault();
+          listsRef.current?.openDropdown();
+          break;
+        case 's':
+          if (hasChanges && !saving && redshiftQuality !== 0) {
+            e.preventDefault();
+            save();
+          }
+          break;
       }
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [canEdit, setRedshiftQuality]);
+  }, [canEdit, setRedshiftQuality, save, hasChanges, saving, redshiftQuality]);
 
   if (!canEdit) return null;
 
   const qualityOptions = REDSHIFT_QUALITY.filter(q => q.value > 0);
-  const qualityLetterByValue: Record<number, string> = { 1: 'i', 2: 't', 3: 'p', 4: 's' };
 
   return (
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-xl shadow-xl px-5 py-3 max-w-5xl w-auto">
@@ -90,7 +100,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
 
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-center">
-          <ObjectListsSection objectId={objectId} ra={ra} dec={dec} dropdownPlacement="top" />
+          <ObjectListsSection ref={listsRef} objectId={objectId} ra={ra} dec={dec} dropdownPlacement="top" />
         </div>
 
         <div className="h-px bg-border dark:bg-slate-700" />
@@ -110,18 +120,19 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
           </div>
 
           <input
+            ref={overrideInputRef}
             type="number"
             step="0.0001"
             value={inspection.redshiftInspected}
             onChange={e => inspection.setRedshiftInspected(e.target.value)}
-            placeholder="Override z"
+            placeholder="Override"
+            title="Override redshift (O)"
             className="w-36 px-2.5 py-1.5 text-sm font-mono border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
           />
 
           <div role="radiogroup" aria-label="Redshift quality" className="flex items-center gap-1.5">
             {qualityOptions.map(q => {
               const isSelected = inspection.redshiftQuality === q.value;
-              const letter = qualityLetterByValue[q.value];
               return (
                 <button
                   key={q.value}
@@ -135,7 +146,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
                       : 'border border-border dark:border-slate-600 hover:bg-background dark:hover:bg-slate-700 text-text-primary dark:text-slate-100'
                     }`}
                   style={isSelected ? { backgroundColor: q.color, color: getContrastColor(q.color) } : undefined}
-                  title={`${q.label} \u2014 ${q.description} (${q.value} or ${letter.toUpperCase()})`}
+                  title={`${q.label} \u2014 ${q.description} (${q.value})`}
                 >
                   <kbd className="font-mono text-xs opacity-60 mr-1">{q.value}</kbd>
                   {q.short}
@@ -161,6 +172,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
             size="sm"
             onClick={() => inspection.save()}
             disabled={!inspection.hasChanges || inspection.saving || inspection.redshiftQuality === 0}
+            title="Save (S)"
           >
             {inspection.saving ? (
               <Loader2 className="w-4 h-4 animate-spin" />
