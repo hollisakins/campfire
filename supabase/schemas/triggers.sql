@@ -130,6 +130,7 @@ BEGIN
        OR OLD.redshift_auto IS DISTINCT FROM NEW.redshift_auto
        OR OLD.last_data_change_at IS DISTINCT FROM NEW.last_data_change_at
        OR OLD.staleness_reason IS DISTINCT FROM NEW.staleness_reason
+       OR OLD.inspected_used_auto IS DISTINCT FROM NEW.inspected_used_auto
        OR OLD.is_active IS DISTINCT FROM NEW.is_active
        OR OLD.created_at IS DISTINCT FROM NEW.created_at
     THEN
@@ -137,6 +138,66 @@ BEGIN
             USING ERRCODE = '42501';  -- insufficient_privilege
     END IF;
 
+    RETURN NEW;
+END;
+$$;
+
+
+-- 4b. pin_redshift_on_signoff
+--     Pins the displayed redshift at the moment an inspector signs off.
+--
+--     The generated `redshift` column is COALESCE(redshift_inspected, redshift_auto)
+--     (when quality != 1). If an inspector commits quality >= 2 without entering
+--     a numeric override, the displayed redshift falls through to redshift_auto
+--     — which compute_object_redshift_auto() can move under their feet on the
+--     next reprocess. This trigger eliminates that "implicit sign-off" failure
+--     mode by promoting the current redshift_auto into redshift_inspected at
+--     sign-off time, recording inspected_used_auto = true so the UI knows the
+--     value wasn't typed.
+--
+--     Cases handled (only fires on inspector-driven UPDATEs by being scoped to
+--     OF redshift_inspected, redshift_quality — reconcile-driven redshift_auto
+--     bumps don't trip it):
+--       - quality >= 2 AND inspected IS NULL AND auto IS NOT NULL:
+--           pin → inspected = auto, used_auto = true
+--       - quality >= 2 AND inspected changes to a NEW non-null value:
+--           explicit override → used_auto = false
+--       - quality < 2 (uninspected or Impossible):
+--           drop the pin → inspected = NULL, used_auto = false
+--
+--     Trigger ordering: PostgreSQL fires BEFORE triggers in alphabetical order,
+--     so on UPDATE we get bump → enforce → pin → track. enforce runs before
+--     pin can mutate inspected_used_auto, so it correctly rejects direct
+--     non-admin writes to the column. track runs after pin, so the audit log
+--     captures the final NEW.redshift_inspected value (matches what's stored).
+DROP FUNCTION IF EXISTS public.pin_redshift_on_signoff CASCADE;
+
+CREATE OR REPLACE FUNCTION public.pin_redshift_on_signoff() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.redshift_quality >= 2 THEN
+        IF NEW.redshift_inspected IS NULL AND NEW.redshift_auto IS NOT NULL THEN
+            -- Implicit sign-off: pin to the current auto-fit so reprocessing
+            -- can't silently move the displayed redshift.
+            NEW.redshift_inspected := NEW.redshift_auto::numeric;
+            NEW.inspected_used_auto := true;
+        ELSIF TG_OP = 'UPDATE'
+              AND NEW.redshift_inspected IS NOT NULL
+              AND NEW.redshift_inspected IS DISTINCT FROM OLD.redshift_inspected THEN
+            -- Explicit override (newly typed or changed): clear the auto flag.
+            NEW.inspected_used_auto := false;
+        ELSIF TG_OP = 'INSERT' AND NEW.redshift_inspected IS NOT NULL THEN
+            -- Initial insert with an explicit override.
+            NEW.inspected_used_auto := false;
+        END IF;
+    ELSE
+        -- quality < 2: object is uninspected or Impossible. Drop the pin so
+        -- redshift_inspected reflects "no user override" again. The generated
+        -- redshift column handles Impossible (quality=1 → NULL) on its own.
+        NEW.redshift_inspected := NULL;
+        NEW.inspected_used_auto := false;
+    END IF;
     RETURN NEW;
 END;
 $$;
@@ -276,6 +337,15 @@ DROP TRIGGER IF EXISTS enforce_object_user_update_scope_trigger ON public.object
 CREATE TRIGGER enforce_object_user_update_scope_trigger
   BEFORE UPDATE ON public.objects
   FOR EACH ROW EXECUTE FUNCTION public.enforce_object_user_update_scope();
+
+-- Pin the displayed redshift at sign-off time. Scoped to inspector-driven
+-- columns so reconcile-driven redshift_auto updates don't fire it. Fires
+-- alphabetically after enforce_object_user_update_scope so any auto-pinning
+-- it does is invisible to the column-scope check (which has already passed).
+DROP TRIGGER IF EXISTS pin_redshift_on_signoff_trigger ON public.objects;
+CREATE TRIGGER pin_redshift_on_signoff_trigger
+  BEFORE INSERT OR UPDATE OF redshift_inspected, redshift_quality ON public.objects
+  FOR EACH ROW EXECUTE FUNCTION public.pin_redshift_on_signoff();
 
 
 -- Per-spectrum DQ flag changes

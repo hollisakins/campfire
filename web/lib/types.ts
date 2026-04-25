@@ -382,6 +382,12 @@ export interface ObjectDetail {
   redshift_quality: number;
   redshift_inspected: number | null;
   redshift_auto: number | null;
+  // True when redshift_inspected was auto-pinned from redshift_auto at sign-off
+  // (inspector accepted the auto-fit rather than typing a number). The UI
+  // suppresses the "(overridden)" hint and shows an empty override input when
+  // this is true. False for explicit user-typed overrides and for
+  // uninspected/impossible rows.
+  inspected_used_auto: boolean;
   last_inspected_at: string | null;
   last_inspected_by: string | null;
   last_data_change_at: string | null;

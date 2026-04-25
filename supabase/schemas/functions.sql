@@ -160,6 +160,7 @@ BEGIN
            o.max_snr, o.max_exposure_time,
            o.redshift, o.redshift_quality,
            o.redshift_inspected, o.redshift_auto,
+           o.inspected_used_auto,
            o.last_inspected_at, o.last_inspected_by,
            o.last_data_change_at, o.staleness_reason,
            o.version, o.is_active,
@@ -247,6 +248,7 @@ BEGIN
         'redshift_quality', m.redshift_quality,
         'redshift_inspected', m.redshift_inspected,
         'redshift_auto', m.redshift_auto,
+        'inspected_used_auto', m.inspected_used_auto,
         'last_inspected_at', m.last_inspected_at,
         'last_inspected_by', m.last_inspected_by,
         'last_data_change_at', m.last_data_change_at,
@@ -960,6 +962,7 @@ BEGIN
       o.redshift_quality,
       o.redshift_inspected,
       o.redshift_auto,
+      o.inspected_used_auto,
       o.last_inspected_at,
       o.last_inspected_by,
       o.last_data_change_at,
@@ -1090,6 +1093,7 @@ BEGIN
         'redshift_quality', fo.redshift_quality,
         'redshift_inspected', fo.redshift_inspected,
         'redshift_auto', fo.redshift_auto,
+        'inspected_used_auto', fo.inspected_used_auto,
         'last_inspected_at', fo.last_inspected_at,
         'last_inspected_by', fo.last_inspected_by,
         'last_data_change_at', fo.last_data_change_at,
@@ -2594,17 +2598,20 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 -- clients would silently miss redshift_auto changes from pipeline reruns.
 -- ROW_COUNT is then the true number of objects whose value changed.
 --
--- Implicit sign-off preservation: when an inspector committed a quality flag
--- (redshift_quality >= 2) without entering a numeric override
--- (redshift_inspected IS NULL), the generated ``redshift`` column resolves to
--- whatever ``redshift_auto`` currently holds. Letting this function silently
--- overwrite redshift_auto would silently move the object's displayed redshift
--- out from under the sign-off. Instead, for any such object whose redshift_auto
--- is about to change, we promote the OLD redshift_auto into redshift_inspected
--- (pinning the generated redshift to what the inspector actually reviewed) and
--- flag ``staleness_reason = 'reprocessed'`` so the UI surfaces a "Needs Review"
--- badge. Inspectors can then reaffirm (no-op) or clear redshift_inspected to
--- accept the new auto-fit.
+-- Sign-off pinning is now handled at write time by the
+-- pin_redshift_on_signoff trigger: any object reaching quality >= 2 with
+-- redshift_inspected = NULL has its current redshift_auto promoted into
+-- redshift_inspected and inspected_used_auto = true. The displayed redshift
+-- (the generated `redshift` column) is therefore stable across reprocessing
+-- for every signed-off object — this function never has to worry about
+-- moving a value out from under an inspector.
+--
+-- Staleness signal: when redshift_auto changes for an already-signed-off
+-- object (quality >= 2), we still flag staleness_reason='reprocessed' and
+-- bump last_data_change_at so the UI surfaces a "Needs Review" badge.
+-- The pinned displayed redshift is unchanged, but the inspector should
+-- know the underlying fit shifted in case they want to update their
+-- override or reaffirm the existing one.
 CREATE OR REPLACE FUNCTION public.compute_object_redshift_auto(p_field TEXT)
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -2615,7 +2622,6 @@ BEGIN
   WITH computed AS (
     SELECT o.id,
            o.redshift_auto AS old_auto,
-           o.redshift_inspected AS old_inspected,
            o.redshift_quality AS quality,
            (
              SELECT s.redshift_auto
@@ -2639,27 +2645,15 @@ BEGIN
   )
   UPDATE objects o
   SET redshift_auto = c.new_val,
-      redshift_inspected = CASE
-        WHEN c.quality >= 2
-             AND c.old_inspected IS NULL
-             AND c.old_auto IS NOT NULL
-             AND c.new_val IS DISTINCT FROM c.old_auto
-        THEN c.old_auto::numeric
-        ELSE o.redshift_inspected
-      END,
       staleness_reason = CASE
         WHEN c.quality >= 2
-             AND c.old_inspected IS NULL
-             AND c.old_auto IS NOT NULL
-             AND c.new_val IS DISTINCT FROM c.old_auto
+             AND c.old_auto IS DISTINCT FROM c.new_val
         THEN 'reprocessed'
         ELSE o.staleness_reason
       END,
       last_data_change_at = CASE
         WHEN c.quality >= 2
-             AND c.old_inspected IS NULL
-             AND c.old_auto IS NOT NULL
-             AND c.new_val IS DISTINCT FROM c.old_auto
+             AND c.old_auto IS DISTINCT FROM c.new_val
         THEN NOW()
         ELSE o.last_data_change_at
       END,

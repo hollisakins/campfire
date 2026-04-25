@@ -528,6 +528,7 @@ export async function getObjectById(objectId: string): Promise<{
       redshift_quality: obj.redshift_quality ?? 0,
       redshift_inspected: obj.redshift_inspected ?? null,
       redshift_auto: obj.redshift_auto ?? null,
+      inspected_used_auto: obj.inspected_used_auto ?? false,
       last_inspected_at: obj.last_inspected_at ?? null,
       last_inspected_by: obj.last_inspected_by ?? null,
       last_data_change_at: obj.last_data_change_at ?? null,
