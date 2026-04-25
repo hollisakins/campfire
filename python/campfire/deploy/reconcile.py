@@ -725,8 +725,16 @@ def confirm_proposals(
 
 def apply_proposals(
     client: Client, field: str, proposals: Proposals,
-) -> dict[str, int]:
-    """Execute the reconciliation against Supabase. Returns a stats dict."""
+) -> tuple[dict[str, int], set[int]]:
+    """Execute the reconciliation against Supabase.
+
+    Returns:
+        (stats, changed_object_db_ids). The set contains the union of
+        object DB ids that were inserted, revived, updated, split (parent
+        plus daughters), or merged (survivor). Soft-deleted orphans and
+        merge losers are excluded — downstream consumers (e.g. photometry)
+        don't need to re-process them.
+    """
     if proposals.complex_overlaps:
         raise RuntimeError(
             f"apply_proposals called with {len(proposals.complex_overlaps)} "
@@ -742,6 +750,8 @@ def apply_proposals(
 
     # Track (cluster_idx → object_db_id) for FK assignment at the end.
     cluster_to_object_db_id: dict[int, int] = {}
+    # Track touched object DB ids (returned for downstream consumers).
+    changed_ids: set[int] = set()
 
     # 1. Inserts — brand-new objects.
     if proposals.inserts:
@@ -752,6 +762,7 @@ def apply_proposals(
         ids = _insert_objects(client, new_records)
         for p, oid in zip(proposals.inserts, ids):
             cluster_to_object_db_id[p.cluster_idx] = oid
+            changed_ids.add(oid)
         stats['inserted'] += len(ids)
 
     # 2. Revivals — reactivate inactive objects, re-set centroid + aggregates.
@@ -773,6 +784,7 @@ def apply_proposals(
             'updated_at': now,
         }).eq('id', r.object['id']).execute()
         cluster_to_object_db_id[r.cluster_idx] = r.object['id']
+        changed_ids.add(r.object['id'])
         stats['revived'] += 1
 
     # 3. Updates — refresh aggregates on matched objects, set staleness if any.
@@ -791,6 +803,7 @@ def apply_proposals(
             stats['reactivated'] += 1
         client.table('objects').update(patch).eq('id', u.object['id']).execute()
         cluster_to_object_db_id[u.cluster_idx] = u.object['id']
+        changed_ids.add(u.object['id'])
         stats['updated'] += 1
         if u.staleness_reason:
             stats[f'staleness_{u.staleness_reason}'] += 1
@@ -821,6 +834,7 @@ def apply_proposals(
             client, s.object['id'], original_centroid,
             [(nid, (d.ra, d.dec)) for nid, d in zip(new_object_db_ids, s.daughters)],
         )
+        changed_ids.update(new_object_db_ids)
         stats['split'] += 1
         stats['inserted'] += len(s.daughters) - 1
 
@@ -832,6 +846,7 @@ def apply_proposals(
         patch['staleness_reason'] = 'membership_changed'
         client.table('objects').update(patch).eq('id', m.survivor['id']).execute()
         cluster_to_object_db_id[m.cluster_idx] = m.survivor['id']
+        changed_ids.add(m.survivor['id'])
         # Absorb state from losers, then soft-delete them.
         for loser in m.losers:
             _absorb_loser_state(client, loser_id=loser['id'], survivor_id=m.survivor['id'])
@@ -879,7 +894,7 @@ def apply_proposals(
             }).execute()
         stats['target_fks_set'] += len(pairs)
 
-    return dict(stats)
+    return dict(stats), changed_ids
 
 
 # ---------------------------------------------------------------------------
@@ -1396,7 +1411,7 @@ def reconcile_field_objects(
     yes: bool = False,
     abort_on_split_merge: bool = False,
     changed_hashes: set[tuple[str, str]] | None = None,
-) -> tuple[int, dict[str, int]]:
+) -> tuple[int, dict[str, int], set[int]]:
     """Incrementally reconcile the objects table for a field.
 
     Args:
@@ -1411,7 +1426,11 @@ def reconcile_field_objects(
             standalone reconcile (no upsert ran).
 
     Returns:
-        (n_clusters, stats_dict). On dry_run, stats is empty.
+        (n_clusters, stats_dict, changed_object_db_ids). The third element is
+        the union of object DB ids touched (inserted, revived, updated, split,
+        merged-survivor) — useful for downstream consumers like photometry
+        deploy that only need to re-process changed objects. Empty on dry_run
+        and on no-targets early returns.
     """
     if changed_hashes is None:
         changed_hashes = set()
@@ -1427,7 +1446,7 @@ def reconcile_field_objects(
     if not targets:
         if dry_run:
             print("  Dry run: would soft-delete all objects.")
-            return 0, {}
+            return 0, {}, set()
         if existing_objects:
             print(f"  No targets remain — soft-deleting {len(existing_objects)} object(s).")
             now = datetime.now(timezone.utc).isoformat()
@@ -1439,7 +1458,7 @@ def reconcile_field_objects(
                         'staleness_reason': 'membership_changed',
                         'updated_at': now,
                     }).eq('id', obj['id']).execute()
-        return 0, {'soft_deleted': sum(1 for o in existing_objects if o.get('is_active'))}
+        return 0, {'soft_deleted': sum(1 for o in existing_objects if o.get('is_active'))}, set()
 
     print(f"  Fetching spectra metadata...")
     target_ids_str = [t['target_id'] for t in targets]
@@ -1464,7 +1483,7 @@ def reconcile_field_objects(
 
     if dry_run:
         confirm_proposals(proposals, yes=True, dry_run=True)
-        return len(groups), {}
+        return len(groups), {}, set()
 
     confirm_proposals(
         proposals, yes=yes, dry_run=False,
@@ -1472,11 +1491,11 @@ def reconcile_field_objects(
     )
 
     print(f"  Applying...")
-    stats = apply_proposals(client, field, proposals)
+    stats, changed_ids = apply_proposals(client, field, proposals)
 
     print(f"  Computing object redshift_auto from member spectra...")
     n_recomputed = compute_object_redshift_auto(client, field)
     stats['redshift_auto_set'] = n_recomputed
     print(f"    Updated {n_recomputed} objects")
 
-    return len(groups), stats
+    return len(groups), stats, changed_ids

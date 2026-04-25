@@ -97,6 +97,7 @@ def deploy_observation(
     include_rgb: bool = False,
     include_sed: bool = True,
     include_shutters: bool = True,
+    include_photometry: bool = True,
     skip_astrometry: bool = False,
     source_ids: list[int] | None = None,
     auto_approve: bool = False,
@@ -197,6 +198,15 @@ def deploy_observation(
                 print("  No shutters ECSV found, would skip")
         else:
             print("  Shutters: skipped (--no-shutters)")
+        if include_photometry:
+            from campfire.deploy.config import resolve_photometry_config
+            phot_path = resolve_photometry_config(None)
+            if phot_path is not None:
+                print(f"  Photometry: would deploy for changed objects after reconcile (count TBD)")
+            else:
+                print("  Photometry: no photometry.toml found, would skip")
+        else:
+            print("  Photometry: skipped (--no-photometry)")
         if not force_overwrite:
             print("  (existing objects: pipeline fields only, inspection data preserved)")
         print()
@@ -336,7 +346,7 @@ def deploy_observation(
         else:
             from campfire.deploy.reconcile import reconcile_field_objects
             print("\nReconciling objects...")
-            n_clusters, _stats = reconcile_field_objects(
+            n_clusters, _stats, changed_ids = reconcile_field_objects(
                 sb, field,
                 changed_hashes=changed_hashes,
                 abort_on_split_merge=True,
@@ -346,6 +356,22 @@ def deploy_observation(
             print()
             refresh_filter_options(sb)
             refresh_programs_overview(sb)
+
+            # Photometry: cross-match the field's catalog and upsert rows
+            # for objects touched by reconcile. Skipped silently if no
+            # photometry config exists for the field, or the change set is
+            # empty (early-exit inside deploy_field_photometry).
+            if include_photometry and changed_ids:
+                from campfire.deploy.config import resolve_photometry_config
+                from campfire.deploy.photometry import deploy_field_photometry
+                phot_path = resolve_photometry_config(None)
+                if phot_path is not None:
+                    print(f"\nDeploying photometry for {len(changed_ids)} "
+                          f"changed objects...")
+                    deploy_field_photometry(
+                        sb, field, phot_path, config,
+                        restrict_to_object_db_ids=changed_ids,
+                    )
 
         # Deploy shutters
         n_shutters = 0

@@ -370,36 +370,79 @@ def _fetch_field_objects(client: Client, field: str) -> list[dict]:
     return all_objects
 
 
-def _clear_field_photometry(client: Client, field: str) -> int:
-    """Delete existing photometry for a field. Returns count deleted."""
-    total = 0
-    while True:
-        resp = (
-            client.table('object_photometry')
-            .select('id')
-            .eq('field', field)
-            .order('id')
-            .limit(BATCH_SIZE)
-            .execute()
-        )
-        if not resp.data:
-            break
-        ids = [row['id'] for row in resp.data]
-        client.table('object_photometry').delete().in_('id', ids).execute()
-        total += len(ids)
-    return total
+def _upsert_photometry(client: Client, records: list[dict]) -> int:
+    """Batch-upsert photometry records on (field, catalog_name, catalog_id).
 
-
-def _insert_photometry(
-    client: Client,
-    records: list[dict],
-) -> int:
-    """Batch-insert photometry records. Returns count inserted."""
+    Returns count upserted.
+    """
     total = 0
     for i in range(0, len(records), BATCH_SIZE):
         batch = records[i:i + BATCH_SIZE]
-        client.table('object_photometry').insert(batch).execute()
+        client.table('object_photometry').upsert(
+            batch, on_conflict='field,catalog_name,catalog_id',
+        ).execute()
         total += len(batch)
+    return total
+
+
+def _delete_photometry_for_objects(
+    client: Client, field: str, object_db_ids: set[int],
+) -> int:
+    """Delete photometry rows for the given object DB ids in a field.
+
+    Used for orphan cleanup when a changed object no longer matches any
+    catalog source (e.g., centroid drifted out of match radius).
+    """
+    if not object_db_ids:
+        return 0
+    ids = list(object_db_ids)
+    total = 0
+    for i in range(0, len(ids), BATCH_SIZE):
+        chunk = ids[i:i + BATCH_SIZE]
+        resp = (
+            client.table('object_photometry')
+            .delete()
+            .eq('field', field)
+            .in_('object_id', chunk)
+            .execute()
+        )
+        total += len(resp.data) if resp.data else 0
+    return total
+
+
+def _prune_photometry(
+    client: Client, field: str, kept_keys: set[tuple[str, str]],
+) -> int:
+    """Delete photometry rows whose (catalog_name, catalog_id) is not in
+    *kept_keys*. Used for upstream catalog regeneration cleanup.
+    """
+    total = 0
+    page_size = 1000
+    offset = 0
+    to_delete: list[int] = []
+    while True:
+        resp = (
+            client.table('object_photometry')
+            .select('id, catalog_name, catalog_id')
+            .eq('field', field)
+            .order('id')
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        rows = resp.data
+        if not rows:
+            break
+        for r in rows:
+            if (r['catalog_name'], r['catalog_id']) not in kept_keys:
+                to_delete.append(r['id'])
+        if len(rows) < page_size:
+            break
+        offset += page_size
+
+    for i in range(0, len(to_delete), BATCH_SIZE):
+        chunk = to_delete[i:i + BATCH_SIZE]
+        client.table('object_photometry').delete().in_('id', chunk).execute()
+        total += len(chunk)
     return total
 
 
@@ -415,9 +458,15 @@ def deploy_field_photometry(
     *,
     include_photoz: bool = True,
     dry_run: bool = False,
+    restrict_to_object_db_ids: set[int] | None = None,
+    prune: bool = False,
 ) -> dict:
     """
-    Full photometry deploy for a field.
+    Photometry deploy for a field.
+
+    Cross-matches the configured photometric catalog against object centroids
+    in the field, upserts `object_photometry` rows on
+    `(field, catalog_name, catalog_id)`, and uploads P(z) sidecars to R2.
 
     Args:
         client: Supabase client (service role)
@@ -426,10 +475,23 @@ def deploy_field_photometry(
         deploy_config: Deploy config dict (for R2 upload credentials)
         include_photoz: Whether to extract photo-z and upload P(z) sidecars
         dry_run: Print stats without writing
+        restrict_to_object_db_ids: When set, limits upserts and sidecar uploads
+            to rows whose `object_id` is in this set. Cross-matching still runs
+            against the full field for correct global dedup. When `None`, the
+            full field is processed (standalone CLI behavior). An empty set
+            triggers an early exit before any catalog/photo-z load.
+        prune: When True (and `restrict_to_object_db_ids` is None), after
+            upsert delete rows whose `(catalog_name, catalog_id)` is not in
+            the current match set. Used to clean up after upstream catalog
+            regenerations.
 
     Returns:
         Dict with keys: n_objects, n_matched, n_bands, n_pz
     """
+    # Empty restriction: nothing to do, skip all I/O.
+    if restrict_to_object_db_ids is not None and not restrict_to_object_db_ids:
+        return {'n_objects': 0, 'n_matched': 0, 'n_bands': 0, 'n_pz': 0}
+
     field_config = load_field_config(photometry_config_path, field)
     if field_config is None:
         print(f"  No photometry config for field '{field}'. Skipping.")
@@ -451,16 +513,8 @@ def deploy_field_photometry(
     catalog = Table.read(catalog_path, format=fmt if fmt != 'fits' else None)
     print(f"    {len(catalog)} sources, {len(band_config)} bands configured")
 
-    # Pre-load photo-z data
-    photoz: PhotozData | None = None
-    if include_photoz and photoz_config:
-        photoz_file = photoz_config.get('file')
-        if photoz_file and Path(photoz_file).exists():
-            photoz = PhotozData(photoz_config)
-        else:
-            print(f"  WARNING: Photo-z file not found: {photoz_file}")
-    elif include_photoz and not photoz_config:
-        print(f"  No [photoz] config for field '{field}'. Skipping photo-z.")
+    # Photo-z is loaded lazily after cross-match (only if any kept match
+    # would actually use it — Lazy.jl FITS load is expensive).
 
     # Fetch objects
     print(f"  Fetching objects for field '{field}'...")
@@ -481,15 +535,28 @@ def deploy_field_photometry(
     print(f"    {len(matches)} matches out of {len(objects)} objects")
 
     if dry_run:
+        if restrict_to_object_db_ids is not None:
+            n_kept_dry = sum(
+                1 for obj_idx, _, _ in matches
+                if objects[obj_idx]['id'] in restrict_to_object_db_ids
+            )
+            print(f"    Restricted to {n_kept_dry} matches "
+                  f"({len(restrict_to_object_db_ids)} changed objects)")
+            n_reported = n_kept_dry
+        else:
+            n_reported = len(matches)
         return {
             'n_objects': len(objects),
-            'n_matched': len(matches),
+            'n_matched': n_reported,
             'n_bands': len(band_config),
             'n_pz': 0,
         }
 
     # De-duplicate: when multiple objects match the same catalog source,
-    # keep only the closest match (unique constraint on field+catalog_name+catalog_id)
+    # keep only the closest match (unique constraint on field+catalog_name+catalog_id).
+    # Dedup runs against the *full* match set (not just restricted ids) so the
+    # catalog-source → closest-object mapping stays globally correct even when
+    # only a subset of objects is being upserted.
     matches.sort(key=lambda m: m[2])  # sort by distance
     seen_cat_idx: set[int] = set()
     unique_matches = []
@@ -502,14 +569,43 @@ def deploy_field_photometry(
               f"(kept closest match per catalog source)")
     matches = unique_matches
 
-    # Build records + P(z) sidecars
+    # Partition: kept = matches we will upsert + upload sidecars for.
+    if restrict_to_object_db_ids is not None:
+        kept_matches = [
+            m for m in matches
+            if objects[m[0]]['id'] in restrict_to_object_db_ids
+        ]
+        print(f"    Restricted to {len(kept_matches)} matches "
+              f"for {len(restrict_to_object_db_ids)} changed objects")
+    else:
+        kept_matches = matches
+
+    # Track which restricted objects produced no match — orphan cleanup target.
+    matched_restricted_ids: set[int] = (
+        {objects[m[0]]['id'] for m in kept_matches}
+        if restrict_to_object_db_ids is not None else set()
+    )
+
+    # Lazy photo-z load: only pay the FITS load if we actually have rows to
+    # process. Skipped entirely when kept_matches is empty.
+    photoz: PhotozData | None = None
+    if include_photoz and kept_matches and photoz_config:
+        photoz_file = photoz_config.get('file')
+        if photoz_file and Path(photoz_file).exists():
+            photoz = PhotozData(photoz_config)
+        else:
+            print(f"  WARNING: Photo-z file not found: {photoz_file}")
+    elif include_photoz and kept_matches and not photoz_config:
+        print(f"  No [photoz] config for field '{field}'. Skipping photo-z.")
+
+    # Build records + P(z) sidecars (only for kept matches)
     now = datetime.now(timezone.utc).isoformat()
     records = []
     upload_tasks: list[UploadTask] = []
     n_pz = 0
     tmpdir = tempfile.mkdtemp(prefix='campfire_pz_')
 
-    for obj_idx, cat_idx, dist in matches:
+    for obj_idx, cat_idx, dist in kept_matches:
         obj = objects[obj_idx]
         cat_row = {col: catalog[col][cat_idx] for col in catalog.colnames}
         # Catalog ID: use the raw value for photo-z lookup (usually int),
@@ -574,14 +670,34 @@ def deploy_field_photometry(
             for err in errors[:5]:
                 print(f"      {err}")
 
-    # Write to database
-    print(f"  Clearing existing photometry for field '{field}'...")
-    n_deleted = _clear_field_photometry(client, field)
-    if n_deleted:
-        print(f"    Deleted {n_deleted} existing rows")
+    # Orphan cleanup: changed objects that no longer match any catalog source
+    # need their existing photometry rows removed. (Only meaningful in the
+    # restricted path; the full-field path uses --prune for sweeps instead.)
+    if restrict_to_object_db_ids is not None:
+        orphan_ids = restrict_to_object_db_ids - matched_restricted_ids
+        if orphan_ids:
+            print(f"  Removing photometry for {len(orphan_ids)} unmatched objects...")
+            n_orphans = _delete_photometry_for_objects(client, field, orphan_ids)
+            if n_orphans:
+                print(f"    Deleted {n_orphans} orphaned rows")
 
-    print(f"  Inserting {len(records)} photometry rows...")
-    _insert_photometry(client, records)
+    if records:
+        print(f"  Upserting {len(records)} photometry rows...")
+        _upsert_photometry(client, records)
+    else:
+        print(f"  No photometry rows to upsert.")
+
+    if prune and restrict_to_object_db_ids is None:
+        # Build kept_keys from the *full* match set, not just kept_matches.
+        kept_keys: set[tuple[str, str]] = set()
+        for obj_idx, cat_idx, _ in matches:
+            cat_id_raw = catalog[id_col][cat_idx] if id_col in catalog.colnames else cat_idx
+            cat_id_str = str(cat_id_raw)
+            kept_keys.add((catalog_name, cat_id_str))
+        print(f"  Pruning rows not in current catalog match set...")
+        n_pruned = _prune_photometry(client, field, kept_keys)
+        if n_pruned:
+            print(f"    Pruned {n_pruned} stale rows")
 
     # Sync denormalized columns to objects
     print(f"  Syncing photo_z to objects table...")
@@ -595,7 +711,7 @@ def deploy_field_photometry(
 
     return {
         'n_objects': len(objects),
-        'n_matched': len(matches),
+        'n_matched': len(kept_matches),
         'n_bands': len(band_config),
         'n_pz': n_pz,
     }
