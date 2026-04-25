@@ -1,11 +1,11 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/Button';
-import { ObjectListsSection } from '@/components/spectra/ObjectListsSection';
+import { ObjectListsSection, type ObjectListsSectionHandle } from '@/components/spectra/ObjectListsSection';
 import { ConflictBanner } from '@/components/spectra/inspection/ConflictBanner';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import { REDSHIFT_QUALITY, getQualityDef } from '@/lib/flags';
+import { REDSHIFT_QUALITY, getContrastColor } from '@/lib/flags';
 import type { InspectionState } from '@/lib/hooks/useInspectionState';
 import { Save, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 
@@ -25,9 +25,51 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
   const { user, userProfile } = useAuth();
   const canEdit = user && userProfile?.can_comment;
 
+  const setRedshiftQuality = inspection.setRedshiftQuality;
+  const save = inspection.save;
+  const { hasChanges, saving, redshiftQuality } = inspection;
+
+  const overrideInputRef = useRef<HTMLInputElement>(null);
+  const listsRef = useRef<ObjectListsSectionHandle>(null);
+
+  useEffect(() => {
+    if (!canEdit) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+        return;
+      }
+      if (e.key >= '1' && e.key <= '4') {
+        setRedshiftQuality(parseInt(e.key));
+        return;
+      }
+      switch (e.key.toLowerCase()) {
+        case 'o':
+          e.preventDefault();
+          overrideInputRef.current?.focus();
+          overrideInputRef.current?.select();
+          break;
+        case 't':
+          e.preventDefault();
+          listsRef.current?.openDropdown();
+          break;
+        case 's':
+          if (hasChanges && !saving && redshiftQuality !== 0) {
+            e.preventDefault();
+            save();
+          }
+          break;
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [canEdit, setRedshiftQuality, save, hasChanges, saving, redshiftQuality]);
+
   if (!canEdit) return null;
 
-  const qualityDef = getQualityDef(inspection.redshiftQuality);
+  const qualityOptions = REDSHIFT_QUALITY.filter(q => q.value > 0);
 
   return (
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-xl shadow-xl px-5 py-3 max-w-5xl w-auto">
@@ -56,12 +98,14 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
         </div>
       )}
 
-      <div className="flex items-center gap-4 flex-wrap">
-        <ObjectListsSection objectId={objectId} ra={ra} dec={dec} dropdownPlacement="top" />
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-center">
+          <ObjectListsSection ref={listsRef} objectId={objectId} ra={ra} dec={dec} dropdownPlacement="top" />
+        </div>
 
-        <div className="w-px h-7 bg-border dark:bg-slate-600 flex-shrink-0" />
+        <div className="h-px bg-border dark:bg-slate-700" />
 
-        <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-base">
             <span className="text-text-secondary dark:text-slate-400">z:</span>
             {inspection.redshiftQuality === 1 ? (
@@ -75,38 +119,55 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
             )}
           </div>
 
-          <input
-            type="number"
-            step="0.0001"
-            value={inspection.redshiftInspected}
-            onChange={e => inspection.setRedshiftInspected(e.target.value)}
-            placeholder="Override z"
-            className="w-36 px-2.5 py-1.5 text-sm font-mono border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
-          />
+          <div className="relative">
+            <input
+              ref={overrideInputRef}
+              type="number"
+              step="0.0001"
+              value={inspection.redshiftInspected}
+              onChange={e => inspection.setRedshiftInspected(e.target.value)}
+              placeholder="Override"
+              className="w-36 pl-2.5 pr-7 py-1.5 text-sm font-mono border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            />
+            <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-xs text-text-secondary dark:text-slate-400 opacity-60">O</kbd>
+          </div>
 
-          <select
-            value={inspection.redshiftQuality}
-            onChange={e => inspection.setRedshiftQuality(parseInt(e.target.value))}
-            className="px-2.5 py-1.5 text-sm border border-border dark:border-slate-600 rounded text-gray-900 focus:outline-none focus:ring-1 focus:ring-primary"
-            style={{ backgroundColor: qualityDef.color }}
-          >
-            {REDSHIFT_QUALITY.map(q => (
-              <option key={q.value} value={q.value} className="bg-white text-gray-900">
-                {q.icon} {q.label}
-              </option>
-            ))}
-          </select>
+          <div role="radiogroup" aria-label="Redshift quality" className="flex items-center gap-1.5">
+            {qualityOptions.map(q => {
+              const isSelected = inspection.redshiftQuality === q.value;
+              return (
+                <button
+                  key={q.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={isSelected}
+                  onClick={() => setRedshiftQuality(q.value)}
+                  className={`px-2.5 py-1.5 text-sm font-medium rounded transition-all
+                    ${isSelected
+                      ? 'ring-2 ring-offset-1 dark:ring-offset-slate-800 ring-text-primary'
+                      : 'border border-border dark:border-slate-600 hover:bg-background dark:hover:bg-slate-700 text-text-primary dark:text-slate-100'
+                    }`}
+                  style={isSelected ? { backgroundColor: q.color, color: getContrastColor(q.color) } : undefined}
+                  title={`${q.label} \u2014 ${q.description}`}
+                >
+                  <kbd className="font-mono text-xs opacity-60 mr-1">{q.value}</kbd>
+                  {q.short}
+                </button>
+              );
+            })}
+          </div>
 
           <div className="flex-1" />
 
-          {inspection.hasChanges && (
-            <span className="text-sm text-amber-600 dark:text-amber-400">Unsaved</span>
-          )}
-          {inspection.redshiftQuality === 0 && (
-            <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1">
-              <AlertCircle className="w-3.5 h-3.5" /> Set quality
-            </span>
-          )}
+          <div className="min-w-[88px] flex justify-end">
+            {inspection.redshiftQuality === 0 ? (
+              <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                <AlertCircle className="w-3.5 h-3.5" /> Set quality
+              </span>
+            ) : inspection.hasChanges ? (
+              <span className="text-sm text-amber-600 dark:text-amber-400">Unsaved</span>
+            ) : null}
+          </div>
 
           <Button
             variant="primary"
@@ -120,6 +181,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
               <>
                 <Save className="w-4 h-4 mr-1" />
                 Save
+                <kbd className="ml-1.5 font-mono text-xs opacity-70">S</kbd>
               </>
             )}
           </Button>
