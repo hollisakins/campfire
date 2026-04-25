@@ -70,6 +70,7 @@ function inspectionInitialFromObject(o: ObjectDetail): InspectionInitialData {
     redshift_auto: o.redshift_auto,
     redshift_inspected: o.redshift_inspected,
     redshift_quality: o.redshift_quality,
+    inspected_used_auto: o.inspected_used_auto,
     last_inspected_at: o.last_inspected_at,
     last_inspected_by: o.last_inspected_by,
     version: o.version,

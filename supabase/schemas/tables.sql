@@ -467,6 +467,7 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "redshift_auto" double precision,
     "redshift_inspected" numeric(10,6),
     "redshift_quality" integer NOT NULL DEFAULT 0,
+    "inspected_used_auto" boolean NOT NULL DEFAULT false,
     "redshift" numeric(10,6) GENERATED ALWAYS AS (
         CASE
             WHEN ("redshift_quality" = 1) THEN NULL::double precision
@@ -491,7 +492,10 @@ COMMENT ON TABLE "public"."objects" IS 'Unique sky positions cross-matched acros
 COMMENT ON COLUMN "public"."objects"."redshift_auto" IS 'Phase A: per-object auto-fit redshift, computed post-reconciliation by compute_object_redshift_auto() from the best member spectrum under a grating-priority hierarchy (PRISM > medium > high-res, tiebreak on exposure_time). Empty until Phase D migration.';
 
 
-COMMENT ON COLUMN "public"."objects"."redshift_inspected" IS 'Phase A: user-set redshift override at the object level. Empty until Phase D migration.';
+COMMENT ON COLUMN "public"."objects"."redshift_inspected" IS 'Phase A: user-set redshift override at the object level. Empty until Phase D migration. After the pin-on-signoff migration, also populated automatically (= redshift_auto, with inspected_used_auto = true) when an inspector commits a quality flag without typing a numeric override — this stabilizes the displayed redshift across reprocessing.';
+
+
+COMMENT ON COLUMN "public"."objects"."inspected_used_auto" IS 'True when redshift_inspected was auto-pinned from redshift_auto at sign-off (implicit sign-off path). False for explicit user-typed overrides and for uninspected/impossible rows. Maintained exclusively by the pin_redshift_on_signoff trigger; the UI uses this to avoid showing an "(overridden)" hint when the inspector merely accepted the auto-fit.';
 
 
 COMMENT ON COLUMN "public"."objects"."redshift_quality" IS 'Phase A: 0=uninspected, 1=Impossible, 2=Tentative, 3=Probable, 4=Secure. Default 0. Empty until Phase D migration.';

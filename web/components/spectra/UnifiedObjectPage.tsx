@@ -184,10 +184,11 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
     redshift_auto: object.redshift_auto,
     redshift_inspected: object.redshift_inspected,
     redshift_quality: object.redshift_quality,
+    inspected_used_auto: object.inspected_used_auto,
     last_inspected_at: object.last_inspected_at,
     last_inspected_by: object.last_inspected_by,
     version: object.version,
-  }), [object.redshift_auto, object.redshift_inspected, object.redshift_quality, object.last_inspected_at, object.last_inspected_by, object.version]);
+  }), [object.redshift_auto, object.redshift_inspected, object.redshift_quality, object.inspected_used_auto, object.last_inspected_at, object.last_inspected_by, object.version]);
 
   const inspection = useInspectionState(object.id, initialInspection);
 

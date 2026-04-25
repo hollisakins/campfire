@@ -15,10 +15,22 @@ export interface InspectionInitialData {
   redshift_auto: number | null;
   redshift_inspected: number | null;
   redshift_quality: number;
+  /** True when redshift_inspected was auto-pinned from redshift_auto at
+   * sign-off. When true, the override input renders empty (the inspector
+   * didn't type anything) even though redshift_inspected has a value. */
+  inspected_used_auto: boolean;
   last_inspected_at: string | null;
   last_inspected_by: string | null;
   /** Required for the optimistic-locking save path. Defaults to 1. */
   version?: number;
+}
+
+/** Reduce InspectionInitialData to the string the override input should
+ *  display: empty for auto-pinned sign-offs (the user didn't type anything),
+ *  the formatted number for explicit overrides. */
+function initialOverrideString(data: InspectionInitialData): string {
+  if (data.inspected_used_auto) return '';
+  return data.redshift_inspected?.toString() ?? '';
 }
 
 export interface SaveIfDirtyResult {
@@ -70,7 +82,7 @@ export function useInspectionState(
   initialData: InspectionInitialData,
 ): InspectionState {
   const [redshiftInspected, _setRedshiftInspected] = useState<string>(
-    initialData.redshift_inspected?.toString() ?? ''
+    initialOverrideString(initialData)
   );
   const [redshiftQuality, _setRedshiftQuality] = useState(initialData.redshift_quality);
 
@@ -85,7 +97,7 @@ export function useInspectionState(
 
   // Refs hold the always-current values (state lags by a render).
   const valuesRef = useRef({
-    redshiftInspected: initialData.redshift_inspected?.toString() ?? '',
+    redshiftInspected: initialOverrideString(initialData),
     redshiftQuality: initialData.redshift_quality,
   });
   const initialDataRef = useRef(initialData);
@@ -107,11 +119,14 @@ export function useInspectionState(
     _setRedshiftQuality(value);
   }, []);
 
+  // Compare the form string against what initial display SHOULD be, not the
+  // raw init.redshift_inspected. For auto-pinned sign-offs the initial display
+  // is empty even though redshift_inspected has a value; without this guard
+  // the form would always look dirty after the pin trigger lands.
   const hasChanges = useMemo(() => {
-    const currentRedshiftInspected = redshiftInspected === '' ? null : parseFloat(redshiftInspected);
     const init = initialDataRef.current;
     return (
-      currentRedshiftInspected !== init.redshift_inspected ||
+      redshiftInspected !== initialOverrideString(init) ||
       redshiftQuality !== init.redshift_quality
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -120,16 +135,19 @@ export function useInspectionState(
   const isDirty = useCallback((): boolean => {
     const v = valuesRef.current;
     const init = initialDataRef.current;
-    const currentRI = v.redshiftInspected === '' ? null : parseFloat(v.redshiftInspected);
     return (
-      currentRI !== init.redshift_inspected ||
+      v.redshiftInspected !== initialOverrideString(init) ||
       v.redshiftQuality !== init.redshift_quality
     );
   }, []);
 
+  // Fall back to the stored redshift_inspected (which may have been pinned by
+  // pin_redshift_on_signoff at sign-off time) before redshift_auto, so signed-
+  // off objects display their pinned value rather than the latest auto-fit
+  // when the form override is empty. Mirrors the COALESCE in objects.redshift.
   const currentRedshift = redshiftInspected
     ? parseFloat(redshiftInspected)
-    : initialData.redshift_auto;
+    : (initialData.redshift_inspected ?? initialData.redshift_auto);
 
   const save = useCallback(async (): Promise<{ success: boolean; conflict?: boolean; version?: number }> => {
     if (savingRef.current) {
@@ -184,12 +202,34 @@ export function useInspectionState(
       versionRef.current = newVersion;
       setVersion(newVersion);
 
+      // Read post-trigger state from the server response: the
+      // pin_redshift_on_signoff trigger may have promoted redshift_auto into
+      // redshift_inspected and set inspected_used_auto=true if the user
+      // signed off with an empty override. Falling back to optimistic
+      // synthesis would mark the form dirty on the next render.
+      const serverObj = data.object;
+      const persistedInspected: number | null =
+        serverObj?.redshift_inspected !== undefined
+          ? (serverObj.redshift_inspected === null ? null : Number(serverObj.redshift_inspected))
+          : (v.redshiftInspected === '' ? null : parseFloat(v.redshiftInspected));
+      const persistedUsedAuto: boolean =
+        typeof serverObj?.inspected_used_auto === 'boolean'
+          ? serverObj.inspected_used_auto
+          : initialDataRef.current.inspected_used_auto;
+
       initialDataRef.current = {
         ...initialDataRef.current,
-        redshift_inspected: v.redshiftInspected === '' ? null : parseFloat(v.redshiftInspected),
+        redshift_inspected: persistedInspected,
         redshift_quality: v.redshiftQuality,
+        inspected_used_auto: persistedUsedAuto,
         version: newVersion,
       };
+
+      // Re-sync the form string to the new initial display so an empty input
+      // after a pin-promotion stays empty (not "dirty against 2.30").
+      const newOverrideStr = initialOverrideString(initialDataRef.current);
+      valuesRef.current.redshiftInspected = newOverrideStr;
+      _setRedshiftInspected(newOverrideStr);
 
       setSaveSuccess(true);
       setSaveCount(c => c + 1);
@@ -228,12 +268,13 @@ export function useInspectionState(
 
   const resetState = useCallback((newData: InspectionInitialData) => {
     initialDataRef.current = newData;
+    const overrideStr = initialOverrideString(newData);
     valuesRef.current = {
-      redshiftInspected: newData.redshift_inspected?.toString() ?? '',
+      redshiftInspected: overrideStr,
       redshiftQuality: newData.redshift_quality,
     };
     versionRef.current = newData.version ?? 1;
-    _setRedshiftInspected(newData.redshift_inspected?.toString() ?? '');
+    _setRedshiftInspected(overrideStr);
     _setRedshiftQuality(newData.redshift_quality);
     setVersion(newData.version ?? 1);
     setSaveSuccess(false);

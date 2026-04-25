@@ -62,6 +62,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
           state={inspectionState}
           canEdit={canEdit}
           redshiftAuto={object.redshift_auto}
+          redshiftInspected={object.redshift_inspected}
           redshiftInputRef={redshiftInputRef}
         />
         <QualitySection state={inspectionState} canEdit={canEdit} />
