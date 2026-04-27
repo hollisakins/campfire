@@ -31,9 +31,7 @@ print(f"{len(lrds)} secure-z LRDs")
 
 # Pull in only the observations these objects belong to,
 # restricted to PRISM gratings
-observations = sorted(set(
-    o for row in lrds for o in str(row['observations']).split(';') if o
-))
+observations = sorted({o for row in lrds for o in row['observations'] if o})
 cf.download(observations=observations, gratings=['PRISM'])
 ```
 
