@@ -379,9 +379,9 @@ def remove(ctx, config_path, obs, dry_run, local, force, supabase_only,
     """Un-deploy observation data from Supabase + R2.
 
     Wipes targets, spectra, shutters, slit_regions for the observation and
-    the matching R2 prefixes (spectra/, rgb/, sed/), then rebuilds the
-    objects table for the affected field. Preserves the observations row
-    and deployments history.
+    the matching R2 prefixes (spectra/, rgb/, sed/), then reconciles the
+    objects table for the affected field (preserving inspection state).
+    Preserves the observations row and deployments history.
 
     Refuses if any target has user inspection data unless --force.
     """

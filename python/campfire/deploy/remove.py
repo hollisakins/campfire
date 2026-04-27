@@ -4,8 +4,9 @@ Remove (un-deploy) an observation's data from Supabase + R2.
 Preserves the ``observations`` row and ``deployments`` history rows.
 Wipes ``targets``, ``spectra``, ``shutters``, ``slit_regions`` for the
 observation and the matching R2 prefixes (``spectra/<obs>/``,
-``rgb/<obs>/``, ``sed/<obs>/``), then rebuilds the ``objects`` table
-for the affected field and refreshes materialized views.
+``rgb/<obs>/``, ``sed/<obs>/``), then reconciles the ``objects`` table
+for the affected field (preserving inspection state via id-reuse) and
+refreshes materialized views.
 
 Refuses to run if any target has user inspection data
 (``redshift_quality > 0``, ``redshift_inspected`` set, non-zero
@@ -271,10 +272,12 @@ def remove_observation(
             print(f"  {prefix}/{obs_name}/: {n} object(s)")
 
     if not skip_rebuild:
-        from campfire.deploy.objects import rebuild_field_objects
-        print(f"\nRebuilding objects for field '{field}'...")
-        n_obj, n_multi = rebuild_field_objects(sb, field)
-        print(f"  {n_obj} objects ({n_multi} multi-target)")
+        from campfire.deploy.reconcile import reconcile_field_objects
+        print(f"\nReconciling objects for field '{field}'...")
+        n_clusters, _stats, _changed_ids = reconcile_field_objects(
+            sb, field, abort_on_split_merge=True,
+        )
+        print(f"  {n_clusters} clusters")
 
     print(f"\nRefreshing materialized views...")
     refresh_filter_options(sb)
