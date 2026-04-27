@@ -169,6 +169,8 @@ def source_ids_option(f):
 @click.option('--rgb', is_flag=True, help='Include RGB image deployment (skipped by default).')
 @click.option('--no-sed', is_flag=True, help='Skip SED plot deployment.')
 @click.option('--no-shutters', is_flag=True, help='Skip shutter deployment.')
+@click.option('--no-photometry', is_flag=True,
+              help='Skip photometry upsert after objects reconcile.')
 @click.option('--skip-astrometry', is_flag=True,
               help='Skip astrometric correction for shutters (deploy raw MSA positions).')
 @click.option('--local', is_flag=True,
@@ -176,7 +178,7 @@ def source_ids_option(f):
 @click.pass_context
 def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                  force_overwrite, auto_approve, rgb, no_sed, no_shutters,
-                 skip_astrometry, local):
+                 no_photometry, skip_astrometry, local):
     """Deploy CAMPFIRE pipeline products to Supabase + R2."""
     ctx.ensure_object(dict)
     ctx.obj['local'] = local
@@ -204,6 +206,7 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                 include_rgb=rgb,
                 include_sed=not no_sed,
                 include_shutters=not no_shutters,
+                include_photometry=not no_photometry,
                 skip_astrometry=skip_astrometry,
                 source_ids=list(source_ids) if source_ids else None,
                 auto_approve=auto_approve,
@@ -213,17 +216,33 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                 fields_needing_rebuild.add(result['field'])
 
         if multi and not dry_run and fields_needing_rebuild:
-            # Deferred multi-obs path: run reconcile once per field at the end.
-            # Trade-off: changed_hashes from each observation's upsert aren't
-            # threaded through here, so 'reprocessed' staleness won't be
-            # detected for multi-obs deploys. Acceptable — per-obs deploys
-            # (the common case) get full detection via deploy_observation.
+            # Deferred multi-obs path: run reconcile (and photometry) once per
+            # field at the end. Trade-off: changed_hashes from each observation's
+            # upsert aren't threaded through here, so 'reprocessed' staleness
+            # won't be detected for multi-obs deploys. Acceptable — per-obs
+            # deploys (the common case) get full detection via deploy_observation.
             from campfire.deploy.reconcile import reconcile_field_objects
 
             sb = get_supabase_client(config)
+            phot_path = None
+            if not no_photometry:
+                from campfire.deploy.config import resolve_photometry_config
+                phot_path = resolve_photometry_config(None)
+
             for field in sorted(fields_needing_rebuild):
                 print(f"\nReconciling objects for field '{field}'...")
-                reconcile_field_objects(sb, field, abort_on_split_merge=True)
+                _, _, changed_ids = reconcile_field_objects(
+                    sb, field, abort_on_split_merge=True,
+                )
+
+                if phot_path is not None and changed_ids:
+                    from campfire.deploy.photometry import deploy_field_photometry
+                    print(f"\nDeploying photometry for {len(changed_ids)} "
+                          f"changed objects in '{field}'...")
+                    deploy_field_photometry(
+                        sb, field, phot_path, config,
+                        restrict_to_object_db_ids=changed_ids,
+                    )
 
             print()
             refresh_filter_options(sb)
@@ -438,7 +457,8 @@ def objects_reconcile(ctx, config_path, field, all_fields, dry_run, radius, yes,
         print(f"\nReconciling objects for field '{f}'...")
         reconcile_field_objects(
             sb, f, radius=radius, dry_run=dry_run, yes=yes,
-        )
+        )  # standalone reconcile: changed_ids discarded; photometry refresh
+        # is operator-driven via `campfire deploy photometry` if needed.
 
     if not dry_run:
         print()
@@ -608,10 +628,14 @@ def objects_rebuild(ctx, config_path, field, all_fields, dry_run, radius, force,
               help='Show stats without making changes.')
 @click.option('--no-photoz', is_flag=True,
               help='Skip photo-z extraction and P(z) sidecar upload.')
+@click.option('--prune', is_flag=True,
+              help='Delete photometry rows whose (catalog_name, catalog_id) '
+                   'is no longer in the catalog (cleanup after upstream '
+                   'catalog regeneration).')
 @click.option('--local', is_flag=True,
               help='Use local Supabase (127.0.0.1:54321).')
 @click.pass_context
-def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz, local):
+def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz, prune, local):
     """Deploy photometric catalog data for a field."""
     from campfire.deploy.photometry import deploy_field_photometry
 
@@ -629,6 +653,7 @@ def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz, l
         sb, field, phot_config_path, config,
         include_photoz=not no_photoz,
         dry_run=dry_run,
+        prune=prune,
     )
 
     print(f"\n{'='*60}")
