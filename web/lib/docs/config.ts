@@ -131,17 +131,27 @@ export const docsNav: DocPage[] = [
       {
         title: 'Overview',
         slug: 'api',
-        description: 'Installation, authentication, and architecture',
+        description: 'Decision guide, install, and where things live',
+      },
+      {
+        title: 'Getting Started',
+        slug: 'api/getting-started',
+        description: 'Install → first query → first plot, with figures',
+      },
+      {
+        title: 'Recipes',
+        slug: 'api/recipes',
+        description: 'End-to-end task examples',
+      },
+      {
+        title: 'Python Client',
+        slug: 'api/python-client',
+        description: 'Full reference for the Campfire class',
       },
       {
         title: 'CLI Reference',
         slug: 'api/cli',
         description: 'Bulk download, sync, and observation management',
-      },
-      {
-        title: 'Python Client',
-        slug: 'api/python-client',
-        description: 'Interactive querying, spectrum access, and plotting',
       },
       {
         title: 'REST API',

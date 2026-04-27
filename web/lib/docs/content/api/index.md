@@ -1,113 +1,75 @@
 # Programmatic Access
 
-CAMPFIRE provides a Python package for querying, downloading, and analyzing NIRSpec spectroscopic data. It includes a **CLI** for bulk data management and a **Python client** for interactive analysis in notebooks.
+CAMPFIRE ships a Python package with three entry points that share the same authentication and local data layout. Pick the one that matches how you work.
 
-## Installation
+| | What it gives you | When to use it |
+|---|---|---|
+| **CLI** (`campfire`) | Catalog sync + bulk FITS download to a local directory | Pull data once, then work with your own scripts / pandas / astropy |
+| **Python client** (`Campfire`) | Interactive querying, lazy spectrum loading, plotting, calibration & stacking | Notebook analysis, custom selections, multi-step workflows |
+| **REST API** | HTTP endpoints with signed URL downloads | Non-Python clients, lightweight integrations |
 
-Install the Python client directly from GitHub:
+The CLI and Python client are siblings — same install, same credentials, same on-disk layout. Anything you `campfire sync` is immediately queryable from `Campfire()`, and anything you `cf.download()` is immediately readable by the pipeline tools.
+
+## Install
 
 ```bash
 pip install "git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
-For plotting functionality, install with optional dependencies:
+Optional extras:
 
 ```bash
-pip install "campfire[plotting] @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
+pip install "campfire[plotting] @ git+..."   # interactive Plotly figures
+pip install "campfire[deploy]   @ git+..."   # NIRCam cutouts, calibration, stacking
+pip install "campfire[all]      @ git+..."   # everything
 ```
 
-## Authentication
-
-Before using the CLI or Python client, you must authenticate:
-
-### Browser Login (Recommended)
+## First five minutes
 
 ```bash
-campfire login
+campfire login                    # browser-based OAuth
+campfire sync                     # pulls full catalog (metadata only, ~seconds)
 ```
-
-This opens your browser for secure OAuth authentication. Credentials are saved to `~/.campfire/credentials` and tokens are automatically refreshed when they expire.
-
-### API Key Login
-
-For headless environments (servers, HPC clusters):
-
-```bash
-campfire login --api-key
-```
-
-Generate API keys from your [Profile page](/profile/api-keys). Keys start with `sk_`.
-
-### Auth Commands
-
-| Command | Description |
-|---------|-------------|
-| `campfire login` | Authenticate with CAMPFIRE |
-| `campfire logout` | Remove stored credentials |
-| `campfire whoami` | Show current authenticated user |
-| `campfire status` | Check credentials, sync status, and disk usage |
-
----
-
-## Two Ways to Access Data
-
-### CLI: Catalog Sync + Bulk Download
-
-For astronomers who want to download data and work with their own tools.
-
-```bash
-campfire sync                         # Pull full catalog (metadata only, fast)
-campfire download --obs ember_uds_p4  # Download FITS files
-```
-
-After syncing, you have `objects.csv` and `spectra.csv` catalogs ready for pandas/astropy. FITS downloads are separate — download only what you need.
-
-See the [CLI Reference](/docs/api/cli) for the full command reference.
-
-### Python Client: Interactive Notebook Workflows
-
-For exploratory analysis, filtering, and plotting. The client queries the local catalog after sync, falling back to the remote API.
 
 ```python
 from campfire import Campfire
 
 cf = Campfire()
-cf.sync()  # Pull full catalog
+obj = cf.get_object('J141934.14+525238.7')   # public RUBIES-EGS LRD at z=6.69
+print(obj)
+# Object(J141934.14+525238.7, z=6.6900, egs)
+#   12 spectra (G140H, G140M, G235H, G395H, G395M, PRISM)
+#   tags: blagn, hae, lrd, o3e
+#   Photometry(11 bands, UNICORN EGS v0.9)
 
-# Query locally — instant, no network
-results = cf.query_objects(
-    redshift_range=(3.0, 6.0),
-    redshift_quality=[3, 4],  # 0 not inspected, 1 impossible, 2 tentative, 3 probable, 4 secure
-)
-
-# Download FITS for specific observations
-cf.download(observations=['ember_uds_p4'], gratings=['PRISM'])
-
-# Load an object with its spectra + photometry
-obj = cf.get_object('ember_uds_p4_123456')
-spec = obj.spectra[0].open()   # SpectrumData
-
-# Or open a spectrum directly by spectrum_id
-spec = cf.open_spectrum('ember_uds_p4_prism_clear_123456')
+obj.spectra[0].plot()              # quick-look matplotlib
+cf.plot_cutout(obj.object_id)      # NIRCam RGB + shutter overlay
 ```
 
-See the [Python Client](/docs/api/python-client) for the full API reference.
+Walk through it step-by-step in [Getting Started](/docs/api/getting-started), or jump to the [Recipes](/docs/api/recipes) for end-to-end task examples.
 
----
+## Where things live
 
-## Architecture
+The CLI and Python client share a single data directory. `$CAMPFIRE_ROOT` (or `~/campfire/` if unset) holds:
 
 ```
-campfire sync       → full catalog into SQLite + CSVs (no FITS, fast)
-campfire download   → FITS files by observation/program/field/grating
-
-Campfire.sync()          → same as campfire sync
-Campfire.download()      → same as campfire download
-Campfire.query_objects() → one row per sky position (inspection state)
-Campfire.query_spectra() → one row per spectrum (FITS paths, dq_flags)
-Campfire.get_object()    → Object with .spectra + .photometry attached
-Campfire.open_spectrum() → local FITS if downloaded, API fallback
-Campfire.plot_cutout()   → NIRCam RGB cutout with vector shutter overlay
+$CAMPFIRE_ROOT/
+├── meta/
+│   ├── campfire.db        # local catalog (queried by Campfire client)
+│   ├── objects.csv        # exported on every sync — open with pandas/astropy
+│   ├── spectra.csv
+│   └── photometry.csv
+└── products/
+    └── <observation>/     # downloaded FITS files
+        └── *_spec.fits
 ```
 
-The CLI and Python client share the same local data store (defaults to `$CAMPFIRE_ROOT` or `~/campfire`). FITS files go in `products/` (matching the pipeline layout), metadata in `meta/`. Sync the catalog often (it's fast), download spectra only when you need them.
+Credentials are stored separately at `~/.campfire/credentials` and cover all three entry points.
+
+## Reference
+
+- [Getting Started](/docs/api/getting-started) — install → first query → first plot, with figures
+- [Recipes](/docs/api/recipes) — six end-to-end task examples
+- [CLI Reference](/docs/api/cli) — `campfire` command-line tool
+- [Python Client](/docs/api/python-client) — full `Campfire` class reference
+- [REST API](/docs/api/rest) — direct HTTP endpoints

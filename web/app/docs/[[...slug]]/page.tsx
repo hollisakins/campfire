@@ -21,6 +21,8 @@ import dataProductsContent from '@/lib/docs/content/data-products/index.md';
 import fitsColumnsContent from '@/lib/docs/content/data-products/fits-columns.md';
 import usageContent from '@/lib/docs/content/usage/index.md';
 import apiContent from '@/lib/docs/content/api/index.md';
+import apiGettingStartedContent from '@/lib/docs/content/api/getting-started.md';
+import apiRecipesContent from '@/lib/docs/content/api/recipes.md';
 import cliContent from '@/lib/docs/content/api/cli.md';
 import pythonClientContent from '@/lib/docs/content/api/python-client.md';
 import restApiContent from '@/lib/docs/content/api/rest.md';
@@ -40,6 +42,8 @@ const contentMap: Record<string, string> = {
   'data-products/fits-columns': fitsColumnsContent,
   'usage': usageContent,
   'api': apiContent,
+  'api/getting-started': apiGettingStartedContent,
+  'api/recipes': apiRecipesContent,
   'api/cli': cliContent,
   'api/python-client': pythonClientContent,
   'api/rest': restApiContent,
