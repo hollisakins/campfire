@@ -12,6 +12,7 @@ import { SpectrumPlot } from '../SpectrumPlot';
 import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import type { FilterOptions } from '@/lib/actions/spectra';
+import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { GRATINGS, type ObjectDetail, type Spectrum } from '@/lib/types';
 import { useSpectrumDataCache } from '@/lib/hooks/useSpectrumDataCache';
 import { useMultiObjectCache } from '@/lib/hooks/useMultiObjectCache';
@@ -23,6 +24,8 @@ interface InspectionModeOverlayProps {
   object: ObjectDetail;
   filterStr: string;
   filters: Partial<FilterOptions>;
+  sortColumn: SortColumn;
+  sortDirection: SortDirection;
 }
 
 interface TabSpec {
@@ -81,6 +84,8 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   object,
   filterStr,
   filters,
+  sortColumn,
+  sortDirection,
 }) => {
   const router = useRouter();
   const { user, userProfile } = useAuth();
@@ -111,6 +116,8 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const queue = useInspectionQueue({
     initialObjectId: object.object_id,
     filters,
+    sortColumn,
+    sortDirection,
   });
 
   const { navigateTo, fetchObject, prefetchObject, isNavigating, navigationError, setNavigationError } = useObjectNavigation();
