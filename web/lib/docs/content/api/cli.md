@@ -150,21 +150,7 @@ Disk usage: 2.9 GB
 
 ## Authentication
 
-### `campfire login`
-
-Authenticate with CAMPFIRE.
-
-```bash
-campfire login              # Browser-based OAuth (recommended)
-campfire login --api-key    # Manual API key paste (headless environments)
-```
-
-### Other auth commands
-
-| Command | Description |
-|---------|-------------|
-| `campfire logout` | Remove stored credentials |
-| `campfire whoami` | Show current authenticated user |
+`campfire login` for browser OAuth, `campfire login --api-key` for headless environments. `campfire whoami` shows the current user; `campfire logout` clears credentials. See [Getting Started](/docs/api/getting-started#2-authenticate) for the full walkthrough.
 
 ---
 
