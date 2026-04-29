@@ -58,14 +58,6 @@ SELECT field,
    FROM public.nircam_exposures
   GROUP BY field, filter;
 
-grant delete on table "public"."nircam_exposures" to "anon";
-grant insert on table "public"."nircam_exposures" to "anon";
-grant references on table "public"."nircam_exposures" to "anon";
-grant select on table "public"."nircam_exposures" to "anon";
-grant trigger on table "public"."nircam_exposures" to "anon";
-grant truncate on table "public"."nircam_exposures" to "anon";
-grant update on table "public"."nircam_exposures" to "anon";
-
 grant delete on table "public"."nircam_exposures" to "authenticated";
 grant insert on table "public"."nircam_exposures" to "authenticated";
 grant references on table "public"."nircam_exposures" to "authenticated";

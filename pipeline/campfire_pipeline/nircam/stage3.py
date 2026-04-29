@@ -1130,6 +1130,6 @@ def run_stage3(field, stage_config, config, filters=None, n_processes=1, overwri
 
         # ----- Drizzle resampling -----
         log(f'Running resample step for {filtname}...')
-        resample_step(filtname, field, stage_config, reduction_version, overwrite=overwrite)
+        resample_step(filtname, field, {**stage_config, 'files_to_skip': files_to_skip}, reduction_version, overwrite=overwrite)
 
     log(f"Stage 3 complete for field '{field.name}'")
