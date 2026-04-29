@@ -2,11 +2,14 @@
 # Export with: cfpipe config > my_config.toml
 
 [pipeline]
-    version = "v0.3"
+    # Reduction version is auto-computed as the campfire git commit hash
+    # (with '-dirty' suffix if the working tree has uncommitted changes).
+    # Uncomment to pin a specific version string instead, e.g.:
+    # version = "release-v1.0"
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
-    # CRDS_CONTEXT = "jwst_1481.pmap"   # uncomment to pin
+    CRDS_CONTEXT = "jwst_1481.pmap"   # uncomment to pin
 
 [paths]
     # Resolved from $CAMPFIRE_ROOT by default. Uncomment to override:
@@ -20,8 +23,8 @@
 # === NIRSpec ===
 
 [nirspec.stage1]
-    do_clean_flicker_noise = false # handled by iterative bkg subtraction
-    mask_science_regions = false
+    do_clean_flicker_noise = true # handled by iterative bkg subtraction
+    mask_science_regions = true
     cleanup_uncal = true
     cleanup_rateints = true
     subtract_2d = false
@@ -29,6 +32,7 @@
     sigma_clip = true
     bkg_estimator = "median"
     do_col_1f = true
+    col_1f_method = "template" # "median" (flat per-column) or "template" (per-column PF template fit)
     do_row_1f = true # only used for PRISM
     plot = true
     

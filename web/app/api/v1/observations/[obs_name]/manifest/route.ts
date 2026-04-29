@@ -87,6 +87,7 @@ export async function GET(
     const spectraWithUrls = spectraList.map(
       (s: {
         spectra_id: number;
+        spectrum_id: string;
         target_id: string;
         grating: string;
         fits_path: string;
@@ -96,6 +97,7 @@ export async function GET(
         reduction_version: string;
       }, i: number) => ({
         spectra_id: s.spectra_id,
+        spectrum_id: s.spectrum_id,
         target_id: s.target_id,
         grating: s.grating,
         fits_path: s.fits_path,

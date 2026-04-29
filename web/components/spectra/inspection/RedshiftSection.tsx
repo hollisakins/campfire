@@ -8,6 +8,11 @@ interface RedshiftSectionProps {
   state: InspectionState;
   canEdit: boolean;
   redshiftAuto: number | null;
+  /** Stored redshift_inspected (may have been pinned at sign-off). Used as
+   *  the "Current" display fallback when the override input is empty so the
+   *  panel shows the inspector's pinned value rather than a freshly
+   *  reprocessed auto-fit. */
+  redshiftInspected: number | null;
   redshiftInputRef?: React.RefObject<HTMLInputElement | null>;
 }
 
@@ -19,6 +24,7 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
   state,
   canEdit,
   redshiftAuto,
+  redshiftInspected,
   redshiftInputRef,
 }, ref) => {
   const [localRedshift, setLocalRedshift] = useState(state.redshiftInspected);
@@ -83,14 +89,18 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
     flushPendingChanges: () => {
       clearTimeout(debounceTimerRef.current);
       if (localRedshift !== state.redshiftInspected) {
-        console.log('[RedshiftSection] Flushing pending redshift:', localRedshift);
         state.setRedshiftInspected(localRedshift);
       }
     },
   }), [localRedshift, state]);
 
-  // Calculate current redshift
-  const currentRedshift = localRedshift ? parseFloat(localRedshift) : redshiftAuto;
+  // Calculate current redshift. When the override input is empty, prefer the
+  // stored redshift_inspected (which may be a pinned auto value from sign-off)
+  // so the "Current" display matches what's persisted. Mirrors the COALESCE in
+  // the objects.redshift generated column.
+  const currentRedshift = localRedshift
+    ? parseFloat(localRedshift)
+    : (redshiftInspected ?? redshiftAuto);
 
   return (
     <div className="p-4 border-b border-border dark:border-slate-700">

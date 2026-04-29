@@ -6,10 +6,8 @@ import os
 import shutil
 import warnings
 import numpy as np
-import matplotlib.pyplot as plt
 from datetime import datetime
 from astropy.io import fits
-from astropy.visualization import ImageNormalize, ZScaleInterval
 
 from campfire_pipeline.common.io import log
 from campfire_pipeline.common.wcs import boundingbox_to_indices, wcs_to_dq
@@ -57,7 +55,8 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     # Phase 1: Run Detector1Pipeline on all uncal files
     if n_processes > 1 and uncal_files:
         _prefetch_detector1_references(
-            [os.path.join(obs.workspace_dir, f) for f in uncal_files]
+            [os.path.join(obs.workspace_dir, f) for f in uncal_files],
+            mask_science_regions=stage_config['do_clean_flicker_noise'] and stage_config['mask_science_regions'],
         )
     dispatch(
         run_stage1_single_uncal,
@@ -76,13 +75,19 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         bkg_estimator=stage_config.get('bkg_estimator', 'median'),
         do_col_1f=stage_config.get('do_col_1f', True),
         do_row_1f=stage_config.get('do_row_1f', True),
+        col_1f_method=stage_config.get('col_1f_method', 'template'),
         plot=stage_config.get('plot', True),
         save_backup=False,
     )
-    rate_files = [
+    expected_rate_files = [
         os.path.join(obs.workspace_dir, f.replace('_uncal.fits', '_rate.fits'))
         for f in uncal_files
     ]
+    rate_files = [f for f in expected_rate_files if os.path.exists(f)]
+    missing = set(expected_rate_files) - set(rate_files)
+    if missing:
+        for f in sorted(missing):
+            log(f"WARNING: Detector1Pipeline did not produce {os.path.basename(f)} — skipping background subtraction for this file")
     if n_processes > 1 and rate_files:
         _prefetch_crds_references(rate_files)
     dispatch(
@@ -195,6 +200,9 @@ def mask_slits(
         meta_model.meta.wcs.bounding_box = generate_compound_bbox(meta_model, slits)
 
         for slitlet in slits:
+            
+            if slitlet.name in ["S200A1", "S200A2", "S400A1", "S1600A1", "S200B1"]:
+                continue #override if fixed slits are present, as these are auto-masked anyways
             bbox = meta_model.meta.wcs.bounding_box[slitlet.name]
             xmin, xmax, ymin, ymax = boundingbox_to_indices(processed_model.data.shape, bbox)
             y_indices, x_indices = np.mgrid[ymin:ymax, xmin:xmax]
@@ -268,7 +276,7 @@ def mask_slits(
         #     bkg_total += pedestal_model
 
 
-def _prefetch_detector1_references(uncal_files):
+def _prefetch_detector1_references(uncal_files, mask_science_regions=False):
     """Pre-cache CRDS reference files for Detector1Pipeline to avoid race conditions.
 
     Multiple workers downloading the same CRDS file simultaneously can cause
@@ -281,6 +289,11 @@ def _prefetch_detector1_references(uncal_files):
         'dark', 'gain', 'ipc', 'linearity', 'mask',
         'readnoise', 'refpix', 'saturation', 'superbias',
     ]
+    if mask_science_regions:
+        reftypes += [
+            'camera', 'collimator', 'disperser', 'fore', 'fpa',
+            'msa', 'ote', 'wavelengthrange', 'msaoper', 'flat',
+        ]
 
     seen_detectors = set()
     for uncal_file in uncal_files:
@@ -307,6 +320,11 @@ def _prefetch_detector1_references(uncal_files):
             "DATE-OBS": hdr.get('DATE-OBS', '2023-01-01'),
             "TIME-OBS": hdr.get('TIME-OBS', '00:00:00'),
         }
+        if mask_science_regions:
+            params.update({
+                "FILTER": hdr.get('FILTER', 'CLEAR'),
+                "GRATING": hdr.get('GRATING', 'G140M'),
+            })
 
         try:
             refs = crds.getreferences(params, reftypes=reftypes, observatory='jwst')
@@ -388,6 +406,55 @@ def _get_pictureframe_file(rate_file):
     return None
 
 
+def _fit_col_template(residual, mask, template, sigma_clip=True,
+                      min_valid=20, n_clip_iter=5):
+    """Per-column fit of residual[:,j] = alpha_j * template[:,j] + beta_j.
+
+    Alternative to the flat per-column median used in the default col_1f step.
+    Captures column-wise mismatches in the picture-frame template that the
+    coarser per-quarter PF fit cannot correct. Returns an ndarray same shape
+    as `residual`, with 0 in columns that have fewer than `min_valid` unmasked
+    pixels.
+    """
+    from astropy.stats import median_absolute_deviation
+
+    col_model = np.zeros_like(residual)
+    _, n_cols = residual.shape
+
+    for j in range(n_cols):
+        col_mask = mask[:, j]
+        if col_mask.sum() < min_valid:
+            continue
+        d = residual[col_mask, j]
+        t = template[col_mask, j]
+
+        # Degenerate: if the template column is essentially flat, only a
+        # constant shift is identifiable — fall back to the column median.
+        if np.ptp(t) == 0:
+            col_model[:, j] = np.median(d)
+            continue
+
+        A = np.column_stack([t, np.ones_like(t)])
+        (alpha, beta), _, _, _ = np.linalg.lstsq(A, d, rcond=None)
+
+        if sigma_clip:
+            for _ in range(n_clip_iter):
+                resid = d - (alpha * t + beta)
+                sigma_mad = median_absolute_deviation(resid)
+                if sigma_mad == 0:
+                    break
+                keep = np.abs(resid - np.median(resid)) < 3.0 * sigma_mad
+                if keep.sum() == len(d) or keep.sum() < min_valid:
+                    break
+                d, t = d[keep], t[keep]
+                A = np.column_stack([t, np.ones_like(t)])
+                (alpha, beta), _, _, _ = np.linalg.lstsq(A, d, rcond=None)
+
+        col_model[:, j] = alpha * template[:, j] + beta
+
+    return col_model
+
+
 def subtract_background_from_rate_file(
         rate_file: str,
         override_wavelength_range: dict = {},
@@ -398,6 +465,7 @@ def subtract_background_from_rate_file(
         bkg_estimator: str = 'median',
         do_col_1f: str = True,
         do_row_1f: str = True,
+        col_1f_method: str = 'template',
         plot: bool = True,
         save_backup: bool = False,
     ):
@@ -598,13 +666,23 @@ def subtract_background_from_rate_file(
 
 
             if do_col_1f:
-                rate_masked = (model.data - bkg_total).copy()
-                rate_masked[~mask] = np.nan
+                if col_1f_method == 'template' and use_pictureframe:
+                    log(f'Subtracting column 1/f via per-column PF template fit')
+                    col_model = _fit_col_template(
+                        model.data - bkg_total, mask, pictureframe_template,
+                        sigma_clip=sigma_clip,
+                    )
+                else:
+                    if col_1f_method == 'template' and not use_pictureframe:
+                        log(f'WARNING: col_1f_method="template" requested but no PF template '
+                            f'available; falling back to per-column median')
+                    rate_masked = (model.data - bkg_total).copy()
+                    rate_masked[~mask] = np.nan
 
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    col_model = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
-                col_model[~np.isfinite(col_model)] = 0.0
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        col_model = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
+                    col_model[~np.isfinite(col_model)] = 0.0
 
                 bkg_total += col_model
                 col_model_total += col_model
@@ -636,143 +714,15 @@ def subtract_background_from_rate_file(
             row_model = row_model_total
 
         if plot:
-            from astropy.visualization import ImageNormalize, ZScaleInterval
-            norm = ImageNormalize(model.data[mask], interval=ZScaleInterval())
-
-            # Build list of columns to plot
-            columns = []
-
-            # Column 0: Always show raw and mask
-            columns.append({
-                'top_title': 'Raw rate file',
-                'top_data': model.data,
-                'top_norm': norm,
-                'bottom_title': 'Slit mask (white=valid)',
-                'bottom_data': mask,
-                'bottom_norm': None,
-                'bottom_cmap': 'gray',
-                'bottom_vmin': 0,
-                'bottom_vmax': 1,
-            })
-
-            # Track cumulative background subtraction
-            bkg_cumulative = np.zeros_like(model.data)
-
-            # Picture frame column
-            if pictureframe_model is not None:
-                bkg_cumulative += pictureframe_model
-                columns.append({
-                    'top_title': 'Picture frame',
-                    'top_data': pictureframe_model,
-                    'top_norm': norm,
-                    'bottom_title': 'Raw - picture frame',
-                    'bottom_data': model.data - bkg_cumulative,
-                    'bottom_norm': norm,
-                })
-
-            # Pedestal quarters column
-            if pedestal_model is not None:
-                bkg_cumulative += pedestal_model
-                columns.append({
-                    'top_title': 'Pedestal quarters',
-                    'top_data': pedestal_model,
-                    'top_norm': norm,
-                    'bottom_title': 'Raw - picture frame - pedestal',
-                    'bottom_data': model.data - bkg_cumulative,
-                    'bottom_norm': norm,
-                })
-
-            # 2D background column
-            if bkg2d_model is not None:
-                bkg_cumulative += bkg2d_model
-                bottom_title = 'Raw'
-                if pictureframe_model is not None:
-                    bottom_title += ' - picture frame'
-                if pedestal_model is not None:
-                    bottom_title += ' - pedestal'
-                bottom_title += ' - 2D'
-
-                columns.append({
-                    'top_title': '2D background',
-                    'top_data': bkg2d_model,
-                    'top_norm': norm,
-                    'bottom_title': bottom_title,
-                    'bottom_data': model.data - bkg_cumulative,
-                    'bottom_norm': norm,
-                })
-
-            # Column 1/f
-            if col_model is not None:
-                bkg_cumulative += col_model
-                bottom_title = 'Raw'
-                if pictureframe_model is not None:
-                    bottom_title += ' - picture frame'
-                if pedestal_model is not None:
-                    bottom_title += ' - pedestal'
-                if bkg2d_model is not None:
-                    bottom_title += ' - 2D'
-                bottom_title += ' - col'
-
-                columns.append({
-                    'top_title': 'Column 1/f',
-                    'top_data': np.zeros_like(model.data) + col_model,
-                    'top_norm': norm,
-                    'bottom_title': bottom_title,
-                    'bottom_data': model.data - bkg_cumulative,
-                    'bottom_norm': norm,
-                })
-
-            # Row 1/f
-            if row_model is not None:
-                bkg_cumulative += row_model
-                bottom_title = 'Raw'
-                if pictureframe_model is not None:
-                    bottom_title += ' - picture frame'
-                if pedestal_model is not None:
-                    bottom_title += ' - pedestal'
-                if bkg2d_model is not None:
-                    bottom_title += ' - 2D'
-                if col_model is not None:
-                    bottom_title += ' - col'
-                bottom_title += ' - row'
-
-                columns.append({
-                    'top_title': 'Row 1/f',
-                    'top_data': np.zeros_like(model.data) + row_model,
-                    'top_norm': norm,
-                    'bottom_title': bottom_title,
-                    'bottom_data': model.data - bkg_cumulative,
-                    'bottom_norm': norm,
-                })
-
-            # Create the plot
-            n_cols = len(columns)
-            fig, ax = plt.subplots(2, n_cols, figsize=(4*n_cols, 8), sharex=True, sharey=True)
-
-            # Handle case where only 1 column (ax won't be 2D array)
-            if n_cols == 1:
-                ax = ax.reshape(2, 1)
-
-            for i, col in enumerate(columns):
-                # Top panel
-                ax[0, i].imshow(col['top_data'], norm=col['top_norm'])
-                ax[0, i].set_title(col['top_title'])
-
-                # Bottom panel
-                if col.get('bottom_cmap') is not None:
-                    ax[1, i].imshow(col['bottom_data'],
-                                   cmap=col['bottom_cmap'],
-                                   vmin=col.get('bottom_vmin'),
-                                   vmax=col.get('bottom_vmax'))
-                else:
-                    ax[1, i].imshow(col['bottom_data'], norm=col.get('bottom_norm', norm))
-                ax[1, i].set_title(col['bottom_title'])
-
-            plt.tight_layout()
-            plot_file = rate_file.replace('_rate.fits','_bkg.pdf')
-            log(f'Saving to {plot_file}')
-            plt.savefig(plot_file, dpi=300)
-            plt.close()
+            from campfire_pipeline.nirspec.plots import plot_bkg_subtraction
+            plot_bkg_subtraction(
+                rate_file, model.data, mask,
+                pictureframe_model=pictureframe_model,
+                pedestal_model=pedestal_model,
+                bkg2d_model=bkg2d_model,
+                col_model=col_model,
+                row_model=row_model,
+            )
 
         fits.writeto(rate_file.replace('_rate.fits','_mask.fits'), mask.astype(int), overwrite=True)
         fits.writeto(rate_file.replace('_rate.fits','_bkg.fits'), bkg_total, overwrite=True)
@@ -842,9 +792,9 @@ def run_stage1_single_uncal(
         return 1
 
     except Exception as e:
-        error_msg = f"Failed stage1 processing for {uncal_file}: {e}"
-        log(error_msg)
-        # logger.error(error_msg)
+        log(f"ERROR: Detector1Pipeline FAILED for {uncal_file}: {e}")
+        import traceback
+        log(traceback.format_exc())
         return 0
 
     finally:

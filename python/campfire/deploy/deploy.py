@@ -32,7 +32,6 @@ from campfire.deploy.generate import (
 )
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
-    REDSHIFT_DRIFT_THRESHOLD,
     batch_upsert_objects,
     batch_upsert_spectra,
     check_existing_objects,
@@ -42,7 +41,6 @@ from campfire.deploy.supabase import (
     get_supabase_client,
     get_user_id_from_token,
     insert_deployment,
-    propagate_crossmatches,
     recompute_target_aggregates,
     refresh_filter_options,
     refresh_programs_overview,
@@ -99,11 +97,22 @@ def deploy_observation(
     include_rgb: bool = False,
     include_sed: bool = True,
     include_shutters: bool = True,
+    include_photometry: bool = True,
     skip_astrometry: bool = False,
     source_ids: list[int] | None = None,
     auto_approve: bool = False,
-) -> None:
-    """Full deployment: ECSV -> generate content -> R2 upload -> Supabase upsert."""
+    defer_rebuild: bool = False,
+) -> dict:
+    """Full deployment: ECSV -> generate content -> R2 upload -> Supabase upsert.
+
+    When *defer_rebuild* is True, the per-field objects reconciliation
+    (and materialized-view refresh) is skipped so the caller can batch
+    them after processing multiple observations of the same field.
+
+    Returns a dict with ``field`` and ``needs_reconcile`` (always True
+    for completed deploys; the no-op return at the dry-run / nothing-
+    to-do branch above sets it False).
+    """
     obs_dir = resolve_obs_dir(obs_name)
     summary = load_summary(obs_dir, obs_name)
 
@@ -189,6 +198,15 @@ def deploy_observation(
                 print("  No shutters ECSV found, would skip")
         else:
             print("  Shutters: skipped (--no-shutters)")
+        if include_photometry:
+            from campfire.deploy.config import resolve_photometry_config
+            phot_path = resolve_photometry_config(None)
+            if phot_path is not None:
+                print(f"  Photometry: would deploy for changed objects after reconcile (count TBD)")
+            else:
+                print("  Photometry: no photometry.toml found, would skip")
+        else:
+            print("  Photometry: skipped (--no-photometry)")
         if not force_overwrite:
             print("  (existing objects: pipeline fields only, inspection data preserved)")
         print()
@@ -197,7 +215,7 @@ def deploy_observation(
             print(f"  - {obj['object_id']}")
         if len(objects) > 5:
             print(f"  ... and {len(objects) - 5} more")
-        return
+        return {'field': field, 'needs_reconcile': False}
 
     # --- Live deployment ---
     programs_config = load_programs()
@@ -303,38 +321,57 @@ def deploy_observation(
 
         # Supabase upserts
         print("Upserting objects...")
-        n_obj, new_object_ids, n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
+        n_obj, new_object_ids, _n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
         print(f"  {n_obj} objects")
-        if n_quality_reset:
-            print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift > {REDSHIFT_DRIFT_THRESHOLD}, no manual override)")
 
         print("Upserting spectra...")
-        n_spec = batch_upsert_spectra(sb, spectra)
-        print(f"  {n_spec} spectra")
+        n_spec, changed_hashes = batch_upsert_spectra(sb, spectra)
+        print(f"  {n_spec} spectra ({len(changed_hashes)} with hash changes)")
 
         # Recompute aggregate columns (max_snr, max_exposure_time) in bulk
         target_ids = [o['object_id'] for o in objects]
         n_agg = recompute_target_aggregates(sb, target_ids)
         print(f"  Recomputed aggregates for {n_agg} targets")
 
-        # Cross-match propagation for new objects
-        if new_object_ids:
-            print("Checking cross-matches...")
-            n_propagated = propagate_crossmatches(sb, new_object_ids)
-            if n_propagated:
-                print(f"  Auto-secured {n_propagated} objects via cross-match")
-            else:
-                print("  No cross-matches found")
+        # Phase C: incremental object reconciliation. Preserves inspection
+        # state on existing objects, inserts only when new clusters appear,
+        # soft-deletes orphans (is_active=false), and aborts hard if a
+        # split/merge is detected (operator must resolve interactively via
+        # `campfire deploy objects reconcile`). `propagate_crossmatches` is
+        # gone — its job is now done by object-level inspection ownership.
+        # `defer_rebuild` defers reconciliation to the multi-obs caller so
+        # the same field isn't reconciled N times for N observations.
+        if defer_rebuild:
+            print(f"\nDeferred objects reconciliation (--defer-rebuild set)")
+        else:
+            from campfire.deploy.reconcile import reconcile_field_objects
+            print("\nReconciling objects...")
+            n_clusters, _stats, changed_ids = reconcile_field_objects(
+                sb, field,
+                changed_hashes=changed_hashes,
+                abort_on_split_merge=True,
+            )
+            print(f"  {n_clusters} clusters")
 
-        # Rebuild objects table for this field
-        from campfire.deploy.objects import rebuild_field_objects
-        print("\nRebuilding objects...")
-        n_obj, n_multi = rebuild_field_objects(sb, field)
-        print(f"  {n_obj} objects ({n_multi} multi-target)")
+            print()
+            refresh_filter_options(sb)
+            refresh_programs_overview(sb)
 
-        print()
-        refresh_filter_options(sb)
-        refresh_programs_overview(sb)
+            # Photometry: cross-match the field's catalog and upsert rows
+            # for objects touched by reconcile. Skipped silently if no
+            # photometry config exists for the field, or the change set is
+            # empty (early-exit inside deploy_field_photometry).
+            if include_photometry and changed_ids:
+                from campfire.deploy.config import resolve_photometry_config
+                from campfire.deploy.photometry import deploy_field_photometry
+                phot_path = resolve_photometry_config(None)
+                if phot_path is not None:
+                    print(f"\nDeploying photometry for {len(changed_ids)} "
+                          f"changed objects...")
+                    deploy_field_photometry(
+                        sb, field, phot_path, config,
+                        restrict_to_object_db_ids=changed_ids,
+                    )
 
         # Deploy shutters
         n_shutters = 0
@@ -350,14 +387,17 @@ def deploy_observation(
                     from campfire.deploy.astrometry import correct_shutter_positions
 
                     imaging_path = resolve_imaging_config()
-                    with open(imaging_path, 'rb') as f:
-                        imaging_config = tomllib.load(f)
-                    n_corrected, n_matches = correct_shutter_positions(
-                        shutters_data, obs_dir, obs_name, field, imaging_config,
-                    )
-                    if n_corrected:
-                        print(f"  Astrometry: corrected {n_corrected} shutters "
-                              f"({n_matches} catalog cross-matches)")
+                    if imaging_path is None:
+                        print("  No imaging.toml found, skipping astrometry correction")
+                    else:
+                        with open(imaging_path, 'rb') as f:
+                            imaging_config = tomllib.load(f)
+                        n_corrected, n_matches = correct_shutter_positions(
+                            shutters_data, obs_dir, obs_name, field, imaging_config,
+                        )
+                        if n_corrected:
+                            print(f"  Astrometry: corrected {n_corrected} shutters "
+                                  f"({n_matches} catalog cross-matches)")
 
                 n_shutters = db_deploy_shutters(sb, obs_name, shutters_data)
                 print(f"  Deployed {n_shutters} shutter records")
@@ -402,6 +442,10 @@ def deploy_observation(
         if n_shutters:
             msg += f" + {n_shutters} shutters"
         print(msg)
+
+        # Phase C: any successful deploy potentially affected member spectra
+        # or membership; the deferred multi-obs path always wants to reconcile.
+        return {'field': field, 'needs_reconcile': True}
 
     finally:
         if temp_dir.exists():
@@ -646,10 +690,8 @@ def deploy_zfit(
                 return
 
     print("Updating objects...")
-    n, _, n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite)
+    n, _, _ = batch_upsert_objects(sb, objects, field, force_overwrite)
     print(f"  Updated {n} objects")
-    if n_quality_reset:
-        print(f"  Reset {n_quality_reset} Secure objects (redshift_auto drift)")
 
     refresh_filter_options(sb)
     refresh_programs_overview(sb)
@@ -780,14 +822,17 @@ def deploy_shutters(
             print("  Could not determine field, skipping astrometry")
         else:
             imaging_path = resolve_imaging_config()
-            with open(imaging_path, 'rb') as f:
-                imaging_config = tomllib.load(f)
-            n_corrected, n_matches = correct_shutter_positions(
-                shutters_data, obs_dir, obs_name, field, imaging_config,
-            )
-            if n_corrected:
-                print(f"  Astrometry: corrected {n_corrected} shutters "
-                      f"({n_matches} catalog cross-matches)")
+            if imaging_path is None:
+                print("  No imaging.toml found, skipping astrometry correction")
+            else:
+                with open(imaging_path, 'rb') as f:
+                    imaging_config = tomllib.load(f)
+                n_corrected, n_matches = correct_shutter_positions(
+                    shutters_data, obs_dir, obs_name, field, imaging_config,
+                )
+                if n_corrected:
+                    print(f"  Astrometry: corrected {n_corrected} shutters "
+                          f"({n_matches} catalog cross-matches)")
 
     if dry_run:
         print("=== DRY RUN ===")

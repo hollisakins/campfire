@@ -258,6 +258,7 @@ export async function getFilteredObjectIds(
       p_max_exposure_time_max: baseParams.p_max_exposure_time_max,
       p_search: baseParams.p_search,
       p_inspected_only: baseParams.p_inspected_only,
+      p_needs_review: baseParams.p_needs_review,
       p_has_photometry: baseParams.p_has_photometry,
       p_list_ids: baseParams.p_list_ids,
       p_coord_ra: baseParams.p_coord_ra,
@@ -303,61 +304,6 @@ export async function getFieldSlits(
   }
 
   return { slits: data };
-}
-
-/**
- * Fetch object IDs matching the given filters (for map marker filtering).
- * Reuses the same RPC function as the spectra table but only extracts IDs.
- */
-export async function getFilteredTargetIds(
-  filters: FilterOptions
-): Promise<{ targetIds: string[]; error?: string }> {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-
-  if (!user) {
-    return { targetIds: [], error: 'Not authenticated' };
-  }
-
-  try {
-    // Determine accessible programs (parallel queries)
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
-
-    if (accessibleProgramSlugs.length === 0) {
-      return { targetIds: [] };
-    }
-
-    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
-
-    const fullRpcParams = {
-      ...rpcParams,
-      p_sort_column: 'target_id',
-      p_sort_direction: 'asc',
-    };
-
-    const { data: allRows, error: rpcError } = await paginateRpc<{ target_id: string }>(
-      supabase, 'get_filtered_target_ids', fullRpcParams,
-    );
-
-    if (rpcError) {
-      console.error('Error fetching filtered target IDs:', rpcError);
-      return { targetIds: [], error: rpcError.message };
-    }
-
-    const targetIds = allRows.map(row => row.target_id);
-
-    return { targetIds };
-  } catch (err) {
-    console.error('Unexpected error fetching filtered target IDs:', err);
-    return { targetIds: [], error: 'An unexpected error occurred' };
-  }
 }
 
 /**

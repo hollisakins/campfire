@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Flame, LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown } from 'lucide-react';
+import { Flame, LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown, Github } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 
@@ -37,7 +37,7 @@ function NavDropdown({ link, isActive }: { link: NavLink; isActive: boolean }) {
         <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-2 w-44 bg-header dark:bg-slate-800 rounded-lg shadow-lg border border-gray-700 dark:border-slate-700 py-1 z-50">
+        <div className="absolute top-full left-0 mt-2 w-44 bg-header dark:bg-slate-800 rounded-lg shadow-lg border border-gray-700 dark:border-slate-700 py-1 z-[1100]">
           {link.children!.map((child) => (
             <Link
               key={child.href}
@@ -134,6 +134,18 @@ export const Navigation: React.FC = () => {
             >
               <ThemeIcon className="w-4 h-4" />
             </button>
+
+            {/* GitHub */}
+            <a
+              href="https://github.com/hollisakins/campfire"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center text-sm text-gray-300 hover:text-white transition-colors"
+              aria-label="View on GitHub"
+              title="View on GitHub"
+            >
+              <Github className="w-4 h-4" />
+            </a>
 
             {/* User Menu */}
             {user ? (

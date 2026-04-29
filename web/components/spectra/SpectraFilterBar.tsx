@@ -158,7 +158,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     (filters.max_snr_max !== null ? 1 : 0) +
     (filters.max_exposure_time_min !== null ? 1 : 0) +
     (filters.max_exposure_time_max !== null ? 1 : 0) +
-    (filters.spectral_features?.length ?? 0) +
     (filters.list_ids?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
@@ -170,6 +169,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     filters.redshift_quality.length > 0 ||
     filters.redshift_min !== null ||
     filters.redshift_max !== null ||
+    filters.needs_review !== null ||
     filters.search.length > 0 ||
     panelFilterCount > 0;
 
@@ -189,8 +189,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
       max_snr_max: null,
       max_exposure_time_min: null,
       max_exposure_time_max: null,
-      spectral_features: [],
-      spectral_features_mode: 'any',
       list_ids: [],
       dq_flags: [],
       dq_flags_mode: 'any',
@@ -299,13 +297,18 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           precision={2}
         />
 
-        {/* Quality filter with "All inspected" shortcut */}
+        {/* Quality filter with "All inspected" shortcut and "Needs review only" toggle */}
         <FilterChip
           label="Quality"
           options={qualityOptions}
           selected={filters.redshift_quality}
           onChange={(selected) => updateFilter('redshift_quality', selected as number[])}
           shortcut={{ label: 'All inspected', values: INSPECTED_QUALITY_VALUES }}
+          extraCheckbox={{
+            label: 'Needs review only',
+            checked: filters.needs_review === true,
+            onChange: (checked) => updateFilter('needs_review', checked ? true : null),
+          }}
         />
 
         {/* Divider */}

@@ -51,9 +51,9 @@ export async function getSpectra(
   filters?: Partial<FilterOptions>,
   page: number = 1,
   pageSize: number = 50,
-  sortColumn: SortColumn = 'target_id',
+  sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc',
-  viewMode: ViewMode = 'targets'
+  viewMode: ViewMode = 'objects'
 ): Promise<PaginatedSpectraResult> {
   const supabase = await createClient();
 
@@ -97,53 +97,51 @@ export async function getSpectra(
 
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
-    // Choose RPC based on view mode
     const rpcName = viewMode === 'spectra'
       ? 'get_filtered_spectra_paginated'
-      : viewMode === 'objects'
-        ? 'get_filtered_objects_paginated'
-        : 'get_filtered_targets_paginated';
+      : 'get_filtered_objects_paginated';
 
     // Build final params for the chosen RPC
     // Objects RPC has a smaller parameter set (no bitmask flags, comments, thumbnails)
-    const callParams = viewMode === 'objects'
-      ? {
-          p_program_slugs: rpcParams.p_program_slugs,
-          p_filter_programs: rpcParams.p_filter_programs,
-          p_fields: rpcParams.p_fields,
-          p_gratings: rpcParams.p_gratings,
-          p_gratings_mode: rpcParams.p_gratings_mode,
-          p_observations: rpcParams.p_observations,
-          p_redshift_quality: rpcParams.p_redshift_quality,
-          p_redshift_min: rpcParams.p_redshift_min,
-          p_redshift_max: rpcParams.p_redshift_max,
-          p_max_snr_min: rpcParams.p_max_snr_min,
-          p_max_snr_max: rpcParams.p_max_snr_max,
-          p_max_exposure_time_min: rpcParams.p_max_exposure_time_min,
-          p_max_exposure_time_max: rpcParams.p_max_exposure_time_max,
-          p_search: rpcParams.p_search,
-          p_inspected_only: rpcParams.p_inspected_only,
-          p_has_photometry: rpcParams.p_has_photometry,
-          p_list_ids: rpcParams.p_list_ids,
-          p_coord_ra: rpcParams.p_coord_ra,
-          p_coord_dec: rpcParams.p_coord_dec,
-          p_radius_degrees: rpcParams.p_radius_degrees,
-          p_sort_column: sortColumn,
-          p_sort_direction: sortDirection,
-          p_page: page,
-          p_page_size: pageSize,
-        }
-      : {
-          ...rpcParams,
-          p_has_photometry: undefined,
-          p_photo_z_min: undefined,
-          p_photo_z_max: undefined,
-          p_sort_column: sortColumn,
-          p_sort_direction: sortDirection,
-          p_page: page,
-          p_page_size: pageSize,
-          p_include_thumbnails: true,
-        };
+    let callParams: Record<string, unknown>;
+    if (viewMode === 'objects') {
+      callParams = {
+        p_program_slugs: rpcParams.p_program_slugs,
+        p_filter_programs: rpcParams.p_filter_programs,
+        p_fields: rpcParams.p_fields,
+        p_gratings: rpcParams.p_gratings,
+        p_gratings_mode: rpcParams.p_gratings_mode,
+        p_observations: rpcParams.p_observations,
+        p_redshift_quality: rpcParams.p_redshift_quality,
+        p_redshift_min: rpcParams.p_redshift_min,
+        p_redshift_max: rpcParams.p_redshift_max,
+        p_max_snr_min: rpcParams.p_max_snr_min,
+        p_max_snr_max: rpcParams.p_max_snr_max,
+        p_max_exposure_time_min: rpcParams.p_max_exposure_time_min,
+        p_max_exposure_time_max: rpcParams.p_max_exposure_time_max,
+        p_search: rpcParams.p_search,
+        p_inspected_only: rpcParams.p_inspected_only,
+        p_needs_review: rpcParams.p_needs_review,
+        p_has_photometry: rpcParams.p_has_photometry,
+        p_list_ids: rpcParams.p_list_ids,
+        p_coord_ra: rpcParams.p_coord_ra,
+        p_coord_dec: rpcParams.p_coord_dec,
+        p_radius_degrees: rpcParams.p_radius_degrees,
+        p_sort_column: sortColumn,
+        p_sort_direction: sortDirection,
+        p_page: page,
+        p_page_size: pageSize,
+      };
+    } else {
+      callParams = {
+        ...rpcParams,
+        p_sort_column: sortColumn,
+        p_sort_direction: sortDirection,
+        p_page: page,
+        p_page_size: pageSize,
+        p_include_thumbnails: true,
+      };
+    }
 
     // Call the RPC function for server-side filtering, sorting, and pagination
     const { data, error } = await supabase.rpc(rpcName, callParams);
@@ -178,8 +176,9 @@ export async function getSpectra(
           field: obj.field,
           ra: obj.ra,
           dec: obj.dec,
-          redshift: obj.best_redshift,
-          redshift_quality: obj.best_redshift_quality ?? 0,
+          redshift: obj.redshift,
+          redshift_quality: obj.redshift_quality ?? 0,
+          redshift_inspected: obj.redshift_inspected ?? null,
           distance: obj.distance ?? null,
           max_snr: obj.max_snr ?? undefined,
           max_exposure_time: obj.max_exposure_time ?? undefined,
@@ -195,16 +194,16 @@ export async function getSpectra(
           member_targets: obj.member_targets,
           lists: obj.lists,
           num_gratings: obj.gratings?.length ?? 0,
+          last_inspected_at: obj.last_inspected_at ?? null,
+          last_inspected_by: obj.last_inspected_by ?? null,
+          last_data_change_at: obj.last_data_change_at ?? null,
+          staleness_reason: obj.staleness_reason ?? null,
           // Fields not applicable in objects mode
           program_slug: obj.programs?.[0] ?? '',
           program_name: undefined,
           observation: '',
-          redshift_auto: null,
-          redshift_inspected: null,
-          spectral_features: 0,
+          redshift_auto: obj.redshift_auto ?? null,
           dq_flags: 0,
-          last_inspected_at: null,
-          last_inspected_by: null,
           updated_at: '',
         } as unknown as SpectrumTarget;
       }
@@ -214,6 +213,7 @@ export async function getSpectra(
       return {
         id: obj.id,
         target_id: obj.target_id,
+        parent_object_id: obj.parent_object_id ?? undefined,
         program_slug: obj.program_slug,
         program_name: obj.program_name || null,
         field: obj.field,
@@ -224,7 +224,6 @@ export async function getSpectra(
         redshift_auto: obj.redshift_auto,
         redshift_inspected: obj.redshift_inspected,
         redshift_quality: obj.redshift_quality,
-        spectral_features: obj.spectral_features,
         dq_flags: obj.dq_flags,
         last_inspected_at: obj.last_inspected_at,
         last_inspected_by: obj.last_inspected_by,
@@ -347,7 +346,6 @@ export async function getSpectrumById(targetId: string): Promise<{
       redshift_auto: data.redshift_auto,
       redshift_inspected: data.redshift_inspected,
       redshift_quality: data.redshift_quality,
-      spectral_features: data.spectral_features,
       dq_flags: data.dq_flags,
       last_inspected_at: data.last_inspected_at,
       last_inspected_by: data.last_inspected_by,
@@ -495,7 +493,7 @@ export async function getObjectById(objectId: string): Promise<{
       };
     }
 
-    // Transform member targets, sorted by max_snr desc
+    // Member targets are stateless provenance — inspection lives on the parent object.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const memberTargets: ObjectMemberTarget[] = (members || []).map((m: any) => ({
       id: m.id,
@@ -505,14 +503,7 @@ export async function getObjectById(objectId: string): Promise<{
       observation: m.observation,
       ra: m.ra,
       dec: m.dec,
-      redshift: m.redshift,
       redshift_auto: m.redshift_auto,
-      redshift_inspected: m.redshift_inspected,
-      redshift_quality: m.redshift_quality,
-      spectral_features: m.spectral_features,
-      dq_flags: m.dq_flags,
-      last_inspected_at: m.last_inspected_at,
-      last_inspected_by: m.last_inspected_by,
       has_sed_plot: m.has_sed_plot ?? false,
       max_snr: m.max_snr,
       max_exposure_time: m.max_exposure_time,
@@ -533,8 +524,17 @@ export async function getObjectById(objectId: string): Promise<{
       gratings: obj.gratings,
       max_snr: obj.max_snr,
       max_exposure_time: obj.max_exposure_time,
-      best_redshift: obj.best_redshift,
-      best_redshift_quality: obj.best_redshift_quality,
+      redshift: obj.redshift ?? null,
+      redshift_quality: obj.redshift_quality ?? 0,
+      redshift_inspected: obj.redshift_inspected ?? null,
+      redshift_auto: obj.redshift_auto ?? null,
+      inspected_used_auto: obj.inspected_used_auto ?? false,
+      last_inspected_at: obj.last_inspected_at ?? null,
+      last_inspected_by: obj.last_inspected_by ?? null,
+      last_data_change_at: obj.last_data_change_at ?? null,
+      staleness_reason: obj.staleness_reason ?? null,
+      version: obj.version ?? 1,
+      is_active: obj.is_active ?? true,
       photo_z: obj.photo_z ?? null,
       photo_z_err_lo: obj.photo_z_err_lo ?? null,
       photo_z_err_hi: obj.photo_z_err_hi ?? null,
@@ -570,7 +570,7 @@ export async function getObjectById(objectId: string): Promise<{
  */
 export async function getObjectMetadata(objectId: string): Promise<{
   object_id: string;
-  best_redshift: number | null;
+  redshift: number | null;
   field: string;
 } | null> {
   try {
@@ -578,7 +578,7 @@ export async function getObjectMetadata(objectId: string): Promise<{
 
     const { data, error } = await supabase
       .from('objects')
-      .select('object_id, best_redshift, field')
+      .select('object_id, redshift, field')
       .eq('object_id', objectId)
       .single();
 
@@ -588,7 +588,7 @@ export async function getObjectMetadata(objectId: string): Promise<{
 
     return {
       object_id: data.object_id,
-      best_redshift: data.best_redshift,
+      redshift: data.redshift,
       field: data.field,
     };
   } catch {
@@ -706,14 +706,15 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
 }
 
 /**
- * Fetch all matching object IDs for the inspection queue.
- * Returns a stable snapshot of IDs that won't change as targets are inspected.
+ * Fetch all matching object IDs (IAU names) for the inspection queue.
+ * Returns a stable snapshot ordered by object_id.
  * If no redshift_quality filter is set, implicitly filters to quality=0 (uninspected).
+ *
+ * Backed by `get_filtered_object_ids`; sort/observation/feature/DQ filters
+ * aren't supported at this lightweight tier.
  */
 export async function getInspectionQueueIds(
   filters?: Partial<FilterOptions>,
-  sortColumn: SortColumn = 'target_id',
-  sortDirection: SortDirection = 'asc'
 ): Promise<{ ids: string[]; error?: string }> {
   const supabase = await createClient();
 
@@ -724,7 +725,6 @@ export async function getInspectionQueueIds(
   }
 
   try {
-    // Determine which programs the user can access (parallel queries)
     const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
       supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
       supabase.from('programs').select('slug').eq('is_public', true),
@@ -738,22 +738,32 @@ export async function getInspectionQueueIds(
       return { ids: [] };
     }
 
-    // Apply implicit quality=0 filter when no quality filter is set
     const hasQualityFilter = filters?.redshift_quality && filters.redshift_quality.length > 0;
     const qualityFilter = hasQualityFilter ? filters!.redshift_quality : [0];
 
-    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
+    const baseRpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
-    // Call lightweight RPC that returns only object IDs (no JSONB, no spectra joins).
-    // Paginate to avoid PostgREST max-rows truncation (5000).
-    const { data: allRows, error: rpcError } = await paginateRpc<{ target_id: string }>(
+    // Strip params not accepted by get_filtered_object_ids (target-only filters
+    // and ordering hints — the objects RPC returns rows in object_id order).
+    /* eslint-disable @typescript-eslint/no-unused-vars */
+    const {
+      p_observations: _obs,
+      p_dq_flags_include_any: _dqa,
+      p_dq_flags_include_all: _dqb,
+      p_dq_flags_exclude: _dqc,
+      p_comment_search: _cs,
+      p_comment_search_scope: _css,
+      p_comment_user_id: _cu,
+      ...objectParams
+    } = baseRpcParams;
+    /* eslint-enable @typescript-eslint/no-unused-vars */
+
+    const { data: allRows, error: rpcError } = await paginateRpc<{ object_id: string }>(
       supabase,
-      'get_filtered_target_ids',
+      'get_filtered_object_ids',
       {
-        ...rpcParams,
-        p_redshift_quality: qualityFilter, // Override: implicit quality=0 for inspection
-        p_sort_column: sortColumn,
-        p_sort_direction: sortDirection,
+        ...objectParams,
+        p_redshift_quality: qualityFilter,
       },
     );
 
@@ -762,8 +772,7 @@ export async function getInspectionQueueIds(
       return { ids: [], error: rpcError.message };
     }
 
-    const ids = allRows.map(row => row.target_id);
-
+    const ids = allRows.map(row => row.object_id);
     return { ids };
   } catch (err) {
     console.error('Unexpected error fetching inspection queue:', err);
@@ -772,79 +781,7 @@ export async function getInspectionQueueIds(
 }
 
 /**
- * Get adjacent target IDs for navigation on detail page.
- * Uses a lightweight server query optimized for finding just prev/next.
- */
-export async function getAdjacentTargetIds(
-  currentTargetId: string,
-  filters?: Partial<FilterOptions>,
-  sortColumn: SortColumn = 'target_id',
-  sortDirection: SortDirection = 'asc'
-): Promise<{
-  prev: string | null;
-  next: string | null;
-  currentIndex: number;
-  total: number;
-}> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
-
-  if (!user) {
-    return { prev: null, next: null, currentIndex: 0, total: 0 };
-  }
-
-  try {
-    // Determine which programs the user can access (parallel queries)
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
-
-    if (accessibleProgramSlugs.length === 0) {
-      return { prev: null, next: null, currentIndex: 0, total: 0 };
-    }
-
-    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
-
-    // Call the lightweight RPC function
-    const { data, error } = await supabase.rpc('get_adjacent_targets', {
-      p_current_target_id: currentTargetId,
-      ...rpcParams,
-      p_sort_column: sortColumn,
-      p_sort_direction: sortDirection,
-    });
-
-    if (error) {
-      console.error('Error fetching adjacent objects:', error);
-      return { prev: null, next: null, currentIndex: 0, total: 0 };
-    }
-
-    // RPC returns a single row
-    const result = data?.[0];
-    if (!result) {
-      return { prev: null, next: null, currentIndex: 0, total: 0 };
-    }
-
-    return {
-      prev: result.prev_target_id || null,
-      next: result.next_target_id || null,
-      currentIndex: Number(result.current_index) || 0,
-      total: Number(result.total_count) || 0,
-    };
-  } catch (err) {
-    console.error('Error in getAdjacentTargetIds:', err);
-    return { prev: null, next: null, currentIndex: 0, total: 0 };
-  }
-}
-
-/**
  * Get adjacent object IDs for navigation on object detail page.
- * Objects-mode equivalent of getAdjacentTargetIds.
  */
 export async function getAdjacentObjectIds(
   currentObjectId: string,
@@ -882,12 +819,13 @@ export async function getAdjacentObjectIds(
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     // Strip target-only params that the objects RPC doesn't accept
+    /* eslint-disable @typescript-eslint/no-unused-vars */
     const {
-      p_spectral_features_include_any: _sf1, p_spectral_features_include_all: _sf2, p_spectral_features_exclude: _sf3,
       p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
       p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
       ...objectsParams
     } = rpcParams;
+    /* eslint-enable @typescript-eslint/no-unused-vars */
 
     const { data, error } = await supabase.rpc('get_adjacent_objects', {
       p_current_object_id: currentObjectId,

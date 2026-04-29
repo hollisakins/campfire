@@ -12,6 +12,9 @@ Also available directly as: campfire-nircam <command>
 
 import os
 
+import matplotlib
+matplotlib.use('Agg')
+
 import click
 
 from campfire_pipeline.config import (
@@ -54,9 +57,8 @@ def _setup(config_path, field_name):
     """
     config = load_config(config_path)
     setup_environment(config)
-    campfire_root = os.environ.get('CAMPFIRE_ROOT')
     field_obj = Field.load(field_name)
-    field_obj.setup_workspace(campfire_root)
+    field_obj.setup_workspace()
     return config, field_obj
 
 

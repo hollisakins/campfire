@@ -121,11 +121,8 @@ class Field:
             Override $CAMPFIRE_ROOT. If None, reads from environment.
         """
         if campfire_root is None:
-            campfire_root = os.environ.get('CAMPFIRE_ROOT')
-        if not campfire_root:
-            raise RuntimeError(
-                "Cannot set up workspace: export CAMPFIRE_ROOT or pass campfire_root"
-            )
+            from campfire_pipeline.config import _get_campfire_root
+            campfire_root = _get_campfire_root()
 
         self.raw_dir = os.path.join(campfire_root, 'raw', self.data_subdir)
         self.products_dir = os.path.join(campfire_root, 'products', 'nircam', self.name)

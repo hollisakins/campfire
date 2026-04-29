@@ -19,6 +19,9 @@ Multiple observations are processed serially:
 Also available directly as: campfire-nirspec <command>
 """
 
+import matplotlib
+matplotlib.use('Agg')
+
 import click
 
 from campfire_pipeline.config import load_config, setup_environment, resolve_paths, get_stage_config, resolve_template_grid_paths
@@ -228,9 +231,9 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
     from campfire_pipeline.nirspec.stage2 import resample_single_exposure
     from campfire_pipeline.nirspec.stuck_shutters import (
         detect_stuck_shutters, merge_stuck_shutters,
-        write_stuck_shutters_toml, plot_stuck_shutter_diagnostics,
-        _get_n_shutters,
+        write_stuck_shutters_toml, _get_n_shutters,
     )
+    from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
@@ -322,7 +325,8 @@ def _run_summary(cfg, obs_obj):
         write_shutters_ecsv,
     )
 
-    version = cfg.get('pipeline', {}).get('version', 'unknown')
+    from campfire_pipeline.common.version import get_reduction_version
+    version = get_reduction_version(cfg)
     consensus_config = cfg.get('nirspec', {}).get('redshift_consensus', {})
     obs_dir = Path(obs_obj.workspace_dir)
     summary_table = generate_observation_summary(obs_obj.name, obs_dir,

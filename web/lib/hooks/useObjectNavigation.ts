@@ -2,128 +2,70 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { getSpectrumById, getAdjacentTargetIds, type FilterOptions } from '@/lib/actions/spectra';
-import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
-import type { NavigationData } from './useMultiObjectCache';
+import { getObjectById } from '@/lib/actions/spectra';
+import type { ObjectDetail } from '@/lib/types';
 
-interface UseObjectNavigationOptions {
-  filters: Partial<FilterOptions>;
-  sortColumn: SortColumn;
-  sortDirection: SortDirection;
-  /** When true, fetchObject only fetches spectrum data (skips getAdjacentTargetIds) */
-  skipNavQuery?: boolean;
+export interface ObjectNavigationData {
+  object: ObjectDetail;
 }
 
-export function useObjectNavigation(options: UseObjectNavigationOptions) {
-  const { filters, sortColumn, sortDirection, skipNavQuery } = options;
+/**
+ * Fetches object data by IAU object_id. Queue ordering is handled by useInspectionQueue.
+ */
+export function useObjectNavigation() {
   const router = useRouter();
 
   const [isNavigating, setIsNavigating] = useState(false);
   const [navigationError, setNavigationError] = useState<string | null>(null);
 
-  // AbortController for canceling in-flight requests
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  /**
-   * Fetch object data (spectrum + RGB + navigation) in parallel
-   */
-  const fetchObject = useCallback(async (targetId: string): Promise<NavigationData | null> => {
-    console.log(`[Navigation] Fetching target: ${targetId}`);
-
-    // Cancel previous request
+  const fetchObject = useCallback(async (objectId: string): Promise<ObjectNavigationData | null> => {
     if (abortControllerRef.current) {
-      console.log('[Navigation] Aborting previous request');
       abortControllerRef.current.abort();
     }
-
-    // Create new controller
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
     try {
-      // Fetch spectrum data (and optionally navigation data in parallel)
-      const spectrumPromise = getSpectrumById(targetId);
-      const navPromise = skipNavQuery
-        ? Promise.resolve({ prev: null, next: null, currentIndex: 0, total: 0 })
-        : getAdjacentTargetIds(targetId, filters, sortColumn, sortDirection);
+      const result = await getObjectById(objectId);
 
-      const [spectrumResult, adjacentIds] = await Promise.all([spectrumPromise, navPromise]);
+      if (controller.signal.aborted) return null;
 
-      // Use API route URL directly as image src (browser follows redirect automatically)
-      const rgbUrl = `/api/tile-thumbnail?target_id=${encodeURIComponent(targetId)}`;
-
-      // Check if aborted during fetch
-      if (controller.signal.aborted) {
-        console.log('[Navigation] Request was aborted');
-        return null;
-      }
-
-      // Handle authentication
-      if (!spectrumResult.isAuthenticated) {
-        console.error('[Navigation] User not authenticated');
+      if (!result.isAuthenticated) {
         router.push('/login?redirect=' + encodeURIComponent(window.location.pathname));
         return null;
       }
 
-      // Handle not found or error
-      if (!spectrumResult.spectrum) {
-        console.error(`[Navigation] Spectrum not found: ${targetId}`, spectrumResult.error);
-        setNavigationError(spectrumResult.error || 'Target not found');
+      if (!result.object) {
+        setNavigationError(result.error || 'Object not found');
         return null;
       }
 
-      // Clear error on success
       setNavigationError(null);
-
-      return {
-        spectrum: spectrumResult.spectrum,
-        rgbImageUrl: rgbUrl,
-        nav: {
-          prev: adjacentIds.prev,
-          next: adjacentIds.next,
-          index: adjacentIds.currentIndex,
-          total: adjacentIds.total,
-        },
-      };
+      return { object: result.object };
     } catch (error) {
-      // Handle abort gracefully
-      if (error instanceof Error && error.name === 'AbortError') {
-        console.log('[Navigation] Request aborted');
-        return null;
-      }
-
-      // Handle other errors
+      if (error instanceof Error && error.name === 'AbortError') return null;
       console.error('[Navigation] Fetch failed:', error);
-      setNavigationError(error instanceof Error ? error.message : 'Failed to load target');
+      setNavigationError(error instanceof Error ? error.message : 'Failed to load object');
       return null;
     }
-  }, [filters, sortColumn, sortDirection, skipNavQuery, router]);
+  }, [router]);
 
-  /**
-   * Navigate to object with auto-save integration
-   */
   const navigateTo = useCallback(async (
-    targetId: string,
+    objectId: string,
     onBeforeNavigate: () => Promise<boolean>
-  ): Promise<NavigationData | null> => {
-    console.log(`[Navigation] Navigating to: ${targetId}`);
+  ): Promise<ObjectNavigationData | null> => {
     setIsNavigating(true);
     setNavigationError(null);
-
     try {
-      // Call pre-navigation hook (auto-save)
       const canProceed = await onBeforeNavigate();
-
       if (!canProceed) {
-        console.log('[Navigation] Navigation blocked by onBeforeNavigate');
         setIsNavigating(false);
         return null;
       }
-
-      // Fetch new target data
-      const data = await fetchObject(targetId);
+      const data = await fetchObject(objectId);
       setIsNavigating(false);
-
       return data;
     } catch (error) {
       console.error('[Navigation] Navigation failed:', error);
@@ -133,26 +75,12 @@ export function useObjectNavigation(options: UseObjectNavigationOptions) {
     }
   }, [fetchObject]);
 
-  /**
-   * Lightweight fetch for prefetching adjacent objects.
-   * Does NOT use the shared AbortController, so it won't cancel
-   * (or be cancelled by) user-initiated navigation.
-   */
-  const prefetchObject = useCallback(async (targetId: string): Promise<NavigationData | null> => {
+  /** Lightweight prefetch — no shared abort controller. */
+  const prefetchObject = useCallback(async (objectId: string): Promise<ObjectNavigationData | null> => {
     try {
-      const spectrumResult = await getSpectrumById(targetId);
-
-      if (!spectrumResult.isAuthenticated || !spectrumResult.spectrum) {
-        return null;
-      }
-
-      const rgbUrl = `/api/tile-thumbnail?target_id=${encodeURIComponent(targetId)}`;
-
-      return {
-        spectrum: spectrumResult.spectrum,
-        rgbImageUrl: rgbUrl,
-        nav: { prev: null, next: null, index: 0, total: 0 },
-      };
+      const result = await getObjectById(objectId);
+      if (!result.isAuthenticated || !result.object) return null;
+      return { object: result.object };
     } catch {
       return null;
     }

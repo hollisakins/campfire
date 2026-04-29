@@ -50,11 +50,8 @@ def build_empirical_wavecorr():
     from jwst.datamodels import WaveCorrModel
 
     # --- cache check ---
-    campfire_root = os.environ.get('CAMPFIRE_ROOT')
-    if not campfire_root:
-        raise RuntimeError(
-            "CAMPFIRE_ROOT must be set to build empirical wavecorr file"
-        )
+    from campfire_pipeline.config import _get_campfire_root
+    campfire_root = _get_campfire_root()
     cache_dir = os.path.join(campfire_root, 'cache')
     os.makedirs(cache_dir, exist_ok=True)
     out_path = os.path.join(cache_dir, 'jwst_nirspec_wavecorr_jades_dr4_empirical.asdf')
@@ -242,6 +239,9 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=False)
 
+    # Ensure the background override file exists so it can be edited before stage2b
+    _ = obs.bkg_overrides
+
     # Pre-fetch CRDS references to avoid multiprocessing race conditions
     if n_processes > 1 and obs.rate_files:
         _prefetch_crds_references(obs.rate_files)
@@ -282,9 +282,9 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     if detect_enabled:
         from campfire_pipeline.nirspec.stuck_shutters import (
             detect_stuck_shutters, merge_stuck_shutters,
-            write_stuck_shutters_toml, plot_stuck_shutter_diagnostics,
-            _get_n_shutters,
+            write_stuck_shutters_toml, _get_n_shutters,
         )
+        from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
         import toml as _toml
 
         detected = detect_stuck_shutters(obs, files, stage_config,
@@ -872,7 +872,14 @@ def run_stage2b_single_slitlet(
                     nods = [int(os.path.basename(cal_file).split('_')[2]) for cal_file in cal_files]
                     if str(nods[i]) in bkg_overrides:
                         nods_to_use = bkg_overrides[str(nods[i])]
-                        print(nods_to_use)
+                        if len(nods_to_use) == 0:
+                            log(f'{os.path.basename(cal_files[i])}: Override empty for nod {nods[i]}, skipping bkgsub output (nod excluded from science combination)')
+                            cal_file_out = cal_files[i].replace('_cal.fits', '_cal_bkgsub.fits')
+                            s2d_file_out = cal_file_out.replace('_cal_bkgsub.fits', '_s2d_bkgsub.fits')
+                            for stale in (cal_file_out, s2d_file_out):
+                                if os.path.exists(stale):
+                                    os.remove(stale)
+                            continue
                         log(f'{os.path.basename(cal_files[i])}: Only using nods {nods_to_use} for bkg subtraction for nod {nods[i]}')
                         bkg = [b[0] for n,b in zip(nods,models) if n in nods_to_use]
 

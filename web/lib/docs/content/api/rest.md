@@ -9,20 +9,20 @@ All requests require an `Authorization` header:
 ```bash
 # Using API key
 curl -H "Authorization: Bearer sk_your_api_key" \
-  https://campfire.hollisakins.com/api/v1/targets
+  https://campfire.hollisakins.com/api/v1/objects
 
 # Using JWT access token (from device flow)
 curl -H "Authorization: Bearer eyJ..." \
-  https://campfire.hollisakins.com/api/v1/targets
+  https://campfire.hollisakins.com/api/v1/objects
 ```
 
 ---
 
 ## Data Endpoints
 
-### GET /targets
+### GET /objects
 
-Query targets with filters.
+Query objects (cross-program grouped sky positions) with filters.
 
 **Query Parameters:**
 
@@ -37,21 +37,16 @@ Query targets with filters.
 | `redshift_quality` | string | Comma-separated quality codes |
 | `max_snr_min` | float | Minimum max SNR |
 | `max_snr_max` | float | Maximum max SNR |
-| `spectral_features_include_any` | int | Match any of these flags |
-| `spectral_features_include_all` | int | Must have all flags |
-| `spectral_features_exclude` | int | Must not have any flags |
 | `lists` | string | Comma-separated tag slugs (e.g., `lrd,blagn`) |
-| `dq_flags_include_any` | int | Same pattern |
-| `dq_flags_include_all` | int | |
-| `dq_flags_exclude` | int | |
-| `inspected_only` | boolean | Filter to inspected targets |
-| `search` | string | Text search on target_id |
+| `inspected_only` | boolean | Filter to inspected objects |
+| `has_photometry` | boolean | Filter to objects with photometry |
+| `search` | string | Text search on object_id / member target_ids |
 | `ra` | float | RA for cone search (degrees) |
 | `dec` | float | Dec for cone search (degrees) |
 | `radius` | float | Search radius (arcsec) |
 | `limit` | int | Max results (default: 1000) |
 | `offset` | int | Pagination offset |
-| `sort` | string | Sort column |
+| `sort` | string | Sort column (object_id, ra, dec, redshift, redshift_quality, field, n_targets, n_spectra, max_snr, max_exposure_time, distance) |
 | `sort_dir` | string | 'asc' or 'desc' |
 
 **Response:**
@@ -60,21 +55,29 @@ Query targets with filters.
 {
   "data": [
     {
-      "target_id": "ember_uds_p4_123456",
+      "object_id": "CAMPFIRE-J095850.12+021234.5",
       "ra": 34.1234,
       "dec": -5.4567,
       "redshift": 2.345,
       "redshift_quality": 3,
-      "field": "UDS",
-      "observation": "ember_uds_p4",
-      "spectra": [
-        {"grating": "PRISM", "fits_path": "spectra/ember_uds_p4/..."}
+      "field": "COSMOS",
+      "member_targets": [
+        {"target_id": "ember_cosmos_p1_12345", "program_slug": "ember-cosmos", "observation": "ember_cosmos_p1", "redshift_auto": 2.345}
       ]
     }
   ],
   "pagination": {"total": 1500, "limit": 1000, "offset": 0}
 }
 ```
+
+### GET /spectra/list
+
+Flat list of spectra (one row per spectrum) with filters.
+
+Same vocabulary as `/objects` plus per-spectrum filters (`dq_flags_include_any`,
+`dq_flags_include_all`, `dq_flags_exclude`). Each row carries
+`spectrum_id`, `target_id`, `object_id`, `grating`, `fits_path`,
+`signal_to_noise`, `exposure_time`, `redshift_auto`, `dq_flags`.
 
 ### GET /spectra
 
@@ -92,8 +95,7 @@ Get spectrum JSON data for plotting.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `target_id` | string | Target ID |
-| `grating` | string | Grating type |
+| `spectrum_id` | string | Stable per-spectrum identifier |
 
 **Response:**
 

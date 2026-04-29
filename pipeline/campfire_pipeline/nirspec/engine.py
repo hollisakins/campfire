@@ -104,7 +104,8 @@ class ReductionEngine:
             write_effective_config,
             write_summary_ecsv,
         )
-        version = self.config.get('pipeline', {}).get('version', 'unknown')
+        from campfire_pipeline.common.version import get_reduction_version
+        version = get_reduction_version(self.config)
         consensus_config = self.config.get('nirspec', {}).get('redshift_consensus', {})
         obs_dir = Path(obs.workspace_dir)
         summary = generate_observation_summary(obs.name, obs_dir,

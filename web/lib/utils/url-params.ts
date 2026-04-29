@@ -5,7 +5,7 @@
 
 import type { AdvancedFilterOptions, SearchScope, FilterMode } from '@/components/spectra/SpectraFilterBar';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
-import { VALID_SORT_COLUMNS, isValidSortColumn } from '@/lib/actions/spectra-types';
+import { VALID_SORT_COLUMNS, isValidSortColumn, defaultSortColumn } from '@/lib/actions/spectra-types';
 
 // Valid search scope values
 const VALID_SEARCH_SCOPES: SearchScope[] = ['target_id', 'my_comments', 'all_comments'];
@@ -79,16 +79,15 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     max_snr_max: parseNumber('snr_max'),
     max_exposure_time_min: parseNumber('exp_min'),
     max_exposure_time_max: parseNumber('exp_max'),
-    spectral_features: parseNumberArray('features'),
     list_ids: parseNumberArray('tags'),
     dq_flags: parseNumberArray('dq_flags'),
     inspected_only: parseBoolean('inspected'),
+    needs_review: parseBoolean('needs_review'),
     has_photometry: parseBoolean('has_photometry'),
     search: searchParams.get('search') || '',
     search_scope: searchScope,
     // Filter modes (default to 'any')
     gratings_mode: parseMode('gratings_mode'),
-    spectral_features_mode: parseMode('features_mode'),
     dq_flags_mode: parseMode('dq_flags_mode'),
   };
 }
@@ -106,25 +105,26 @@ export function parsePaginationFromURL(searchParams: URLSearchParams): { page: n
 }
 
 /**
- * Parse view mode from URL search parameters
+ * Parse view mode from URL search parameters.
+ * Legacy `view=targets` collapses to `objects` so old bookmarks keep working.
  */
 export function parseViewModeFromURL(searchParams: URLSearchParams): ViewMode {
   const view = searchParams.get('view');
   if (view === 'spectra') return 'spectra';
-  if (view === 'objects') return 'objects';
-  return 'targets';
+  return 'objects';
 }
 
 /**
  * Parse sorting parameters from URL search parameters.
  * Validates the sort column against the current view mode.
  */
-export function parseSortingFromURL(searchParams: URLSearchParams, viewMode: ViewMode = 'targets'): { sortColumn: SortColumn; sortDirection: SortDirection } {
-  const sort = searchParams.get('sort') || 'target_id';
+export function parseSortingFromURL(searchParams: URLSearchParams, viewMode: ViewMode = 'objects'): { sortColumn: SortColumn; sortDirection: SortDirection } {
+  const fallback = defaultSortColumn(viewMode);
+  const sort = searchParams.get('sort') || fallback;
   const dir = searchParams.get('dir') || 'asc';
   const isValid = VALID_SORT_COLUMNS.includes(sort as SortColumn) && isValidSortColumn(sort, viewMode);
   return {
-    sortColumn: isValid ? (sort as SortColumn) : 'target_id',
+    sortColumn: isValid ? (sort as SortColumn) : fallback,
     sortDirection: dir === 'desc' ? 'desc' : 'asc',
   };
 }
@@ -136,9 +136,9 @@ export function filtersToURLParams(
   filters: AdvancedFilterOptions,
   page: number = 1,
   pageSize: number = DEFAULT_PAGE_SIZE,
-  sortColumn: SortColumn = 'target_id',
+  sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc',
-  viewMode: ViewMode = 'targets'
+  viewMode: ViewMode = 'objects'
 ): URLSearchParams {
   const params = new URLSearchParams();
 
@@ -181,9 +181,6 @@ export function filtersToURLParams(
   if (filters.max_exposure_time_max !== null) {
     params.set('exp_max', filters.max_exposure_time_max.toString());
   }
-  if (filters.spectral_features.length > 0) {
-    params.set('features', filters.spectral_features.join(','));
-  }
   if (filters.list_ids.length > 0) {
     params.set('tags', filters.list_ids.join(','));
   }
@@ -192,6 +189,9 @@ export function filtersToURLParams(
   }
   if (filters.inspected_only !== null) {
     params.set('inspected', filters.inspected_only.toString());
+  }
+  if (filters.needs_review !== null) {
+    params.set('needs_review', filters.needs_review.toString());
   }
   if (filters.has_photometry !== null) {
     params.set('has_photometry', filters.has_photometry.toString());
@@ -207,9 +207,6 @@ export function filtersToURLParams(
   if (filters.gratings.length > 0 && filters.gratings_mode && filters.gratings_mode !== 'any') {
     params.set('gratings_mode', filters.gratings_mode);
   }
-  if (filters.spectral_features.length > 0 && filters.spectral_features_mode && filters.spectral_features_mode !== 'any') {
-    params.set('features_mode', filters.spectral_features_mode);
-  }
   if (filters.dq_flags.length > 0 && filters.dq_flags_mode && filters.dq_flags_mode !== 'any') {
     params.set('dq_flags_mode', filters.dq_flags_mode);
   }
@@ -220,12 +217,13 @@ export function filtersToURLParams(
   if (pageSize !== DEFAULT_PAGE_SIZE) {
     params.set('pageSize', pageSize.toString());
   }
-  // Only include view mode when non-default
-  if (viewMode !== 'targets') {
+  // Only include view mode when non-default (objects)
+  if (viewMode !== 'objects') {
     params.set('view', viewMode);
   }
   // Only include sorting params when non-default
-  if (sortColumn !== 'target_id') {
+  const defaultSort = defaultSortColumn(viewMode);
+  if (sortColumn !== defaultSort) {
     params.set('sort', sortColumn);
   }
   if (sortDirection !== 'asc') {

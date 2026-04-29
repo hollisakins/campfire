@@ -2,9 +2,9 @@
 
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams, usePathname } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import type { ObjectDetail, ObjectMemberTarget, Spectrum } from '@/lib/types';
-import { MEMBER_COLORS } from '@/lib/types';
+import { MEMBER_COLORS, GRATINGS } from '@/lib/types';
 import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
 import { MetricCards } from '@/components/spectra/MetricCards';
 import { DownloadButtons } from '@/components/spectra/DownloadButtons';
@@ -14,24 +14,33 @@ import { ShowOnMapLink } from '@/components/map/ShowOnMapLink';
 import { FloatingInspectionPanel } from './FloatingInspectionPanel';
 import { TileThumbnailWithToggle } from './TileThumbnailWithToggle';
 import { ObjectSidebar } from './ObjectSidebar';
-import { OverviewTab } from './OverviewTab';
-import { TargetTab } from './TargetTab';
+import { MultiSpectrumViewer, type SpectrumSource } from './MultiSpectrumViewer';
+import { getSpectrumShade } from './plotting-utils';
+import { SpectraDetailSection } from './SpectraDetailSection';
+import { RedshiftFitSummary } from './RedshiftFitSummary';
+import { PhotometrySED } from './PhotometrySED';
+import { ObjectComments } from './ObjectComments';
+import { NearbyObjects } from './NearbyObjects';
+import { StalenessBadge } from './StalenessBadge';
+import { useAuth } from '@/lib/contexts/AuthContext';
 
 interface UnifiedObjectPageProps {
   object: ObjectDetail;
 }
 
-export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
-  object,
-}) => {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+function buildInitialVisibility(members: ObjectMemberTarget[]): Record<number, boolean> {
+  const v: Record<number, boolean> = {};
+  for (const m of members) for (const s of m.spectra) v[s.id] = true;
+  return v;
+}
 
-  const activeTab = searchParams.get('tab') || 'overview';
-  const grating = searchParams.get('grating') || undefined;
+export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) => {
+  const { userProfile } = useAuth();
+  // Local override for last_inspected_at so the "Mark as reviewed" action in
+  // the StalenessBadge can hide the badge without a full refetch. Reset on
+  // object change (see navigation effect below).
+  const [lastInspectedOverride, setLastInspectedOverride] = useState<string | null>(null);
 
-  // Stable color assignment
   const colors = useMemo(() => {
     const c: Record<string, string> = {};
     object.member_targets.forEach((m, i) => {
@@ -40,183 +49,188 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
     return c;
   }, [object.member_targets]);
 
-  // Program slug → human-readable name
   const programNames = useMemo(() => {
     const names: Record<string, string> = {};
     for (const m of object.member_targets) {
-      if (!names[m.program_slug]) {
-        names[m.program_slug] = m.program_name;
-      }
+      if (!names[m.program_slug]) names[m.program_slug] = m.program_name;
     }
     return names;
   }, [object.member_targets]);
 
-  // === Shared visibility + order state (used by sidebar + overview spectrum viewer) ===
-  const [memberOrder, setMemberOrder] = useState<string[]>(
-    () => object.member_targets.map(m => m.target_id)
+  // Per-spectrum visibility — drives both the comparison plot and Section 2 cards.
+  // Target-level visibility (and shutter visibility) is derived: a target is "off" when
+  // ALL of its child spectra are off, "on" when all are on, "partial" otherwise.
+  const [spectrumVisibility, setSpectrumVisibility] = useState<Record<number, boolean>>(
+    () => buildInitialVisibility(object.member_targets)
   );
 
-  const [visibility, setVisibility] = useState<Record<string, boolean>>(() => {
-    const vis: Record<string, boolean> = {};
-    object.member_targets.forEach((m) => {
-      vis[m.target_id] = true;
-    });
-    return vis;
-  });
-
-  const handleVisibilityChange = useCallback((targetId: string, visible: boolean) => {
-    setVisibility(prev => ({ ...prev, [targetId]: visible }));
+  const handleSpectrumVisibility = useCallback((spectrumId: number, visible: boolean) => {
+    setSpectrumVisibility(prev => ({ ...prev, [spectrumId]: visible }));
   }, []);
 
-  const handleToggleAll = useCallback((visible: boolean) => {
-    setVisibility(prev => {
+  const handleTargetVisibility = useCallback((targetId: string, visible: boolean) => {
+    const member = object.member_targets.find(m => m.target_id === targetId);
+    if (!member) return;
+    setSpectrumVisibility(prev => {
       const next = { ...prev };
-      for (const m of object.member_targets) {
-        next[m.target_id] = visible;
-      }
+      for (const s of member.spectra) next[s.id] = visible;
       return next;
     });
   }, [object.member_targets]);
 
-  const handleReorder = useCallback((newOrder: string[]) => {
-    setMemberOrder(newOrder);
+  // Section 2 expansion state — all cards collapsed by default; user opens via
+  // sidebar jump links, the card header, or the Expand-all toggle.
+  const [expandedSpectra, setExpandedSpectra] = useState<Set<number>>(() => new Set());
+
+  const handleToggleExpand = useCallback((spectrumId: number) => {
+    setExpandedSpectra(prev => {
+      const next = new Set(prev);
+      if (next.has(spectrumId)) next.delete(spectrumId);
+      else next.add(spectrumId);
+      return next;
+    });
   }, []);
 
-  // Ordered + filtered members
-  const orderedMembers = useMemo(() => {
-    const memberMap = new Map<string, ObjectMemberTarget>(
-      object.member_targets.map(m => [m.target_id, m])
-    );
-    return memberOrder
-      .map(id => memberMap.get(id))
-      .filter((m): m is ObjectMemberTarget => m != null);
-  }, [object.member_targets, memberOrder]);
+  const handleExpandAll = useCallback(() => {
+    const all = new Set<number>();
+    for (const m of object.member_targets) for (const s of m.spectra) all.add(s.id);
+    setExpandedSpectra(all);
+  }, [object.member_targets]);
 
-  // === Tab + target resolution ===
-  const activeTarget = useMemo(() => {
-    if (activeTab === 'overview') return null;
-    return object.member_targets.find(m => m.target_id === activeTab) || null;
-  }, [activeTab, object.member_targets]);
+  const handleCollapseAll = useCallback(() => {
+    setExpandedSpectra(new Set());
+  }, []);
 
-  const resolvedTab = activeTarget ? activeTab : 'overview';
+  // Sidebar → Section 2: jump to (and auto-expand) a specific spectrum card.
+  const handleJumpToSpectrum = useCallback((spectrumId: number) => {
+    setExpandedSpectra(prev => {
+      if (prev.has(spectrumId)) return prev;
+      const next = new Set(prev);
+      next.add(spectrumId);
+      return next;
+    });
+    // Wait a tick so the freshly-expanded card has a height before scrolling.
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`spec-card-${spectrumId}`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, []);
 
-  const isSingleton = object.member_targets.length === 1;
+  // Deep-link from the spectra table: ?spectrum=<spectrum_id> auto-opens that
+  // card on first paint. Fires once per (object, spectrum_id) pair.
+  const searchParams = useSearchParams();
+  const spectrumParam = searchParams?.get('spectrum') ?? null;
+  const jumpedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!spectrumParam) return;
+    const key = `${object.id}:${spectrumParam}`;
+    if (jumpedRef.current === key) return;
+    const match = object.member_targets
+      .flatMap(m => m.spectra)
+      .find(s => s.spectrum_id === spectrumParam);
+    if (!match) return;
+    jumpedRef.current = key;
+    handleJumpToSpectrum(match.id);
+  }, [spectrumParam, object.id, object.member_targets, handleJumpToSpectrum]);
 
-  // The target whose inspection state is active:
-  // - on a target tab: that target
-  // - on overview with a singleton: the only target
-  // - on overview with multiple targets: null (inspection disabled)
-  const resolvedTarget = useMemo(() => {
-    if (activeTarget) return activeTarget;
-    if (isSingleton) return object.member_targets[0];
-    return null;
-  }, [activeTarget, isSingleton, object.member_targets]);
+  // Section 1 filter pills.
+  const sortedGratings = useMemo(() =>
+    GRATINGS.filter(g => object.gratings.includes(g)),
+    [object.gratings]
+  );
+  const [selectedGrating, setSelectedGrating] = useState<string | null>(null);
+  const [selectedProgram, setSelectedProgram] = useState<string | null>(null);
 
-  // === Lifted inspection state ===
-  const emptyInitial: InspectionInitialData = {
-    redshift_auto: null, redshift_inspected: null, redshift_quality: 0,
-    spectral_features: 0, dq_flags: 0, last_inspected_at: null, last_inspected_by: null,
-  };
-
-  const initialDataForTarget = useMemo((): InspectionInitialData => {
-    if (!resolvedTarget) return emptyInitial;
-    return {
-      redshift_auto: resolvedTarget.redshift_auto,
-      redshift_inspected: resolvedTarget.redshift_inspected,
-      redshift_quality: resolvedTarget.redshift_quality,
-      spectral_features: resolvedTarget.spectral_features,
-      dq_flags: resolvedTarget.dq_flags,
-      last_inspected_at: resolvedTarget.last_inspected_at,
-      last_inspected_by: resolvedTarget.last_inspected_by,
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedTarget?.id]);
-
-  const inspection = useInspectionState(
-    resolvedTarget?.id ?? -1,
-    initialDataForTarget,
+  const filteredMembers = useMemo(() =>
+    selectedProgram
+      ? object.member_targets.filter(m => m.program_slug === selectedProgram)
+      : object.member_targets,
+    [object.member_targets, selectedProgram]
   );
 
-  // Reset inspection state when the resolved target changes
-  const prevTargetIdRef = useRef(resolvedTarget?.id ?? -1);
-  useEffect(() => {
-    const newId = resolvedTarget?.id ?? -1;
-    if (newId !== prevTargetIdRef.current) {
-      prevTargetIdRef.current = newId;
-      if (resolvedTarget) {
-        inspection.resetState({
-          redshift_auto: resolvedTarget.redshift_auto,
-          redshift_inspected: resolvedTarget.redshift_inspected,
-          redshift_quality: resolvedTarget.redshift_quality,
-          spectral_features: resolvedTarget.spectral_features,
-          dq_flags: resolvedTarget.dq_flags,
-          last_inspected_at: resolvedTarget.last_inspected_at,
-          last_inspected_by: resolvedTarget.last_inspected_by,
-        });
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedTarget?.id]);
+  // MultiSpectrumViewer source list — driven by per-spectrum visibility.
+  // Each spectrum trace uses the same shade as its sidebar checkbox so the sidebar
+  // doubles as a legend. Index is the spectrum's position in the member's FULL
+  // list (not the filtered list) so a grating filter doesn't reshuffle shades.
+  const sources: SpectrumSource[] = useMemo(() =>
+    filteredMembers.flatMap(m =>
+      m.spectra
+        .map((s, i) => ({ s, i }))
+        .filter(({ s }) => !selectedGrating || s.grating === selectedGrating)
+        .filter(({ s }) => spectrumVisibility[s.id] ?? true)
+        .map(({ s, i }) => ({
+          fitsPath: s.fits_path,
+          label: selectedGrating ? m.target_id : `${m.target_id} (${s.grating})`,
+          color: getSpectrumShade(colors[m.target_id], i),
+          visible: true,
+        }))
+    ),
+    [filteredMembers, spectrumVisibility, selectedGrating, colors]
+  );
 
-  // Protect against browser back/forward/close when dirty
-  useEffect(() => {
-    const handler = (e: BeforeUnloadEvent) => {
-      if (resolvedTarget && inspection.isDirty()) {
-        e.preventDefault();
-      }
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [resolvedTarget, inspection.isDirty]);
-
-  // === Tab navigation ===
-  const handleTabChange = useCallback((tab: string) => {
-    // Check for unsaved inspection changes before switching away
-    if (resolvedTarget && inspection.isDirty()) {
-      const confirmed = window.confirm(
-        'You have unsaved inspection changes. Discard and switch targets?'
-      );
-      if (!confirmed) return;
-    }
-
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('tab', tab);
-    // Grating is only meaningful on initial mount of a specific target tab;
-    // clear it on any tab switch to avoid stale/invalid values in the URL
-    params.delete('grating');
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  }, [router, pathname, searchParams, resolvedTarget, inspection]);
-
-  // === Cutout shutter colors: reactive to current state ===
-  const cutoutMemberColors = useMemo(() => {
-    if (activeTarget) {
-      // On a target tab: highlight just that target
-      return { [activeTarget.target_id]: colors[activeTarget.target_id] };
-    }
-    // On overview: show all visible members
-    const mc: Record<string, string> = {};
-    for (const m of orderedMembers) {
-      if (visibility[m.target_id]) {
-        mc[m.target_id] = colors[m.target_id];
-      }
-    }
-    return mc;
-  }, [activeTarget, orderedMembers, visibility, colors]);
-
-  // Flatten all member spectra for download button
-  const allSpectra: Spectrum[] = useMemo(() =>
-    object.member_targets.flatMap(m => m.spectra),
+  // Section 3 — flat list of all member spectra for object-level redshift fit summary.
+  const allMemberSpectra: Spectrum[] = useMemo(
+    () => object.member_targets.flatMap(m => m.spectra),
     [object.member_targets]
   );
 
+  // Section 6 — exclude object's own member targets from nearby search.
+  const excludeTargetIds = useMemo(
+    () => object.member_targets.map(m => m.target_id),
+    [object.member_targets]
+  );
+
+  const initialInspection = useMemo((): InspectionInitialData => ({
+    redshift_auto: object.redshift_auto,
+    redshift_inspected: object.redshift_inspected,
+    redshift_quality: object.redshift_quality,
+    inspected_used_auto: object.inspected_used_auto,
+    last_inspected_at: object.last_inspected_at,
+    last_inspected_by: object.last_inspected_by,
+    version: object.version,
+  }), [object.redshift_auto, object.redshift_inspected, object.redshift_quality, object.inspected_used_auto, object.last_inspected_at, object.last_inspected_by, object.version]);
+
+  const inspection = useInspectionState(object.id, initialInspection);
+
+  // Reset inspection + expansion when navigating between objects.
+  const prevObjectIdRef = useRef(object.id);
+  useEffect(() => {
+    if (object.id !== prevObjectIdRef.current) {
+      prevObjectIdRef.current = object.id;
+      inspection.resetState(initialInspection);
+      setExpandedSpectra(new Set());
+      setSpectrumVisibility(buildInitialVisibility(object.member_targets));
+      setLastInspectedOverride(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [object.id]);
+
+  // Block accidental nav with unsaved inspection state.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (inspection.isDirty()) e.preventDefault();
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Cutout shutter colors: include any member with at least one visible spectrum.
+  const cutoutMemberColors = useMemo(() => {
+    const mc: Record<string, string> = {};
+    for (const m of object.member_targets) {
+      const anyVisible = m.spectra.some(s => spectrumVisibility[s.id] ?? true);
+      if (anyVisible) mc[m.target_id] = colors[m.target_id];
+    }
+    return mc;
+  }, [object.member_targets, spectrumVisibility, colors]);
+
   return (
     <div>
-      {/* Sidebar (with cutout) + Header + Main Panel */}
       <div className="flex gap-6 pb-24">
-        {/* Desktop sidebar — spans full height from header to bottom */}
+        {/* Desktop sidebar: cutout + members control panel */}
         <div className="hidden lg:block">
           <div className="w-[260px] flex-shrink-0 sticky top-4 max-h-[calc(100vh-6rem)] overflow-y-auto border-r border-border dark:border-slate-700 pr-3">
-            {/* Cutout — reactive to sidebar/tab state */}
             <div className="mb-3">
               <TileThumbnailWithToggle
                 targetId={object.object_id}
@@ -230,26 +244,54 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
                 memberColors={cutoutMemberColors}
               />
             </div>
-
             <ObjectSidebar
-              members={orderedMembers}
-              activeTab={resolvedTab}
-              onTabChange={handleTabChange}
+              members={object.member_targets}
               colors={colors}
-              visibility={visibility}
-              onVisibilityChange={handleVisibilityChange}
-              onToggleAll={handleToggleAll}
-              onReorder={handleReorder}
+              spectrumVisibility={spectrumVisibility}
+              onSpectrumVisibility={handleSpectrumVisibility}
+              onTargetVisibility={handleTargetVisibility}
+              onJumpToSpectrum={handleJumpToSpectrum}
             />
           </div>
         </div>
 
         <div className="flex-1 min-w-0">
-          {/* Object Header */}
-          <div className="mb-4">
-            <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100 mb-2">
-              {object.object_id}
-            </h1>
+          {/* Mobile: cutout above content */}
+          <div className="lg:hidden mb-4">
+            <TileThumbnailWithToggle
+              targetId={object.object_id}
+              size={600}
+              displaySize={200}
+              fov={3.2}
+              ra={object.ra}
+              dec={object.dec}
+              field={object.field}
+              linkToMap={{ field: object.field, ra: object.ra, dec: object.dec }}
+              memberColors={cutoutMemberColors}
+            />
+          </div>
+
+          {/* === Header === */}
+          <div className="mb-6">
+            <div className="flex items-center gap-3 mb-2 flex-wrap">
+              <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100">
+                {object.object_id}
+              </h1>
+              <StalenessBadge
+                reason={object.staleness_reason}
+                lastInspectedAt={lastInspectedOverride ?? object.last_inspected_at}
+                lastDataChangeAt={object.last_data_change_at}
+                objectId={object.id}
+                version={inspection.version}
+                canMarkReviewed={!!userProfile?.can_comment}
+                onReviewed={({ last_inspected_at }) => setLastInspectedOverride(last_inspected_at)}
+              />
+              {!object.is_active && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-200 dark:bg-slate-700 text-text-secondary dark:text-slate-300">
+                  Inactive
+                </span>
+              )}
+            </div>
             <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
               <span>Field:</span>
               <Link
@@ -259,24 +301,25 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
                 {object.field}
               </Link>
               <span>&middot;</span>
-              <span>{object.n_targets} targets</span>
-              <span>&middot;</span>
-              <span>{object.n_spectra} spectra</span>
+              <span>
+                {object.n_spectra === 1 ? '1 spectrum' : `${object.n_spectra} spectra`}
+                {' across '}
+                {object.n_targets === 1 ? '1 observation' : `${object.n_targets} observations`}
+              </span>
             </div>
             <div className="flex items-center gap-4 mb-3">
               <CoordinateDisplay ra={object.ra} dec={object.dec} />
               <ShowOnMapLink ra={object.ra} dec={object.dec} field={object.field} objectId={object.object_id} />
             </div>
-
-            <div className="flex items-end justify-between gap-4 flex-wrap mb-4">
+            <div className="flex items-end justify-between gap-4 flex-wrap">
               <MetricCards
                 maxSnr={object.max_snr}
-                redshift={object.best_redshift}
-                redshiftQuality={object.best_redshift_quality}
+                redshift={object.redshift}
+                redshiftQuality={object.redshift_quality}
                 numGratings={object.gratings.length}
               />
               <div className="flex gap-4">
-                <DownloadButtons spectra={allSpectra} targetId={object.object_id} />
+                <DownloadButtons spectra={allMemberSpectra} targetId={object.object_id} />
                 <CopyLinkButton
                   targetId={object.object_id}
                   url={`/nirspec/objects/${encodeURIComponent(object.object_id)}`}
@@ -285,62 +328,135 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({
             </div>
           </div>
 
-          {/* Mobile: cutout + target selector (replaces sidebar on small screens) */}
-          <div className="lg:hidden mb-4">
-            <div className="mb-3">
-              <TileThumbnailWithToggle
-                targetId={object.object_id}
-                size={600}
-                displaySize={200}
-                fov={3.2}
-                ra={object.ra}
-                dec={object.dec}
-                field={object.field}
-                linkToMap={{ field: object.field, ra: object.ra, dec: object.dec }}
-                memberColors={cutoutMemberColors}
+          {/* === Section 1: Spectrum Comparison === */}
+          <section className="mb-8">
+            <div className="flex flex-wrap gap-5 items-center mb-4">
+              <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+                Spectrum Comparison{selectedGrating ? ` — ${selectedGrating}` : ''}
+              </h2>
+              {object.programs.length > 1 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-text-secondary dark:text-slate-400">Program:</span>
+                  <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">
+                    <button
+                      onClick={() => setSelectedProgram(null)}
+                      className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                        selectedProgram === null
+                          ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
+                          : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                      }`}
+                    >
+                      All
+                    </button>
+                    {object.programs.map(p => (
+                      <button
+                        key={p}
+                        onClick={() => setSelectedProgram(selectedProgram === p ? null : p)}
+                        className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                          selectedProgram === p
+                            ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
+                            : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                        }`}
+                      >
+                        {programNames[p] || p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-text-secondary dark:text-slate-400">Grating:</span>
+                <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">
+                  <button
+                    onClick={() => setSelectedGrating(null)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                      selectedGrating === null
+                        ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
+                        : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {sortedGratings.map(g => (
+                    <button
+                      key={g}
+                      onClick={() => setSelectedGrating(selectedGrating === g ? null : g)}
+                      className={`px-2.5 py-1 text-xs font-medium font-mono rounded transition-colors ${
+                        g === selectedGrating
+                          ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
+                          : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {g}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+              <MultiSpectrumViewer
+                sources={sources}
+                grating={selectedGrating}
+                redshift={object.redshift}
               />
             </div>
-            <select
-              value={resolvedTab}
-              onChange={(e) => handleTabChange(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-lg bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
-            >
-              <option value="overview">Overview</option>
-              {orderedMembers.map(m => (
-                <option key={m.target_id} value={m.target_id}>
-                  {m.target_id} — {m.program_name}
-                </option>
-              ))}
-            </select>
-          </div>
+          </section>
 
-          {/* Main content */}
-          {resolvedTab === 'overview' ? (
-            <OverviewTab
-              object={object}
+          {/* === Section 2: Spectra Detail Cards === */}
+          <section className="mb-8">
+            <SpectraDetailSection
+              members={object.member_targets}
+              spectrumVisibility={spectrumVisibility}
               colors={colors}
-              orderedMembers={orderedMembers}
-              visibility={visibility}
-              programNames={programNames}
+              objectRedshift={object.redshift}
+              expanded={expandedSpectra}
+              onToggleExpand={handleToggleExpand}
+              onExpandAll={handleExpandAll}
+              onCollapseAll={handleCollapseAll}
             />
-          ) : activeTarget ? (
-            <TargetTab
-              key={activeTarget.target_id}
-              target={activeTarget}
-              initialGrating={grating}
-              color={colors[activeTarget.target_id]}
-              inspection={inspection}
+          </section>
+
+          {/* === Section 3: Redshift Fits === */}
+          <section className="mb-8">
+            <RedshiftFitSummary
+              spectra={allMemberSpectra}
+              redshift_auto={object.redshift_auto}
             />
-          ) : null}
+          </section>
+
+          {/* === Section 4: Photometry & SED === */}
+          {object.has_photometry && object.photometry && (
+            <section className="mb-8">
+              <PhotometrySED
+                photometry={object.photometry}
+                objectId={object.object_id}
+                bestRedshift={object.redshift}
+              />
+            </section>
+          )}
+
+          {/* === Section 5: Discussion === */}
+          <section className="mb-8">
+            <ObjectComments objectDbId={object.id} memberTargets={object.member_targets} />
+          </section>
+
+          {/* === Section 6: Nearby Objects === */}
+          <section className="mb-8">
+            <NearbyObjects
+              ra={object.ra}
+              dec={object.dec}
+              currentTargetId={object.object_id}
+              excludeTargetIds={excludeTargetIds}
+            />
+          </section>
         </div>
       </div>
 
-      {/* Floating inspection panel — always visible */}
       <FloatingInspectionPanel
         objectId={object.id}
         ra={object.ra}
         dec={object.dec}
-        inspection={resolvedTarget ? inspection : null}
+        inspection={inspection}
       />
     </div>
   );

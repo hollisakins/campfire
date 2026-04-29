@@ -34,15 +34,14 @@ export interface FilterOptions {
   max_snr_max: number | null;
   max_exposure_time_min: number | null;
   max_exposure_time_max: number | null;
-  spectral_features: number[];
   list_ids: number[];
   dq_flags: number[];
   inspected_only: boolean | null;
+  needs_review: boolean | null;
   has_photometry: boolean | null;
   search: string;
   search_scope: SearchScope;
   gratings_mode: FilterMode;
-  spectral_features_mode: FilterMode;
   dq_flags_mode: FilterMode;
 }
 
@@ -59,21 +58,21 @@ export const DEFAULT_FILTERS: FilterOptions = {
   max_snr_max: null,
   max_exposure_time_min: null,
   max_exposure_time_max: null,
-  spectral_features: [],
   list_ids: [],
   dq_flags: [],
   inspected_only: null,
+  needs_review: null,
   has_photometry: null,
   search: '',
   search_scope: 'target_id',
   gratings_mode: 'any',
-  spectral_features_mode: 'any',
   dq_flags_mode: 'any',
 };
 
 /**
  * Typed RPC params shared by all filter-based Supabase RPCs
- * (get_filtered_targets_paginated, get_csv_export, get_adjacent_targets).
+ * (get_filtered_objects_paginated, get_filtered_spectra_paginated,
+ * get_csv_export_objects, get_csv_export_spectra, get_adjacent_objects).
  *
  * Consumer-specific params (pagination, sorting, thumbnails) are NOT included —
  * each caller spreads these base params and adds its own.
@@ -92,15 +91,13 @@ export interface FilterRpcParams {
   p_max_snr_max: number | null;
   p_max_exposure_time_min: number | null;
   p_max_exposure_time_max: number | null;
-  p_spectral_features_include_any: number | null;
-  p_spectral_features_include_all: number | null;
-  p_spectral_features_exclude: number | null;
   p_list_ids: number[] | null;
   p_dq_flags_include_any: number | null;
   p_dq_flags_include_all: number | null;
   p_dq_flags_exclude: number | null;
   p_search: string | null;
   p_inspected_only: boolean | null;
+  p_needs_review: boolean | null;
   p_has_photometry: boolean | null;
   p_coord_ra: number | null;
   p_coord_dec: number | null;
@@ -123,16 +120,11 @@ export function buildFilterParams(
   userId?: string
 ): FilterRpcParams {
   // Bitmask combining: OR individual flag values into a single mask
-  const spectralFeaturesMask = filters?.spectral_features && filters.spectral_features.length > 0
-    ? filters.spectral_features.reduce((acc, val) => acc | val, 0)
-    : null;
-
   const dqFlagsMask = filters?.dq_flags && filters.dq_flags.length > 0
     ? filters.dq_flags.reduce((acc, val) => acc | val, 0)
     : null;
 
   // Route bitmask to include_any / include_all / exclude based on mode
-  const sfMode = filters?.spectral_features_mode || 'any';
   const dqMode = filters?.dq_flags_mode || 'any';
 
   // Coordinate search conversion
@@ -175,15 +167,13 @@ export function buildFilterParams(
     p_max_snr_max: filters?.max_snr_max ?? null,
     p_max_exposure_time_min: filters?.max_exposure_time_min ?? null,
     p_max_exposure_time_max: filters?.max_exposure_time_max ?? null,
-    p_spectral_features_include_any: sfMode === 'any' ? spectralFeaturesMask : null,
-    p_spectral_features_include_all: sfMode === 'all' ? spectralFeaturesMask : null,
-    p_spectral_features_exclude: sfMode === 'none' ? spectralFeaturesMask : null,
     p_list_ids: filters?.list_ids?.length ? filters.list_ids : null,
     p_dq_flags_include_any: dqMode === 'any' ? dqFlagsMask : null,
     p_dq_flags_include_all: dqMode === 'all' ? dqFlagsMask : null,
     p_dq_flags_exclude: dqMode === 'none' ? dqFlagsMask : null,
     p_search: targetIdSearch,
     p_inspected_only: filters?.inspected_only ?? null,
+    p_needs_review: filters?.needs_review ?? null,
     p_has_photometry: filters?.has_photometry ?? null,
     p_coord_ra: coordRa,
     p_coord_dec: coordDec,

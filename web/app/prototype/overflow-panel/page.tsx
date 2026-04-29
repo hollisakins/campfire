@@ -10,7 +10,6 @@ import {
 } from '@/lib/mocks/spectra-mock-data';
 import {
   REDSHIFT_QUALITY,
-  SPECTRAL_FEATURES,
   DQ_FLAGS,
   getQualityDef,
 } from '@/lib/flags';
@@ -28,7 +27,6 @@ const GRATINGS = ['PRISM', 'G140M', 'G235M', 'G395M'];
 
 interface FilterState extends MockFilterOptions {
   gratings_mode: FilterMode;
-  spectral_features_mode: FilterMode;
   dq_flags_mode: FilterMode;
 }
 
@@ -45,8 +43,6 @@ const DEFAULT_FILTERS: FilterState = {
   max_snr_max: null,
   max_exposure_time_min: null,
   max_exposure_time_max: null,
-  spectral_features: [],
-  spectral_features_mode: 'any',
   dq_flags: [],
   dq_flags_mode: 'any',
   inspected_only: null,
@@ -583,13 +579,6 @@ export default function OverflowPanelPage() {
     color: q.color,
   }));
 
-  const featureOptions: FilterOption[] = SPECTRAL_FEATURES.map(f => ({
-    value: f.value,
-    label: f.label,
-    icon: f.icon,
-    color: f.color,
-  }));
-
   const dqFlagOptions: FilterOption[] = DQ_FLAGS.map(f => ({
     value: f.value,
     label: f.label,
@@ -611,7 +600,6 @@ export default function OverflowPanelPage() {
     (filters.gratings?.length ?? 0) +
     (filters.max_snr_min !== null ? 1 : 0) +
     (filters.max_snr_max !== null ? 1 : 0) +
-    (filters.spectral_features?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
   const hasAnyActiveFilters =
@@ -714,8 +702,6 @@ export default function OverflowPanelPage() {
                   gratings_mode: 'any',
                   max_snr_min: null,
                   max_snr_max: null,
-                  spectral_features: [],
-                  spectral_features_mode: 'any',
                   dq_flags: [],
                   dq_flags_mode: 'any',
                 });
@@ -959,21 +945,6 @@ export default function OverflowPanelPage() {
               </div>
             </div>
 
-            {/* Spectral Features Section */}
-            <div className="p-4 border-b border-border dark:border-slate-700">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 mb-4">
-                Object Classification
-              </h3>
-              <InlineMultiFilter
-                label="Spectral Features"
-                options={featureOptions}
-                selected={filters.spectral_features ?? []}
-                onChange={(s) => setFilters({ ...filters, spectral_features: s as number[] })}
-                mode={filters.spectral_features_mode}
-                onModeChange={(m) => setFilters({ ...filters, spectral_features_mode: m })}
-              />
-            </div>
-
             {/* Data Quality Section */}
             <div className="p-4">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 mb-4">
@@ -1001,8 +972,6 @@ export default function OverflowPanelPage() {
                     gratings_mode: 'any',
                     max_snr_min: null,
                     max_snr_max: null,
-                    spectral_features: [],
-                    spectral_features_mode: 'any',
                     dq_flags: [],
                     dq_flags_mode: 'any',
                   });

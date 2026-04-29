@@ -1,6 +1,8 @@
 // TypeScript type definitions for CAMPFIRE
 // Matches the Supabase database schema
 
+import { REDSHIFT_QUALITY } from '@/lib/flags';
+
 // ============================================
 // Database Tables
 // ============================================
@@ -148,6 +150,9 @@ export interface AccountRequest {
   rejection_reason: string | null;
 }
 
+// Spectra-mode rows: redshift / redshift_quality / last_inspected_* fields
+// are pulled from the parent object by the spectra RPC and surfaced here so
+// the table renderer can type them as `DbTarget`.
 export interface DbTarget {
   id: number;
   target_id: string;
@@ -156,13 +161,11 @@ export interface DbTarget {
   observation: string;
   ra: number;
   dec: number;
-  redshift: number | null;           // Computed: COALESCE(redshift_inspected, redshift_auto)
-  redshift_auto: number | null;      // From pipeline
-  redshift_inspected: number | null; // Manual override
-  redshift_quality: number;
-  spectral_features: number;
-  dq_flags: number;
-  last_inspected_at: string | null;
+  redshift: number | null;           // From parent object
+  redshift_auto: number | null;      // From spectra (per-grating) or transitional target value
+  redshift_inspected: number | null; // From parent object
+  redshift_quality: number;          // From parent object
+  last_inspected_at: string | null;  // From parent object
   last_inspected_by: string | null;
   created_at: string;
   updated_at: string;
@@ -171,6 +174,8 @@ export interface DbTarget {
 
 export interface Spectrum {
   id: number;
+  /** Stable filename-derived identifier (basename of fits_path with `_spec.fits` stripped). */
+  spectrum_id: string;
   target_id: string;  // FK to targets.target_id (text)
   grating: string;
   fits_path: string;
@@ -178,6 +183,8 @@ export interface Spectrum {
   signal_to_noise: number | null;
   exposure_time: number | null;
   created_at: string;
+  redshift_auto?: number | null;
+  dq_flags?: number;
   // Pre-generated SVG thumbnails (included when p_include_thumbnails=true in RPC)
   thumbnail_svg_fnu?: string | null;
   thumbnail_svg_flambda?: string | null;
@@ -236,8 +243,8 @@ export interface ObjectListMemberWithObject extends ObjectListMember {
     field: string;
     ra: number;
     dec: number;
-    best_redshift: number | null;
-    best_redshift_quality: number;
+    redshift: number | null;
+    redshift_quality: number;
     n_spectra: number;
     max_snr: number | null;
   } | null;
@@ -245,7 +252,10 @@ export interface ObjectListMemberWithObject extends ObjectListMember {
 
 export interface FlagAuditLog {
   id: number;
-  target_id: number;
+  // Exactly one of these three is non-null (check constraint).
+  target_id: number | null;
+  object_id: number | null;
+  spectrum_id: number | null;
   user_id: string;
   field_name: string;
   old_value: number | null;
@@ -317,11 +327,19 @@ export interface SpectrumTarget extends DbTarget {
   gratings?: string[];
   photo_z?: number | null;
   has_photometry?: boolean;
-  member_targets?: { target_id: string; program_slug: string; observation: string; redshift: number | null; redshift_quality: number }[];
+  member_targets?: { target_id: string; program_slug: string; observation: string; redshift_auto: number | null }[];
   lists?: { id: number; name: string; slug: string; icon: string | null; color: string | null }[];
+  // Staleness fields surfaced in objects mode only.
+  staleness_reason?: 'new_target' | 'reprocessed' | 'membership_changed' | 'migration_conflict' | null;
+  last_data_change_at?: string | null;
+  // Legacy shim — DQ flags now live per-spectrum (spectra[i].dq_flags);
+  // a few UI surfaces still read a per-target summary.
+  dq_flags?: number;
 }
 
-// Member target with full spectra for object detail page
+// Member targets are stateless provenance — inspection state lives on the
+// parent object. The optional inspection fields are legacy shims for UI
+// surfaces still reading per-target columns.
 export interface ObjectMemberTarget {
   id: number;
   target_id: string;
@@ -330,18 +348,18 @@ export interface ObjectMemberTarget {
   observation: string;
   ra: number;
   dec: number;
-  redshift: number | null;
   redshift_auto: number | null;
-  redshift_inspected: number | null;
-  redshift_quality: number;
-  spectral_features: number;
-  dq_flags: number;
-  last_inspected_at: string | null;
-  last_inspected_by: string | null;
   has_sed_plot: boolean;
   max_snr: number | null;
   max_exposure_time: number | null;
   spectra: Spectrum[];
+  // Legacy shims reflecting deprecated targets.* columns — not authoritative.
+  redshift?: number | null;
+  redshift_inspected?: number | null;
+  redshift_quality?: number;
+  dq_flags?: number;
+  last_inspected_at?: string | null;
+  last_inspected_by?: string | null;
 }
 
 // Photometry band measurement
@@ -368,7 +386,6 @@ export interface ObjectPhotometry {
   has_pz: boolean;
 }
 
-// Full object detail for object detail page
 export interface ObjectDetail {
   id: number;
   object_id: string;
@@ -381,8 +398,22 @@ export interface ObjectDetail {
   gratings: string[];
   max_snr: number | null;
   max_exposure_time: number | null;
-  best_redshift: number | null;
-  best_redshift_quality: number;
+  redshift: number | null;
+  redshift_quality: number;
+  redshift_inspected: number | null;
+  redshift_auto: number | null;
+  // True when redshift_inspected was auto-pinned from redshift_auto at sign-off
+  // (inspector accepted the auto-fit rather than typing a number). The UI
+  // suppresses the "(overridden)" hint and shows an empty override input when
+  // this is true. False for explicit user-typed overrides and for
+  // uninspected/impossible rows.
+  inspected_used_auto: boolean;
+  last_inspected_at: string | null;
+  last_inspected_by: string | null;
+  last_data_change_at: string | null;
+  staleness_reason: 'new_target' | 'reprocessed' | 'membership_changed' | 'migration_conflict' | null;
+  version: number;
+  is_active: boolean;
   photo_z: number | null;
   photo_z_err_lo: number | null;
   photo_z_err_hi: number | null;
@@ -436,13 +467,19 @@ export interface ProfileRecentComments {
 // Constants
 // ============================================
 
-export const QUALITY_LABELS: FlagDefinition[] = [
-  { category: 'redshift_quality', bit_position: null, value: 0, label: 'Not Inspected', short_label: 'None', icon: '⚪', color: '#e0e0e0', description: 'Not yet visually inspected' },
-  { category: 'redshift_quality', bit_position: null, value: 1, label: 'Impossible', short_label: 'Bad', icon: '🔴', color: '#dc3545', description: 'Impossible to determine redshift from available data' },
-  { category: 'redshift_quality', bit_position: null, value: 2, label: 'Tentative', short_label: 'Tent.', icon: '🟠', color: '#ffc107', description: 'Redshift uncertain but plausible (~50% confidence)' },
-  { category: 'redshift_quality', bit_position: null, value: 3, label: 'Probable', short_label: 'Prob.', icon: '🟡', color: '#ff9800', description: 'Redshift likely correct (~80% confidence)' },
-  { category: 'redshift_quality', bit_position: null, value: 4, label: 'Secure', short_label: 'Secure', icon: '🟢', color: '#28a745', description: 'Redshift definitely correct (>95% confidence)' },
-];
+// Derived from REDSHIFT_QUALITY so the two exports can't drift apart.
+// Consumers of QUALITY_LABELS expect the FlagDefinition shape (`short_label`,
+// nullable fields); REDSHIFT_QUALITY uses `short` with non-nullable fields.
+export const QUALITY_LABELS: FlagDefinition[] = REDSHIFT_QUALITY.map(q => ({
+  category: 'redshift_quality',
+  bit_position: null,
+  value: q.value,
+  label: q.label,
+  short_label: q.short,
+  icon: q.icon,
+  color: q.color,
+  description: q.description,
+}));
 
 export const GRATINGS = ['PRISM', 'G140H', 'G140M', 'G235H', 'G235M', 'G395H', 'G395M'] as const;
 
@@ -525,9 +562,8 @@ export function formatActivityField(fieldName: string, value: number | null): st
     case 'redshift_inspected':
       return value.toFixed(4);
 
-    // For bitmask fields, just show the numeric value (decoding would be complex)
-    case 'spectral_features':
     case 'dq_flags':
+      // Bitmask — display the numeric value; the badge UI decodes per-bit
       return `${value}`;
 
     default:
@@ -539,7 +575,6 @@ export function formatFieldName(fieldName: string): string {
   const names: Record<string, string> = {
     'redshift_quality': 'Redshift Quality',
     'redshift_inspected': 'Redshift (Manual)',
-    'spectral_features': 'Spectral Features',
     'dq_flags': 'Data Quality',
   };
   return names[fieldName] || fieldName;

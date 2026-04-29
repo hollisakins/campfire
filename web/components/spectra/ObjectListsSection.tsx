@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useTransition, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useTransition, useRef, useImperativeHandle } from 'react';
 import { Plus, X, Loader2, Check, AlertCircle, Search, Tag } from 'lucide-react';
 import { getListsWithMembership, addObjectToList, removeObjectFromList } from '@/lib/actions/lists';
 import { ListForm } from '@/components/lists/ListForm';
@@ -53,15 +53,20 @@ function darkenColor(hex: string, percent: number): string {
   return '#' + ((rHex << 16) | (gHex << 8) | bHex).toString(16).padStart(6, '0');
 }
 
+export interface ObjectListsSectionHandle {
+  openDropdown: () => void;
+}
+
 interface ObjectListsSectionProps {
   objectId: number;
   ra: number;
   dec: number;
   /** Direction dropdown opens. Default 'bottom'. Use 'top' when near bottom of viewport. */
   dropdownPlacement?: 'bottom' | 'top';
+  ref?: React.Ref<ObjectListsSectionHandle>;
 }
 
-export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bottom' }: ObjectListsSectionProps) {
+export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bottom', ref }: ObjectListsSectionProps) {
   const { user, userProfile } = useAuth();
   const canEdit = !!userProfile?.can_comment;
 
@@ -81,6 +86,10 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    openDropdown: () => setShowDropdown(true),
+  }), []);
 
   useEffect(() => {
     getListsWithMembership(objectId).then(({ lists: data }) => {
@@ -217,6 +226,11 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
   return (
     <div className="relative">
       <div className="flex flex-wrap items-center gap-2">
+        {memberLists.length === 0 && canEdit && (
+          <span className="text-xs text-text-secondary dark:text-slate-400">
+            Tag object properties:
+          </span>
+        )}
         {memberLists.map(list => (
           <span
             key={list.id}
@@ -250,6 +264,7 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
             >
               <Plus className="w-3 h-3" />
               Add tag
+              <kbd className="ml-0.5 font-mono opacity-60">T</kbd>
             </button>
 
             {showDropdown && (

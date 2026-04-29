@@ -1,0 +1,49 @@
+# programs.toml — JWST program definitions for CAMPFIRE
+#
+# Place this file at $CAMPFIRE_ROOT/config/programs.toml
+#
+# Each top-level section is a program slug (unique identifier).
+# The slug is used as the primary key in the database and referenced
+# by the `program` field in observations.toml.
+#
+# Fields:
+#   program_name = Full display name of the program (required)
+#   pi_name      = Principal Investigator name (optional)
+#   description  = Brief program description (optional)
+#   cycle        = JWST observing cycle number (optional, integer)
+#   is_public    = Whether program data is publicly visible (optional, default false)
+#
+# Deploy with:
+#   campfire deploy sync-programs              # upsert all programs
+#   campfire deploy sync-programs --dry-run    # preview without changes
+
+[example_program]
+    program_name = "Example JWST Program"
+    pi_name = "J. Smith"
+    description = "A minimal example program for demonstration purposes."
+    cycle = 1
+    is_public = false
+
+[capers]
+    program_name = "CAPERS"
+    pi_name = "M. Dickinson"
+    description = "COSMOS-Web and PRIMER: A Combined Emission-line Reionization Survey"
+    cycle = 3
+    is_public = true
+
+[jades]
+    program_name = "JADES"
+    pi_name = "A. Carnall"
+    description = "JWST Advanced Deep Extragalactic Survey"
+    cycle = 1
+    is_public = true
+
+[rubies]
+    program_name = "RUBIES"
+    pi_name = "A. de Graaff"
+    description = "Red Unknowns: Bright Infrared Extragalactic Survey"
+    cycle = 2
+    is_public = true
+
+[minimal_example]
+    program_name = "Minimal Program"

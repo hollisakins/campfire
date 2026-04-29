@@ -1,218 +1,113 @@
 'use client';
 
-import React, { useState, useRef, useCallback } from 'react';
-import { LayoutGrid, GripVertical } from 'lucide-react';
+import React from 'react';
 import type { ObjectMemberTarget } from '@/lib/types';
-import { QUALITY_LABELS, GRATINGS } from '@/lib/types';
+import { formatExposureTime, getSpectrumShade } from './plotting-utils';
 
 interface ObjectSidebarProps {
   members: ObjectMemberTarget[];
-  activeTab: string; // 'overview' | target_id
-  onTabChange: (tab: string) => void;
+  /** Color per target_id (sidebar palette). */
   colors: Record<string, string>;
-  visibility: Record<string, boolean>;
-  onVisibilityChange: (targetId: string, visible: boolean) => void;
-  onToggleAll: (visible: boolean) => void;
-  onReorder: (orderedIds: string[]) => void;
+  /** Spectrum.id → visible? */
+  spectrumVisibility: Record<number, boolean>;
+  /** Per-spectrum checkbox toggle. */
+  onSpectrumVisibility: (spectrumId: number, visible: boolean) => void;
+  /** Target row checkbox: applies `visible` to ALL of the target's spectra (and shutters). */
+  onTargetVisibility: (targetId: string, visible: boolean) => void;
+  /** Click on a child spectrum row jumps to its detail card (auto-expands + scrolls). */
+  onJumpToSpectrum: (spectrumId: number) => void;
+}
+
+type TargetState = 'on' | 'off' | 'partial';
+
+function targetState(member: ObjectMemberTarget, visibility: Record<number, boolean>): TargetState {
+  if (member.spectra.length === 0) return 'off';
+  let onCount = 0;
+  for (const s of member.spectra) {
+    if (visibility[s.id]) onCount++;
+  }
+  if (onCount === 0) return 'off';
+  if (onCount === member.spectra.length) return 'on';
+  return 'partial';
 }
 
 export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
   members,
-  activeTab,
-  onTabChange,
   colors,
-  visibility,
-  onVisibilityChange,
-  onToggleAll,
-  onReorder,
+  spectrumVisibility,
+  onSpectrumVisibility,
+  onTargetVisibility,
+  onJumpToSpectrum,
 }) => {
-  // Drag state
-  const [draggedId, setDraggedId] = useState<string | null>(null);
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-  const [dropPosition, setDropPosition] = useState<'above' | 'below'>('below');
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  const allChecked = members.every(m => visibility[m.target_id]);
-  const noneChecked = members.every(m => !visibility[m.target_id]);
-
-  const handleDragStart = useCallback((e: React.DragEvent, targetId: string) => {
-    setDraggedId(targetId);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', targetId);
-  }, []);
-
-  // dragover fires continuously on the hovered element — reliable source of truth
-  const handleDragOver = useCallback((e: React.DragEvent, targetId: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (targetId === draggedId) {
-      setDropTargetId(null);
-      return;
-    }
-
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const midY = rect.top + rect.height / 2;
-    setDropTargetId(targetId);
-    setDropPosition(e.clientY < midY ? 'above' : 'below');
-  }, [draggedId]);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    if (!draggedId || !dropTargetId || draggedId === dropTargetId) return;
-
-    const ids = members.map(m => m.target_id);
-    const fromIndex = ids.indexOf(draggedId);
-    if (fromIndex === -1) return;
-
-    ids.splice(fromIndex, 1);
-    let toIndex = ids.indexOf(dropTargetId);
-    if (toIndex === -1) return;
-    if (dropPosition === 'below') toIndex++;
-    ids.splice(toIndex, 0, draggedId);
-
-    onReorder(ids);
-  }, [draggedId, dropTargetId, dropPosition, members, onReorder]);
-
-  const handleDragEnd = useCallback(() => {
-    setDraggedId(null);
-    setDropTargetId(null);
-  }, []);
-
-  // Clear drop indicator when pointer leaves the member list container entirely
-  const handleContainerDragLeave = useCallback((e: React.DragEvent) => {
-    if (containerRef.current && !containerRef.current.contains(e.relatedTarget as Node)) {
-      setDropTargetId(null);
-    }
-  }, []);
-
   return (
     <nav>
-      {/* Overview tab */}
-      <button
-        onClick={() => onTabChange('overview')}
-        className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
-          activeTab === 'overview'
-            ? 'bg-accent/10 text-accent dark:bg-accent/20'
-            : 'text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 hover:text-text-primary dark:hover:text-slate-200'
-        }`}
-      >
-        <LayoutGrid className="w-4 h-4 flex-shrink-0" />
-        Overview
-      </button>
-
-      {/* Divider with toggle-all checkbox */}
-      <div className="flex items-center gap-2 my-2 px-1">
-        <div className="border-t border-border dark:border-slate-700 flex-1" />
-        <input
-          type="checkbox"
-          checked={allChecked}
-          ref={(el) => { if (el) el.indeterminate = !allChecked && !noneChecked; }}
-          onChange={() => onToggleAll(!allChecked)}
-          title={allChecked ? 'Hide all from plot' : 'Show all in plot'}
-          className="rounded border-gray-300 dark:border-slate-600 text-accent focus:ring-accent w-3.5 h-3.5"
-        />
-        <div className="border-t border-border dark:border-slate-700 flex-1" />
-      </div>
-
-      {/* Member target tabs */}
-      <div
-        ref={containerRef}
-        className="space-y-0.5"
-        onDragLeave={handleContainerDragLeave}
-      >
+      <div className="space-y-2">
         {members.map((member) => {
-          const qualityDef = QUALITY_LABELS.find(q => q.value === member.redshift_quality);
-          const memberGratings = [...new Set(member.spectra.map(s => s.grating))];
-          const sortedGratings = GRATINGS.filter(g => memberGratings.includes(g));
-          const isActive = activeTab === member.target_id;
-          const isDragged = draggedId === member.target_id;
-          const isDropTarget = dropTargetId === member.target_id && draggedId !== member.target_id;
+          const tState = targetState(member, spectrumVisibility);
+          const targetColor = colors[member.target_id] ?? '#94a3b8';
 
           return (
-            <div
-              key={member.target_id}
-              draggable
-              onDragStart={(e) => handleDragStart(e, member.target_id)}
-              onDragOver={(e) => handleDragOver(e, member.target_id)}
-              onDrop={handleDrop}
-              onDragEnd={handleDragEnd}
-              className={`flex items-start gap-1.5 rounded-lg text-sm transition-all ${
-                isActive
-                  ? 'bg-accent/10 dark:bg-accent/20 border-l-3 border-l-accent'
-                  : 'hover:bg-gray-100 dark:hover:bg-slate-800 border-l-3 border-l-transparent'
-              } ${isDragged ? 'opacity-30' : ''} ${
-                isDropTarget && dropPosition === 'above' ? 'border-t-2 border-t-accent' : ''
-              } ${
-                isDropTarget && dropPosition === 'below' ? 'border-b-2 border-b-accent' : ''
-              }`}
-            >
-              {/* Drag handle */}
-              <div className="pt-2.5 pl-1 cursor-grab active:cursor-grabbing">
-                <GripVertical className="w-3.5 h-3.5 text-text-secondary/40 dark:text-slate-600" />
-              </div>
-
-              {/* Visibility checkbox */}
-              <div className="pt-2.5">
+            <div key={member.target_id}>
+              {/* Target row */}
+              <div className="flex items-start gap-2 px-1 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-slate-800">
                 <input
                   type="checkbox"
-                  checked={visibility[member.target_id] ?? true}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    onVisibilityChange(member.target_id, e.target.checked);
+                  checked={tState === 'on'}
+                  ref={(el) => {
+                    if (el) el.indeterminate = tState === 'partial';
                   }}
-                  className="rounded border-gray-300 dark:border-slate-600 text-accent focus:ring-accent w-3.5 h-3.5"
+                  onChange={() => onTargetVisibility(member.target_id, tState !== 'on')}
+                  style={{ accentColor: targetColor }}
+                  className="mt-1 rounded border-gray-300 dark:border-slate-600 focus:ring-accent w-3.5 h-3.5"
+                  title={`Toggle ${member.target_id} + shutters`}
                 />
-              </div>
-
-              {/* Clickable target info */}
-              <button
-                onClick={() => onTabChange(member.target_id)}
-                className="flex-1 text-left py-2 pr-2 min-w-0"
-              >
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <div
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: colors[member.target_id] }}
-                  />
+                <div className="flex-1 min-w-0">
                   <span
-                    className={`font-mono truncate ${
-                      isActive
-                        ? 'text-sm text-accent font-semibold'
-                        : 'text-xs text-text-primary dark:text-slate-200'
-                    }`}
+                    className="text-xs font-mono truncate text-text-primary dark:text-slate-200 block"
                     title={member.target_id}
                   >
-                    {member.observation}
+                    {member.target_id}
                   </span>
-                  {qualityDef && (
-                    <span
-                      className="w-2 h-2 rounded-full flex-shrink-0 ml-auto"
-                      style={{ backgroundColor: qualityDef.color ?? undefined }}
-                      title={qualityDef.label}
-                    />
-                  )}
+                  <span className="text-[11px] text-text-secondary dark:text-slate-500 truncate block">
+                    {member.program_name}
+                  </span>
                 </div>
-                <div className="pl-4 text-xs text-text-secondary dark:text-slate-500">
-                  <div className="flex items-center gap-1">
-                    <span className="truncate">{member.program_name}</span>
-                  </div>
-                  <div className="flex items-center gap-1 mt-0.5">
-                    {member.redshift != null && (
-                      <span className="font-mono">z={member.redshift.toFixed(3)}</span>
-                    )}
-                    <span className="ml-auto flex-shrink-0 flex gap-0.5">
-                      {sortedGratings.map(g => (
-                        <span
-                          key={g}
-                          className="text-[11px] px-1 py-0.5 rounded font-mono bg-gray-100 dark:bg-slate-700 text-text-secondary dark:text-slate-400"
-                        >
-                          {g}
+              </div>
+
+              {/* Child spectrum rows */}
+              <ul className="pl-5 mt-0.5 space-y-0.5">
+                {member.spectra.map((spectrum, i) => {
+                  const visible = spectrumVisibility[spectrum.id] ?? true;
+                  const childColor = getSpectrumShade(targetColor, i);
+
+                  return (
+                    <li key={spectrum.id} className="flex items-center gap-1.5">
+                      <span className="text-text-secondary/40 dark:text-slate-600 text-xs leading-none select-none">
+                        ↳
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={visible}
+                        onChange={(e) => onSpectrumVisibility(spectrum.id, e.target.checked)}
+                        style={{ accentColor: childColor }}
+                        className="rounded border-gray-300 dark:border-slate-600 focus:ring-accent w-3.5 h-3.5"
+                        title={`Toggle ${spectrum.grating} on the comparison plot`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => onJumpToSpectrum(spectrum.id)}
+                        className="flex-1 min-w-0 text-left text-xs px-1 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-slate-800 hover:text-primary dark:hover:text-primary text-text-primary dark:text-slate-200"
+                        title={`Jump to ${spectrum.grating} card`}
+                      >
+                        <span className="font-mono">{spectrum.grating}</span>
+                        <span className="ml-1.5 text-text-secondary dark:text-slate-500">
+                          ({formatExposureTime(spectrum.exposure_time)})
                         </span>
-                      ))}
-                    </span>
-                  </div>
-                </div>
-              </button>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
             </div>
           );
         })}

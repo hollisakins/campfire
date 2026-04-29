@@ -15,26 +15,14 @@
 CREATE INDEX IF NOT EXISTS idx_targets_coords
     ON public.targets USING btree (ra, dec);
 
-CREATE INDEX IF NOT EXISTS idx_targets_field
-    ON public.targets USING btree (field);
-
 CREATE INDEX IF NOT EXISTS idx_targets_field_observation
     ON public.targets USING btree (field, observation);
 
 CREATE INDEX IF NOT EXISTS idx_targets_has_sed_plot
     ON public.targets USING btree (has_sed_plot) WHERE (has_sed_plot = true);
 
-CREATE INDEX IF NOT EXISTS idx_targets_max_snr
-    ON public.targets USING btree (max_snr) WHERE (max_snr IS NOT NULL);
-
-CREATE INDEX IF NOT EXISTS idx_targets_max_exposure_time
-    ON public.targets USING btree (max_exposure_time) WHERE (max_exposure_time IS NOT NULL);
-
 CREATE INDEX IF NOT EXISTS idx_targets_target_id_trgm
     ON public.targets USING gin (target_id public.gin_trgm_ops);
-
-CREATE INDEX IF NOT EXISTS idx_targets_program_slug
-    ON public.targets USING btree (program_slug);
 
 CREATE INDEX IF NOT EXISTS idx_targets_program_slug_field
     ON public.targets USING btree (program_slug, field);
@@ -66,14 +54,8 @@ CREATE INDEX IF NOT EXISTS idx_objects_coords
 CREATE INDEX IF NOT EXISTS idx_objects_field
     ON public.objects USING btree (field);
 
-CREATE INDEX IF NOT EXISTS idx_objects_best_redshift
-    ON public.objects USING btree (best_redshift) WHERE (best_redshift IS NOT NULL);
-
 CREATE INDEX IF NOT EXISTS idx_objects_best_redshift_quality
     ON public.objects USING btree (best_redshift_quality);
-
-CREATE INDEX IF NOT EXISTS idx_objects_max_snr
-    ON public.objects USING btree (max_snr) WHERE (max_snr IS NOT NULL);
 
 CREATE INDEX IF NOT EXISTS idx_objects_programs
     ON public.objects USING gin (programs);
@@ -84,12 +66,22 @@ CREATE INDEX IF NOT EXISTS idx_objects_gratings
 CREATE INDEX IF NOT EXISTS idx_objects_object_id_trgm
     ON public.objects USING gin (object_id public.gin_trgm_ops);
 
-CREATE INDEX IF NOT EXISTS idx_objects_max_exposure_time
-    ON public.objects USING btree (max_exposure_time) WHERE (max_exposure_time IS NOT NULL);
+-- Phase A: support filtering/sorting by the new object-level inspection fields.
+CREATE INDEX IF NOT EXISTS idx_objects_redshift_quality
+    ON public.objects USING btree (redshift_quality);
 
-CREATE INDEX IF NOT EXISTS idx_objects_photo_z
-    ON public.objects USING btree (photo_z) WHERE (photo_z IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_objects_redshift
+    ON public.objects USING btree (redshift);
 
+-- Soft-deleted objects are the rare case; partial index keeps it cheap.
+CREATE INDEX IF NOT EXISTS idx_objects_is_active
+    ON public.objects USING btree (is_active) WHERE (is_active = false);
+
+-- Backs the incremental-sync path: get_objects_for_sync filters on
+-- updated_at > p_updated_since, and the total count CTE uses the same
+-- predicate.
+CREATE INDEX IF NOT EXISTS idx_objects_updated_at
+    ON public.objects USING btree (updated_at);
 
 -- =============================================================================
 -- object_photometry
@@ -154,20 +146,32 @@ CREATE INDEX IF NOT EXISTS idx_list_audit_user_id
 -- spectra
 -- =============================================================================
 
-CREATE INDEX IF NOT EXISTS idx_spectra_target_id
-    ON public.spectra USING btree (target_id) INCLUDE (grating, fits_path);
-
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_target_grating
     ON public.spectra USING btree (target_id, grating);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_fits_path
     ON public.spectra USING btree (fits_path);
 
-CREATE INDEX IF NOT EXISTS idx_spectra_file_hash
-    ON public.spectra USING btree (file_hash) WHERE (file_hash IS NOT NULL);
+-- Generated spectrum_id (filename basename) — unique because fits_path is unique
+-- and the regex is deterministic. Btree supports both equality lookups (search)
+-- and ORDER BY (sort) for the spectra table view.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_spectrum_id
+    ON public.spectra USING btree (spectrum_id);
+
+-- Trigram index for substring (ILIKE) search on the search bar.
+CREATE INDEX IF NOT EXISTS idx_spectra_spectrum_id_trgm
+    ON public.spectra USING gin (spectrum_id public.gin_trgm_ops);
 
 CREATE INDEX IF NOT EXISTS idx_spectra_grating
     ON public.spectra USING btree (grating);
+
+-- Phase A: filter spectra by DQ flag presence (rare, partial keeps it small).
+CREATE INDEX IF NOT EXISTS idx_spectra_dq_flags
+    ON public.spectra USING btree (dq_flags) WHERE (dq_flags != 0);
+
+-- Phase E: incremental spectra sync keys on updated_at.
+CREATE INDEX IF NOT EXISTS idx_spectra_updated_at
+    ON public.spectra USING btree (updated_at);
 
 
 -- =============================================================================
@@ -199,16 +203,19 @@ CREATE INDEX IF NOT EXISTS idx_comments_object_id
 -- flag_audit_log
 -- =============================================================================
 
+-- target_id is now nullable (Phase D); keep the index but make it partial so
+-- it only covers rows that still target a target (mostly pre-migration).
 CREATE INDEX IF NOT EXISTS idx_audit_target
-    ON public.flag_audit_log USING btree (target_id);
+    ON public.flag_audit_log USING btree (target_id) WHERE (target_id IS NOT NULL);
 
+-- New (Phase D): object-level audit lookups for "history of inspection on
+-- this object" panels.
+CREATE INDEX IF NOT EXISTS idx_audit_object
+    ON public.flag_audit_log USING btree (object_id) WHERE (object_id IS NOT NULL);
 
--- =============================================================================
--- download_log
--- =============================================================================
-
-CREATE INDEX IF NOT EXISTS idx_download_log_target_ids
-    ON public.download_log USING gin (target_ids);
+-- New (Phase D): per-spectrum DQ audit lookups.
+CREATE INDEX IF NOT EXISTS idx_audit_spectrum
+    ON public.flag_audit_log USING btree (spectrum_id) WHERE (spectrum_id IS NOT NULL);
 
 
 -- =============================================================================
@@ -217,9 +224,6 @@ CREATE INDEX IF NOT EXISTS idx_download_log_target_ids
 
 CREATE INDEX IF NOT EXISTS idx_shutters_field
     ON public.shutters USING btree (field);
-
-CREATE INDEX IF NOT EXISTS idx_shutters_observation
-    ON public.shutters USING btree (observation);
 
 CREATE INDEX IF NOT EXISTS idx_shutters_object_id
     ON public.shutters USING btree (object_id);
@@ -256,17 +260,6 @@ CREATE INDEX IF NOT EXISTS idx_observations_jwst_pid
 
 
 -- =============================================================================
--- targets (legacy index names from before objects → targets rename)
--- =============================================================================
-
-CREATE INDEX IF NOT EXISTS idx_objects_redshift_generated
-    ON public.targets USING btree (redshift) WHERE (redshift IS NOT NULL);
-
-CREATE INDEX IF NOT EXISTS idx_objects_redshift_quality
-    ON public.targets USING btree (redshift_quality);
-
-
--- =============================================================================
 -- comments (additional)
 -- =============================================================================
 
@@ -289,10 +282,6 @@ CREATE INDEX IF NOT EXISTS idx_audit_time
 
 CREATE INDEX IF NOT EXISTS idx_audit_user
     ON public.flag_audit_log USING btree (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_flag_audit_log_target_id
-    ON public.flag_audit_log USING btree (target_id);
-
 
 -- =============================================================================
 -- download_log (additional)

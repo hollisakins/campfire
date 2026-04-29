@@ -1,18 +1,18 @@
 'use client';
 
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { Loader2, HelpCircle, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { InspectionHeader } from './InspectionHeader';
 import { DashboardPanel } from './DashboardPanel';
 import { KeyboardShortcutSheet } from './KeyboardShortcutSheet';
+import { ConflictBanner } from './ConflictBanner';
 import type { RedshiftSectionHandle } from './RedshiftSection';
 import { SpectrumPlot } from '../SpectrumPlot';
 import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import type { FilterOptions } from '@/lib/actions/spectra';
-import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
-import { GRATINGS, type SpectrumTarget } from '@/lib/types';
+import { GRATINGS, type ObjectDetail, type Spectrum } from '@/lib/types';
 import { useSpectrumDataCache } from '@/lib/hooks/useSpectrumDataCache';
 import { useMultiObjectCache } from '@/lib/hooks/useMultiObjectCache';
 import { useObjectNavigation } from '@/lib/hooks/useObjectNavigation';
@@ -20,115 +20,145 @@ import { useInspectionQueue } from '@/lib/hooks/useInspectionQueue';
 import { createClient } from '@/lib/supabase/client';
 
 interface InspectionModeOverlayProps {
-  spectrum: SpectrumTarget;
+  object: ObjectDetail;
   filterStr: string;
   filters: Partial<FilterOptions>;
-  sortColumn: SortColumn;
-  sortDirection: SortDirection;
+}
+
+interface TabSpec {
+  spectrum: Spectrum;
+  targetId: string;
+  observation: string;
+  programName: string;
+  /** Compact label shown in the header tab. */
+  label: string;
+  /** Tooltip with full context (program / observation / target). */
+  title: string;
+}
+
+/**
+ * Build a flat list of (member spectrum × member target) tabs ordered by
+ * GRATINGS canonical ordering, then by member target order. Multi-target
+ * objects get observation suffixes so users can disambiguate.
+ */
+function buildSpectrumTabs(object: ObjectDetail): TabSpec[] {
+  const isMultiTarget = object.member_targets.length > 1;
+  const tabs: TabSpec[] = [];
+
+  for (const member of object.member_targets) {
+    for (const spec of member.spectra) {
+      const programShort = (member.program_slug || member.program_name || '').toUpperCase().split('_')[0];
+      const label = isMultiTarget ? `${spec.grating} (${programShort})` : spec.grating;
+      tabs.push({
+        spectrum: spec,
+        targetId: member.target_id,
+        observation: member.observation,
+        programName: member.program_name,
+        label,
+        title: `${spec.grating} · ${member.program_name} · ${member.observation} · ${member.target_id}`,
+      });
+    }
+  }
+
+  const gratingOrder = (GRATINGS as readonly string[]);
+  tabs.sort((a, b) => gratingOrder.indexOf(a.spectrum.grating) - gratingOrder.indexOf(b.spectrum.grating));
+  return tabs;
+}
+
+function inspectionInitialFromObject(o: ObjectDetail): InspectionInitialData {
+  return {
+    redshift_auto: o.redshift_auto,
+    redshift_inspected: o.redshift_inspected,
+    redshift_quality: o.redshift_quality,
+    inspected_used_auto: o.inspected_used_auto,
+    last_inspected_at: o.last_inspected_at,
+    last_inspected_by: o.last_inspected_by,
+    version: o.version,
+  };
 }
 
 export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
-  spectrum,
+  object,
   filterStr,
   filters,
-  sortColumn,
-  sortDirection,
 }) => {
   const router = useRouter();
   const { user, userProfile } = useAuth();
   const canEdit = !!(user && userProfile?.can_comment);
-  const supabase = createClient();
+  const supabase = useMemo(() => createClient(), []);
 
   const redshiftInputRef = useRef<HTMLInputElement>(null);
   const redshiftSectionRef = useRef<RedshiftSectionHandle>(null);
   const [showHelp, setShowHelp] = useState(false);
-  const [autoSaveHint, setAutoSaveHint] = useState<string | null>(null);
   const [commentCount, setCommentCount] = useState(0);
 
-  // Current object state (initialized from props, updated client-side)
-  const [currentSpectrum, setCurrentSpectrum] = useState(spectrum);
+  const [currentObject, setCurrentObject] = useState(object);
 
-  // Grating state — track by name so the selection persists across objects
-  const sortedSpectra = [...currentSpectrum.spectra].sort((a, b) => {
-    const order: readonly string[] = GRATINGS;
-    return order.indexOf(a.grating) - order.indexOf(b.grating);
+  const tabs = useMemo(() => buildSpectrumTabs(currentObject), [currentObject]);
+  const [activeKey, setActiveKey] = useState<string>(() => {
+    const first = buildSpectrumTabs(object)[0];
+    return first ? `${first.targetId}::${first.spectrum.grating}` : '';
   });
-  const [activeGrating, setActiveGrating] = useState(sortedSpectra[0]?.grating ?? '');
-  const activeGratingIdx = Math.max(0, sortedSpectra.findIndex(s => s.grating === activeGrating));
-  const activeSpec = sortedSpectra[activeGratingIdx];
+  const activeTabIdx = Math.max(0, tabs.findIndex(t => `${t.targetId}::${t.spectrum.grating}` === activeKey));
+  const activeTab = tabs[activeTabIdx];
 
-  // Inspection state
-  const initialData: InspectionInitialData = {
-    redshift_auto: currentSpectrum.redshift_auto,
-    redshift_inspected: currentSpectrum.redshift_inspected,
-    redshift_quality: currentSpectrum.redshift_quality,
-    spectral_features: currentSpectrum.spectral_features,
-    dq_flags: currentSpectrum.dq_flags,
-    last_inspected_at: currentSpectrum.last_inspected_at,
-    last_inspected_by: currentSpectrum.last_inspected_by,
-  };
+  const initialData = useMemo(() => inspectionInitialFromObject(currentObject), [currentObject]);
+  const inspectionState = useInspectionState(currentObject.id, initialData);
 
-  const inspectionState = useInspectionState(currentSpectrum.id, initialData);
-
-  // Spectrum data cache (for gratings)
   const { prefetchGratings, getCached: getCachedGrating, clearCache: clearGratingCache } = useSpectrumDataCache();
-
-  // Object data cache (for prev/next prefetch)
   const { getCached: getCachedObject, setCached: setCachedObject, deleteCached: deleteCachedObject, clearCache: clearObjectCache } = useMultiObjectCache();
 
-  // Snapshot-based inspection queue (fetched once, stable navigation)
   const queue = useInspectionQueue({
-    initialTargetId: spectrum.target_id,
+    initialObjectId: object.object_id,
     filters,
-    sortColumn,
-    sortDirection,
   });
 
-  // Navigation hook (skipNavQuery: queue handles prev/next)
-  const { navigateTo, fetchObject, prefetchObject, isNavigating, navigationError, setNavigationError } = useObjectNavigation({
-    filters,
-    sortColumn,
-    sortDirection,
-    skipNavQuery: true,
-  });
+  const { navigateTo, fetchObject, prefetchObject, isNavigating, navigationError, setNavigationError } = useObjectNavigation();
 
-  // Prefetch all gratings on mount for instant switching
+  const allMemberSpectra = useMemo(
+    () => currentObject.member_targets.flatMap(m => m.spectra),
+    [currentObject]
+  );
+
+  // Prefetch all gratings on object change for instant tab switching.
   useEffect(() => {
-    console.log('[InspectionMode] Mounting, will prefetch gratings');
-    prefetchGratings(currentSpectrum.spectra);
-  }, [currentSpectrum.spectra, prefetchGratings]);
+    prefetchGratings(allMemberSpectra);
+  }, [allMemberSpectra, prefetchGratings]);
 
-  // Fetch comment count for current object
+  // Fetch comment count across all member targets + the object itself.
   useEffect(() => {
     async function fetchCommentCount() {
       if (!user) {
         setCommentCount(0);
         return;
       }
-
       try {
-        const { count, error } = await supabase
-          .from('comments')
-          .select('*', { count: 'exact', head: true })
-          .eq('target_id', currentSpectrum.id)
-          .eq('is_deleted', false);
-
-        if (error) {
-          console.warn('[InspectionMode] Failed to fetch comment count:', error);
-          setCommentCount(0);
-        } else {
-          setCommentCount(count ?? 0);
-        }
-      } catch (error) {
-        console.warn('[InspectionMode] Error fetching comment count:', error);
+        const memberIds = currentObject.member_targets.map(m => m.id);
+        const [objectRes, targetRes] = await Promise.all([
+          supabase
+            .from('comments')
+            .select('*', { count: 'exact', head: true })
+            .eq('object_id', currentObject.id)
+            .eq('is_deleted', false),
+          memberIds.length > 0
+            ? supabase
+                .from('comments')
+                .select('*', { count: 'exact', head: true })
+                .in('target_id', memberIds)
+                .eq('is_deleted', false)
+            : Promise.resolve({ count: 0, error: null }),
+        ]);
+        const total = (objectRes.count ?? 0) + (targetRes.count ?? 0);
+        setCommentCount(total);
+      } catch (err) {
+        console.warn('[InspectionMode] Error fetching comment count:', err);
         setCommentCount(0);
       }
     }
-
     fetchCommentCount();
-  }, [currentSpectrum.id, user, supabase]);
+  }, [currentObject.id, currentObject.member_targets, user, supabase]);
 
-  // Handle queue redirect: if initial object not in queue, navigate to first queue item
+  // Handle queue redirect: if initial object isn't in the queue, jump to first.
   const redirectHandledRef = useRef(false);
   const [redirectComplete, setRedirectComplete] = useState(false);
   useEffect(() => {
@@ -137,104 +167,96 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     redirectHandledRef.current = true;
 
     if (!queue.redirected || !queue.firstId) {
-      // No redirect needed — mark complete immediately
       setRedirectComplete(true);
       return;
     }
 
-    console.log('[InspectionMode] Object not in queue, redirecting to first item:', queue.firstId);
     (async () => {
       const data = await fetchObject(queue.firstId!);
       if (data) {
         setCachedObject(queue.firstId!, data);
-        setCurrentSpectrum(data.spectrum);
-        inspectionState.resetState(data.spectrum);
-        setRedirectComplete(true);
-      } else {
-        // Fetch was aborted or failed — retry once
-        console.warn('[InspectionMode] Redirect fetch failed, retrying...');
-        const retry = await fetchObject(queue.firstId!);
-        if (retry) {
-          setCachedObject(queue.firstId!, retry);
-          setCurrentSpectrum(retry.spectrum);
-          inspectionState.resetState(retry.spectrum);
-        }
-        setRedirectComplete(true);
+        setCurrentObject(data.object);
+        inspectionState.resetState(inspectionInitialFromObject(data.object));
       }
+      setRedirectComplete(true);
     })();
   }, [queue.loading, queue.redirected, queue.firstId, fetchObject, inspectionState, setCachedObject]);
 
-  // Queue is ready when: loaded AND redirect resolved (either not needed or complete)
   const queueReady = !queue.loading && redirectComplete;
 
-  // Prefetch adjacent objects' data when queue position changes.
-  // Uses prefetchObject (separate from fetchObject) so prefetch requests
-  // don't share an AbortController with user-initiated navigation.
+  // Prefetch adjacent objects when queue position changes.
   useEffect(() => {
     if (!queueReady || queue.isEmpty) return;
 
-    const prefetch = async (targetId: string | null) => {
-      if (!targetId) return;
-      if (getCachedObject(targetId)) return; // Already cached
+    const prefetch = async (objectId: string | null) => {
+      if (!objectId) return;
+      if (getCachedObject(objectId)) return;
       try {
-        const data = await prefetchObject(targetId);
+        const data = await prefetchObject(objectId);
         if (data) {
-          setCachedObject(targetId, data);
-          prefetchGratings(data.spectrum.spectra);
+          setCachedObject(objectId, data);
+          prefetchGratings(data.object.member_targets.flatMap(m => m.spectra));
         }
-      } catch { /* ignore prefetch errors */ }
+      } catch { /* ignore */ }
     };
 
-    // Safe to run in parallel — prefetchObject doesn't use a shared AbortController
     prefetch(queue.next);
     prefetch(queue.prev);
   }, [queue.next, queue.prev, queueReady, queue.isEmpty, prefetchObject, prefetchGratings, getCachedObject, setCachedObject]);
 
-  // Body scroll prevention
+  // Block body scroll behind the overlay.
   useEffect(() => {
     document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = '';
-    };
+    return () => { document.body.style.overflow = ''; };
   }, []);
 
-  // Navigate with client-side data swapping (queue-based)
-  const handleNavigate = useCallback(async (targetId: string | null) => {
-    if (!targetId) return;
+  const handleNavigate = useCallback(async (objectId: string | null) => {
+    if (!objectId) return;
 
-    // 1. Auto-save FIRST
     redshiftSectionRef.current?.flushPendingChanges();
     const saveResult = await inspectionState.saveIfDirty();
-    if (saveResult.saved) {
-      deleteCachedObject(currentSpectrum.target_id);
-      // Show cross-match propagation hint if any were auto-secured
-      if (saveResult.propagated && saveResult.propagated > 0) {
-        const n = saveResult.propagated;
-        setAutoSaveHint(`${n} cross-match${n !== 1 ? 'es' : ''} auto-secured`);
-        setTimeout(() => setAutoSaveHint(null), 3000);
-      }
+    // 409 blocks navigation: the queue must not advance past an object
+    // whose pending edits didn't apply. The ConflictBanner stays visible
+    // until the user clicks "Discard & refresh".
+    if (saveResult.reason === 'version-conflict') {
+      return;
     }
-    // quality-zero skip is now communicated by greyed-out flags inline
+    if (saveResult.saved) {
+      deleteCachedObject(currentObject.object_id);
+    }
 
-    // 2. Update queue position
-    queue.goTo(targetId);
+    queue.goTo(objectId);
 
-    // 3. Check object cache first
-    const cached = getCachedObject(targetId);
+    const cached = getCachedObject(objectId);
     let data;
     if (cached) {
       data = cached;
     } else {
-      // Cache miss — fetch from server
-      data = await navigateTo(targetId, async () => true);
+      data = await navigateTo(objectId, async () => true);
       if (!data) return;
-      setCachedObject(targetId, data);
+      setCachedObject(objectId, data);
     }
 
-    // 4. Update state
-    setCurrentSpectrum(data.spectrum);
-    inspectionState.resetState(data.spectrum);
-  }, [navigateTo, inspectionState, queue, getCachedObject, setCachedObject, deleteCachedObject, currentSpectrum.target_id]);
+    setCurrentObject(data.object);
+    inspectionState.resetState(inspectionInitialFromObject(data.object));
+    // Reset active tab to the first available spectrum for the new object.
+    const newTabs = buildSpectrumTabs(data.object);
+    if (newTabs.length > 0) {
+      setActiveKey(`${newTabs[0].targetId}::${newTabs[0].spectrum.grating}`);
+    }
+  }, [navigateTo, inspectionState, queue, getCachedObject, setCachedObject, deleteCachedObject, currentObject.object_id]);
+
+  /** Discard the local draft and refetch the object from the server. Used
+   *  from the ConflictBanner's "Discard & refresh" button. Stays on the
+   *  same object — no queue advance, no page reload. */
+  const handleDiscardAndRefresh = useCallback(async () => {
+    const fresh = await fetchObject(currentObject.object_id);
+    if (!fresh) return;
+    deleteCachedObject(currentObject.object_id);
+    setCachedObject(currentObject.object_id, fresh);
+    setCurrentObject(fresh.object);
+    inspectionState.resetState(inspectionInitialFromObject(fresh.object));
+  }, [fetchObject, currentObject.object_id, deleteCachedObject, setCachedObject, inspectionState]);
 
   const handlePrev = useCallback(() => handleNavigate(queue.prev), [handleNavigate, queue.prev]);
   const handleNext = useCallback(() => handleNavigate(queue.next), [handleNavigate, queue.next]);
@@ -242,52 +264,42 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const handleSave = useCallback(async () => {
     const result = await inspectionState.save();
     if (result.success) {
-      deleteCachedObject(currentSpectrum.target_id);
+      deleteCachedObject(currentObject.object_id);
     }
-  }, [inspectionState, deleteCachedObject, currentSpectrum.target_id]);
+  }, [inspectionState, deleteCachedObject, currentObject.object_id]);
 
   const handleSaveAndNext = useCallback(() => {
     handleNavigate(queue.next);
   }, [handleNavigate, queue.next]);
 
   const handleClose = useCallback(async () => {
-    // Auto-save before exiting
     redshiftSectionRef.current?.flushPendingChanges();
     await inspectionState.saveIfDirty();
-
-    // Clear caches when explicitly exiting inspection mode
     clearGratingCache();
     clearObjectCache();
-
     const qs = filterStr;
-    router.push(`/nirspec/targets/${encodeURIComponent(currentSpectrum.target_id)}${qs ? `?${qs}` : ''}`);
-  }, [router, currentSpectrum.target_id, filterStr, clearGratingCache, clearObjectCache, inspectionState]);
+    router.push(`/nirspec/objects/${encodeURIComponent(currentObject.object_id)}${qs ? `?${qs}` : ''}`);
+  }, [router, currentObject.object_id, filterStr, clearGratingCache, clearObjectCache, inspectionState]);
 
   const handleCycleGrating = useCallback(() => {
-    if (sortedSpectra.length <= 1) return;
-    const nextIdx = (activeGratingIdx + 1) % sortedSpectra.length;
-    setActiveGrating(sortedSpectra[nextIdx].grating);
-  }, [sortedSpectra, activeGratingIdx]);
+    if (tabs.length <= 1) return;
+    const nextIdx = (activeTabIdx + 1) % tabs.length;
+    const t = tabs[nextIdx];
+    setActiveKey(`${t.targetId}::${t.spectrum.grating}`);
+  }, [tabs, activeTabIdx]);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT';
 
-      // Escape always works
       if (e.key === 'Escape') {
-        if (isInput) {
-          target.blur();
-        } else if (showHelp) {
-          setShowHelp(false);
-        } else {
-          handleClose();
-        }
+        if (isInput) target.blur();
+        else if (showHelp) setShowHelp(false);
+        else handleClose();
         return;
       }
-
-      // Suppress other shortcuts when typing
       if (isInput) return;
 
       switch (e.key) {
@@ -295,9 +307,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         case '2':
         case '3':
         case '4':
-          if (canEdit) {
-            inspectionState.setRedshiftQuality(parseInt(e.key));
-          }
+          if (canEdit) inspectionState.setRedshiftQuality(parseInt(e.key));
           break;
         case 'ArrowRight':
         case 'n':
@@ -328,16 +338,14 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
           handleCycleGrating();
           break;
         case '?':
-          setShowHelp((prev) => !prev);
+          setShowHelp(prev => !prev);
           break;
       }
     };
-
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [canEdit, inspectionState, handleNext, handlePrev, handleSave, handleClose, handleCycleGrating, showHelp]);
 
-  // Sync slider redshift changes to inspection state (debounced for performance)
   const sliderDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const handleRedshiftSliderChange = useCallback((value: number) => {
     clearTimeout(sliderDebounceRef.current);
@@ -346,13 +354,16 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     }, 100);
   }, [inspectionState]);
 
-  // Clean up slider debounce timer
-  useEffect(() => {
-    return () => clearTimeout(sliderDebounceRef.current);
-  }, []);
+  useEffect(() => () => clearTimeout(sliderDebounceRef.current), []);
 
-  // Current redshift for emission lines
   const currentRedshift = inspectionState.currentRedshift ?? 0;
+  const headerGratings = useMemo(
+    () => tabs.map(t => ({ grating: t.label, title: t.title })),
+    [tabs]
+  );
+  const programDisplay = currentObject.programs.length === 1
+    ? (currentObject.member_targets[0]?.program_name ?? null)
+    : `${currentObject.programs.length} programs`;
 
   return (
     <div
@@ -360,14 +371,13 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       style={{ isolation: 'isolate' }}
       data-inspection-mode
     >
-      {/* Minimal header while queue loads — no object-specific details */}
       {!queueReady ? (
         <div className="h-12 border-b border-border dark:border-slate-700 px-4 flex items-center justify-between bg-background dark:bg-slate-900 flex-shrink-0">
           <div />
           <Loader2 className="w-4 h-4 animate-spin text-text-secondary dark:text-slate-400" />
           <div className="flex items-center gap-1">
             <button
-              onClick={() => setShowHelp((prev) => !prev)}
+              onClick={() => setShowHelp(prev => !prev)}
               className="p-1.5 rounded hover:bg-card dark:hover:bg-slate-700 transition-colors text-text-secondary dark:text-slate-400"
               title="Keyboard shortcuts (?)"
             >
@@ -384,26 +394,28 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         </div>
       ) : (
         <InspectionHeader
-          targetId={currentSpectrum.target_id}
-          field={currentSpectrum.field}
-          programName={currentSpectrum.program_name || null}
+          targetId={currentObject.object_id}
+          field={currentObject.field}
+          programName={programDisplay}
           index={queue.index}
           total={queue.total}
           loading={isNavigating}
           hasPrev={!!queue.prev}
           hasNext={!!queue.next}
           commentCount={commentCount}
-          gratings={sortedSpectra}
-          activeGratingIdx={activeGratingIdx}
-          onGratingChange={(idx) => setActiveGrating(sortedSpectra[idx].grating)}
+          gratings={headerGratings}
+          activeGratingIdx={activeTabIdx}
+          onGratingChange={(idx) => {
+            const t = tabs[idx];
+            if (t) setActiveKey(`${t.targetId}::${t.spectrum.grating}`);
+          }}
           onPrev={handlePrev}
           onNext={handleNext}
-          onToggleHelp={() => setShowHelp((prev) => !prev)}
+          onToggleHelp={() => setShowHelp(prev => !prev)}
           onClose={handleClose}
         />
       )}
 
-      {/* Navigation error banner */}
       {navigationError && (
         <div className="absolute top-14 left-1/2 -translate-x-1/2 px-4 py-2 bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 text-sm rounded-lg shadow-lg z-10">
           {navigationError}
@@ -416,7 +428,17 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         </div>
       )}
 
-      {/* Loading state while queue loads or redirect is in progress */}
+      {queueReady && inspectionState.versionConflict && inspectionState.conflictInfo && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 w-[640px] max-w-[calc(100vw-2rem)] z-20">
+          <ConflictBanner
+            conflict={inspectionState.conflictInfo}
+            pendingRedshiftInspected={inspectionState.redshiftInspected}
+            pendingRedshiftQuality={inspectionState.redshiftQuality}
+            onDiscard={handleDiscardAndRefresh}
+          />
+        </div>
+      )}
+
       {!queueReady && (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center text-text-secondary dark:text-slate-400">
@@ -425,7 +447,6 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         </div>
       )}
 
-      {/* Empty queue message */}
       {queueReady && queue.isEmpty && (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
@@ -442,49 +463,36 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         </div>
       )}
 
-      {/* Main content - spectrum on left, dashboard on right */}
-      {queueReady && !queue.isEmpty && <div className="flex-1 flex min-h-0">
-        {/* Left: Spectrum (expanded) */}
-        <div className="flex-1 flex flex-col min-w-0 px-4 py-2">
-          {/* Spectrum Plot */}
-          {activeSpec && (
-            <div className="flex-1 min-h-0 overflow-auto">
-              <SpectrumPlot
-                key={activeSpec.grating}
-                fitsPath={activeSpec.fits_path}
-                grating={activeSpec.grating}
-                initialRedshift={currentRedshift}
-                inspectionMode={true}
-                getCachedData={getCachedGrating}
-                onRedshiftChange={canEdit ? handleRedshiftSliderChange : undefined}
-              />
-            </div>
-          )}
-        </div>
+      {queueReady && !queue.isEmpty && (
+        <div className="flex-1 flex min-h-0">
+          <div className="flex-1 flex flex-col min-w-0 px-4 py-2">
+            {activeTab && (
+              <div className="flex-1 min-h-0 overflow-auto">
+                <SpectrumPlot
+                  key={`${activeTab.targetId}-${activeTab.spectrum.grating}`}
+                  fitsPath={activeTab.spectrum.fits_path}
+                  grating={activeTab.spectrum.grating}
+                  initialRedshift={currentRedshift}
+                  inspectionMode
+                  getCachedData={getCachedGrating}
+                  onRedshiftChange={canEdit ? handleRedshiftSliderChange : undefined}
+                />
+              </div>
+            )}
+          </div>
 
-        {/* Right: Dashboard Panel */}
-        <DashboardPanel
-          spectrum={currentSpectrum}
-          inspectionState={inspectionState}
-          canEdit={canEdit}
-          commentCount={commentCount}
-          queueIds={queue.ids}
-          onNavigateToObject={handleNavigate}
-          redshiftInputRef={redshiftInputRef}
-          redshiftSectionRef={redshiftSectionRef}
-          onSave={handleSave}
-          onSaveAndNext={handleSaveAndNext}
-        />
-      </div>}
-
-      {/* Auto-save hint */}
-      {autoSaveHint && (
-        <div className={`absolute top-14 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 text-xs rounded-lg shadow-lg ${
-          autoSaveHint.includes('auto-secured')
-            ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200'
-            : 'bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200'
-        }`}>
-          {autoSaveHint}
+          <DashboardPanel
+            object={currentObject}
+            inspectionState={inspectionState}
+            canEdit={canEdit}
+            commentCount={commentCount}
+            queueIds={queue.ids}
+            onNavigateToObject={handleNavigate}
+            redshiftInputRef={redshiftInputRef}
+            redshiftSectionRef={redshiftSectionRef}
+            onSave={handleSave}
+            onSaveAndNext={handleSaveAndNext}
+          />
         </div>
       )}
 

@@ -7,16 +7,17 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import type { CommentWithUser } from '@/lib/types';
 
 interface CommentsPreviewProps {
-  targetDbId: number;
+  objectDbId: number;
+  memberTargetIds: number[];
   commentCount: number;
 }
 
-export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ targetDbId, commentCount }) => {
+export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ objectDbId, memberTargetIds, commentCount }) => {
   const { user } = useAuth();
   const supabase = createClient();
   const [comments, setComments] = useState<CommentWithUser[]>([]);
 
-  // Fetch latest 2 comments only
+  // Fetch latest 2 comments across the object + its member targets.
   useEffect(() => {
     if (commentCount === 0 || !user) {
       setComments([]);
@@ -25,30 +26,47 @@ export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ targetDbId, co
 
     async function fetchLatestComments() {
       try {
-        const { data: commentsData, error } = await supabase
-          .from('comments')
-          .select('*')
-          .eq('target_id', targetDbId)
-          .eq('is_deleted', false)
-          .order('created_at', { ascending: false })
-          .limit(2);
+        const [objectRes, targetRes] = await Promise.all([
+          supabase
+            .from('comments')
+            .select('*')
+            .eq('object_id', objectDbId)
+            .eq('is_deleted', false)
+            .order('created_at', { ascending: false })
+            .limit(2),
+          memberTargetIds.length > 0
+            ? supabase
+                .from('comments')
+                .select('*')
+                .in('target_id', memberTargetIds)
+                .eq('is_deleted', false)
+                .order('created_at', { ascending: false })
+                .limit(2)
+            : Promise.resolve({ data: [], error: null }),
+        ]);
 
-        if (error) throw error;
-        if (!commentsData || commentsData.length === 0) {
+        if (objectRes.error) throw objectRes.error;
+        if (targetRes.error) throw targetRes.error;
+
+        const merged = [...(objectRes.data ?? []), ...(targetRes.data ?? [])]
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+          .slice(0, 2);
+
+        if (merged.length === 0) {
           setComments([]);
           return;
         }
 
-        const userIds = [...new Set(commentsData.map((c) => c.user_id))];
+        const userIds = [...new Set(merged.map(c => c.user_id))];
         const { data: profilesData } = await supabase
           .from('user_profiles')
           .select('*')
           .in('user_id', userIds);
 
         setComments(
-          commentsData.map((comment) => ({
+          merged.map(comment => ({
             ...comment,
-            user_profile: profilesData?.find((p) => p.user_id === comment.user_id) || null,
+            user_profile: profilesData?.find(p => p.user_id === comment.user_id) || null,
           }))
         );
       } catch (error) {
@@ -58,9 +76,8 @@ export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ targetDbId, co
     }
 
     fetchLatestComments();
-  }, [targetDbId, commentCount, user, supabase]);
+  }, [objectDbId, memberTargetIds, commentCount, user, supabase]);
 
-  // Format relative time
   const formatDistanceToNow = (date: Date) => {
     const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
     if (seconds < 60) return `${seconds}s`;
@@ -93,7 +110,7 @@ export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ targetDbId, co
         Comments ({commentCount})
       </h3>
       <div className="space-y-2 max-h-32 overflow-y-auto">
-        {comments.slice(0, 2).reverse().map((comment) => (
+        {comments.slice().reverse().map(comment => (
           <div key={comment.id} className="text-xs">
             <div className="flex items-center gap-1 text-text-secondary dark:text-slate-400">
               <span className="font-medium">{comment.user_profile?.full_name || 'Anonymous'}</span>

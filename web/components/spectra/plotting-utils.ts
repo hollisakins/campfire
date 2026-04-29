@@ -124,6 +124,71 @@ export function getHoverLabel(unit: FluxUnit): string {
   return unit === 'fnu' ? 'fν' : 'fλ';
 }
 
+/** Force a #RRGGBB color to a specific HSL lightness, preserving hue + saturation. */
+export function withLightness(hex: string, lightness: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const r = ((n >> 16) & 0xff) / 255;
+  const g = ((n >> 8) & 0xff) / 255;
+  const b = (n & 0xff) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l0 = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l0 > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)); break;
+      case g: h = (b - r) / d + 2; break;
+      case b: h = (r - g) / d + 4; break;
+    }
+    h /= 6;
+  }
+  const l = Math.max(0, Math.min(1, lightness));
+  const hue2rgb = (p: number, q: number, t: number) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const nr = Math.round(hue2rgb(p, q, h + 1 / 3) * 255);
+  const ng = Math.round(hue2rgb(p, q, h) * 255);
+  const nb = Math.round(hue2rgb(p, q, h - 1 / 3) * 255);
+  const hexByte = (c: number) => c.toString(16).padStart(2, '0');
+  return `#${hexByte(nr)}${hexByte(ng)}${hexByte(nb)}`;
+}
+
+/**
+ * Format an exposure time in seconds as a short human-readable string.
+ * Thresholds pick the coarsest useful unit: hours for ≥1h, minutes for ≥1m.
+ */
+export function formatExposureTime(seconds: number | null | undefined): string {
+  if (seconds == null) return '—';
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)}hr`;
+  if (seconds >= 60) return `${Math.round(seconds / 60)}min`;
+  return `${Math.round(seconds)}s`;
+}
+
+/** Per-spectrum lightness rungs around the target color. Index 0 = base color
+ *  unmodified; subsequent rungs alternate lighter / darker so siblings stay
+ *  visually distinct against any background. Used by the sidebar checkboxes
+ *  AND the comparison-plot trace colors so they line up as a true legend. */
+const SPECTRUM_LIGHTNESS_RUNGS: (number | null)[] = [null, 0.68, 0.32, 0.82, 0.18, 0.55, 0.42];
+
+export function getSpectrumShade(targetColor: string, index: number): string {
+  const rung = SPECTRUM_LIGHTNESS_RUNGS[
+    Math.min(index, SPECTRUM_LIGHTNESS_RUNGS.length - 1)
+  ];
+  return rung == null ? targetColor : withLightness(targetColor, rung);
+}
+
 /**
  * Calculate observed wavelengths for emission lines at given redshift
  * and filter to visible range. For PRISM, grating-only lines are excluded.

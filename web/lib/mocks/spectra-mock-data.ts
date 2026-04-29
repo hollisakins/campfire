@@ -29,9 +29,10 @@ const GRATINGS = ['PRISM', 'G140M', 'G235M', 'G395M'] as const;
 function generateSpectra(objectId: string, gratingSet: string[], baseSNR: number): Spectrum[] {
   return gratingSet.map((grating) => ({
     id: Math.floor(Math.random() * 100000),
+    spectrum_id: `${objectId}_${grating.toLowerCase()}`,
     target_id: objectId,
     grating,
-    fits_path: `s3://campfire-data/${objectId}/${grating.toLowerCase()}.fits`,
+    fits_path: `s3://campfire-data/${objectId}/${grating.toLowerCase()}_spec.fits`,
     reduction_version: 'v0.3',
     signal_to_noise: baseSNR + Math.random() * 10 - 5,
     exposure_time: grating === 'PRISM' ? 2500 + Math.random() * 1000 : 5000 + Math.random() * 2000,
@@ -150,7 +151,6 @@ function generateMockSpectra(): SpectrumTarget[] {
       redshift_auto: config.z,
       redshift_inspected: config.quality > 0 ? config.z : null,
       redshift_quality: config.quality,
-      spectral_features: config.features,
       dq_flags: config.dqFlags,
       last_inspected_at: config.quality > 0 ? '2024-10-15T14:30:00Z' : null,
       last_inspected_by: config.quality > 0 ? 'user-123' : null,
@@ -185,8 +185,6 @@ export interface MockFilterOptions {
   max_snr_max?: number | null;
   max_exposure_time_min?: number | null;
   max_exposure_time_max?: number | null;
-  spectral_features?: number[];
-  spectral_features_mode?: FilterMode;
   dq_flags?: number[];
   dq_flags_mode?: FilterMode;
   inspected_only?: boolean | null;
@@ -259,31 +257,17 @@ export function applyFiltersToMockData(
       if (!obj.max_exposure_time || obj.max_exposure_time > filters.max_exposure_time_max) return false;
     }
 
-    // Spectral features bitmask with mode
-    if (filters.spectral_features && filters.spectral_features.length > 0) {
-      const mask = filters.spectral_features.reduce((acc, v) => acc | v, 0);
-      const mode = filters.spectral_features_mode || 'any';
-
-      if (mode === 'any') {
-        if ((obj.spectral_features & mask) === 0) return false;
-      } else if (mode === 'all') {
-        if ((obj.spectral_features & mask) !== mask) return false;
-      } else if (mode === 'none') {
-        if ((obj.spectral_features & mask) !== 0) return false;
-      }
-    }
-
     // DQ flags bitmask with mode
     if (filters.dq_flags && filters.dq_flags.length > 0) {
       const mask = filters.dq_flags.reduce((acc, v) => acc | v, 0);
       const mode = filters.dq_flags_mode || 'any';
 
       if (mode === 'any') {
-        if ((obj.dq_flags & mask) === 0) return false;
+        if (((obj.dq_flags ?? 0) & mask) === 0) return false;
       } else if (mode === 'all') {
-        if ((obj.dq_flags & mask) !== mask) return false;
+        if (((obj.dq_flags ?? 0) & mask) !== mask) return false;
       } else if (mode === 'none') {
-        if ((obj.dq_flags & mask) !== 0) return false;
+        if (((obj.dq_flags ?? 0) & mask) !== 0) return false;
       }
     }
 
