@@ -122,7 +122,7 @@ def stage3(config, field, filters, processes, overwrite):
     cfg, field_obj = _setup(config, field)
     stage_config = get_nircam_stage_config('stage3', cfg, field_obj)
     filter_list = _resolve_filters(filters, field_obj)
-    run_stage3(field_obj, stage_config, filters=filter_list,
+    run_stage3(field_obj, stage_config, cfg, filters=filter_list,
                n_processes=processes, overwrite=overwrite)
 
 
@@ -203,7 +203,7 @@ def run(config, field, filters, processes, overwrite,
 
     if do_stage3:
         sc = get_nircam_stage_config('stage3', cfg, field_obj)
-        _run_stage3(field_obj, sc, filters=filter_list,
+        _run_stage3(field_obj, sc, cfg, filters=filter_list,
                     n_processes=processes, overwrite=overwrite)
 
 

@@ -711,7 +711,7 @@ def outlier_step(asn_file, field, stage_config, filtname):
 # Drizzle resampling
 # ---------------------------------------------------------------------------
 
-def resample_step(filtname, field, stage_config, overwrite=False):
+def resample_step(filtname, field, stage_config, reduction_version, overwrite=False):
     """Drizzle-combine CRF files into mosaic tiles.
 
     By default, uses manifest-based change detection to skip tiles whose
@@ -726,6 +726,10 @@ def resample_step(filtname, field, stage_config, overwrite=False):
         NIRCam field dataclass.
     stage_config : dict
         Stage-3 configuration dict.
+    reduction_version : str
+        Campfire reduction version string (git hash or override) stamped onto
+        the mosaic primary header as CMPFRVER. Distinct from the filename
+        version token in ``resample_cfg.version``.
     overwrite : bool
         If True, rebuild all tiles regardless of manifest state.
     """
@@ -869,6 +873,15 @@ def resample_step(filtname, field, stage_config, overwrite=False):
                     save_results=True,
                 )
 
+                # Stamp campfire reduction version on the mosaic primary header.
+                # Image3Pipeline writes blended jwst headers; CMPFRVER lets us
+                # trace any mosaic back to the campfire commit that built it.
+                with fits.open(mosaic_file, mode='update') as hdul:
+                    hdul[0].header['CMPFRTIM'] = (
+                        str(datetime.now()), 'Date/time of CAMPFIRE reduction')
+                    hdul[0].header['CMPFRVER'] = (
+                        reduction_version, 'CAMPFIRE git commit (or pinned version)')
+
                 # Write manifest recording inputs and config
                 manifest = create_manifest(
                     mosaic_name, field, filtname, tile, pixel_scale_str,
@@ -991,7 +1004,7 @@ def resample_step(filtname, field, stage_config, overwrite=False):
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-def run_stage3(field, stage_config, filters=None, n_processes=1, overwrite=False):
+def run_stage3(field, stage_config, config, filters=None, n_processes=1, overwrite=False):
     """Orchestrate all stage-3 steps for a NIRCam field.
 
     Parameters
@@ -1000,6 +1013,9 @@ def run_stage3(field, stage_config, filters=None, n_processes=1, overwrite=False
         NIRCam field dataclass (must have workspace set up).
     stage_config : dict
         Merged stage-3 configuration dict.
+    config : dict
+        Full pipeline config (used to resolve ``pipeline.version`` overrides
+        when stamping CMPFRVER on mosaic headers).
     filters : list of str, optional
         Filters to process. If None, uses ``field.filters``.
     n_processes : int
@@ -1008,6 +1024,9 @@ def run_stage3(field, stage_config, filters=None, n_processes=1, overwrite=False
         Overwrite existing products.
     """
     from campfire_pipeline.common.parallel import dispatch
+    from campfire_pipeline.common.version import get_reduction_version
+
+    reduction_version = get_reduction_version(config)
 
     if filters is None:
         filters = field.filters
@@ -1111,6 +1130,6 @@ def run_stage3(field, stage_config, filters=None, n_processes=1, overwrite=False
 
         # ----- Drizzle resampling -----
         log(f'Running resample step for {filtname}...')
-        resample_step(filtname, field, stage_config, overwrite=overwrite)
+        resample_step(filtname, field, stage_config, reduction_version, overwrite=overwrite)
 
     log(f"Stage 3 complete for field '{field.name}'")

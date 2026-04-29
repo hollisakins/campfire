@@ -46,5 +46,5 @@ class ReductionEngine:
     def run_stage3(self, field, filters=None, n_processes=1, overwrite=False):
         from campfire_pipeline.nircam.stage3 import run_stage3
         stage_config = self.get_stage_config('stage3', field)
-        run_stage3(field, stage_config, filters=filters,
+        run_stage3(field, stage_config, self.config, filters=filters,
                    n_processes=n_processes, overwrite=overwrite)
