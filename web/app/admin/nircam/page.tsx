@@ -66,7 +66,7 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
   if (progress.length === 0) {
     return (
       <p className="text-sm text-text-secondary dark:text-slate-400 py-4">
-        No reduction data available. Deploy exposures with <code className="text-xs bg-card dark:bg-slate-700 px-1 py-0.5 rounded">cfdeploy nircam</code>.
+        No reduction data available. Deploy exposures with <code className="text-xs bg-card dark:bg-slate-700 px-1 py-0.5 rounded">campfire deploy nircam</code>.
       </p>
     );
   }

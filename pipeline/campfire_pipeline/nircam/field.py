@@ -265,7 +265,7 @@ class Field:
     def get_excluded_exposures(self):
         """Read excluded exposure names from the contract file if present.
 
-        The contract file is written by ``cfdeploy nircam pull`` and lives at
+        The contract file is written by ``campfire deploy nircam pull`` and lives at
         ``$CAMPFIRE_ROOT/reference/nircam/{field}/exposures.json``.
 
         Returns
