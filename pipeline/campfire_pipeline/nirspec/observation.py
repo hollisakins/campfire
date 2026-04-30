@@ -165,8 +165,8 @@ class Observation:
             dst_file = os.path.join(self.workspace_dir, os.path.basename(src_file))
             rate_file = dst_file.replace('_uncal.fits', '_rate.fits')
             if not os.path.exists(dst_file) and (not os.path.exists(rate_file) or overwrite):
-                log(f"Copying {os.path.basename(src_file)} to workspace")
-                shutil.copy2(src_file, dst_file)
+                log(f"Linking {os.path.basename(src_file)} to workspace")
+                os.symlink(src_file, dst_file)
             copied_files.append(dst_file)
 
         for msa_meta_file in self.msa_meta_files:
