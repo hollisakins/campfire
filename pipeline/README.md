@@ -38,9 +38,35 @@ cfpipe nirspec zfit          --obs <obs>                   # Redshift fitting
 cfpipe nirspec summary       --obs <obs>                   # Generate metadata summary
 cfpipe nirspec detect-stuck  --obs <obs> --processes 4     # Auto-detect stuck shutters
 
+# Manual masks for shorts/artifacts on rate files (DS9 polygons → DQ DO_NOT_USE)
+cfpipe nirspec mask edit     --obs <obs>                   # Draw polygons in DS9 (saves to observations.toml)
+cfpipe nirspec mask apply    --obs <obs>                   # Restore + re-bkgsub with current masks
+cfpipe nirspec mask validate --obs <obs>                   # Parse and report pixel counts
+cfpipe nirspec mask clear    --obs <obs> --exposure <basename>  # Remove a mask entry
+
 # Template grid generation (one-time)
 cfpipe nirspec make-templates
 ```
+
+#### Manual masks
+
+Some NIRSpec exposures show mild detector-level artifacts (shorts, etc.) that
+are easy to spot on rate files but not in the bkg-subtracted spectra. Draw
+polygon regions around them in DS9 (image coords); they are stored inline in
+`observations.toml` and OR'd as `DO_NOT_USE` into the rate file DQ array
+before stage1 background subtraction.
+
+```toml
+[my_obs.masks]
+"jw01234001001_nrs1" = """
+image
+polygon(120,540,180,540,180,610,120,610)
+"""
+```
+
+DS9 is a soft dependency: `mask edit` falls back to manual instructions if
+`ds9`/`xpaset` aren't on PATH. Stage 2a auto-detects stale masks (via the
+`CFMASKSH` header sentinel) and re-applies them transparently.
 
 ### NIRCam
 

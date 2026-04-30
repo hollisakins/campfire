@@ -87,12 +87,22 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
 
     if n_processes > 1 and rates_to_subtract:
         _prefetch_crds_references(rates_to_subtract)
-    dispatch(
-        subtract_background_from_rate_file,
-        rates_to_subtract,
-        n_processes=n_processes,
-        **bkg_kwargs,
-    )
+    if obs.manual_masks:
+        from campfire_pipeline.nirspec.masks import bkgsub_with_masks
+        dispatch(
+            bkgsub_with_masks,
+            rates_to_subtract,
+            n_processes=n_processes,
+            manual_masks=obs.manual_masks,
+            **bkg_kwargs,
+        )
+    else:
+        dispatch(
+            subtract_background_from_rate_file,
+            rates_to_subtract,
+            n_processes=n_processes,
+            **bkg_kwargs,
+        )
 
 
 def mask_slits(
@@ -730,8 +740,9 @@ def subtract_background_from_rate_file(
         nsci = model.data / np.sqrt(model.var_rnoise)
         from astropy.stats import sigma_clipped_stats
         rms = sigma_clipped_stats(nsci[mask])[2]
-        log(f'Scaling up VAR_RNOISE by {rms**2:.2f}')
-        model.var_rnoise = model.var_rnoise * rms**2
+        var_rescale = float(rms ** 2)
+        log(f'Scaling up VAR_RNOISE by {var_rescale:.2f}')
+        model.var_rnoise = model.var_rnoise * var_rescale
 
         log(f"Saving to {os.path.basename(rate_file)}")
         time = datetime.now()
@@ -743,6 +754,13 @@ def subtract_background_from_rate_file(
             shutil.copy2(rate_file, rate_file.replace('_rate.fits', '_rate_before_bkgsub.fits'))
 
         model.save(rate_file)
+
+    # Stamp the variance rescale factor into the primary header so the bkg sub
+    # is invertible later (used by manual-mask re-apply path). Also stamp a
+    # timestamp for traceability.
+    with fits.open(rate_file, mode='update') as hdul:
+        hdul[0].header['CFBKGRMS'] = (var_rescale, 'VAR_RNOISE rescale factor from bkg sub')
+        hdul[0].header['CFBKGDT'] = (time.strftime('%Y-%m-%dT%H:%M:%S'), 'Timestamp of last bkg sub')
 
 
 def run_stage1_single_uncal(

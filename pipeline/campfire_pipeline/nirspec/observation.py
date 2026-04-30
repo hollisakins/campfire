@@ -27,6 +27,7 @@ class Observation:
     gratings: List[str] = field(default_factory=list)
     stage_overrides: dict = field(default_factory=dict)
     config_groups: dict = field(default_factory=dict)
+    manual_masks: dict = field(default_factory=dict)
 
     directories_setup: bool = False
 
@@ -78,6 +79,18 @@ class Observation:
             for cfg in group:
                 config_groups[cfg] = label
 
+        # Manual masks: { rate_basename (no _rate.fits suffix): DS9 region string }
+        manual_masks = {}
+        masks_section = obs.get('masks', {})
+        if isinstance(masks_section, dict):
+            for basename, reg_string in masks_section.items():
+                if not isinstance(reg_string, str):
+                    raise TypeError(
+                        f"masks['{basename}'] must be a string in [{name}.masks]; "
+                        f"got {type(reg_string).__name__}"
+                    )
+                manual_masks[basename] = reg_string
+
         return cls(
             name=name,
             field=field_name,
@@ -88,6 +101,7 @@ class Observation:
             gratings=gratings,
             stage_overrides=stage_overrides,
             config_groups=config_groups,
+            manual_masks=manual_masks,
         )
 
     def setup_workspace_directory(self, data_dir, product_dir, overwrite=False):
