@@ -233,6 +233,15 @@ def upsert_observation(
     client.table('observations').upsert(data, on_conflict='name').execute()
 
 
+def update_observation_pointings(
+    client: Client,
+    obs_name: str,
+    pointings: list[dict],
+) -> None:
+    """Write the JSONB pointings array for an observation."""
+    client.table('observations').update({'pointings': pointings}).eq('name', obs_name).execute()
+
+
 def batch_upsert_objects(
     client: Client,
     objects: list[dict],

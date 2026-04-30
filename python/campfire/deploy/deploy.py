@@ -16,12 +16,14 @@ from tqdm import tqdm
 
 from campfire.deploy.config import load_observations, load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir
 from campfire.deploy.discover import (
+    discover_pointings_ecsv,
     discover_rgb_images,
     discover_sed_plots,
     discover_shutters_ecsv,
     discover_slits_json,
     extract_object_ids_from_files,
     filter_files_by_source_ids,
+    load_pointings_ecsv,
     load_shutters_ecsv,
     load_slits_json,
 )
@@ -46,6 +48,7 @@ from campfire.deploy.supabase import (
     refresh_programs_overview,
     update_has_sed_plot,
     update_latest_deployment,
+    update_observation_pointings,
     upsert_observation,
     upsert_programs,
 )
@@ -198,6 +201,12 @@ def deploy_observation(
                 print("  No shutters ECSV found, would skip")
         else:
             print("  Shutters: skipped (--no-shutters)")
+        pointings_path = discover_pointings_ecsv(obs_dir, obs_name)
+        if pointings_path:
+            pointings_data = load_pointings_ecsv(pointings_path)
+            print(f"  {len(pointings_data)} pointing(s)")
+        else:
+            print("  No pointings ECSV found, would skip")
         if include_photometry:
             from campfire.deploy.config import resolve_photometry_config
             phot_path = resolve_photometry_config(None)
@@ -372,6 +381,15 @@ def deploy_observation(
                         sb, field, phot_path, config,
                         restrict_to_object_db_ids=changed_ids,
                     )
+
+        # Deploy pointings (JSONB on observations)
+        pointings_ecsv = discover_pointings_ecsv(obs_dir, obs_name)
+        if pointings_ecsv:
+            pointings_data = load_pointings_ecsv(pointings_ecsv)
+            update_observation_pointings(sb, obs_name, pointings_data)
+            print(f"\nDeployed {len(pointings_data)} pointing(s) for {obs_name}")
+        else:
+            print(f"\nNo pointings ECSV found for {obs_name}, skipping pointings deployment")
 
         # Deploy shutters
         n_shutters = 0

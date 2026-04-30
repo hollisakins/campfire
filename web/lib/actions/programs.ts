@@ -16,6 +16,24 @@ export interface ProgramOverview {
   jwst_pids: number[];
 }
 
+export interface Pointing {
+  msametid: number;
+  msametfl: string;
+  ra_center: number;
+  dec_center: number;
+  pa_aper: number;
+  gratings: string[];
+  filters: string[];
+  jwst_program: number;
+  jwst_obs_ids: string[];
+  n_exposures: number;
+  n_dithers: number;
+  exptime_total: number;
+  date_obs_start: string;
+  date_obs_end: string;
+  footprint: number[][][]; // 4 quadrants × 4 corners × [ra, dec]
+}
+
 export interface ObservationStat {
   observation: string;
   program_slug: string;
@@ -24,6 +42,7 @@ export interface ObservationStat {
   target_count: number;
   spectrum_count: number;
   total_size_bytes: number;
+  pointings: Pointing[] | null;
 }
 
 export interface ProgramsOverviewResult {
@@ -147,6 +166,7 @@ export async function getProgramDetail(programSlug: string): Promise<ProgramDeta
         target_count: Number(o.target_count) || 0,
         spectrum_count: Number(o.spectrum_count) || 0,
         total_size_bytes: Number(o.total_size_bytes) || 0,
+        pointings: (o.pointings as Pointing[] | null) ?? null,
       })
     );
 

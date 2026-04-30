@@ -1892,17 +1892,20 @@ GRANT EXECUTE ON FUNCTION public.refresh_programs_overview TO authenticated;
 CREATE OR REPLACE FUNCTION public.get_observation_stats(p_program_slugs text[])
 RETURNS TABLE(
   observation text, program_slug text, program_name text, field text,
-  target_count bigint, spectrum_count bigint, total_size_bytes bigint
+  target_count bigint, spectrum_count bigint, total_size_bytes bigint,
+  pointings jsonb
 ) LANGUAGE sql STABLE AS $$
   SELECT t.observation, t.program_slug, p.program_name, t.field,
     COUNT(DISTINCT t.target_id) AS target_count,
     COUNT(s.id) AS spectrum_count,
-    COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes
+    COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes,
+    o.pointings
   FROM targets t
   JOIN programs p ON p.slug = t.program_slug
   LEFT JOIN spectra s ON s.target_id = t.target_id
+  LEFT JOIN observations o ON o.name = t.observation
   WHERE t.program_slug = ANY(p_program_slugs)
-  GROUP BY t.observation, t.program_slug, p.program_name, t.field
+  GROUP BY t.observation, t.program_slug, p.program_name, t.field, o.pointings
   ORDER BY t.observation;
 $$;
 
