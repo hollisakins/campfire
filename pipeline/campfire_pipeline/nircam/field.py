@@ -3,9 +3,14 @@ Field dataclass: NIRCam field configuration and workspace management.
 
 Analogous to nirspec/observation.py but organized around sky fields
 (file globs + filters) rather than MSA observations.
+
+Raw uncal layout is PID-organized: ``$CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/``.
+PIDs are derived from the leading ``jwNNNNN`` of each ``files`` glob, so a field
+that spans multiple programs naturally pulls from multiple PID directories.
 """
 
 import os
+import re
 from glob import glob
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -17,18 +22,27 @@ from campfire_pipeline.common.io import log
 from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
 
 
+_PID_RE = re.compile(r'jw(\d{5})')
+
+
+def _extract_pid(pattern):
+    """Pull the 5-digit PID out of a JWST file glob (e.g. 'jw01727*' → '01727')."""
+    m = _PID_RE.match(pattern)
+    return m.group(1) if m else None
+
+
 @dataclass
 class Field:
     name: str
     filters: List[str]
     files: List[str]           # glob patterns, e.g. ['jw01727*', 'jw05893*']
-    data_subdir: str           # subdir under $CAMPFIRE_ROOT/raw/
     tangent_point: tuple       # (RA, Dec)
     tiles: dict                # tile WCS definitions
     stage_overrides: dict = field(default_factory=dict)
 
     # Populated by setup_workspace()
-    raw_dir: Optional[str] = None
+    campfire_root: Optional[str] = None
+    raw_root: Optional[str] = None  # $CAMPFIRE_ROOT/raw/nircam (parent of PID dirs)
     products_dir: Optional[str] = None
     reference_dir: Optional[str] = None
     stage1_dir: Optional[str] = None
@@ -83,12 +97,20 @@ class Field:
             file_patterns = [file_patterns]
         file_patterns = list(np.unique(file_patterns))
 
-        data_subdir = fc['data_subdir']
+        # Validate: every pattern must start with jwNNNNN so we can locate
+        # the PID-organized raw directory.
+        bad = [p for p in file_patterns if _extract_pid(p) is None]
+        if bad:
+            raise ValueError(
+                f"Field '{name}': every entry in `files` must start with "
+                f"'jwNNNNN' (5-digit PID). Offending patterns: {bad}"
+            )
+
         tangent_point = tuple(fc['tangent_point'])
 
         # Parse tile WCS definitions
         tiles = {}
-        reserved_keys = {'filters', 'files', 'data_subdir', 'tangent_point',
+        reserved_keys = {'filters', 'files', 'tangent_point',
                          'stage1', 'stage2', 'stage3'}
         for key, value in fc.items():
             if key in reserved_keys:
@@ -106,11 +128,15 @@ class Field:
             name=name,
             filters=filters,
             files=file_patterns,
-            data_subdir=data_subdir,
             tangent_point=tangent_point,
             tiles=tiles,
             stage_overrides=stage_overrides,
         )
+
+    @property
+    def pids(self):
+        """Unique JWST program IDs referenced by this field's `files` patterns."""
+        return sorted({_extract_pid(p) for p in self.files if _extract_pid(p)})
 
     def setup_workspace(self, campfire_root=None):
         """Create the directory tree for this field.
@@ -124,7 +150,8 @@ class Field:
             from campfire_pipeline.config import _get_campfire_root
             campfire_root = _get_campfire_root()
 
-        self.raw_dir = os.path.join(campfire_root, 'raw', self.data_subdir)
+        self.campfire_root = campfire_root
+        self.raw_root = os.path.join(campfire_root, 'raw', 'nircam')
         self.products_dir = os.path.join(campfire_root, 'products', 'nircam', self.name)
         self.reference_dir = os.path.join(campfire_root, 'reference', 'nircam', self.name)
 
@@ -181,8 +208,32 @@ class Field:
         return sorted(result)
 
     def get_uncal_files(self, filter_name, skip=None):
-        """Get uncal files from raw data directory."""
-        return self.get_files(self.raw_dir, filter_name, '*_uncal.fits', skip=skip)
+        """Get uncal files from PID-organized raw directories.
+
+        Globs across ``$CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/`` for every PID
+        derived from this field's ``files`` patterns.
+        """
+        if self.raw_root is None:
+            raise RuntimeError("setup_workspace() must be called first")
+        result = []
+        for pattern in self.files:
+            pid = _extract_pid(pattern)
+            stage_dir = os.path.join(self.raw_root, pid)
+            full_pattern = os.path.join(stage_dir, filter_name, pattern + '*_uncal.fits')
+            result.extend(glob(full_pattern))
+
+        if skip:
+            excluded = set()
+            for exc_pattern in skip:
+                pid = _extract_pid(exc_pattern)
+                if pid is None:
+                    continue
+                stage_dir = os.path.join(self.raw_root, pid)
+                full_exc = os.path.join(stage_dir, filter_name, exc_pattern + '*_uncal.fits')
+                excluded.update(glob(full_exc))
+            result = [f for f in result if f not in excluded]
+
+        return sorted(result)
 
     def get_rate_files(self, filter_name, skip=None):
         """Get rate files from stage1 products."""

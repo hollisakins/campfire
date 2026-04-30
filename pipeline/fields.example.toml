@@ -3,11 +3,19 @@
 # Place this file at $CAMPFIRE_ROOT/config/fields.toml
 # (or pass --fields-file to the CLI)
 #
+# Raw data layout is PID-organized and filter-binned:
+#   $CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/*_uncal.fits
+# Each PID directory also gets a manifest.ecsv written by `cfpipe download`
+# capturing per-exposure metadata (filter, observtn, target RA/Dec, s_region).
+#
+# A field is defined by a list of file globs (one per PID, or per obs/visit
+# slice), so the field definition selects which exposures contribute to its
+# mosaics. PIDs are inferred from each glob's leading 'jwNNNNN'.
+#
 # Each section defines a field with:
-#   filters     = list of NIRCam filters to reduce
-#   files       = glob pattern(s) matching JWST file prefixes
-#   data_subdir = subdirectory under $CAMPFIRE_ROOT/raw/ containing uncal files
-#                 (organized by filter: {data_subdir}/{filter}/*_uncal.fits)
+#   filters       = list of NIRCam filters to reduce
+#   files         = glob pattern(s) matching JWST fileset prefixes
+#                   (e.g. 'jw01727*' = whole program, 'jw01727001*' = obs 1)
 #   tangent_point = [RA, Dec] for mosaic WCS reference
 #
 # Tile WCS definitions nest under the field:
@@ -29,7 +37,6 @@
 [example_cosmos]
     filters = ['f115w', 'f150w', 'f200w', 'f277w', 'f356w', 'f410m', 'f444w']
     files = ['jw01727*', 'jw05893*']
-    data_subdir = 'nircam/cosmos'
     tangent_point = [150.1163213, 2.200973097]
 
     [example_cosmos.A1]

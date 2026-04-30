@@ -127,8 +127,10 @@ INSTRUMENT_DEFAULTS = {
 @click.option('--instrument', type=click.Choice(['nirspec', 'nircam'],
               case_sensitive=False), default='nirspec',
               help='Instrument (default: nirspec).')
-@click.option('--obs-id', type=int, default=None,
-              help='JWST observation number (e.g. 1, 2, 3).')
+@click.option('--obs-id', 'obs_ids', type=int, multiple=True,
+              help='JWST observation number(s); repeat for multiple (e.g. --obs-id 1 --obs-id 2).')
+@click.option('--filters', 'filters', multiple=True,
+              help='NIRCam: restrict to these filters (repeat for multiple). Ignored for NIRSpec.')
 @click.option('--exp-type', default=None,
               help='Exposure type (default: auto from instrument).')
 @click.option('--download-dir', default=None,
@@ -137,8 +139,13 @@ INSTRUMENT_DEFAULTS = {
               help='List files without downloading.')
 @click.option('--token', default=None,
               help='MAST API token for proprietary data. Falls back to $MAST_API_TOKEN env var.')
-def download(program, instrument, obs_id, exp_type, download_dir, dry_run, token):
-    """Download raw JWST data from MAST."""
+def download(program, instrument, obs_ids, filters, exp_type, download_dir, dry_run, token):
+    """Download raw JWST data from MAST.
+
+    NIRSpec layout: $CAMPFIRE_ROOT/raw/{PID}/{filename}
+    NIRCam layout:  $CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/{filename}
+                    plus a manifest.ecsv per PID directory.
+    """
     from campfire_pipeline.common.query import download_jwst_data
 
     instrument_upper = instrument.upper()
@@ -152,6 +159,10 @@ def download(program, instrument, obs_id, exp_type, download_dir, dry_run, token
 
     token = token or os.environ.get('MAST_API_TOKEN')
 
+    if filters and instrument_upper != 'NIRCAM':
+        click.echo("Warning: --filters is ignored for NIRSpec.")
+        filters = ()
+
     try:
         download_jwst_data(
             program_id=program,
@@ -159,7 +170,8 @@ def download(program, instrument, obs_id, exp_type, download_dir, dry_run, token
             exp_type=exp_type,
             download_dir=download_dir,
             dry_run=dry_run,
-            obs_id=obs_id,
+            obs_ids=list(obs_ids) if obs_ids else None,
+            filters=list(filters) if filters else None,
             token=token,
         )
     except KeyboardInterrupt:

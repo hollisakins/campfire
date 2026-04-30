@@ -23,47 +23,77 @@ BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
 
 
 def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
-                    obs_id=None, token=None):
+                    obs_ids=None, filters=None, token=None):
     """Query MAST for level 1b filesets in a program.
 
     Returns a list of dicts with fileSetName and observation metadata.
-    """
-    obs_label = f" obs {obs_id}" if obs_id else ""
-    print(f"Searching for {instrument} {exp_type} level 1b filesets in program {program_id}{obs_label}...")
 
-    conditions = [
-        {"program": str(program_id)},
-        {"instrume": instrument},
-        {"exp_type": exp_type},
-        {"productLevel": "1b"},
-    ]
-    if obs_id is not None:
-        conditions.append({"observtn": str(obs_id)})
+    Parameters
+    ----------
+    obs_ids : list of int, optional
+        Restrict to these observation numbers. Sent server-side as multiple
+        equality conditions; an ``in`` operator isn't documented for the JWST
+        search API, so we fan out one search per obs and merge.
+    filters : list of str, optional
+        Restrict to these filters (NIRCam only). Same fan-out reason.
+    """
+    obs_list = list(obs_ids) if obs_ids else [None]
+    filt_list = list(filters) if filters else [None]
 
     headers = {"Authorization": f"token {token}"} if token else {}
-    resp = requests.post(
-        f"{BASE_URL}/search",
-        json={
-            "conditions": conditions,
-            "select_cols": [
-                "fileSetName", "productLevel", "opticalElements",
-                "filter", "date_obs", "duration", "observtn", "exposure",
-            ],
-            "limit": 5000,
-        },
-        headers=headers,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    select_cols = [
+        "fileSetName", "productLevel", "opticalElements",
+        "filter", "date_obs", "duration", "observtn", "exposure",
+    ]
+    if instrument == "NIRCAM":
+        select_cols += ["targ_ra", "targ_dec", "s_region"]
 
-    results = data["results"]
-    total = data["totalResults"]
+    label_extras = []
+    if obs_ids:
+        label_extras.append(f"obs {','.join(str(o) for o in obs_ids)}")
+    if filters:
+        label_extras.append(f"filters {','.join(filters)}")
+    extra = (" " + ", ".join(label_extras)) if label_extras else ""
+    print(f"Searching for {instrument} {exp_type} level 1b filesets in program {program_id}{extra}...")
 
-    if total > len(results):
-        print(f"  Warning: {total} filesets found but only {len(results)} returned (limit 5000)")
+    seen = set()
+    merged = []
+    for obs_id in obs_list:
+        for filt in filt_list:
+            conditions = [
+                {"program": str(program_id)},
+                {"instrume": instrument},
+                {"exp_type": exp_type},
+                {"productLevel": "1b"},
+            ]
+            if obs_id is not None:
+                conditions.append({"observtn": str(obs_id)})
+            if filt is not None:
+                conditions.append({"filter": filt.upper()})
 
-    print(f"Found {total} filesets")
-    return results
+            resp = requests.post(
+                f"{BASE_URL}/search",
+                json={
+                    "conditions": conditions,
+                    "select_cols": select_cols,
+                    "limit": 5000,
+                },
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            for r in data["results"]:
+                key = r["fileSetName"]
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(r)
+            total = data["totalResults"]
+            if total > len(data["results"]):
+                print(f"  Warning: {total} filesets found but only {len(data['results'])} returned (limit 5000)")
+
+    print(f"Found {len(merged)} filesets")
+    return merged
 
 
 def list_products_batched(filesets, batch_size=25, token=None):
@@ -192,9 +222,65 @@ def download_file(uri, output_path, size, index, total, token=None):
         return "error"
 
 
+def _build_fileset_index(filesets):
+    """Map fileSetName → fileset metadata dict for fast joins to products."""
+    return {fs["fileSetName"]: fs for fs in filesets}
+
+
+def _output_path_for(file_info, download_root, instrument):
+    """Compute the on-disk path for a downloaded product.
+
+    NIRSpec: ``{download_root}/{PID}/{filename}``  (flat per-PID).
+    NIRCam:  ``{download_root}/nircam/{PID}/{filter}/{filename}``.
+    """
+    filename = file_info["filename"]
+    pid = file_info["program_id"]
+    if instrument == "NIRCAM":
+        filt = (file_info.get("filter") or "unknown").lower()
+        return Path(download_root) / "nircam" / pid / filt / filename
+    return Path(download_root) / pid / filename
+
+
+def _write_nircam_manifest(download_root, program_id, rows):
+    """Upsert NIRCam manifest rows into ``raw/nircam/{PID}/manifest.ecsv``.
+
+    `rows` is a list of dicts (one per uncal file). Existing rows with the same
+    `filename` are replaced; new rows are appended; unrelated rows are kept.
+    """
+    if not rows:
+        return
+    from astropy.table import Table, vstack
+    manifest_dir = Path(download_root) / "nircam" / program_id
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / "manifest.ecsv"
+
+    new_tbl = Table(rows=rows)
+    if manifest_path.exists():
+        try:
+            old_tbl = Table.read(manifest_path, format="ascii.ecsv")
+            keep = [name not in set(new_tbl["filename"]) for name in old_tbl["filename"]]
+            old_tbl = old_tbl[keep]
+            tbl = vstack([old_tbl, new_tbl], join_type="outer")
+        except Exception as e:
+            print(f"  Warning: could not read existing manifest ({e}); overwriting.")
+            tbl = new_tbl
+    else:
+        tbl = new_tbl
+
+    tbl.sort("filename")
+    tbl.write(manifest_path, format="ascii.ecsv", overwrite=True)
+    print(f"  Manifest updated: {manifest_path} ({len(tbl)} rows)")
+
+
 def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
-                       download_dir="data", dry_run=False, obs_id=None, token=None):
+                       download_dir="data", dry_run=False, obs_ids=None,
+                       filters=None, token=None):
     """Download JWST level 1b data for a program.
+
+    Layout:
+      NIRSpec → ``{download_dir}/{PID}/{filename}``
+      NIRCam  → ``{download_dir}/nircam/{PID}/{filter}/{filename}`` plus a
+                ``manifest.ecsv`` per PID directory.
 
     Parameters
     ----------
@@ -205,11 +291,13 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     exp_type : str
         Exposure type (e.g. 'NRS_MSASPEC', 'NRC_IMAGE').
     download_dir : str
-        Base download directory. Files go into download_dir/program_id/.
+        Base download directory (the ``raw/`` root).
     dry_run : bool
         If True, list files without downloading.
-    obs_id : int or None
-        JWST observation number to filter by (e.g. 1, 2, 3).
+    obs_ids : iterable of int, optional
+        Restrict to these observation numbers.
+    filters : iterable of str, optional
+        Restrict to these filters (NIRCam only).
     token : str or None
         MAST API token for accessing proprietary data.
     """
@@ -217,7 +305,10 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         print("Using MAST API token for authentication.")
 
     # Step 1: Search for filesets
-    filesets = search_filesets(program_id, instrument, exp_type, obs_id=obs_id, token=token)
+    filesets = search_filesets(
+        program_id, instrument, exp_type,
+        obs_ids=obs_ids, filters=filters, token=token,
+    )
     if not filesets:
         print("No filesets found. Exiting.")
         return
@@ -227,8 +318,32 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     products = list_products_batched(filesets, token=token)
     print(f"  {len(products)} total products across {len(filesets)} filesets")
 
-    # Step 3: Filter
+    # Step 3: Filter to uncal + per-instrument aux files
     uncal_files, aux_files = filter_products(products, instrument)
+
+    # Annotate every file with the program_id and (NIRCam) the parent fileset's
+    # filter, so the path computation has what it needs.
+    pid_str = str(program_id).zfill(5)
+    fileset_index = _build_fileset_index(filesets)
+    for f in uncal_files + aux_files:
+        f["program_id"] = pid_str
+    if instrument == "NIRCAM":
+        for f in uncal_files:
+            # NIRCam uncal filenames look like '{fileSetName}_{detector}_uncal.fits'
+            # where fileSetName has no detector token. Walk back tokens until we
+            # match an entry in the fileset index.
+            stem = f["filename"].rsplit("_uncal.fits", 1)[0]
+            fs = {}
+            parts = stem.split("_")
+            while parts:
+                candidate = "_".join(parts)
+                if candidate in fileset_index:
+                    fs = fileset_index[candidate]
+                    break
+                parts.pop()
+            f["filter"] = (fs.get("filter") or "").lower() or None
+            f["_fileset"] = fs
+
     all_files = uncal_files + aux_files
     total_size = sum(f["size"] for f in all_files)
 
@@ -241,11 +356,12 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         return
 
     # Check which files already exist
-    output_dir = Path(download_dir) / str(program_id)
+    download_root = Path(download_dir)
     to_download = []
     to_skip = []
     for f in all_files:
-        path = output_dir / f["filename"]
+        path = _output_path_for(f, download_root, instrument)
+        f["_path"] = path
         if path.exists() and path.stat().st_size == f["size"]:
             to_skip.append(f)
         else:
@@ -261,29 +377,40 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
             dl_size = sum(f["size"] for f in to_download)
             print(f"Files to download ({len(to_download)}, {format_size(dl_size)}):")
             for f in to_download:
-                print(f"  {f['filename']:55s}  {format_size(f['size']):>10s}")
+                rel = f["_path"].relative_to(download_root)
+                print(f"  {str(rel):70s}  {format_size(f['size']):>10s}")
         else:
             print("Nothing to download — all files already exist.")
         if to_skip:
             print(f"\nAlready downloaded ({len(to_skip)}):")
             for f in to_skip:
-                print(f"  {f['filename']:55s}  {format_size(f['size']):>10s}  (exists)")
+                rel = f["_path"].relative_to(download_root)
+                print(f"  {str(rel):70s}  {format_size(f['size']):>10s}  (exists)")
+        if instrument == "NIRCAM":
+            print(f"\nManifest would be written/updated at: "
+                  f"{download_root / 'nircam' / pid_str / 'manifest.ecsv'}")
         return
 
     # Step 4: Download
     if not to_download:
         print("\nNothing to download — all files already exist.")
+        # Even with nothing new, refresh manifest from current selection so
+        # filter/s_region info backfills for previously-downloaded files.
+        if instrument == "NIRCAM":
+            _write_nircam_manifest(
+                download_root, pid_str,
+                [_manifest_row(f) for f in uncal_files if f["_path"].exists()],
+            )
         return
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     dl_size = sum(f["size"] for f in to_download)
-
     print()
-    print(f"Downloading {len(to_download)} files ({format_size(dl_size)}) to {output_dir}/")
+    print(f"Downloading {len(to_download)} files ({format_size(dl_size)})")
 
     errors = 0
     for i, f in enumerate(to_download, 1):
-        output_path = output_dir / f["filename"]
+        output_path = f["_path"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         result = download_file(f["uri"], output_path, f["size"], i, len(to_download), token=token)
         if result == "error":
             errors += 1
@@ -291,7 +418,33 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     print()
     downloaded = len(to_download) - errors
     print(f"Complete: {downloaded} downloaded, {len(to_skip)} skipped, {errors} errors")
-    print(f"Location: {output_dir}/")
+
+    if instrument == "NIRCAM":
+        # Manifest covers everything we know about (downloaded + previously present)
+        _write_nircam_manifest(
+            download_root, pid_str,
+            [_manifest_row(f) for f in uncal_files if f["_path"].exists()],
+        )
+
+
+def _manifest_row(f):
+    """Build a manifest row dict from a NIRCam uncal file_info."""
+    from datetime import datetime, timezone
+    fs = f.get("_fileset") or {}
+    return {
+        "filename":       f["filename"],
+        "fileSetName":    fs.get("fileSetName", ""),
+        "filter":         (f.get("filter") or "").lower(),
+        "observtn":       str(fs.get("observtn", "")),
+        "exposure":       str(fs.get("exposure", "")),
+        "targ_ra":        float(fs["targ_ra"]) if fs.get("targ_ra") is not None else float("nan"),
+        "targ_dec":       float(fs["targ_dec"]) if fs.get("targ_dec") is not None else float("nan"),
+        "s_region":       fs.get("s_region", "") or "",
+        "date_obs":       fs.get("date_obs", "") or "",
+        "duration":       float(fs["duration"]) if fs.get("duration") is not None else float("nan"),
+        "size_bytes":     int(f["size"]),
+        "downloaded_at":  datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
 
 
 def download_nirspec_uncal(program_id, download_dir="data", exp_type="NRS_MSASPEC", dry_run=False):
