@@ -79,15 +79,18 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         plot=stage_config.get('plot', True),
         save_backup=False,
     )
+    all_uncal_files = [os.path.basename(f) for f in obs.glob("_uncal.fits")]
     expected_rate_files = [
         os.path.join(obs.workspace_dir, f.replace('_uncal.fits', '_rate.fits'))
-        for f in uncal_files
+        for f in all_uncal_files
     ]
     rate_files = [f for f in expected_rate_files if os.path.exists(f)]
     missing = set(expected_rate_files) - set(rate_files)
     if missing:
         for f in sorted(missing):
             log(f"WARNING: Detector1Pipeline did not produce {os.path.basename(f)} — skipping background subtraction for this file")
+    if not overwrite:
+        rate_files = [f for f in rate_files if not os.path.exists(f.replace('_rate.fits', '_bkg.fits'))]
     if n_processes > 1 and rate_files:
         _prefetch_crds_references(rate_files)
     dispatch(
