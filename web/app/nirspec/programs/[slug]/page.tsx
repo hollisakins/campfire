@@ -11,7 +11,7 @@ import { useProgramDetailQuery } from '@/lib/hooks/useProgramsQuery';
 import { LogIn, Loader2, Telescope, ExternalLink, ArrowRight, AlertCircle, ChevronRight, ChevronDown, Download } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { pointingsToCsv, pointingsToDs9, flattenPointings, downloadBlob } from '@/lib/pointings';
-import type { Pointing } from '@/lib/actions/programs';
+import type { Pointing } from '@/lib/types';
 
 // Editorial content registry — add imports as markdown files are authored
 import ember from '@/lib/docs/content/programs/7076.md';

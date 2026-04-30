@@ -6,7 +6,7 @@
  * array — no server round-trip.
  */
 
-import type { Pointing } from '@/lib/actions/programs';
+import type { Pointing } from '@/lib/types';
 
 interface PointingRow extends Pointing {
   observation: string;
