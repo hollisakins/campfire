@@ -166,8 +166,9 @@ export async function getFieldMarkers(
 /**
  * Fetch all objects for a field with member target IDs (for slit filter bridge).
  *
- * Uses get_field_object_markers RPC for a single round-trip — replaces the
- * old paginated PostgREST select that fired N×1000-row pages and embedded
+ * Uses get_field_object_markers RPC, paged at 5000 rows (PostgREST's
+ * configured max_rows cap — see supabase/config.toml). Replaces the old
+ * paginated PostgREST select that fired N×1000-row pages and embedded
  * targets(target_id), which made COSMOS take ~2-3 minutes. The RPC
  * aggregates member_target_ids server-side and returns inspection-driven
  * `redshift` / `redshift_quality` (not the legacy deploy-time `best_*`
@@ -178,15 +179,15 @@ export async function getFieldObjectMarkers(
 ): Promise<MapObjectMarkersResult> {
   const supabase = await createClient();
 
-  const { data, error } = await supabase.rpc('get_field_object_markers', {
-    p_field: field,
-  });
+  const { data, error } = await paginateRpc<MapObjectMarker>(
+    supabase, 'get_field_object_markers', { p_field: field },
+  );
 
   if (error) {
     return { markers: [], error: error.message };
   }
 
-  return { markers: (data || []) as MapObjectMarker[] };
+  return { markers: data };
 }
 
 /**
@@ -310,21 +311,21 @@ export async function getNearbyShutters(
 }
 
 /**
- * Fetch all shutters for a field via RPC (single round-trip).
- * Used by the full map viewer; replaces a 1000-row-per-page PostgREST select.
+ * Fetch all shutters for a field via RPC, paged at PostgREST's max_rows
+ * cap (5000; see supabase/config.toml). Used by the full map viewer.
  */
 export async function getFieldShutters(
   field: string
 ): Promise<ShuttersResult> {
   const supabase = await createClient();
 
-  const { data, error } = await supabase.rpc('get_field_shutters', {
-    p_field: field,
-  });
+  const { data, error } = await paginateRpc<Shutter>(
+    supabase, 'get_field_shutters', { p_field: field },
+  );
 
   if (error) {
     return { shutters: [], error: error.message };
   }
 
-  return { shutters: (data || []) as Shutter[] };
+  return { shutters: data };
 }
