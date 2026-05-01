@@ -1180,7 +1180,9 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
   p_has_photometry BOOLEAN DEFAULT NULL,
   p_photo_z_min DOUBLE PRECISION DEFAULT NULL,
-  p_photo_z_max DOUBLE PRECISION DEFAULT NULL
+  p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
+  p_sort_column TEXT DEFAULT 'object_id',
+  p_sort_direction TEXT DEFAULT 'asc'
 )
 RETURNS TABLE(object_id TEXT)
 LANGUAGE plpgsql STABLE
@@ -1197,6 +1199,17 @@ BEGIN
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
     v_gratings_mode := 'any';
+  END IF;
+
+  IF p_sort_direction NOT IN ('asc', 'desc') THEN
+    p_sort_direction := 'asc';
+  END IF;
+
+  IF NOT (p_sort_column IN (
+    'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
+    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
+  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
+    p_sort_column := 'object_id';
   END IF;
 
   -- Intersect user-accessible programs with filter selection
@@ -1268,7 +1281,42 @@ BEGIN
         SELECT olm.object_id FROM object_list_members olm
         WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
     ))
-  ORDER BY o.object_id;
+  ORDER BY
+    CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'asc' THEN
+      2 * DEGREES(ASIN(SQRT(
+        POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+        COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+        POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+      ))) END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'desc' THEN
+      2 * DEGREES(ASIN(SQRT(
+        POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+        COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+        POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+      ))) END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN o.object_id END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'object_id' AND p_sort_direction = 'desc' THEN o.object_id END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc' THEN o.field END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN o.field END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN o.ra END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN o.ra END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN o.dec END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'desc' THEN o.dec END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'redshift' AND p_sort_direction = 'asc' THEN o.redshift END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'redshift' AND p_sort_direction = 'desc' THEN o.redshift END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'redshift_quality' AND p_sort_direction = 'asc' THEN o.redshift_quality END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'redshift_quality' AND p_sort_direction = 'desc' THEN o.redshift_quality END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'n_targets' AND p_sort_direction = 'asc' THEN o.n_targets END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'n_targets' AND p_sort_direction = 'desc' THEN o.n_targets END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'n_spectra' AND p_sort_direction = 'asc' THEN o.n_spectra END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'n_spectra' AND p_sort_direction = 'desc' THEN o.n_spectra END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'asc' THEN o.max_snr END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN o.max_snr END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN o.max_exposure_time END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN o.max_exposure_time END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'asc' THEN o.photo_z END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'desc' THEN o.photo_z END DESC NULLS LAST,
+    o.object_id ASC;
 END;
 $$;
 
