@@ -14,8 +14,10 @@ schemas = ["public", "graphql_public"]
 # Extra schemas to add to the search_path of every request.
 extra_search_path = ["public", "extensions"]
 # The maximum number of rows returns from a view, table, or stored procedure. Limits payload size
-# for accidental or malicious requests.
-max_rows = 5000
+# for accidental or malicious requests. Sized for our largest "all-rows-for-a-field" queries
+# (map markers + shutters on COSMOS, ~10-50K each), with headroom for growth. Still small enough
+# to catch a missing-WHERE on `targets` / `spectra` / `photometry`.
+max_rows = 50000
 
 [api.tls]
 # Enable HTTPS endpoints locally using a self-signed certificate.
