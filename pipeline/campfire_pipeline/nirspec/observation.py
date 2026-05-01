@@ -155,8 +155,8 @@ class Observation:
     def copy_uncal_files(self, overwrite=False):
 
         log(self.rate_files)
-        if all([os.path.exists(f) for f in self.rate_files]) and not overwrite:
-            log('All rate files already exist, and overwrite=False! aborting stage1')
+        if all([os.path.exists(f) and os.path.exists(f.replace('_rate.fits', '_bkg.fits')) for f in self.rate_files]) and not overwrite:
+            log('All rate files and bkg files already exist, and overwrite=False! aborting stage1')
             return False
 
         # Copy rate files to workspace and track MSA meta files needed
