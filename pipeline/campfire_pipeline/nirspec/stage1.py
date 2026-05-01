@@ -88,11 +88,12 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     if missing:
         for f in sorted(missing):
             log(f"WARNING: Detector1Pipeline did not produce {os.path.basename(f)} — skipping background subtraction for this file")
+
+    rates_to_subtract = rate_files
     if not overwrite:
-        rates_to_subtract = [f for f in rate_files if not os.path.exists(f.replace('_rate.fits', '_bkg.fits'))]
-    else: 
-        rates_to_subtract = rate_files
-    if n_processes > 1 and rates_to_process:
+        rates_to_subtract = [f for f in rates_to_subtract if not os.path.exists(f.replace('_rate.fits', '_bkg.fits'))]
+
+    if n_processes > 1 and rates_to_subtract:
         _prefetch_crds_references(rates_to_subtract)
     dispatch(
         subtract_background_from_rate_file,
