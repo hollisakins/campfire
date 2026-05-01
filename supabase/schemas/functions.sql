@@ -1994,6 +1994,84 @@ $$;
 
 
 -- =============================================================================
+-- get_field_object_markers
+-- =============================================================================
+-- Single-shot fetch of every object in a field for the map viewer. Replaces
+-- the paginated PostgREST select that capped at 1000 rows/page and embedded
+-- targets(target_id) for the slit-filter bridge — both very expensive on
+-- COSMOS-sized fields. RLS on objects still applies (SECURITY INVOKER).
+
+CREATE OR REPLACE FUNCTION public.get_field_object_markers(p_field TEXT)
+RETURNS TABLE (
+  object_id           TEXT,
+  ra                  DOUBLE PRECISION,
+  "dec"               DOUBLE PRECISION,
+  redshift            DOUBLE PRECISION,
+  redshift_quality    INTEGER,
+  field               TEXT,
+  n_targets           INTEGER,
+  n_spectra           INTEGER,
+  programs            TEXT[],
+  member_target_ids   TEXT[]
+)
+LANGUAGE sql STABLE
+AS $$
+  SELECT
+    o.object_id,
+    o.ra,
+    o.dec,
+    o.redshift::double precision,
+    o.redshift_quality,
+    o.field,
+    o.n_targets,
+    o.n_spectra,
+    o.programs,
+    COALESCE(
+      (SELECT array_agg(t.target_id ORDER BY t.target_id)
+         FROM public.targets t
+        WHERE t.object_id = o.id),
+      ARRAY[]::TEXT[]
+    ) AS member_target_ids
+  FROM public.objects o
+  WHERE o.field = p_field
+    AND o.is_active
+  ORDER BY o.object_id;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_field_object_markers TO authenticated;
+
+
+-- =============================================================================
+-- get_field_shutters
+-- =============================================================================
+-- Single-shot fetch of every shutter in a field for the map viewer. Shutters
+-- are public to authenticated users, so SECURITY INVOKER is fine.
+
+CREATE OR REPLACE FUNCTION public.get_field_shutters(p_field TEXT)
+RETURNS TABLE (
+  object_id        TEXT,
+  source_id        INTEGER,
+  center_ra        DOUBLE PRECISION,
+  center_dec       DOUBLE PRECISION,
+  position_angle   DOUBLE PRECISION,
+  shutter_idx      SMALLINT,
+  dither_id        SMALLINT,
+  shutter_state    TEXT,
+  observation      TEXT
+)
+LANGUAGE sql STABLE
+AS $$
+  SELECT s.object_id, s.source_id, s.center_ra, s.center_dec,
+         s.position_angle, s.shutter_idx, s.dither_id, s.shutter_state, s.observation
+  FROM public.shutters s
+  WHERE s.field = p_field
+  ORDER BY s.object_id;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_field_shutters TO authenticated;
+
+
+-- =============================================================================
 -- increment_tile_version
 -- =============================================================================
 
