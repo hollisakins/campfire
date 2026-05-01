@@ -224,28 +224,6 @@ def build_objects(
             if s.get('exposure_time') is not None
         ]
 
-        # Best redshift: highest quality, tiebreak by max_snr
-        valid_members = [
-            m for m in members
-            if m.get('redshift') is not None
-        ]
-        if valid_members:
-            best = max(
-                valid_members,
-                key=lambda m: (
-                    m.get('redshift_quality') or 0,
-                    m.get('max_snr') or 0,
-                ),
-            )
-            best_redshift = float(best['redshift'])
-            best_quality = best.get('redshift_quality') or 0
-        else:
-            best_redshift = None
-            best_quality = max(
-                (m.get('redshift_quality') or 0 for m in members),
-                default=0,
-            )
-
         obj = {
             'object_id': object_id,
             'field': field,
@@ -257,8 +235,6 @@ def build_objects(
             'gratings': sorted(all_gratings),
             'max_snr': max(all_snr) if all_snr else None,
             'max_exposure_time': max(all_exp) if all_exp else None,
-            'best_redshift': best_redshift,
-            'best_redshift_quality': best_quality,
             '_member_db_ids': [m['id'] for m in members],
         }
         objects.append(obj)
@@ -317,8 +293,6 @@ def _insert_objects(
                 'gratings': obj['gratings'],
                 'max_snr': obj['max_snr'],
                 'max_exposure_time': obj['max_exposure_time'],
-                'best_redshift': obj['best_redshift'],
-                'best_redshift_quality': obj['best_redshift_quality'],
                 'updated_at': now,
             }
             for obj in batch

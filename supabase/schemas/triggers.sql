@@ -121,8 +121,6 @@ BEGIN
        OR OLD.observations IS DISTINCT FROM NEW.observations
        OR OLD.max_snr IS DISTINCT FROM NEW.max_snr
        OR OLD.max_exposure_time IS DISTINCT FROM NEW.max_exposure_time
-       OR OLD.best_redshift IS DISTINCT FROM NEW.best_redshift
-       OR OLD.best_redshift_quality IS DISTINCT FROM NEW.best_redshift_quality
        OR OLD.photo_z IS DISTINCT FROM NEW.photo_z
        OR OLD.photo_z_err_lo IS DISTINCT FROM NEW.photo_z_err_lo
        OR OLD.photo_z_err_hi IS DISTINCT FROM NEW.photo_z_err_hi
