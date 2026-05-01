@@ -79,17 +79,9 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         plot=stage_config.get('plot', True),
         save_backup=False,
     )
-    expected_rate_files = [
-        os.path.join(obs.workspace_dir, f.replace('_uncal.fits', '_rate.fits'))
-        for f in uncal_files
-    ]
-    rate_files = [f for f in expected_rate_files if os.path.exists(f)]
-    missing = set(expected_rate_files) - set(rate_files)
-    if missing:
-        for f in sorted(missing):
-            log(f"WARNING: Detector1Pipeline did not produce {os.path.basename(f)} — skipping background subtraction for this file")
 
-    rates_to_subtract = rate_files
+    # Grab all rate files (in case there are some that didn't have background subtraction run on them!)
+    rates_to_subtract = obs.glob("_rate.fits")
     if not overwrite:
         rates_to_subtract = [f for f in rates_to_subtract if not os.path.exists(f.replace('_rate.fits', '_bkg.fits'))]
 
