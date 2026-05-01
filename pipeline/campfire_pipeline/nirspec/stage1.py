@@ -37,7 +37,7 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=overwrite)
 
     obs.discover_raw_files()
-    obs.copy_uncal_files(overwrite=overwrite)
+    obs.symlink_uncal_files(overwrite=overwrite)
 
     uncal_files = obs.glob("_uncal.fits")
     if not overwrite:
