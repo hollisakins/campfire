@@ -156,7 +156,7 @@ class Observation:
 
         log(self.rate_files)
         if all([os.path.exists(f) for f in self.rate_files]) and not overwrite:
-            log('All rate files already exist, and overwrite=False! aborting stage1')
+            log('All rate files already exist, and overwrite=False! No new rate files will be generated.')
             return False
             
         # Copy rate files to workspace and track MSA meta files needed
