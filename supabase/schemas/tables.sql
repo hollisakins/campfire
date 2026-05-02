@@ -456,8 +456,6 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "observations" "text"[] NOT NULL DEFAULT '{}'::"text"[],
     "max_snr" double precision,
     "max_exposure_time" double precision,
-    "best_redshift" double precision,
-    "best_redshift_quality" integer DEFAULT 0,
     "photo_z" double precision,
     "photo_z_err_lo" double precision,
     "photo_z_err_hi" double precision,

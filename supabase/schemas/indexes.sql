@@ -54,9 +54,6 @@ CREATE INDEX IF NOT EXISTS idx_objects_coords
 CREATE INDEX IF NOT EXISTS idx_objects_field
     ON public.objects USING btree (field);
 
-CREATE INDEX IF NOT EXISTS idx_objects_best_redshift_quality
-    ON public.objects USING btree (best_redshift_quality);
-
 CREATE INDEX IF NOT EXISTS idx_objects_programs
     ON public.objects USING gin (programs);
 

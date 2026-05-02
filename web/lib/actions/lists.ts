@@ -507,7 +507,7 @@ export async function getListBySlug(
   const offset = (page - 1) * pageSize;
   const { data: membersData, error: membersError } = await supabase
     .from('object_list_members')
-    .select('*, object:objects(id, object_id, field, ra, dec, best_redshift, best_redshift_quality, n_spectra, max_snr)')
+    .select('*, object:objects(id, object_id, field, ra, dec, redshift, redshift_quality, n_spectra, max_snr)')
     .eq('list_id', list.id)
     .order('added_at', { ascending: false })
     .range(offset, offset + pageSize - 1);
