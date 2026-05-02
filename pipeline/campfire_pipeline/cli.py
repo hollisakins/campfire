@@ -137,9 +137,9 @@ INSTRUMENT_DEFAULTS = {
               help='List files without downloading.')
 @click.option('--token', default=None,
               help='MAST API token for proprietary data. Falls back to $MAST_API_TOKEN env var.')
-@click.option('--workers', '-w', type=int, default=4, show_default=True,
+@click.option('--processes', '-p', type=int, default=4, show_default=True,
               help='Number of parallel download streams.')
-def download(program, instrument, obs_id, exp_type, download_dir, dry_run, token, workers):
+def download(program, instrument, obs_id, exp_type, download_dir, dry_run, token, processes):
     """Download raw JWST data from MAST.
 
     Auxiliary metafiles (e.g. NIRSpec MSA metadata) are fetched first so
@@ -158,8 +158,8 @@ def download(program, instrument, obs_id, exp_type, download_dir, dry_run, token
 
     token = token or os.environ.get('MAST_API_TOKEN')
 
-    if workers < 1:
-        raise click.BadParameter('--workers must be >= 1')
+    if processes < 1:
+        raise click.BadParameter('--processes must be >= 1')
 
     try:
         download_jwst_data(
@@ -170,7 +170,7 @@ def download(program, instrument, obs_id, exp_type, download_dir, dry_run, token
             dry_run=dry_run,
             obs_id=obs_id,
             token=token,
-            workers=workers,
+            workers=processes,
         )
     except KeyboardInterrupt:
         click.echo("\n\nInterrupted. Re-run to resume (existing files will be skipped).")

@@ -383,7 +383,7 @@ Examples:
     parser.add_argument("--download-dir", default="data", help="Base directory for downloads (default: data)")
     parser.add_argument("--dry-run", action="store_true", help="List files without downloading")
     parser.add_argument("--exp-type", default="NRS_MSASPEC", help="NIRSpec exposure type (default: NRS_MSASPEC)")
-    parser.add_argument("--workers", type=int, default=4, help="Parallel download streams (default: 4)")
+    parser.add_argument("-p", "--processes", type=int, default=4, help="Parallel download streams (default: 4)")
 
     args = parser.parse_args()
 
@@ -394,7 +394,7 @@ Examples:
             exp_type=args.exp_type,
             download_dir=args.download_dir,
             dry_run=args.dry_run,
-            workers=args.workers,
+            workers=args.processes,
         )
     except requests.HTTPError as e:
         print(f"\nAPI error: {e}", file=sys.stderr)
