@@ -58,7 +58,7 @@ export const ProvenanceCell: React.FC<ProvenanceCellProps> = ({ provenance, comp
           type="button"
           onClick={() => setOpen((v) => !v)}
           onBlur={() => setOpen(false)}
-          className="inline-flex items-center gap-1.5 text-left hover:text-primary transition-colors"
+          className="group inline-flex items-center gap-1.5 text-left hover:text-primary transition-colors"
           title="Show reduction details"
         >
           <span className={compact ? 'text-sm font-medium text-text-primary dark:text-slate-100' : 'font-semibold'}>
@@ -69,7 +69,7 @@ export const ProvenanceCell: React.FC<ProvenanceCellProps> = ({ provenance, comp
               {reducedRel}
             </span>
           )}
-          <Info className="w-3 h-3 text-text-secondary dark:text-slate-400 opacity-0 group-hover:opacity-100" />
+          <Info className="w-3 h-3 text-text-secondary dark:text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
         </button>
       ) : (
         <span className="text-xs text-text-secondary dark:text-slate-400 italic">no full reduction</span>

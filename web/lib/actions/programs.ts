@@ -234,29 +234,35 @@ export async function getObservationsOverview(): Promise<ObservationsOverviewRes
   }
 
   try {
-    const [rpcResult, accessResult] = await Promise.all([
-      supabase.rpc('get_observations_overview'),
+    // Compute the accessible slug list with two cheap queries in parallel,
+    // then scope the heavy RPC server-side. Avoids hitting mv_programs_overview
+    // (via get_programs_overview) just to discover public slugs.
+    const [publicResult, accessResult] = await Promise.all([
+      supabase.from('programs').select('slug').eq('is_public', true),
       supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
     ]);
+
+    const accessibleSlugs = Array.from(
+      new Set([
+        ...(publicResult.data || []).map(p => p.slug),
+        ...(accessResult.data || []).map(a => a.program_slug),
+      ])
+    );
+
+    if (accessibleSlugs.length === 0) {
+      return { observations: [], isAuthenticated: true };
+    }
+
+    const rpcResult = await supabase.rpc('get_observations_overview', {
+      p_program_slugs: accessibleSlugs,
+    });
 
     if (rpcResult.error) {
       console.error('Error fetching observations overview:', rpcResult.error);
       return { observations: [], error: rpcResult.error.message, isAuthenticated: true };
     }
 
-    const explicitAccessSlugs = new Set((accessResult.data || []).map(a => a.program_slug));
-
-    // Determine public programs to scope visibility (mirrors getProgramsOverview).
-    const programsResult = await supabase.rpc('get_programs_overview');
-    const publicSlugs = new Set(
-      (programsResult.data || [])
-        .filter((p: ProgramOverview) => p.is_public)
-        .map((p: ProgramOverview) => p.slug)
-    );
-
     const observations: ObservationOverview[] = (rpcResult.data || [])
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .filter((o: any) => publicSlugs.has(o.program_slug) || explicitAccessSlugs.has(o.program_slug))
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .map((o: any) => ({
         observation: o.observation,

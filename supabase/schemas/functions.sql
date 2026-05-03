@@ -2004,10 +2004,15 @@ GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
 -- =============================================================================
 -- get_observations_overview
 -- =============================================================================
--- Flat list of every observation with provenance + patch counts. Powers the
--- /nirspec/metadata page Observations tab. Filtering is done client-side so
--- this function takes no arguments.
-CREATE OR REPLACE FUNCTION public.get_observations_overview()
+-- Flat list of observations (scoped to the caller's accessible programs) with
+-- provenance + patch counts. Powers the /nirspec/metadata page Observations
+-- tab. Caller passes the accessible program slug list (public + explicit
+-- access), matching the get_observation_stats pattern; filtering happens in
+-- SQL so the targets/spectra aggregate doesn't scan inaccessible rows.
+DROP FUNCTION IF EXISTS public.get_observations_overview();
+DROP FUNCTION IF EXISTS public.get_observations_overview(text[]);
+
+CREATE OR REPLACE FUNCTION public.get_observations_overview(p_program_slugs text[])
 RETURNS TABLE(
   observation text, program_slug text, program_name text, field text,
   cycle integer, gratings text[], pointing_count integer, pointings jsonb,
@@ -2023,6 +2028,7 @@ RETURNS TABLE(
       COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes
     FROM public.targets t
     LEFT JOIN public.spectra s ON s.target_id = t.target_id
+    WHERE t.program_slug = ANY(p_program_slugs)
     GROUP BY t.observation, t.program_slug
   )
   SELECT
@@ -2060,6 +2066,7 @@ RETURNS TABLE(
       AND d.source_ids_filter IS NOT NULL
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
   ) patches ON true
+  WHERE o.program_slug = ANY(p_program_slugs)
   ORDER BY o.program_slug, o.name;
 $$;
 
