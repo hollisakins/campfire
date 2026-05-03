@@ -218,8 +218,7 @@ def download_files(files, output_dir, token=None, workers=4, desc="downloading")
                         errors += 1
                         tqdm.write(f"    ERROR {name}: {err}")
             except KeyboardInterrupt:
-                for fut in futures:
-                    fut.cancel()
+                ex.shutdown(wait=False, cancel_futures=True)
                 raise
 
     return errors
