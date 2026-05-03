@@ -32,8 +32,8 @@ GRANT ALL ON TABLE public.mv_filter_options TO service_role;
 
 
 -- 2. mv_programs_overview
---    Pre-aggregated program stats (target counts, gratings, fields, observations).
---    Refresh after data deployments using refresh_programs_overview().
+--    Pre-aggregated program stats (target counts, gratings, fields, observations,
+--    last full-deployment timestamp). Refresh via refresh_programs_overview().
 DROP MATERIALIZED VIEW IF EXISTS public.mv_programs_overview;
 
 CREATE MATERIALIZED VIEW public.mv_programs_overview AS
@@ -48,7 +48,9 @@ SELECT
     COALESCE(stats.gratings, ARRAY[]::text[]) AS gratings,
     COALESCE(stats.fields, ARRAY[]::text[]) AS fields,
     COALESCE(stats.observations, ARRAY[]::text[]) AS observations,
-    COALESCE(pids.jwst_pids, ARRAY[]::integer[]) AS jwst_pids
+    COALESCE(pids.jwst_pids, ARRAY[]::integer[]) AS jwst_pids,
+    COALESCE(pids.n_observations, 0)::bigint AS n_observations,
+    last_red.last_reduced_at
 FROM programs p
 LEFT JOIN (
     SELECT t.program_slug,
@@ -63,10 +65,19 @@ LEFT JOIN (
 ) stats ON p.slug = stats.program_slug
 LEFT JOIN (
     SELECT program_slug,
-        ARRAY_AGG(DISTINCT jwst_program_id ORDER BY jwst_program_id) AS jwst_pids
+        ARRAY_AGG(DISTINCT jwst_program_id ORDER BY jwst_program_id) AS jwst_pids,
+        COUNT(*)::bigint AS n_observations
     FROM observations
     GROUP BY program_slug
 ) pids ON p.slug = pids.program_slug
+LEFT JOIN (
+    SELECT o.program_slug,
+        MAX(d.reduced_at) AS last_reduced_at
+    FROM observations o
+    JOIN deployments d ON d.observation = o.name
+    WHERE d.source_ids_filter IS NULL
+    GROUP BY o.program_slug
+) last_red ON p.slug = last_red.program_slug
 WITH DATA;
 
 CREATE UNIQUE INDEX mv_programs_overview_slug ON public.mv_programs_overview (slug);

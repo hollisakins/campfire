@@ -1902,14 +1902,18 @@ GRANT EXECUTE ON FUNCTION public.get_csv_export_objects TO authenticated;
 -- get_programs_overview (reads from mv_programs_overview)
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_programs_overview();
+
 CREATE OR REPLACE FUNCTION public.get_programs_overview()
 RETURNS TABLE(
   slug text, program_name text, pi_name text, description text,
   is_public boolean, cycle integer, target_count bigint,
-  gratings text[], fields text[], observations text[], jwst_pids integer[]
+  gratings text[], fields text[], observations text[], jwst_pids integer[],
+  n_observations bigint, last_reduced_at timestamptz
 ) LANGUAGE sql STABLE AS $$
   SELECT mv.slug, mv.program_name, mv.pi_name, mv.description, mv.is_public, mv.cycle,
-    mv.target_count, mv.gratings, mv.fields, mv.observations, mv.jwst_pids
+    mv.target_count, mv.gratings, mv.fields, mv.observations, mv.jwst_pids,
+    mv.n_observations, mv.last_reduced_at
   FROM public.mv_programs_overview mv ORDER BY mv.program_name;
 $$;
 
@@ -1940,12 +1944,20 @@ GRANT EXECUTE ON FUNCTION public.refresh_programs_overview TO authenticated;
 -- Aggregate stats first, then LEFT JOIN observations once for the JSONB
 -- payload. Keeps the GROUP BY key as cheap text/uuid columns so adding more
 -- per-observation metadata (additional JSONB or array columns) doesn't drag
--- through the targets x spectra cross product.
+-- through the targets x spectra cross product. Provenance fields come from
+-- the most recent FULL deployment (source_ids_filter IS NULL); patch deployments
+-- contribute only to n_patches_since_full so per-source re-reductions don't
+-- masquerade as observation-level reductions.
+DROP FUNCTION IF EXISTS public.get_observation_stats(text[]);
+
 CREATE OR REPLACE FUNCTION public.get_observation_stats(p_program_slugs text[])
 RETURNS TABLE(
   observation text, program_slug text, program_name text, field text,
   target_count bigint, spectrum_count bigint, total_size_bytes bigint,
-  pointings jsonb
+  pointings jsonb,
+  reduction_version text, crds_context text, cfpipe_version text, jwst_version text,
+  reduced_at timestamptz, deployed_at timestamptz,
+  n_patches_since_full integer, last_patch_at timestamptz
 ) LANGUAGE sql STABLE AS $$
   WITH stats AS (
     SELECT t.observation, t.program_slug, p.program_name, t.field,
@@ -1960,13 +1972,131 @@ RETURNS TABLE(
   )
   SELECT s.observation, s.program_slug, s.program_name, s.field,
     s.target_count, s.spectrum_count, s.total_size_bytes,
-    o.pointings
+    o.pointings,
+    full_dep.reduction_version, full_dep.crds_context,
+    full_dep.cfpipe_version, full_dep.jwst_version,
+    full_dep.reduced_at, full_dep.deployed_at,
+    COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
+    patches.last_patch_at
   FROM stats s
   LEFT JOIN observations o ON o.name = s.observation
+  LEFT JOIN LATERAL (
+    SELECT d.reduction_version, d.crds_context, d.cfpipe_version, d.jwst_version,
+           d.reduced_at, d.deployed_at
+    FROM public.deployments d
+    WHERE d.observation = s.observation AND d.source_ids_filter IS NULL
+    ORDER BY d.deployed_at DESC
+    LIMIT 1
+  ) full_dep ON true
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
+    FROM public.deployments d
+    WHERE d.observation = s.observation
+      AND d.source_ids_filter IS NOT NULL
+      AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
+  ) patches ON true
   ORDER BY s.observation;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
+
+
+-- =============================================================================
+-- get_observations_overview
+-- =============================================================================
+-- Flat list of every observation with provenance + patch counts. Powers the
+-- /nirspec/metadata page Observations tab. Filtering is done client-side so
+-- this function takes no arguments.
+CREATE OR REPLACE FUNCTION public.get_observations_overview()
+RETURNS TABLE(
+  observation text, program_slug text, program_name text, field text,
+  cycle integer, gratings text[], pointing_count integer, pointings jsonb,
+  target_count bigint, spectrum_count bigint, total_size_bytes bigint,
+  reduction_version text, crds_context text, cfpipe_version text, jwst_version text,
+  reduced_at timestamptz, deployed_at timestamptz,
+  n_patches_since_full integer, last_patch_at timestamptz
+) LANGUAGE sql STABLE AS $$
+  WITH stats AS (
+    SELECT t.observation, t.program_slug,
+      COUNT(DISTINCT t.target_id) AS target_count,
+      COUNT(s.id) AS spectrum_count,
+      COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes
+    FROM public.targets t
+    LEFT JOIN public.spectra s ON s.target_id = t.target_id
+    GROUP BY t.observation, t.program_slug
+  )
+  SELECT
+    o.name AS observation,
+    o.program_slug,
+    p.program_name,
+    o.field,
+    p.cycle,
+    COALESCE(o.gratings, ARRAY[]::text[]) AS gratings,
+    COALESCE(jsonb_array_length(o.pointings), 0) AS pointing_count,
+    o.pointings,
+    COALESCE(s.target_count, 0)::bigint AS target_count,
+    COALESCE(s.spectrum_count, 0)::bigint AS spectrum_count,
+    COALESCE(s.total_size_bytes, 0)::bigint AS total_size_bytes,
+    full_dep.reduction_version, full_dep.crds_context,
+    full_dep.cfpipe_version, full_dep.jwst_version,
+    full_dep.reduced_at, full_dep.deployed_at,
+    COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
+    patches.last_patch_at
+  FROM public.observations o
+  JOIN public.programs p ON p.slug = o.program_slug
+  LEFT JOIN stats s ON s.observation = o.name AND s.program_slug = o.program_slug
+  LEFT JOIN LATERAL (
+    SELECT d.reduction_version, d.crds_context, d.cfpipe_version, d.jwst_version,
+           d.reduced_at, d.deployed_at
+    FROM public.deployments d
+    WHERE d.observation = o.name AND d.source_ids_filter IS NULL
+    ORDER BY d.deployed_at DESC
+    LIMIT 1
+  ) full_dep ON true
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
+    FROM public.deployments d
+    WHERE d.observation = o.name
+      AND d.source_ids_filter IS NOT NULL
+      AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
+  ) patches ON true
+  ORDER BY o.program_slug, o.name;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_observations_overview TO authenticated;
+
+
+-- =============================================================================
+-- get_database_overview
+-- =============================================================================
+-- Single-row scope summary for the metadata page header.
+CREATE OR REPLACE FUNCTION public.get_database_overview()
+RETURNS TABLE(
+  n_programs bigint, n_observations bigint, n_pointings bigint,
+  n_targets bigint, n_spectra bigint, total_size_bytes bigint,
+  latest_deployed_at timestamptz, latest_reduction_version text
+) LANGUAGE sql STABLE AS $$
+  WITH latest AS (
+    SELECT d.deployed_at, d.reduction_version
+    FROM public.deployments d
+    WHERE d.source_ids_filter IS NULL
+    ORDER BY d.deployed_at DESC
+    LIMIT 1
+  )
+  SELECT
+    (SELECT COUNT(*)::bigint FROM public.programs) AS n_programs,
+    (SELECT COUNT(*)::bigint FROM public.observations) AS n_observations,
+    (SELECT COALESCE(SUM(jsonb_array_length(pointings)), 0)::bigint
+       FROM public.observations
+       WHERE pointings IS NOT NULL) AS n_pointings,
+    (SELECT COUNT(*)::bigint FROM public.targets) AS n_targets,
+    (SELECT COUNT(*)::bigint FROM public.spectra) AS n_spectra,
+    (SELECT COALESCE(SUM(file_size), 0)::bigint FROM public.spectra) AS total_size_bytes,
+    (SELECT deployed_at FROM latest) AS latest_deployed_at,
+    (SELECT reduction_version FROM latest) AS latest_reduction_version;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_database_overview TO authenticated;
 
 
 -- =============================================================================
