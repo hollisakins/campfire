@@ -483,15 +483,19 @@ def subtract_background_from_rate_file(
     from astropy.stats import median_absolute_deviation
 
     input_dir = os.path.dirname(rate_file)
+
+    # Self-skip if bkgsub has already run on this rate file. Single source of truth
+    # is the CFBKGSUB primary-header bool — written by this function, cleared by
+    # masks.restore_pre_bkgsub when undoing for a re-apply.
+    with fits.open(rate_file) as _hdul:
+        if bool(_hdul[0].header.get('CFBKGSUB', False)):
+            log(f'Background subtraction already done for {os.path.basename(rate_file)}, skipping...')
+            return
+
     with ImageModel(rate_file) as model:
 
         if not 'PRISM' in model.meta.instrument.grating:
             do_row_1f = False
-
-        for entry in model.history:
-            if 'Subtracted' in entry['description'] and 'rescaled variance' in entry['description']:
-                log(f'Background subtraction already done for {os.path.basename(rate_file)}, skipping...')
-                return
 
         log(f'Subtracting background and rescaling variance for {os.path.basename(rate_file)}')
 
@@ -731,8 +735,6 @@ def subtract_background_from_rate_file(
                 row_model=row_model,
             )
 
-        fits.writeto(rate_file.replace('_rate.fits','_mask.fits'), mask.astype(int), overwrite=True)
-        fits.writeto(rate_file.replace('_rate.fits','_bkg.fits'), bkg_total, overwrite=True)
         rate_new = model.data - bkg_total
 
         model.data = rate_new
@@ -755,12 +757,21 @@ def subtract_background_from_rate_file(
 
         model.save(rate_file)
 
-    # Stamp the variance rescale factor into the primary header so the bkg sub
-    # is invertible later (used by manual-mask re-apply path). Also stamp a
-    # timestamp for traceability.
+    # Bundle the bkg image, bkg-fit mask, variance-rescale factor, and timestamp
+    # into the rate file itself so the bkgsub state can't desync from the rate.
+    # CFBKGSUB is the single source of truth for "bkgsub has run on this file".
     with fits.open(rate_file, mode='update') as hdul:
-        hdul[0].header['CFBKGRMS'] = (var_rescale, 'VAR_RNOISE rescale factor from bkg sub')
-        hdul[0].header['CFBKGDT'] = (time.strftime('%Y-%m-%dT%H:%M:%S'), 'Timestamp of last bkg sub')
+        hdr = hdul[0].header
+        hdr['CFBKGSUB'] = (True, 'Background subtraction applied to SCI')
+        hdr['CFBKGRMS'] = (var_rescale, 'VAR_RNOISE rescale factor from bkg sub')
+        hdr['CFBKGDT'] = (time.strftime('%Y-%m-%dT%H:%M:%S'), 'Timestamp of last bkg sub')
+        for name in ('CFBKG', 'CFBKGMASK'):
+            try:
+                del hdul[name]
+            except KeyError:
+                pass
+        hdul.append(fits.ImageHDU(bkg_total.astype(np.float32), name='CFBKG'))
+        hdul.append(fits.ImageHDU(mask.astype(np.uint8), name='CFBKGMASK'))
 
 
 def run_stage1_single_uncal(
