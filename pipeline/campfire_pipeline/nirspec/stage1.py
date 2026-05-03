@@ -13,6 +13,17 @@ from campfire_pipeline.common.io import log
 from campfire_pipeline.common.wcs import boundingbox_to_indices, wcs_to_dq
 
 
+def bkgsub_done(rate_file: str) -> bool:
+    """True iff the rate file's primary header has CFBKGSUB=True.
+
+    Single source of truth for "has background subtraction been applied to
+    this rate file" — replaces the older `_bkg.fits`-existence sentinel,
+    which could desync from the rate file under partial reruns / crashes.
+    """
+    with fits.open(rate_file) as hdul:
+        return bool(hdul[0].header.get('CFBKGSUB', False))
+
+
 def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None, products_dir=None):
     """Orchestrate stage 1: Detector1Pipeline + background subtraction.
 
@@ -83,7 +94,7 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     # Grab all rate files (in case there are some that didn't have background subtraction run on them!)
     rates_to_subtract = obs.glob("_rate.fits")
     if not overwrite:
-        rates_to_subtract = [f for f in rates_to_subtract if not os.path.exists(f.replace('_rate.fits', '_bkg.fits'))]
+        rates_to_subtract = [f for f in rates_to_subtract if not bkgsub_done(f)]
 
     if n_processes > 1 and rates_to_subtract:
         _prefetch_crds_references(rates_to_subtract)
