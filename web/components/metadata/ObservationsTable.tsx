@@ -33,6 +33,9 @@ const COLUMN_DEFS: ColumnDefinition[] = [
   { id: 'spectrum_count', label: 'Spectra', defaultVisible: true },
   { id: 'total_size_bytes', label: 'Size', defaultVisible: true },
   { id: 'reduction', label: 'Reduction', defaultVisible: true },
+  { id: 'jwst_version', label: 'JWST', defaultVisible: false },
+  { id: 'crds_context', label: 'CRDS', defaultVisible: false },
+  { id: 'reduced_by', label: 'Reduced by', defaultVisible: false },
 ];
 
 function formatBytes(bytes: number): string {
@@ -181,6 +184,49 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         header: 'Reduction',
         enableSorting: true,
         cell: ({ row }) => <ProvenanceCell provenance={row.original} />,
+      },
+      {
+        id: 'jwst_version',
+        accessorKey: 'jwst_version',
+        header: 'JWST',
+        enableSorting: true,
+        cell: ({ getValue }) => (
+          <span className="text-xs font-mono text-text-secondary dark:text-slate-400">
+            {String(getValue() || '—')}
+          </span>
+        ),
+      },
+      {
+        id: 'crds_context',
+        accessorKey: 'crds_context',
+        header: 'CRDS',
+        enableSorting: true,
+        cell: ({ getValue }) => (
+          <span className="text-xs font-mono text-text-secondary dark:text-slate-400">
+            {String(getValue() || '—')}
+          </span>
+        ),
+      },
+      {
+        id: 'reduced_by',
+        accessorFn: (r) => r.deployed_by_username || r.deployed_by_full_name || '',
+        header: 'Reduced by',
+        enableSorting: true,
+        cell: ({ row }) => {
+          const username = row.original.deployed_by_username;
+          const fullName = row.original.deployed_by_full_name;
+          if (!username && !fullName) {
+            return <span className="text-xs text-text-secondary dark:text-slate-500">—</span>;
+          }
+          return (
+            <span
+              className="text-xs text-text-secondary dark:text-slate-400"
+              title={fullName ?? undefined}
+            >
+              {username ?? fullName}
+            </span>
+          );
+        },
       },
     ],
     []

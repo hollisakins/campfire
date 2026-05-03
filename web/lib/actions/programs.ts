@@ -29,6 +29,8 @@ export interface ObservationProvenance {
   jwst_version: string | null;
   reduced_at: string | null;
   deployed_at: string | null;
+  deployed_by_username: string | null;
+  deployed_by_full_name: string | null;
   n_patches_since_full: number;
   last_patch_at: string | null;
 }
@@ -213,6 +215,8 @@ export async function getProgramDetail(programSlug: string): Promise<ProgramDeta
         jwst_version: o.jwst_version ?? null,
         reduced_at: o.reduced_at ?? null,
         deployed_at: o.deployed_at ?? null,
+        deployed_by_username: o.deployed_by_username ?? null,
+        deployed_by_full_name: o.deployed_by_full_name ?? null,
         n_patches_since_full: Number(o.n_patches_since_full) || 0,
         last_patch_at: o.last_patch_at ?? null,
       })
@@ -282,6 +286,8 @@ export async function getObservationsOverview(): Promise<ObservationsOverviewRes
         jwst_version: o.jwst_version ?? null,
         reduced_at: o.reduced_at ?? null,
         deployed_at: o.deployed_at ?? null,
+        deployed_by_username: o.deployed_by_username ?? null,
+        deployed_by_full_name: o.deployed_by_full_name ?? null,
         n_patches_since_full: Number(o.n_patches_since_full) || 0,
         last_patch_at: o.last_patch_at ?? null,
       }));

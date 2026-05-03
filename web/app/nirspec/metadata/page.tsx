@@ -257,6 +257,8 @@ function MetadataPageContent() {
         <MetadataSearchBar
           programs={programs}
           observations={observations}
+          value={filters.search}
+          onChange={(search) => setFilters((prev) => ({ ...prev, search }))}
           onSelectObservation={(name) =>
             setFilters((prev) => ({ ...prev, tab: 'observations', search: name }))
           }

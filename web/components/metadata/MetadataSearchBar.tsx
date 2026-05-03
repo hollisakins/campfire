@@ -20,6 +20,13 @@ interface SearchResult {
 interface MetadataSearchBarProps {
   programs: ProgramOverview[];
   observations: ObservationOverview[];
+  /**
+   * Current search text. Controlled so it stays in sync with the filter
+   * state (typing here drives `filters.search` directly — there is no
+   * second search bar in the filter row).
+   */
+  value: string;
+  onChange: (value: string) => void;
   onSelectObservation: (obsName: string) => void;
   onSelectPi: (piName: string) => void;
 }
@@ -34,11 +41,12 @@ function matches(haystack: string | number | null | undefined, needle: string): 
 export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
   programs,
   observations,
+  value,
+  onChange,
   onSelectObservation,
   onSelectPi,
 }) => {
   const router = useRouter();
-  const [value, setValue] = useState('');
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -112,7 +120,7 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
   }, [value]);
 
   const select = (r: SearchResult) => {
-    setValue('');
+    onChange('');
     setOpen(false);
     if (r.kind === 'program' && r.programSlug) {
       router.push(`/nirspec/metadata/programs/${r.programSlug}`);
@@ -149,7 +157,7 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
         type="text"
         value={value}
         onChange={(e) => {
-          setValue(e.target.value);
+          onChange(e.target.value);
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
@@ -160,7 +168,7 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
       {value && (
         <button
           onClick={() => {
-            setValue('');
+            onChange('');
             setOpen(false);
           }}
           className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary dark:text-slate-500 hover:text-text-primary dark:hover:text-slate-200"
