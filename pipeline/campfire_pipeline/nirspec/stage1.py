@@ -503,6 +503,18 @@ def subtract_background_from_rate_file(
             log(f'Background subtraction already done for {os.path.basename(rate_file)}, skipping...')
             return
 
+    # Drop any pre-existing CFBKG/CFBKGMASK *before* the ImageModel save below.
+    # ImageModel.save() snapshots asdf refs to whatever extensions are present,
+    # so deleting after save would leave dangling refs. In the normal flow these
+    # extensions aren't present here (restore_pre_bkgsub clears them); this
+    # protects against any inconsistent state surviving into a re-run.
+    with fits.open(rate_file, mode='update') as _hdul:
+        for name in ('CFBKG', 'CFBKGMASK'):
+            try:
+                del _hdul[name]
+            except KeyError:
+                pass
+
     with ImageModel(rate_file) as model:
 
         if not 'PRISM' in model.meta.instrument.grating:
@@ -771,16 +783,12 @@ def subtract_background_from_rate_file(
     # Bundle the bkg image, bkg-fit mask, variance-rescale factor, and timestamp
     # into the rate file itself so the bkgsub state can't desync from the rate.
     # CFBKGSUB is the single source of truth for "bkgsub has run on this file".
+    # CFBKG/CFBKGMASK were dropped above the ImageModel block so we just append.
     with fits.open(rate_file, mode='update') as hdul:
         hdr = hdul[0].header
         hdr['CFBKGSUB'] = (True, 'Background subtraction applied to SCI')
         hdr['CFBKGRMS'] = (var_rescale, 'VAR_RNOISE rescale factor from bkg sub')
         hdr['CFBKGDT'] = (time.strftime('%Y-%m-%dT%H:%M:%S'), 'Timestamp of last bkg sub')
-        for name in ('CFBKG', 'CFBKGMASK'):
-            try:
-                del hdul[name]
-            except KeyError:
-                pass
         hdul.append(fits.ImageHDU(bkg_total.astype(np.float32), name='CFBKG'))
         hdul.append(fits.ImageHDU(mask.astype(np.uint8), name='CFBKGMASK'))
 

@@ -169,6 +169,20 @@ def is_stale(rate_file: str, reg_string: str | None) -> bool:
 # the extension.
 
 
+def _drop_extensions_if_present(rate_file: str, names: tuple[str, ...]) -> None:
+    """Delete the named extensions from ``rate_file`` if present. No-op for
+    names that don't exist. Used to remove extensions *before* an upcoming
+    ``ImageModel.save()`` — that save snapshots asdf refs to whatever
+    extensions are present at save time, so deleting after would leave
+    dangling refs and break the next ImageModel open."""
+    with fits.open(rate_file, mode="update") as hdul:
+        for name in names:
+            try:
+                del hdul[name]
+            except KeyError:
+                pass
+
+
 def apply_mask_dq(rate_file: str, reg_string: str | None) -> int:
     """OR ``DO_NOT_USE`` into the rate file's DQ array, recording the diff
     as a ``CFDQMASK`` ImageHDU inside the rate file so it can be cleanly
@@ -179,6 +193,11 @@ def apply_mask_dq(rate_file: str, reg_string: str | None) -> int:
     """
     if not canonicalize(reg_string):
         return 0
+
+    # Drop any pre-existing CFDQMASK *before* the ImageModel save below so
+    # the save doesn't snapshot an asdf ref to a soon-to-be-replaced HDU.
+    _drop_extensions_if_present(rate_file, ("CFDQMASK",))
+
     from jwst.datamodels import ImageModel
 
     with ImageModel(rate_file) as model:
@@ -193,10 +212,6 @@ def apply_mask_dq(rate_file: str, reg_string: str | None) -> int:
         model.save(rate_file)
 
     with fits.open(rate_file, mode="update") as hdul:
-        try:
-            del hdul["CFDQMASK"]
-        except KeyError:
-            pass
         hdul.append(fits.ImageHDU(flipped.astype(np.uint8), name="CFDQMASK"))
     log(f"  flagged {n} pixels in {os.path.basename(rate_file)} ({int(flipped.sum())} newly DNU)")
     return n
@@ -209,7 +224,10 @@ def clear_manual_mask_dq(rate_file: str) -> None:
     with fits.open(rate_file) as hdul:
         if "CFDQMASK" not in hdul:
             return
-        flipped = hdul["CFDQMASK"].data.astype(bool)
+        flipped = hdul["CFDQMASK"].data.astype(bool).copy()
+
+    # Drop CFDQMASK *before* the ImageModel save below — see _drop_extensions_if_present.
+    _drop_extensions_if_present(rate_file, ("CFDQMASK",))
 
     from jwst.datamodels import ImageModel
 
@@ -223,12 +241,6 @@ def clear_manual_mask_dq(rate_file: str) -> None:
         # AND-NOT DO_NOT_USE on the recorded pixels.
         model.dq[flipped] &= ~np.uint32(DO_NOT_USE)
         model.save(rate_file)
-
-    with fits.open(rate_file, mode="update") as hdul:
-        try:
-            del hdul["CFDQMASK"]
-        except KeyError:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +295,17 @@ def restore_pre_bkgsub(rate_file: str) -> None:
                 f"Cannot restore {os.path.basename(rate_file)}: CFBKGRMS missing. "
                 f"Re-run stage1 from uncal."
             )
-        bkg = np.asarray(hdul["CFBKG"].data)
+        bkg = np.asarray(hdul["CFBKG"].data).copy()
+
+    # Tear down the bkgsub state *before* reopening as ImageModel — see
+    # _drop_extensions_if_present for the asdf-ref reasoning. Header keys
+    # are cleared in the same pass for atomicity.
+    with fits.open(rate_file, mode="update") as hdul:
+        hdr = hdul[0].header
+        for k in ("CFBKGSUB", "CFBKGRMS", "CFBKGDT", "CFMASKSH", "CFMASKDT", "CFMASKN"):
+            if k in hdr:
+                del hdr[k]
+    _drop_extensions_if_present(rate_file, ("CFBKG", "CFBKGMASK"))
 
     with ImageModel(rate_file) as model:
         if bkg.shape != model.data.shape:
@@ -298,19 +320,6 @@ def restore_pre_bkgsub(rate_file: str) -> None:
         model.data = model.data + bkg
         model.var_rnoise = model.var_rnoise / float(var_rescale)
         model.save(rate_file)
-
-    # Tear down the bkgsub state. After this returns the file looks (to
-    # downstream code) like bkgsub never ran on it.
-    with fits.open(rate_file, mode="update") as hdul:
-        hdr = hdul[0].header
-        for k in ("CFBKGSUB", "CFBKGRMS", "CFBKGDT", "CFMASKSH", "CFMASKDT", "CFMASKN"):
-            if k in hdr:
-                del hdr[k]
-        for name in ("CFBKG", "CFBKGMASK"):
-            try:
-                del hdul[name]
-            except KeyError:
-                pass
 
 
 # ---------------------------------------------------------------------------
