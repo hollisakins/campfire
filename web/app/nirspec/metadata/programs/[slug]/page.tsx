@@ -6,11 +6,13 @@ import Link from 'next/link';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
+import { LoadingState } from '@/components/ui/LoadingState';
 import { MarkdownRenderer } from '@/components/docs';
 import { useProgramDetailQuery } from '@/lib/hooks/useProgramsQuery';
-import { LogIn, Loader2, Telescope, ExternalLink, ArrowRight, AlertCircle, ChevronRight, ChevronDown, Download } from 'lucide-react';
+import { LogIn, Telescope, ExternalLink, ArrowRight, AlertCircle, ChevronRight, ChevronDown, Download } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { pointingsToCsv, pointingsToDs9, flattenPointings, downloadBlob } from '@/lib/pointings';
+import { ProvenanceCell } from '@/components/metadata/ProvenanceCell';
 import type { Pointing } from '@/lib/types';
 
 // Editorial content registry — add imports as markdown files are authored
@@ -26,6 +28,8 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
+
+const METADATA_HREF = '/nirspec/metadata';
 
 export default function ProgramDetailPage() {
   const params = useParams();
@@ -71,19 +75,23 @@ export default function ProgramDetailPage() {
     downloadBlob(pointingsToDs9(rows), `${obsName}_pointings.reg`, 'text/plain');
   };
 
+  const breadcrumbs = (label: string) => (
+    <Breadcrumbs
+      items={[
+        { label: 'CAMPFIRE', href: '/' },
+        { label: 'NIRSpec', href: '/nirspec' },
+        { label: 'Metadata', href: METADATA_HREF },
+        { label },
+      ]}
+      className="mb-6"
+    />
+  );
+
   // Auth gate
   if (!authLoading && !user) {
     return (
       <div className="container mx-auto px-4 py-8">
-        <Breadcrumbs
-          items={[
-            { label: 'CAMPFIRE', href: '/' },
-            { label: 'NIRSpec', href: '/nirspec' },
-          { label: 'Programs', href: '/nirspec/programs' },
-            { label: programSlug },
-          ]}
-          className="mb-6"
-        />
+        {breadcrumbs(programSlug)}
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
             <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
@@ -110,19 +118,8 @@ export default function ProgramDetailPage() {
   if (loading) {
     return (
       <div className="container mx-auto px-4 py-8">
-        <Breadcrumbs
-          items={[
-            { label: 'CAMPFIRE', href: '/' },
-            { label: 'NIRSpec', href: '/nirspec' },
-          { label: 'Programs', href: '/nirspec/programs' },
-            { label: '...' },
-          ]}
-          className="mb-6"
-        />
-        <div className="flex items-center justify-center py-16">
-          <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading program...</span>
-        </div>
+        {breadcrumbs('...')}
+        <LoadingState label="Loading program..." />
       </div>
     );
   }
@@ -131,15 +128,7 @@ export default function ProgramDetailPage() {
   if (error || !program) {
     return (
       <div className="container mx-auto px-4 py-8">
-        <Breadcrumbs
-          items={[
-            { label: 'CAMPFIRE', href: '/' },
-            { label: 'NIRSpec', href: '/nirspec' },
-          { label: 'Programs', href: '/nirspec/programs' },
-            { label: programSlug },
-          ]}
-          className="mb-6"
-        />
+        {breadcrumbs(programSlug)}
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="w-16 h-16 bg-red-100 dark:bg-red-950 rounded-full flex items-center justify-center mb-4">
             <AlertCircle className="w-8 h-8 text-red-600 dark:text-red-400" />
@@ -153,10 +142,10 @@ export default function ProgramDetailPage() {
               : 'The program you are looking for does not exist.'}
           </p>
           <Link
-            href="/nirspec/programs"
+            href={METADATA_HREF}
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
           >
-            Back to Programs
+            Back to Metadata
           </Link>
         </div>
       </div>
@@ -164,19 +153,10 @@ export default function ProgramDetailPage() {
   }
 
   const editorialContent = programContent[program.slug];
-  const firstPid = program.jwst_pids?.[0];
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-5xl">
-      <Breadcrumbs
-        items={[
-          { label: 'CAMPFIRE', href: '/' },
-          { label: 'NIRSpec', href: '/nirspec' },
-          { label: 'Programs', href: '/nirspec/programs' },
-          { label: program.program_name || program.slug },
-        ]}
-        className="mb-6"
-      />
+      {breadcrumbs(program.program_name || program.slug)}
 
       {/* Header */}
       <div className="mb-8">
@@ -276,6 +256,7 @@ export default function ProgramDetailPage() {
                     <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Targets</th>
                     <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Spectra</th>
                     <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Total Size</th>
+                    <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Reduction</th>
                     <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400"></th>
                   </tr>
                 </thead>
@@ -286,6 +267,7 @@ export default function ProgramDetailPage() {
                     return (
                       <React.Fragment key={obs.observation}>
                         <tr
+                          id={obs.observation}
                           className="border-b border-border dark:border-slate-700 last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-800/30 transition-colors"
                         >
                           <td className="px-2 py-3 text-center">
@@ -323,6 +305,9 @@ export default function ProgramDetailPage() {
                           <td className="px-4 py-3 text-right text-text-secondary dark:text-slate-400">
                             {formatBytes(obs.total_size_bytes)}
                           </td>
+                          <td className="px-4 py-3">
+                            <ProvenanceCell provenance={obs} />
+                          </td>
                           <td className="px-4 py-3 text-right">
                             <Link
                               href={`/nirspec?programs=${program.slug}&observations=${obs.observation}`}
@@ -335,7 +320,7 @@ export default function ProgramDetailPage() {
                         </tr>
                         {isExpanded && hasPointings && (
                           <tr className="border-b border-border dark:border-slate-700 bg-gray-50/50 dark:bg-slate-800/20">
-                            <td colSpan={8} className="px-4 py-3">
+                            <td colSpan={9} className="px-4 py-3">
                               <PointingsSubtable
                                 obsName={obs.observation}
                                 pointings={obs.pointings!}
