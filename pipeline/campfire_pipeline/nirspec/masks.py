@@ -7,9 +7,10 @@ the rate-file DQ array before bkg subtraction so that masked pixels are
 excluded from the bkg fit.
 
 Re-running with edited masks restores the pre-bkg-sub rate state from the
-already-written ``_bkg.fits`` plus the ``CFBKGRMS`` header keyword (variance
-rescale factor stamped during the previous bkg sub), avoiding the need for
-a duplicate rate-file backup.
+``CFBKG`` extension stamped into the rate file by the previous bkg sub,
+plus the ``CFBKGRMS`` header keyword (variance rescale factor), avoiding
+the need for a duplicate rate-file backup. ``CFBKGSUB`` in the primary
+header is the single source of truth for whether bkg sub has run.
 """
 
 from __future__ import annotations
@@ -231,81 +232,85 @@ def clear_manual_mask_dq(rate_file: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pre-bkg-sub restoration (uses _bkg.fits + CFBKGRMS)
+# Pre-bkg-sub restoration (uses CFBKG extension + CFBKGRMS header)
 # ---------------------------------------------------------------------------
 
 
-_BKGSUB_HISTORY_MARKERS = ("Subtracted", "rescaled variance")
-
-
-def has_bkgsub_history(rate_file: str) -> bool:
-    """Return True if the rate file shows a prior bkg-sub history entry."""
+def _bkgsub_done(rate_file: str) -> bool:
+    """True iff the rate file's primary header has CFBKGSUB=True. Local copy
+    of stage1.bkgsub_done to avoid an import cycle (stage1 imports from
+    masks lazily; masks should not depend on stage1 at module level)."""
     with fits.open(rate_file) as hdul:
-        for entry in hdul[0].header["HISTORY"] if "HISTORY" in hdul[0].header else []:
-            text = str(entry)
-            if all(marker in text for marker in _BKGSUB_HISTORY_MARKERS):
-                return True
-    return False
+        return bool(hdul[0].header.get("CFBKGSUB", False))
 
 
 def restore_pre_bkgsub(rate_file: str) -> None:
-    """Undo bkg sub in place by adding ``_bkg.fits`` back and un-rescaling variance.
+    """Undo bkg sub in place by adding the ``CFBKG`` extension back to SCI
+    and un-rescaling ``VAR_RNOISE`` by ``CFBKGRMS``.
 
-    Strips the bkg-sub history entry so ``subtract_background_from_rate_file``
-    will run again on the next call.
+    Inverts ``subtract_background_from_rate_file``'s
+    ``model.var_rnoise *= var_rescale`` by dividing by the same factor.
 
-    Raises ``RuntimeError`` if the required restoration metadata is missing.
+    After restore the rate file is in its pre-bkgsub state: ``CFBKGSUB`` is
+    cleared, the ``CFBKG`` / ``CFBKGMASK`` extensions are dropped (they
+    correspond to a bkgsub that no longer holds), and any stale
+    ``CFMASK*`` sentinels are stripped so the re-apply can re-stamp from
+    scratch.
+
+    Raises ``RuntimeError`` if the required restoration metadata is missing
+    (rate file predates the in-rate-extension cutover, or never had bkgsub
+    applied).
     """
-    bkg_file = rate_file.replace("_rate.fits", "_bkg.fits")
-    if not os.path.exists(bkg_file):
-        raise RuntimeError(
-            f"Cannot restore {os.path.basename(rate_file)}: missing {os.path.basename(bkg_file)}. "
-            f"Re-run stage1 from uncal."
-        )
-
     from jwst.datamodels import ImageModel
 
-    bkg = fits.getdata(bkg_file)
-    with ImageModel(rate_file) as model:
-        # The CFBKGRMS keyword lives in the primary header; ImageModel surfaces
-        # primary-header values via its underlying fits handle, but jwst datamodels
-        # don't expose ad-hoc keywords. Read it directly.
-        with fits.open(rate_file) as hdul:
-            var_rescale = hdul[0].header.get("CFBKGRMS")
+    # Read everything we need from the file before opening with ImageModel,
+    # so the gating check fires before any in-place modification.
+    with fits.open(rate_file) as hdul:
+        if not bool(hdul[0].header.get("CFBKGSUB", False)):
+            raise RuntimeError(
+                f"Cannot restore {os.path.basename(rate_file)}: CFBKGSUB is not set. "
+                f"Either bkgsub never ran, or this rate file pre-dates the in-rate "
+                f"extension cutover — re-run stage1 from uncal."
+            )
+        if "CFBKG" not in hdul:
+            raise RuntimeError(
+                f"Cannot restore {os.path.basename(rate_file)}: CFBKG extension missing. "
+                f"Re-run stage1 from uncal."
+            )
+        var_rescale = hdul[0].header.get("CFBKGRMS")
         if var_rescale is None:
             raise RuntimeError(
                 f"Cannot restore {os.path.basename(rate_file)}: CFBKGRMS missing. "
-                f"Rate file pre-dates the manual-masking feature; re-run stage1 from uncal."
+                f"Re-run stage1 from uncal."
             )
+        bkg = np.asarray(hdul["CFBKG"].data)
 
+    with ImageModel(rate_file) as model:
         if bkg.shape != model.data.shape:
             raise RuntimeError(
                 f"Shape mismatch restoring {os.path.basename(rate_file)}: "
-                f"rate {model.data.shape} vs bkg {bkg.shape}"
+                f"rate {model.data.shape} vs CFBKG {bkg.shape}"
             )
 
+        # Invert the bkgsub:
+        #   forward:  data -= bkg;        var_rnoise *= var_rescale
+        #   reverse:  data += bkg;        var_rnoise /= var_rescale
         model.data = model.data + bkg
         model.var_rnoise = model.var_rnoise / float(var_rescale)
-
-        # Drop the bkg-sub history entry so subtract_background_from_rate_file
-        # doesn't short-circuit on next call.
-        kept = []
-        for entry in model.history:
-            text = str(entry.get("description", entry)) if hasattr(entry, "get") else str(entry)
-            if all(marker in text for marker in _BKGSUB_HISTORY_MARKERS):
-                continue
-            kept.append(entry)
-        model.history = kept
-
         model.save(rate_file)
 
-    # Strip stale CFBKGRMS / CFBKGDT and any prior CFMASK* sentinels from the
-    # primary header so a stale value can't be misread before the re-run completes.
+    # Tear down the bkgsub state. After this returns the file looks (to
+    # downstream code) like bkgsub never ran on it.
     with fits.open(rate_file, mode="update") as hdul:
         hdr = hdul[0].header
-        for k in ("CFBKGRMS", "CFBKGDT", "CFMASKSH", "CFMASKDT", "CFMASKN"):
+        for k in ("CFBKGSUB", "CFBKGRMS", "CFBKGDT", "CFMASKSH", "CFMASKDT", "CFMASKN"):
             if k in hdr:
                 del hdr[k]
+        for name in ("CFBKG", "CFBKGMASK"):
+            try:
+                del hdul[name]
+            except KeyError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -361,8 +366,8 @@ def apply_to_observation(obs, stage1_config: dict, force: bool = False) -> None:
 
         log(f"{basename}: applying manual mask")
         clear_manual_mask_dq(rate_file)
-        if has_bkgsub_history(rate_file):
-            log(f"  restoring pre-bkg-sub state from _bkg.fits + CFBKGRMS")
+        if _bkgsub_done(rate_file):
+            log(f"  restoring pre-bkg-sub state from CFBKG extension + CFBKGRMS")
             restore_pre_bkgsub(rate_file)
 
         n_pixels = apply_mask_dq(rate_file, reg_string)
@@ -393,7 +398,7 @@ def bkgsub_with_masks(
     if needs_restore:
         log(f"{basename}: stale mask, restoring pre-bkg-sub state")
         clear_manual_mask_dq(rate_file)
-        if has_bkgsub_history(rate_file):
+        if _bkgsub_done(rate_file):
             restore_pre_bkgsub(rate_file)
 
     fresh_apply = bool(reg_string) and (not sentinel or needs_restore)
@@ -430,7 +435,7 @@ def ensure_fresh(rate_file: str, obs, stage1_config: dict) -> None:
 
     log(f"{basename}: stale mask detected, re-applying before stage2a")
     clear_manual_mask_dq(rate_file)
-    if has_bkgsub_history(rate_file):
+    if _bkgsub_done(rate_file):
         restore_pre_bkgsub(rate_file)
     n_pixels = apply_mask_dq(rate_file, reg_string)
     subtract_background_from_rate_file(rate_file, **_bkgsub_kwargs(stage1_config))
