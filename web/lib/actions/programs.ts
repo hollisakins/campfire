@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
+import type { Pointing } from '@/lib/types';
 
 export interface ProgramOverview {
   slug: string;
@@ -24,6 +25,7 @@ export interface ObservationStat {
   target_count: number;
   spectrum_count: number;
   total_size_bytes: number;
+  pointings: Pointing[] | null;
 }
 
 export interface ProgramsOverviewResult {
@@ -147,6 +149,7 @@ export async function getProgramDetail(programSlug: string): Promise<ProgramDeta
         target_count: Number(o.target_count) || 0,
         spectrum_count: Number(o.spectrum_count) || 0,
         total_size_bytes: Number(o.total_size_bytes) || 0,
+        pointings: (o.pointings as Pointing[] | null) ?? null,
       })
     );
 

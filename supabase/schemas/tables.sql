@@ -606,7 +606,8 @@ CREATE TABLE IF NOT EXISTS "public"."observations" (
     "latest_deployment_id" integer,
     "file_globs" "text"[] NOT NULL DEFAULT '{}',
     "gratings" "text"[] NOT NULL DEFAULT '{}',
-    "data_subdir" "text"
+    "data_subdir" "text",
+    "pointings" "jsonb"
 );
 
 
