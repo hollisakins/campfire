@@ -237,9 +237,18 @@ def update_observation_pointings(
     client: Client,
     obs_name: str,
     pointings: list[dict],
-) -> None:
-    """Write the JSONB pointings array for an observation."""
-    client.table('observations').update({'pointings': pointings}).eq('name', obs_name).execute()
+) -> int:
+    """Write the JSONB pointings array for an observation.
+
+    Returns the number of rows updated (0 if no observation row matches).
+    """
+    response = (
+        client.table('observations')
+        .update({'pointings': pointings})
+        .eq('name', obs_name)
+        .execute()
+    )
+    return len(response.data or [])
 
 
 def batch_upsert_objects(

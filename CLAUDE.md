@@ -141,6 +141,7 @@ cd python && pip install -e ".[deploy]"
 campfire deploy --obs <obs_name>                         # full deploy
 campfire deploy --obs <obs_name> --dry-run               # validate only
 campfire deploy rgb --obs <obs_name>                     # RGB cutouts only
+campfire deploy pointings --obs <obs_name>               # pointings JSONB backfill
 campfire deploy tiles --field cosmos --filter f444w      # map tiles
 campfire deploy sync-programs                            # upsert from programs.toml
 ```

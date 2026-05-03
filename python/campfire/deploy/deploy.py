@@ -865,6 +865,44 @@ def deploy_shutters(
     print(f"Deployed {n} shutter records for {obs_name}")
 
 
+def deploy_pointings(
+    obs_name: str,
+    config: dict,
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Deploy pointings ECSV data to observations.pointings (JSONB).
+
+    Useful for backfilling existing observations without rerunning a
+    full `campfire deploy`. The observations row must already exist —
+    run `campfire deploy --obs <name>` first if it doesn't.
+    """
+    obs_dir = resolve_obs_dir(obs_name)
+    ecsv_path = discover_pointings_ecsv(obs_dir, obs_name)
+
+    if not ecsv_path:
+        print(f"Error: Pointings file not found: {obs_dir / f'{obs_name}_pointings.ecsv'}")
+        print(f"Generate it first by rerunning the pipeline summary for {obs_name}.")
+        return
+
+    pointings_data = load_pointings_ecsv(ecsv_path)
+    print(f"Found {len(pointings_data)} pointing(s) for {obs_name}")
+
+    if dry_run:
+        print("=== DRY RUN ===")
+        print(f"Would update observations.pointings for '{obs_name}' "
+              f"with {len(pointings_data)} entries")
+        return
+
+    sb = get_supabase_client(config)
+    n_updated = update_observation_pointings(sb, obs_name, pointings_data)
+    if n_updated == 0:
+        print(f"Error: observation '{obs_name}' not found in database.")
+        print(f"  Run 'campfire deploy --obs {obs_name}' first to create the row.")
+        return
+    print(f"Deployed {len(pointings_data)} pointing(s) for {obs_name}")
+
+
 def fetch_config(
     obs_name: str,
     config: dict,
