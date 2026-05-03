@@ -163,19 +163,17 @@ def is_stale(rate_file: str, reg_string: str | None) -> bool:
 # OR'ing DO_NOT_USE into DQ is not reversible without knowing which bits we
 # set. To undo a previous mask cleanly (when re-applying after edits) we
 # record the *pixels we flipped* — those that did not already have
-# DO_NOT_USE set — in a sidecar ``_manual_dq.fits`` file. Restoration
-# AND-NOTs DO_NOT_USE on exactly those pixels.
-
-
-def _sidecar_path(rate_file: str) -> str:
-    return rate_file.replace("_rate.fits", "_manual_dq.fits")
+# DO_NOT_USE set — in a ``CFDQMASK`` extension inside the rate file itself.
+# Restoration AND-NOTs DO_NOT_USE on exactly those pixels and then drops
+# the extension.
 
 
 def apply_mask_dq(rate_file: str, reg_string: str | None) -> int:
     """OR ``DO_NOT_USE`` into the rate file's DQ array, recording the diff
-    in a ``_manual_dq.fits`` sidecar so it can be cleanly reverted later.
+    as a ``CFDQMASK`` ImageHDU inside the rate file so it can be cleanly
+    reverted later.
 
-    Returns the number of pixels flagged. Returns 0 (and writes no sidecar)
+    Returns the number of pixels flagged. Returns 0 (and writes no extension)
     if the region string is empty or rasterizes to nothing.
     """
     if not canonicalize(reg_string):
@@ -193,31 +191,43 @@ def apply_mask_dq(rate_file: str, reg_string: str | None) -> int:
         model.dq[mask] |= DO_NOT_USE
         model.save(rate_file)
 
-    fits.writeto(_sidecar_path(rate_file), flipped.astype(np.uint8), overwrite=True)
+    with fits.open(rate_file, mode="update") as hdul:
+        try:
+            del hdul["CFDQMASK"]
+        except KeyError:
+            pass
+        hdul.append(fits.ImageHDU(flipped.astype(np.uint8), name="CFDQMASK"))
     log(f"  flagged {n} pixels in {os.path.basename(rate_file)} ({int(flipped.sum())} newly DNU)")
     return n
 
 
 def clear_manual_mask_dq(rate_file: str) -> None:
     """Undo a previous ``apply_mask_dq`` by AND-NOT'ing DO_NOT_USE on the
-    sidecar-recorded pixels. No-op if no sidecar exists."""
-    sidecar = _sidecar_path(rate_file)
-    if not os.path.exists(sidecar):
-        return
+    pixels recorded in the ``CFDQMASK`` extension, then drop the extension.
+    No-op if no ``CFDQMASK`` extension exists."""
+    with fits.open(rate_file) as hdul:
+        if "CFDQMASK" not in hdul:
+            return
+        flipped = hdul["CFDQMASK"].data.astype(bool)
+
     from jwst.datamodels import ImageModel
 
-    flipped = fits.getdata(sidecar).astype(bool)
     with ImageModel(rate_file) as model:
         if flipped.shape != model.dq.shape:
             log(
-                f"WARNING: sidecar shape {flipped.shape} != DQ shape "
+                f"WARNING: CFDQMASK shape {flipped.shape} != DQ shape "
                 f"{model.dq.shape} for {os.path.basename(rate_file)}; skipping clear"
             )
             return
         # AND-NOT DO_NOT_USE on the recorded pixels.
         model.dq[flipped] &= ~np.uint32(DO_NOT_USE)
         model.save(rate_file)
-    os.remove(sidecar)
+
+    with fits.open(rate_file, mode="update") as hdul:
+        try:
+            del hdul["CFDQMASK"]
+        except KeyError:
+            pass
 
 
 # ---------------------------------------------------------------------------
