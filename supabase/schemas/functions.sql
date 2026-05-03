@@ -1889,24 +1889,33 @@ GRANT EXECUTE ON FUNCTION public.refresh_programs_overview TO authenticated;
 -- get_observation_stats
 -- =============================================================================
 
+-- Aggregate stats first, then LEFT JOIN observations once for the JSONB
+-- payload. Keeps the GROUP BY key as cheap text/uuid columns so adding more
+-- per-observation metadata (additional JSONB or array columns) doesn't drag
+-- through the targets x spectra cross product.
 CREATE OR REPLACE FUNCTION public.get_observation_stats(p_program_slugs text[])
 RETURNS TABLE(
   observation text, program_slug text, program_name text, field text,
   target_count bigint, spectrum_count bigint, total_size_bytes bigint,
   pointings jsonb
 ) LANGUAGE sql STABLE AS $$
-  SELECT t.observation, t.program_slug, p.program_name, t.field,
-    COUNT(DISTINCT t.target_id) AS target_count,
-    COUNT(s.id) AS spectrum_count,
-    COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes,
+  WITH stats AS (
+    SELECT t.observation, t.program_slug, p.program_name, t.field,
+      COUNT(DISTINCT t.target_id) AS target_count,
+      COUNT(s.id) AS spectrum_count,
+      COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes
+    FROM targets t
+    JOIN programs p ON p.slug = t.program_slug
+    LEFT JOIN spectra s ON s.target_id = t.target_id
+    WHERE t.program_slug = ANY(p_program_slugs)
+    GROUP BY t.observation, t.program_slug, p.program_name, t.field
+  )
+  SELECT s.observation, s.program_slug, s.program_name, s.field,
+    s.target_count, s.spectrum_count, s.total_size_bytes,
     o.pointings
-  FROM targets t
-  JOIN programs p ON p.slug = t.program_slug
-  LEFT JOIN spectra s ON s.target_id = t.target_id
-  LEFT JOIN observations o ON o.name = t.observation
-  WHERE t.program_slug = ANY(p_program_slugs)
-  GROUP BY t.observation, t.program_slug, p.program_name, t.field, o.pointings
-  ORDER BY t.observation;
+  FROM stats s
+  LEFT JOIN observations o ON o.name = s.observation
+  ORDER BY s.observation;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
