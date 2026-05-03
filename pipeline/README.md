@@ -68,6 +68,27 @@ DS9 is a soft dependency: `mask edit` falls back to manual instructions if
 `ds9`/`xpaset` aren't on PATH. Stage 2a auto-detects stale masks (via the
 `CFMASKSH` header sentinel) and re-applies them transparently.
 
+##### Rate file state (CFBKG / CFBKGMASK / CFDQMASK extensions)
+
+Stage 1 background subtraction stores all of its state inside the rate file
+itself, not as separate sidecar files:
+
+| Artifact | Location | Purpose |
+| --- | --- | --- |
+| `CFBKGSUB` (primary header) | rate file | Boolean: bkg sub has run |
+| `CFBKGRMS`, `CFBKGDT` | rate file | `var_rnoise` rescale factor + timestamp |
+| `CFBKG` (ImageHDU) | rate file | The 2D background that was subtracted |
+| `CFBKGMASK` (ImageHDU) | rate file | Mask used by the bkg fit |
+| `CFMASKSH`, `CFMASKDT`, `CFMASKN` | rate file | Manual-mask sentinel + stats |
+| `CFDQMASK` (ImageHDU) | rate file | Pixels whose DQ DNU bit a manual mask flipped |
+
+Pre-2026-05 rate files (which carried `_bkg.fits`, `_mask.fits`,
+`_manual_dq.fits` as separate files alongside the rate) are not compatible
+with the new code path — re-run `cfpipe nirspec stage1 --obs <obs> --overwrite`
+from uncal to migrate. There is no upgrade tool by design: the old
+disk-sidecar layout had no atomic guarantee with the rate file's SCI/DQ
+arrays, which is the exact desync hazard this change exists to remove.
+
 ### NIRCam
 
 *Somewhat under construction*
