@@ -1957,6 +1957,7 @@ RETURNS TABLE(
   pointings jsonb,
   reduction_version text, crds_context text, cfpipe_version text, jwst_version text,
   reduced_at timestamptz, deployed_at timestamptz,
+  deployed_by_username text, deployed_by_full_name text,
   n_patches_since_full integer, last_patch_at timestamptz
 ) LANGUAGE sql STABLE AS $$
   WITH stats AS (
@@ -1976,14 +1977,18 @@ RETURNS TABLE(
     full_dep.reduction_version, full_dep.crds_context,
     full_dep.cfpipe_version, full_dep.jwst_version,
     full_dep.reduced_at, full_dep.deployed_at,
+    full_dep.deployed_by_username, full_dep.deployed_by_full_name,
     COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
     patches.last_patch_at
   FROM stats s
   LEFT JOIN observations o ON o.name = s.observation
   LEFT JOIN LATERAL (
     SELECT d.reduction_version, d.crds_context, d.cfpipe_version, d.jwst_version,
-           d.reduced_at, d.deployed_at
+           d.reduced_at, d.deployed_at,
+           up.username AS deployed_by_username,
+           up.full_name AS deployed_by_full_name
     FROM public.deployments d
+    LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
     WHERE d.observation = s.observation AND d.source_ids_filter IS NULL
     ORDER BY d.deployed_at DESC
     LIMIT 1
@@ -2009,6 +2014,15 @@ GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
 -- tab. Caller passes the accessible program slug list (public + explicit
 -- access), matching the get_observation_stats pattern; filtering happens in
 -- SQL so the targets/spectra aggregate doesn't scan inaccessible rows.
+--
+-- Gratings are derived from the spectra table (the actual deployed data),
+-- with observations.gratings as a fallback when no spectra exist yet — the
+-- observations.gratings column is populated from observations.toml at deploy
+-- time and is empty for observations that haven't gone through that path.
+--
+-- deployed_by_username / deployed_by_full_name come from user_profiles via
+-- the latest full deployment so the metadata page can show who reduced each
+-- observation without an extra client-side join.
 DROP FUNCTION IF EXISTS public.get_observations_overview();
 DROP FUNCTION IF EXISTS public.get_observations_overview(text[]);
 
@@ -2019,13 +2033,16 @@ RETURNS TABLE(
   target_count bigint, spectrum_count bigint, total_size_bytes bigint,
   reduction_version text, crds_context text, cfpipe_version text, jwst_version text,
   reduced_at timestamptz, deployed_at timestamptz,
+  deployed_by_username text, deployed_by_full_name text,
   n_patches_since_full integer, last_patch_at timestamptz
 ) LANGUAGE sql STABLE AS $$
   WITH stats AS (
     SELECT t.observation, t.program_slug,
       COUNT(DISTINCT t.target_id) AS target_count,
       COUNT(s.id) AS spectrum_count,
-      COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes
+      COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes,
+      ARRAY_AGG(DISTINCT s.grating ORDER BY s.grating)
+        FILTER (WHERE s.grating IS NOT NULL) AS gratings
     FROM public.targets t
     LEFT JOIN public.spectra s ON s.target_id = t.target_id
     WHERE t.program_slug = ANY(p_program_slugs)
@@ -2037,7 +2054,10 @@ RETURNS TABLE(
     p.program_name,
     o.field,
     p.cycle,
-    COALESCE(o.gratings, ARRAY[]::text[]) AS gratings,
+    CASE
+      WHEN COALESCE(array_length(s.gratings, 1), 0) > 0 THEN s.gratings
+      ELSE COALESCE(o.gratings, ARRAY[]::text[])
+    END AS gratings,
     COALESCE(jsonb_array_length(o.pointings), 0) AS pointing_count,
     o.pointings,
     COALESCE(s.target_count, 0)::bigint AS target_count,
@@ -2046,6 +2066,7 @@ RETURNS TABLE(
     full_dep.reduction_version, full_dep.crds_context,
     full_dep.cfpipe_version, full_dep.jwst_version,
     full_dep.reduced_at, full_dep.deployed_at,
+    full_dep.deployed_by_username, full_dep.deployed_by_full_name,
     COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
     patches.last_patch_at
   FROM public.observations o
@@ -2053,8 +2074,11 @@ RETURNS TABLE(
   LEFT JOIN stats s ON s.observation = o.name AND s.program_slug = o.program_slug
   LEFT JOIN LATERAL (
     SELECT d.reduction_version, d.crds_context, d.cfpipe_version, d.jwst_version,
-           d.reduced_at, d.deployed_at
+           d.reduced_at, d.deployed_at,
+           up.username AS deployed_by_username,
+           up.full_name AS deployed_by_full_name
     FROM public.deployments d
+    LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
     WHERE d.observation = o.name AND d.source_ids_filter IS NULL
     ORDER BY d.deployed_at DESC
     LIMIT 1

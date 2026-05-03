@@ -44,6 +44,8 @@ export const ProvenanceCell: React.FC<ProvenanceCellProps> = ({ provenance, comp
     jwst_version,
     reduced_at,
     deployed_at,
+    deployed_by_username,
+    deployed_by_full_name,
     n_patches_since_full,
     last_patch_at,
   } = provenance;
@@ -106,6 +108,10 @@ export const ProvenanceCell: React.FC<ProvenanceCellProps> = ({ provenance, comp
             <dd className="font-mono text-text-primary dark:text-slate-100">{formatTimestamp(reduced_at)}</dd>
             <dt>Deployed</dt>
             <dd className="font-mono text-text-primary dark:text-slate-100">{formatTimestamp(deployed_at)}</dd>
+            <dt>By</dt>
+            <dd className="text-text-primary dark:text-slate-100" title={deployed_by_full_name ?? undefined}>
+              {deployed_by_username ?? deployed_by_full_name ?? '—'}
+            </dd>
           </dl>
           {n_patches_since_full > 0 && (
             <div className="mt-3 pt-2 border-t border-border dark:border-slate-700">

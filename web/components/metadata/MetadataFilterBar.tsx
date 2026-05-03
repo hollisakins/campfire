@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useMemo } from 'react';
-import { Search, X } from 'lucide-react';
 import { FilterChip, type FilterOption } from '@/components/ui/FilterChip';
 import type {
   MetadataFilters,
@@ -109,31 +108,6 @@ export const MetadataFilterBar: React.FC<MetadataFilterBarProps> = ({
 
   return (
     <div className="flex flex-wrap items-center gap-2 mb-4">
-      {/* Free-text search */}
-      <div className="relative flex-1 min-w-[200px] max-w-md">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary dark:text-slate-500" />
-        <input
-          type="text"
-          value={filters.search}
-          onChange={(e) => update({ search: e.target.value })}
-          placeholder={
-            tab === 'programs'
-              ? 'Search programs, slug, PI, JWST PID…'
-              : 'Search observation, program, field…'
-          }
-          className="w-full pl-9 pr-9 py-1.5 text-sm border border-border dark:border-slate-700 rounded-md bg-background dark:bg-slate-900 text-text-primary dark:text-slate-100 placeholder:text-text-secondary dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-primary"
-        />
-        {filters.search && (
-          <button
-            onClick={() => update({ search: '' })}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary dark:text-slate-500 hover:text-text-primary dark:hover:text-slate-200"
-            aria-label="Clear search"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        )}
-      </div>
-
       {tab === 'programs' && (
         <>
           <FilterChip
