@@ -51,7 +51,7 @@ export function pointingsToDs9(rows: PointingRow[]): string {
   const lines: string[] = ['# Region file format: DS9', 'icrs'];
   for (const r of rows) {
     const tag = `${r.observation}_msametid${r.msametid}`;
-    lines.push(`# composite ${r.ra_center} ${r.dec_center} ||| tag={${tag}}`);
+    lines.push(`# composite ${r.ra_center} ${r.dec_center} ${r.pa_aper} ||| tag={${tag}}`);
     for (let q = 0; q < r.footprint.length; q++) {
       const corners = r.footprint[q];
       const coords = corners.map(([ra, dec]) => `${ra},${dec}`).join(',');

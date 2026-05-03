@@ -106,6 +106,7 @@ def generate_pointings_table(obs_name, obs_dir, field):
         groups[exp['msametid']].append(exp)
 
     rows = []
+    skipped = []
     for msametid, exps in sorted(groups.items()):
         ra_center = float(np.mean([e['ra_ref'] for e in exps]))
         dec_center = float(np.mean([e['dec_ref'] for e in exps]))
@@ -133,8 +134,9 @@ def generate_pointings_table(obs_name, obs_dir, field):
         try:
             footprint = _compute_msa_footprint(ra_center, dec_center, pa_aper)
         except Exception as e:
-            log(f"Warning: failed to compute footprint for MSAMETID={msametid}: {e}")
-            footprint = np.zeros((4, 4, 2))
+            log(f"Warning: failed to compute footprint for MSAMETID={msametid}: {e}; skipping pointing")
+            skipped.append((msametid, str(e)))
+            continue
 
         rows.append({
             'msametid': msametid,
@@ -154,7 +156,15 @@ def generate_pointings_table(obs_name, obs_dir, field):
             'footprint': footprint,
         })
 
+    if skipped:
+        log(
+            f"WARNING: skipped {len(skipped)} pointing(s) in {obs_name} due to "
+            f"footprint computation failures: "
+            + ", ".join(f"MSAMETID={mid} ({err})" for mid, err in skipped)
+        )
+
     if not rows:
+        log(f"WARNING: no valid pointings produced for {obs_name} (all skipped)")
         return Table()
 
     table = Table(rows=rows, names=list(rows[0].keys()))
