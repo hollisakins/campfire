@@ -1,9 +1,9 @@
 """Tests for the manual masking module (campfire_pipeline.nirspec.masks).
 
 Targets the pure-Python pieces (parsing, hashing, TOML round-trip,
-sentinel reads/writes, sidecar logic) that don't require a real JWST
-rate file. End-to-end DQ/bkg-sub behavior is verified in the project
-README's manual workflow.
+sentinel reads/writes, in-rate extension I/O) that don't require a
+real JWST rate file. End-to-end DQ/bkg-sub behavior is verified in
+the project README's manual workflow.
 """
 
 import os
@@ -173,14 +173,129 @@ class TestApplyAndClearDQ:
             # Pixel inside polygon also set.
             assert model.dq[10, 8] & masks.DO_NOT_USE
 
-        # Sidecar exists.
-        sidecar = rate.replace("_rate.fits", "_manual_dq.fits")
-        assert os.path.exists(sidecar)
+        # CFDQMASK extension records the pixels we flipped, and no on-disk
+        # sidecar is created (the _manual_dq.fits file is gone for good).
+        assert not os.path.exists(rate.replace("_rate.fits", "_manual_dq.fits"))
+        with fits.open(rate) as hdul:
+            assert "CFDQMASK" in hdul
+            flipped = hdul["CFDQMASK"].data.astype(bool)
+        # The pre-existing DNU pixel must NOT be in the flipped set, otherwise
+        # clear_manual_mask_dq would erase a DNU bit it didn't put there.
+        assert not flipped[10, 10]
+        # A polygon-interior pixel that wasn't pre-flagged must be in flipped.
+        assert flipped[10, 8]
 
         masks.clear_manual_mask_dq(rate)
-        assert not os.path.exists(sidecar)
+        with fits.open(rate) as hdul:
+            assert "CFDQMASK" not in hdul
         with ImageModel(rate) as model:
             # Pre-existing DNU pixel should still be set.
             assert model.dq[10, 10] & masks.DO_NOT_USE
             # Pixel inside polygon (that we flipped) should be cleared.
             assert not (model.dq[10, 8] & masks.DO_NOT_USE)
+
+
+class TestBkgsubExtensionsAndRestore:
+    """Round-trip CFBKG/CFBKGMASK/CFBKGSUB/CFBKGRMS: simulate a bkgsub by
+    writing the extensions and header keys directly, then verify
+    restore_pre_bkgsub correctly inverts the SCI offset and the variance
+    rescale, and tears down all bkgsub state."""
+
+    def _make_rate(self, path, sci, var, dq=None):
+        from jwst.datamodels import ImageModel
+        m = ImageModel(sci.shape)
+        m.data = sci.astype(np.float32)
+        m.err = np.ones_like(sci, dtype=np.float32)
+        m.var_rnoise = var.astype(np.float32)
+        m.var_poisson = np.ones_like(sci, dtype=np.float32)
+        m.dq = (dq if dq is not None else np.zeros_like(sci, dtype=np.uint32))
+        m.meta.instrument.grating = "PRISM"
+        m.save(path)
+        m.close()
+
+    def _stamp_post_bkgsub(self, path, bkg, mask, var_rescale):
+        with fits.open(path, mode="update") as hdul:
+            hdr = hdul[0].header
+            hdr["CFBKGSUB"] = (True, "Background subtraction applied to SCI")
+            hdr["CFBKGRMS"] = (var_rescale, "VAR_RNOISE rescale factor from bkg sub")
+            hdr["CFBKGDT"] = ("2026-05-02T00:00:00", "Timestamp")
+            hdul.append(fits.ImageHDU(bkg.astype(np.float32), name="CFBKG"))
+            hdul.append(fits.ImageHDU(mask.astype(np.uint8), name="CFBKGMASK"))
+
+    def test_bkgsub_done_reads_header(self, tmp_path):
+        pytest.importorskip("jwst")
+        from campfire_pipeline.nirspec.stage1 import bkgsub_done
+
+        rate = str(tmp_path / "rate.fits")
+        sci = np.full((8, 8), 5.0, dtype=np.float32)
+        var = np.ones((8, 8), dtype=np.float32)
+        self._make_rate(rate, sci, var)
+        assert bkgsub_done(rate) is False
+
+        with fits.open(rate, mode="update") as hdul:
+            hdul[0].header["CFBKGSUB"] = True
+        assert bkgsub_done(rate) is True
+
+    def test_restore_pre_bkgsub_round_trip(self, tmp_path):
+        pytest.importorskip("jwst")
+        from jwst.datamodels import ImageModel
+
+        rate = str(tmp_path / "rate.fits")
+        # Pre-bkgsub state: SCI = original, var = original.
+        original_sci = np.full((8, 8), 10.0, dtype=np.float32)
+        original_var = np.full((8, 8), 2.0, dtype=np.float32)
+        bkg = np.full((8, 8), 3.0, dtype=np.float32)
+        var_rescale = 4.0
+
+        # Write the *post*-bkgsub state directly: SCI = original - bkg,
+        # var = original * var_rescale, plus extensions + header.
+        post_sci = original_sci - bkg
+        post_var = original_var * var_rescale
+        bkg_mask = np.ones((8, 8), dtype=bool)
+        self._make_rate(rate, post_sci, post_var)
+        self._stamp_post_bkgsub(rate, bkg, bkg_mask, var_rescale)
+
+        # Sanity: extensions and header are present.
+        with fits.open(rate) as hdul:
+            assert "CFBKG" in hdul and "CFBKGMASK" in hdul
+            assert hdul[0].header["CFBKGSUB"] is True
+
+        masks.restore_pre_bkgsub(rate)
+
+        # SCI is restored: post + bkg == original.
+        # var_rnoise is un-rescaled: post / var_rescale == original.
+        with ImageModel(rate) as model:
+            np.testing.assert_allclose(model.data, original_sci, rtol=1e-6)
+            np.testing.assert_allclose(model.var_rnoise, original_var, rtol=1e-6)
+
+        # All bkgsub state is torn down.
+        with fits.open(rate) as hdul:
+            hdr = hdul[0].header
+            for k in ("CFBKGSUB", "CFBKGRMS", "CFBKGDT"):
+                assert k not in hdr, f"{k} should be cleared after restore"
+            assert "CFBKG" not in hdul
+            assert "CFBKGMASK" not in hdul
+
+    def test_restore_raises_when_cfbkgsub_false(self, tmp_path):
+        pytest.importorskip("jwst")
+
+        rate = str(tmp_path / "rate.fits")
+        sci = np.full((8, 8), 1.0, dtype=np.float32)
+        var = np.full((8, 8), 1.0, dtype=np.float32)
+        self._make_rate(rate, sci, var)
+        # No CFBKGSUB stamped — restore should refuse.
+        with pytest.raises(RuntimeError, match="CFBKGSUB"):
+            masks.restore_pre_bkgsub(rate)
+
+    def test_restore_raises_when_cfbkg_extension_missing(self, tmp_path):
+        pytest.importorskip("jwst")
+
+        rate = str(tmp_path / "rate.fits")
+        sci = np.full((8, 8), 1.0, dtype=np.float32)
+        var = np.full((8, 8), 1.0, dtype=np.float32)
+        self._make_rate(rate, sci, var)
+        with fits.open(rate, mode="update") as hdul:
+            hdul[0].header["CFBKGSUB"] = True
+            hdul[0].header["CFBKGRMS"] = 2.0
+        with pytest.raises(RuntimeError, match="CFBKG extension missing"):
+            masks.restore_pre_bkgsub(rate)
