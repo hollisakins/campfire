@@ -89,9 +89,10 @@ tag already exist, so a direct push is cleaner.)
 Tell the user:
 - Re-installing `cfpipe` (`cd pipeline && pip install -e .`) will now report
   the clean version in `_version.py` and in `cfpipe info`.
-- Any reductions in flight need to be re-run from a clean install of the new
-  tag for their FITS headers to record the released version (vs. a `.dev` string).
-- `campfire deploy` will accept FITS produced under the new version.
+- Reductions in flight will still record a `.dev` string in their FITS headers
+  unless re-run from a clean install of the new tag. Such data can still be
+  deployed (with a warn-and-confirm prompt) but loses the clean release
+  provenance — re-running is preferred when feasible.
 
 ## Constraints
 

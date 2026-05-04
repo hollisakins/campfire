@@ -54,11 +54,11 @@ CHANGELOG categories map directly: **Calibration → MINOR**, **Algorithm → MI
 - Every PR touching `pipeline/**` adds an entry under `## Unreleased` in `pipeline/CHANGELOG.md`, categorized.
 - Tags happen separately, after merge, when you're ready to deploy. PRs do not bump versions.
 - Use `/pipeline-release [X.Y.Z]` (or `bash scripts/release-pipeline.sh X.Y.Z`) to do the rollover, commit, and tag. The script enforces: on `main`, clean tree, up-to-date with origin, non-empty Unreleased section, tag does not exist.
-- `campfire deploy` rejects FITS whose `cfpipe_version` contains `.dev`, `.dirty`, or `+nondefault` — so production data always carries a clean release string. *(Note: this enforcement is not yet implemented in `campfire deploy`; it's the next step.)*
+- `campfire deploy` warns and requires explicit confirmation when any FITS being deployed carries a non-release `cfpipe_version` (anything not matching `^X.Y.Z$` — i.e. `.dev`, `+dirty`, `+nondefault`, or a free-form override string). The dev string is preserved verbatim in `spectra.cfpipe_version` so provenance stays visible downstream; the prompt exists so deployers consciously choose to ship unreleased data, not to block it. *(Note: this prompt is not yet implemented in `campfire deploy`; it's the next step.)*
 
 ### Override
 
-For ad-hoc tagged runs that aren't going through the release flow, set `[pipeline].version = "..."` in your config. The string passes through verbatim into `CMPFRVER`. These runs cannot be deployed.
+For ad-hoc tagged runs that aren't going through the release flow, set `[pipeline].version = "..."` in your config. The string passes through verbatim into `CMPFRVER` and deploys through the same warn-and-confirm path as `.dev` builds.
 
 ## Web Portal
 
