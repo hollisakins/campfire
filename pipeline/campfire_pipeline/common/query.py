@@ -13,11 +13,13 @@ Usage:
 """
 
 import argparse
+import concurrent.futures
 import sys
-import time
+import threading
 from pathlib import Path
 
 import requests
+from tqdm import tqdm
 
 BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
 
@@ -159,67 +161,114 @@ def format_size(size_bytes):
     return f"{size_bytes} B"
 
 
-def progress_bar(fraction, width=30):
-    """Render a progress bar string like [████████░░░░░░░░░░]."""
-    filled = int(width * fraction)
-    return f"[{'█' * filled}{'░' * (width - filled)}]"
+def _download_one(file_info, token, pbar, pbar_lock):
+    """Download a single file to ``file_info['_path']``, updating the shared bar.
 
-
-def format_speed(bytes_per_sec):
-    """Format download speed as human-readable string."""
-    if bytes_per_sec >= 1024 ** 2:
-        return f"{bytes_per_sec / 1024 ** 2:.1f} MB/s"
-    if bytes_per_sec >= 1024:
-        return f"{bytes_per_sec / 1024:.0f} KB/s"
-    return f"{bytes_per_sec:.0f} B/s"
-
-
-def download_file(uri, output_path, size, index, total, token=None):
-    """Download a single file with progress bar and speed.
-
-    Returns 'downloaded' or 'error'.
+    Returns ('downloaded' | 'error', filename, error_message_or_None).
     """
-    label = f"  [{index}/{total}]"
-    name = output_path.name
-    size_str = format_size(size)
+    filename = file_info["filename"]
+    output_path = file_info["_path"]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_suffix(".tmp")
     headers = {"Authorization": f"token {token}"} if token else {}
 
     try:
         resp = requests.get(
             f"{BASE_URL}/retrieve_product",
-            params={"product_name": uri},
+            params={"product_name": file_info["uri"]},
             stream=True,
             headers=headers,
+            timeout=60,
         )
         resp.raise_for_status()
 
-        tmp_path = output_path.with_suffix(".tmp")
-        downloaded = 0
-        t_start = time.monotonic()
-
         with open(tmp_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
                 f.write(chunk)
-                downloaded += len(chunk)
-                elapsed = time.monotonic() - t_start
-                speed = downloaded / elapsed if elapsed > 0 else 0
-                frac = downloaded / size if size > 0 else 0
-                bar = progress_bar(frac)
-                line = f"\r{label} {name}  {bar} {format_size(downloaded)}/{size_str}  {format_speed(speed)}"
-                print(line, end="", flush=True)
+                with pbar_lock:
+                    pbar.update(len(chunk))
 
         tmp_path.rename(output_path)
-        elapsed = time.monotonic() - t_start
-        speed = size / elapsed if elapsed > 0 else 0
-        print(f"\r{label} {name}  {size_str}  done in {elapsed:.0f}s ({format_speed(speed)})" + " " * 20)
-        return "downloaded"
+        return "downloaded", filename, None
 
     except (requests.RequestException, OSError) as e:
-        print(f"\r{label} {name}  ERROR: {e}" + " " * 40)
-        tmp_path = output_path.with_suffix(".tmp")
         if tmp_path.exists():
-            tmp_path.unlink()
-        return "error"
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        return "error", filename, str(e)
+
+
+def download_files(files, token=None, workers=4, desc="downloading"):
+    """Download a list of files concurrently with a single aggregate progress bar.
+
+    Each file_info must have ``_path`` precomputed (see ``_output_path_for``).
+
+    Parameters
+    ----------
+    files : list of dict
+        Each dict has 'filename', 'uri', 'size', and '_path' (target Path).
+    token : str or None
+        MAST API token for authentication.
+    workers : int
+        Number of parallel download streams.
+    desc : str
+        Label shown in the progress bar.
+
+    Returns the number of files that errored.
+    """
+    if not files:
+        return 0
+
+    total_size = sum(f["size"] for f in files)
+    pbar_lock = threading.Lock()
+    errors = 0
+
+    workers = max(1, min(workers, len(files)))
+
+    with tqdm(
+        total=total_size,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc=f"  {desc}",
+        dynamic_ncols=True,
+    ) as pbar:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [
+                ex.submit(_download_one, f, token, pbar, pbar_lock)
+                for f in files
+            ]
+            try:
+                for future in concurrent.futures.as_completed(futures):
+                    status, name, err = future.result()
+                    if status == "error":
+                        errors += 1
+                        tqdm.write(f"    ERROR {name}: {err}")
+            except KeyboardInterrupt:
+                ex.shutdown(wait=False, cancel_futures=True)
+                raise
+
+    return errors
+
+
+def _split_existing(files):
+    """Partition files into (to_download, to_skip) based on what's on disk.
+
+    Each file_info must have ``_path`` precomputed.
+    """
+    to_download = []
+    to_skip = []
+    for f in files:
+        path = f["_path"]
+        if path.exists() and path.stat().st_size == f["size"]:
+            to_skip.append(f)
+        else:
+            to_download.append(f)
+    return to_download, to_skip
 
 
 def _build_fileset_index(filesets):
@@ -274,13 +323,17 @@ def _write_nircam_manifest(download_root, program_id, rows):
 
 def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
                        download_dir="data", dry_run=False, obs_ids=None,
-                       filters=None, token=None):
+                       filters=None, token=None, workers=4):
     """Download JWST level 1b data for a program.
 
     Layout:
       NIRSpec → ``{download_dir}/{PID}/{filename}``
       NIRCam  → ``{download_dir}/nircam/{PID}/{filter}/{filename}`` plus a
                 ``manifest.ecsv`` per PID directory.
+
+    Auxiliary metadata files (e.g. NIRSpec MSA metafiles) are downloaded
+    first, so reduction can begin while the larger uncal files are still
+    being fetched.
 
     Parameters
     ----------
@@ -300,6 +353,8 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         Restrict to these filters (NIRCam only).
     token : str or None
         MAST API token for accessing proprietary data.
+    workers : int
+        Number of parallel download streams (default 4).
     """
     if token:
         print("Using MAST API token for authentication.")
@@ -344,7 +399,8 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
             f["filter"] = (fs.get("filter") or "").lower() or None
             f["_fileset"] = fs
 
-    all_files = uncal_files + aux_files
+    # Aux first so reduction can start while uncal files stream in.
+    all_files = aux_files + uncal_files
     total_size = sum(f["size"] for f in all_files)
 
     print()
@@ -355,17 +411,14 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         print("No matching files found. Exiting.")
         return
 
-    # Check which files already exist
+    # Annotate every file with its target path, then split into existing-vs-new.
     download_root = Path(download_dir)
-    to_download = []
-    to_skip = []
     for f in all_files:
-        path = _output_path_for(f, download_root, instrument)
-        f["_path"] = path
-        if path.exists() and path.stat().st_size == f["size"]:
-            to_skip.append(f)
-        else:
-            to_download.append(f)
+        f["_path"] = _output_path_for(f, download_root, instrument)
+    aux_to_dl, aux_skip = _split_existing(aux_files)
+    uncal_to_dl, uncal_skip = _split_existing(uncal_files)
+    to_skip = aux_skip + uncal_skip
+    to_download = aux_to_dl + uncal_to_dl
 
     if to_skip:
         skip_size = sum(f["size"] for f in to_skip)
@@ -391,7 +444,6 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
                   f"{download_root / 'nircam' / pid_str / 'manifest.ecsv'}")
         return
 
-    # Step 4: Download
     if not to_download:
         print("\nNothing to download — all files already exist.")
         # Even with nothing new, refresh manifest from current selection so
@@ -405,15 +457,24 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
 
     dl_size = sum(f["size"] for f in to_download)
     print()
-    print(f"Downloading {len(to_download)} files ({format_size(dl_size)})")
+    print(f"Downloading {len(to_download)} files ({format_size(dl_size)}) "
+          f"with {workers} parallel stream{'s' if workers != 1 else ''}")
 
     errors = 0
-    for i, f in enumerate(to_download, 1):
-        output_path = f["_path"]
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        result = download_file(f["uri"], output_path, f["size"], i, len(to_download), token=token)
-        if result == "error":
-            errors += 1
+
+    # Step 4a: Aux/MSA metafiles first so reduction can start early
+    if aux_to_dl:
+        print(f"\nFetching {len(aux_to_dl)} metafile(s) first...")
+        errors += download_files(
+            aux_to_dl, token=token, workers=workers, desc="metafiles",
+        )
+
+    # Step 4b: Uncal data files
+    if uncal_to_dl:
+        print(f"\nFetching {len(uncal_to_dl)} uncal file(s)...")
+        errors += download_files(
+            uncal_to_dl, token=token, workers=workers, desc="uncal    ",
+        )
 
     print()
     downloaded = len(to_download) - errors
@@ -447,7 +508,8 @@ def _manifest_row(f):
     }
 
 
-def download_nirspec_uncal(program_id, download_dir="data", exp_type="NRS_MSASPEC", dry_run=False):
+def download_nirspec_uncal(program_id, download_dir="data", exp_type="NRS_MSASPEC",
+                           dry_run=False, workers=4):
     """Backwards-compatible wrapper for download_jwst_data()."""
     download_jwst_data(
         program_id=program_id,
@@ -455,6 +517,7 @@ def download_nirspec_uncal(program_id, download_dir="data", exp_type="NRS_MSASPE
         exp_type=exp_type,
         download_dir=download_dir,
         dry_run=dry_run,
+        workers=workers,
     )
 
 
@@ -475,15 +538,18 @@ Examples:
     parser.add_argument("--download-dir", default="data", help="Base directory for downloads (default: data)")
     parser.add_argument("--dry-run", action="store_true", help="List files without downloading")
     parser.add_argument("--exp-type", default="NRS_MSASPEC", help="NIRSpec exposure type (default: NRS_MSASPEC)")
+    parser.add_argument("-p", "--processes", type=int, default=4, help="Parallel download streams (default: 4)")
 
     args = parser.parse_args()
 
     try:
-        download_nirspec_uncal(
+        download_jwst_data(
             program_id=args.program,
-            download_dir=args.download_dir,
+            instrument="NIRSPEC",
             exp_type=args.exp_type,
+            download_dir=args.download_dir,
             dry_run=args.dry_run,
+            workers=args.processes,
         )
     except requests.HTTPError as e:
         print(f"\nAPI error: {e}", file=sys.stderr)

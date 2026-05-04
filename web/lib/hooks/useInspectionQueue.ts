@@ -2,11 +2,14 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { getInspectionQueueIds, type FilterOptions } from '@/lib/actions/spectra';
+import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 
 interface UseInspectionQueueOptions {
   /** IAU object_id of the entry point (start parameter from /inspect URL). */
   initialObjectId: string;
   filters: Partial<FilterOptions>;
+  sortColumn?: SortColumn;
+  sortDirection?: SortDirection;
 }
 
 interface InspectionQueueState {
@@ -36,7 +39,7 @@ export function useInspectionQueue(options: UseInspectionQueueOptions): Inspecti
   /** Get the first object ID in the queue (for redirect) */
   firstId: string | null;
 } {
-  const { initialObjectId, filters } = options;
+  const { initialObjectId, filters, sortColumn, sortDirection } = options;
 
   const [ids, setIds] = useState<string[]>([]);
   const [index, setIndex] = useState(-1);
@@ -49,7 +52,7 @@ export function useInspectionQueue(options: UseInspectionQueueOptions): Inspecti
 
     async function fetchQueue() {
       try {
-        const result = await getInspectionQueueIds(filters);
+        const result = await getInspectionQueueIds(filters, sortColumn, sortDirection);
 
         if (cancelled) return;
 

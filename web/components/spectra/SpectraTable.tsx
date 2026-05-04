@@ -303,7 +303,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
     prevHasCoordinateSearch.current = hasCoordinateSearch;
 
     // In server-side mode, sync from props
-    // Map server column name back to client column ID (e.g. best_redshift → redshift)
+    // Map server column name back to client column ID
     if (!isFullDataset) {
       const clientId = sortColumn ? (SERVER_TO_COLUMN_NAME[sortColumn] || sortColumn) : null;
       setInternalSorting(clientId ? [{ id: clientId, desc: sortDirection === 'desc' }] : []);

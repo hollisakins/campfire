@@ -707,14 +707,18 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
 
 /**
  * Fetch all matching object IDs (IAU names) for the inspection queue.
- * Returns a stable snapshot ordered by object_id.
+ * Returns a stable snapshot ordered by the requested sort column (defaulting
+ * to object_id ascending) so inspection mode steps through targets in the
+ * same order as the table view it was launched from.
  * If no redshift_quality filter is set, implicitly filters to quality=0 (uninspected).
  *
- * Backed by `get_filtered_object_ids`; sort/observation/feature/DQ filters
- * aren't supported at this lightweight tier.
+ * Backed by `get_filtered_object_ids`; observation/feature/DQ filters aren't
+ * supported at this lightweight tier.
  */
 export async function getInspectionQueueIds(
   filters?: Partial<FilterOptions>,
+  sortColumn: SortColumn = 'object_id',
+  sortDirection: SortDirection = 'asc',
 ): Promise<{ ids: string[]; error?: string }> {
   const supabase = await createClient();
 
@@ -743,8 +747,7 @@ export async function getInspectionQueueIds(
 
     const baseRpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
-    // Strip params not accepted by get_filtered_object_ids (target-only filters
-    // and ordering hints — the objects RPC returns rows in object_id order).
+    // Strip params not accepted by get_filtered_object_ids (target-only filters).
     /* eslint-disable @typescript-eslint/no-unused-vars */
     const {
       p_observations: _obs,
@@ -764,6 +767,8 @@ export async function getInspectionQueueIds(
       {
         ...objectParams,
         p_redshift_quality: qualityFilter,
+        p_sort_column: sortColumn,
+        p_sort_direction: sortDirection,
       },
     );
 

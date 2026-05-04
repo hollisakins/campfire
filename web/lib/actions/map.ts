@@ -47,8 +47,8 @@ export interface MapObjectMarker {
   object_id: string;
   ra: number;
   dec: number;
-  best_redshift: number | null;
-  best_redshift_quality: number;
+  redshift: number | null;
+  redshift_quality: number;
   field: string;
   n_targets: number;
   n_spectra: number;
@@ -165,51 +165,29 @@ export async function getFieldMarkers(
 
 /**
  * Fetch all objects for a field with member target IDs (for slit filter bridge).
+ *
+ * Uses get_field_object_markers RPC, paged at 5000 rows (PostgREST's
+ * configured max_rows cap — see supabase/config.toml). Replaces the old
+ * paginated PostgREST select that fired N×1000-row pages and embedded
+ * targets(target_id), which made COSMOS take ~2-3 minutes. The RPC
+ * aggregates member_target_ids server-side and returns inspection-driven
+ * `redshift` / `redshift_quality` (not the legacy deploy-time `best_*`
+ * columns, which never reflected user inspections).
  */
 export async function getFieldObjectMarkers(
   field: string
 ): Promise<MapObjectMarkersResult> {
   const supabase = await createClient();
 
-  // Supabase embedded resources: objects → targets via FK
-  const { data, error } = await paginateQuery<{
-    object_id: string;
-    ra: number;
-    dec: number;
-    best_redshift: number | null;
-    best_redshift_quality: number;
-    field: string;
-    n_targets: number;
-    n_spectra: number;
-    programs: string[];
-    targets: { target_id: string }[];
-  }>(
-    () => supabase
-      .from('objects')
-      .select('object_id, ra, dec, best_redshift, best_redshift_quality, field, n_targets, n_spectra, programs, targets(target_id)')
-      .eq('field', field)
-      .order('object_id'),
-    1000,
+  const { data, error } = await paginateRpc<MapObjectMarker>(
+    supabase, 'get_field_object_markers', { p_field: field },
   );
 
   if (error) {
     return { markers: [], error: error.message };
   }
 
-  const markers: MapObjectMarker[] = data.map(row => ({
-    object_id: row.object_id,
-    ra: row.ra,
-    dec: row.dec,
-    best_redshift: row.best_redshift,
-    best_redshift_quality: row.best_redshift_quality,
-    field: row.field,
-    n_targets: row.n_targets,
-    n_spectra: row.n_spectra,
-    programs: row.programs,
-    member_target_ids: row.targets.map(t => t.target_id),
-  }));
-
-  return { markers };
+  return { markers: data };
 }
 
 /**
@@ -333,25 +311,20 @@ export async function getNearbyShutters(
 }
 
 /**
- * Fetch all shutters for a field, paginating to get past Supabase row limits.
- * Used by the full map viewer.
+ * Fetch all shutters for a field via RPC, paged at PostgREST's max_rows
+ * cap (5000; see supabase/config.toml). Used by the full map viewer.
  */
 export async function getFieldShutters(
   field: string
 ): Promise<ShuttersResult> {
   const supabase = await createClient();
 
-  const { data, error } = await paginateQuery<Shutter>(
-    () => supabase
-      .from('shutters')
-      .select('object_id, source_id, center_ra, center_dec, position_angle, shutter_idx, dither_id, shutter_state, observation')
-      .eq('field', field)
-      .order('object_id'),
-    1000,
+  const { data, error } = await paginateRpc<Shutter>(
+    supabase, 'get_field_shutters', { p_field: field },
   );
 
   if (error) {
-    return { shutters: data, error: error.message };
+    return { shutters: [], error: error.message };
   }
 
   return { shutters: data };

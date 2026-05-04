@@ -139,12 +139,17 @@ INSTRUMENT_DEFAULTS = {
               help='List files without downloading.')
 @click.option('--token', default=None,
               help='MAST API token for proprietary data. Falls back to $MAST_API_TOKEN env var.')
-def download(program, instrument, obs_ids, filters, exp_type, download_dir, dry_run, token):
+@click.option('--processes', '-p', type=int, default=4, show_default=True,
+              help='Number of parallel download streams.')
+def download(program, instrument, obs_ids, filters, exp_type, download_dir, dry_run, token, processes):
     """Download raw JWST data from MAST.
 
     NIRSpec layout: $CAMPFIRE_ROOT/raw/{PID}/{filename}
     NIRCam layout:  $CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/{filename}
                     plus a manifest.ecsv per PID directory.
+
+    Auxiliary metafiles (e.g. NIRSpec MSA metadata) are fetched first so
+    reduction can begin while uncal files are still downloading.
     """
     from campfire_pipeline.common.query import download_jwst_data
 
@@ -163,6 +168,9 @@ def download(program, instrument, obs_ids, filters, exp_type, download_dir, dry_
         click.echo("Warning: --filters is ignored for NIRSpec.")
         filters = ()
 
+    if processes < 1:
+        raise click.BadParameter('--processes must be >= 1')
+
     try:
         download_jwst_data(
             program_id=program,
@@ -173,6 +181,7 @@ def download(program, instrument, obs_ids, filters, exp_type, download_dir, dry_
             obs_ids=list(obs_ids) if obs_ids else None,
             filters=list(filters) if filters else None,
             token=token,
+            workers=processes,
         )
     except KeyboardInterrupt:
         click.echo("\n\nInterrupted. Re-run to resume (existing files will be skipped).")

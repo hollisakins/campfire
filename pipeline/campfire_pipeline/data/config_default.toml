@@ -2,10 +2,10 @@
 # Export with: cfpipe config > my_config.toml
 
 [pipeline]
-    # Reduction version is auto-computed as the campfire git commit hash
-    # (with '-dirty' suffix if the working tree has uncommitted changes).
-    # Uncomment to pin a specific version string instead, e.g.:
-    # version = "release-v1.0"
+    # Reduction version is auto-resolved from setuptools-scm git tags of the
+    # form `pipeline-vX.Y.Z` (e.g. "0.4.0", or "0.4.1.dev3+g7f4e2c1.d20260504"
+    # for unreleased dev builds). Override only for ad-hoc tagged runs:
+    # version = "experimental-bkg-tweak"
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
@@ -43,6 +43,9 @@
         G140H = [0.70, 2.5]
         G235H = [1.66, 4.0]
         G395H = [2.87, 5.5]
+
+[nirspec.masks]
+    auto_apply = true   # at stage2a entry, auto re-apply manual masks if they're stale vs the rate file
 
 [nirspec.stage2]
     set_stellarity = 1.0

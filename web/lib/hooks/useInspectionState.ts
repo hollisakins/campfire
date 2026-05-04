@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useCallback, useRef, useMemo } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import type { MapObjectMarker } from '@/lib/actions/map';
 
 /**
  * Object-level inspection state.
@@ -81,6 +83,7 @@ export function useInspectionState(
   objectDbId: number,
   initialData: InspectionInitialData,
 ): InspectionState {
+  const queryClient = useQueryClient();
   const [redshiftInspected, _setRedshiftInspected] = useState<string>(
     initialOverrideString(initialData)
   );
@@ -202,6 +205,27 @@ export function useInspectionState(
       versionRef.current = newVersion;
       setVersion(newVersion);
 
+      // Patch the map marker cache so the marker recolors instantly without
+      // waiting for the 10-min staleTime in useFieldObjectMarkers. We have
+      // the post-trigger row in data.object — use redshift_quality and the
+      // generated redshift column directly.
+      if (data.object?.object_id && data.object?.field) {
+        const objectIdToPatch: string = data.object.object_id;
+        const fieldToPatch: string = data.object.field;
+        const newQuality: number = data.object.redshift_quality ?? 0;
+        const newRedshift: number | null = data.object.redshift !== undefined
+          ? (data.object.redshift === null ? null : Number(data.object.redshift))
+          : null;
+        queryClient.setQueryData<MapObjectMarker[]>(
+          ['fieldObjectMarkers', fieldToPatch],
+          (old) => old?.map(m =>
+            m.object_id === objectIdToPatch
+              ? { ...m, redshift_quality: newQuality, redshift: newRedshift }
+              : m,
+          ),
+        );
+      }
+
       // Read post-trigger state from the server response: the
       // pin_redshift_on_signoff trigger may have promoted redshift_auto into
       // redshift_inspected and set inspected_used_auto=true if the user
@@ -242,7 +266,7 @@ export function useInspectionState(
       savingRef.current = false;
       setSaving(false);
     }
-  }, []);
+  }, [queryClient]);
 
   const saveIfDirty = useCallback(async (): Promise<SaveIfDirtyResult> => {
     if (savingRef.current) {

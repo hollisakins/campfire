@@ -149,7 +149,7 @@ def stage2a(config, obs, source_ids, processes, overwrite):
         cfg, obs_obj, paths = _setup(config, obs_name)
         stage_config = get_stage_config('stage2', cfg, obs_obj)
         sids = _resolve_source_ids(source_ids)
-        _run_stage2a(obs_obj, stage_config, source_ids=sids, n_processes=processes, overwrite=overwrite)
+        _run_stage2a(obs_obj, stage_config, source_ids=sids, n_processes=processes, overwrite=overwrite, cfg=cfg)
 
 
 @main.command()
@@ -312,6 +312,119 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
                 f'--overwrite -p {processes}')
 
 
+# ---------------------------------------------------------------------------
+# Manual mask subgroup
+# ---------------------------------------------------------------------------
+
+
+@main.group('mask')
+def mask_group():
+    """Manage manual DQ masks for NIRSpec rate files.
+
+    Polygon regions are stored inline in observations.toml under
+    [<obs>.masks] keyed by rate file basename. They are OR'd as
+    DO_NOT_USE into the rate file DQ array before stage1 background
+    subtraction so masked pixels are excluded from the bkg fit.
+    """
+    pass
+
+
+@mask_group.command('apply')
+@common_options
+def mask_apply(config, obs):
+    """Apply manual masks for the given observation(s).
+
+    Restores pre-bkg-sub rate state, ORs DO_NOT_USE into DQ from current
+    region strings, re-runs background subtraction, and stamps the
+    CFMASKSH header sentinel. Idempotent — skips files whose stamped
+    sentinel already matches the current mask.
+    """
+    from campfire_pipeline.nirspec.masks import apply_to_observation
+
+    for obs_name in obs:
+        cfg, obs_obj, paths = _setup(config, obs_name)
+        stage1_config = get_stage_config('stage1', cfg, obs_obj)
+        apply_to_observation(obs_obj, stage1_config)
+
+
+@mask_group.command('validate')
+@common_options
+def mask_validate(config, obs):
+    """Parse all mask region strings and report pixel coverage."""
+    from campfire_pipeline.nirspec.masks import validate_observation
+
+    for obs_name in obs:
+        cfg, obs_obj, paths = _setup(config, obs_name)
+        if not obs_obj.manual_masks:
+            log(f"{obs_name}: no manual masks defined.")
+            continue
+        results = validate_observation(obs_obj)
+        ok_count = sum(1 for r in results if r['ok'])
+        log(f"{obs_name}: {ok_count}/{len(results)} masks valid")
+        for r in results:
+            if r['ok']:
+                log(f"  {r['basename']}: {r['n_pixels']} px")
+            else:
+                log(f"  {r['basename']}: FAILED — {r['message']}")
+
+
+@mask_group.command('clear')
+@common_options
+@click.option('--exposure', 'exposure', default=None,
+              help='Single exposure (rate file basename without _rate.fits) to clear. '
+                   'If omitted, clears all masks for the observation.')
+def mask_clear(config, obs, exposure):
+    """Remove a mask entry from observations.toml.
+
+    Does NOT modify any rate files — run `cfpipe nirspec mask apply` afterwards
+    to clear the mask DQ bits and re-run bkg sub.
+    """
+    from campfire_pipeline.config import resolve_observations_file
+    from campfire_pipeline.nirspec.masks import write_masks_to_observations_toml
+
+    obs_file = resolve_observations_file(None)
+    for obs_name in obs:
+        cfg, obs_obj, paths = _setup(config, obs_name)
+        if not obs_obj.manual_masks:
+            log(f"{obs_name}: no manual masks defined.")
+            continue
+        if exposure:
+            if exposure not in obs_obj.manual_masks:
+                log(f"{obs_name}: no mask for {exposure}; nothing to clear.")
+                continue
+            write_masks_to_observations_toml(obs_file, obs_name, {exposure: None})
+            log(f"{obs_name}: cleared mask for {exposure}")
+        else:
+            cleared = {k: None for k in obs_obj.manual_masks}
+            write_masks_to_observations_toml(obs_file, obs_name, cleared)
+            log(f"{obs_name}: cleared {len(cleared)} mask(s)")
+        log(f"  run `cfpipe nirspec mask apply --obs {obs_name}` to update rate files.")
+
+
+@mask_group.command('edit')
+@common_options
+@click.option('--exposure', 'exposure', default=None,
+              help='Edit a single rate file (basename without _rate.fits). '
+                   'If omitted, all rate files are loaded sequentially.')
+def mask_edit(config, obs, exposure):
+    """Open rate file(s) in a matplotlib polygon editor.
+
+    One window per rate file, opened sequentially. Click to place vertices,
+    close near the start vertex (or press Enter), drag handles to refine.
+    Press ``s`` to save & advance, ``b`` to go back, ``q`` to abort.
+
+    Does NOT auto-apply the new masks — run `cfpipe nirspec mask apply`
+    afterwards to update rate files.
+    """
+    from campfire_pipeline.config import resolve_observations_file
+    from campfire_pipeline.nirspec.mpl_editor import edit_masks_in_matplotlib
+
+    obs_file = resolve_observations_file(None)
+    for obs_name in obs:
+        cfg, obs_obj, paths = _setup(config, obs_name)
+        edit_masks_in_matplotlib(obs_obj, obs_file, exposure=exposure)
+
+
 def _run_summary(cfg, obs_obj):
     """Generate (or regenerate) the observation summary ECSV and shutters ECSV."""
     from pathlib import Path
@@ -323,6 +436,10 @@ def _run_summary(cfg, obs_obj):
     from campfire_pipeline.metadata.shutters import (
         generate_shutters_table,
         write_shutters_ecsv,
+    )
+    from campfire_pipeline.metadata.pointings import (
+        generate_pointings_table,
+        write_pointings_ecsv,
     )
 
     from campfire_pipeline.common.version import get_reduction_version
@@ -349,6 +466,13 @@ def _run_summary(cfg, obs_obj):
         write_shutters_ecsv(shutters_table, obs_dir, obs_obj.name)
     else:
         log(f"No shutters generated for {obs_obj.name}")
+
+    # Generate pointings ECSV
+    pointings_table = generate_pointings_table(obs_obj.name, obs_dir, obs_obj.field)
+    if len(pointings_table) > 0:
+        write_pointings_ecsv(pointings_table, obs_dir, obs_obj.name)
+    else:
+        log(f"No pointings generated for {obs_obj.name}")
 
 
 @main.command()
@@ -398,7 +522,7 @@ def run(config, obs, source_ids, processes, overwrite,
 
         if do_stage2a:
             sc = get_stage_config('stage2', cfg, obs_obj)
-            run_stage2a(obs_obj, sc, source_ids=sids, n_processes=processes, overwrite=overwrite)
+            run_stage2a(obs_obj, sc, source_ids=sids, n_processes=processes, overwrite=overwrite, cfg=cfg)
 
         if do_stage2b:
             sc = get_stage_config('stage2', cfg, obs_obj)

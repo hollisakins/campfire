@@ -1,8 +1,8 @@
 [project]
 name = "campfire-pipeline"
-version = "0.3.0"
 description = "JWST data reduction pipeline"
 requires-python = ">=3.12"
+dynamic = ["version"]
 dependencies = [
     "jwst>=1.20,<1.21",
     "astropy>=6.1",
@@ -19,6 +19,9 @@ dependencies = [
     "snowblind",
     "shapely",
     "photutils>=1.13",
+    "regions>=0.6",
+    "tomlkit>=0.13",
+    "JWST_FOV_plotter>=0.4",
 ]
 
 [project.scripts]
@@ -33,5 +36,15 @@ include = ["campfire_pipeline*"]
 campfire_pipeline = ["data/*.fits", "data/*.toml", "data/*.hdf5"]
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+# Versions come from monorepo git tags of the form `pipeline-vX.Y.Z` only.
+# This isolates the pipeline subpackage version from unrelated commits in
+# `web/`, `python/`, `supabase/`, etc.
+root = ".."
+tag_regex = "^pipeline-v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "pipeline-v*"]
+write_to = "campfire_pipeline/_version.py"
+fallback_version = "0.0.0+unknown"

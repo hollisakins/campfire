@@ -116,6 +116,55 @@ def load_shutters_ecsv(ecsv_path: Path) -> list[dict]:
     return records
 
 
+def discover_pointings_ecsv(obs_dir: Path, obs_name: str) -> Path | None:
+    """Find the pointings ECSV file, or None if absent."""
+    ecsv_path = obs_dir / f'{obs_name}_pointings.ecsv'
+    return ecsv_path if ecsv_path.exists() else None
+
+
+def load_pointings_ecsv(ecsv_path: Path) -> list[dict]:
+    """Load pointings ECSV and return JSONB-ready dicts.
+
+    Each dict represents one MSA pointing with geometry, exposure
+    aggregates, and a 4-quadrant footprint. Semicolon-joined string
+    columns (gratings, filters, jwst_obs_ids) are split back into lists.
+    The footprint column (4 x 4 x 2 numpy array) becomes a nested list
+    of [ra, dec] corners.
+    """
+    from astropy.table import Table
+
+    table = Table.read(ecsv_path, format='ascii.ecsv')
+
+    records = []
+    for row in table:
+        gratings_s = str(row['gratings']) if row['gratings'] else ''
+        filters_s = str(row['filters']) if row['filters'] else ''
+        obs_ids_s = str(row['jwst_obs_ids']) if row['jwst_obs_ids'] else ''
+        footprint = row['footprint']
+        records.append({
+            'msametid': int(row['msametid']),
+            'msametfl': str(row['msametfl']),
+            'ra_center': float(row['ra_center']),
+            'dec_center': float(row['dec_center']),
+            'pa_aper': float(row['pa_aper']),
+            'gratings': [g for g in gratings_s.split(';') if g],
+            'filters': [f for f in filters_s.split(';') if f],
+            'jwst_program': int(row['jwst_program']),
+            'jwst_obs_ids': [o for o in obs_ids_s.split(';') if o],
+            'n_exposures': int(row['n_exposures']),
+            'n_dithers': int(row['n_dithers']),
+            'exptime_total': float(row['exptime_total']),
+            'date_obs_start': str(row['date_obs_start']),
+            'date_obs_end': str(row['date_obs_end']),
+            'footprint': [
+                [[float(footprint[i, j, 0]), float(footprint[i, j, 1])]
+                 for j in range(footprint.shape[1])]
+                for i in range(footprint.shape[0])
+            ],
+        })
+    return records
+
+
 def filter_files_by_source_ids(
     files: list[Path],
     source_ids: list[int],

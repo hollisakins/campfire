@@ -917,10 +917,7 @@ def _aggregate_to_insert_dict(agg: ClusterAggregates, field: str, now: str) -> d
         'max_exposure_time': agg.max_exposure_time,
         'updated_at': now,
         # New objects start with no inspection state. is_active and version
-        # get their column defaults (true, 1). best_redshift / best_redshift_quality
-        # remain in the schema for back-compat until Phase E; they're left at
-        # the column default (NULL, 0) here since the trigger that maintained
-        # them is removed in Phase D.
+        # get their column defaults (true, 1).
     }
 
 

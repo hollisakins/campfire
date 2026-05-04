@@ -410,7 +410,7 @@ export function MapViewer({
 
         {/* Popup for clicked marker (standalone, rendered by React) */}
         {popupState && (() => {
-          const qualityLabel = QUALITY_LABELS.find(q => q.value === popupState.marker.best_redshift_quality);
+          const qualityLabel = QUALITY_LABELS.find(q => q.value === popupState.marker.redshift_quality);
           return (
             <Popup
               position={popupState.latLng}
@@ -427,8 +427,8 @@ export function MapViewer({
                   </Link>
                 </div>
                 <div className="space-y-0.5 text-xs">
-                  {popupState.marker.best_redshift !== null && (
-                    <div>z = {popupState.marker.best_redshift.toFixed(4)}</div>
+                  {popupState.marker.redshift !== null && (
+                    <div>z = {popupState.marker.redshift.toFixed(4)}</div>
                   )}
                   <div>
                     Quality: {qualityLabel?.icon} {qualityLabel?.label || 'Unknown'}

@@ -15,6 +15,17 @@
 # Per-observation stage overrides can be nested:
 #   [obs_name.stage1]
 #       subtract_2d = true
+#
+# Manual masks (DS9 polygon regions in detector pixel coords) can be drawn
+# in DS9 via `cfpipe nirspec mask edit --obs <name>` and stored as raw .reg
+# strings under [obs_name.masks], keyed by rate file basename:
+#   [obs_name.masks]
+#       "jw01234001001_nrs1" = """
+#       image
+#       polygon(100,200,120,200,120,250,100,250)
+#       """
+# Masked pixels are OR'd as DO_NOT_USE into the rate file DQ before stage1
+# background subtraction.
 
 [example_cosmos_p1]
     field = 'cosmos'
@@ -34,3 +45,9 @@
     [example_uds_medium.stage1]
         subtract_2d = true
         box_size = 16
+
+    [example_uds_medium.masks]
+        "jw05678001001_nrs1" = """
+        image
+        polygon(120,540,180,540,180,610,120,610)
+        """

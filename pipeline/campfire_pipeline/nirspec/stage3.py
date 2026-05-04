@@ -17,6 +17,7 @@ from campfire_pipeline.common.io import log
 from campfire_pipeline.nirspec.extraction import (
     boxcar_profile,
     optext_profile,
+    optext_profile_is_corrupted,
     extract_with_profile,
     combine_1d_spectra,
 )
@@ -339,7 +340,7 @@ def opt_ext_single_source(
             continue
 
     ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
-    ph['CMPFRVER'] = (version, 'CAMPFIRE git commit (or pinned version)')
+    ph['CMPFRVER'] = (version, 'campfire-pipeline version (PEP 440)')
 
     primary = fits.PrimaryHDU(header=ph)
 
@@ -351,9 +352,18 @@ def opt_ext_single_source(
     x1d_stop = x1d['EXTRACT1D'].header['EXTRYSTP']
     cen = (x1d_start+x1d_stop)/2
     profile_opt = optext_profile(collapsed, x1d_start, x1d_stop)
-    if all(np.isnan(profile_opt)):
-        # fallback to 3px boxcar
+    corrupted, n_pos, pos_frac = optext_profile_is_corrupted(collapsed, x1d_start, x1d_stop)
+    if corrupted or all(np.isnan(profile_opt)):
+        log(f"Optimal-extraction profile is corrupted for {product_name} "
+            f"(n_positive={n_pos}, positive_fraction={pos_frac:.2f}); "
+            f"falling back to 3px boxcar")
         profile_opt = boxcar_profile(cen-1.5, cen+1.5, len(collapsed))
+        optext_status = 'boxcar-3px'
+        opt_label = 'Optimal (3px boxcar fallback)'
+    else:
+        optext_status = 'optimal'
+        opt_label = 'Optimal'
+    primary.header['CMPFROPT'] = (optext_status, "Optimal extraction status ('optimal' or fallback)")
 
     fnu_opt, fnu_opt_err = extract_with_profile(profile_opt, s2d_sci, s2d_err, mask=s2d_mask, ivw=True)
 
@@ -371,7 +381,7 @@ def opt_ext_single_source(
 
     if plot_profiles:
         from campfire_pipeline.nirspec.plots import plot_extraction_profiles
-        profiles = {'Optimal': profile_opt, '3px boxcar': profile_3px,
+        profiles = {opt_label: profile_opt, '3px boxcar': profile_3px,
                     '4px boxcar': profile_4px, '5px boxcar': profile_5px}
         plot_extraction_profiles(
             out_filename.replace('_spec.fits', '_prof.pdf'),
@@ -533,15 +543,24 @@ def combine_per_eg_spectra(
     x1d_stop = x1d['EXTRACT1D'].header['EXTRYSTP']
     cen = (x1d_start + x1d_stop) / 2
     profile_opt = optext_profile(collapsed, x1d_start, x1d_stop)
-    if all(np.isnan(profile_opt)):
+    corrupted, n_pos, pos_frac = optext_profile_is_corrupted(collapsed, x1d_start, x1d_stop)
+    if corrupted or all(np.isnan(profile_opt)):
+        log(f"Stacked optimal-extraction profile is corrupted for {product_name} "
+            f"(n_positive={n_pos}, positive_fraction={pos_frac:.2f}); "
+            f"falling back to 3px boxcar")
         profile_opt = boxcar_profile(cen - 1.5, cen + 1.5, len(collapsed))
+        optext_status = 'boxcar-3px'
+        opt_label = 'Optimal (3px boxcar fallback)'
+    else:
+        optext_status = 'optimal'
+        opt_label = 'Optimal'
     profile_3px = boxcar_profile(cen - 1.5, cen + 1.5, len(collapsed))
     profile_4px = boxcar_profile(cen - 2.0, cen + 2.0, len(collapsed))
     profile_5px = boxcar_profile(cen - 2.5, cen + 2.5, len(collapsed))
 
     if plot_profiles:
         from campfire_pipeline.nirspec.plots import plot_extraction_profiles
-        profiles = {'Optimal': profile_opt, '3px boxcar': profile_3px,
+        profiles = {opt_label: profile_opt, '3px boxcar': profile_3px,
                     '4px boxcar': profile_4px, '5px boxcar': profile_5px}
         prof_path = os.path.join(workspace_dir, f'{product_name}_prof.pdf')
         plot_extraction_profiles(prof_path, collapsed, profiles,
@@ -569,8 +588,9 @@ def combine_per_eg_spectra(
         except KeyError:
             continue
     ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
-    ph['CMPFRVER'] = (version, 'CAMPFIRE git commit (or pinned version)')
+    ph['CMPFRVER'] = (version, 'campfire-pipeline version (PEP 440)')
     ph['CMPFRSTG'] = ('stage3-1d', 'CAMPFIRE stage that produced this file')
+    ph['CMPFROPT'] = (optext_status, "Optimal extraction status ('optimal' or fallback)")
     ph['NCOMBINE'] = (len(per_eg_spec_files), 'Number of per-exp_group spectra combined')
     primary = fits.PrimaryHDU(header=ph)
 

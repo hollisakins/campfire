@@ -6,7 +6,7 @@ import { Loader2 } from 'lucide-react';
 import { InspectionModeOverlay } from '@/components/spectra/inspection/InspectionModeOverlay';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { getObjectById } from '@/lib/actions/spectra';
-import { parseFiltersFromURL } from '@/lib/utils/url-params';
+import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
 import type { ObjectDetail } from '@/lib/types';
 
 function InspectPageInner() {
@@ -21,6 +21,7 @@ function InspectPageInner() {
   urlParams.delete('start');
   const filterStr = urlParams.toString();
   const filters = parseFiltersFromURL(urlParams);
+  const { sortColumn, sortDirection } = parseSortingFromURL(urlParams, 'objects');
 
   const [object, setObject] = useState<ObjectDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -97,6 +98,8 @@ function InspectPageInner() {
       object={object}
       filterStr={filterStr}
       filters={filters}
+      sortColumn={sortColumn}
+      sortDirection={sortDirection}
     />
   );
 }

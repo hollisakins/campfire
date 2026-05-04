@@ -306,6 +306,25 @@ export interface NircamExposure {
   updated_at: string;
 }
 
+// One entry in observations.pointings — a NIRSpec MSA pointing.
+export interface Pointing {
+  msametid: number;
+  msametfl: string;
+  ra_center: number;
+  dec_center: number;
+  pa_aper: number;
+  gratings: string[];
+  filters: string[];
+  jwst_program: number;
+  jwst_obs_ids: string[];
+  n_exposures: number;
+  n_dithers: number;
+  exptime_total: number;
+  date_obs_start: string;
+  date_obs_end: string;
+  footprint: number[][][]; // 4 quadrants × 4 corners × [ra, dec]
+}
+
 // ============================================
 // Frontend-specific Types
 // ============================================

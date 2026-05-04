@@ -77,6 +77,32 @@ def optext_profile(collapsed, start, end):
     return profile
 
 
+def optext_profile_is_corrupted(collapsed, start, end,
+                                min_positive_pixels=3,
+                                min_positive_fraction=0.5):
+    """Diagnose whether the in-aperture cross-dispersion profile is too
+    corrupted (e.g. by background over-subtraction) to support an optimal
+    extraction. Returns ``(corrupted, n_positive, positive_fraction)``.
+
+    The profile is considered corrupted if fewer than ``min_positive_pixels``
+    finite, positive pixels lie inside the aperture, or if the ratio of
+    positive flux to total |flux| in the aperture is below
+    ``min_positive_fraction``.
+    """
+    x = np.arange(len(collapsed) + 1)
+    in_ap = (x[:-1] > start) & (x[1:] <= end)
+    aper = collapsed[in_ap]
+    aper = aper[np.isfinite(aper)]
+    if aper.size == 0:
+        return True, 0, 0.0
+    n_positive = int(np.sum(aper > 0))
+    abs_sum = float(np.sum(np.abs(aper)))
+    pos_sum = float(np.sum(aper[aper > 0]))
+    positive_fraction = pos_sum / abs_sum if abs_sum > 0 else 0.0
+    corrupted = (n_positive < min_positive_pixels) or (positive_fraction < min_positive_fraction)
+    return corrupted, n_positive, positive_fraction
+
+
 def extract_with_profile(profile, data, error, mask=None, ivw=False):
     variance = error**2
     variance[np.isnan(data)] = np.nan
