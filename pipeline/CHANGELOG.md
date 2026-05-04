@@ -44,6 +44,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   rather than a raw monorepo git short SHA.
 - Added `scripts/release-pipeline.sh` and the `/pipeline-release` Claude Code
   slash command to drive the tag-and-push workflow.
+- Scoped the `CMPFRVER` dirty-flag check to `pipeline/`, so edits in `web/`,
+  `python/`, `supabase/`, etc. no longer flip `+dDATE` on the pipeline
+  version string (#135). `git describe --dirty` checks the whole working
+  tree; we now call `git describe` (no `--dirty`) and pair it with a
+  pipeline-scoped `git status --porcelain -- pipeline`.
 
 ## v0.3.0 — legacy
 
