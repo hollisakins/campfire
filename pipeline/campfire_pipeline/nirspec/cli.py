@@ -405,25 +405,24 @@ def mask_clear(config, obs, exposure):
 @common_options
 @click.option('--exposure', 'exposure', default=None,
               help='Edit a single rate file (basename without _rate.fits). '
-                   'If omitted, all rate files are loaded as DS9 frames.')
+                   'If omitted, all rate files are loaded sequentially.')
 def mask_edit(config, obs, exposure):
-    """Open rate file(s) in DS9 to draw/edit polygon masks.
+    """Open rate file(s) in a matplotlib polygon editor.
 
-    Uses XPA to load existing regions, then captures the user's edits when
-    they press Enter and writes them back to observations.toml. DS9 is a
-    soft dependency: if `ds9` or `xpaset` is missing, prints manual-edit
-    instructions instead.
+    One window per rate file, opened sequentially. Click to place vertices,
+    close near the start vertex (or press Enter), drag handles to refine.
+    Press ``s`` to save & advance, ``b`` to go back, ``q`` to abort.
 
     Does NOT auto-apply the new masks — run `cfpipe nirspec mask apply`
-    (or any downstream stage with auto_apply=true) to update rate files.
+    afterwards to update rate files.
     """
     from campfire_pipeline.config import resolve_observations_file
-    from campfire_pipeline.nirspec.ds9 import edit_masks_in_ds9
+    from campfire_pipeline.nirspec.mpl_editor import edit_masks_in_matplotlib
 
     obs_file = resolve_observations_file(None)
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
-        edit_masks_in_ds9(obs_obj, obs_file, exposure=exposure)
+        edit_masks_in_matplotlib(obs_obj, obs_file, exposure=exposure)
 
 
 def _run_summary(cfg, obs_obj):
