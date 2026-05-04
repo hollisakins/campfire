@@ -9,6 +9,7 @@ Each public function follows the same pattern:
   5. Upsert to Supabase
 """
 
+import re
 import shutil
 from pathlib import Path
 
@@ -90,6 +91,38 @@ def _load_stuck_shutters(obs_dir: Path, obs_name: str) -> dict | None:
         return None
 
 
+_RELEASE_VERSION_RE = re.compile(r'^\d+\.\d+\.\d+$')
+
+
+def _is_release_version(version: str | None) -> bool:
+    """Return True iff *version* is a clean PEP 440 release like '0.4.0'.
+
+    Anything else — ``.dev`` builds, ``+local`` segments, free-form override
+    strings, or raw git SHAs from the legacy reduction_version scheme — is
+    considered non-release and triggers the warn-and-confirm path in
+    ``deploy_observation``.
+    """
+    return bool(version) and bool(_RELEASE_VERSION_RE.match(version))
+
+
+def _collect_non_release_versions(summary, spectra) -> list[str]:
+    """Return the unique non-release version strings present in *summary* or
+    *spectra*. Inspects both ``summary.meta['cfpipe_version']`` and each
+    spectrum's ``reduction_version`` (sourced from the FITS ``CMPFRVER``
+    header), since heterogeneous reductions may carry different strings
+    per row.
+    """
+    versions: set[str] = set()
+    meta_v = summary.meta.get('cfpipe_version')
+    if meta_v:
+        versions.add(meta_v)
+    for s in spectra:
+        v = s.get('reduction_version')
+        if v:
+            versions.add(v)
+    return sorted(v for v in versions if not _is_release_version(v))
+
+
 def deploy_observation(
     obs_name: str,
     config: dict,
@@ -140,6 +173,25 @@ def deploy_observation(
     print(f"  Objects: {len(objects)}")
     print(f"  Spectra: {len(spectra)}")
     print(f"  Zfit files: {len(zfit_paths)}")
+
+    # Warn if any spectrum was reduced with a non-release pipeline version.
+    # The dev/override string is preserved verbatim in spectra.cfpipe_version
+    # for downstream traceability — this prompt exists so deployers consciously
+    # choose to ship unreleased data, not to block it.
+    non_release_versions = _collect_non_release_versions(summary, spectra)
+    if non_release_versions:
+        print()
+        print("WARNING: non-release pipeline version detected")
+        print("  cfpipe_version strings present in this deployment:")
+        for v in non_release_versions:
+            print(f"    - {v}")
+        print("  These will be preserved verbatim in spectra.cfpipe_version.")
+        print("  Prefer deploying from a tagged release (see /pipeline-release).")
+        if not dry_run and not auto_approve:
+            resp = input("  Continue? [y/N]: ")
+            if resp.lower() != 'y':
+                print("Aborted.")
+                return {'field': field, 'needs_reconcile': False}
 
     # Generate RGB/SED if requested (skips existing files)
     if not dry_run:
