@@ -37,13 +37,13 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=overwrite)
 
     obs.discover_raw_files()
-    obs.copy_uncal_files(overwrite=overwrite)
+    obs.symlink_uncal_files(overwrite=overwrite)
 
     uncal_files = obs.glob("_uncal.fits")
     if not overwrite:
-        uncal_files = [f for f in uncal_files if not os.path.exists(f.replace('_uncal.fits', '_rate.fits'))]
-
-    uncal_files = [os.path.basename(f) for f in uncal_files]
+        uncals_to_process = [os.path.basename(f) for f in uncal_files if not os.path.exists(f.replace('_uncal.fits', '_rate.fits'))]
+    else: 
+        uncals_to_process = [os.path.basename(f) for f in uncal_files]
 
     kwargs = dict(
         do_clean_flicker_noise=stage_config['do_clean_flicker_noise'],
@@ -53,14 +53,14 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     )
 
     # Phase 1: Run Detector1Pipeline on all uncal files
-    if n_processes > 1 and uncal_files:
+    if n_processes > 1 and uncals_to_process:
         _prefetch_detector1_references(
-            [os.path.join(obs.workspace_dir, f) for f in uncal_files],
+            [os.path.join(obs.workspace_dir, f) for f in uncals_to_process],
             mask_science_regions=stage_config['do_clean_flicker_noise'] and stage_config['mask_science_regions'],
         )
     dispatch(
         run_stage1_single_uncal,
-        uncal_files,
+        uncals_to_process,
         n_processes=n_processes,
         workspace_dir=obs.workspace_dir,
         **kwargs,
@@ -79,20 +79,17 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         plot=stage_config.get('plot', True),
         save_backup=False,
     )
-    expected_rate_files = [
-        os.path.join(obs.workspace_dir, f.replace('_uncal.fits', '_rate.fits'))
-        for f in uncal_files
-    ]
-    rate_files = [f for f in expected_rate_files if os.path.exists(f)]
-    missing = set(expected_rate_files) - set(rate_files)
-    if missing:
-        for f in sorted(missing):
-            log(f"WARNING: Detector1Pipeline did not produce {os.path.basename(f)} — skipping background subtraction for this file")
-    if n_processes > 1 and rate_files:
-        _prefetch_crds_references(rate_files)
+
+    # Grab all rate files (in case there are some that didn't have background subtraction run on them!)
+    rates_to_subtract = obs.glob("_rate.fits")
+    if not overwrite:
+        rates_to_subtract = [f for f in rates_to_subtract if not os.path.exists(f.replace('_rate.fits', '_bkg.fits'))]
+
+    if n_processes > 1 and rates_to_subtract:
+        _prefetch_crds_references(rates_to_subtract)
     dispatch(
         subtract_background_from_rate_file,
-        rate_files,
+        rates_to_subtract,
         n_processes=n_processes,
         **bkg_kwargs,
     )

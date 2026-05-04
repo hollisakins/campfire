@@ -152,22 +152,20 @@ class Observation:
             rate_file = uncal_file.replace('_uncal.fits', '_rate.fits').replace(self.raw_dir, self.workspace_dir)
             self.rate_files.append(rate_file)
 
-    def copy_uncal_files(self, overwrite=False):
+    def symlink_uncal_files(self, overwrite=False):
 
         log(self.rate_files)
         if all([os.path.exists(f) for f in self.rate_files]) and not overwrite:
-            log('All rate files already exist, and overwrite=False! aborting stage1')
+            log('All rate files already exist, and overwrite=False! No new rate files will be generated.')
             return False
 
-        # Copy rate files to workspace and track MSA meta files needed
-        copied_files = []
+        # Symlink uncal files into workspace and track MSA meta files needed
         for src_file in self.uncal_files:
             dst_file = os.path.join(self.workspace_dir, os.path.basename(src_file))
             rate_file = dst_file.replace('_uncal.fits', '_rate.fits')
             if not os.path.exists(dst_file) and (not os.path.exists(rate_file) or overwrite):
-                log(f"Copying {os.path.basename(src_file)} to workspace")
-                shutil.copy2(src_file, dst_file)
-            copied_files.append(dst_file)
+                log(f"Linking {os.path.basename(src_file)} to workspace")
+                os.symlink(src_file, dst_file)
 
         for msa_meta_file in self.msa_meta_files:
             dst_msa_meta_file = os.path.join(self.workspace_dir, os.path.basename(msa_meta_file))

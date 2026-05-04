@@ -31,9 +31,34 @@ Config is parametric only — controls *how* stages run, not *whether*. `--overw
 
 Observations defined in `$CAMPFIRE_ROOT/config/observations.toml`, fields in `fields.toml`.
 
+The `[environment].CRDS_CONTEXT` value in `config_default.toml` is the canonical CRDS context for the current `cfpipe` release. Bumping it always implies a MINOR release (CRDS changes are scientifically equivalent to a calibration update). PRs that change this line must categorize the changelog entry as **Calibration**.
+
 ### Python Environment
 
 Always use the `campfire` conda environment when testing code: `conda run -n campfire python ...`
+
+## Pipeline Versioning & Releases
+
+`campfire-pipeline` follows PEP 440 / semver. Version is resolved by `setuptools-scm` from git tags matching `pipeline-vX.Y.Z` — never edited by hand. Between tags, the version is `X.Y.Z+1.devN+g<sha>[.dDATE]`.
+
+### Bump policy
+
+- **MAJOR** (X.0.0): breaking output format change (FITS schema, summary columns, file naming)
+- **MINOR** (0.X.0): any change to pixel/flux values for the same input — CRDS bump, `jwst` upgrade, new calibration default, algorithmic change with scientific impact
+- **PATCH** (0.0.X): no change to scientific output (CLI, plots, perf, internal refactor)
+
+CHANGELOG categories map directly: **Calibration → MINOR**, **Algorithm → MINOR/MAJOR**, **Infrastructure → PATCH**.
+
+### Workflow
+
+- Every PR touching `pipeline/**` adds an entry under `## Unreleased` in `pipeline/CHANGELOG.md`, categorized.
+- Tags happen separately, after merge, when you're ready to deploy. PRs do not bump versions.
+- Use `/pipeline-release [X.Y.Z]` (or `bash scripts/release-pipeline.sh X.Y.Z`) to do the rollover, commit, and tag. The script enforces: on `main`, clean tree, up-to-date with origin, non-empty Unreleased section, tag does not exist.
+- `campfire deploy` warns and requires explicit confirmation when any FITS being deployed carries a non-release `cfpipe_version` (anything not matching `^X.Y.Z$` — i.e. `.dev`, `+dirty`, `+nondefault`, or a free-form override string). The dev string is preserved verbatim in `spectra.cfpipe_version` so provenance stays visible downstream; the prompt exists so deployers consciously choose to ship unreleased data, not to block it. Pass `--auto-approve` to skip the prompt when knowingly redeploying old or experimental data.
+
+### Override
+
+For ad-hoc tagged runs that aren't going through the release flow, set `[pipeline].version = "..."` in your config. The string passes through verbatim into `CMPFRVER` and deploys through the same warn-and-confirm path as `.dev` builds.
 
 ## Web Portal
 
@@ -116,6 +141,7 @@ Test users: `admin@campfire.dev`, `user@campfire.dev`, `viewer@campfire.dev` (pa
 - Feature/fix branches off `main` → preview deployments with branched Supabase instances, merge back to `main` via PR
 - On PR open: Supabase creates a preview branch (isolated DB + Auth), runs migrations, seeds from `supabase/seed.sql`, and injects credentials into the Vercel preview deployment
 - On PR merge to `main`: Supabase automatically runs new migrations against production
+- PRs touching `pipeline/**` must add an entry to `pipeline/CHANGELOG.md` under `## Unreleased`, categorized as Calibration / Algorithm / Infrastructure. PRs touching only `web/`, `python/`, or `supabase/` do not need a changelog entry.
 
 ### Build Verification
 
@@ -141,6 +167,7 @@ cd python && pip install -e ".[deploy]"
 campfire deploy --obs <obs_name>                         # full deploy
 campfire deploy --obs <obs_name> --dry-run               # validate only
 campfire deploy rgb --obs <obs_name>                     # RGB cutouts only
+campfire deploy pointings --obs <obs_name>               # pointings JSONB backfill
 campfire deploy tiles --field cosmos --filter f444w      # map tiles
 campfire deploy sync-programs                            # upsert from programs.toml
 ```

@@ -661,8 +661,8 @@ def generate_objects_table_sql(objects: list[dict]) -> str:
         redshift_inspected = obj.get('redshift_inspected')
         redshift_inspected_sql = str(redshift_inspected) if redshift_inspected is not None else 'NULL'
 
-        lines.append(f"""INSERT INTO public.objects (id, object_id, field, ra, dec, n_targets, n_spectra, programs, gratings, observations, max_snr, max_exposure_time, best_redshift, best_redshift_quality, redshift_auto, redshift_inspected, redshift_quality, last_inspected_at, last_inspected_by, last_data_change_at)
-VALUES ({obj['_db_id']}, {sql_escape(obj['object_id'])}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {obj['n_targets']}, {obj['n_spectra']}, {sql_escape(obj['programs'])}, {sql_escape(obj['gratings'])}, {sql_escape(obj['observations'])}, {sql_escape(obj['max_snr'])}, {sql_escape(obj['max_exposure_time'])}, {sql_escape(obj['best_redshift'])}, {obj.get('best_redshift_quality', 0)}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {inspected_at}, {inspected_by}, {last_data_change_at});""")
+        lines.append(f"""INSERT INTO public.objects (id, object_id, field, ra, dec, n_targets, n_spectra, programs, gratings, observations, max_snr, max_exposure_time, redshift_auto, redshift_inspected, redshift_quality, last_inspected_at, last_inspected_by, last_data_change_at)
+VALUES ({obj['_db_id']}, {sql_escape(obj['object_id'])}, {sql_escape(obj['field'])}, {obj['ra']}, {obj['dec']}, {obj['n_targets']}, {obj['n_spectra']}, {sql_escape(obj['programs'])}, {sql_escape(obj['gratings'])}, {sql_escape(obj['observations'])}, {sql_escape(obj['max_snr'])}, {sql_escape(obj['max_exposure_time'])}, {sql_escape(obj.get('redshift_auto'))}, {redshift_inspected_sql}, {obj.get('redshift_quality', 0)}, {inspected_at}, {inspected_by}, {last_data_change_at});""")
 
     lines.append('')
     return '\n'.join(lines)

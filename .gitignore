@@ -44,6 +44,9 @@ pipeline/fields.toml
 pipeline/templates/*.pickle
 pipeline/templates/pictureframe/
 
+# setuptools-scm generated version file (regenerated on every install)
+pipeline/campfire_pipeline/_version.py
+
 # Generated map tiles (uploaded to R2)
 pipeline/tiles/
 

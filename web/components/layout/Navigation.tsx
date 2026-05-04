@@ -81,7 +81,7 @@ export const Navigation: React.FC = () => {
       href: '/nirspec', label: 'NIRSpec', children: [
         { href: '/nirspec', label: 'Catalog' },
         { href: '/nirspec/tags', label: 'Tags' },
-        { href: '/nirspec/programs', label: 'Programs' },
+        { href: '/nirspec/metadata', label: 'Metadata' },
       ],
     },
     { href: '/map', label: 'Map' },

@@ -10,13 +10,29 @@ interface TabsContextType {
 const TabsContext = createContext<TabsContextType | undefined>(undefined);
 
 interface TabsProps {
-  defaultValue: string;
+  /** Initial tab when uncontrolled. Ignored if `value` is provided. */
+  defaultValue?: string;
+  /** Controlled value. When provided, `onValueChange` is invoked on tab change. */
+  value?: string;
+  onValueChange?: (value: string) => void;
   children: React.ReactNode;
   className?: string;
 }
 
-export const Tabs: React.FC<TabsProps> = ({ defaultValue, children, className = '' }) => {
-  const [activeTab, setActiveTab] = useState(defaultValue);
+export const Tabs: React.FC<TabsProps> = ({
+  defaultValue,
+  value,
+  onValueChange,
+  children,
+  className = '',
+}) => {
+  const [internalTab, setInternalTab] = useState(defaultValue ?? '');
+  const isControlled = value !== undefined;
+  const activeTab = isControlled ? (value as string) : internalTab;
+  const setActiveTab = (next: string) => {
+    if (!isControlled) setInternalTab(next);
+    onValueChange?.(next);
+  };
 
   return (
     <TabsContext.Provider value={{ activeTab, setActiveTab }}>

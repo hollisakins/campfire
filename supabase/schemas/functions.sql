@@ -1180,7 +1180,9 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
   p_has_photometry BOOLEAN DEFAULT NULL,
   p_photo_z_min DOUBLE PRECISION DEFAULT NULL,
-  p_photo_z_max DOUBLE PRECISION DEFAULT NULL
+  p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
+  p_sort_column TEXT DEFAULT 'object_id',
+  p_sort_direction TEXT DEFAULT 'asc'
 )
 RETURNS TABLE(object_id TEXT)
 LANGUAGE plpgsql STABLE
@@ -1197,6 +1199,17 @@ BEGIN
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
     v_gratings_mode := 'any';
+  END IF;
+
+  IF p_sort_direction NOT IN ('asc', 'desc') THEN
+    p_sort_direction := 'asc';
+  END IF;
+
+  IF NOT (p_sort_column IN (
+    'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
+    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
+  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
+    p_sort_column := 'object_id';
   END IF;
 
   -- Intersect user-accessible programs with filter selection
@@ -1268,7 +1281,42 @@ BEGIN
         SELECT olm.object_id FROM object_list_members olm
         WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
     ))
-  ORDER BY o.object_id;
+  ORDER BY
+    CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'asc' THEN
+      2 * DEGREES(ASIN(SQRT(
+        POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+        COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+        POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+      ))) END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'desc' THEN
+      2 * DEGREES(ASIN(SQRT(
+        POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+        COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+        POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+      ))) END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN o.object_id END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'object_id' AND p_sort_direction = 'desc' THEN o.object_id END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc' THEN o.field END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN o.field END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN o.ra END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN o.ra END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN o.dec END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'desc' THEN o.dec END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'redshift' AND p_sort_direction = 'asc' THEN o.redshift END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'redshift' AND p_sort_direction = 'desc' THEN o.redshift END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'redshift_quality' AND p_sort_direction = 'asc' THEN o.redshift_quality END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'redshift_quality' AND p_sort_direction = 'desc' THEN o.redshift_quality END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'n_targets' AND p_sort_direction = 'asc' THEN o.n_targets END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'n_targets' AND p_sort_direction = 'desc' THEN o.n_targets END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'n_spectra' AND p_sort_direction = 'asc' THEN o.n_spectra END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'n_spectra' AND p_sort_direction = 'desc' THEN o.n_spectra END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'asc' THEN o.max_snr END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN o.max_snr END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN o.max_exposure_time END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN o.max_exposure_time END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'asc' THEN o.photo_z END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'desc' THEN o.photo_z END DESC NULLS LAST,
+    o.object_id ASC;
 END;
 $$;
 
@@ -1854,14 +1902,18 @@ GRANT EXECUTE ON FUNCTION public.get_csv_export_objects TO authenticated;
 -- get_programs_overview (reads from mv_programs_overview)
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_programs_overview();
+
 CREATE OR REPLACE FUNCTION public.get_programs_overview()
 RETURNS TABLE(
   slug text, program_name text, pi_name text, description text,
   is_public boolean, cycle integer, target_count bigint,
-  gratings text[], fields text[], observations text[], jwst_pids integer[]
+  gratings text[], fields text[], observations text[], jwst_pids integer[],
+  n_observations bigint, last_reduced_at timestamptz
 ) LANGUAGE sql STABLE AS $$
   SELECT mv.slug, mv.program_name, mv.pi_name, mv.description, mv.is_public, mv.cycle,
-    mv.target_count, mv.gratings, mv.fields, mv.observations, mv.jwst_pids
+    mv.target_count, mv.gratings, mv.fields, mv.observations, mv.jwst_pids,
+    mv.n_observations, mv.last_reduced_at
   FROM public.mv_programs_overview mv ORDER BY mv.program_name;
 $$;
 
@@ -1889,24 +1941,193 @@ GRANT EXECUTE ON FUNCTION public.refresh_programs_overview TO authenticated;
 -- get_observation_stats
 -- =============================================================================
 
+-- Aggregate stats first, then LEFT JOIN observations once for the JSONB
+-- payload. Keeps the GROUP BY key as cheap text/uuid columns so adding more
+-- per-observation metadata (additional JSONB or array columns) doesn't drag
+-- through the targets x spectra cross product. Provenance fields come from
+-- the most recent FULL deployment (source_ids_filter IS NULL); patch deployments
+-- contribute only to n_patches_since_full so per-source re-reductions don't
+-- masquerade as observation-level reductions.
+DROP FUNCTION IF EXISTS public.get_observation_stats(text[]);
+
 CREATE OR REPLACE FUNCTION public.get_observation_stats(p_program_slugs text[])
 RETURNS TABLE(
   observation text, program_slug text, program_name text, field text,
-  target_count bigint, spectrum_count bigint, total_size_bytes bigint
+  target_count bigint, spectrum_count bigint, total_size_bytes bigint,
+  pointings jsonb,
+  reduction_version text, crds_context text, cfpipe_version text, jwst_version text,
+  reduced_at timestamptz, deployed_at timestamptz,
+  deployed_by_username text, deployed_by_full_name text,
+  n_patches_since_full integer, last_patch_at timestamptz
 ) LANGUAGE sql STABLE AS $$
-  SELECT t.observation, t.program_slug, p.program_name, t.field,
-    COUNT(DISTINCT t.target_id) AS target_count,
-    COUNT(s.id) AS spectrum_count,
-    COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes
-  FROM targets t
-  JOIN programs p ON p.slug = t.program_slug
-  LEFT JOIN spectra s ON s.target_id = t.target_id
-  WHERE t.program_slug = ANY(p_program_slugs)
-  GROUP BY t.observation, t.program_slug, p.program_name, t.field
-  ORDER BY t.observation;
+  WITH stats AS (
+    SELECT t.observation, t.program_slug, p.program_name, t.field,
+      COUNT(DISTINCT t.target_id) AS target_count,
+      COUNT(s.id) AS spectrum_count,
+      COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes
+    FROM targets t
+    JOIN programs p ON p.slug = t.program_slug
+    LEFT JOIN spectra s ON s.target_id = t.target_id
+    WHERE t.program_slug = ANY(p_program_slugs)
+    GROUP BY t.observation, t.program_slug, p.program_name, t.field
+  )
+  SELECT s.observation, s.program_slug, s.program_name, s.field,
+    s.target_count, s.spectrum_count, s.total_size_bytes,
+    o.pointings,
+    full_dep.reduction_version, full_dep.crds_context,
+    full_dep.cfpipe_version, full_dep.jwst_version,
+    full_dep.reduced_at, full_dep.deployed_at,
+    full_dep.deployed_by_username, full_dep.deployed_by_full_name,
+    COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
+    patches.last_patch_at
+  FROM stats s
+  LEFT JOIN observations o ON o.name = s.observation
+  LEFT JOIN LATERAL (
+    SELECT d.reduction_version, d.crds_context, d.cfpipe_version, d.jwst_version,
+           d.reduced_at, d.deployed_at,
+           up.username AS deployed_by_username,
+           up.full_name AS deployed_by_full_name
+    FROM public.deployments d
+    LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
+    WHERE d.observation = s.observation AND d.source_ids_filter IS NULL
+    ORDER BY d.deployed_at DESC
+    LIMIT 1
+  ) full_dep ON true
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
+    FROM public.deployments d
+    WHERE d.observation = s.observation
+      AND d.source_ids_filter IS NOT NULL
+      AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
+  ) patches ON true
+  ORDER BY s.observation;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
+
+
+-- =============================================================================
+-- get_observations_overview
+-- =============================================================================
+-- Flat list of observations (scoped to the caller's accessible programs) with
+-- provenance + patch counts. Powers the /nirspec/metadata page Observations
+-- tab. Caller passes the accessible program slug list (public + explicit
+-- access), matching the get_observation_stats pattern; filtering happens in
+-- SQL so the targets/spectra aggregate doesn't scan inaccessible rows.
+--
+-- Gratings are derived from the spectra table (the actual deployed data),
+-- with observations.gratings as a fallback when no spectra exist yet — the
+-- observations.gratings column is populated from observations.toml at deploy
+-- time and is empty for observations that haven't gone through that path.
+--
+-- deployed_by_username / deployed_by_full_name come from user_profiles via
+-- the latest full deployment so the metadata page can show who reduced each
+-- observation without an extra client-side join.
+DROP FUNCTION IF EXISTS public.get_observations_overview();
+DROP FUNCTION IF EXISTS public.get_observations_overview(text[]);
+
+CREATE OR REPLACE FUNCTION public.get_observations_overview(p_program_slugs text[])
+RETURNS TABLE(
+  observation text, program_slug text, program_name text, field text,
+  cycle integer, gratings text[], pointing_count integer, pointings jsonb,
+  target_count bigint, spectrum_count bigint, total_size_bytes bigint,
+  reduction_version text, crds_context text, cfpipe_version text, jwst_version text,
+  reduced_at timestamptz, deployed_at timestamptz,
+  deployed_by_username text, deployed_by_full_name text,
+  n_patches_since_full integer, last_patch_at timestamptz
+) LANGUAGE sql STABLE AS $$
+  WITH stats AS (
+    SELECT t.observation, t.program_slug,
+      COUNT(DISTINCT t.target_id) AS target_count,
+      COUNT(s.id) AS spectrum_count,
+      COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes,
+      ARRAY_AGG(DISTINCT s.grating ORDER BY s.grating)
+        FILTER (WHERE s.grating IS NOT NULL) AS gratings
+    FROM public.targets t
+    LEFT JOIN public.spectra s ON s.target_id = t.target_id
+    WHERE t.program_slug = ANY(p_program_slugs)
+    GROUP BY t.observation, t.program_slug
+  )
+  SELECT
+    o.name AS observation,
+    o.program_slug,
+    p.program_name,
+    o.field,
+    p.cycle,
+    CASE
+      WHEN COALESCE(array_length(s.gratings, 1), 0) > 0 THEN s.gratings
+      ELSE COALESCE(o.gratings, ARRAY[]::text[])
+    END AS gratings,
+    COALESCE(jsonb_array_length(o.pointings), 0) AS pointing_count,
+    o.pointings,
+    COALESCE(s.target_count, 0)::bigint AS target_count,
+    COALESCE(s.spectrum_count, 0)::bigint AS spectrum_count,
+    COALESCE(s.total_size_bytes, 0)::bigint AS total_size_bytes,
+    full_dep.reduction_version, full_dep.crds_context,
+    full_dep.cfpipe_version, full_dep.jwst_version,
+    full_dep.reduced_at, full_dep.deployed_at,
+    full_dep.deployed_by_username, full_dep.deployed_by_full_name,
+    COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
+    patches.last_patch_at
+  FROM public.observations o
+  JOIN public.programs p ON p.slug = o.program_slug
+  LEFT JOIN stats s ON s.observation = o.name AND s.program_slug = o.program_slug
+  LEFT JOIN LATERAL (
+    SELECT d.reduction_version, d.crds_context, d.cfpipe_version, d.jwst_version,
+           d.reduced_at, d.deployed_at,
+           up.username AS deployed_by_username,
+           up.full_name AS deployed_by_full_name
+    FROM public.deployments d
+    LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
+    WHERE d.observation = o.name AND d.source_ids_filter IS NULL
+    ORDER BY d.deployed_at DESC
+    LIMIT 1
+  ) full_dep ON true
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
+    FROM public.deployments d
+    WHERE d.observation = o.name
+      AND d.source_ids_filter IS NOT NULL
+      AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
+  ) patches ON true
+  WHERE o.program_slug = ANY(p_program_slugs)
+  ORDER BY o.program_slug, o.name;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_observations_overview TO authenticated;
+
+
+-- =============================================================================
+-- get_database_overview
+-- =============================================================================
+-- Single-row scope summary for the metadata page header.
+CREATE OR REPLACE FUNCTION public.get_database_overview()
+RETURNS TABLE(
+  n_programs bigint, n_observations bigint, n_pointings bigint,
+  n_targets bigint, n_spectra bigint, total_size_bytes bigint,
+  latest_deployed_at timestamptz, latest_reduction_version text
+) LANGUAGE sql STABLE AS $$
+  WITH latest AS (
+    SELECT d.deployed_at, d.reduction_version
+    FROM public.deployments d
+    WHERE d.source_ids_filter IS NULL
+    ORDER BY d.deployed_at DESC
+    LIMIT 1
+  )
+  SELECT
+    (SELECT COUNT(*)::bigint FROM public.programs) AS n_programs,
+    (SELECT COUNT(*)::bigint FROM public.observations) AS n_observations,
+    (SELECT COALESCE(SUM(jsonb_array_length(pointings)), 0)::bigint
+       FROM public.observations
+       WHERE pointings IS NOT NULL) AS n_pointings,
+    (SELECT COUNT(*)::bigint FROM public.targets) AS n_targets,
+    (SELECT COUNT(*)::bigint FROM public.spectra) AS n_spectra,
+    (SELECT COALESCE(SUM(file_size), 0)::bigint FROM public.spectra) AS total_size_bytes,
+    (SELECT deployed_at FROM latest) AS latest_deployed_at,
+    (SELECT reduction_version FROM latest) AS latest_reduction_version;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_database_overview TO authenticated;
 
 
 -- =============================================================================
@@ -1991,6 +2212,84 @@ LANGUAGE sql STABLE AS $$
     AND s.center_dec BETWEEN p_dec - p_radius_arcsec / 3600.0
                          AND p_dec + p_radius_arcsec / 3600.0;
 $$;
+
+
+-- =============================================================================
+-- get_field_object_markers
+-- =============================================================================
+-- Single-shot fetch of every object in a field for the map viewer. Replaces
+-- the paginated PostgREST select that capped at 1000 rows/page and embedded
+-- targets(target_id) for the slit-filter bridge — both very expensive on
+-- COSMOS-sized fields. RLS on objects still applies (SECURITY INVOKER).
+
+CREATE OR REPLACE FUNCTION public.get_field_object_markers(p_field TEXT)
+RETURNS TABLE (
+  object_id           TEXT,
+  ra                  DOUBLE PRECISION,
+  "dec"               DOUBLE PRECISION,
+  redshift            DOUBLE PRECISION,
+  redshift_quality    INTEGER,
+  field               TEXT,
+  n_targets           INTEGER,
+  n_spectra           INTEGER,
+  programs            TEXT[],
+  member_target_ids   TEXT[]
+)
+LANGUAGE sql STABLE
+AS $$
+  SELECT
+    o.object_id,
+    o.ra,
+    o.dec,
+    o.redshift::double precision,
+    o.redshift_quality,
+    o.field,
+    o.n_targets,
+    o.n_spectra,
+    o.programs,
+    COALESCE(
+      (SELECT array_agg(t.target_id ORDER BY t.target_id)
+         FROM public.targets t
+        WHERE t.object_id = o.id),
+      ARRAY[]::TEXT[]
+    ) AS member_target_ids
+  FROM public.objects o
+  WHERE o.field = p_field
+    AND o.is_active
+  ORDER BY o.object_id;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_field_object_markers TO authenticated;
+
+
+-- =============================================================================
+-- get_field_shutters
+-- =============================================================================
+-- Single-shot fetch of every shutter in a field for the map viewer. Shutters
+-- are public to authenticated users, so SECURITY INVOKER is fine.
+
+CREATE OR REPLACE FUNCTION public.get_field_shutters(p_field TEXT)
+RETURNS TABLE (
+  object_id        TEXT,
+  source_id        INTEGER,
+  center_ra        DOUBLE PRECISION,
+  center_dec       DOUBLE PRECISION,
+  position_angle   DOUBLE PRECISION,
+  shutter_idx      SMALLINT,
+  dither_id        SMALLINT,
+  shutter_state    TEXT,
+  observation      TEXT
+)
+LANGUAGE sql STABLE
+AS $$
+  SELECT s.object_id, s.source_id, s.center_ra, s.center_dec,
+         s.position_angle, s.shutter_idx, s.dither_id, s.shutter_state, s.observation
+  FROM public.shutters s
+  WHERE s.field = p_field
+  ORDER BY s.object_id;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_field_shutters TO authenticated;
 
 
 -- =============================================================================
