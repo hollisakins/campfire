@@ -25,6 +25,8 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+## v0.4.0 — 2026-05-04
+
 ### Algorithm
 - NIRSpec now includes an optional masking step between stage1 and stage2, 
   to mask specific regions contaminated by artifacts (e.g., shorts) which
