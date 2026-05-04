@@ -290,6 +290,76 @@ def _output_path_for(file_info, download_root, instrument):
     return Path(download_root) / pid / filename
 
 
+# ---------------------------------------------------------------------------
+# NIRCam: per-detector filter resolution
+#
+# A NIRCam exposure images simultaneously through a SW filter (modules A1-A4,
+# B1-B4) and an LW filter (NRCALONG/NRCBLONG, a.k.a. NRCA5/NRCB5). MAST
+# returns one fileset row per searched filter, but ``list_products`` then
+# yields uncal files for ALL ten detectors of that fileset — so the fileset's
+# top-level ``filter`` field is wrong for half of them. The correct per-file
+# filter has to be derived by classifying the detector and looking up the
+# matching half of ``opticalElements`` (e.g. ``"F090W;CLEAR, F410M;CLEAR"``).
+# ---------------------------------------------------------------------------
+
+def _is_lw_detector(detector_token):
+    """True if a NIRCam detector token (lowercased, e.g. 'nrca1', 'nrcalong')
+    refers to a long-wavelength detector (NRCALONG/NRCBLONG = NRCA5/NRCB5)."""
+    d = (detector_token or "").lower()
+    return d.endswith("long") or d.endswith("5")
+
+
+def _effective_filter(filter_str, pupil_str, sw_set, lw_set):
+    """Pick the science filter from a (filter, pupil) pair.
+
+    NIRCam can mount narrowband filters in the pupil wheel — when the pupil
+    is itself a known bandpass, that's the actual filter being used and the
+    filter wheel just holds a wide companion (e.g. F150W2 + F162M pupil).
+    """
+    f = (filter_str or "").strip()
+    p = (pupil_str or "").strip()
+    if p and p.upper() not in ("CLEAR", "CLEARP") and p.lower() in (sw_set | lw_set):
+        return p
+    return f
+
+
+def _parse_optical_elements(s, sw_set, lw_set):
+    """Parse a NIRCam ``opticalElements`` string into (sw_filter, lw_filter).
+
+    Format is two ``"FILTER;PUPIL"`` pairs joined by ``", "`` — one SW, one LW.
+    Either side may be ``None`` if the string is malformed or the filter
+    isn't recognized.
+    """
+    if not s:
+        return None, None
+    sw_filter = lw_filter = None
+    for pair in s.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        bits = pair.split(";")
+        filt = bits[0].strip()
+        pup = bits[1].strip() if len(bits) > 1 else ""
+        eff = _effective_filter(filt, pup, sw_set, lw_set)
+        if not eff:
+            continue
+        key = eff.lower()
+        if key in sw_set:
+            sw_filter = eff
+        elif key in lw_set:
+            lw_filter = eff
+    return sw_filter, lw_filter
+
+
+def _detector_token_from_filename(filename):
+    """Extract the lowercase detector token from a NIRCam uncal filename.
+
+    Example: ``jw06882025001_02101_00001_nrca1_uncal.fits`` → ``'nrca1'``.
+    """
+    stem = filename.rsplit("_uncal.fits", 1)[0]
+    return stem.rsplit("_", 1)[-1].lower()
+
+
 def _write_nircam_manifest(download_root, program_id, rows):
     """Upsert NIRCam manifest rows into ``raw/nircam/{PID}/manifest.ecsv``.
 
@@ -383,6 +453,14 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     for f in uncal_files + aux_files:
         f["program_id"] = pid_str
     if instrument == "NIRCAM":
+        from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
+        sw_set = set(SW_FILTERS)
+        lw_set = set(LW_FILTERS)
+
+        kept = []
+        requested = {x.lower() for x in filters} if filters else None
+        unresolved = 0
+        dropped = 0
         for f in uncal_files:
             # NIRCam uncal filenames look like '{fileSetName}_{detector}_uncal.fits'
             # where fileSetName has no detector token. Walk back tokens until we
@@ -396,8 +474,38 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
                     fs = fileset_index[candidate]
                     break
                 parts.pop()
-            f["filter"] = (fs.get("filter") or "").lower() or None
+
+            # Resolve the actual filter for THIS detector. The fileset's
+            # top-level `filter` is whichever of SW/LW matched our search and
+            # would tag every detector identically — wrong for the other
+            # half of the focal plane.
+            sw_filt, lw_filt = _parse_optical_elements(
+                fs.get("opticalElements"), sw_set, lw_set,
+            )
+            is_lw = _is_lw_detector(_detector_token_from_filename(f["filename"]))
+            effective = lw_filt if is_lw else sw_filt
+            if not effective:
+                # Fall back to fileset's filter and warn — manifest will
+                # reflect what MAST gave us, but it's likely wrong for the
+                # mismatched module.
+                effective = fs.get("filter") or ""
+                unresolved += 1
+
+            f["filter"] = effective.lower() if effective else None
             f["_fileset"] = fs
+
+            if requested is not None and (f["filter"] or "") not in requested:
+                dropped += 1
+                continue
+            kept.append(f)
+
+        if dropped:
+            print(f"  Dropped {dropped} uncal file(s) whose detector's actual "
+                  f"filter wasn't in --filters")
+        if unresolved:
+            print(f"  Warning: {unresolved} uncal file(s) had no resolvable "
+                  f"filter from opticalElements; using fileset.filter as fallback")
+        uncal_files = kept
 
     # Aux first so reduction can start while uncal files stream in.
     all_files = aux_files + uncal_files

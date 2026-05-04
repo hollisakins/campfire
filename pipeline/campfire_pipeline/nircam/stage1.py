@@ -1,6 +1,6 @@
 """
-Stage 1: Detector1Pipeline processing, snowball removal, wisp subtraction,
-1/f striping removal, and persistence flagging for NIRCam data.
+Stage 1: Detector1Pipeline processing, wisp subtraction, 1/f striping
+removal, and persistence flagging for NIRCam data.
 
 Ported from nircamx/stage1.py with refactored config/path/logging access.
 """
@@ -51,8 +51,8 @@ def run_stage1(field, stage_config, filters=None, n_processes=1, overwrite=False
     field : Field
         Field dataclass (must have workspace already set up).
     stage_config : dict
-        Stage 1 configuration dict (keys: detector1_step, remove_snowball_step,
-        remove_wisp_step, remove_striping_step, persistence_step).
+        Stage 1 configuration dict (keys: detector1, remove_wisp,
+        remove_striping, persistence).
     filters : list of str, optional
         Filters to process. If None, uses ``field.filters``.
     n_processes : int
@@ -88,19 +88,6 @@ def run_stage1(field, stage_config, filters=None, n_processes=1, overwrite=False
                 stage_config=stage_config,
                 field=field,
                 overwrite=overwrite,
-            )
-
-        # ----- remove_snowball -----
-        rate_files = field.get_rate_files(filtname)
-        if not rate_files:
-            log(f"No rate files found for {filtname}, skipping remove_snowball")
-        else:
-            log(f"remove_snowball: {len(rate_files)} rate files")
-            dispatch(
-                remove_snowballs,
-                rate_files,
-                n_processes=n_processes,
-                stage_config=stage_config,
             )
 
         # ----- remove_wisp -----
@@ -183,9 +170,14 @@ def detector1_step(uncal_file, stage_config, field, overwrite=False):
 
     log(f"Running detector1_step on {uncal_file_name}")
 
+    # Pipeline-level save_results=False suppresses both _rate.fits and
+    # _rateints.fits auto-save; we save _rate.fits explicitly below to skip
+    # the rateints I/O (a 4D cube we never use). _jump.fits is still emitted
+    # because the jump substep has its own save_results=True (PersistenceFlagStep
+    # reads it from disk).
     kwargs = {
         'output_dir': output_dir,
-        'save_results': True,
+        'save_results': False,
         'steps': {
             'group_scale': {'skip': False},
             'dq_init': {'skip': False},
@@ -212,7 +204,7 @@ def detector1_step(uncal_file, stage_config, field, overwrite=False):
                 'preserve_irs2_refpix': False,
                 'refpix_algorithm': 'median',
             },
-            'rscd': {'skip': False, 'type': 'baseline'},
+            'rscd': {'skip': False},
             'firstframe': {'skip': False, 'bright_use_group1': False},
             'lastframe': {'skip': False},
             'linearity': {'skip': False},
@@ -225,8 +217,8 @@ def detector1_step(uncal_file, stage_config, field, overwrite=False):
             'persistence': {
                 'skip': False,
                 'flag_pers_cutoff': 40.0,
-                'save_persistence': True,
-                'save_results': True,
+                'save_persistence': False,
+                'save_results': False,
                 'save_trapsfilled': False,
             },
             'charge_migration': {'skip': True},
@@ -283,105 +275,10 @@ def detector1_step(uncal_file, stage_config, field, overwrite=False):
         }
     }
 
-    raw_dir = os.path.dirname(uncal_file)
-
-    calwebb_detector1.Detector1Pipeline.call(uncal_file, **kwargs)
-
-    # Move persistence-related files to stage1 output if they were written
-    # to the raw directory (some JWST pipeline versions ignore output_dir
-    # for these auxiliary products).
-    pers_suffixes = ['_persistence.fits', '_trapsfilled.fits', '_output_pers.fits']
-    for suffix in pers_suffixes:
-        pers_name = rate_file_name.replace('_rate.fits', suffix)
-        # Check raw dir first (where the pipeline may have written them)
-        raw_path = os.path.join(raw_dir, pers_name)
-        dest_path = os.path.join(output_dir, pers_name)
-        if os.path.exists(raw_path) and raw_path != dest_path:
-            shutil.move(raw_path, dest_path)
-        # If already in output_dir (newer JWST versions), nothing to do
-
-
-# ---------------------------------------------------------------------------
-# Snowball removal
-# ---------------------------------------------------------------------------
-
-def run_snowblind(rate_file, stage_config):
-    """Update JWST DQ mask using snowblind.
-
-    Parameters
-    ----------
-    rate_file : str
-        Filename of a rate.fits exposure.
-    stage_config : dict
-        Stage 1 configuration dict.
-
-    Returns
-    -------
-    dq : array-like
-        Image array with values ``new_jump_flag`` with identified snowballs.
-    """
-    step_cfg = stage_config.get('remove_snowball', {})
-    max_fraction = step_cfg.get('max_fraction', 0.3)
-    new_jump_flag = step_cfg.get('new_jump_flag', 1024)
-    min_radius = step_cfg.get('min_radius', 4)
-    growth_factor = step_cfg.get('growth_factor', 1.5)
-
-    from jwst.datamodels import ImageModel
-    import snowblind
-
-    find_snowballs = snowblind.SnowblindStep
-    with ImageModel(rate_file) as dm:
-        sb = find_snowballs.call(dm,
-            save_results=False,
-            new_jump_flag=new_jump_flag,
-            min_radius=min_radius,
-            growth_factor=growth_factor
-        )
-
-    mask_frac = ((sb.dq & new_jump_flag) > 0).sum() / sb.dq.size
-
-    if mask_frac > max_fraction:
-        log(f'snowblind: fraction of masked pixels {mask_frac*100:.2f}% > '
-            f'{max_fraction*100:.2f}% for {rate_file}, skipping...')
-        return (sb.dq & 0)
-    else:
-        log(f'snowblind: {rate_file} {mask_frac*100:.2f} masked with DQ={new_jump_flag}')
-        return (sb.dq & new_jump_flag)
-
-
-def remove_snowballs(image, stage_config):
-    """Remove snowball artifacts from a rate file.
-
-    Parameters
-    ----------
-    image : str
-        Full path to rate file.
-    stage_config : dict
-        Stage 1 configuration dict.
-    """
-    from jwst.datamodels import ImageModel
-
-    # Check that image has not already been corrected
-    model = ImageModel(image)
-    for entry in model.history:
-        if 'Removed snowballs' in entry['description']:
-            log(f'{os.path.basename(image)} already removed snowballs, exiting')
-            return
-
-    log(f'Running remove_snowballs on {os.path.basename(image)}')
-    import snowblind
-
-    snowblind_dq = run_snowblind(image, stage_config)
-    model.dq |= snowblind_dq
-
-    # Add history entry
-    from stdatamodels import util as stutil
-    time = datetime.now()
-    stepdescription = f"Removed snowballs {time.strftime('%Y-%m-%d %H:%M:%S')}"
-    substr = stutil.create_history_entry(stepdescription)
-    model.history.append(substr)
-
-    model.save(image)
+    result = calwebb_detector1.Detector1Pipeline.call(uncal_file, **kwargs)
+    if result is not None:
+        result.save(rate_file)
+        result.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1276,28 +1173,15 @@ def persistence_step(rate_files):
         input_dir=path,
         output_dir=path)
 
+    # Detector1 only emits _jump.fits as a side product (used above by
+    # PersistenceFlagStep). Other intermediates (_rateints, _output_pers,
+    # _trapsfilled, _persistence) are no longer written.
     for rate_file in rate_files:
         try:
-            os.remove(rate_file.replace('_rate.fits', '_rateints.fits'))
-        except OSError:
-            pass
-        try:
             os.remove(rate_file.replace('_rate.fits', '_jump.fits'))
+            log(f"Removed _jump.fits for {os.path.basename(rate_file).replace('_rate.fits', '')}")
         except OSError:
             pass
-        try:
-            os.remove(rate_file.replace('_rate.fits', '_trapsfilled.fits'))
-        except OSError:
-            pass
-        try:
-            os.remove(rate_file.replace('_rate.fits', '_persistence.fits'))
-        except OSError:
-            pass
-        try:
-            os.remove(rate_file.replace('_rate.fits', '_output_pers.fits'))
-        except OSError:
-            pass
-        log(f"Removed extra files for {os.path.basename(rate_file).replace('_rate.fits', '')}")
 
 
 # ---------------------------------------------------------------------------

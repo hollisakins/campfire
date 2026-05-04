@@ -25,6 +25,37 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Calibration
+- NIRCam stage 1 no longer runs `snowblind.SnowblindStep` after `Detector1Pipeline`.
+  The jump step is already configured with `expand_large_events=True`,
+  `sat_required_snowball=False`, `expand_factor=2.2`, `sat_expand=2`, and
+  `mask_snowball_core_next_int=True` (4000 s), which detects and dilates large
+  cosmic-ray clusters at the groupdq level — covering the same cases as
+  `SnowblindStep` (and more aggressively, since groupdq flags exclude affected
+  groups from the ramp fit and propagate flagging across integrations). The
+  `remove_snowballs` orchestrator step and the `[nircam.stage1.remove_snowball]`
+  config block are removed. `snowblind` remains a dependency for
+  `PersistenceFlagStep` in the persistence step.
+
+### Infrastructure
+- NIRCam `Detector1Pipeline` no longer writes `_rateints.fits`, `_output_pers.fits`,
+  `_trapsfilled.fits`, or `_persistence.fits` intermediates. Pipeline-level
+  `save_results` is now `False` and the returned rate model is saved explicitly;
+  `persistence.save_persistence` and `persistence.save_results` are likewise
+  `False`. `_jump.fits` is still written (the jump substep keeps
+  `save_results=True`) because `PersistenceFlagStep` reads `groupdq` from it,
+  and is removed by the persistence step's cleanup. No change to pixel values
+  or `_rate.fits` contents.
+- `cfpipe download --instrument nircam` now resolves the per-detector filter
+  from MAST's `opticalElements` field (e.g. `"F090W;CLEAR, F410M;CLEAR"`)
+  instead of using the fileset's top-level `filter`. Previously a request for
+  a single filter pulled in all 10 detectors of every matching fileset and
+  tagged them all with the searched filter — so SW detectors landed under
+  the LW filter directory (and vice versa) with bogus filter metadata that
+  then propagated into `manifest.ecsv` and downstream stages. Pupil-mounted
+  narrowbands (`F150W2;F162M`-style) are also handled. Files whose actual
+  filter isn't in `--filters` are dropped with a count printed.
+
 ## v0.4.0 — 2026-05-04
 
 ### Algorithm

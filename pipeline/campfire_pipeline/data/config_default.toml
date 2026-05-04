@@ -133,12 +133,6 @@
 [nircam.stage1.detector1]
     clean_flicker_noise = false
 
-[nircam.stage1.remove_snowball]
-    max_fraction = 0.3
-    new_jump_flag = 1024
-    min_radius = 4
-    growth_factor = 1.5
-
 [nircam.stage1.remove_wisp]
     apply_flat = true
     use_custom_flat = false

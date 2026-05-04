@@ -57,7 +57,17 @@ def _setup(config_path, field_name):
     """
     config = load_config(config_path)
     setup_environment(config)
-    field_obj = Field.load(field_name)
+    try:
+        field_obj = Field.load(field_name)
+    except FileNotFoundError as e:
+        raise click.ClickException(
+            f"{e}\n\n"
+            "NIRCam reductions need a fields.toml at $CAMPFIRE_ROOT/config/fields.toml. "
+            "See pipeline/fields.example.toml for the schema."
+        )
+    except ValueError as e:
+        # Raised by Field.load when the field name isn't in fields.toml
+        raise click.ClickException(str(e))
     field_obj.setup_workspace()
     return config, field_obj
 
@@ -88,7 +98,7 @@ def main():
 @common_options
 @processing_options
 def stage1(config, field, filters, processes, overwrite):
-    """Run stage 1: Detector1Pipeline + snowball/wisp/striping/persistence."""
+    """Run stage 1: Detector1Pipeline + wisp/striping/persistence."""
     from campfire_pipeline.nircam.stage1 import run_stage1
 
     cfg, field_obj = _setup(config, field)
