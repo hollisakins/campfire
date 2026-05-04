@@ -19,6 +19,8 @@ dependencies = [
     "snowblind",
     "shapely",
     "photutils>=1.13",
+    "regions>=0.6",
+    "tomlkit>=0.13",
     "JWST_FOV_plotter>=0.4",
 ]
 

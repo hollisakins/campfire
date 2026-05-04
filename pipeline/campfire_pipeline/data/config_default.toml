@@ -44,6 +44,9 @@
         G235H = [1.66, 4.0]
         G395H = [2.87, 5.5]
 
+[nirspec.masks]
+    auto_apply = true   # at stage2a entry, auto re-apply manual masks if they're stale vs the rate file
+
 [nirspec.stage2]
     set_stellarity = 1.0
     rectify = true

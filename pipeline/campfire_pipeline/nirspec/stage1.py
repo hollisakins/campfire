@@ -13,6 +13,17 @@ from campfire_pipeline.common.io import log
 from campfire_pipeline.common.wcs import boundingbox_to_indices, wcs_to_dq
 
 
+def bkgsub_done(rate_file: str) -> bool:
+    """True iff the rate file's primary header has CFBKGSUB=True.
+
+    Single source of truth for "has background subtraction been applied to
+    this rate file" — replaces the older `_bkg.fits`-existence sentinel,
+    which could desync from the rate file under partial reruns / crashes.
+    """
+    with fits.open(rate_file) as hdul:
+        return bool(hdul[0].header.get('CFBKGSUB', False))
+
+
 def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None, products_dir=None):
     """Orchestrate stage 1: Detector1Pipeline + background subtraction.
 
@@ -83,16 +94,26 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     # Grab all rate files (in case there are some that didn't have background subtraction run on them!)
     rates_to_subtract = obs.glob("_rate.fits")
     if not overwrite:
-        rates_to_subtract = [f for f in rates_to_subtract if not os.path.exists(f.replace('_rate.fits', '_bkg.fits'))]
+        rates_to_subtract = [f for f in rates_to_subtract if not bkgsub_done(f)]
 
     if n_processes > 1 and rates_to_subtract:
         _prefetch_crds_references(rates_to_subtract)
-    dispatch(
-        subtract_background_from_rate_file,
-        rates_to_subtract,
-        n_processes=n_processes,
-        **bkg_kwargs,
-    )
+    if obs.manual_masks:
+        from campfire_pipeline.nirspec.masks import bkgsub_with_masks
+        dispatch(
+            bkgsub_with_masks,
+            rates_to_subtract,
+            n_processes=n_processes,
+            manual_masks=obs.manual_masks,
+            **bkg_kwargs,
+        )
+    else:
+        dispatch(
+            subtract_background_from_rate_file,
+            rates_to_subtract,
+            n_processes=n_processes,
+            **bkg_kwargs,
+        )
 
 
 def mask_slits(
@@ -473,15 +494,31 @@ def subtract_background_from_rate_file(
     from astropy.stats import median_absolute_deviation
 
     input_dir = os.path.dirname(rate_file)
+
+    # Self-skip if bkgsub has already run on this rate file. Single source of truth
+    # is the CFBKGSUB primary-header bool — written by this function, cleared by
+    # masks.restore_pre_bkgsub when undoing for a re-apply.
+    with fits.open(rate_file) as _hdul:
+        if bool(_hdul[0].header.get('CFBKGSUB', False)):
+            log(f'Background subtraction already done for {os.path.basename(rate_file)}, skipping...')
+            return
+
+    # Drop any pre-existing CFBKG/CFBKGMASK *before* the ImageModel save below.
+    # ImageModel.save() snapshots asdf refs to whatever extensions are present,
+    # so deleting after save would leave dangling refs. In the normal flow these
+    # extensions aren't present here (restore_pre_bkgsub clears them); this
+    # protects against any inconsistent state surviving into a re-run.
+    with fits.open(rate_file, mode='update') as _hdul:
+        for name in ('CFBKG', 'CFBKGMASK'):
+            try:
+                del _hdul[name]
+            except KeyError:
+                pass
+
     with ImageModel(rate_file) as model:
 
         if not 'PRISM' in model.meta.instrument.grating:
             do_row_1f = False
-
-        for entry in model.history:
-            if 'Subtracted' in entry['description'] and 'rescaled variance' in entry['description']:
-                log(f'Background subtraction already done for {os.path.basename(rate_file)}, skipping...')
-                return
 
         log(f'Subtracting background and rescaling variance for {os.path.basename(rate_file)}')
 
@@ -721,8 +758,6 @@ def subtract_background_from_rate_file(
                 row_model=row_model,
             )
 
-        fits.writeto(rate_file.replace('_rate.fits','_mask.fits'), mask.astype(int), overwrite=True)
-        fits.writeto(rate_file.replace('_rate.fits','_bkg.fits'), bkg_total, overwrite=True)
         rate_new = model.data - bkg_total
 
         model.data = rate_new
@@ -730,8 +765,9 @@ def subtract_background_from_rate_file(
         nsci = model.data / np.sqrt(model.var_rnoise)
         from astropy.stats import sigma_clipped_stats
         rms = sigma_clipped_stats(nsci[mask])[2]
-        log(f'Scaling up VAR_RNOISE by {rms**2:.2f}')
-        model.var_rnoise = model.var_rnoise * rms**2
+        var_rescale = float(rms ** 2)
+        log(f'Scaling up VAR_RNOISE by {var_rescale:.2f}')
+        model.var_rnoise = model.var_rnoise * var_rescale
 
         log(f"Saving to {os.path.basename(rate_file)}")
         time = datetime.now()
@@ -743,6 +779,18 @@ def subtract_background_from_rate_file(
             shutil.copy2(rate_file, rate_file.replace('_rate.fits', '_rate_before_bkgsub.fits'))
 
         model.save(rate_file)
+
+    # Bundle the bkg image, bkg-fit mask, variance-rescale factor, and timestamp
+    # into the rate file itself so the bkgsub state can't desync from the rate.
+    # CFBKGSUB is the single source of truth for "bkgsub has run on this file".
+    # CFBKG/CFBKGMASK were dropped above the ImageModel block so we just append.
+    with fits.open(rate_file, mode='update') as hdul:
+        hdr = hdul[0].header
+        hdr['CFBKGSUB'] = (True, 'Background subtraction applied to SCI')
+        hdr['CFBKGRMS'] = (var_rescale, 'VAR_RNOISE rescale factor from bkg sub')
+        hdr['CFBKGDT'] = (time.strftime('%Y-%m-%dT%H:%M:%S'), 'Timestamp of last bkg sub')
+        hdul.append(fits.ImageHDU(bkg_total.astype(np.float32), name='CFBKG'))
+        hdul.append(fits.ImageHDU(mask.astype(np.uint8), name='CFBKGMASK'))
 
 
 def run_stage1_single_uncal(

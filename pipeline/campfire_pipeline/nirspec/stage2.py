@@ -205,7 +205,7 @@ def _prefetch_crds_references(rate_files):
 
 def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
                 n_processes=1, plot=True, data_dir=None, products_dir=None,
-                _skip_stuck_detection=False):
+                _skip_stuck_detection=False, cfg=None):
     """Orchestrate stage 2a: WCS assignment + unit fixing + optional resampling/plotting.
 
     Parameters
@@ -218,6 +218,9 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     n_processes : int
     data_dir, products_dir : str
         Used for workspace setup if not already done.
+    cfg : dict, optional
+        Top-level config dict (used for mask auto-apply staleness check). If
+        None, loaded on demand only if manual masks are defined.
     """
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec.plots import plot_stage2a_results
@@ -238,6 +241,22 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
 
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=False)
+
+    # Mask staleness check: if any rate file's stamped CFMASKSH disagrees with
+    # the current observations.toml, restore and re-apply before stage2a runs.
+    # Done serially before the parallel dispatch to avoid races.
+    from campfire_pipeline.nirspec.masks import ensure_fresh, read_sentinel
+    rate_files_with_state = obs.manual_masks or any(
+        read_sentinel(p) for p in obs.rate_files
+    )
+    if rate_files_with_state:
+        from campfire_pipeline.config import load_config, get_stage_config
+        cfg_local = cfg if cfg is not None else load_config()
+        masks_cfg = cfg_local.get('nirspec', {}).get('masks', {})
+        if masks_cfg.get('auto_apply', True):
+            stage1_cfg = get_stage_config('stage1', cfg_local, obs)
+            for rate_file in obs.rate_files:
+                ensure_fresh(rate_file, obs, stage1_cfg)
 
     # Ensure the background override file exists so it can be edited before stage2b
     _ = obs.bkg_overrides
