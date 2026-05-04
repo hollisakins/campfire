@@ -12,13 +12,16 @@ Resolution order (first that succeeds wins):
    lookup against installed package metadata.
 5. ``"0.0.0+unknown"`` — sentinel.
 
-The translation from ``git describe`` to PEP 440:
+The translation from ``git describe`` to PEP 440 (dirty flag below comes
+from a pipeline-scoped ``git status --porcelain -- pipeline``, not from
+``git describe --dirty``, which would be tripped by edits anywhere in the
+monorepo):
 
-    pipeline-v0.4.0                    -> 0.4.0
-    pipeline-v0.4.0-3-g7f4e2c1         -> 0.4.1.dev3+g7f4e2c1
-    pipeline-v0.4.0-3-g7f4e2c1-dirty   -> 0.4.1.dev3+g7f4e2c1.d20260504
-    pipeline-v0.4.0-0-g7f4e2c1-dirty   -> 0.4.0+d20260504
-    (no matching tag yet)              -> 0.0.0.dev0+g7f4e2c1[.d20260504]
+    pipeline-v0.4.0           clean -> 0.4.0
+    pipeline-v0.4.0-3-g7f4e2c1 clean -> 0.4.1.dev3+g7f4e2c1
+    pipeline-v0.4.0-3-g7f4e2c1 dirty -> 0.4.1.dev3+g7f4e2c1.d20260504
+    pipeline-v0.4.0-0-g7f4e2c1 dirty -> 0.4.0+d20260504
+    (no matching tag yet)            -> 0.0.0.dev0+g7f4e2c1[.d20260504]
 """
 
 from __future__ import annotations
@@ -34,8 +37,7 @@ import campfire_pipeline
 
 _DESCRIBE_RE = re.compile(
     r'^pipeline-v(?P<base>\d+\.\d+\.\d+)'
-    r'(?:-(?P<distance>\d+)-g(?P<sha>[0-9a-f]+))?'
-    r'(?P<dirty>-dirty)?$'
+    r'(?:-(?P<distance>\d+)-g(?P<sha>[0-9a-f]+))?$'
 )
 
 
@@ -68,7 +70,7 @@ def _today_local_segment() -> str:
     return datetime.now(timezone.utc).strftime('d%Y%m%d')
 
 
-def _describe_to_pep440(described: str) -> str | None:
+def _describe_to_pep440(described: str, dirty: bool) -> str | None:
     m = _DESCRIBE_RE.match(described)
     if not m:
         return None
@@ -76,7 +78,6 @@ def _describe_to_pep440(described: str) -> str | None:
     base = m.group('base')
     distance = int(m.group('distance') or 0)
     sha = m.group('sha')
-    dirty = bool(m.group('dirty'))
 
     if distance == 0:
         version = base
@@ -94,25 +95,29 @@ def _describe_to_pep440(described: str) -> str | None:
     return version
 
 
+def _pipeline_dirty(repo: Path) -> bool:
+    # `git describe --dirty` checks the entire working tree; we only care
+    # about edits to pipeline/ since that's what the version string scopes.
+    return bool(_run_git(['status', '--porcelain', '--', 'pipeline'], repo))
+
+
 def _git_version() -> str | None:
     repo = _repo_root()
     if not (repo / '.git').exists():
         return None
 
     described = _run_git(
-        ['describe', '--tags', '--long', '--dirty', '--match', 'pipeline-v*'],
+        ['describe', '--tags', '--long', '--match', 'pipeline-v*'],
         repo,
     )
     if described:
-        return _describe_to_pep440(described)
+        return _describe_to_pep440(described, _pipeline_dirty(repo))
 
     # No matching tag yet — synthesize a 0.0.0.dev0 string from HEAD.
     sha = _run_git(['rev-parse', '--short=7', 'HEAD'], repo)
     if not sha:
         return None
-    dirty_local = _today_local_segment() if _run_git(
-        ['status', '--porcelain', '--', 'pipeline'], repo
-    ) else None
+    dirty_local = _today_local_segment() if _pipeline_dirty(repo) else None
     local = f"g{sha}" + (f".{dirty_local}" if dirty_local else "")
     return f"0.0.0.dev0+{local}"
 
