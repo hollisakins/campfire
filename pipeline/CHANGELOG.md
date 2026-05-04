@@ -26,6 +26,9 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- NIRSpec now includes an optional masking step between stage1 and stage2, 
+  to mask specific regions contaminated by artifacts (e.g., shorts) which
+  then get set as DQ `DO_NOT_USE`. 
 - NIRSpec optimal extraction now falls back to a 3-pixel boxcar when the
   in-aperture collapsed cross-dispersion profile is corrupted (fewer than
   3 finite positive pixels, or positive flux / total |flux| below 0.5),
