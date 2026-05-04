@@ -25,6 +25,17 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- NIRSpec optimal extraction now falls back to a 3-pixel boxcar when the
+  in-aperture collapsed cross-dispersion profile is corrupted (fewer than
+  3 finite positive pixels, or positive flux / total |flux| below 0.5),
+  e.g. due to background over-subtraction. Previously such cases produced
+  a near-delta-function profile from the single surviving positive pixel
+  and a degenerate optimal extraction. The chosen extraction method is
+  recorded in the new `CMPFROPT` primary-header keyword (`'optimal'` or
+  `'boxcar-3px'`); the QA profile plot is relabeled accordingly when the
+  fallback triggers.
+
 ### Infrastructure
 - Switched version resolution to `setuptools-scm` with a `pipeline-v*` tag
   prefix, scoping releases to the pipeline subpackage rather than the monorepo
