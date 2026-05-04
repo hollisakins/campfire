@@ -74,6 +74,7 @@ def _parse_source_ids(ctx, param, value):
 from campfire.deploy.deploy import (
     deploy_json,
     deploy_observation,
+    deploy_pointings,
     deploy_rgb,
     deploy_sed,
     deploy_shutters,
@@ -357,6 +358,20 @@ def shutters(ctx, config_path, obs, dry_run, local, skip_astrometry):
     for obs_name in obs:
         deploy_shutters(obs_name, config, dry_run=dry_run,
                         skip_astrometry=skip_astrometry)
+
+
+@deploy_group.command()
+@shared_options
+@click.pass_context
+def pointings(ctx, config_path, obs, dry_run, local):
+    """Deploy pointings ECSV to observations.pointings (JSONB).
+
+    Backfills an existing observation row with pointing metadata from
+    {obs}_pointings.ecsv without rerunning a full `campfire deploy`.
+    """
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    for obs_name in obs:
+        deploy_pointings(obs_name, config, dry_run=dry_run)
 
 
 # ---------------------------------------------------------------------------

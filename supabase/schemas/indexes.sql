@@ -184,6 +184,10 @@ CREATE INDEX IF NOT EXISTS idx_deployments_deployed_by
 CREATE INDEX IF NOT EXISTS idx_deployments_deployed_at
     ON public.deployments USING btree (deployed_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_deployments_full_obs_recent
+    ON public.deployments USING btree (observation, deployed_at DESC)
+    WHERE source_ids_filter IS NULL;
+
 
 -- =============================================================================
 -- comments

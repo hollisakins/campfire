@@ -339,7 +339,7 @@ def opt_ext_single_source(
             continue
 
     ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
-    ph['CMPFRVER'] = (version, 'CAMPFIRE git commit (or pinned version)')
+    ph['CMPFRVER'] = (version, 'campfire-pipeline version (PEP 440)')
 
     primary = fits.PrimaryHDU(header=ph)
 
@@ -569,7 +569,7 @@ def combine_per_eg_spectra(
         except KeyError:
             continue
     ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
-    ph['CMPFRVER'] = (version, 'CAMPFIRE git commit (or pinned version)')
+    ph['CMPFRVER'] = (version, 'campfire-pipeline version (PEP 440)')
     ph['CMPFRSTG'] = ('stage3-1d', 'CAMPFIRE stage that produced this file')
     ph['NCOMBINE'] = (len(per_eg_spec_files), 'Number of per-exp_group spectra combined')
     primary = fits.PrimaryHDU(header=ph)

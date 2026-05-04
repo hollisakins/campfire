@@ -437,6 +437,10 @@ def _run_summary(cfg, obs_obj):
         generate_shutters_table,
         write_shutters_ecsv,
     )
+    from campfire_pipeline.metadata.pointings import (
+        generate_pointings_table,
+        write_pointings_ecsv,
+    )
 
     from campfire_pipeline.common.version import get_reduction_version
     version = get_reduction_version(cfg)
@@ -462,6 +466,13 @@ def _run_summary(cfg, obs_obj):
         write_shutters_ecsv(shutters_table, obs_dir, obs_obj.name)
     else:
         log(f"No shutters generated for {obs_obj.name}")
+
+    # Generate pointings ECSV
+    pointings_table = generate_pointings_table(obs_obj.name, obs_dir, obs_obj.field)
+    if len(pointings_table) > 0:
+        write_pointings_ecsv(pointings_table, obs_dir, obs_obj.name)
+    else:
+        log(f"No pointings generated for {obs_obj.name}")
 
 
 @main.command()
