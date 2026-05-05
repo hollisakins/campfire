@@ -30,7 +30,8 @@ def _extract_srcmask(exposure_file):
                              name='SRCMASK')
 
 
-def image2_step(exposure_file, field, step_config, overwrite=False):
+def image2_step(exposure_file, field, step_config, overwrite=False,
+                status=None):
     """Run JWST Image2Pipeline on a single canonical exposure.
 
     Parameters
@@ -41,6 +42,8 @@ def image2_step(exposure_file, field, step_config, overwrite=False):
     step_config : dict
         ``[nircam.image2]`` (legacy ``[nircam.stage2.image2]``).
     overwrite : bool
+    status : StepStatus, optional
+        Pre-scanned CFP_* status cache.
     """
     from jwst.pipeline import calwebb_image2
 
@@ -48,9 +51,13 @@ def image2_step(exposure_file, field, step_config, overwrite=False):
     filtname = exposure_file.split('/')[-2]
     assert (filtname.lower() in SW_FILTERS) or (filtname.lower() in LW_FILTERS)
 
-    if not overwrite and cfp.has_step(exposure_file, 'CFP_IMG2'):
-        log(f"Skipping image2 on {rootname}: CFP_IMG2 already set")
-        return
+    if not overwrite:
+        already_done = (status.has(exposure_file, 'CFP_IMG2')
+                        if status is not None
+                        else cfp.has_step(exposure_file, 'CFP_IMG2'))
+        if already_done:
+            log(f"Skipping image2 on {rootname}: CFP_IMG2 already set")
+            return
 
     log(f"Running image2 on {rootname}")
 

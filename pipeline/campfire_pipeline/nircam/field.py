@@ -206,7 +206,8 @@ class Field:
 
         return sorted(result)
 
-    def get_exposure_files(self, filter_name, skip=None, with_step=None):
+    def get_exposure_files(self, filter_name, skip=None, with_step=None,
+                           status=None):
         """Get canonical per-exposure files from ``exposures_dir``.
 
         These are the files that the new pipeline mutates in place — one FITS
@@ -224,6 +225,12 @@ class Field:
             If given, restrict the results to exposures whose primary header
             already records this CFP step keyword (e.g. ``'CFP_OUT'`` to
             select only outlier-detection-finished exposures for resample).
+        status : StepStatus, optional
+            If given, ``with_step`` filtering consults the cached status
+            instead of reopening each FITS. Required for correctness only
+            in the orchestrator (which marks fresh CFP_OUT keys onto the
+            cache as outlier finishes); other callers can omit it and pay
+            the per-file fits.open.
 
         Returns
         -------
@@ -258,8 +265,11 @@ class Field:
             result = [f for f in result if f not in excluded]
 
         if with_step is not None:
-            from campfire_pipeline.common import cfp
-            result = [f for f in result if cfp.has_step(f, with_step)]
+            if status is not None:
+                result = [f for f in result if status.has(f, with_step)]
+            else:
+                from campfire_pipeline.common import cfp
+                result = [f for f in result if cfp.has_step(f, with_step)]
 
         return sorted(result)
 

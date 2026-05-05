@@ -68,7 +68,7 @@ def _polygon_overlap(region_a, region_b):
 
 
 def outlier_step(visit, visit_files, filter_files, sregions,
-                 field, step_config, overwrite=False):
+                 field, step_config, overwrite=False, status=None):
     """Run outlier detection on one visit's exposures.
 
     Parameters
@@ -86,6 +86,8 @@ def outlier_step(visit, visit_files, filter_files, sregions,
     step_config : dict
         ``[nircam.outlier]`` (legacy ``[nircam.stage3.outlier]``).
     overwrite : bool
+    status : StepStatus, optional
+        Pre-scanned CFP_* status cache.
     """
     if not visit_files:
         return
@@ -115,7 +117,10 @@ def outlier_step(visit, visit_files, filter_files, sregions,
 
     # Manifest-based skip
     if not overwrite:
-        all_done = all(cfp.has_step(f, 'CFP_OUT') for f in visit_files)
+        if status is not None:
+            all_done = all(status.has(f, 'CFP_OUT') for f in visit_files)
+        else:
+            all_done = all(cfp.has_step(f, 'CFP_OUT') for f in visit_files)
         if all_done:
             new_basenames = sorted(os.path.basename(f) for f in all_inputs)
             manifest = load_manifest(manifest_path)

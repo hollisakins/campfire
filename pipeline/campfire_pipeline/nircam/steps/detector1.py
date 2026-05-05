@@ -18,7 +18,8 @@ from campfire_pipeline.common import cfp
 from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
 
 
-def detector1_step(uncal_file, field, step_config, overwrite=False):
+def detector1_step(uncal_file, field, step_config, overwrite=False,
+                   status=None):
     """Run JWST Detector1Pipeline on a single ``_uncal.fits`` exposure.
 
     Parameters
@@ -32,6 +33,9 @@ def detector1_step(uncal_file, field, step_config, overwrite=False):
     overwrite : bool
         If True, re-run even when ``CFP_DET1`` is already stamped on the
         canonical file.
+    status : StepStatus, optional
+        Pre-scanned CFP_* status cache (consulted instead of reopening the
+        FITS for the skip check). Falls back to a live header read when None.
     """
     from jwst.pipeline import calwebb_detector1
 
@@ -45,11 +49,12 @@ def detector1_step(uncal_file, field, step_config, overwrite=False):
     os.makedirs(output_dir, exist_ok=True)
     canonical = field.get_exposure_path(rootname, filtname)
 
-    if (os.path.exists(canonical)
-            and not overwrite
-            and cfp.has_step(canonical, 'CFP_DET1')):
-        log(f"Skipping detector1 on {rootname}, CFP_DET1 already set")
-        return
+    if os.path.exists(canonical) and not overwrite:
+        already_done = (status.has(canonical, 'CFP_DET1') if status is not None
+                        else cfp.has_step(canonical, 'CFP_DET1'))
+        if already_done:
+            log(f"Skipping detector1 on {rootname}, CFP_DET1 already set")
+            return
 
     log(f"Running detector1 on {rootname}")
 

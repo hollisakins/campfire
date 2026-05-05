@@ -20,13 +20,17 @@ from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 
 
-def edge_step(exposure_file, field, step_config, overwrite=False):
+def edge_step(exposure_file, field, step_config, overwrite=False, status=None):
     """Flag noisy outer edges of a single canonical exposure."""
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
-    if not overwrite and cfp.has_step(exposure_file, 'CFP_EDGE'):
-        log(f"Skipping edge on {rootname}: CFP_EDGE already set")
-        return
+    if not overwrite:
+        already_done = (status.has(exposure_file, 'CFP_EDGE')
+                        if status is not None
+                        else cfp.has_step(exposure_file, 'CFP_EDGE'))
+        if already_done:
+            log(f"Skipping edge on {rootname}: CFP_EDGE already set")
+            return
 
     log(f"Running edge flagging on {rootname}")
 

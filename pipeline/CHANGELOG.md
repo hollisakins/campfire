@@ -38,6 +38,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Infrastructure
+- NIRCam orchestrator pre-scans every canonical exposure's primary header
+  once at the top of `run_process` / `run_combine` / `run_step` and caches
+  the set of present `CFP_*` keys in a `StepStatus` object
+  (`nircam/status.py`). Each per-exposure step now filters out
+  already-stamped files *before* spinning up the multiprocessing pool, so
+  no-op passes on a finished field skip the worker spin-up entirely
+  (worker processes use `spawn` on macOS, so each one re-imports
+  astropy/jwst — that overhead used to be paid once per step regardless
+  of whether any work needed to happen). Skymatch and outlier likewise
+  short-circuit whole visits whose every member is already up-to-date.
+  No change to outputs; `cfp.has_step` remains the fallback path for
+  ad-hoc/CLI callers (`status`, `reset`, standalone scripts) and as a
+  defensive check inside each step.
 - NIRCam `Detector1Pipeline` no longer writes `_rateints.fits`, `_output_pers.fits`,
   `_trapsfilled.fits`, or `_persistence.fits` intermediates. Pipeline-level
   `save_results` is now `False` and the returned rate model is saved explicitly;

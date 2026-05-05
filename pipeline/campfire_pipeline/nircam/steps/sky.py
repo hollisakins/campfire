@@ -20,13 +20,17 @@ from campfire_pipeline.common import cfp
 from campfire_pipeline.nircam.skyfit import fit_sky_tot
 
 
-def sky_step(exposure_file, field, step_config, overwrite=False):
+def sky_step(exposure_file, field, step_config, overwrite=False, status=None):
     """Subtract a fitted sky pedestal from a single canonical exposure."""
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
-    if not overwrite and cfp.has_step(exposure_file, 'CFP_SKY'):
-        log(f"Skipping sky on {rootname}: CFP_SKY already set")
-        return
+    if not overwrite:
+        already_done = (status.has(exposure_file, 'CFP_SKY')
+                        if status is not None
+                        else cfp.has_step(exposure_file, 'CFP_SKY'))
+        if already_done:
+            log(f"Skipping sky on {rootname}: CFP_SKY already set")
+            return
 
     # Read SRCMASK from the canonical file's extension (was a sidecar in the
     # legacy layout).

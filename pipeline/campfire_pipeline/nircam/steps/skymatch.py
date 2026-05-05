@@ -49,7 +49,8 @@ def _none_if_string_none(val):
     return val
 
 
-def skymatch_step(visit_files, field, step_config, overwrite=False):
+def skymatch_step(visit_files, field, step_config, overwrite=False,
+                  status=None):
     """Run skymatch on one visit's worth of canonical exposures.
 
     Parameters
@@ -60,14 +61,20 @@ def skymatch_step(visit_files, field, step_config, overwrite=False):
     step_config : dict
         ``[nircam.skymatch]`` (legacy ``[nircam.stage3.skymatch]``).
     overwrite : bool
+    status : StepStatus, optional
+        Pre-scanned CFP_* status cache.
     """
     if not visit_files:
         return
 
-    if not overwrite and all(
-            cfp.has_step(f, 'CFP_SMAT') for f in visit_files):
-        log("Skipping skymatch: CFP_SMAT set on every visit member")
-        return
+    if not overwrite:
+        if status is not None:
+            all_done = all(status.has(f, 'CFP_SMAT') for f in visit_files)
+        else:
+            all_done = all(cfp.has_step(f, 'CFP_SMAT') for f in visit_files)
+        if all_done:
+            log("Skipping skymatch: CFP_SMAT set on every visit member")
+            return
 
     visit = os.path.basename(visit_files[0]).split('_')[0]
     log(f"Running skymatch on visit {visit} ({len(visit_files)} exposures)")

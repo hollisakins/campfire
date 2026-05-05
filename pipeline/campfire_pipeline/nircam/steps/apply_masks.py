@@ -29,7 +29,8 @@ from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 
 
-def apply_masks_step(exposure_file, field, step_config, overwrite=False):
+def apply_masks_step(exposure_file, field, step_config, overwrite=False,
+                     status=None):
     """Apply region-file masks to a single canonical exposure.
 
     Parameters
@@ -41,13 +42,19 @@ def apply_masks_step(exposure_file, field, step_config, overwrite=False):
         Keys: ``mask_flag`` (DQ bit, default 1024), ``mask_set_nan``
         (boolean, default False — also write NaN to SCI for masked pixels).
     overwrite : bool
+    status : StepStatus, optional
+        Pre-scanned CFP_* status cache.
     """
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
     filtname = exposure_file.split('/')[-2]
 
-    if not overwrite and cfp.has_step(exposure_file, 'CFP_MASK'):
-        log(f"Skipping apply_masks on {rootname}: CFP_MASK already set")
-        return
+    if not overwrite:
+        already_done = (status.has(exposure_file, 'CFP_MASK')
+                        if status is not None
+                        else cfp.has_step(exposure_file, 'CFP_MASK'))
+        if already_done:
+            log(f"Skipping apply_masks on {rootname}: CFP_MASK already set")
+            return
 
     reg_file = os.path.join(field.mask_dir, filtname, f'{rootname}.reg')
 

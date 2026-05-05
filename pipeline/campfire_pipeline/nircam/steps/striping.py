@@ -156,7 +156,8 @@ def _apply_flat_with_retry(model, flatfile):
     raise last_exc
 
 
-def striping_step(exposure_file, field, step_config, overwrite=False):
+def striping_step(exposure_file, field, step_config, overwrite=False,
+                  status=None):
     """Subtract 1/f striping from a single canonical exposure.
 
     Parameters
@@ -167,6 +168,8 @@ def striping_step(exposure_file, field, step_config, overwrite=False):
     step_config : dict
         ``[nircam.striping]`` (legacy ``[nircam.stage1.remove_striping]``).
     overwrite : bool
+    status : StepStatus, optional
+        Pre-scanned CFP_* status cache.
     """
     apply_flat = step_config.get('apply_flat', True)
     use_custom_flat = step_config.get('use_custom_flat', False)
@@ -182,9 +185,13 @@ def striping_step(exposure_file, field, step_config, overwrite=False):
 
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
-    if not overwrite and cfp.has_step(exposure_file, 'CFP_1F'):
-        log(f"Skipping striping on {rootname}: CFP_1F already set")
-        return
+    if not overwrite:
+        already_done = (status.has(exposure_file, 'CFP_1F')
+                        if status is not None
+                        else cfp.has_step(exposure_file, 'CFP_1F'))
+        if already_done:
+            log(f"Skipping striping on {rootname}: CFP_1F already set")
+            return
 
     log(f"Running striping on {rootname}")
 

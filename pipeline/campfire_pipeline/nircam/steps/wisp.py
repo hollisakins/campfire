@@ -105,7 +105,7 @@ def _apply_flat_with_retry(model, flatfile):
     raise last_exc
 
 
-def wisp_step(exposure_file, field, step_config, overwrite=False):
+def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     """Subtract a fitted wisp template from a single canonical exposure.
 
     Parameters
@@ -118,6 +118,8 @@ def wisp_step(exposure_file, field, step_config, overwrite=False):
         equivalent in shape).
     overwrite : bool
         Re-run even when ``CFP_WISP`` is already set.
+    status : StepStatus, optional
+        Pre-scanned CFP_* status cache.
     """
     plot = step_config.get('plot', True)
     apply_flat = step_config.get('apply_flat', True)
@@ -127,9 +129,13 @@ def wisp_step(exposure_file, field, step_config, overwrite=False):
     filtname = exposure_file.split('/')[-2]
     detector = rootname.split('_')[3]
 
-    if not overwrite and cfp.has_step(exposure_file, 'CFP_WISP'):
-        log(f"Skipping wisp on {rootname}: CFP_WISP already set")
-        return
+    if not overwrite:
+        already_done = (status.has(exposure_file, 'CFP_WISP')
+                        if status is not None
+                        else cfp.has_step(exposure_file, 'CFP_WISP'))
+        if already_done:
+            log(f"Skipping wisp on {rootname}: CFP_WISP already set")
+            return
 
     if detector not in WISP_DETECTORS:
         log(f"Skipping wisp on {rootname}: detector {detector} has no wisps")

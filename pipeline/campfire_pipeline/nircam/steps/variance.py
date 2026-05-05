@@ -23,13 +23,18 @@ from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 
 
-def variance_step(exposure_file, field, step_config, overwrite=False):
+def variance_step(exposure_file, field, step_config, overwrite=False,
+                  status=None):
     """Rescale variance maps on a single canonical exposure."""
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
-    if not overwrite and cfp.has_step(exposure_file, 'CFP_VAR'):
-        log(f"Skipping variance on {rootname}: CFP_VAR already set")
-        return
+    if not overwrite:
+        already_done = (status.has(exposure_file, 'CFP_VAR')
+                        if status is not None
+                        else cfp.has_step(exposure_file, 'CFP_VAR'))
+        if already_done:
+            log(f"Skipping variance on {rootname}: CFP_VAR already set")
+            return
 
     log(f"Rescaling variance for {rootname}")
 

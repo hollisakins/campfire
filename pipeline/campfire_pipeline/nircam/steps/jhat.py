@@ -46,7 +46,7 @@ def _copy_diagnostics(scratch_subdir, diag_dir, rootname):
                 log(f"jhat: failed to copy diagnostic {fname}: {e}")
 
 
-def jhat_step(exposure_file, field, step_config, overwrite=False):
+def jhat_step(exposure_file, field, step_config, overwrite=False, status=None):
     """Align WCS of a single canonical exposure against a reference catalog.
 
     Parameters
@@ -60,13 +60,19 @@ def jhat_step(exposure_file, field, step_config, overwrite=False):
         ``refcat_dict`` mapping filter names to refcat filenames in
         ``field.refcat_dir``.
     overwrite : bool
+    status : StepStatus, optional
+        Pre-scanned CFP_* status cache.
     """
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
     filtname = exposure_file.split('/')[-2]
 
-    if not overwrite and cfp.has_step(exposure_file, 'CFP_JHAT'):
-        log(f"Skipping jhat on {rootname}: CFP_JHAT already set")
-        return
+    if not overwrite:
+        already_done = (status.has(exposure_file, 'CFP_JHAT')
+                        if status is not None
+                        else cfp.has_step(exposure_file, 'CFP_JHAT'))
+        if already_done:
+            log(f"Skipping jhat on {rootname}: CFP_JHAT already set")
+            return
 
     if 'refcat_dict' not in step_config:
         raise ValueError(
@@ -87,6 +93,17 @@ def jhat_step(exposure_file, field, step_config, overwrite=False):
     input_dir = os.path.dirname(exposure_file)
 
     with tempfile.TemporaryDirectory(prefix='jhat-') as scratch:
+        # JHAT's load_image (jhat/simple_jwst_phot.py) infers image type from a
+        # filename regex and only accepts ``_cal.fits`` / ``_tweakregstep.fits``
+        # / ``_assignwcsstep.fits`` / ``_i2d.fits``. Our canonical exposures end
+        # in plain ``.fits``, so we feed JHAT a ``<rootname>_cal.fits`` symlink
+        # in a scratch input dir.
+        shim_dir = os.path.join(scratch, 'input')
+        os.makedirs(shim_dir, exist_ok=True)
+        shim_name = f'{rootname}_cal.fits'
+        shim_path = os.path.join(shim_dir, shim_name)
+        os.symlink(exposure_file, shim_path)
+
         align_batch = align_wcs_batch()
         align_batch.verbose = step_config.get('verbose', True)
         align_batch.debug = step_config.get('debug', True)
@@ -99,8 +116,8 @@ def jhat_step(exposure_file, field, step_config, overwrite=False):
         align_batch.d_rotated_Nsigma = step_config.get('d_rotated_Nsigma', 3.0)
 
         align_batch.get_input_files(
-            [os.path.basename(exposure_file)],
-            directory=input_dir,
+            [shim_name],
+            directory=shim_dir,
             detectors=None, filters=None, pupils=None,
         )
 

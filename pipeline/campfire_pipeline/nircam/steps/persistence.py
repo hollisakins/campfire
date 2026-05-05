@@ -29,7 +29,8 @@ def _jump_path(exposure_path):
     return os.path.join(os.path.dirname(exposure_path), f'{rootname}_jump.fits')
 
 
-def persistence_step(exposure_files, field, step_config, overwrite=False):
+def persistence_step(exposure_files, field, step_config, overwrite=False,
+                     status=None):
     """Flag persistence across a per-filter set of canonical exposure files.
 
     Parameters
@@ -44,14 +45,20 @@ def persistence_step(exposure_files, field, step_config, overwrite=False):
         snowblind tunables).
     overwrite : bool
         If True, re-run even when every exposure already has ``CFP_PERS``.
+    status : StepStatus, optional
+        Pre-scanned CFP_* status cache.
     """
     if not exposure_files:
         return
 
-    if not overwrite and all(
-            cfp.has_step(f, 'CFP_PERS') for f in exposure_files):
-        log("Skipping persistence; CFP_PERS already set on all exposures")
-        return
+    if not overwrite:
+        if status is not None:
+            all_done = all(status.has(f, 'CFP_PERS') for f in exposure_files)
+        else:
+            all_done = all(cfp.has_step(f, 'CFP_PERS') for f in exposure_files)
+        if all_done:
+            log("Skipping persistence; CFP_PERS already set on all exposures")
+            return
 
     from jwst.datamodels import ImageModel, ModelContainer
 

@@ -122,14 +122,19 @@ def build_bad_pixel_masks(filtname, exposure_files, field, step_config,
     log(f"Bad pixel masks written to {field.bad_pixel_dir}/")
 
 
-def bad_pixel_step(exposure_file, field, step_config, overwrite=False):
+def bad_pixel_step(exposure_file, field, step_config, overwrite=False,
+                   status=None):
     """OR the per-detector bad-pixel mask into a canonical exposure's DQ."""
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
     filtname = exposure_file.split('/')[-2]
 
-    if not overwrite and cfp.has_step(exposure_file, 'CFP_BPIX'):
-        log(f"Skipping bad_pixel on {rootname}: CFP_BPIX already set")
-        return
+    if not overwrite:
+        already_done = (status.has(exposure_file, 'CFP_BPIX')
+                        if status is not None
+                        else cfp.has_step(exposure_file, 'CFP_BPIX'))
+        if already_done:
+            log(f"Skipping bad_pixel on {rootname}: CFP_BPIX already set")
+            return
 
     detector = _detector_of(exposure_file)
     if detector not in ALL_DETECTORS:
