@@ -118,6 +118,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   mosaic outputs and the manifest format are unchanged. `CFP_SMAT` is
   added to `common.cfp.CFP_KEYS` between `CFP_BPIX` and `CFP_OUT`.
 
+### Infrastructure (continued)
+- `cfpipe nircam status --field <name>` reads CFP_* keywords across all
+  canonical exposures and prints a per-step completion table plus a
+  per-step summary (done / skipped / total). Reads each FITS primary
+  header once via `cfp.get_steps`.
+- `cfpipe nircam reset --field <name>` for clearing pipeline state.
+  `--from <step>` clears the named CFP key and every later one on each
+  canonical exposure (header-only, atomic via tmp+rename); refused for
+  SCI-mutating steps (wisp, striping, image2, sky, variance, skymatch)
+  since re-running them on already-mutated data would compound the
+  effect. `--uncal` deletes every canonical exposure file (and any
+  ``_jump.fits`` sidecars) for the selected filters; reference products
+  (`bad_pixel_dir`, `refcat`, mask `.reg` files) and diagnostic PDFs
+  are kept. Both modes prompt for confirmation; pass `--yes` to skip.
+
 ### Algorithm
 - NIRCam pipeline restructured into a two-phase canonical-exposure flow.
   `cfpipe nircam process` runs the per-exposure work (detector1 →
