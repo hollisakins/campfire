@@ -120,7 +120,8 @@ def clear_from(path, key):
         raise ValueError(f"Unknown CFP key: {key}")
     to_clear = CFP_KEYS[CFP_KEYS.index(key):]
 
-    tmp = path + '.tmp'
+    base, ext = os.path.splitext(path)
+    tmp = f'{base}.tmp{ext}' if ext else f'{path}.tmp'
     with fits.open(path) as hdul:
         for k in to_clear:
             if k in hdul[0].header:

@@ -24,7 +24,10 @@ def atomic_save(model_or_hdul, path, header_updates=None, extra_hdus=None):
         Either a JWST ``DataModel`` (anything with ``.save(path)``) or an
         astropy ``HDUList`` (anything with ``.writeto(path, overwrite=True)``).
     path : str
-        Destination path. Parent directory must already exist.
+        Destination path. Parent directory must already exist. Should end
+        in a known extension (``.fits`` or ``.asdf``); the temporary path
+        used for the staging write inserts ``.tmp`` *before* that extension
+        so JWST datamodels' filetype dispatch still works.
     header_updates : dict, optional
         ``{key: (value, comment)}`` or ``{key: value}`` entries to apply to
         the primary header before the rename. Lets callers stamp a CFP
@@ -36,7 +39,11 @@ def atomic_save(model_or_hdul, path, header_updates=None, extra_hdus=None):
         for ``SRCMASK`` (algorithmic source mask) and ``CFMASK`` (user region
         mask) extensions that aren't part of the JWST datamodel schema.
     """
-    tmp = path + '.tmp'
+    # Insert .tmp before the file extension. JWST datamodels dispatch
+    # save format on the extension, so e.g. `path + '.tmp'` would error
+    # with "unknown filetype .tmp".
+    base, ext = os.path.splitext(path)
+    tmp = f'{base}.tmp{ext}' if ext else f'{path}.tmp'
     if hasattr(model_or_hdul, 'save'):
         model_or_hdul.save(tmp)
     else:
