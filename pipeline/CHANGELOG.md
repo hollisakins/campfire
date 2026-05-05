@@ -92,6 +92,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   file is no longer written. `SubtractBackground.call()` is refactored as
   a thin wrapper around `compute()` plus the existing FITS write so the
   mosaic-level usage in stage3 is unaffected.
+- Per-step module `nircam/steps/jhat.py` finishes the calibrate-phase
+  rewrites. Runs `jhat.align_wcs_batch` against a private scratch dir
+  (one `TemporaryDirectory` per worker), stamps `CFP_JHAT` with the
+  refcat name on the scratch output, then atomic-replaces the canonical
+  file. JHAT preserves all FITS extensions through its WCS update so the
+  `SRCMASK` extension carries through unchanged. Diagnostic PDFs and
+  photometry tables are copied from the scratch dir to
+  `exposures/<filter>/diagnostics/` before the scratch dir is cleaned up.
 
 ## v0.4.0 — 2026-05-04
 
