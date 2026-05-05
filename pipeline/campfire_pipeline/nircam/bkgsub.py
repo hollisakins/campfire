@@ -323,11 +323,54 @@ class SubtractBackground:
         log(f"Difference = {diff:.4f} at {significance:.2f} sigma significance")
 
     # ------------------------------------------------------------------
-    # Main entry point
+    # Main entry points
     # ------------------------------------------------------------------
 
+    def compute(
+        self, filepath: str
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Run the source-rejection + background pipeline in memory only.
+
+        Returns
+        -------
+        bkgd_subtracted : ndarray
+            ``sci - background``, same dtype as the input SCI.
+        mask_final : ndarray of bool
+            True where pixels were excluded from the background fit (off
+            detector, DQ-flagged, NaN, or rejected by any tier).
+        bitmask : ndarray of uint32
+            Per-bit source rejection map (bit 0 = off-detector / DQ / NaN,
+            bits 1+ = each tier of source detection).
+
+        Used by the variance-rescaling step in the canonical-exposure
+        pipeline, which doesn't need the file on disk that ``call()`` writes.
+        """
+        log(f"Running background subtraction on {os.path.basename(filepath)}")
+        sci, err = self.open_file(filepath)
+
+        bitmask = np.zeros(sci.shape, np.uint32)
+
+        off_detector_mask = self.off_detector(sci, err)
+        if self.has_dq:
+            self.mask_by_dq()
+            mask = off_detector_mask | self.dqmask
+        else:
+            mask = off_detector_mask
+        mask = np.logical_or(mask, np.isnan(sci))
+        bitmask = np.bitwise_or(bitmask, np.left_shift(mask, 0))
+
+        filtered = self.clipped_ring_median_filter(sci, mask)
+        bitmask = self.mask_sources(filtered, bitmask, starting_bit=1)
+        mask_final = bitmask != 0
+
+        bkg = self.estimate_background(sci, mask_final)
+        bkgd_subtracted = sci - bkg.background
+
+        self.mask_final = mask_final
+        return bkgd_subtracted, mask_final, bitmask
+
     def call(self, filepath: str) -> str:
-        """Run the full background-subtraction pipeline on a single FITS file.
+        """Run the full background-subtraction pipeline and write the result.
 
         Parameters
         ----------
@@ -338,43 +381,13 @@ class SubtractBackground:
         Returns
         -------
         str
-            Path to the output background-subtracted FITS file.
+            Path to the output background-subtracted FITS file (suffix from
+            ``self.suffix``).
         """
-        log(f"Running background subtraction on {os.path.basename(filepath)}")
-        sci, err = self.open_file(filepath)
+        bkgd_subtracted, mask, bitmask = self.compute(filepath)
 
-        # Set up a bitmask (enough bits for 32 tiers)
-        bitmask = np.zeros(sci.shape, np.uint32)
-
-        # Bit 0: off-detector and DQ-flagged pixels
-        off_detector_mask = self.off_detector(sci, err)
-        if self.has_dq:
-            self.mask_by_dq()
-            mask = off_detector_mask | self.dqmask
-        else:
-            mask = off_detector_mask
-
-        mask = np.logical_or(mask, np.isnan(sci))
-        bitmask = np.bitwise_or(bitmask, np.left_shift(mask, 0))
-
-        # Ring-median filter (clipped variant)
-        filtered = self.clipped_ring_median_filter(sci, mask)
-
-        # Iterative tiered source masking
-        bitmask = self.mask_sources(filtered, bitmask, starting_bit=1)
-        mask = bitmask != 0
-
-        # 2-D background estimation on unmasked pixels
-        bkg = self.estimate_background(sci, mask)
-        bkgd = bkg.background
-
-        # Subtract
-        bkgd_subtracted = sci - bkgd
-
-        # Write output
         outfile = filepath.replace(".fits", f"_{self.suffix}.fits")
         self.outfile = outfile
-        self.mask_final = mask
 
         with fits.open(filepath) as hdu:
             wcs = WCS(hdu["SCI"].header)

@@ -80,6 +80,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   `exposures/<filter>/diagnostics/`. A small shared
   `nircam/steps/_plots.py` carries the `plot_two` helper so the new
   modules don't import from `stage1.py`.
+- Per-step modules `nircam/steps/{image2,edge,sky,variance}.py` round out
+  the calibrate-phase per-exposure rewrites. image2 runs
+  `Image2Pipeline.call(input, save_results=False)` and atomic-saves the
+  returned cal-stage model to the canonical path, re-attaching the
+  `SRCMASK` extension that the JWST pipeline doesn't carry through. sky
+  reads `SRCMASK` from the canonical file's extension instead of the
+  former `_rate_1fmask.fits` sidecar in `stage1_dir`. variance uses a new
+  `SubtractBackground.compute()` method that performs the source-rejection
+  + background fit in memory only — the legacy `_cal_bkgsub.fits` scratch
+  file is no longer written. `SubtractBackground.call()` is refactored as
+  a thin wrapper around `compute()` plus the existing FITS write so the
+  mosaic-level usage in stage3 is unaffected.
 
 ## v0.4.0 — 2026-05-04
 
