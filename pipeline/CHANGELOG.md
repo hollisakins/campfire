@@ -55,6 +55,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   then propagated into `manifest.ecsv` and downstream stages. Pupil-mounted
   narrowbands (`F150W2;F162M`-style) are also handled. Files whose actual
   filter isn't in `--filters` are dropped with a count printed.
+- Foundation pieces for the upcoming NIRCam canonical-exposure restructure:
+  `common.io.atomic_save` (tmp+rename with optional primary-header updates
+  applied in the same atomic operation), the `common.cfp` provenance module
+  (ordered `CFP_KEYS`, plus `format`/`has_step`/`get_steps`/`clear_from`),
+  and additive `Field.exposures_dir` / `get_exposure_files` /
+  `get_exposure_path` getters. Existing stage dirs and getters are
+  unchanged; the current pipeline is unaffected.
 
 ## v0.4.0 — 2026-05-04
 

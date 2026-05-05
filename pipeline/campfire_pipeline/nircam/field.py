@@ -48,6 +48,7 @@ class Field:
     stage1_dir: Optional[str] = None
     stage2_dir: Optional[str] = None
     stage3_dir: Optional[str] = None
+    exposures_dir: Optional[str] = None
     mosaic_dir: Optional[str] = None
 
     # Reference subdirectories
@@ -158,6 +159,7 @@ class Field:
         self.stage1_dir = os.path.join(self.products_dir, 'stage1')
         self.stage2_dir = os.path.join(self.products_dir, 'stage2')
         self.stage3_dir = os.path.join(self.products_dir, 'stage3')
+        self.exposures_dir = os.path.join(self.products_dir, 'exposures')
         self.mosaic_dir = os.path.join(self.products_dir, 'mosaics')
 
         self.bad_pixel_dir = os.path.join(self.reference_dir, 'bad_pixels')
@@ -168,7 +170,8 @@ class Field:
 
         # Create directories
         for d in [self.stage1_dir, self.stage2_dir, self.stage3_dir,
-                  self.mosaic_dir, self.bad_pixel_dir, self.refcat_dir,
+                  self.exposures_dir, self.mosaic_dir,
+                  self.bad_pixel_dir, self.refcat_dir,
                   self.wisp_dir, self.mask_dir, self.flats_dir]:
             os.makedirs(d, exist_ok=True)
 
@@ -264,6 +267,73 @@ class Field:
     def get_crf_files(self, filter_name, skip=None):
         """Get crf files from stage3 products."""
         return self.get_files(self.stage3_dir, filter_name, '*_crf.fits', skip=skip)
+
+    def get_exposure_files(self, filter_name, skip=None, with_step=None):
+        """Get canonical per-exposure files from ``exposures_dir``.
+
+        These are the files that the new pipeline mutates in place — one FITS
+        file per exposure, named simply ``<rootname>.fits`` (no ``_rate`` /
+        ``_cal`` / ``_jhat`` / ``_crf`` suffix).
+
+        Parameters
+        ----------
+        filter_name : str
+            Filter subdirectory (e.g. ``'f444w'``).
+        skip : list of str, optional
+            Glob patterns to exclude (matched against the same naming root
+            used by the field's ``files`` patterns).
+        with_step : str, optional
+            If given, restrict the results to exposures whose primary header
+            already records this CFP step keyword (e.g. ``'CFP_OUT'`` to
+            select only outlier-detection-finished exposures for resample).
+
+        Returns
+        -------
+        list of str
+            Sorted absolute paths.
+        """
+        if self.exposures_dir is None:
+            raise RuntimeError("setup_workspace() must be called first")
+
+        result = []
+        for pattern in self.files:
+            full_pattern = os.path.join(
+                self.exposures_dir, filter_name, pattern + '*.fits',
+            )
+            # Keep only canonical files — exclude transient sidecars and
+            # diagnostic outputs that share the directory.
+            for path in glob(full_pattern):
+                base = os.path.basename(path)
+                if base.endswith('.tmp'):
+                    continue
+                if base.endswith('_jump.fits'):
+                    continue
+                result.append(path)
+
+        if skip:
+            excluded = set()
+            for exc_pattern in skip:
+                full_exc = os.path.join(
+                    self.exposures_dir, filter_name, exc_pattern + '*.fits',
+                )
+                excluded.update(glob(full_exc))
+            result = [f for f in result if f not in excluded]
+
+        if with_step is not None:
+            from campfire_pipeline.common import cfp
+            result = [f for f in result if cfp.has_step(f, with_step)]
+
+        return sorted(result)
+
+    def get_exposure_path(self, rootname, filter_name):
+        """Return the canonical path for a given exposure rootname.
+
+        ``rootname`` is the JWST filename stem without any ``_<suffix>.fits``
+        (e.g. ``'jw01727028001_04101_00003_nrcalong'``).
+        """
+        if self.exposures_dir is None:
+            raise RuntimeError("setup_workspace() must be called first")
+        return os.path.join(self.exposures_dir, filter_name, f'{rootname}.fits')
 
     def get_tile_wcs(self, tile_name, pixel_scale='30mas'):
         """Get WCS parameters for a tile.
