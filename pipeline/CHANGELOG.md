@@ -100,6 +100,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   `SRCMASK` extension carries through unchanged. Diagnostic PDFs and
   photometry tables are copied from the scratch dir to
   `exposures/<filter>/diagnostics/` before the scratch dir is cleaned up.
+- Mosaic-phase per-step modules
+  `nircam/steps/{apply_masks,bad_pixel,skymatch,outlier,resample}.py`.
+  apply_masks rebuilds a `CFMASK` extension from the user `.reg` files
+  on every run (replaces any existing CFMASK; OR's into DQ — DQ is
+  cumulative, so mask removal requires `--reset-from apply_masks`).
+  bad_pixel splits into a `build_bad_pixel_masks` ensemble step (writes
+  `fl_pixels_<filter>_<detector>.fits` reference products) and a
+  per-exposure `bad_pixel_step` that ORs the per-detector mask into DQ.
+  skymatch and outlier both run JWST `Image3Pipeline` in a private
+  scratch dir per visit, stamp `CFP_SMAT` / `CFP_OUT` on the scratch
+  outputs, and atomic-replace the canonicals (with belt-and-suspenders
+  capture/restore of `SRCMASK`/`CFMASK`). Outlier manifests now live in
+  `exposures/<filter>/manifests/`. resample switches input source to
+  `field.get_exposure_files(filter, with_step='CFP_OUT')` so only
+  outlier-detection-finished exposures are eligible to be drizzled;
+  mosaic outputs and the manifest format are unchanged. `CFP_SMAT` is
+  added to `common.cfp.CFP_KEYS` between `CFP_BPIX` and `CFP_OUT`.
 
 ## v0.4.0 — 2026-05-04
 

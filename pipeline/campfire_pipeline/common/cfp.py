@@ -20,6 +20,8 @@ from astropy.io import fits
 
 # Ordered list of provenance keys, one per pipeline step. The order encodes
 # the dependency chain: clearing key K should also clear every key after K.
+# (FITS standard limits keyword names to 8 characters, hence the
+# abbreviated forms — CFP_SMAT for skymatch, etc.)
 CFP_KEYS = [
     'CFP_DET1',  # detector1
     'CFP_PERS',  # snowblind persistence
@@ -32,7 +34,8 @@ CFP_KEYS = [
     'CFP_JHAT',  # WCS alignment
     'CFP_MASK',  # user region masks
     'CFP_BPIX',  # bad pixel mask
-    'CFP_OUT',   # outlier detection (skymatch folded in)
+    'CFP_SMAT',  # skymatch (per-visit ensemble)
+    'CFP_OUT',   # outlier detection (per-visit ensemble)
 ]
 
 CFP_COMMENTS = {
@@ -47,6 +50,7 @@ CFP_COMMENTS = {
     'CFP_JHAT': 'campfire: jhat refcat used',
     'CFP_MASK': 'campfire: user masks applied',
     'CFP_BPIX': 'campfire: bad pixel mask applied',
+    'CFP_SMAT': 'campfire: skymatch done',
     'CFP_OUT':  'campfire: outlier detection done',
 }
 
