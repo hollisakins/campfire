@@ -11,7 +11,7 @@ def log(*args, **kwargs):
     print(f"[{timestamp}]", *args, **kwargs)
 
 
-def atomic_save(model_or_hdul, path, header_updates=None):
+def atomic_save(model_or_hdul, path, header_updates=None, extra_hdus=None):
     """Save a JWST datamodel or astropy HDUList atomically.
 
     Writes to ``<path>.tmp`` and then ``os.replace``-s into place. ``os.replace``
@@ -30,17 +30,31 @@ def atomic_save(model_or_hdul, path, header_updates=None):
         the primary header before the rename. Lets callers stamp a CFP
         provenance keyword in the same atomic operation that writes the
         mutated data, so a crash between save and stamp is not possible.
+    extra_hdus : list of astropy.io.fits.ImageHDU, optional
+        Extra extensions to append to the saved file. Any existing extension
+        with the same ``EXTNAME`` is removed first (replace-or-append). Used
+        for ``SRCMASK`` (algorithmic source mask) and ``CFMASK`` (user region
+        mask) extensions that aren't part of the JWST datamodel schema.
     """
     tmp = path + '.tmp'
     if hasattr(model_or_hdul, 'save'):
         model_or_hdul.save(tmp)
     else:
         model_or_hdul.writeto(tmp, overwrite=True)
-    if header_updates:
+    if header_updates or extra_hdus:
         from astropy.io import fits
         with fits.open(tmp, mode='update') as hdul:
-            for key, val in header_updates.items():
-                hdul[0].header[key] = val
+            if header_updates:
+                for key, val in header_updates.items():
+                    hdul[0].header[key] = val
+            if extra_hdus:
+                for hdu in extra_hdus:
+                    name = hdu.name
+                    # Drop any existing extension of the same name first.
+                    existing = [i for i, h in enumerate(hdul) if h.name == name]
+                    for i in reversed(existing):
+                        del hdul[i]
+                    hdul.append(hdu)
     os.replace(tmp, path)
 
 

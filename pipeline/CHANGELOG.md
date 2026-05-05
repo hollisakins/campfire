@@ -70,6 +70,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   detector1) so the 1/f striping source-mask construction sees persistence
   DQ flags — this becomes a real behavior change when the new orchestrator
   lands.
+- Per-step modules `nircam/steps/wisp.py` and `nircam/steps/striping.py`
+  also written against the canonical layout. Wisp drops the
+  `_rate_without_wisps_sub.fits` backup (PDFs generated inline with the
+  in-memory before/after arrays). Striping replaces the
+  `_rate_1fmask.fits` sidecar with a `SRCMASK` extension on the canonical
+  file, written atomically alongside the SCI mutation via the new
+  `atomic_save(..., extra_hdus=...)` parameter. Diagnostic PDFs land in
+  `exposures/<filter>/diagnostics/`. A small shared
+  `nircam/steps/_plots.py` carries the `plot_two` helper so the new
+  modules don't import from `stage1.py`.
 
 ## v0.4.0 — 2026-05-04
 
