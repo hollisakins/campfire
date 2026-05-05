@@ -38,6 +38,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Infrastructure
+- Pin `pandas<3` to keep `jhat` 0.3.6 working. pandas 3.0 removed the
+  `delim_whitespace` keyword that `jhat/pdastro.py` still passes to
+  `pd.read_csv` / `pd.read_table` when loading reference catalogs, which
+  caused the jhat WCS-alignment step to crash on every exposure under
+  pandas 3.x. Lift this pin once a pandas-3-compatible `jhat` release is
+  available on PyPI.
 - NIRCam orchestrator pre-scans every canonical exposure's primary header
   once at the top of `run_process` / `run_combine` / `run_step` and caches
   the set of present `CFP_*` keys in a `StepStatus` object

@@ -8,6 +8,7 @@ dependencies = [
     "astropy>=6.1",
     "numpy>=2.0",
     "scipy>=1.13",
+    "pandas<3",  # jhat 0.3.6 still calls pd.read_csv(delim_whitespace=...); remove when jhat upstream fixes
     "matplotlib>=3.9",
     "toml>=0.10",
     "click>=8.0",
