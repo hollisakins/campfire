@@ -62,6 +62,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   and additive `Field.exposures_dir` / `get_exposure_files` /
   `get_exposure_path` getters. Existing stage dirs and getters are
   unchanged; the current pipeline is unaffected.
+- Per-step modules `nircam/steps/detector1.py` and `nircam/steps/persistence.py`
+  rewritten against the canonical exposures layout (one file per exposure,
+  CFP_DET1 / CFP_PERS stamped via `atomic_save`). Not yet wired into a CLI;
+  legacy `stage1.py` orchestrator continues to drive the pipeline. The new
+  persistence step also moves earlier in the sequence (right after
+  detector1) so the 1/f striping source-mask construction sees persistence
+  DQ flags — this becomes a real behavior change when the new orchestrator
+  lands.
 
 ## v0.4.0 — 2026-05-04
 
