@@ -37,7 +37,7 @@ from scipy.ndimage import binary_dilation, median_filter
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 from campfire_pipeline.nircam.constants import NIR_AMPS
-from campfire_pipeline.nircam.stage1 import (
+from campfire_pipeline.nircam.skyfit import (
     collapse_image,
     find_optimal_threshold,
     fit_pedestal,

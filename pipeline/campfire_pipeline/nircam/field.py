@@ -38,17 +38,13 @@ class Field:
     files: List[str]           # glob patterns, e.g. ['jw01727*', 'jw05893*']
     tangent_point: tuple       # (RA, Dec)
     tiles: dict                # tile WCS definitions
-    stage_overrides: dict = field(default_factory=dict)  # legacy stage{1,2,3}
-    step_overrides: dict = field(default_factory=dict)   # canonical per-step
+    step_overrides: dict = field(default_factory=dict)
 
     # Populated by setup_workspace()
     campfire_root: Optional[str] = None
     raw_root: Optional[str] = None  # $CAMPFIRE_ROOT/raw/nircam (parent of PID dirs)
     products_dir: Optional[str] = None
     reference_dir: Optional[str] = None
-    stage1_dir: Optional[str] = None
-    stage2_dir: Optional[str] = None
-    stage3_dir: Optional[str] = None
     exposures_dir: Optional[str] = None
     mosaic_dir: Optional[str] = None
 
@@ -121,22 +117,14 @@ class Field:
 
         # Parse tile WCS definitions
         tiles = {}
-        reserved_keys = ({'filters', 'files', 'tangent_point',
-                          'stage1', 'stage2', 'stage3'}
-                         | known_steps)
+        reserved_keys = ({'filters', 'files', 'tangent_point'} | known_steps)
         for key, value in fc.items():
             if key in reserved_keys:
                 continue
             if isinstance(value, dict) and 'corners' in value:
                 tiles[key] = value
 
-        # Capture per-field stage config overrides (legacy stage{1,2,3} layout)
-        stage_overrides = {}
-        for key in ('stage1', 'stage2', 'stage3'):
-            if key in fc and isinstance(fc[key], dict):
-                stage_overrides[key] = fc[key]
-
-        # Capture per-field step config overrides (canonical flat layout)
+        # Capture per-field step config overrides (flat layout)
         step_overrides = {}
         for key in known_steps:
             if key in fc and isinstance(fc[key], dict):
@@ -148,7 +136,6 @@ class Field:
             files=file_patterns,
             tangent_point=tangent_point,
             tiles=tiles,
-            stage_overrides=stage_overrides,
             step_overrides=step_overrides,
         )
 
@@ -174,9 +161,6 @@ class Field:
         self.products_dir = os.path.join(campfire_root, 'products', 'nircam', self.name)
         self.reference_dir = os.path.join(campfire_root, 'reference', 'nircam', self.name)
 
-        self.stage1_dir = os.path.join(self.products_dir, 'stage1')
-        self.stage2_dir = os.path.join(self.products_dir, 'stage2')
-        self.stage3_dir = os.path.join(self.products_dir, 'stage3')
         self.exposures_dir = os.path.join(self.products_dir, 'exposures')
         self.mosaic_dir = os.path.join(self.products_dir, 'mosaics')
 
@@ -187,46 +171,12 @@ class Field:
         self.flats_dir = os.path.join(self.reference_dir, 'flats')
 
         # Create directories
-        for d in [self.stage1_dir, self.stage2_dir, self.stage3_dir,
-                  self.exposures_dir, self.mosaic_dir,
+        for d in [self.exposures_dir, self.mosaic_dir,
                   self.bad_pixel_dir, self.refcat_dir,
                   self.wisp_dir, self.mask_dir, self.flats_dir]:
             os.makedirs(d, exist_ok=True)
 
         log(f"Workspace ready for field '{self.name}' at {self.products_dir}")
-
-    def get_files(self, stage_dir, filter_name, suffix, skip=None):
-        """Glob for files matching this field's patterns in a stage/filter directory.
-
-        Parameters
-        ----------
-        stage_dir : str
-            Base stage directory (e.g. self.stage1_dir).
-        filter_name : str
-            Filter subdirectory name (e.g. 'f444w').
-        suffix : str
-            Glob suffix (e.g. '*_rate.fits').
-        skip : list of str, optional
-            Glob patterns to exclude from results.
-
-        Returns
-        -------
-        list of str
-            Sorted list of matching file paths.
-        """
-        result = []
-        for pattern in self.files:
-            full_pattern = os.path.join(stage_dir, filter_name, pattern + suffix)
-            result.extend(glob(full_pattern))
-
-        if skip:
-            excluded = set()
-            for exc_pattern in skip:
-                full_exc = os.path.join(stage_dir, filter_name, exc_pattern + suffix)
-                excluded.update(glob(full_exc))
-            result = [f for f in result if f not in excluded]
-
-        return sorted(result)
 
     def get_uncal_files(self, filter_name, skip=None):
         """Get uncal files from PID-organized raw directories.
@@ -255,36 +205,6 @@ class Field:
             result = [f for f in result if f not in excluded]
 
         return sorted(result)
-
-    def get_rate_files(self, filter_name, skip=None):
-        """Get rate files from stage1 products."""
-        return self.get_files(self.stage1_dir, filter_name, '*_rate.fits', skip=skip)
-
-    def get_cal_files(self, filter_name, skip=None):
-        """Get cal files from stage2 products."""
-        return self.get_files(self.stage2_dir, filter_name, '*_cal.fits', skip=skip)
-
-    def get_jhat_files(self, filter_name, skip=None):
-        """Get jhat files from stage3 products."""
-        return self.get_files(self.stage3_dir, filter_name, '*_jhat.fits', skip=skip)
-
-    def get_all_jhat_files(self, filter_name, skip=None):
-        """Get all jhat files (any prefix) from stage3 products."""
-        result = []
-        full_pattern = os.path.join(self.stage3_dir, filter_name, '*_jhat.fits')
-        result.extend(glob(full_pattern))
-        if skip:
-            excluded = set()
-            for exc_pattern in skip:
-                full_exc = os.path.join(self.stage3_dir, filter_name,
-                                        exc_pattern + '*_jhat.fits')
-                excluded.update(glob(full_exc))
-            result = [f for f in result if f not in excluded]
-        return sorted(result)
-
-    def get_crf_files(self, filter_name, skip=None):
-        """Get crf files from stage3 products."""
-        return self.get_files(self.stage3_dir, filter_name, '*_crf.fits', skip=skip)
 
     def get_exposure_files(self, filter_name, skip=None, with_step=None):
         """Get canonical per-exposure files from ``exposures_dir``.

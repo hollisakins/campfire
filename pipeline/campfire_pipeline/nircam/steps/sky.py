@@ -17,7 +17,7 @@ from astropy.stats import sigma_clip
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
-from campfire_pipeline.nircam.stage2 import _fit_sky_tot
+from campfire_pipeline.nircam.skyfit import fit_sky_tot
 
 
 def sky_step(exposure_file, field, step_config, overwrite=False):
@@ -54,7 +54,7 @@ def sky_step(exposure_file, field, step_config, overwrite=False):
         data = data[~np.isinf(data) & ~np.isnan(data)]
 
         try:
-            sky = float(_fit_sky_tot(data))
+            sky = float(fit_sky_tot(data))
         except Exception:
             log(f"Sky fit failed on {rootname}")
             raise

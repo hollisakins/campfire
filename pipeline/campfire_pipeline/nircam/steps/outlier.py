@@ -8,9 +8,9 @@ and runs ``Image3Pipeline`` (outlier_detection only) inside a private
 scratch directory. Each of the visit's own scratch outputs is then
 atomically promoted back to its canonical path with ``CFP_OUT`` stamped.
 
-Maintains the same manifest-based skip logic as the legacy step
-(``compute_file_hash`` over ``SCI``/``DQ``), with manifests now living in
-``exposures/<filter>/manifests/`` instead of ``stage3_dir/<filter>/``.
+Maintains a manifest-based skip (``compute_file_hash`` over ``SCI`` /
+``DQ`` of every visit + overlap input). Manifests live in
+``exposures/<filter>/manifests/outlier_<visit>_manifest.json``.
 """
 
 import json

@@ -133,6 +133,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   (`bad_pixel_dir`, `refcat`, mask `.reg` files) and diagnostic PDFs
   are kept. Both modes prompt for confirmation; pass `--yes` to skip.
 
+### Infrastructure (cleanup)
+- Removed the legacy NIRCam stage modules (`stage1.py`, `stage2.py`,
+  `stage3.py`) and the `engine.py` `ReductionEngine` wrapper. Their
+  numerical helpers (`fit_pedestal`, `fit_sky`, `fit_sky_tot`,
+  `collapse_image`, `find_optimal_threshold`,
+  `measure_fullimage_striping`) move to a new `nircam/skyfit.py` module
+  which `steps/striping.py` and `steps/sky.py` now import from.
+  `Field.stage{1,2,3}_dir`, `Field.stage_overrides`, and the
+  `get_rate_files` / `get_cal_files` / `get_jhat_files` /
+  `get_all_jhat_files` / `get_crf_files` / `get_files` getters are
+  removed; `Field.exposures_dir` and `get_exposure_files` /
+  `get_exposure_path` are the single source of truth for per-exposure
+  paths. `manifest.get_stale_tiles` switches its CRF glob to
+  `field.get_exposure_files(filter, with_step='CFP_OUT')`. The
+  `get_nircam_stage_config` helper is dropped from `config.py` (only
+  `get_nircam_step_config` remains).
+
 ### Algorithm
 - NIRCam pipeline restructured into a two-phase canonical-exposure flow.
   `cfpipe nircam process` runs the per-exposure work (detector1 →

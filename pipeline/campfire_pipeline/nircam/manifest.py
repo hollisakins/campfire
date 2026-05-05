@@ -293,7 +293,13 @@ def get_stale_tiles(field, filtname, stage_config):
         tiles = [tiles]
 
     files_to_skip = stage_config.get('files_to_skip', [])
-    crf_files = field.get_crf_files(filtname, skip=files_to_skip if files_to_skip else None)
+    # Resample's input source: canonical exposures whose outlier detection
+    # has finished (CFP_OUT keyword stamped).
+    candidate_files = field.get_exposure_files(
+        filtname,
+        skip=files_to_skip if files_to_skip else None,
+        with_step='CFP_OUT',
+    )
 
     results = []
     for tile in tiles:
@@ -310,9 +316,9 @@ def get_stale_tiles(field, filtname, stage_config):
         manifest_dir = os.path.join(field.mosaic_dir, filtname, 'manifests')
         manifest_path = os.path.join(manifest_dir, f'{mosaic_name}_manifest.json')
 
-        # Find which CRF files overlap this tile
+        # Find which canonical exposures overlap this tile
         tile_polygon = Polygon(field.get_tile_corners(tile))
-        selected = _select_overlapping_files(crf_files, tile_polygon)
+        selected = _select_overlapping_files(candidate_files, tile_polygon)
 
         changed, reasons = check_inputs_changed(manifest_path, selected)
 
