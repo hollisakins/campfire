@@ -265,9 +265,33 @@ def get_nircam_stage_config(stage_name, config, field):
     Merges two layers (highest priority wins):
         1. Field-specific overrides   (fields.toml  [field.stageN])
         2. Config defaults + user overrides (already merged in load_config)
+
+    Used by the legacy ``cfpipe nircam stage{1,2,3}`` orchestrators, which
+    operate on the ``[nircam.stage1.*]`` / ``[nircam.stage2.*]`` /
+    ``[nircam.stage3.*]`` nested config layout and the corresponding
+    legacy stage1_dir / stage2_dir / stage3_dir directories on disk. The
+    canonical-exposure pipeline uses ``get_nircam_step_config`` instead.
     """
     base = config.get('nircam', {}).get(stage_name, {})
     return deep_merge(base, field.stage_overrides.get(stage_name, {}))
+
+
+def get_nircam_step_config(step_name, config, field):
+    """Build effective config for a single NIRCam pipeline step.
+
+    Used by the canonical-exposure orchestrators (``run_process``,
+    ``run_combine``) and the per-step CLI commands. Reads from the flat
+    ``[nircam.<step>]`` layout in ``config_default.toml`` and the matching
+    flat ``[<field>.<step>]`` layout in ``fields.toml``.
+
+    Merges (highest priority wins):
+        1. Field-specific step overrides  (fields.toml [<field>.<step>])
+        2. Config defaults + user overrides (already merged in load_config)
+    """
+    base = config.get('nircam', {}).get(step_name, {})
+    override = field.step_overrides.get(step_name, {}) if hasattr(
+        field, 'step_overrides') else {}
+    return deep_merge(base, override)
 
 
 # ---------------------------------------------------------------------------

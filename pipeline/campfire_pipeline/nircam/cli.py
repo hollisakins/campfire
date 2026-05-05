@@ -1,13 +1,19 @@
 """
-NIRCam CLI — Click-based entry point for NIRCam pipeline.
+NIRCam CLI — Click entry point for the canonical-exposure pipeline.
 
-Usage (via unified CLI):
-    cfpipe nircam stage1  --field cosmos [--filters f444w f150w] [-p 4] [--overwrite]
-    cfpipe nircam stage2  --field cosmos [--filters f444w] [-p 4] [--overwrite]
-    cfpipe nircam stage3  --field cosmos [--filters f444w] [--overwrite]
-    cfpipe nircam run     --field cosmos --all [-p 4]
+Top-level commands:
 
-Also available directly as: campfire-nircam <command>
+    cfpipe nircam process    # per-exposure phase (detector1 → jhat)
+    cfpipe nircam combine    # ensemble phase    (apply_mask → resample)
+    cfpipe nircam <step>     # any of the 14 individual steps
+    cfpipe nircam run --all  # whole pipeline
+    cfpipe nircam check      # tile-staleness probe
+    cfpipe nircam status     # per-exposure CFP_* completion table  (TODO)
+    cfpipe nircam reset      # clear CFP_* keys / wipe canonical files (TODO)
+
+Status and reset land in a follow-up commit. Per-step commands are
+registered programmatically from ``orchestrate.STEP_NAMES`` so the
+top-level help auto-includes them.
 """
 
 import os
@@ -17,13 +23,13 @@ matplotlib.use('Agg')
 
 import click
 
-from campfire_pipeline.config import (
-    load_config,
-    setup_environment,
-    get_nircam_stage_config,
-)
+from campfire_pipeline.config import load_config, setup_environment
 from campfire_pipeline.nircam.field import Field
 from campfire_pipeline.common.io import log
+from campfire_pipeline.nircam.orchestrate import (
+    STEP_NAMES, PROCESS_STEPS, COMBINE_STEPS,
+    run_process, run_combine, run_step,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +37,7 @@ from campfire_pipeline.common.io import log
 # ---------------------------------------------------------------------------
 
 def common_options(f):
-    """Decorator that adds --config and --field options."""
+    """``--config`` and ``--field``."""
     f = click.option('--config', default=None,
                      help='Path to configuration file.')(f)
     f = click.option('--field', required=True,
@@ -40,7 +46,7 @@ def common_options(f):
 
 
 def processing_options(f):
-    """Decorator that adds --filters, --processes, --overwrite."""
+    """``--filters``, ``-p`` / ``--processes``, ``--overwrite``."""
     f = click.option('--filters', multiple=True, default=None,
                      help='Filters to process (default: all from field).')(f)
     f = click.option('--processes', '-p', default=1, type=int,
@@ -51,10 +57,7 @@ def processing_options(f):
 
 
 def _setup(config_path, field_name):
-    """Load config, set up environment, load field, set up workspace.
-
-    Returns (config, field_obj).
-    """
+    """Load config + environment + field; set up the workspace."""
     config = load_config(config_path)
     setup_environment(config)
     try:
@@ -62,25 +65,24 @@ def _setup(config_path, field_name):
     except FileNotFoundError as e:
         raise click.ClickException(
             f"{e}\n\n"
-            "NIRCam reductions need a fields.toml at $CAMPFIRE_ROOT/config/fields.toml. "
+            "NIRCam reductions need a fields.toml at "
+            "$CAMPFIRE_ROOT/config/fields.toml. "
             "See pipeline/fields.example.toml for the schema."
         )
     except ValueError as e:
-        # Raised by Field.load when the field name isn't in fields.toml
         raise click.ClickException(str(e))
     field_obj.setup_workspace()
     return config, field_obj
 
 
 def _resolve_filters(filters, field_obj):
-    """Convert Click tuple to list, defaulting to field.filters."""
     if filters:
         return list(filters)
     return list(field_obj.filters)
 
 
 # ---------------------------------------------------------------------------
-# CLI group
+# Top-level group
 # ---------------------------------------------------------------------------
 
 @click.group()
@@ -91,53 +93,85 @@ def main():
 
 
 # ---------------------------------------------------------------------------
-# Stage commands
+# Phase commands
 # ---------------------------------------------------------------------------
 
 @main.command()
 @common_options
 @processing_options
-def stage1(config, field, filters, processes, overwrite):
-    """Run stage 1: Detector1Pipeline + wisp/striping/persistence."""
-    from campfire_pipeline.nircam.stage1 import run_stage1
-
+def process(config, field, filters, processes, overwrite):
+    """Run the per-exposure process phase (detector1 → jhat)."""
     cfg, field_obj = _setup(config, field)
-    stage_config = get_nircam_stage_config('stage1', cfg, field_obj)
-    filter_list = _resolve_filters(filters, field_obj)
-    run_stage1(field_obj, stage_config, filters=filter_list,
-               n_processes=processes, overwrite=overwrite)
+    run_process(field_obj, cfg,
+                filters=_resolve_filters(filters, field_obj),
+                n_processes=processes, overwrite=overwrite)
 
 
 @main.command()
 @common_options
 @processing_options
-def stage2(config, field, filters, processes, overwrite):
-    """Run stage 2: Image2Pipeline + edge/sky/diagonal/variance/masks."""
-    from campfire_pipeline.nircam.stage2 import run_stage2
-
+def combine(config, field, filters, processes, overwrite):
+    """Run the ensemble combine phase (apply_mask → resample)."""
     cfg, field_obj = _setup(config, field)
-    stage_config = get_nircam_stage_config('stage2', cfg, field_obj)
-    filter_list = _resolve_filters(filters, field_obj)
-    run_stage2(field_obj, stage_config, filters=filter_list,
-               n_processes=processes, overwrite=overwrite)
+    run_combine(field_obj, cfg,
+                filters=_resolve_filters(filters, field_obj),
+                n_processes=processes, overwrite=overwrite)
 
 
 @main.command()
 @common_options
 @processing_options
-def stage3(config, field, filters, processes, overwrite):
-    """Run stage 3: JHAT + bad pixels + skymatch + outlier + resample."""
-    from campfire_pipeline.nircam.stage3 import run_stage3
+@click.option('--process', 'do_process', is_flag=True,
+              help='Run the process phase.')
+@click.option('--combine', 'do_combine', is_flag=True,
+              help='Run the combine phase.')
+@click.option('--all', 'do_all', is_flag=True,
+              help='Run both phases.')
+def run(config, field, filters, processes, overwrite,
+        do_process, do_combine, do_all):
+    """Run process and/or combine in one invocation."""
+    if do_all:
+        do_process = do_combine = True
+    if not (do_process or do_combine):
+        raise click.UsageError(
+            "Specify --process, --combine, or --all."
+        )
 
     cfg, field_obj = _setup(config, field)
-    stage_config = get_nircam_stage_config('stage3', cfg, field_obj)
     filter_list = _resolve_filters(filters, field_obj)
-    run_stage3(field_obj, stage_config, cfg, filters=filter_list,
-               n_processes=processes, overwrite=overwrite)
+
+    if do_process:
+        run_process(field_obj, cfg, filters=filter_list,
+                    n_processes=processes, overwrite=overwrite)
+    if do_combine:
+        run_combine(field_obj, cfg, filters=filter_list,
+                    n_processes=processes, overwrite=overwrite)
 
 
 # ---------------------------------------------------------------------------
-# Check command
+# Per-step commands (auto-registered from STEP_NAMES)
+# ---------------------------------------------------------------------------
+
+def _make_step_command(step_name):
+    """Build a Click command for a single step."""
+    @click.command(name=step_name,
+                   help=f"Run the {step_name} step.")
+    @common_options
+    @processing_options
+    def _cmd(config, field, filters, processes, overwrite):
+        cfg, field_obj = _setup(config, field)
+        run_step(step_name, field_obj, cfg,
+                 filters=_resolve_filters(filters, field_obj),
+                 n_processes=processes, overwrite=overwrite)
+    return _cmd
+
+
+for _step_name in STEP_NAMES:
+    main.add_command(_make_step_command(_step_name))
+
+
+# ---------------------------------------------------------------------------
+# Tile-staleness probe (kept from legacy CLI)
 # ---------------------------------------------------------------------------
 
 @main.command()
@@ -145,16 +179,25 @@ def stage3(config, field, filters, processes, overwrite):
 @click.option('--filters', multiple=True, default=None,
               help='Filters to check (default: all from field).')
 def check(config, field, filters):
-    """Check which mosaic tiles are stale and need re-mosaicking."""
+    """Report which mosaic tiles are stale and need re-mosaicking."""
     from campfire_pipeline.nircam.manifest import get_stale_tiles
+    from campfire_pipeline.config import get_nircam_step_config
 
     cfg, field_obj = _setup(config, field)
-    stage_config = get_nircam_stage_config('stage3', cfg, field_obj)
     filter_list = _resolve_filters(filters, field_obj)
 
     any_stale = False
     for filtname in filter_list:
-        results = get_stale_tiles(field_obj, filtname, stage_config)
+        # ``get_stale_tiles`` expects a stage_config-shaped dict with a
+        # 'resample' sub-block, matching the legacy [nircam.stage3] layout.
+        # Wrap the new flat config in that shape so the helper still works.
+        resample_cfg = get_nircam_step_config('resample', cfg, field_obj)
+        files_to_skip = resample_cfg.get('files_to_skip', [])
+        wrapped = {
+            'resample': resample_cfg,
+            'files_to_skip': files_to_skip,
+        }
+        results = get_stale_tiles(field_obj, filtname, wrapped)
         if not results:
             log(f'{filtname}: no tiles configured')
             continue
@@ -166,55 +209,14 @@ def check(config, field, filters):
             any_stale = True
             for r in stale:
                 reasons = '; '.join(r['reasons'])
-                log(f'{filtname}/{r["tile"]}: STALE ({r["n_inputs"]} inputs) — {reasons}')
+                log(f'{filtname}/{r["tile"]}: STALE ({r["n_inputs"]} inputs)'
+                    f' — {reasons}')
         for r in fresh:
-            log(f'{filtname}/{r["tile"]}: up to date ({r["n_inputs"]} inputs)')
+            log(f'{filtname}/{r["tile"]}: up to date '
+                f'({r["n_inputs"]} inputs)')
 
     if not any_stale:
         log('All tiles are up to date.')
-
-
-# ---------------------------------------------------------------------------
-# Compound command
-# ---------------------------------------------------------------------------
-
-@main.command()
-@common_options
-@processing_options
-@click.option('--stage1', 'do_stage1', is_flag=True, help='Run stage 1.')
-@click.option('--stage2', 'do_stage2', is_flag=True, help='Run stage 2.')
-@click.option('--stage3', 'do_stage3', is_flag=True, help='Run stage 3.')
-@click.option('--all', 'do_all', is_flag=True, help='Run all stages.')
-def run(config, field, filters, processes, overwrite,
-        do_stage1, do_stage2, do_stage3, do_all):
-    """Run multiple pipeline stages in sequence."""
-    from campfire_pipeline.nircam.stage1 import run_stage1 as _run_stage1
-    from campfire_pipeline.nircam.stage2 import run_stage2 as _run_stage2
-    from campfire_pipeline.nircam.stage3 import run_stage3 as _run_stage3
-
-    if do_all:
-        do_stage1 = do_stage2 = do_stage3 = True
-
-    if not any([do_stage1, do_stage2, do_stage3]):
-        raise click.UsageError("Specify at least one stage flag, or use --all.")
-
-    cfg, field_obj = _setup(config, field)
-    filter_list = _resolve_filters(filters, field_obj)
-
-    if do_stage1:
-        sc = get_nircam_stage_config('stage1', cfg, field_obj)
-        _run_stage1(field_obj, sc, filters=filter_list,
-                    n_processes=processes, overwrite=overwrite)
-
-    if do_stage2:
-        sc = get_nircam_stage_config('stage2', cfg, field_obj)
-        _run_stage2(field_obj, sc, filters=filter_list,
-                    n_processes=processes, overwrite=overwrite)
-
-    if do_stage3:
-        sc = get_nircam_stage_config('stage3', cfg, field_obj)
-        _run_stage3(field_obj, sc, cfg, filters=filter_list,
-                    n_processes=processes, overwrite=overwrite)
 
 
 if __name__ == '__main__':

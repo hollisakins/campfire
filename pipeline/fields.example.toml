@@ -29,10 +29,14 @@
 #           crpix = [x, y]
 #           naxis = [nx, ny]
 #
-# Per-field stage overrides can be nested:
-#   [field.stage1]
-#       [field.stage1.remove_striping_step]
-#           apply_flat = false
+# Per-field per-step overrides use a flat layout matching the
+# canonical-exposure config namespace in config_default.toml:
+#   [field.striping]
+#       apply_flat = false
+#       maxiters = 5
+#   [field.jhat.refcat_dict]
+#       f444w = "gaia_dr3_f444w.cat"
+#       f200w = "gaia_dr3_f200w.cat"
 
 [example_cosmos]
     filters = ['f115w', 'f150w', 'f200w', 'f277w', 'f356w', 'f410m', 'f444w']

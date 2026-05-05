@@ -38,7 +38,8 @@ class Field:
     files: List[str]           # glob patterns, e.g. ['jw01727*', 'jw05893*']
     tangent_point: tuple       # (RA, Dec)
     tiles: dict                # tile WCS definitions
-    stage_overrides: dict = field(default_factory=dict)
+    stage_overrides: dict = field(default_factory=dict)  # legacy stage{1,2,3}
+    step_overrides: dict = field(default_factory=dict)   # canonical per-step
 
     # Populated by setup_workspace()
     campfire_root: Optional[str] = None
@@ -109,21 +110,37 @@ class Field:
 
         tangent_point = tuple(fc['tangent_point'])
 
+        # Known per-step keys for the canonical-exposure pipeline. Used both
+        # to recognize per-field step overrides and to exclude them from the
+        # tile-detection loop below.
+        known_steps = {
+            'detector1', 'persistence', 'wisp', 'striping',
+            'image2', 'edge', 'sky', 'variance', 'jhat',
+            'apply_mask', 'bad_pixel', 'skymatch', 'outlier', 'resample',
+        }
+
         # Parse tile WCS definitions
         tiles = {}
-        reserved_keys = {'filters', 'files', 'tangent_point',
-                         'stage1', 'stage2', 'stage3'}
+        reserved_keys = ({'filters', 'files', 'tangent_point',
+                          'stage1', 'stage2', 'stage3'}
+                         | known_steps)
         for key, value in fc.items():
             if key in reserved_keys:
                 continue
             if isinstance(value, dict) and 'corners' in value:
                 tiles[key] = value
 
-        # Capture per-field stage config overrides
+        # Capture per-field stage config overrides (legacy stage{1,2,3} layout)
         stage_overrides = {}
-        for key in ['stage1', 'stage2', 'stage3']:
+        for key in ('stage1', 'stage2', 'stage3'):
             if key in fc and isinstance(fc[key], dict):
                 stage_overrides[key] = fc[key]
+
+        # Capture per-field step config overrides (canonical flat layout)
+        step_overrides = {}
+        for key in known_steps:
+            if key in fc and isinstance(fc[key], dict):
+                step_overrides[key] = fc[key]
 
         return cls(
             name=name,
@@ -132,6 +149,7 @@ class Field:
             tangent_point=tangent_point,
             tiles=tiles,
             stage_overrides=stage_overrides,
+            step_overrides=step_overrides,
         )
 
     @property

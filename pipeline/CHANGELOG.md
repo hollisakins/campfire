@@ -118,6 +118,34 @@ Release procedure: edit the `## Unreleased` section below, then run
   mosaic outputs and the manifest format are unchanged. `CFP_SMAT` is
   added to `common.cfp.CFP_KEYS` between `CFP_BPIX` and `CFP_OUT`.
 
+### Algorithm
+- NIRCam pipeline restructured into a two-phase canonical-exposure flow.
+  `cfpipe nircam process` runs the per-exposure work (detector1 →
+  persistence → wisp → striping → image2 → edge → sky → variance →
+  jhat) into a single canonical FITS file per exposure at
+  `products/nircam/<field>/exposures/<filter>/<rootname>.fits`. User
+  intervention (region masks in `mask_dir/<filter>/<rootname>.reg`,
+  exclusion contract) sits between the two phases. `cfpipe nircam
+  combine` runs the ensemble work (apply_mask → bad_pixel → skymatch →
+  outlier → resample), promoting per-visit Image3Pipeline outputs back
+  to the canonical paths via atomic_save. Persistence moves earlier in
+  the sequence (immediately after detector1 instead of last in the
+  per-exposure flow), so the 1/f striping source-mask construction now
+  sees persistence DQ flags — small calibration delta. Snowblind's
+  `jumpify` expects a `_rate.fits` filename, so the persistence step
+  temporarily munges `meta.filename` around the call. Single canonical
+  file per exposure replaces the old rate/cal/jhat/crf chain and the
+  `_rate_orig`/`_rate_without_wisps_sub`/`_rate_1fmask`/`_cal_bkgsub`
+  scratch files. NIRCam config namespace flattens from
+  `[nircam.stage{1,2,3}.<step>]` to `[nircam.<step>]`. Per-field
+  overrides in `fields.toml` use the matching flat layout
+  (`[<field>.<step>]`). Legacy `cfpipe nircam stage{1,2,3}` CLI
+  commands are removed; the new CLI is `process` / `combine` /
+  `<step>` / `run` / `check` (status and reset land next). The
+  `Image2Pipeline` round-trip drops custom extensions, so image2 and
+  the Image3Pipeline-driven steps capture/restore `SRCMASK` / `CFMASK`
+  via `atomic_save(extra_hdus=...)`.
+
 ## v0.4.0 — 2026-05-04
 
 ### Algorithm

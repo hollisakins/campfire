@@ -129,33 +129,43 @@
     gratings = ["g140h", "g235h", "g395h"]
 
 # === NIRCam ===
+# Flat per-step layout for the canonical-exposure pipeline.
+# Run individual steps with `cfpipe nircam <step>` or whole phases with
+# `cfpipe nircam process` (per-exposure) and `cfpipe nircam combine`
+# (ensemble through resample).
 
-[nircam.stage1.detector1]
+# --- process phase (per-exposure) ---
+
+[nircam.detector1]
     clean_flicker_noise = false
 
-[nircam.stage1.remove_wisp]
+[nircam.persistence]
+    # No tunable parameters; reserved for future snowblind config.
+
+[nircam.wisp]
     apply_flat = true
     use_custom_flat = false
     plot = true
 
-[nircam.stage1.remove_striping]
+[nircam.striping]
     apply_flat = true
     use_custom_flat = false
     mask_sources = true
-    save_mask = true
     maskparam = "none"
     subtract_background = true
     maxiters = 3
     plot = true
 
-[nircam.stage1.persistence]
-
-[nircam.stage2.image2]
+[nircam.image2]
     use_custom_flat = false
 
-[nircam.stage2.remove_edge]
+[nircam.edge]
+    # No tunable parameters.
 
-[nircam.stage2.bkgsub_var]
+[nircam.sky]
+    # No tunable parameters.
+
+[nircam.variance]
     plot = true
     ring_radius_in = 40
     ring_width = 3
@@ -173,10 +183,7 @@
     bg_interpolator = "zoom"
     block_size = 7
 
-[nircam.stage2.apply_mask]
-    mask_flag = 1024
-
-[nircam.stage3.jhat]
+[nircam.jhat]
     verbose = true
     debug = true
     rough_cut_px_min = 2.5
@@ -191,10 +198,16 @@
     saveplots = true
     savephottable = true
 
-[nircam.stage3.bad_pixel]
+# --- combine phase (ensemble) ---
+
+[nircam.apply_mask]
+    mask_flag = 1024
+    mask_set_nan = false
+
+[nircam.bad_pixel]
     threshold = 0.2
 
-[nircam.stage3.skymatch]
+[nircam.skymatch]
     skymethod = "match"
     match_down = true
     subtract = true
@@ -206,7 +219,7 @@
     nclip = 10
     binwidth = 0.1
 
-[nircam.stage3.outlier]
+[nircam.outlier]
     max_radius = 20
     good_bits = "~DO_NOT_USE"
     weight_type = "ivm"
@@ -219,7 +232,7 @@
     backg = 0.0
     resample_data = true
 
-[nircam.stage3.resample]
+[nircam.resample]
     mode = "tile"
     pixel_scale = "60mas"
     version = "v0_1"
