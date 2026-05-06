@@ -207,18 +207,6 @@
 [nircam.bad_pixel]
     threshold = 0.2
 
-[nircam.skymatch]
-    skymethod = "match"
-    match_down = true
-    subtract = true
-    stepsize = "none"
-    skystat = "mode"
-    dqbits = "~DO_NOT_USE+NON_SCIENCE"
-    lower = "none"
-    upper = "none"
-    nclip = 10
-    binwidth = 0.1
-
 [nircam.outlier]
     max_radius = 20
     good_bits = "~DO_NOT_USE"
@@ -234,7 +222,15 @@
 
 [nircam.resample]
     mode = "tile"
-    pixel_scale = "60mas"
+    # implementation = "jwst" routes the per-tile drizzle through
+    # `jwst.pipeline.calwebb_image3.Image3Pipeline` (stcal Resample,
+    # the historical default). "campfire" uses the campfire-native
+    # drizzle in `nircam/drizzle.py` — variance trick, output-bbox
+    # slicing, no per-component variance bookkeeping. The two paths
+    # produce SCI bit-equal mod accumulation order on ivm weighting;
+    # ERR agrees to ~1%. See issue #138.
+    implementation = "jwst"
+    pixel_scale = "30mas"
     version = "v0_1"
     mosaic_name = "mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[version]_[tile]"
     pixfrac = 1

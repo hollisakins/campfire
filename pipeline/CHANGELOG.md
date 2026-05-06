@@ -37,7 +37,88 @@ Release procedure: edit the `## Unreleased` section below, then run
   config block are removed. `snowblind` remains a dependency for
   `PersistenceFlagStep` in the persistence step.
 
+### Algorithm
+- NIRCam stage-3 resample now has an opt-in campfire-native drizzle path
+  (`[nircam.resample].implementation = "campfire"`) that replaces
+  `jwst.pipeline.calwebb_image3.Image3Pipeline` with a direct
+  `drizzle.resample.Drizzle` loop in `nircam/drizzle.py`. The structural
+  win over `stcal.resample.resample.Resample` is the **variance trick** —
+  a single persistent accumulator is filled by drizzling
+  `var_total · wht` weighted by `wht`, with the final ERR computed as
+  `sqrt(outvar / outwht)`. This replaces stcal's three transient
+  per-component variance drizzles plus full-tile Python masked
+  accumulator updates (the `wsum[mask] = ...` loops at COSMOS-Web tile
+  size were the dominant per-tile cost).
+
+  The output WCS is built via `stcal.alignment.util.wcs_from_sregions`
+  using the campfire-supplied `(crpix, crval, shape, rotation,
+  pixel_scale)` from `Field.get_tile_wcs`. The i2d FITS is written
+  through `stdatamodels.jwst.datamodels.ImageModel` so the
+  `SCI`/`ERR`/`WHT`/`CON` HDU layout matches what `bkgsub` and the
+  extension splitter consume; per-component `VAR_*` extensions are
+  intentionally not written (nothing in pipeline/, python/, or web/
+  reads them from i2d files).
+
+  Validation on rj0911 venus f277w (60mas, 8 inputs, 23 MP): SCI, WHT,
+  and coverage are bit-exact (modulo float32 accumulation order). ERR
+  is systematically ~5% larger than stcal's ERR at the median because
+  the trick computes the canonical kernel-weighted estimator
+  `V = (Σᵢ kᵢ wᵢ² varᵢ_total) / (Σᵢ kᵢ wᵢ)²` while stcal computes a
+  per-component sum `Σ_xx wsum_xx / (wt² · pixel_scale_ratio²)` after
+  drizzling each `sqrt(varᵢ)` separately. The bias is concentrated at
+  low-coverage edges (1.13× at p25 WHT) and uniform at ~1.03× in
+  well-covered regions; nearly zero correlation with var_poisson /
+  var_rnoise (Spearman 0.008) so it's a geometry/kernel artifact, not
+  a noise-model artifact. Wall-time speedup on the validation tile is
+  4.4× (28.4 s vs 125.9 s); expected to grow at COSMOS-Web tile sizes
+  where stcal's per-input full-tile bookkeeping dominates. Default
+  stays `"jwst"` until COSMOS-Web spot-checks confirm the bias is
+  acceptable for downstream catalog use.
+- NIRCam combine phase no longer runs `skymatch`. The step has been removed
+  from `COMBINE_STEPS` (and dropped from `STEP_NAMES`, `_SCI_MUTATING_STEPS`,
+  `_STEP_LABELS`, and the `CFP_*` provenance keys), along with the
+  `nircam/steps/skymatch.py` module and the `[nircam.skymatch]` config block.
+  The step had been a silent no-op since it was wired through
+  `Image3Pipeline` with every other substep skipped — `Image3Pipeline.process`
+  only propagates `save_results` to `outlier_detection`/`resample`/
+  `source_catalog`, so the modified models were never written to disk and
+  the in-place SCI subtraction was discarded. Per-exposure background
+  subtraction (the `sky` step, `CFP_SKY`) and the resample-time 2-D source-
+  masked background (`SubtractBackground` inside `resample_step`) cover the
+  remaining background work; existing reductions have effectively been
+  running this two-pass setup all along, so this changelog entry records
+  the removal of plumbing that wasn't doing anything rather than a change
+  in pixel values. `outlier_step` and `resample_step` still pass
+  `'skymatch': {'skip': True}` to their JWST `Image3Pipeline` calls — that
+  keeps JWST's own skymatch substep disabled inside those calls and is
+  unrelated to the orchestrator-level step we removed.
+
 ### Infrastructure
+- NIRCam `resample_step` extracts its per-tile drizzle body into
+  `_drizzle_tile_via_jwst(selected_files, output_path, *, crpix, crval, shape,
+  rotation, pixel_scale, resample_cfg, reduction_version)`. The function
+  builds the ASN, runs `Image3Pipeline` with every substep but `resample`
+  skipped, and stamps `CMPFRTIM` / `CMPFRVER` on the i2d primary header.
+  No behavior change — sets up a clean swap point for the upcoming
+  campfire-native drizzle (issue #138).
+- NIRCam tile `corners` are now optional in `fields.toml`. If omitted, the
+  pipeline derives the tile sky polygon from the first `<scale>mas`
+  subsection (`crpix` + `naxis`) plus the tile/field `tangent_point` and
+  `rotation`, so a tile that already specifies its WCS doesn't need to
+  duplicate the same information as a hand-typed corner list. Existing
+  `corners` entries continue to override the WCS-derived polygon.
+- NIRCam tiles only need to declare `crpix`/`naxis` at one pixel scale.
+  `Field.get_tile_wcs(tile, pixel_scale=...)` now rescales `crpix` and
+  `naxis` from any defined subsection to the requested pixel scale (the
+  tile covers the same sky region at every scale); explicit `[<scale>mas]`
+  blocks still take precedence when present. Resampling at `60mas` no
+  longer requires duplicating a `30mas` definition (or vice-versa).
+- `compute_file_hash` (NIRCam mosaic manifests) now opens FITS with
+  `do_not_scale_image_data=True` so memmap stays available on extensions
+  that carry `BZERO`/`BSCALE`/`BLANK` keywords. The previous behavior
+  raised `ValueError: Cannot load a memory-mapped image` on the first
+  manifest write for a visit whose CRF outputs were stored with integer
+  scaling (jwst 1.20.x).
 - Pin `pandas<3` to keep `jhat` 0.3.6 working. pandas 3.0 removed the
   `delim_whitespace` keyword that `jhat/pdastro.py` still passes to
   `pd.read_csv` / `pd.read_table` when loading reference catalogs, which

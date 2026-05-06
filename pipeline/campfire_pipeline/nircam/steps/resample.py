@@ -56,6 +56,129 @@ def _select_overlapping(exposure_files, tile_polygon):
     return selected
 
 
+def _drizzle_tile_via_campfire(
+    selected_files,
+    output_path,
+    *,
+    crpix,
+    crval,
+    shape,
+    rotation,
+    pixel_scale,
+    resample_cfg,
+    reduction_version,
+):
+    """Drizzle ``selected_files`` to ``output_path`` via the campfire-native
+    drizzle (issue #138).
+
+    Same observable contract as ``_drizzle_tile_via_jwst`` — produces an i2d
+    at ``output_path`` with SCI/ERR/WHT/CON extensions and ``CMPFRTIM`` /
+    ``CMPFRVER`` stamped on the primary header.
+    """
+    from campfire_pipeline.nircam.drizzle import drizzle_tile
+
+    drizzle_tile(
+        selected_files,
+        output_path,
+        crpix=crpix,
+        crval=crval,
+        shape=shape,
+        rotation=rotation,
+        pixel_scale=pixel_scale,
+        pixfrac=resample_cfg.get('pixfrac', 1.0),
+        kernel=resample_cfg.get('kernel', 'square'),
+        weight_type=resample_cfg.get('weight_type', 'ivm'),
+        good_bits=resample_cfg.get('good_bits', '~DO_NOT_USE'),
+        reduction_version=reduction_version,
+    )
+
+
+def _drizzle_tile_via_jwst(
+    selected_files,
+    output_path,
+    *,
+    crpix,
+    crval,
+    shape,
+    rotation,
+    pixel_scale,
+    resample_cfg,
+    reduction_version,
+):
+    """Drizzle ``selected_files`` to ``output_path`` via JWST ``Image3Pipeline``.
+
+    Builds an ASN next to ``output_path``, runs ``Image3Pipeline`` with
+    every substep but ``resample`` skipped, and stamps ``CMPFRTIM`` /
+    ``CMPFRVER`` on the primary header of the resulting i2d.
+
+    Parameters
+    ----------
+    selected_files : list of str
+        CRF input paths.
+    output_path : str
+        Destination i2d path. Must end in ``_i2d.fits``.
+    crpix, crval, shape, rotation : tile WCS parameters from
+        ``Field.get_tile_wcs``.
+    pixel_scale : float
+        Output pixel scale in arcseconds.
+    resample_cfg : dict
+        ``[nircam.resample]`` config block (used for pixfrac/kernel etc.).
+    reduction_version : str
+        Stamped as ``CMPFRVER`` on the primary header.
+    """
+    from jwst.associations.lib.rules_level3_base import DMS_Level3_Base
+    from jwst.associations import asn_from_list
+    from jwst.pipeline import calwebb_image3
+
+    mosaic_outdir = os.path.dirname(output_path)
+    mosaic_name = os.path.basename(output_path).removesuffix('_i2d.fits')
+
+    asn_file = os.path.join(mosaic_outdir, f'{mosaic_name}_asn.json')
+    asn = asn_from_list.asn_from_list(
+        selected_files, rule=DMS_Level3_Base, product_name=mosaic_name,
+    )
+    with open(asn_file, 'w') as fp:
+        _, serialized = asn.dump(format='json')
+        fp.write(serialized)
+
+    params = {
+        'assign_mtwcs': {'skip': True},
+        'tweakreg': {'skip': True},
+        'skymatch': {'skip': True},
+        'outlier_detection': {'skip': True},
+        'resample': {
+            'pixfrac': resample_cfg.get('pixfrac', 1),
+            'kernel': resample_cfg.get('kernel', 'square'),
+            'pixel_scale': pixel_scale,
+            'rotation': rotation,
+            'output_shape': shape,
+            'crpix': crpix,
+            'crval': crval,
+            'fillval': 'indef',
+            'weight_type': 'ivm',
+            'single': False,
+            'blendheaders': True,
+            'save_results': True,
+        },
+        'source_catalog': {'skip': True},
+    }
+
+    calwebb_image3.Image3Pipeline.call(
+        asn_file, output_dir=mosaic_outdir, steps=params,
+        save_results=True,
+    )
+
+    with fits.open(output_path, mode='update') as hdul:
+        hdul[0].header['CMPFRTIM'] = (
+            str(datetime.now()),
+            'Date/time of CAMPFIRE reduction',
+        )
+        hdul[0].header['CMPFRVER'] = (
+            reduction_version,
+            'CAMPFIRE git commit (or pinned version)',
+        )
+
+
 def resample_step(filtname, exposure_files, field, step_config,
                   reduction_version, overwrite=False):
     """Drizzle-combine canonical exposure files into mosaic tiles.
@@ -73,9 +196,6 @@ def resample_step(filtname, exposure_files, field, step_config,
         as ``CMPFRVER``.
     overwrite : bool
     """
-    from jwst.associations.lib.rules_level3_base import DMS_Level3_Base
-    from jwst.associations import asn_from_list
-    from jwst.pipeline import calwebb_image3
     from campfire_pipeline.nircam.manifest import (
         check_config_changed, check_inputs_changed,
         create_manifest, write_manifest,
@@ -147,54 +267,32 @@ def resample_step(filtname, exposure_files, field, step_config,
         if needs_rebuild:
             log(f"  drizzling {len(selected)} exposures")
 
-            asn_file = os.path.join(mosaic_outdir, f'{mosaic_name}_asn.json')
-            asn = asn_from_list.asn_from_list(
-                selected, rule=DMS_Level3_Base, product_name=mosaic_name,
-            )
-            with open(asn_file, 'w') as fp:
-                _, serialized = asn.dump(format='json')
-                fp.write(serialized)
-
             crpix, crval, shape, rotation = field.get_tile_wcs(
                 tile, pixel_scale=pixel_scale_str,
             )
 
-            params = {
-                'assign_mtwcs': {'skip': True},
-                'tweakreg': {'skip': True},
-                'skymatch': {'skip': True},
-                'outlier_detection': {'skip': True},
-                'resample': {
-                    'pixfrac': step_config.get('pixfrac', 1),
-                    'kernel': step_config.get('kernel', 'square'),
-                    'pixel_scale': pixel_scale,
-                    'rotation': rotation,
-                    'output_shape': shape,
-                    'crpix': crpix,
-                    'crval': crval,
-                    'fillval': 'indef',
-                    'weight_type': 'ivm',
-                    'single': False,
-                    'blendheaders': True,
-                    'save_results': True,
-                },
-                'source_catalog': {'skip': True},
-            }
+            implementation = step_config.get('implementation', 'jwst')
+            if implementation == 'campfire':
+                drizzle_fn = _drizzle_tile_via_campfire
+            elif implementation == 'jwst':
+                drizzle_fn = _drizzle_tile_via_jwst
+            else:
+                raise ValueError(
+                    f"Unknown resample.implementation {implementation!r}; "
+                    f"expected 'jwst' or 'campfire'"
+                )
 
-            calwebb_image3.Image3Pipeline.call(
-                asn_file, output_dir=mosaic_outdir, steps=params,
-                save_results=True,
+            drizzle_fn(
+                selected,
+                mosaic_file,
+                crpix=crpix,
+                crval=crval,
+                shape=shape,
+                rotation=rotation,
+                pixel_scale=pixel_scale,
+                resample_cfg=step_config,
+                reduction_version=reduction_version,
             )
-
-            with fits.open(mosaic_file, mode='update') as hdul:
-                hdul[0].header['CMPFRTIM'] = (
-                    str(datetime.now()),
-                    'Date/time of CAMPFIRE reduction',
-                )
-                hdul[0].header['CMPFRVER'] = (
-                    reduction_version,
-                    'CAMPFIRE git commit (or pinned version)',
-                )
 
             manifest = create_manifest(
                 mosaic_name, field, filtname, tile, pixel_scale_str,
