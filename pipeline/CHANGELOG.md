@@ -38,6 +38,45 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Algorithm
+- NIRCam outlier detection now has an opt-in per-tile path
+  (`[nircam.outlier].implementation = "campfire"`) in
+  `nircam/outlier_detect.py:outlier_detect_for_tile`. Drops visit
+  grouping entirely. For each tile, all overlapping CRFs are drizzled
+  into the tile WCS via `drizzle.drizzle_tile_singles` (the per-input
+  rasters share pixmap/weight scaffolding with `drizzle_tile`),
+  streamed into `stcal.outlier_detection.median.MedianComputer`,
+  median-combined, blotted back via `gwcs_blot`, and DQ-flagged via
+  the standard upstream `flag_resampled_model_crs` two-pass SNR scheme
+  (no fork from the canonical CR-detection algorithm). The orchestrator
+  computes the per-exposure tile-participation matrix up front and
+  stamps `CFP_OUT` only after every tile an exposure overlaps has a
+  valid up-to-date manifest, so partial runs (`--tile A` followed
+  later by `--tile B`) are handled correctly without the resample-step
+  input query (`with_step='CFP_OUT'`) seeing prematurely-stamped
+  exposures.
+
+  Validation on rj0911 venus f277w (60mas, 8 inputs, single visit):
+  campfire flagged 9706 OUTLIER pixels total (1213/input), jwst
+  per-visit flagged 35 (4/input) — a ~300× divergence on identical
+  starting DQ. Campfire's flags are spatially distributed as
+  single-pixel clusters with peak SCI 34.7 (p99.9 of overall = 2.1),
+  i.e., they have the morphology of real cosmic rays (bright,
+  single-pixel, not clumped at source edges). The discrepancy with
+  the fresh jwst per-visit run reproducing 35 flags vs the production
+  baseline's 17k flags on the same inputs is unexplained — the same
+  `outlier_step` code that produced the baseline now flags 500× fewer
+  pixels. Wall time on this test was 68.9 s campfire vs 37.0 s jwst
+  (campfire 0.54× — slower); the 8-input single-visit case doesn't
+  exercise the cross-visit overlap-padding multiplier where per-tile
+  is intended to win. Default stays `"jwst"` until the algorithmic
+  divergence is understood and a COSMOS-Web-scale dataset confirms
+  the speed/quality trade.
+
+  Helpers extracted to `nircam/geometry.py:select_overlapping_files`
+  (deduplicated from `steps/resample.py` and `manifest.py`) and
+  `nircam/drizzle.py:_prepare_drizzle_input` /
+  `_add_image_kwargs` (shared between `drizzle_tile` and the new
+  `drizzle_tile_singles`).
 - NIRCam stage-3 resample now has an opt-in campfire-native drizzle path
   (`[nircam.resample].implementation = "campfire"`) that replaces
   `jwst.pipeline.calwebb_image3.Image3Pipeline` with a direct

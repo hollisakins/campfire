@@ -37,7 +37,9 @@ def compute_file_hash(filepath):
         Hex digest prefixed with ``sha256:``.
     """
     h = hashlib.sha256()
-    with fits.open(filepath, memmap=True) as hdul:
+    # do_not_scale_image_data lets memmap work even when extensions carry
+    # BZERO/BSCALE/BLANK; the raw stored bytes are a fine fingerprint.
+    with fits.open(filepath, memmap=True, do_not_scale_image_data=True) as hdul:
         for extname in ('SCI', 'DQ'):
             try:
                 data = hdul[extname].data
@@ -277,6 +279,8 @@ def get_stale_tiles(field, filtname, stage_config):
     """
     from shapely.geometry import Polygon
 
+    from campfire_pipeline.nircam.geometry import select_overlapping_files
+
     resample_cfg = stage_config.get('resample', {})
     version = resample_cfg.get('version', 'v0_1')
     pixel_scale = resample_cfg.get('pixel_scale', '60mas')
@@ -318,7 +322,7 @@ def get_stale_tiles(field, filtname, stage_config):
 
         # Find which canonical exposures overlap this tile
         tile_polygon = Polygon(field.get_tile_corners(tile))
-        selected = _select_overlapping_files(candidate_files, tile_polygon)
+        selected = select_overlapping_files(candidate_files, tile_polygon)
 
         changed, reasons = check_inputs_changed(manifest_path, selected)
 
@@ -338,27 +342,3 @@ def get_stale_tiles(field, filtname, stage_config):
     return results
 
 
-def _select_overlapping_files(crf_files, tile_polygon):
-    """Return the subset of CRF files whose footprints overlap a tile polygon.
-
-    This duplicates the selection logic in resample_step so that ``check``
-    gives the same answer as an actual reduction run.
-    """
-    import warnings
-
-    import numpy as np
-    from astropy.wcs import WCS
-    from shapely.geometry import Polygon as ShapelyPolygon
-
-    selected = []
-    for f in crf_files:
-        with fits.open(f, memmap=True) as hdul:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                wcs = WCS(hdul[1].header, naxis=2)
-            pixcoords = np.array([[0., 0.], [2048., 0.], [2048., 2048.], [0., 2048.]])
-            worldcoords = wcs.wcs_pix2world(pixcoords, 0)
-            file_polygon = ShapelyPolygon(worldcoords)
-            if tile_polygon.intersects(file_polygon):
-                selected.append(f)
-    return selected

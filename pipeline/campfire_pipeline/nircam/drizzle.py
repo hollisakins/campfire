@@ -187,6 +187,73 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
         )
 
 
+def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
+                           weight_type, good_bits):
+    """Open one CRF and prepare the per-input arrays drizzle needs.
+
+    Returns a dict with ``data``, ``err``, ``var_total``, ``weight``,
+    ``pixmap``, ``exptime``, ``xmin``/``xmax``/``ymin``/``ymax``,
+    ``in_shape``, ``input_gwcs`` — or ``None`` if the input footprint
+    does not overlap the tile.
+
+    Shared by ``drizzle_tile`` (accumulate mode for resample) and
+    ``drizzle_tile_singles`` (per-input rasters for outlier).
+    """
+    from jwst.datamodels.dqflags import pixel as pixel_flags
+    from stcal.resample.utils import build_driz_weight, resample_range
+    from stdatamodels.jwst.datamodels import ImageModel
+
+    with ImageModel(crf_file) as model:
+        data = np.asarray(model.data, dtype=np.float32)
+        err = np.asarray(model.err, dtype=np.float32)
+        in_shape = data.shape
+        input_gwcs = deepcopy(model.meta.wcs)
+        exptime = float(model.meta.exposure.exposure_time)
+
+        pixmap = _input_to_output_pixmap(input_gwcs, output_wcs, in_shape)
+        if _output_bbox_in_tile(pixmap, out_shape) is None:
+            return None
+
+        weight = build_driz_weight(
+            {'data': model.data, 'dq': model.dq,
+             'var_rnoise': model.var_rnoise},
+            weight_type=weight_type,
+            good_bits=good_bits,
+            flag_name_map=pixel_flags,
+        ).astype(np.float32)
+
+        var_total = (
+            np.asarray(model.var_rnoise, dtype=np.float32)
+            + np.asarray(model.var_poisson, dtype=np.float32)
+            + np.asarray(model.var_flat, dtype=np.float32)
+        )
+
+        xmin, xmax, ymin, ymax = resample_range(
+            in_shape, input_gwcs.bounding_box,
+        )
+
+    return {
+        'data': data, 'err': err,
+        'var_total': var_total, 'weight': weight,
+        'pixmap': pixmap, 'exptime': exptime,
+        'xmin': xmin, 'xmax': xmax, 'ymin': ymin, 'ymax': ymax,
+        'in_shape': in_shape, 'input_gwcs': input_gwcs,
+    }
+
+
+def _add_image_kwargs(prep, pixfrac):
+    """Common kwargs for `Drizzle.add_image` from a `_prepare_drizzle_input` dict."""
+    return dict(
+        exptime=prep['exptime'],
+        pixmap=prep['pixmap'],
+        weight_map=prep['weight'],
+        pixfrac=pixfrac,
+        in_units='cps',
+        xmin=prep['xmin'], xmax=prep['xmax'],
+        ymin=prep['ymin'], ymax=prep['ymax'],
+    )
+
+
 def drizzle_tile(
     crf_files,
     output_path,
@@ -213,17 +280,11 @@ def drizzle_tile(
       an out_wht buffer, its values are discarded and equal ``outwht`` mod
       float32 accumulation order).
 
-    Each input drizzles into a sliced view of every accumulator sized to
-    the input's bounding box in the output frame plus a 4-pixel kernel halo.
-
     Parameters mirror ``Field.get_tile_wcs`` outputs (``crpix``, ``crval``,
     ``shape``, ``rotation``) and ``[nircam.resample]`` config knobs
     (``pixfrac``, ``kernel``, ``weight_type``, ``good_bits``).
     """
     from drizzle.resample import Drizzle
-    from jwst.datamodels.dqflags import pixel as pixel_flags
-    from stcal.resample.utils import build_driz_weight, resample_range
-    from stdatamodels.jwst.datamodels import ImageModel
 
     n_inputs = len(crf_files)
     nx, ny = shape
@@ -235,8 +296,6 @@ def drizzle_tile(
         crf_files, crpix, crval, shape, rotation, pixel_scale,
     )
 
-    # Persistent accumulators owned by Drizzle objects below. ctx is 3D
-    # `(n_planes, ny, nx)` since >32 inputs requires bit-plane stacking.
     outsci = np.zeros(out_shape, dtype=np.float32)
     outwht = np.zeros(out_shape, dtype=np.float32)
     outvar = np.zeros(out_shape, dtype=np.float32)
@@ -244,13 +303,11 @@ def drizzle_tile(
     n_planes = max(1, (n_inputs + 31) // 32)
     outctx = np.zeros((n_planes, ny, nx), dtype=np.int32)
 
-    # SCI pass — keeps ctx tracking, accumulates exptime internally
     sci_drizzle = Drizzle(
         out_img=outsci, out_wht=outwht, out_ctx=outctx,
         kernel=kernel, fillval='INDEF',
         max_ctx_id=n_inputs,
     )
-    # Variance trick — single accumulator, no ctx
     var_drizzle = Drizzle(
         out_img=outvar, out_wht=outvarw,
         kernel=kernel, fillval='INDEF',
@@ -258,59 +315,21 @@ def drizzle_tile(
     )
 
     skipped = 0
-
     for crf_file in crf_files:
-        with ImageModel(crf_file) as model:
-            data = model.data
-            input_gwcs = model.meta.wcs
-            in_shape = data.shape
-            exptime = float(model.meta.exposure.exposure_time)
+        prep = _prepare_drizzle_input(
+            crf_file, output_wcs, out_shape,
+            weight_type=weight_type, good_bits=good_bits,
+        )
+        if prep is None:
+            skipped += 1
+            continue
 
-            pixmap = _input_to_output_pixmap(input_gwcs, output_wcs, in_shape)
-            if _output_bbox_in_tile(pixmap, out_shape) is None:
-                skipped += 1
-                continue
-
-            # Per-input weight (uses input DQ + var_rnoise for ivm).
-            # ImageModel auto-allocates var_* as zeros if the FITS lacks
-            # them; build_driz_weight then falls back to uniform weights
-            # via _get_inverse_variance.
-            weight = build_driz_weight(
-                {'data': data, 'dq': model.dq, 'var_rnoise': model.var_rnoise},
-                weight_type=weight_type,
-                good_bits=good_bits,
-                flag_name_map=pixel_flags,
-            ).astype(np.float32)
-
-            var_total = (
-                np.asarray(model.var_rnoise, dtype=np.float32)
-                + np.asarray(model.var_poisson, dtype=np.float32)
-                + np.asarray(model.var_flat, dtype=np.float32)
-            )
-
-            # Input-side bounds from gwcs bounding box (caps pixmap eval
-            # to valid detector region, matches stcal)
-            xmin, xmax, ymin, ymax = resample_range(
-                in_shape, input_gwcs.bounding_box,
-            )
-
-            common = dict(
-                exptime=exptime,
-                pixmap=pixmap,
-                weight_map=weight,
-                pixfrac=pixfrac,
-                in_units='cps',
-                xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax,
-            )
-
-            sci_drizzle.add_image(
-                data=data.astype(np.float32, copy=False),
-                **common,
-            )
-            var_drizzle.add_image(
-                data=(var_total * weight).astype(np.float32),
-                **common,
-            )
+        common = _add_image_kwargs(prep, pixfrac)
+        sci_drizzle.add_image(data=prep['data'], **common)
+        var_drizzle.add_image(
+            data=(prep['var_total'] * prep['weight']).astype(np.float32),
+            **common,
+        )
 
     if skipped:
         log(f"  {skipped} inputs did not overlap tile")
@@ -336,3 +355,70 @@ def drizzle_tile(
 
     log(f"  wrote {os.path.basename(output_path)} "
         f"({n_inputs - skipped} contributing inputs)")
+
+
+def drizzle_tile_singles(
+    crf_files,
+    output_wcs,
+    out_shape,
+    *,
+    pixfrac=1.0,
+    kernel='square',
+    weight_type='ivm',
+    good_bits='~DO_NOT_USE',
+):
+    """Yield per-input ``(sci_raster, err_raster, wht_raster, prep)`` rasters.
+
+    Each input is drizzled into a fresh full-tile buffer with no persistent
+    accumulator across inputs. Pixels outside the input footprint are NaN
+    (so ``MedianComputer`` and similar consumers can treat them as missing
+    data via standard NaN-aware reductions).
+
+    Both SCI and ERR are drizzled per input — the per-input pixmap and
+    weight construction are the dominant per-input cost, so doing the
+    extra cdriz call for ERR is cheap on the margin.
+
+    Used by ``outlier_detect_for_tile`` to feed a streaming median for
+    cosmic-ray rejection. The caller is expected to build ``output_wcs``
+    via ``_build_output_wcs`` (so it can reuse it for the blot pass after
+    the median is computed).
+
+    Yields
+    ------
+    sci, err, wht : `numpy.ndarray` (out_shape, float32)
+    prep : dict
+        Per-input metadata (input_gwcs, exptime, etc.) — useful for the
+        caller's blot pass.
+
+    Inputs that don't overlap the tile are skipped (no yield).
+    """
+    from drizzle.resample import Drizzle
+
+    skipped = 0
+    for crf_file in crf_files:
+        prep = _prepare_drizzle_input(
+            crf_file, output_wcs, out_shape,
+            weight_type=weight_type, good_bits=good_bits,
+        )
+        if prep is None:
+            skipped += 1
+            continue
+
+        common = _add_image_kwargs(prep, pixfrac)
+
+        sci_driz = Drizzle(
+            out_shape=out_shape, kernel=kernel, fillval='NaN',
+            disable_ctx=True,
+        )
+        sci_driz.add_image(data=prep['data'], **common)
+
+        err_driz = Drizzle(
+            out_shape=out_shape, kernel=kernel, fillval='NaN',
+            disable_ctx=True,
+        )
+        err_driz.add_image(data=prep['err'], **common)
+
+        yield sci_driz.out_img, err_driz.out_img, sci_driz.out_wht, prep
+
+    if skipped:
+        log(f"  {skipped} inputs did not overlap tile")

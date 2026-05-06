@@ -6,8 +6,8 @@ single-step dispatcher (``run_step``). Both phases iterate over the
 field's filters; within a filter, the per-exposure steps run via
 ``common.parallel.dispatch`` (with ``n_processes`` workers), the
 per-filter ensemble steps (persistence, build_bad_pixel_masks) run
-serially, and the per-visit ensemble steps (skymatch, outlier) iterate
-over visits sequentially.
+serially, and the per-visit ensemble steps (outlier) iterate over
+visits sequentially.
 
 The legacy ``stage1.py`` / ``stage2.py`` / ``stage3.py`` orchestrators
 remain in place for now but are not invoked from the new CLI.
@@ -36,7 +36,6 @@ from campfire_pipeline.nircam.steps.apply_masks import apply_masks_step
 from campfire_pipeline.nircam.steps.bad_pixel import (
     build_bad_pixel_masks, bad_pixel_step,
 )
-from campfire_pipeline.nircam.steps.skymatch import skymatch_step
 from campfire_pipeline.nircam.steps.outlier import outlier_step
 from campfire_pipeline.nircam.steps.resample import resample_step
 
@@ -59,7 +58,6 @@ PROCESS_STEPS = [
 COMBINE_STEPS = [
     ('apply_mask', 'CFP_MASK'),
     ('bad_pixel',  'CFP_BPIX'),
-    ('skymatch',   'CFP_SMAT'),
     ('outlier',    'CFP_OUT'),
     ('resample',   None),
 ]
@@ -217,39 +215,26 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
     status.mark_all(pending, 'CFP_BPIX')
 
 
-def _run_skymatch(field, config, filtname, n_processes, overwrite, status):
-    exposures = field.get_exposure_files(filtname)
-    if not exposures:
-        log(f"skymatch: no exposures for {filtname}")
-        return
-    cfg = get_nircam_step_config('skymatch', config, field)
-    visits = _group_by_visit(exposures)
-    # Skip whole visits whose every member already has CFP_SMAT
-    pending_visits = {}
-    for visit, visit_files in visits.items():
-        if not overwrite and all(status.has(f, 'CFP_SMAT')
-                                 for f in visit_files):
-            continue
-        pending_visits[visit] = visit_files
-    skipped = len(visits) - len(pending_visits)
-    if skipped:
-        log(f"skymatch: {skipped}/{len(visits)} visits already have CFP_SMAT "
-            f"on every member for {filtname}; skipping those")
-    if not pending_visits:
-        return
-    log(f"skymatch: {len(pending_visits)} visits for {filtname}")
-    for visit, visit_files in sorted(pending_visits.items()):
-        skymatch_step(visit_files, field, cfg, overwrite=overwrite,
-                      status=status)
-        status.mark_all(visit_files, 'CFP_SMAT')
-
-
 def _run_outlier(field, config, filtname, n_processes, overwrite, status):
+    cfg = get_nircam_step_config('outlier', config, field)
+    implementation = cfg.get('implementation', 'jwst')
+    if implementation == 'campfire':
+        _run_outlier_per_tile(field, cfg, filtname, overwrite, status)
+        return
+    if implementation != 'jwst':
+        raise ValueError(
+            f"Unknown outlier.implementation {implementation!r}; "
+            f"expected 'jwst' or 'campfire'"
+        )
+    _run_outlier_per_visit(field, cfg, filtname, overwrite, status)
+
+
+def _run_outlier_per_visit(field, cfg, filtname, overwrite, status):
+    """Legacy per-visit outlier (jwst Image3Pipeline). Default."""
     exposures = field.get_exposure_files(filtname)
     if not exposures:
         log(f"outlier: no exposures for {filtname}")
         return
-    cfg = get_nircam_step_config('outlier', config, field)
     visits = _group_by_visit(exposures)
 
     # Pre-filter visits whose members all carry CFP_OUT *AND* whose manifest
@@ -307,6 +292,99 @@ def _run_outlier(field, config, filtname, n_processes, overwrite, status):
         status.mark_all(visit_files, 'CFP_OUT')
 
 
+def _run_outlier_per_tile(field, cfg, filtname, overwrite, status):
+    """Per-tile outlier (campfire-native, issue #138 Phase 2).
+
+    Drops visit grouping. For each tile, medians all overlapping
+    exposures on the tile WCS. Per-exposure ``CFP_OUT`` is stamped
+    deferredly — only after every tile the exposure overlaps has a
+    valid up-to-date outlier manifest (covers partial-run cases like
+    ``--tile A`` followed later by ``--tile B``).
+    """
+    from shapely.geometry import Polygon
+
+    from campfire_pipeline.common import cfp
+    from campfire_pipeline.common.io import atomic_save
+    from campfire_pipeline.nircam.geometry import select_overlapping_files
+    from campfire_pipeline.nircam.manifest import compute_file_hash, load_manifest
+    from campfire_pipeline.nircam.steps.outlier import outlier_step_per_tile
+    from stdatamodels.jwst.datamodels import ImageModel
+
+    exposures = field.get_exposure_files(filtname)
+    if not exposures:
+        log(f"outlier: no exposures for {filtname}")
+        return
+
+    tiles = list(field.tiles.keys())
+    if not tiles:
+        log(f"outlier: no tiles defined for field {field.name}; skipping")
+        return
+
+    # Participation matrix: tile -> overlapping exposures
+    tile_to_exps = {}
+    for tile in tiles:
+        tile_polygon = Polygon(field.get_tile_corners(tile))
+        tile_to_exps[tile] = select_overlapping_files(exposures, tile_polygon)
+
+    # Inverse: exposure -> set of overlapping tiles
+    exp_to_tiles = {exp: set() for exp in exposures}
+    for tile, tfiles in tile_to_exps.items():
+        for f in tfiles:
+            exp_to_tiles[f].add(tile)
+
+    log(f"outlier (per-tile): {len(tiles)} tiles, {len(exposures)} exposures, "
+        f"filter {filtname}")
+    for tile in sorted(tiles):
+        tile_files = sorted(tile_to_exps[tile])
+        if not tile_files:
+            log(f"  tile {tile}: no overlapping exposures; skipping")
+            continue
+        outlier_step_per_tile(
+            tile, tile_files, filtname, field, cfg, overwrite=overwrite,
+        )
+
+    # Deferred CFP_OUT: stamp each exposure iff every tile it overlaps has a
+    # valid up-to-date outlier manifest including this exposure.
+    hash_cache = {}
+
+    def _file_hash(path):
+        if path not in hash_cache:
+            hash_cache[path] = compute_file_hash(path)
+        return hash_cache[path]
+
+    def _all_tiles_done_for_exposure(path):
+        bn = os.path.basename(path)
+        my_hash = _file_hash(path)
+        for tile in exp_to_tiles[path]:
+            manifest_path = os.path.join(
+                field.exposures_dir, filtname, 'manifests',
+                f'outlier_{tile}_manifest.json',
+            )
+            manifest = load_manifest(manifest_path)
+            if manifest is None:
+                return False
+            old_hashes = {inp['filename']: inp['file_hash']
+                          for inp in manifest['inputs']}
+            if old_hashes.get(bn) != my_hash:
+                return False
+        return True
+
+    n_stamped = 0
+    for exp in exposures:
+        if not exp_to_tiles[exp]:
+            continue  # exposure overlaps no tile — nothing to do
+        if status.has(exp, 'CFP_OUT'):
+            continue
+        if not _all_tiles_done_for_exposure(exp):
+            continue
+        with ImageModel(exp) as model:
+            atomic_save(model, exp, header_updates=cfp.format(CFP_OUT=None))
+        status.mark(exp, 'CFP_OUT')
+        n_stamped += 1
+    log(f"outlier: stamped CFP_OUT on {n_stamped} fully-completed exposures "
+        f"for {filtname}")
+
+
 def _run_resample(field, config, filtname, n_processes, overwrite, status,
                   reduction_version):
     exposures = field.get_exposure_files(filtname, with_step='CFP_OUT',
@@ -350,7 +428,6 @@ _RUNNERS = {
                        'apply_mask', apply_masks_step, 'CFP_MASK',
                        f, c, fl, n, ow, st),
     'bad_pixel':   _run_bad_pixel,
-    'skymatch':    _run_skymatch,
     'outlier':     _run_outlier,
     # 'resample' handled in run_combine/run_step (needs reduction_version)
 }

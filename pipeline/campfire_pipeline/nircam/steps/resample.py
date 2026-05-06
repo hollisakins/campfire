@@ -18,15 +18,13 @@ extension splitting into ``_sci/_err/_wht/_srcmask`` files, and a
 
 import os
 import shutil
-import warnings
 from datetime import datetime
 
-import numpy as np
 from astropy.io import fits
-from astropy.wcs import WCS
 from shapely.geometry import Polygon
 
 from campfire_pipeline.common.io import log
+from campfire_pipeline.nircam.geometry import select_overlapping_files
 
 
 def _resolve_pixel_scale(value):
@@ -37,23 +35,6 @@ def _resolve_pixel_scale(value):
     if value > 1:
         return float(value) / 1000, f'{int(value)}mas'
     return float(value), f'{int(value * 1000)}mas'
-
-
-def _select_overlapping(exposure_files, tile_polygon):
-    """Return exposures whose footprints intersect ``tile_polygon``."""
-    selected = []
-    for f in exposure_files:
-        with fits.open(f, ignore_missing_simple=True) as hdul:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                wcs = WCS(hdul[1].header, naxis=2)
-            pixcoords = np.array([[0, 0], [2048, 0],
-                                   [2048, 2048], [0, 2048]])
-            worldcoords = wcs.wcs_pix2world(pixcoords, 0)
-        file_polygon = Polygon(worldcoords)
-        if tile_polygon.intersects(file_polygon):
-            selected.append(f)
-    return selected
 
 
 def _drizzle_tile_via_campfire(
@@ -237,7 +218,7 @@ def resample_step(filtname, exposure_files, field, step_config,
         log(f"  mosaic → {mosaic_file}")
 
         tile_polygon = Polygon(field.get_tile_corners(tile))
-        selected = _select_overlapping(exposure_files, tile_polygon)
+        selected = select_overlapping_files(exposure_files, tile_polygon)
         if not selected:
             log(f"  no exposures overlap {tile}; skipping")
             continue

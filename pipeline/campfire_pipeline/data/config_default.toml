@@ -208,6 +208,13 @@
     threshold = 0.2
 
 [nircam.outlier]
+    # implementation = "jwst" routes outlier detection through
+    # `jwst.pipeline.calwebb_image3.Image3Pipeline` per visit (with
+    # cross-visit overlap padding). "campfire" uses the campfire-native
+    # per-tile path in `nircam/outlier_detect.py` — drops visit grouping,
+    # medians all exposures overlapping each tile on the tile WCS.
+    # Issue #138 Phase 2.
+    implementation = "jwst"
     max_radius = 20
     good_bits = "~DO_NOT_USE"
     weight_type = "ivm"
@@ -219,6 +226,9 @@
     snr = "3.0 2.0"
     backg = 0.0
     resample_data = true
+    # pixel_scale only used when implementation = "campfire"; sets the
+    # tile WCS pixel scale for the per-tile outlier median.
+    pixel_scale = "60mas"
 
 [nircam.resample]
     mode = "tile"

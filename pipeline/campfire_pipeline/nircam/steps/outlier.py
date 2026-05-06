@@ -1,16 +1,30 @@
 """
-outlier: per-visit outlier (cosmic-ray) detection via JWST Image3Pipeline.
+outlier: cosmic-ray detection on canonical NIRCam exposures.
 
-Combines the legacy ``outlier_step_prep`` and ``outlier_step`` into one
-function. For each visit, finds the spatially overlapping exposures from
-other visits (so cross-visit cosmic ray rejection works), assembles an ASN,
-and runs ``Image3Pipeline`` (outlier_detection only) inside a private
-scratch directory. Each of the visit's own scratch outputs is then
-atomically promoted back to its canonical path with ``CFP_OUT`` stamped.
+Two implementations live here, dispatched by the orchestrator based on
+``[nircam.outlier].implementation``:
 
-Maintains a manifest-based skip (``compute_file_hash`` over ``SCI`` /
-``DQ`` of every visit + overlap input). Manifests live in
-``exposures/<filter>/manifests/outlier_<visit>_manifest.json``.
+- ``outlier_step`` (jwst, default) — per-visit pass using
+  ``jwst.pipeline.calwebb_image3.Image3Pipeline``. For each visit, finds
+  every spatially overlapping exposure from any other visit (so the
+  cross-visit median has full statistics on overlap regions), assembles
+  an ASN, and runs Image3 in outlier-only mode inside a private scratch
+  directory. Each visit's own scratch outputs are then atomically
+  promoted back to their canonical paths with ``CFP_OUT`` stamped.
+  Manifests: ``exposures/<filter>/manifests/outlier_<visit>_manifest.json``.
+
+- ``outlier_step_per_tile`` (campfire, opt-in) — per-tile pass using
+  the campfire-native ``outlier_detect_for_tile`` (issue #138, Phase 2).
+  All exposures overlapping a tile are drizzled into the tile WCS,
+  medianed via streaming ``MedianComputer``, blotted back via
+  ``gwcs_blot``, and DQ-flagged via the standard two-pass SNR scheme.
+  Drops visit grouping entirely; drops the cross-visit overlap-padding
+  ASN gymnastics. Manifests:
+  ``exposures/<filter>/manifests/outlier_<tile>_manifest.json``. The
+  per-exposure ``CFP_OUT`` stamp is stamped by the orchestrator only
+  after every tile the exposure participates in has completed
+  (deferred-completion semantic — preserves resample's
+  ``with_step='CFP_OUT'`` input query).
 """
 
 import json
@@ -241,6 +255,117 @@ def outlier_step(visit, visit_files, filter_files, sregions,
                 'file_hash': compute_file_hash(f),
             }
             for f in sorted(all_inputs)
+        ],
+    }
+    write_manifest(manifest_data, manifest_path)
+
+
+def outlier_step_per_tile(tile, tile_files, filtname, field, step_config,
+                          overwrite=False):
+    """Run per-tile outlier detection across all CRFs overlapping the tile.
+
+    Parameters
+    ----------
+    tile : str
+        Tile name (e.g. ``'venus'`` or ``'A1'``).
+    tile_files : list of str
+        Canonical CRF paths for this filter that overlap the tile.
+        Caller (orchestrator) is expected to have run
+        ``select_overlapping_files`` already.
+    filtname : str
+    field : Field
+    step_config : dict
+        ``[nircam.outlier]`` section.
+    overwrite : bool
+
+    Notes
+    -----
+    Does not stamp ``CFP_OUT`` — the orchestrator stamps that once every
+    tile an exposure participates in has completed (deferred-completion
+    semantic). DQ updates land via ``atomic_save`` inside
+    ``outlier_detect_for_tile``.
+
+    Manifest staleness check: skip if the manifest exists, all input
+    hashes match, and ``--overwrite`` is not set.
+    """
+    if not tile_files:
+        return
+
+    from campfire_pipeline.nircam.outlier_detect import outlier_detect_for_tile
+
+    log(f"Outlier (per-tile) on {tile} ({len(tile_files)} exposures, {filtname})")
+
+    manifest_dir = os.path.join(field.exposures_dir, filtname, 'manifests')
+    manifest_path = os.path.join(
+        manifest_dir, f'outlier_{tile}_manifest.json',
+    )
+
+    if not overwrite:
+        manifest = load_manifest(manifest_path)
+        if manifest is not None:
+            new_basenames = sorted(os.path.basename(f) for f in tile_files)
+            old_basenames = sorted(inp['filename'] for inp in manifest['inputs'])
+            if new_basenames == old_basenames:
+                old_hashes = {
+                    inp['filename']: inp['file_hash']
+                    for inp in manifest['inputs']
+                }
+                content_changed = []
+                for f in tile_files:
+                    bn = os.path.basename(f)
+                    if compute_file_hash(f) != old_hashes.get(bn):
+                        content_changed.append(bn)
+                if not content_changed:
+                    log(f"  tile {tile} up-to-date; skipping")
+                    return
+                log(f"  inputs changed: {', '.join(content_changed)}")
+            else:
+                log(f"  input set changed for tile {tile}")
+        else:
+            log(f"  no manifest for tile {tile}; running")
+
+    pixel_scale_str = step_config.get('pixel_scale', '60mas')
+    if not pixel_scale_str.endswith('mas'):
+        raise ValueError(
+            f"[nircam.outlier].pixel_scale must look like 'NNmas' "
+            f"(got {pixel_scale_str!r})"
+        )
+    pixel_scale = float(pixel_scale_str[:-3]) / 1000  # arcsec
+
+    crpix, crval, shape, rotation = field.get_tile_wcs(
+        tile, pixel_scale=pixel_scale_str,
+    )
+
+    snr_str = step_config.get('snr', '3.0 2.0')
+    scale_str = step_config.get('scale', '1.2 0.7')
+    snr = tuple(float(x) for x in snr_str.split())
+    scale = tuple(float(x) for x in scale_str.split())
+
+    outlier_detect_for_tile(
+        tile_files,
+        crpix=crpix, crval=crval, shape=shape, rotation=rotation,
+        pixel_scale=pixel_scale,
+        snr=snr, scale=scale,
+        backg=float(step_config.get('backg', 0.0)),
+        pixfrac=float(step_config.get('pixfrac', 1.0)),
+        kernel=step_config.get('kernel', 'square'),
+        weight_type=step_config.get('weight_type', 'ivm'),
+        good_bits=step_config.get('good_bits', '~DO_NOT_USE'),
+        in_memory=bool(step_config.get('in_memory', False)),
+    )
+
+    os.makedirs(manifest_dir, exist_ok=True)
+    manifest_data = {
+        'tile': tile,
+        'field': field.name,
+        'filter': filtname,
+        'pixel_scale': pixel_scale_str,
+        'inputs': [
+            {
+                'filename': os.path.basename(f),
+                'file_hash': compute_file_hash(f),
+            }
+            for f in sorted(tile_files)
         ],
     }
     write_manifest(manifest_data, manifest_path)
