@@ -5,8 +5,8 @@ First step of the mosaic phase. Reads ``.reg`` files from
 ``mask_dir/<filter>/<rootname>.reg``, rasterizes each region to a pixel mask
 using the exposure WCS, and writes the result to a ``CFMASK`` extension on
 the canonical file. Then OR's ``CFMASK`` into ``DQ`` (with the user-chosen
-flag bit, default ``1024``) so downstream JWST steps (skymatch, outlier
-detection, resample) honor it through their ``dqbits`` parameters.
+flag bit, default ``1024``) so downstream JWST steps (outlier detection,
+resample) honor it through their ``dqbits`` parameters.
 
 CFMASK is rebuilt from scratch every run, replacing any existing CFMASK
 extension on the canonical file. This gives the user a clean way to *add*

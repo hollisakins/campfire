@@ -1,44 +1,78 @@
 """
-outlier_detect: per-tile cosmic-ray rejection across all overlapping inputs.
+outlier_detect: campfire-native per-visit cosmic-ray rejection.
 
-Replaces the per-visit + overlap-padded outlier path with a per-tile flow
-that medians **all** exposures whose footprint hits the tile, on the
-**tile WCS** rather than a per-visit-derived WCS (issue #138, Phase 2).
+For each visit, drizzles all (visit + intra-program-overlap) inputs into a
+**per-visit intermediate WCS** (input native pscale, ref-input rotation,
+union-bbox shape — the same convention ``jwst.outlier_detection`` uses
+internally), streams sci rasters through ``MedianComputer``, blots
+median back via ``gwcs_blot``, and flags CRs in input DQ via
+``flag_resampled_model_crs``. DQ updates land on the visit's own canonical
+files via ``atomic_save`` with ``CFP_OUT`` stamped.
 
-Flow (per tile, per filter):
+Only SCI is drizzled, matching ``jwst.outlier_detection``'s
+``ResampleImage(enable_var=False, compute_err=None)`` setup. The
+SNR comparison inside ``flag_resampled_model_crs`` uses each input
+model's own native ERR — a blotted-median ERR would be smoother than
+native and systematically inflate computed SNRs (over-flagging).
 
-1. Drizzle each overlapping CRF input into the tile WCS via
-   ``drizzle_tile_singles`` (one fresh full-tile raster per input,
-   no shared accumulator).
-2. Stream the per-input SCI and ERR rasters into
-   ``stcal.outlier_detection.median.MedianComputer`` (NaN-aware median
-   bounded in memory by ``buffer_size``).
-3. ``flag_resampled_model_crs`` (from ``jwst.outlier_detection.utils``)
-   blots the SCI median back to each input frame via ``gwcs_blot``,
-   blots the ERR median similarly, runs the standard two-pass SNR
-   gradient comparison, and updates ``input_model.dq`` in place.
-4. Per-input updated DQ is written back to the canonical exposure path
-   via ``atomic_save``.
+Reuses campfire's bbox-sliced drizzle primitive
+(``drizzle.drizzle_tile_singles``) and stcal/jwst's median + flag helpers.
+The per-visit intermediate WCS is small (~visit footprint at native scale,
+not full mosaic tile), so per-input drizzle scaffolding and the median
+buffer are both bounded by visit size — avoids the per-input full-tile
+allocation cost that ``stcal.resample.Resample`` pays inside
+``Image3Pipeline``.
 
-The per-exposure ``CFP_OUT`` provenance stamp is *not* set here — the
-orchestrator stamps it only after every tile that an exposure
-participates in has completed (deferred-completion semantic).
+Replaces the dead-end per-tile path (issue #138 Phase 2 v1). The
+per-visit framing keeps the rotation/scale alignment quality of the
+jwst path while routing the heavy lifting through the campfire drizzle
+primitive (variance trick, bbox-sliced output, no Python-level masked
+accumulator updates).
 """
 
 import os
 from copy import deepcopy
 
+import numpy as np
+from astropy.io import fits
+
+from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import atomic_save, log
 
 
-def outlier_detect_for_tile(
-    crf_files,
+def _build_visit_wcs(crf_files):
+    """Build per-visit intermediate WCS via ``wcs_from_sregions`` auto-derivation.
+
+    With ``pscale=None``, ``rotation=None``, ``shape=None`` (all defaults),
+    ``wcs_from_sregions`` derives:
+    - pixel scale from the reference CRF's gwcs at the field reference point
+      (``compute_scale``);
+    - rotation from ``ref_wcsinfo['roll_ref']`` / ``v3yangle`` / ``vparity``
+      (instrument frame, not ICRS-aligned);
+    - shape sized to enclose the union footprint of all input s_regions.
+
+    The resulting gwcs has ``.pixel_shape = (Nx, Ny)`` baked in. Returning
+    array-shape ``(Ny, Nx)`` for downstream use is the caller's job.
+    """
+    from stcal.alignment.util import wcs_from_sregions
+    from stdatamodels.jwst.datamodels import ImageModel
+
+    sregions = []
+    with ImageModel(crf_files[0]) as ref:
+        ref_wcs = deepcopy(ref.meta.wcs)
+        ref_wcsinfo = ref.meta.wcsinfo.instance
+        sregions.append(ref.meta.wcsinfo.s_region)
+    for crf in crf_files[1:]:
+        sregions.append(fits.getheader(crf, extname='SCI')['S_REGION'])
+    return wcs_from_sregions(
+        sregions, ref_wcs=ref_wcs, ref_wcsinfo=ref_wcsinfo,
+    )
+
+
+def outlier_detect_for_visit(
+    all_inputs,
+    visit_files,
     *,
-    crpix,
-    crval,
-    shape,
-    rotation,
-    pixel_scale,
     snr=(3.0, 2.0),
     scale=(1.2, 0.7),
     backg=0.0,
@@ -48,117 +82,129 @@ def outlier_detect_for_tile(
     good_bits='~DO_NOT_USE',
     in_memory=False,
     tempdir=None,
+    extras_per_visit=None,
 ):
-    """Run per-tile outlier detection across ``crf_files``.
+    """Per-visit campfire-native outlier across ``all_inputs``, flag ``visit_files``.
 
     Parameters
     ----------
-    crf_files : list of str
-        CRF input paths overlapping this tile. The caller is expected to
-        have pre-filtered via ``select_overlapping_files``; inputs that
-        still fail the per-input pixmap overlap check inside
-        ``drizzle_tile_singles`` are skipped with a logged warning.
-    crpix, crval, shape, rotation, pixel_scale : tile WCS overrides
-        (see ``Field.get_tile_wcs``).
-    snr : tuple of float
-        ``(snr1, snr2)`` two-pass SNR thresholds.
-    scale : tuple of float
-        ``(scale1, scale2)`` derivative scaling factors.
+    all_inputs : list of str
+        CRF paths to include in the median pool (visit's own files plus
+        spatially-overlapping intra-program files). Drizzled into the
+        per-visit intermediate WCS.
+    visit_files : list of str
+        The visit's own canonical CRF paths — the only files whose DQ
+        gets updated and saved. Must be a subset of ``all_inputs``.
+    snr, scale : tuples of float
+        Two-pass ``(snr1, snr2)`` thresholds and ``(scale1, scale2)``
+        derivative scaling factors for the median-comparison CR test.
     backg : float
-        Scalar background level added to the blotted image before the SNR
-        comparison (overridden by ``input_model.meta.background.level``
-        when subtracted=False).
+        Scalar background added to the blotted image before the SNR
+        comparison (overridden per-input by
+        ``model.meta.background.level`` when ``subtracted=False``).
     pixfrac, kernel, weight_type, good_bits : drizzle parameters.
     in_memory : bool
-        If True, hold all per-input rasters in RAM
-        (``2 × n_inputs × tile_size × float32``). If False (default),
-        stream to a temp directory bounded by ``MedianComputer``'s
-        per-section buffer size.
-    tempdir : str or None
-        Parent directory for the streaming temp files. None means current
-        working directory.
+        Hold per-input rasters in RAM
+        (~``n_inputs × visit_wcs_pixels × float32 × 2``). At native scale
+        per-visit this is typically a few hundred MB even for dense
+        overlap regions — feasible at COSMOS scale.
+    tempdir : str, optional
+        Parent dir for ``MedianComputer`` temp files when ``in_memory=False``.
+    extras_per_visit : dict, optional
+        Map ``{rootname: [HDU, ...]}`` of extras (SRCMASK/CFMASK)
+        captured before the run, preserved through ``atomic_save``.
+
+    Notes
+    -----
+    DQ updates are written via ``atomic_save`` with ``CFP_OUT`` stamped
+    on the primary header. Caller does not need to re-stamp.
     """
+    from jwst.datamodels.dqflags import pixel as pixel_flags
     from jwst.outlier_detection.utils import flag_resampled_model_crs
     from stcal.outlier_detection.median import MedianComputer
     from stdatamodels.jwst.datamodels import ImageModel
 
-    from campfire_pipeline.nircam.drizzle import (
-        _build_output_wcs, drizzle_tile_singles,
-    )
+    from campfire_pipeline.nircam.drizzle import drizzle_tile_singles
 
-    n_inputs = len(crf_files)
+    n_inputs = len(all_inputs)
     if n_inputs == 0:
-        log("  outlier (per-tile): no inputs")
+        log("  outlier (per-visit): no inputs")
         return
 
-    nx, ny = shape
+    output_wcs = _build_visit_wcs(all_inputs)
+    nx, ny = output_wcs.pixel_shape
     out_shape = (ny, nx)
 
-    log(f"  campfire outlier: {n_inputs} inputs into {nx}x{ny} tile")
+    log(f"  campfire outlier (per-visit): {n_inputs} inputs into "
+        f"{nx}x{ny} visit WCS")
 
-    output_wcs = _build_output_wcs(
-        crf_files, crpix, crval, shape, rotation, pixel_scale,
-    )
-
-    # Phase A — drizzle each input into the tile WCS, streaming SCI and
-    # ERR rasters into separate MedianComputer instances. Collect prep
-    # dicts so phase B can blot back without re-reading the gwcs.
     sci_mc = MedianComputer(
         full_shape=(n_inputs,) + out_shape,
-        in_memory=in_memory,
-        tempdir=tempdir or '',
-    )
-    err_mc = MedianComputer(
-        full_shape=(n_inputs,) + out_shape,
-        in_memory=in_memory,
-        tempdir=tempdir or '',
+        in_memory=in_memory, tempdir=tempdir or '',
     )
 
-    contributing = []
-    for idx, (sci, err, wht, prep) in enumerate(drizzle_tile_singles(
-        crf_files, output_wcs, out_shape,
-        pixfrac=pixfrac, kernel=kernel,
-        weight_type=weight_type, good_bits=good_bits,
+    # Reusable visit-shape scratch for pasting bbox-sliced rasters into
+    # the full-shape array MedianComputer requires.
+    scratch_sci = np.full(out_shape, np.nan, dtype=np.float32)
+
+    contributing_paths = []
+    for idx, ((sci_bbox, _wht_bbox, prep), crf) in enumerate(zip(
+        drizzle_tile_singles(
+            all_inputs, output_wcs, out_shape,
+            pixfrac=pixfrac, kernel=kernel,
+            weight_type=weight_type, good_bits=good_bits,
+        ),
+        all_inputs,
     )):
-        sci_mc.append(sci, idx=idx)
-        err_mc.append(err, idx=idx)
-        # Use position in the yield stream to recover the source CRF.
-        # If drizzle_tile_singles skipped any inputs, this would
-        # mis-align — we trust the caller has pre-filtered overlapping
-        # files (matching the pixmap-bbox check inside
-        # _prepare_drizzle_input is a strict subset of the sky-polygon
-        # overlap check the caller uses).
-        contributing.append(prep)
+        sly, slx = prep['sly'], prep['slx']
 
-    log(f"  computing median...")
+        scratch_sci[sly, slx] = sci_bbox
+        sci_mc.append(scratch_sci, idx=idx)
+        scratch_sci[sly, slx] = np.nan
+
+        contributing_paths.append(crf)
+
+    log("  computing median...")
     median_sci = sci_mc.evaluate()
-    median_err = err_mc.evaluate()
-    del sci_mc, err_mc
+    del sci_mc
 
-    # Phase B — blot median back to each input frame, flag CRs in DQ,
-    # write updated DQ back to the canonical path. Re-open each input
-    # via ImageModel (cheap; pixmap state is not reused).
     snr_str = f"{snr[0]:.2f} {snr[1]:.2f}"
     scale_str = f"{scale[0]:.2f} {scale[1]:.2f}"
     log(f"  flagging CRs (snr={snr_str}, scale={scale_str})...")
 
+    OUTLIER_BIT = pixel_flags['OUTLIER']
+    visit_set = set(visit_files)
+    extras_per_visit = extras_per_visit or {}
+
     n_flagged_total = 0
-    for prep, crf in zip(contributing, crf_files):
+    n_visit_flagged = 0
+    for crf in contributing_paths:
+        if crf not in visit_set:
+            continue  # only flag and save the visit's own files
         with ImageModel(crf) as model:
-            dq_before = int((model.dq != 0).sum())
+            dq_before = (model.dq & OUTLIER_BIT) != 0
+            # Match jwst.outlier_detection.imaging.detect_outliers: pass
+            # only median_sci. flag_resampled_model_crs falls back to the
+            # input model's own ERR for the SNR comparison when median_err
+            # is None — using a blotted-median ERR instead would
+            # systematically over-flag (median_err is smoother than
+            # native model.err, which inflates computed SNRs).
             flag_resampled_model_crs(
-                model,
-                median_sci,
-                output_wcs,
+                model, median_sci, output_wcs,
                 snr1=snr[0], snr2=snr[1],
                 scale1=scale[0], scale2=scale[1],
                 backg=backg,
-                median_err=median_err,
             )
-            dq_after = int((model.dq != 0).sum())
-            n_flagged_total += (dq_after - dq_before)
+            dq_after = (model.dq & OUTLIER_BIT) != 0
+            n_flagged_total += int((dq_after & ~dq_before).sum())
+            n_visit_flagged += 1
 
-            atomic_save(model, crf)
+            rootname = os.path.basename(crf).removesuffix('.fits')
+            atomic_save(
+                model, crf,
+                header_updates=cfp.format(CFP_OUT=None),
+                extra_hdus=extras_per_visit.get(rootname),
+            )
 
     log(f"  outlier: flagged {n_flagged_total} new pixels across "
-        f"{len(contributing)} inputs")
+        f"{n_visit_flagged} visit exposures")

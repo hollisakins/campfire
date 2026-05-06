@@ -21,7 +21,10 @@
 # Tile WCS definitions nest under the field:
 #   [field.tile_name]
 #       rotation = degrees
-#       corners  = [[RA, Dec], ...]
+#       # corners  = [[RA, Dec], ...]   # optional override; if omitted,
+#       #                               # corners are auto-computed from the
+#       #                               # first <scale>mas subsection plus
+#       #                               # tangent_point + rotation.
 #       [field.tile_name.30mas]
 #           crpix = [x, y]
 #           naxis = [nx, ny]

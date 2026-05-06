@@ -13,6 +13,9 @@ Original version history:
   1.3.0 -- optionally mask DQ bits
   1.3.1 -- only pass tier_mask the bad-pixel / off-detector mask
   1.4.0 -- added clipped_ring_median to reduce suppression in galaxy outskirts
+  1.5.0 -- perf: ring-median on a block-reduced image, gaussian_filter in
+           place of convolve_fft, EDT-based tier dilation, hoisted biweight
+           stats out of the tier loop
 """
 
 import os
@@ -21,8 +24,9 @@ from typing import Optional, Tuple
 
 import numpy as np
 from astropy import stats as astrostats
-from astropy.convolution import Gaussian2DKernel, Ring2DKernel, convolve_fft
+from astropy.convolution import Ring2DKernel
 from astropy.io import fits
+from astropy.nddata import block_reduce
 from astropy.wcs import WCS
 from jwst.datamodels import dqflags
 from photutils.background import (
@@ -33,8 +37,12 @@ from photutils.background import (
 )
 from photutils.segmentation import detect_sources
 from photutils.utils import ShepardIDWInterpolator as idw  # noqa: F401
-from photutils.utils import circular_footprint
-from scipy.ndimage import median_filter
+from scipy.ndimage import (
+    distance_transform_edt,
+    gaussian_filter,
+    median_filter,
+    zoom,
+)
 
 from campfire_pipeline.common.io import log
 
@@ -62,6 +70,12 @@ class SubtractBackground:
     ring_clip_max_sigma: float = 5.0
     ring_clip_box_size: int = 100
     ring_clip_filter_size: int = 3
+    # Downsample the ring-median pass by this integer factor in each axis.
+    # The ring-median estimates a smooth large-scale background, so running
+    # it on a block-reduced image (and zooming the result back) is
+    # equivalent to within sampling noise. A factor of 4 gives ~250x
+    # speedup at radius=80; default of 1 preserves the original behaviour.
+    ring_downsample: int = 1
 
     # -- Tiered source masking -------------------------------------------------
     tier_kernel_size: list = field(default_factory=lambda: [25, 15, 5, 2])
@@ -138,9 +152,9 @@ class SubtractBackground:
         self, sci: np.ndarray, mask: np.ndarray
     ) -> np.ndarray:
         """Fill masked pixels with a robust mean so convolution is clean."""
-        sci_nan = np.choose(mask, (sci, np.nan))
+        sci_nan = np.where(mask, np.nan, sci)
         robust_mean = astrostats.biweight_location(sci_nan, c=6.0, ignore_nan=True)
-        return np.choose(mask, (sci, robust_mean))
+        return np.where(mask, robust_mean, sci)
 
     @staticmethod
     def off_detector(sci: np.ndarray, err: np.ndarray) -> np.ndarray:
@@ -192,13 +206,37 @@ class SubtractBackground:
         ceiling = self.ring_clip_max_sigma * background_rms + bkg.background
         ceiling_mask = sci > ceiling
 
+        f = max(int(self.ring_downsample), 1)
         log(
             f"Ring median filtering with radius = {self.ring_radius_in}, "
-            f"width = {self.ring_width}"
+            f"width = {self.ring_width}, downsample = {f}"
         )
         sci_filled = self.replace_masked(sci, mask | ceiling_mask)
-        ring = Ring2DKernel(self.ring_radius_in, self.ring_width)
-        filtered = median_filter(sci_filled, footprint=ring.array)
+
+        if f > 1:
+            # Block-reduce, ring-median at scaled radius/width, zoom back.
+            # The ring-median is by construction a smooth large-scale
+            # estimator, so this is equivalent to within sampling noise.
+            h, w = sci_filled.shape
+            pad_h = (-h) % f
+            pad_w = (-w) % f
+            if pad_h or pad_w:
+                sci_padded = np.pad(
+                    sci_filled, ((0, pad_h), (0, pad_w)), mode='edge'
+                )
+            else:
+                sci_padded = sci_filled
+            small = block_reduce(sci_padded, f, func=np.mean)
+            radius_small = max(int(round(self.ring_radius_in / f)), 1)
+            width_small = max(int(round(self.ring_width / f)), 1)
+            ring_small = Ring2DKernel(radius_small, width_small)
+            filtered_small = median_filter(small, footprint=ring_small.array)
+            filtered_padded = zoom(filtered_small, f, order=1, mode='nearest')
+            filtered = filtered_padded[:h, :w]
+        else:
+            ring = Ring2DKernel(self.ring_radius_in, self.ring_width)
+            filtered = median_filter(sci_filled, footprint=ring.array)
+
         return sci - filtered
 
     # ------------------------------------------------------------------
@@ -207,19 +245,21 @@ class SubtractBackground:
 
     def tier_mask(
         self,
-        img: np.ndarray,
+        replaced_img: np.ndarray,
         mask: np.ndarray,
+        background_rms: float,
         tiernum: int = 0,
     ) -> Optional[np.ndarray]:
-        """Detect sources at a single tier and return a boolean mask."""
-        background_rms = astrostats.biweight_scale(img[~mask])
-        background_level = astrostats.biweight_location(img[~mask])
-        replaced_img = np.choose(mask, (img, background_level))
+        """Detect sources at a single tier and return a boolean mask.
 
-        convolved = convolve_fft(
+        ``replaced_img`` and ``background_rms`` are computed once by
+        :meth:`mask_sources` (they don't change across tiers) and passed in
+        to avoid redundant biweight passes over a multi-GB array.
+        """
+        convolved = gaussian_filter(
             replaced_img,
-            Gaussian2DKernel(self.tier_kernel_size[tiernum]),
-            allow_huge=True,
+            sigma=self.tier_kernel_size[tiernum],
+            mode='reflect',
         )
 
         seg_detect = detect_sources(
@@ -232,11 +272,15 @@ class SubtractBackground:
             log(f"No sources detected for tier {tiernum}, moving to next tier...")
             return None
 
+        base = seg_detect.make_source_mask()
         if self.tier_dilate_size[tiernum] == 0:
-            tier_result = seg_detect.make_source_mask()
+            tier_result = base
         else:
-            footprint = circular_footprint(radius=self.tier_dilate_size[tiernum])
-            tier_result = seg_detect.make_source_mask(footprint=footprint)
+            # Euclidean disk dilation via distance transform: O(N) instead
+            # of O(N * footprint_area) for binary_dilation with a large
+            # circular footprint, and bit-identical for integer radii.
+            radius = float(self.tier_dilate_size[tiernum])
+            tier_result = distance_transform_edt(~base) <= radius
 
         log(f"Tier #{tiernum}:")
         log(f"  kernel_size = {self.tier_kernel_size[tiernum]}")
@@ -253,9 +297,17 @@ class SubtractBackground:
     ) -> np.ndarray:
         """Iteratively mask sources through all configured tiers."""
         first_mask = bitmask != 0
-        log(f"Ring-filtered background median: {np.median(img[~first_mask])}")
+        valid = img[~first_mask]
+        background_rms = astrostats.biweight_scale(valid)
+        background_level = astrostats.biweight_location(valid)
+        log(f"Ring-filtered background median: {np.median(valid)}")
+
+        replaced_img = np.where(first_mask, background_level, img)
+
         for tiernum in range(len(self.tier_nsigma)):
-            mask = self.tier_mask(img, first_mask, tiernum=tiernum)
+            mask = self.tier_mask(
+                replaced_img, first_mask, background_rms, tiernum=tiernum
+            )
             if mask is None:
                 continue
             bitmask = np.bitwise_or(

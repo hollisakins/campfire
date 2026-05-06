@@ -210,10 +210,14 @@
 [nircam.outlier]
     # implementation = "jwst" routes outlier detection through
     # `jwst.pipeline.calwebb_image3.Image3Pipeline` per visit (with
-    # cross-visit overlap padding). "campfire" uses the campfire-native
-    # per-tile path in `nircam/outlier_detect.py` — drops visit grouping,
-    # medians all exposures overlapping each tile on the tile WCS.
-    # Issue #138 Phase 2.
+    # intra-program cross-visit overlap padding). "campfire" runs the
+    # same per-visit grouping and intra-program scoping but routes
+    # the drizzle/median/blot through campfire's bbox-sliced drizzle
+    # primitive + `MedianComputer`, with a per-visit intermediate WCS
+    # built via `wcs_from_sregions` (input native pscale, ref-input
+    # rotation — same convention jwst uses internally). Same
+    # observable contract: per-visit `outlier_<visit>_manifest.json`,
+    # per-exposure CFP_OUT stamping. Issue #138 Phase 2.
     implementation = "jwst"
     max_radius = 20
     good_bits = "~DO_NOT_USE"
@@ -226,9 +230,14 @@
     snr = "3.0 2.0"
     backg = 0.0
     resample_data = true
-    # pixel_scale only used when implementation = "campfire"; sets the
-    # tile WCS pixel scale for the per-tile outlier median.
-    pixel_scale = "60mas"
+    # cross_program_overlap: when true, each visit's outlier median pool
+    # includes any spatially-overlapping exposure regardless of program
+    # (legacy behavior). When false (default), the pool is scoped to the
+    # same JWST program — avoids drizzling the same CRF once for every
+    # foreign program's visit that happens to overlap, which is the
+    # dominant cost driver in heavily-observed footprints (COSMOS center).
+    # CR statistics within the program are unchanged.
+    cross_program_overlap = false
 
 [nircam.resample]
     mode = "tile"
@@ -248,6 +257,7 @@
     background_subtract = true
     ring_radius_in = 80
     ring_width = 4
+    ring_downsample = 4
     ring_clip_max_sigma = 5.0
     ring_clip_box_size = 100
     ring_clip_filter_size = 3

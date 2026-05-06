@@ -211,8 +211,10 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
         exptime = float(model.meta.exposure.exposure_time)
 
         pixmap = _input_to_output_pixmap(input_gwcs, output_wcs, in_shape)
-        if _output_bbox_in_tile(pixmap, out_shape) is None:
+        bbox = _output_bbox_in_tile(pixmap, out_shape)
+        if bbox is None:
             return None
+        sly, slx = bbox
 
         weight = build_driz_weight(
             {'data': model.data, 'dq': model.dq,
@@ -238,6 +240,8 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
         'pixmap': pixmap, 'exptime': exptime,
         'xmin': xmin, 'xmax': xmax, 'ymin': ymin, 'ymax': ymax,
         'in_shape': in_shape, 'input_gwcs': input_gwcs,
+        'sly': sly, 'slx': slx,
+        'bbox_shape': (sly.stop - sly.start, slx.stop - slx.start),
     }
 
 
@@ -367,28 +371,41 @@ def drizzle_tile_singles(
     weight_type='ivm',
     good_bits='~DO_NOT_USE',
 ):
-    """Yield per-input ``(sci_raster, err_raster, wht_raster, prep)`` rasters.
+    """Yield per-input bbox-sliced ``(sci, wht, prep)`` rasters.
 
-    Each input is drizzled into a fresh full-tile buffer with no persistent
-    accumulator across inputs. Pixels outside the input footprint are NaN
-    (so ``MedianComputer`` and similar consumers can treat them as missing
-    data via standard NaN-aware reductions).
+    Each input is drizzled into a fresh **bbox-sized** buffer (the input
+    footprint in the output frame plus a small kernel-halo pad), not a
+    full-tile buffer. The pixmap is shifted by ``(slx.start, sly.start)``
+    so cdriz writes into bbox-local coordinates. ``prep['sly']`` and
+    ``prep['slx']`` carry the slice into the full tile so the caller can
+    paste each raster into a tile-shape scratch buffer when feeding
+    ``MedianComputer`` (which requires full-shape input).
 
-    Both SCI and ERR are drizzled per input — the per-input pixmap and
-    weight construction are the dominant per-input cost, so doing the
-    extra cdriz call for ERR is cheap on the margin.
+    Avoiding per-input full-tile allocation is the point: with N inputs at
+    COSMOS-Web tile scale, the old full-tile path zero-init'd ~70 GB of
+    Drizzle scratch per tile run; bbox-allocation drops that by roughly the
+    ratio of input-footprint area to tile area (~5×).
 
-    Used by ``outlier_detect_for_tile`` to feed a streaming median for
-    cosmic-ray rejection. The caller is expected to build ``output_wcs``
-    via ``_build_output_wcs`` (so it can reuse it for the blot pass after
-    the median is computed).
+    Only SCI is drizzled — matches ``jwst.outlier_detection``'s
+    ``ResampleImage(enable_var=False, compute_err=None)`` setup.
+    ``flag_resampled_model_crs`` falls back to the input model's own ERR
+    for the SNR comparison when ``median_err`` is not supplied, which is
+    the upstream default and what we want here.
+
+    Used by ``outlier_detect_for_visit`` to feed a streaming median for
+    cosmic-ray rejection. The caller builds ``output_wcs`` and
+    ``out_shape`` appropriately (per-visit intermediate WCS for outlier,
+    tile WCS for resample) and reuses them across this function and the
+    downstream blot pass.
 
     Yields
     ------
-    sci, err, wht : `numpy.ndarray` (out_shape, float32)
+    sci, wht : `numpy.ndarray` (bbox_shape, float32)
+        Bbox-sliced rasters. Pixels with no input contribution are NaN
+        (sci) or zero (wht).
     prep : dict
-        Per-input metadata (input_gwcs, exptime, etc.) — useful for the
-        caller's blot pass.
+        Per-input metadata. Includes ``sly`` and ``slx`` slices into the
+        full tile, plus ``bbox_shape``, ``input_gwcs``, ``exptime``, etc.
 
     Inputs that don't overlap the tile are skipped (no yield).
     """
@@ -404,21 +421,21 @@ def drizzle_tile_singles(
             skipped += 1
             continue
 
+        sly, slx = prep['sly'], prep['slx']
+        pixmap_local = prep['pixmap'].copy()
+        pixmap_local[..., 0] -= slx.start
+        pixmap_local[..., 1] -= sly.start
+
         common = _add_image_kwargs(prep, pixfrac)
+        common['pixmap'] = pixmap_local
 
         sci_driz = Drizzle(
-            out_shape=out_shape, kernel=kernel, fillval='NaN',
+            out_shape=prep['bbox_shape'], kernel=kernel, fillval='NaN',
             disable_ctx=True,
         )
         sci_driz.add_image(data=prep['data'], **common)
 
-        err_driz = Drizzle(
-            out_shape=out_shape, kernel=kernel, fillval='NaN',
-            disable_ctx=True,
-        )
-        err_driz.add_image(data=prep['err'], **common)
-
-        yield sci_driz.out_img, err_driz.out_img, sci_driz.out_wht, prep
+        yield sci_driz.out_img, sci_driz.out_wht, prep
 
     if skipped:
         log(f"  {skipped} inputs did not overlap tile")

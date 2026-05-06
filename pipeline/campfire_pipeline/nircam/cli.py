@@ -38,7 +38,7 @@ from campfire_pipeline.nircam.orchestrate import (
 # --from <step>` refuses these — the user must `--uncal` to redo them
 # correctly.
 _SCI_MUTATING_STEPS = {
-    'wisp', 'striping', 'image2', 'sky', 'variance', 'skymatch',
+    'wisp', 'striping', 'image2', 'sky', 'variance',
 }
 
 # Short labels for the status command's column headers (max 4 chars).
@@ -54,7 +54,6 @@ _STEP_LABELS = {
     'jhat':        'jhat',
     'apply_mask':  'mask',
     'bad_pixel':   'bpix',
-    'skymatch':    'smat',
     'outlier':     'out',
 }
 

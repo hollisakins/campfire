@@ -38,44 +38,64 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Algorithm
-- NIRCam outlier detection now has an opt-in per-tile path
-  (`[nircam.outlier].implementation = "campfire"`) in
-  `nircam/outlier_detect.py:outlier_detect_for_tile`. Drops visit
-  grouping entirely. For each tile, all overlapping CRFs are drizzled
-  into the tile WCS via `drizzle.drizzle_tile_singles` (the per-input
-  rasters share pixmap/weight scaffolding with `drizzle_tile`),
-  streamed into `stcal.outlier_detection.median.MedianComputer`,
-  median-combined, blotted back via `gwcs_blot`, and DQ-flagged via
-  the standard upstream `flag_resampled_model_crs` two-pass SNR scheme
-  (no fork from the canonical CR-detection algorithm). The orchestrator
-  computes the per-exposure tile-participation matrix up front and
-  stamps `CFP_OUT` only after every tile an exposure overlaps has a
-  valid up-to-date manifest, so partial runs (`--tile A` followed
-  later by `--tile B`) are handled correctly without the resample-step
-  input query (`with_step='CFP_OUT'`) seeing prematurely-stamped
-  exposures.
+- NIRCam mosaic resample now zeros SCI at WHT=0 pixels in the final i2d
+  before extension splitting (`steps/resample.py`). The drizzle output
+  already initialises SCI=0 at uncovered pixels, but `bkgsub` subtracts a
+  smooth background everywhere, leaving small nonzero residuals there;
+  the explicit re-zero restores the "no coverage ⇒ no signal" convention
+  in the published `_sci.fits` and `_i2d.fits`.
+- NIRCam mosaic SCI header now encodes the celestial WCS as a CD matrix
+  (`CDi_j` + `CDELT=1.0`) instead of the `PC` + non-unit `CDELT` form
+  that `gwcs.WCS.to_fits()` (called by `ImageModel.save`) emits. The
+  two encodings are mathematically equivalent — astropy reads the same
+  sky coordinates either way — but DS9 parses `PC + CDELT` unreliably
+  and silently drops the WCS in some configurations. Conversion is
+  applied in the same post-drizzle update pass that zeroes SCI at WHT=0,
+  so the canonical encoding propagates into split files via the SCI
+  header. Sky coordinates are bit-identical to the PC representation.
+- NIRCam outlier detection's cross-visit overlap padding is now
+  scoped to the same JWST program by default. The previous behavior
+  (any spatially-overlapping exposure regardless of program) is
+  available behind `[nircam.outlier].cross_program_overlap = true`.
+  Motivation: in heavily-observed footprints (e.g. COSMOS-Web center
+  in F200W where many programs dither over the same area), the
+  cross-program padding caused each CRF to be drizzled once for its
+  own visit plus once for every other program's visit it overlapped,
+  driving an N²-ish redundant-drizzle cost. Intra-program scoping
+  removes that scaling problem; CR statistics within the program
+  (the only median pool that contributes to that program's
+  exposures) are unchanged.
 
-  Validation on rj0911 venus f277w (60mas, 8 inputs, single visit):
-  campfire flagged 9706 OUTLIER pixels total (1213/input), jwst
-  per-visit flagged 35 (4/input) — a ~300× divergence on identical
-  starting DQ. Campfire's flags are spatially distributed as
-  single-pixel clusters with peak SCI 34.7 (p99.9 of overall = 2.1),
-  i.e., they have the morphology of real cosmic rays (bright,
-  single-pixel, not clumped at source edges). The discrepancy with
-  the fresh jwst per-visit run reproducing 35 flags vs the production
-  baseline's 17k flags on the same inputs is unexplained — the same
-  `outlier_step` code that produced the baseline now flags 500× fewer
-  pixels. Wall time on this test was 68.9 s campfire vs 37.0 s jwst
-  (campfire 0.54× — slower); the 8-input single-visit case doesn't
-  exercise the cross-visit overlap-padding multiplier where per-tile
-  is intended to win. Default stays `"jwst"` until the algorithmic
-  divergence is understood and a COSMOS-Web-scale dataset confirms
-  the speed/quality trade.
+- NIRCam outlier detection has an opt-in campfire-native drizzle path
+  (`[nircam.outlier].implementation = "campfire"`) in
+  `nircam/outlier_detect.py:outlier_detect_for_visit`. Same per-visit
+  grouping, intra-program scoping, manifest conventions, and
+  `CFP_OUT` semantic as the jwst path; the drizzle/median/blot
+  routine routes through campfire's bbox-sliced
+  `drizzle.drizzle_tile_singles` + `stcal.MedianComputer` instead of
+  `Image3Pipeline`'s stcal Resample. The per-visit intermediate WCS
+  is built via `wcs_from_sregions` with `pscale=None`, `rotation=None`
+  (input native scale, ref-input rotation — the same convention
+  `jwst.outlier_detection` uses internally), so the drizzle/blot
+  roundtrip preserves PSF cores rather than smearing them through a
+  fixed-rotation tile grid. CR flagging still goes through the
+  upstream `flag_resampled_model_crs` two-pass SNR scheme. Default
+  stays `"jwst"` until COSMOS-scale validation confirms the speed and
+  flagging-quality trade.
+
+  Replaces the dead-end per-tile path that briefly lived under
+  `outlier_step_per_tile` / `outlier_detect_for_tile` — the per-tile
+  framing forced the median onto the science tile WCS, which both
+  inflated per-input drizzle scaffolding (full-tile output buffers
+  per input) and degraded PSF-core preservation in the blot
+  roundtrip due to rotation/pscale mismatch with the inputs. The
+  per-visit framing fixes both. The bbox-sliced `drizzle_tile_singles`
+  primitive that came out of that work is retained and reused.
 
   Helpers extracted to `nircam/geometry.py:select_overlapping_files`
   (deduplicated from `steps/resample.py` and `manifest.py`) and
   `nircam/drizzle.py:_prepare_drizzle_input` /
-  `_add_image_kwargs` (shared between `drizzle_tile` and the new
+  `_add_image_kwargs` (shared between `drizzle_tile` and
   `drizzle_tile_singles`).
 - NIRCam stage-3 resample now has an opt-in campfire-native drizzle path
   (`[nircam.resample].implementation = "campfire"`) that replaces
@@ -133,6 +153,27 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam mosaic-level background subtraction (`nircam/bkgsub.py`) is now
+  ~10–50× faster on COSMOS-Web-scale tiles. The dominant cost — the
+  ring-median filter at `radius=80, width=4` — now runs on a block-reduced
+  copy of the SCI array (configurable via `[nircam.stage3].ring_downsample`,
+  default `4`); the result is bilinearly zoomed back to full resolution
+  before subtraction. The ring-median is by construction a smooth
+  large-scale estimator, so this is equivalent to within sampling noise.
+  Per-tier dilation in `tier_mask` switches from `binary_dilation` with a
+  large `circular_footprint` to `scipy.ndimage.distance_transform_edt`
+  thresholded at the dilate radius (O(N) instead of O(N×footprint), and
+  bit-identical for integer radii since `circular_footprint` is itself an
+  integer Euclidean disk). Tier convolution moves from
+  `astropy.convolution.convolve_fft` to `scipy.ndimage.gaussian_filter`
+  (separable, C-optimized, no full-image FFT). The biweight scale/location
+  used by every tier is hoisted out of the tier loop in `mask_sources`
+  (single pass over the unmasked image instead of four), as is the
+  filled-image array fed to the smoothing kernel. `np.choose` is replaced
+  by `np.where` throughout. No CRDS / pipeline / output-format change;
+  default behaviour for the per-exposure variance step is unchanged
+  (`ring_downsample` defaults to `1` in the dataclass and is only enabled
+  in `[nircam.stage3]`).
 - NIRCam `resample_step` extracts its per-tile drizzle body into
   `_drizzle_tile_via_jwst(selected_files, output_path, *, crpix, crval, shape,
   rotation, pixel_scale, resample_cfg, reduction_version)`. The function

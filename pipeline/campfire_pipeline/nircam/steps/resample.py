@@ -293,6 +293,7 @@ def resample_step(filtname, exposure_files, field, step_config,
                 bkg = SubtractBackground(
                     ring_radius_in=step_config.get('ring_radius_in', 80),
                     ring_width=step_config.get('ring_width', 4),
+                    ring_downsample=step_config.get('ring_downsample', 4),
                     ring_clip_max_sigma=step_config.get(
                         'ring_clip_max_sigma', 5.0),
                     ring_clip_box_size=step_config.get(
@@ -327,6 +328,51 @@ def resample_step(filtname, exposure_files, field, step_config,
             else:
                 log(f"  skipping background subtraction "
                     f"for {os.path.basename(mosaic_file)}")
+
+        if needs_rebuild:
+            # Enforce SCI = 0 where WHT = 0, and rewrite SCI's WCS in
+            # CD-matrix form (DS9 reads CD reliably; PC+CDELT, which
+            # ImageModel.save / gwcs.to_fits emit, sometimes parses as
+            # missing). Split files inherit the SCI header, so this also
+            # fixes _sci/_err/_wht/_srcmask. Applied after bkgsub and
+            # before extension splitting so both effects propagate.
+            with fits.open(mosaic_file, mode='update') as hdul:
+                sci_hdr = hdul['SCI'].header
+                wht = hdul['WHT'].data
+                sci = hdul['SCI'].data
+
+                no_cov = wht == 0
+                n_zeroed = int(no_cov.sum())
+                if n_zeroed:
+                    sci[no_cov] = 0
+                    hdul['SCI'].data = sci
+                    log(
+                        f"  zeroed SCI at {n_zeroed:,} WHT=0 pixels "
+                        f"({n_zeroed / sci.size * 100:.1f}%)"
+                    )
+
+                if 'PC1_1' in sci_hdr or 'PC1_2' in sci_hdr \
+                        or 'PC2_1' in sci_hdr or 'PC2_2' in sci_hdr:
+                    cdelt1 = float(sci_hdr.get('CDELT1', 1.0))
+                    cdelt2 = float(sci_hdr.get('CDELT2', 1.0))
+                    pc11 = float(sci_hdr.get('PC1_1', 1.0))
+                    pc12 = float(sci_hdr.get('PC1_2', 0.0))
+                    pc21 = float(sci_hdr.get('PC2_1', 0.0))
+                    pc22 = float(sci_hdr.get('PC2_2', 1.0))
+                    cd_comment = 'Coordinate transformation matrix element'
+                    sci_hdr['CD1_1'] = (pc11 * cdelt1, cd_comment)
+                    sci_hdr['CD1_2'] = (pc12 * cdelt1, cd_comment)
+                    sci_hdr['CD2_1'] = (pc21 * cdelt2, cd_comment)
+                    sci_hdr['CD2_2'] = (pc22 * cdelt2, cd_comment)
+                    for k in ('PC1_1', 'PC1_2', 'PC2_1', 'PC2_2'):
+                        if k in sci_hdr:
+                            del sci_hdr[k]
+                    cdelt_comment = (
+                        '[deg] Coordinate increment at reference point'
+                    )
+                    sci_hdr['CDELT1'] = (1.0, cdelt_comment)
+                    sci_hdr['CDELT2'] = (1.0, cdelt_comment)
+                    log("  converted SCI WCS from PC+CDELT to CD matrix")
 
         if needs_rebuild and step_config.get('split_extensions', True):
             log("  splitting extensions")

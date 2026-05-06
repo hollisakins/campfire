@@ -218,19 +218,36 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
 def _run_outlier(field, config, filtname, n_processes, overwrite, status):
     cfg = get_nircam_step_config('outlier', config, field)
     implementation = cfg.get('implementation', 'jwst')
-    if implementation == 'campfire':
-        _run_outlier_per_tile(field, cfg, filtname, overwrite, status)
-        return
-    if implementation != 'jwst':
+    if implementation not in ('jwst', 'campfire'):
         raise ValueError(
             f"Unknown outlier.implementation {implementation!r}; "
             f"expected 'jwst' or 'campfire'"
         )
-    _run_outlier_per_visit(field, cfg, filtname, overwrite, status)
+    _run_outlier_per_visit(field, cfg, filtname, overwrite, status,
+                           implementation=implementation)
 
 
-def _run_outlier_per_visit(field, cfg, filtname, overwrite, status):
-    """Legacy per-visit outlier (jwst Image3Pipeline). Default."""
+def _run_outlier_per_visit(field, cfg, filtname, overwrite, status,
+                           implementation='jwst'):
+    """Per-visit outlier dispatcher.
+
+    Both implementations share the same orchestration (visit grouping,
+    manifest staleness pre-scan, CFP_OUT stamping). They differ only in
+    the per-visit drizzle/median/blot routine:
+
+    - ``implementation='jwst'`` → ``outlier_step``: ``Image3Pipeline``
+      with stcal Resample, classic per-visit ASN flow.
+    - ``implementation='campfire'`` → ``outlier_step_campfire``: builds
+      a per-visit intermediate WCS via ``wcs_from_sregions`` and runs
+      campfire's bbox-sliced drizzle primitive + ``MedianComputer``.
+    """
+    from campfire_pipeline.nircam.steps.outlier import (
+        outlier_step, outlier_step_campfire,
+    )
+    visit_step = (
+        outlier_step_campfire if implementation == 'campfire' else outlier_step
+    )
+
     exposures = field.get_exposure_files(filtname)
     if not exposures:
         log(f"outlier: no exposures for {filtname}")
@@ -285,104 +302,12 @@ def _run_outlier_per_visit(field, cfg, filtname, overwrite, status):
 
     # Read S_REGION only when there's actual outlier work to do
     sregions = _read_sregions(exposures)
-    log(f"outlier: {len(pending_visits)} visits for {filtname}")
+    log(f"outlier: {len(pending_visits)} visits for {filtname} "
+        f"({implementation})")
     for visit, visit_files in sorted(pending_visits.items()):
-        outlier_step(visit, visit_files, exposures, sregions,
-                     field, cfg, overwrite=overwrite, status=status)
+        visit_step(visit, visit_files, exposures, sregions,
+                   field, cfg, overwrite=overwrite, status=status)
         status.mark_all(visit_files, 'CFP_OUT')
-
-
-def _run_outlier_per_tile(field, cfg, filtname, overwrite, status):
-    """Per-tile outlier (campfire-native, issue #138 Phase 2).
-
-    Drops visit grouping. For each tile, medians all overlapping
-    exposures on the tile WCS. Per-exposure ``CFP_OUT`` is stamped
-    deferredly — only after every tile the exposure overlaps has a
-    valid up-to-date outlier manifest (covers partial-run cases like
-    ``--tile A`` followed later by ``--tile B``).
-    """
-    from shapely.geometry import Polygon
-
-    from campfire_pipeline.common import cfp
-    from campfire_pipeline.common.io import atomic_save
-    from campfire_pipeline.nircam.geometry import select_overlapping_files
-    from campfire_pipeline.nircam.manifest import compute_file_hash, load_manifest
-    from campfire_pipeline.nircam.steps.outlier import outlier_step_per_tile
-    from stdatamodels.jwst.datamodels import ImageModel
-
-    exposures = field.get_exposure_files(filtname)
-    if not exposures:
-        log(f"outlier: no exposures for {filtname}")
-        return
-
-    tiles = list(field.tiles.keys())
-    if not tiles:
-        log(f"outlier: no tiles defined for field {field.name}; skipping")
-        return
-
-    # Participation matrix: tile -> overlapping exposures
-    tile_to_exps = {}
-    for tile in tiles:
-        tile_polygon = Polygon(field.get_tile_corners(tile))
-        tile_to_exps[tile] = select_overlapping_files(exposures, tile_polygon)
-
-    # Inverse: exposure -> set of overlapping tiles
-    exp_to_tiles = {exp: set() for exp in exposures}
-    for tile, tfiles in tile_to_exps.items():
-        for f in tfiles:
-            exp_to_tiles[f].add(tile)
-
-    log(f"outlier (per-tile): {len(tiles)} tiles, {len(exposures)} exposures, "
-        f"filter {filtname}")
-    for tile in sorted(tiles):
-        tile_files = sorted(tile_to_exps[tile])
-        if not tile_files:
-            log(f"  tile {tile}: no overlapping exposures; skipping")
-            continue
-        outlier_step_per_tile(
-            tile, tile_files, filtname, field, cfg, overwrite=overwrite,
-        )
-
-    # Deferred CFP_OUT: stamp each exposure iff every tile it overlaps has a
-    # valid up-to-date outlier manifest including this exposure.
-    hash_cache = {}
-
-    def _file_hash(path):
-        if path not in hash_cache:
-            hash_cache[path] = compute_file_hash(path)
-        return hash_cache[path]
-
-    def _all_tiles_done_for_exposure(path):
-        bn = os.path.basename(path)
-        my_hash = _file_hash(path)
-        for tile in exp_to_tiles[path]:
-            manifest_path = os.path.join(
-                field.exposures_dir, filtname, 'manifests',
-                f'outlier_{tile}_manifest.json',
-            )
-            manifest = load_manifest(manifest_path)
-            if manifest is None:
-                return False
-            old_hashes = {inp['filename']: inp['file_hash']
-                          for inp in manifest['inputs']}
-            if old_hashes.get(bn) != my_hash:
-                return False
-        return True
-
-    n_stamped = 0
-    for exp in exposures:
-        if not exp_to_tiles[exp]:
-            continue  # exposure overlaps no tile — nothing to do
-        if status.has(exp, 'CFP_OUT'):
-            continue
-        if not _all_tiles_done_for_exposure(exp):
-            continue
-        with ImageModel(exp) as model:
-            atomic_save(model, exp, header_updates=cfp.format(CFP_OUT=None))
-        status.mark(exp, 'CFP_OUT')
-        n_stamped += 1
-    log(f"outlier: stamped CFP_OUT on {n_stamped} fully-completed exposures "
-        f"for {filtname}")
 
 
 def _run_resample(field, config, filtname, n_processes, overwrite, status,

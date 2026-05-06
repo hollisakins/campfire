@@ -23,12 +23,28 @@ from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
 
 
 _PID_RE = re.compile(r'jw(\d{5})')
+_PIXEL_SCALE_RE = re.compile(r'^(\d+)mas$')
 
 
 def _extract_pid(pattern):
     """Pull the 5-digit PID out of a JWST file glob (e.g. 'jw01727*' → '01727')."""
     m = _PID_RE.match(pattern)
     return m.group(1) if m else None
+
+
+def _is_pixel_scale_section(value):
+    """True for a dict like ``{'crpix': [...], 'naxis': [...]}``."""
+    return isinstance(value, dict) and 'crpix' in value and 'naxis' in value
+
+
+def _tile_has_wcs_subsection(value):
+    """True if ``value`` defines at least one pixel-scale WCS subsection."""
+    if not isinstance(value, dict):
+        return False
+    return any(
+        _PIXEL_SCALE_RE.match(k) and _is_pixel_scale_section(v)
+        for k, v in value.items()
+    )
 
 
 @dataclass
@@ -112,16 +128,21 @@ class Field:
         known_steps = {
             'detector1', 'persistence', 'wisp', 'striping',
             'image2', 'edge', 'sky', 'variance', 'jhat',
-            'apply_mask', 'bad_pixel', 'skymatch', 'outlier', 'resample',
+            'apply_mask', 'bad_pixel', 'outlier', 'resample',
         }
 
-        # Parse tile WCS definitions
+        # Parse tile WCS definitions. A tile is any non-reserved sub-table
+        # that either declares explicit sky `corners` (legacy / override) or
+        # provides at least one `<scale>mas` subsection with `crpix`+`naxis`
+        # — in the latter case corners are derived on demand from the WCS.
         tiles = {}
         reserved_keys = ({'filters', 'files', 'tangent_point'} | known_steps)
         for key, value in fc.items():
             if key in reserved_keys:
                 continue
-            if isinstance(value, dict) and 'corners' in value:
+            if not isinstance(value, dict):
+                continue
+            if 'corners' in value or _tile_has_wcs_subsection(value):
                 tiles[key] = value
 
         # Capture per-field step config overrides (flat layout)
@@ -284,14 +305,19 @@ class Field:
         return os.path.join(self.exposures_dir, filter_name, f'{rootname}.fits')
 
     def get_tile_wcs(self, tile_name, pixel_scale='30mas'):
-        """Get WCS parameters for a tile.
+        """Get WCS parameters for a tile at the requested pixel scale.
+
+        Tiles only need to declare their WCS at one pixel scale; other
+        pixel scales are derived by rescaling ``naxis`` and ``crpix`` so
+        the tile covers the same sky region. Explicit ``[<scale>mas]``
+        subsections always override the derived values.
 
         Parameters
         ----------
         tile_name : str
             Tile name (e.g. 'A1', 'B3').
         pixel_scale : str
-            Pixel scale key ('30mas' or '60mas').
+            Pixel scale key (e.g. ``'30mas'`` or ``'60mas'``).
 
         Returns
         -------
@@ -305,14 +331,47 @@ class Field:
                 f"Available: {list(self.tiles.keys())}"
             )
         tile = self.tiles[tile_name]
-        crpix = tile[pixel_scale]['crpix']
-        shape = tile[pixel_scale]['naxis']
-        rotation = tile['rotation']
-        crval = tile.get('tangent_point', list(self.tangent_point))
+
+        m = _PIXEL_SCALE_RE.match(pixel_scale)
+        if not m:
+            raise ValueError(
+                f"pixel_scale must look like 'NNmas' (got {pixel_scale!r})"
+            )
+        target_mas = int(m.group(1))
+
+        if pixel_scale in tile and _is_pixel_scale_section(tile[pixel_scale]):
+            crpix = list(tile[pixel_scale]['crpix'])
+            shape = list(tile[pixel_scale]['naxis'])
+        else:
+            ref_mas, ref_section = self._reference_pixel_scale(tile_name, tile)
+            ratio = ref_mas / target_mas
+            ref_crpix = ref_section['crpix']
+            ref_naxis = ref_section['naxis']
+            crpix = [(c - 0.5) * ratio + 0.5 for c in ref_crpix]
+            shape = [int(round(n * ratio)) for n in ref_naxis]
+
+        rotation = tile.get('rotation', 0)
+        crval = list(tile.get('tangent_point', list(self.tangent_point)))
         return crpix, crval, shape, rotation
+
+    def _reference_pixel_scale(self, tile_name, tile):
+        """Return ``(scale_mas, section_dict)`` for the first WCS subsection."""
+        for key, value in tile.items():
+            m = _PIXEL_SCALE_RE.match(key)
+            if m and _is_pixel_scale_section(value):
+                return int(m.group(1)), value
+        raise ValueError(
+            f"Tile '{tile_name}' on field '{self.name}' has no "
+            f"`<scale>mas` subsection with `crpix` and `naxis`."
+        )
 
     def get_tile_corners(self, tile_name):
         """Get sky corners for a tile.
+
+        If the tile config provides explicit ``corners``, those are returned
+        verbatim. Otherwise corners are derived from the tile's WCS
+        (``crpix``/``naxis`` of the first pixel-scale subsection plus the
+        tile or field tangent point and rotation).
 
         Parameters
         ----------
@@ -322,14 +381,59 @@ class Field:
         Returns
         -------
         list
-            List of [RA, Dec] corners.
+            List of [RA, Dec] corners (4 entries, FITS pixel order:
+            (1,1), (nx,1), (nx,ny), (1,ny)).
         """
         if tile_name not in self.tiles:
             raise ValueError(
                 f"Tile '{tile_name}' not found for field '{self.name}'. "
                 f"Available: {list(self.tiles.keys())}"
             )
-        return self.tiles[tile_name]['corners']
+        tile = self.tiles[tile_name]
+        if 'corners' in tile:
+            return tile['corners']
+        return self._compute_corners_from_wcs(tile_name, tile)
+
+    def _compute_corners_from_wcs(self, tile_name, tile):
+        """Build a TAN WCS from the tile config and return its sky corners.
+
+        Picks the first ``<scale>mas`` subsection that defines ``crpix`` and
+        ``naxis``. The polygon is sky-equivalent across pixel scales as
+        long as ``naxis`` and ``crpix`` are defined consistently.
+        """
+        from astropy.wcs import WCS
+
+        ref_mas, ref_section = self._reference_pixel_scale(tile_name, tile)
+        pixel_scale_arcsec = ref_mas / 1000.0
+        crpix = list(ref_section['crpix'])
+        naxis = list(ref_section['naxis'])
+
+        rotation = tile.get('rotation', 0)
+        crval = list(tile.get('tangent_point', list(self.tangent_point)))
+
+        scale_deg = pixel_scale_arcsec / 3600.0
+        theta = np.radians(rotation)
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+
+        w = WCS(naxis=2)
+        w.wcs.crpix = crpix
+        w.wcs.crval = crval
+        w.wcs.ctype = ['RA---TAN', 'DEC--TAN']
+        # North-up east-left at rotation=0; rotation interpreted as PA of
+        # output +y measured east-of-north (CCW on sky), matching the
+        # `rotation` argument passed to JWST resample.
+        w.wcs.cd = np.array([
+            [-scale_deg * cos_t,  scale_deg * sin_t],
+            [ scale_deg * sin_t,  scale_deg * cos_t],
+        ])
+
+        nx, ny = naxis
+        pix = np.array(
+            [[1, 1], [nx, 1], [nx, ny], [1, ny]], dtype=float,
+        )
+        sky = w.all_pix2world(pix, 1)
+        return sky.tolist()
 
     def get_excluded_exposures(self):
         """Read excluded exposure names from the contract file if present.
