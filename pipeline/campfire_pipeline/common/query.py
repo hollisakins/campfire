@@ -25,7 +25,8 @@ BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
 
 
 def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
-                    obs_ids=None, filters=None, token=None):
+                    obs_ids=None, filters=None, targets=None, radius=None,
+                    radius_units=None, token=None):
     """Query MAST for level 1b filesets in a program.
 
     Returns a list of dicts with fileSetName and observation metadata.
@@ -38,6 +39,15 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         search API, so we fan out one search per obs and merge.
     filters : list of str, optional
         Restrict to these filters (NIRCam only). Same fan-out reason.
+    targets : list of str, optional
+        Cone-search center(s). Each entry is either a resolvable object name
+        (e.g. ``"M1"``) or a ``"RA Dec"`` string in decimal degrees. Sent as
+        the API's top-level ``target`` field.
+    radius : float, optional
+        Cone-search radius. Server default is 3 arcminutes; server cap is 30
+        arcminutes. Ignored when ``targets`` is empty.
+    radius_units : str, optional
+        ``"arcminutes"`` (default) or ``"arcseconds"``.
     """
     obs_list = list(obs_ids) if obs_ids else [None]
     filt_list = list(filters) if filters else [None]
@@ -55,6 +65,12 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         label_extras.append(f"obs {','.join(str(o) for o in obs_ids)}")
     if filters:
         label_extras.append(f"filters {','.join(filters)}")
+    if targets:
+        units_short = {"arcminutes": "arcmin", "arcseconds": "arcsec"}.get(
+            radius_units or "arcminutes", radius_units or "arcmin",
+        )
+        r_str = f", r={radius} {units_short}" if radius is not None else ""
+        label_extras.append(f"near {'; '.join(targets)}{r_str}")
     extra = (" " + ", ".join(label_extras)) if label_extras else ""
     print(f"Searching for {instrument} {exp_type} level 1b filesets in program {program_id}{extra}...")
 
@@ -73,13 +89,21 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
             if filt is not None:
                 conditions.append({"filter": filt.upper()})
 
+            payload = {
+                "conditions": conditions,
+                "select_cols": select_cols,
+                "limit": 5000,
+            }
+            if targets:
+                payload["target"] = list(targets)
+                if radius is not None:
+                    payload["radius"] = radius
+                if radius_units is not None:
+                    payload["radius_units"] = radius_units
+
             resp = requests.post(
                 f"{BASE_URL}/search",
-                json={
-                    "conditions": conditions,
-                    "select_cols": select_cols,
-                    "limit": 5000,
-                },
+                json=payload,
                 headers=headers,
             )
             resp.raise_for_status()
@@ -393,7 +417,8 @@ def _write_nircam_manifest(download_root, program_id, rows):
 
 def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
                        download_dir="data", dry_run=False, obs_ids=None,
-                       filters=None, token=None, workers=4):
+                       filters=None, targets=None, radius=None,
+                       radius_units=None, token=None, workers=4):
     """Download JWST level 1b data for a program.
 
     Layout:
@@ -421,6 +446,14 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         Restrict to these observation numbers.
     filters : iterable of str, optional
         Restrict to these filters (NIRCam only).
+    targets : iterable of str, optional
+        Restrict to filesets within a cone of one or more sky positions —
+        each entry is either a resolvable object name or a ``"RA Dec"``
+        string in decimal degrees.
+    radius : float, optional
+        Cone-search radius. Server default is 3, max is 30 arcminutes.
+    radius_units : str, optional
+        ``"arcminutes"`` (default) or ``"arcseconds"``.
     token : str or None
         MAST API token for accessing proprietary data.
     workers : int
@@ -432,7 +465,9 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     # Step 1: Search for filesets
     filesets = search_filesets(
         program_id, instrument, exp_type,
-        obs_ids=obs_ids, filters=filters, token=token,
+        obs_ids=obs_ids, filters=filters,
+        targets=targets, radius=radius, radius_units=radius_units,
+        token=token,
     )
     if not filesets:
         print("No filesets found. Exiting.")

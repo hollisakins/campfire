@@ -201,6 +201,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- `cfpipe download` accepts a positional filter: `--target` (object name or
+  `"RA Dec"` decimal-degree string, repeatable) plus `--radius` /
+  `--radius-units` (default 3 arcmin; server cap 30 arcmin). Forwarded to the
+  MAST JWST search API's native `target`/`radius` fields, so spatial pruning
+  happens server-side and returns only filesets within the cone.
 - New `cfpipe nircam rgb --field <name>` subcommand: combines per-filter
   per-tile mosaics produced by `cfpipe nircam combine` into trilogy-style
   RGB PNGs (one native-resolution PNG plus one downsampled preview per

@@ -131,6 +131,15 @@ INSTRUMENT_DEFAULTS = {
               help='JWST observation number(s); repeat for multiple (e.g. --obs-id 1 --obs-id 2).')
 @click.option('--filters', 'filters', multiple=True,
               help='NIRCam: restrict to these filters (repeat for multiple). Ignored for NIRSpec.')
+@click.option('--target', 'targets', multiple=True,
+              help='Cone-search center: object name (e.g. "M1") or "RA Dec" in '
+                   'decimal degrees (e.g. "150.1163 2.2070"). Repeat for multiple.')
+@click.option('--radius', type=float, default=None,
+              help='Cone-search radius (default: 3 arcmin server-side; max: 30 arcmin). '
+                   'Requires --target.')
+@click.option('--radius-units', type=click.Choice(['arcmin', 'arcsec'],
+              case_sensitive=False), default='arcmin', show_default=True,
+              help='Units for --radius.')
 @click.option('--exp-type', default=None,
               help='Exposure type (default: auto from instrument).')
 @click.option('--download-dir', default=None,
@@ -141,7 +150,8 @@ INSTRUMENT_DEFAULTS = {
               help='MAST API token for proprietary data. Falls back to $MAST_API_TOKEN env var.')
 @click.option('--processes', '-p', type=int, default=4, show_default=True,
               help='Number of parallel download streams.')
-def download(program, instrument, obs_ids, filters, exp_type, download_dir, dry_run, token, processes):
+def download(program, instrument, obs_ids, filters, targets, radius, radius_units,
+             exp_type, download_dir, dry_run, token, processes):
     """Download raw JWST data from MAST.
 
     NIRSpec layout: $CAMPFIRE_ROOT/raw/{PID}/{filename}
@@ -171,6 +181,21 @@ def download(program, instrument, obs_ids, filters, exp_type, download_dir, dry_
     if processes < 1:
         raise click.BadParameter('--processes must be >= 1')
 
+    radius_units_full = {'arcmin': 'arcminutes', 'arcsec': 'arcseconds'}[
+        radius_units.lower()
+    ]
+    if radius is not None and not targets:
+        raise click.BadParameter('--radius requires --target.')
+    if radius is not None:
+        if radius <= 0:
+            raise click.BadParameter('--radius must be positive.')
+        radius_arcmin = radius if radius_units_full == 'arcminutes' else radius / 60.0
+        if radius_arcmin > 30:
+            raise click.BadParameter(
+                f'--radius {radius} {radius_units_full} exceeds the MAST '
+                f'server-side cap of 30 arcminutes.'
+            )
+
     try:
         download_jwst_data(
             program_id=program,
@@ -180,6 +205,9 @@ def download(program, instrument, obs_ids, filters, exp_type, download_dir, dry_
             dry_run=dry_run,
             obs_ids=list(obs_ids) if obs_ids else None,
             filters=list(filters) if filters else None,
+            targets=list(targets) if targets else None,
+            radius=radius,
+            radius_units=radius_units_full if targets else None,
             token=token,
             workers=processes,
         )
