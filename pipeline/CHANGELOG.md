@@ -188,6 +188,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- New `cfpipe nircam rgb --field <name>` subcommand: combines per-filter
+  per-tile mosaics produced by `cfpipe nircam combine` into trilogy-style
+  RGB PNGs (one native-resolution PNG plus one downsampled preview per
+  tile, written next to the per-filter products under
+  `products/nircam/<field>/<tile>_<pixscale>_rgb[_preview].png`). Filter
+  channel weights and stretch tunables (`noisesig`, `noiselum`,
+  `satpercent`) come from a new optional `[<field>.rgb]` block in
+  `fields.toml`; pixel scale defaults to `[nircam.resample].pixel_scale`
+  and is overridable via `--pixel-scale`. The trilogy stretch core lives
+  in `nircam/trilogy.py` (small, dependency-light copy of the algorithm
+  in `python/campfire/deploy/tiles_engine.py` — to be consolidated when
+  the deploy-side tile generator is rewired to read from NIRCam outputs
+  directly). Pipeline-only; produces no FITS, does not build a tile
+  pyramid.
 - NIRCam striping: removed the unused `find_optimal_threshold` maskparam
   sweep (an 11-point per-exposure search that was dead code under the default
   asymmetry-based fallback) and the legacy mask-fraction code path

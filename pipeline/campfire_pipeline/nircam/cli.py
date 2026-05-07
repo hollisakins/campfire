@@ -202,6 +202,42 @@ main.add_command(refcat_group)
 
 
 # ---------------------------------------------------------------------------
+# Per-tile RGB compositor
+# ---------------------------------------------------------------------------
+
+@main.command()
+@common_options
+@click.option('--tiles', multiple=True, default=None,
+              help='Tile name(s) to render (default: all tiles in field).')
+@click.option('--pixel-scale', default=None,
+              help='Pixel scale label (e.g. "30mas"). '
+                   'Defaults to [nircam.resample].pixel_scale.')
+@click.option('--preview-max-dim', type=int, default=2048, show_default=True,
+              help='Long-axis pixel cap for the downsampled preview PNG.')
+@click.option('--processes', '-p', default=1, type=int, show_default=True,
+              help='Number of parallel processes (one tile per worker).')
+@click.option('--overwrite', is_flag=True,
+              help='Re-render even if both output PNGs already exist.')
+def rgb(config, field, tiles, pixel_scale, preview_max_dim, processes, overwrite):
+    """Generate per-tile RGB PNGs from per-filter mosaics."""
+    cfg, field_obj = _setup(config, field)
+    if not field_obj.rgb:
+        raise click.UsageError(
+            f"No [{field}.rgb] block defined in fields.toml. "
+            f"See pipeline/fields.example.toml for the schema."
+        )
+    from campfire_pipeline.nircam.rgb import run_rgb
+    run_rgb(
+        field_obj, cfg,
+        tiles=list(tiles) if tiles else None,
+        pixel_scale=pixel_scale,
+        preview_max_dim=preview_max_dim,
+        n_processes=processes,
+        overwrite=overwrite,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Tile-staleness probe (kept from legacy CLI)
 # ---------------------------------------------------------------------------
 

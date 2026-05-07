@@ -49,6 +49,16 @@
 #   [field.jhat.refcat_dict]
 #       f444w = "gaia_dr3_f444w.cat"
 #       f200w = "gaia_dr3_f200w.cat"
+#
+# Per-field RGB composite (consumed only by `cfpipe nircam rgb`):
+#   [field.rgb]
+#       noisesig = 2.0       # blackpoint = noisesig * sigma_clip(SCI), per channel max
+#       noiselum = 0.12      # noise-floor lift in the log stretch (0 = pure log, 1 = white)
+#       satpercent = 0.01    # whitepoint = (100 - satpercent)-th percentile of all pixels
+#       [field.rgb.channels]                 # filter → [r, g, b] color weight
+#           f444w = [0.0, 0.4, 0.0]          #   pure-G push from the LW
+#           f356w = [0.4, 0.2, 0.0]          #   R + G mid-IR
+#           f150w = [0.0, 0.4, 1.0]          #   G + B SW
 
 [example_cosmos]
     filters = ['f115w', 'f150w', 'f200w', 'f277w', 'f356w', 'f410m', 'f444w']
@@ -75,3 +85,12 @@
         [example_cosmos.A2.60mas]
             crpix = [-2845, 11545]
             naxis = [9600, 12455]
+
+    [example_cosmos.rgb]
+        noisesig = 2.0
+        noiselum = 0.12
+        satpercent = 0.01
+        [example_cosmos.rgb.channels]
+            f444w = [0.0, 0.4, 0.0]
+            f356w = [0.4, 0.2, 0.0]
+            f150w = [0.0, 0.4, 1.0]

@@ -84,6 +84,7 @@ class Field:
     tiles: dict                # tile WCS definitions
     step_overrides: dict = field(default_factory=dict)
     skip: List[str] = field(default_factory=list)  # field-wide exclude globs
+    rgb: Optional[dict] = None  # optional [field.rgb] block, consumed by `cfpipe nircam rgb`
 
     # Populated by setup_workspace()
     campfire_root: Optional[str] = None
@@ -179,7 +180,7 @@ class Field:
         # provides at least one `<scale>mas` subsection with `crpix`+`naxis`
         # — in the latter case corners are derived on demand from the WCS.
         tiles = {}
-        reserved_keys = ({'filters', 'files', 'skip', 'tangent_point'} | known_steps)
+        reserved_keys = ({'filters', 'files', 'skip', 'tangent_point', 'rgb'} | known_steps)
         for key, value in fc.items():
             if key in reserved_keys:
                 continue
@@ -187,6 +188,15 @@ class Field:
                 continue
             if 'corners' in value or _tile_has_wcs_subsection(value):
                 tiles[key] = value
+
+        # Optional [<field>.rgb] block, consumed only by `cfpipe nircam rgb`.
+        # Validation of channel filters against `filters` happens at use-site
+        # so a stale RGB block doesn't block other commands.
+        rgb_cfg = fc.get('rgb')
+        if rgb_cfg is not None and not isinstance(rgb_cfg, dict):
+            raise ValueError(
+                f"Field '{name}': [{name}.rgb] must be a table, got {type(rgb_cfg).__name__}"
+            )
 
         # Capture per-field step config overrides (flat layout)
         step_overrides = {}
@@ -202,6 +212,7 @@ class Field:
             tiles=tiles,
             step_overrides=step_overrides,
             skip=skip_patterns,
+            rgb=rgb_cfg,
         )
 
     @property
