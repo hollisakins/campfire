@@ -38,6 +38,7 @@ from campfire_pipeline.nircam.steps.bad_pixel import (
 )
 from campfire_pipeline.nircam.steps.outlier import outlier_step
 from campfire_pipeline.nircam.steps.resample import resample_step
+from campfire_pipeline.nircam.prefetch import prefetch_process_references
 
 
 # Step ordering — also used by the CLI to validate ``cfpipe nircam <step>``
@@ -64,6 +65,10 @@ COMBINE_STEPS = [
 
 ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 STEP_NAMES = [name for name, _ in ALL_STEPS]
+
+# Steps that hit CRDS — used by run_step() to decide when to pre-fetch
+# reference files before parallel dispatch.
+_CRDS_STEPS = {'detector1', 'wisp', 'striping', 'image2'}
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +413,7 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
     filters = _resolve_filters(filters, field)
     status = _scan_status(field, filters)
     log(f"=== Process phase: field={field.name}, filters={filters} ===")
+    prefetch_process_references(field, filters, n_processes)
     for filt in filters:
         log(f"--- Process: {filt} ---")
         for step_name, _ in PROCESS_STEPS:
@@ -447,6 +453,8 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
     filters = _resolve_filters(filters, field)
     status = _scan_status(field, filters)
     log(f"=== Step '{step_name}': field={field.name}, filters={filters} ===")
+    if step_name in _CRDS_STEPS:
+        prefetch_process_references(field, filters, n_processes)
 
     for filt in filters:
         if step_name == 'resample':

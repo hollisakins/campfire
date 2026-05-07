@@ -188,6 +188,17 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam now serializes a CRDS reference-file pre-fetch pass before parallel
+  `detector1` / `wisp` / `striping` / `image2` dispatch. Mirrors the existing
+  NIRSpec pattern (`nirspec/stage1.py`, `nirspec/stage2.py`): one
+  `crds.getreferences()` call per unique `(DETECTOR, READPATT, SUBARRAY)` for
+  Detector1Pipeline reftypes and one per `(DETECTOR, FILTER, PUPIL)` for
+  Image2Pipeline reftypes (covers the `flat` lookup used by wisp/striping
+  too). Fixes "empty or corrupt FITS" / "no SIMPLE card found" failures
+  caused by multiple workers racing to download the same reference file on
+  cold-cache runs. No-op when `--processes 1`. Wired in
+  `nircam/orchestrate.py::run_process` and (for CRDS-touching steps only)
+  `run_step`; new module at `nircam/prefetch.py`.
 - NIRCam `fields.toml` now supports bash-style brace expansion in `files`
   patterns (e.g. `'jw01727{001,002,003}*'` → three patterns), and a
   field-wide top-level `skip = [...]` exclude list that applies to every step
