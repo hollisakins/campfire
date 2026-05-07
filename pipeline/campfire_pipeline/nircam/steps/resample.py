@@ -20,6 +20,7 @@ import os
 import shutil
 from datetime import datetime
 
+import numpy as np
 from astropy.io import fits
 from shapely.geometry import Polygon
 
@@ -330,36 +331,38 @@ def resample_step(filtname, exposure_files, field, step_config,
                     f"for {os.path.basename(mosaic_file)}")
 
         if needs_rebuild:
-            # Enforce SCI = 0 where WHT = 0, and rewrite SCI's WCS in
-            # CD-matrix form (DS9 reads CD reliably; PC+CDELT, which
-            # ImageModel.save / gwcs.to_fits emit, sometimes parses as
-            # missing). Split files inherit the SCI header, so this also
-            # fixes _sci/_err/_wht/_srcmask. Applied after bkgsub and
-            # before extension splitting so both effects propagate.
+            # Enforce SCI = NaN where WHT = 0 (matches the ERR convention),
+            # and on the jwst path convert any PC+CDELT WCS encoding to
+            # CD-matrix form for DS9 compatibility. The campfire drizzle
+            # path already writes CD directly via _write_i2d_fits. Applied
+            # after bkgsub and before extension splitting so the canonical
+            # SCI header propagates to _sci/_err/_wht/_srcmask.
             with fits.open(mosaic_file, mode='update') as hdul:
                 sci_hdr = hdul['SCI'].header
                 wht = hdul['WHT'].data
                 sci = hdul['SCI'].data
 
                 no_cov = wht == 0
-                n_zeroed = int(no_cov.sum())
-                if n_zeroed:
-                    sci[no_cov] = 0
+                n_no_cov = int(no_cov.sum())
+                if n_no_cov:
+                    sci[no_cov] = np.nan
                     hdul['SCI'].data = sci
                     log(
-                        f"  zeroed SCI at {n_zeroed:,} WHT=0 pixels "
-                        f"({n_zeroed / sci.size * 100:.1f}%)"
+                        f"  set SCI=NaN at {n_no_cov:,} WHT=0 pixels "
+                        f"({n_no_cov / sci.size * 100:.1f}%)"
                     )
 
-                if 'PC1_1' in sci_hdr or 'PC1_2' in sci_hdr \
-                        or 'PC2_1' in sci_hdr or 'PC2_2' in sci_hdr:
+                if 'CD1_1' not in sci_hdr and (
+                    'PC1_1' in sci_hdr or 'PC1_2' in sci_hdr
+                    or 'PC2_1' in sci_hdr or 'PC2_2' in sci_hdr
+                ):
                     cdelt1 = float(sci_hdr.get('CDELT1', 1.0))
                     cdelt2 = float(sci_hdr.get('CDELT2', 1.0))
                     pc11 = float(sci_hdr.get('PC1_1', 1.0))
                     pc12 = float(sci_hdr.get('PC1_2', 0.0))
                     pc21 = float(sci_hdr.get('PC2_1', 0.0))
                     pc22 = float(sci_hdr.get('PC2_2', 1.0))
-                    cd_comment = 'Coordinate transformation matrix element'
+                    cd_comment = 'Linear transformation matrix element'
                     sci_hdr['CD1_1'] = (pc11 * cdelt1, cd_comment)
                     sci_hdr['CD1_2'] = (pc12 * cdelt1, cd_comment)
                     sci_hdr['CD2_1'] = (pc21 * cdelt2, cd_comment)

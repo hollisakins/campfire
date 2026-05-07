@@ -150,11 +150,20 @@ def _output_bbox_in_tile(pixmap, out_shape, pad=4):
 
 
 def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
-                    cmpfrver, exptime):
+                    cmpfrver, exptime, *, crpix, crval):
     """Write i2d FITS with the schema bkgsub and _split_extensions consume.
 
     Uses ``stdatamodels.jwst.datamodels.ImageModel`` so the HDU layout
     (SCI/ERR/CON/WHT) and primary header conventions match stcal's output.
+
+    ``ImageModel.save`` writes ``output_wcs`` (a gwcs) into the asdf-in-fits
+    extension only, leaving the SCI/ERR/WHT/CON image headers without any
+    legacy FITS-WCS keys. DS9 (and astropy.wcs without explicit gwcs
+    support) reads coordinates from those header keys, not from the asdf
+    blob, so this function explicitly stamps a CD-matrix tangent-projection
+    WCS on each 2D image extension. The CD matrix is computed numerically
+    from the gwcs (sampling around CRPIX), which avoids depending on any
+    rotation-sign convention.
     """
     from stdatamodels.jwst.datamodels import ImageModel
 
@@ -172,10 +181,44 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
 
     model.save(output_path)
 
-    # Stamp campfire provenance + tighten WCS encoding in the SCI header
-    # (ImageModel.save writes the gwcs via asdf-in-fits; downstream
-    # campfire code reads CRPIX/CRVAL/CD via astropy.wcs from the SCI
-    # header, so make sure those keys are present and correct).
+    # Compute CD matrix by sampling the gwcs at and around CRPIX (gwcs uses
+    # 0-indexed pixel coords; FITS CRPIX is 1-indexed).
+    cx0 = crpix[0] - 1.0
+    cy0 = crpix[1] - 1.0
+    ra0, dec0 = output_wcs(cx0, cy0)
+    ra_x, dec_x = output_wcs(cx0 + 1.0, cy0)
+    ra_y, dec_y = output_wcs(cx0, cy0 + 1.0)
+    cosd = np.cos(np.deg2rad(dec0))
+    cd11 = (ra_x - ra0) * cosd
+    cd12 = (ra_y - ra0) * cosd
+    cd21 = dec_x - dec0
+    cd22 = dec_y - dec0
+
+    cd_comment = 'Linear transformation matrix element'
+    cdelt_comment = '[deg] Coordinate increment at reference point'
+
+    def _stamp_wcs(hdr):
+        hdr['WCSAXES'] = (2, 'Number of World Coordinate System axes')
+        hdr['CRPIX1'] = (float(crpix[0]),
+                         'Axis 1 reference pixel (1-indexed)')
+        hdr['CRPIX2'] = (float(crpix[1]),
+                         'Axis 2 reference pixel (1-indexed)')
+        hdr['CRVAL1'] = (float(crval[0]),
+                         'Axis 1 world coordinate at reference')
+        hdr['CRVAL2'] = (float(crval[1]),
+                         'Axis 2 world coordinate at reference')
+        hdr['CTYPE1'] = ('RA---TAN', 'Right ascension, gnomonic projection')
+        hdr['CTYPE2'] = ('DEC--TAN', 'Declination, gnomonic projection')
+        hdr['CUNIT1'] = ('deg', 'Axis 1 units')
+        hdr['CUNIT2'] = ('deg', 'Axis 2 units')
+        hdr['CD1_1'] = (float(cd11), cd_comment)
+        hdr['CD1_2'] = (float(cd12), cd_comment)
+        hdr['CD2_1'] = (float(cd21), cd_comment)
+        hdr['CD2_2'] = (float(cd22), cd_comment)
+        hdr['CDELT1'] = (1.0, cdelt_comment)
+        hdr['CDELT2'] = (1.0, cdelt_comment)
+        hdr['RADESYS'] = ('ICRS', 'Coordinate reference frame')
+
     with fits.open(output_path, mode='update') as hdul:
         hdul[0].header['CMPFRTIM'] = (
             str(datetime.now()),
@@ -185,6 +228,14 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
             cmpfrver,
             'CAMPFIRE git commit (or pinned version)',
         )
+        for extname in ('SCI', 'ERR', 'WHT', 'CON'):
+            try:
+                ext = hdul[extname]
+            except KeyError:
+                continue
+            if ext.data is None or ext.data.ndim != 2:
+                continue
+            _stamp_wcs(ext.header)
 
 
 def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
@@ -355,6 +406,7 @@ def drizzle_tile(
         output_wcs=output_wcs,
         cmpfrver=reduction_version,
         exptime=total_exptime,
+        crpix=crpix, crval=crval,
     )
 
     log(f"  wrote {os.path.basename(output_path)} "

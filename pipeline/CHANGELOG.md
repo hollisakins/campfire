@@ -38,21 +38,25 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Algorithm
-- NIRCam mosaic resample now zeros SCI at WHT=0 pixels in the final i2d
-  before extension splitting (`steps/resample.py`). The drizzle output
-  already initialises SCI=0 at uncovered pixels, but `bkgsub` subtracts a
-  smooth background everywhere, leaving small nonzero residuals there;
-  the explicit re-zero restores the "no coverage ⇒ no signal" convention
-  in the published `_sci.fits` and `_i2d.fits`.
-- NIRCam mosaic SCI header now encodes the celestial WCS as a CD matrix
-  (`CDi_j` + `CDELT=1.0`) instead of the `PC` + non-unit `CDELT` form
-  that `gwcs.WCS.to_fits()` (called by `ImageModel.save`) emits. The
-  two encodings are mathematically equivalent — astropy reads the same
-  sky coordinates either way — but DS9 parses `PC + CDELT` unreliably
-  and silently drops the WCS in some configurations. Conversion is
-  applied in the same post-drizzle update pass that zeroes SCI at WHT=0,
-  so the canonical encoding propagates into split files via the SCI
-  header. Sky coordinates are bit-identical to the PC representation.
+- NIRCam mosaic resample now sets SCI=NaN at WHT=0 pixels in the final i2d
+  before extension splitting (`steps/resample.py`), matching the ERR
+  convention. The drizzle output already initialises SCI=0 at uncovered
+  pixels, but `bkgsub` subtracts a smooth background everywhere, leaving
+  small nonzero residuals there; the explicit NaN-fill makes the
+  "no coverage ⇒ no signal" state unambiguous in the published
+  `_sci.fits` and `_i2d.fits`, and matches ERR=NaN at the same pixels.
+- NIRCam campfire-native drizzle (`drizzle.drizzle_tile` →
+  `_write_i2d_fits`) now stamps a legacy FITS-WCS (CD-matrix tangent
+  projection) onto the SCI/ERR/WHT/CON image headers in addition to the
+  gwcs that `ImageModel.save` writes into asdf-in-fits. The CD elements
+  are computed numerically from the gwcs by sampling at and around CRPIX,
+  so the stamped WCS is exact regardless of any rotation-sign convention.
+  Without this, DS9 (and any astropy.wcs consumer that doesn't know about
+  asdf-in-fits) saw no celestial WCS at all on campfire-path mosaics.
+  The post-drizzle update pass in `steps/resample.py` additionally
+  converts any `PC + non-unit CDELT` encoding (emitted by the jwst path
+  via stcal) to the same `CD + CDELT=1.0` form so both implementations
+  produce identically-encoded headers. Sky coordinates are unchanged.
 - NIRCam outlier detection's cross-visit overlap padding is now
   scoped to the same JWST program by default. The previous behavior
   (any spatially-overlapping exposure regardless of program) is
