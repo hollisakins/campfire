@@ -105,6 +105,122 @@ def _build_srcmask(model):
     return out
 
 
+def fit_residual_striping(
+    data,
+    mask,
+    maxiters,
+    asymmetry_threshold=0.1,
+    nmask_prefilter=0.20,
+):
+    """Fit per-amp per-row horizontal + per-column vertical 1/f striping.
+
+    Pure function. Operates on a flat-fielded (and ideally pedestal-/
+    background-subtracted) frame. Returns 2D additive correction arrays
+    that should be subtracted from the un-flat-fielded SCI.
+
+    Parameters
+    ----------
+    data : (H, W) ndarray
+        Input frame (flat-fielded, pedestal/background pre-subtracted).
+    mask : (H, W) bool ndarray
+        True where pixels are masked (DQ flagged or source).
+    maxiters : int
+        Sigma-clipping iterations.
+    asymmetry_threshold : float
+        Distribution asymmetry threshold (|mean − median| / std on the
+        post-clip per-row sample) above which a row falls back to the
+        full-image row median. Detects rows where 2σ clipping failed to
+        reject one-sided source-wing contamination. Clean / successfully
+        clipped rows give ratio ≈ 0; heavy bright-source contamination
+        gives ratio ≳ 0.3.
+    nmask_prefilter : float
+        Apply the asymmetry test only to rows where the source mask
+        covers ≥ this fraction of the amp-row width. Below this, take
+        the per-amp median directly. In low-mask (clean) rows the
+        asymmetry statistic has its own sample-noise floor (~0.07 for
+        N ≈ 508 pixels), so a tight threshold like 0.1 would produce
+        many false positives without this prefilter.
+
+    Returns
+    -------
+    horizontal : (H, W) ndarray
+        Per-amp, per-row striping pattern.
+    vertical : (H, W) ndarray
+        Per-column striping pattern (1D x-collapse broadcast to 2D).
+    ampcounts : list[str]
+        Per-amp diagnostic strings ``'A-N'`` ... ``'D-N'`` where ``N`` is
+        the number of rows that fell back to the full-image median.
+    """
+    full_horizontal, _ = measure_fullimage_striping(data, mask, maxiters)
+
+    horizontal = np.zeros(data.shape)
+    ampcounts = []
+    for amp in ('A', 'B', 'C', 'D'):
+        _, _, colstart, colstop = NIR_AMPS[amp]['data']
+        ampdata = data[:, colstart:colstop]
+        ampmask = mask[:, colstart:colstop]
+        # Replaces a separate `collapse_image(...)` call: returns the same
+        # per-row median in `h_amp`, plus the mean and std needed for the
+        # asymmetry test below — all from one sigma-clip pass.
+        # Fully-masked rows produce all-NaN slices; the asymmetry guard
+        # below treats them as contaminated, so the inner RuntimeWarnings
+        # are noise.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore', category=RuntimeWarning,
+                message='Mean of empty slice',
+            )
+            warnings.filterwarnings(
+                'ignore', category=RuntimeWarning,
+                message='All-NaN slice encountered',
+            )
+            warnings.filterwarnings(
+                'ignore', category=RuntimeWarning,
+                message='Degrees of freedom <= 0',
+            )
+            mean_amp, h_amp, std_amp = sigma_clipped_stats(
+                ampdata, mask=ampmask, sigma=2.0,
+                cenfunc=np.nanmedian, stdfunc=np.nanstd,
+                axis=1, maxiters=maxiters,
+            )
+        with np.errstate(invalid='ignore', divide='ignore'):
+            asymmetry = np.abs(mean_amp - h_amp) / std_amp
+        # Non-finite (e.g. all-masked rows where std is 0/nan) → treat as
+        # contaminated so the fallback path is taken.
+        asymmetry = np.where(np.isfinite(asymmetry), asymmetry, np.inf)
+
+        nmask = np.sum(ampmask, axis=1)
+        ampcount = 0
+        for i in range(ampmask.shape[0]):
+            # Per-amp median in clean rows (where the source mask says
+            # nothing's there); asymmetry test only in rows where the
+            # source mask is meaningful AND there are still enough
+            # unmasked pixels to estimate from.
+            nmask_frac_i = nmask[i] / ampmask.shape[1]
+            if nmask_frac_i > 0.95:
+                # Too few unmasked pixels for any reliable per-amp
+                # estimate — fall back regardless of asymmetry.
+                horizontal[i, colstart:colstop] = full_horizontal[i]
+                ampcount += 1
+            elif (nmask_frac_i > nmask_prefilter
+                  and asymmetry[i] > asymmetry_threshold):
+                # Source mask is meaningful here AND the post-clip
+                # distribution is still asymmetric: contamination biased
+                # the per-amp median.
+                horizontal[i, colstart:colstop] = full_horizontal[i]
+                ampcount += 1
+            else:
+                horizontal[i, colstart:colstop] = h_amp[i]
+        ampcounts.append(f'{amp}-{ampcount}')
+
+    vertical_1d = collapse_image(
+        data - horizontal, mask, maxiters, dimension='x',
+    )
+    vertical = np.broadcast_to(vertical_1d, data.shape).copy()
+
+    return horizontal, vertical, ampcounts
+
+
 def _resolve_flat(model, field, use_custom):
     crds_dict = {
         'INSTRUME': 'NIRCAM',
@@ -233,91 +349,15 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
         except Exception as e:
             log(f"2D background failed for {rootname}: {e}; pedestal-only")
 
-    full_horizontal, _ = measure_fullimage_striping(
-        fit_model.data, mask, maxiters,
-    )
-
-    horizontal = np.zeros(fit_model.data.shape)
-    ampcounts = []
-    rowstart = rowstop = 0
-    # Hardcoded for first-pass validation against real data. Distribution
-    # asymmetry test (|mean - median| / std on the post-clip per-row sample)
-    # detects rows where 2σ clipping failed to reject one-sided source-wing
-    # contamination. Clean / successfully-clipped rows give ratio ≈ 0;
-    # heavy bright-source contamination gives ratio ≳ 0.3.
     ASYMMETRY_THRESHOLD = 0.1
-    # Hybrid prefilter: only run the asymmetry test on rows where the source
-    # mask covers ≥ NMASK_PREFILTER of the amp-row width. In low-mask
-    # (clean) rows the asymmetry statistic has its own sample-noise floor
-    # (~0.07 for N≈508 pixels), so a tight threshold like 0.1 would produce
-    # many false positives in clean regions. The prefilter restricts the
-    # test to rows the source mask thinks have a meaningful source —
-    # there N is smaller and the signal we want to detect is larger.
     NMASK_PREFILTER = 0.20
-    for amp in ('A', 'B', 'C', 'D'):
-        rowstart, rowstop, colstart, colstop = NIR_AMPS[amp]['data']
-        ampdata = fit_model.data[:, colstart:colstop]
-        ampmask = mask[:, colstart:colstop]
-        # Replaces the previous `collapse_image(...)` call: returns the same
-        # per-row median in `h_amp`, plus the mean and std needed for the
-        # asymmetry test below — all from one sigma-clip pass.
-        # Fully-masked rows produce all-NaN slices; the asymmetry guard below
-        # treats them as contaminated, so the inner RuntimeWarnings are noise.
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                'ignore', category=RuntimeWarning,
-                message='Mean of empty slice',
-            )
-            warnings.filterwarnings(
-                'ignore', category=RuntimeWarning,
-                message='All-NaN slice encountered',
-            )
-            warnings.filterwarnings(
-                'ignore', category=RuntimeWarning,
-                message='Degrees of freedom <= 0',
-            )
-            mean_amp, h_amp, std_amp = sigma_clipped_stats(
-                ampdata, mask=ampmask, sigma=2.0,
-                cenfunc=np.nanmedian, stdfunc=np.nanstd,
-                axis=1, maxiters=maxiters,
-            )
-        with np.errstate(invalid='ignore', divide='ignore'):
-            asymmetry = np.abs(mean_amp - h_amp) / std_amp
-        # Non-finite (e.g. all-masked rows where std is 0/nan) → treat as
-        # contaminated so the fallback path is taken.
-        asymmetry = np.where(np.isfinite(asymmetry), asymmetry, np.inf)
-
-        nmask = np.sum(ampmask, axis=1)
-        ampcount = 0
-        for i in range(ampmask.shape[0]):
-            # Per-amp median in clean rows (where the source mask says
-            # nothing's there); asymmetry test only in rows where the source
-            # mask is meaningful AND there are still enough unmasked pixels
-            # to estimate from.
-            nmask_frac_i = nmask[i] / ampmask.shape[1]
-            if nmask_frac_i > 0.95:
-                # Too few unmasked pixels for any reliable per-amp estimate —
-                # fall back regardless of asymmetry.
-                horizontal[i, colstart:colstop] = full_horizontal[i]
-                ampcount += 1
-            elif (nmask_frac_i > NMASK_PREFILTER
-                  and asymmetry[i] > ASYMMETRY_THRESHOLD):
-                # Source mask is meaningful here AND the post-clip
-                # distribution is still asymmetric: contamination biased
-                # the per-amp median.
-                horizontal[i, colstart:colstop] = full_horizontal[i]
-                ampcount += 1
-            else:
-                horizontal[i, colstart:colstop] = h_amp[i]
-        ampcounts.append(f'{amp}-{ampcount}')
-
-    log(f"{rootname}: full-row medians used: "
-        f"{', '.join(ampcounts)}/{rowstop - rowstart}")
-
-    vertical_1d = collapse_image(
-        fit_model.data - horizontal, mask, maxiters, dimension='x',
+    horizontal, vertical, ampcounts = fit_residual_striping(
+        fit_model.data, mask, maxiters,
+        asymmetry_threshold=ASYMMETRY_THRESHOLD,
+        nmask_prefilter=NMASK_PREFILTER,
     )
-    vertical = np.broadcast_to(vertical_1d, fit_model.data.shape).copy()
+    log(f"{rootname}: full-row medians used: "
+        f"{', '.join(ampcounts)}/{fit_model.data.shape[0]}")
 
     fit_model.close()
 

@@ -158,6 +158,28 @@
 [nircam.image2]
     use_custom_flat = false
 
+[nircam.diag_striping]
+    # Opt-in scattered-light diagonal striping correction. Some exposures
+    # show stripe-like artifacts from off-axis bright stars; the angle is
+    # set by source geometry so it varies per exposure. Default theta
+    # range is a placeholder — enable per field with a range tuned to the
+    # actual scattered-light geometry, e.g.
+    #     [field.diag_striping]
+    #         enabled = true
+    #         theta_min = 25.0
+    #         theta_max = 35.0
+    enabled = false
+    theta_min = 0.0
+    theta_max = 90.0
+    theta_coarse_step = 1.0
+    theta_fine_step = 0.1
+    theta_fine_window = 2.0
+    bin_width = 3
+    column_width = 256
+    column_overlap = 32
+    maxiters = 3
+    plot = true
+
 [nircam.edge]
     # No tunable parameters.
 

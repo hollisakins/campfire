@@ -28,6 +28,7 @@ from campfire_pipeline.nircam.steps.persistence import persistence_step
 from campfire_pipeline.nircam.steps.wisp import wisp_step
 from campfire_pipeline.nircam.steps.striping import striping_step
 from campfire_pipeline.nircam.steps.image2 import image2_step
+from campfire_pipeline.nircam.steps.diag_striping import diag_striping_step
 from campfire_pipeline.nircam.steps.edge import edge_step
 from campfire_pipeline.nircam.steps.sky import sky_step
 from campfire_pipeline.nircam.steps.variance import variance_step
@@ -50,6 +51,7 @@ PROCESS_STEPS = [
     ('wisp',        'CFP_WISP'),
     ('striping',    'CFP_1F'),
     ('image2',      'CFP_IMG2'),
+    ('diag_striping', 'CFP_DIAG'),
     ('edge',        'CFP_EDGE'),
     ('sky',         'CFP_SKY'),
     ('variance',    'CFP_VAR'),
@@ -195,6 +197,28 @@ def _run_per_exposure(step_name, fn, cfp_key, field, config, filtname,
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
     status.mark_all(pending, cfp_key)
+
+
+def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
+    """Opt-in scattered-light diagonal striping. Disabled unless a field
+    sets ``[field.diag_striping].enabled = true``."""
+    cfg = get_nircam_step_config('diag_striping', config, field)
+    if not cfg.get('enabled', False):
+        log(f"diag_striping: disabled by config; skipping {filtname}")
+        return
+    exposures = field.get_exposure_files(filtname)
+    if not exposures:
+        log(f"diag_striping: no exposures for {filtname}")
+        return
+    pending, _ = _filter_pending('diag_striping', exposures, 'CFP_DIAG',
+                                 status, overwrite)
+    if not pending:
+        return
+    log(f"diag_striping: dispatching {len(pending)} exposures for {filtname}")
+    dispatch(diag_striping_step, pending, n_processes=n_processes,
+             field=field, step_config=cfg, overwrite=overwrite,
+             status=status)
+    status.mark_all(pending, 'CFP_DIAG')
 
 
 def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
@@ -347,6 +371,7 @@ _RUNNERS = {
     'image2':      lambda f, c, fl, n, ow, st: _run_per_exposure(
                        'image2', image2_step, 'CFP_IMG2',
                        f, c, fl, n, ow, st),
+    'diag_striping': _run_diag_striping,
     'edge':        lambda f, c, fl, n, ow, st: _run_per_exposure(
                        'edge', edge_step, 'CFP_EDGE',
                        f, c, fl, n, ow, st),

@@ -136,6 +136,55 @@ def plot_sky(sci_before, sci_after, hist_data, popt, pedestal,
     plt.close(fig)
 
 
+def plot_diag_striping(sci_before, diag_model, residual_model, sci_after,
+                       thetas, scores, opt_theta, save_file=None, title=None):
+    """Diagonal-striping diagnostic.
+
+    Five-panel layout:
+      - top: variance vs θ with the chosen optimum marked
+      - row 2: original SCI | diagonal stripe model
+      - row 3: residual horizontal+vertical model | corrected SCI
+
+    All four image panels share ``sci_before``'s ZScale so amplitudes
+    are directly comparable.
+    """
+    import matplotlib.pyplot as plt
+
+    norm = ImageNormalize(sci_before, interval=ZScaleInterval())
+
+    fig = plt.figure(figsize=(10, 11), tight_layout=True)
+    gs = fig.add_gridspec(3, 2, height_ratios=[0.5, 1, 1])
+    ax_var = fig.add_subplot(gs[0, :])
+    ax_orig = fig.add_subplot(gs[1, 0])
+    ax_diag = fig.add_subplot(gs[1, 1])
+    ax_resid = fig.add_subplot(gs[2, 0])
+    ax_final = fig.add_subplot(gs[2, 1])
+
+    ax_var.plot(thetas, scores, marker='o', ms=3, lw=0.8, color='k')
+    ax_var.axvline(opt_theta, color='red', ls='--', lw=1,
+                   label=f'optimum θ = {opt_theta:.2f}°')
+    ax_var.set_xlabel('angle (degrees)')
+    ax_var.set_ylabel('residual MAD²')
+    ax_var.legend(loc='best', fontsize=9)
+    if title:
+        ax_var.set_title(title, fontsize=10)
+
+    for ax, im, lbl in (
+        (ax_orig, sci_before, 'A. Original'),
+        (ax_diag, diag_model, 'B. Diagonal model'),
+        (ax_resid, residual_model, 'C. Residual H+V model'),
+        (ax_final, sci_after, 'D. Corrected'),
+    ):
+        ax.imshow(im, origin='lower', interpolation='none',
+                  cmap='Greys', norm=norm)
+        ax.set_title(lbl)
+        ax.axis('off')
+
+    if save_file is not None:
+        fig.savefig(save_file)
+    plt.close(fig)
+
+
 def plot_outlier(sci, new_outlier, save_file=None, title=None):
     """Outlier-step diagnostic: SCI plus a side-panel with newly flagged pixels.
 

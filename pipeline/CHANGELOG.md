@@ -38,6 +38,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Algorithm
+- NIRCam ``diag_striping`` step (new, opt-in): subtracts scattered-light
+  diagonal stripe artifacts caused by off-axis bright stars. Runs after
+  ``image2`` (so the data is flat-corrected), before ``edge``. Reads the
+  source mask from the ``SRCMASK`` extension that ``striping`` writes and
+  ``image2`` preserves. Coarse + fine grid search over θ scored by the
+  residual MAD² of a global per-bin median; applies a strip-blended
+  per-bin median at the optimal θ to capture spatial amplitude variation;
+  re-fits horizontal + vertical 1/f residuals via a new
+  ``fit_residual_striping`` helper extracted from ``striping`` (pure
+  refactor — no change to ``striping`` behaviour). Provenance recorded
+  in ``CFP_DIAG``. Disabled by default; enable per field with
+  ``[field.diag_striping].enabled = true`` and tune
+  ``theta_min``/``theta_max`` to the field's scattered-light geometry.
 - NIRCam ``bad_pixel`` step: now disabled by default, only stacks the
   DO_NOT_USE bit (not all DQ bits), and defaults to a stricter
   ``threshold = 0.8``. The previous behaviour — flagging any pixel

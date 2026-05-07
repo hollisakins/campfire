@@ -28,6 +28,7 @@ CFP_KEYS = [
     'CFP_WISP',  # wisp template subtraction
     'CFP_1F',    # 1/f striping
     'CFP_IMG2',  # image2
+    'CFP_DIAG',  # diagonal scattered-light striping (opt-in)
     'CFP_EDGE',  # edge flagging
     'CFP_SKY',   # sky pedestal subtraction
     'CFP_VAR',   # variance rescaling
@@ -43,6 +44,7 @@ CFP_COMMENTS = {
     'CFP_WISP': 'campfire: wisp template, scale',
     'CFP_1F':   'campfire: 1/f striping params',
     'CFP_IMG2': 'campfire: image2 done',
+    'CFP_DIAG': 'campfire: diagonal stripe theta and search range',
     'CFP_EDGE': 'campfire: edges flagged',
     'CFP_SKY':  'campfire: sky pedestal value',
     'CFP_VAR':  'campfire: variance correction factor',

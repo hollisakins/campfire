@@ -46,6 +46,10 @@
 #   [field.striping]
 #       apply_flat = false
 #       maxiters = 5
+#   [field.diag_striping]                # off by default; enable per field
+#       enabled = true
+#       theta_min = 25.0
+#       theta_max = 35.0
 #   [field.jhat.refcat_dict]
 #       f444w = "gaia_dr3_f444w.cat"
 #       f200w = "gaia_dr3_f200w.cat"
