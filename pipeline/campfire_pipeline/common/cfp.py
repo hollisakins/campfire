@@ -32,6 +32,7 @@ CFP_KEYS = [
     'CFP_EDGE',  # edge flagging
     'CFP_SKY',   # sky pedestal subtraction
     'CFP_VAR',   # variance rescaling
+    'CFP_SHIFT', # pre-jhat astrometric WCS shift (opt-in, rule-driven)
     'CFP_JHAT',  # WCS alignment
     'CFP_MASK',  # user region masks
     'CFP_BPIX',  # bad pixel mask
@@ -48,6 +49,7 @@ CFP_COMMENTS = {
     'CFP_EDGE': 'campfire: edges flagged',
     'CFP_SKY':  'campfire: sky pedestal value',
     'CFP_VAR':  'campfire: variance correction factor',
+    'CFP_SHIFT': 'campfire: pre-jhat WCS shift (dra,ddec,droll,scale)',
     'CFP_JHAT': 'campfire: jhat refcat used',
     'CFP_MASK': 'campfire: user masks applied',
     'CFP_BPIX': 'campfire: bad pixel mask applied',

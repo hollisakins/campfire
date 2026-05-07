@@ -32,6 +32,7 @@ from campfire_pipeline.nircam.steps.diag_striping import diag_striping_step
 from campfire_pipeline.nircam.steps.edge import edge_step
 from campfire_pipeline.nircam.steps.sky import sky_step
 from campfire_pipeline.nircam.steps.variance import variance_step
+from campfire_pipeline.nircam.steps.wcs_shift import wcs_shift_step, _match_rule
 from campfire_pipeline.nircam.steps.jhat import jhat_step
 from campfire_pipeline.nircam.steps.apply_masks import apply_masks_step
 from campfire_pipeline.nircam.steps.bad_pixel import (
@@ -55,6 +56,7 @@ PROCESS_STEPS = [
     ('edge',        'CFP_EDGE'),
     ('sky',         'CFP_SKY'),
     ('variance',    'CFP_VAR'),
+    ('wcs_shift',   'CFP_SHIFT'),
     ('jhat',        'CFP_JHAT'),
 ]
 
@@ -221,6 +223,43 @@ def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
     status.mark_all(pending, 'CFP_DIAG')
 
 
+def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
+    """Opt-in pre-JHAT astrometric shift. No-op unless ``[[<field>.wcs_shift]]``
+    rules are defined in fields.toml."""
+    rules = field.wcs_shift_rules
+    if not rules:
+        log(f"wcs_shift: no rules; skipping {filtname}")
+        return
+    exposures = field.get_exposure_files(filtname)
+    if not exposures:
+        log(f"wcs_shift: no exposures for {filtname}")
+        return
+
+    # Pre-filter to exposures actually matched by some rule. Saves I/O on
+    # the (typical) majority of files that no rule touches — they're never
+    # stamped, so _filter_pending wouldn't catch them.
+    matched = []
+    for f in exposures:
+        rootname = os.path.basename(f).removesuffix('.fits')
+        if _match_rule(rootname, filtname, rules) is not None:
+            matched.append(f)
+    if not matched:
+        log(f"wcs_shift: no exposures match any rule for {filtname}")
+        return
+
+    pending, _ = _filter_pending('wcs_shift', matched, 'CFP_SHIFT', status,
+                                 overwrite)
+    if not pending:
+        return
+    cfg = dict(get_nircam_step_config('wcs_shift', config, field))
+    cfg['rules'] = rules
+    log(f"wcs_shift: dispatching {len(pending)} exposures for {filtname}")
+    dispatch(wcs_shift_step, pending, n_processes=n_processes,
+             field=field, step_config=cfg, overwrite=overwrite,
+             status=status)
+    status.mark_all(pending, 'CFP_SHIFT')
+
+
 def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
     exposures = field.get_exposure_files(filtname)
     if not exposures:
@@ -381,6 +420,7 @@ _RUNNERS = {
     'variance':    lambda f, c, fl, n, ow, st: _run_per_exposure(
                        'variance', variance_step, 'CFP_VAR',
                        f, c, fl, n, ow, st),
+    'wcs_shift':   _run_wcs_shift,
     'jhat':        lambda f, c, fl, n, ow, st: _run_per_exposure(
                        'jhat', jhat_step, 'CFP_JHAT',
                        f, c, fl, n, ow, st),

@@ -38,6 +38,17 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Algorithm
+- NIRCam ``wcs_shift`` step (new, opt-in): applies a per-rule bulk
+  astrometric shift to the GWCS via ``jwst.tweakreg.utils.adjust_wcs``
+  before ``jhat``, for visits whose pipeline astrometry lands outside
+  JHAT's source-matching radius. Rules live as an array of tables under
+  ``[[<field>.wcs_shift]]`` in ``fields.toml`` (``files`` rootname globs,
+  optional ``filters``, ``delta_ra``/``delta_dec``/``delta_roll``/``scale``).
+  The original GWCS is stashed in a ``WCS_BAK`` FITS extension on first
+  apply and restored before re-applying on ``--overwrite``, so the step
+  is declarative — config specifies the desired shift, on-disk state is
+  brought into agreement. Provenance recorded in ``CFP_SHIFT`` between
+  ``CFP_VAR`` and ``CFP_JHAT``. No-op for fields without rules.
 - NIRCam ``diag_striping`` step (new, opt-in): subtracts scattered-light
   diagonal stripe artifacts caused by off-axis bright stars. Runs after
   ``image2`` (so the data is flat-corrected), before ``edge``. Reads the

@@ -204,6 +204,23 @@
     bg_interpolator = "zoom"
     block_size = 7
 
+[nircam.wcs_shift]
+    # Opt-in pre-JHAT astrometric shift. Some exposures land far enough off
+    # the reference catalog that JHAT can't converge; this step applies a
+    # bulk shift (delta_ra, delta_dec, delta_roll, scale) to the GWCS to
+    # bring them close enough for JHAT to finish the alignment.
+    #
+    # Rules live entirely under [<field>.wcs_shift] in fields.toml as an
+    # array of tables — there are no package-level rule defaults. The block
+    # is a no-op for fields that don't define any rules.
+    #
+    # Example fields.toml:
+    #   [[example_uds.wcs_shift]]
+    #       files     = ['jw01837002007*', 'jw01837002009*']
+    #       filters   = ['f090w']
+    #       delta_ra  = -0.0022538
+    #       delta_dec = -0.003637
+
 [nircam.jhat]
     verbose = true
     debug = true

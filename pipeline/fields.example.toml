@@ -54,6 +54,20 @@
 #       f444w = "gaia_dr3_f444w.cat"
 #       f200w = "gaia_dr3_f200w.cat"
 #
+# Pre-JHAT astrometric shifts (opt-in, declared as an array of tables):
+#   [[field.wcs_shift]]
+#       files     = ['jw01837002007*', 'jw01837002009*']  # rootname globs
+#       filters   = ['f090w']     # optional; default = all field filters
+#       delta_ra  = -0.0022538    # degrees
+#       delta_dec = -0.003637
+#       delta_roll = 0.0          # default 0.0
+#       scale     = 1.0           # default 1.0
+#   Each entry shifts the GWCS of the matched exposures via
+#   ``jwst.tweakreg.utils.adjust_wcs`` before the ``jhat`` step. Used to
+#   pre-correct visits with bad astrometry that would otherwise fall
+#   outside JHAT's source-matching radius. Multiple ``[[ ]]`` entries
+#   stack independently; first match wins for any given exposure.
+#
 # Per-field RGB composite (consumed only by `cfpipe nircam rgb`):
 #   [field.rgb]
 #       noisesig = 2.0       # blackpoint = noisesig * sigma_clip(SCI), per channel max

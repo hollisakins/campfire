@@ -75,6 +75,89 @@ def _tile_has_wcs_subsection(value):
     )
 
 
+_WCS_SHIFT_REQUIRED = {'files', 'delta_ra', 'delta_dec'}
+_WCS_SHIFT_ALLOWED = (
+    _WCS_SHIFT_REQUIRED | {'filters', 'delta_roll', 'scale'}
+)
+
+
+def _parse_wcs_shift_rules(field_name, raw, field_filters):
+    """Normalize a list of [[<field>.wcs_shift]] entries.
+
+    Each entry must declare ``files`` (string or list of rootname globs) and
+    ``delta_ra``/``delta_dec`` (degrees). Optional: ``filters`` (defaults to
+    every field filter), ``delta_roll`` (default 0.0), ``scale`` (default 1.0).
+    Brace-style globs in ``files`` are expanded up-front.
+
+    Returns
+    -------
+    list of dict
+        Empty list when ``raw`` is None or empty.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"Field '{field_name}': [<field>.wcs_shift] must be an array of "
+            f"tables ([[ ]]), got {type(raw).__name__}"
+        )
+
+    rules = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Field '{field_name}': wcs_shift entry #{i} must be a table"
+            )
+        unknown = set(entry) - _WCS_SHIFT_ALLOWED
+        if unknown:
+            raise ValueError(
+                f"Field '{field_name}': wcs_shift entry #{i} has unknown "
+                f"keys {sorted(unknown)}. Allowed: {sorted(_WCS_SHIFT_ALLOWED)}"
+            )
+        missing = _WCS_SHIFT_REQUIRED - set(entry)
+        if missing:
+            raise ValueError(
+                f"Field '{field_name}': wcs_shift entry #{i} missing required "
+                f"keys {sorted(missing)}"
+            )
+
+        files = entry['files']
+        if isinstance(files, str):
+            files = [files]
+        files = [p for raw_p in files for p in _expand_braces(raw_p)]
+        files = list(np.unique(files))
+        bad = [p for p in files if _extract_pid(p) is None]
+        if bad:
+            raise ValueError(
+                f"Field '{field_name}': wcs_shift entry #{i} `files` patterns "
+                f"must start with 'jwNNNNN' (5-digit PID). Offending: {bad}"
+            )
+
+        filters = entry.get('filters')
+        if filters is None:
+            filters_norm = list(field_filters)
+        else:
+            if isinstance(filters, str):
+                filters = [filters]
+            unknown_f = [f for f in filters if f not in field_filters]
+            if unknown_f:
+                raise ValueError(
+                    f"Field '{field_name}': wcs_shift entry #{i} `filters` "
+                    f"contains values not in field.filters: {unknown_f}"
+                )
+            filters_norm = list(filters)
+
+        rules.append({
+            'files': files,
+            'filters': filters_norm,
+            'delta_ra': float(entry['delta_ra']),
+            'delta_dec': float(entry['delta_dec']),
+            'delta_roll': float(entry.get('delta_roll', 0.0)),
+            'scale': float(entry.get('scale', 1.0)),
+        })
+    return rules
+
+
 @dataclass
 class Field:
     name: str
@@ -85,6 +168,10 @@ class Field:
     step_overrides: dict = field(default_factory=dict)
     skip: List[str] = field(default_factory=list)  # field-wide exclude globs
     rgb: Optional[dict] = None  # optional [field.rgb] block, consumed by `cfpipe nircam rgb`
+    # Parsed [[<field>.wcs_shift]] array-of-tables (pre-JHAT shift rules).
+    # Each entry: {files: [globs], filters: [filtnames] | None,
+    #              delta_ra, delta_dec, delta_roll, scale}.
+    wcs_shift_rules: List[dict] = field(default_factory=list)
 
     # Populated by setup_workspace()
     campfire_root: Optional[str] = None
@@ -171,7 +258,8 @@ class Field:
         # tile-detection loop below.
         known_steps = {
             'detector1', 'persistence', 'wisp', 'striping',
-            'image2', 'edge', 'sky', 'variance', 'jhat',
+            'image2', 'diag_striping', 'edge', 'sky', 'variance',
+            'wcs_shift', 'jhat',
             'apply_mask', 'bad_pixel', 'outlier', 'resample',
         }
 
@@ -204,6 +292,11 @@ class Field:
             if key in fc and isinstance(fc[key], dict):
                 step_overrides[key] = fc[key]
 
+        # Parse [[<field>.wcs_shift]] array-of-tables (TOML parses these as
+        # a list under fc['wcs_shift']) into a normalized rule list.
+        wcs_shift_rules = _parse_wcs_shift_rules(name, fc.get('wcs_shift'),
+                                                 filters)
+
         return cls(
             name=name,
             filters=filters,
@@ -213,6 +306,7 @@ class Field:
             step_overrides=step_overrides,
             skip=skip_patterns,
             rgb=rgb_cfg,
+            wcs_shift_rules=wcs_shift_rules,
         )
 
     @property
