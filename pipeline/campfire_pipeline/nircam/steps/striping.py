@@ -20,13 +20,14 @@ explicitly want to avoid).
 
 import copy
 import os
+import warnings
 from datetime import datetime
 from time import sleep
 
 import numpy as np
 from astropy.io import fits
 from astropy.convolution import Gaussian2DKernel, Ring2DKernel, convolve_fft
-from astropy.stats import biweight_location
+from astropy.stats import biweight_location, sigma_clipped_stats
 from photutils.segmentation import (
     SegmentationImage,
     detect_sources,
@@ -44,10 +45,6 @@ from campfire_pipeline.nircam.skyfit import (
     fit_sky,
     measure_fullimage_striping,
 )
-
-
-def _diagnostics_dir(canonical):
-    return os.path.join(os.path.dirname(canonical), 'diagnostics')
 
 
 def _build_srcmask(model):
@@ -259,24 +256,98 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
     horizontal = np.zeros(fit_model.data.shape)
     ampcounts = []
     rowstart = rowstop = 0
+    # Hardcoded for first-pass validation against real data. Distribution
+    # asymmetry test (|mean - median| / std on the post-clip per-row sample)
+    # detects rows where 2σ clipping failed to reject one-sided source-wing
+    # contamination. Clean / successfully-clipped rows give ratio ≈ 0;
+    # heavy bright-source contamination gives ratio ≳ 0.3.
+    ASYMMETRY_THRESHOLD = 0.1
+    # Hybrid prefilter: only run the asymmetry test on rows where the source
+    # mask covers ≥ NMASK_PREFILTER of the amp-row width. In low-mask
+    # (clean) rows the asymmetry statistic has its own sample-noise floor
+    # (~0.07 for N≈508 pixels), so a tight threshold like 0.1 would produce
+    # many false positives in clean regions. The prefilter restricts the
+    # test to rows the source mask thinks have a meaningful source —
+    # there N is smaller and the signal we want to detect is larger.
+    NMASK_PREFILTER = 0.20
+    # Runtime switch for A/B testing the new asymmetry-based fallback against
+    # the legacy mask-fraction fallback. Defaults to the new method; set
+    # CAMPFIRE_STRIPING_METHOD=mask to use the legacy decision.
+    striping_method = os.environ.get(
+        'CAMPFIRE_STRIPING_METHOD', 'asymmetry',
+    ).lower()
+    if striping_method not in ('asymmetry', 'mask'):
+        raise ValueError(
+            f"CAMPFIRE_STRIPING_METHOD={striping_method!r}; "
+            f"expected 'asymmetry' or 'mask'"
+        )
+    log(f"Striping fallback decision: {striping_method}")
     for amp in ('A', 'B', 'C', 'D'):
         rowstart, rowstop, colstart, colstop = NIR_AMPS[amp]['data']
         ampdata = fit_model.data[:, colstart:colstop]
         ampmask = mask[:, colstart:colstop]
-        h_amp = collapse_image(
-            ampdata, ampmask, dimension='y', maxiters=maxiters,
-        )
+        # Replaces the previous `collapse_image(...)` call: returns the same
+        # per-row median in `h_amp`, plus the mean and std needed for the
+        # asymmetry test below — all from one sigma-clip pass.
+        # Fully-masked rows produce all-NaN slices; the asymmetry guard below
+        # treats them as contaminated, so the inner RuntimeWarnings are noise.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore', category=RuntimeWarning,
+                message='Mean of empty slice',
+            )
+            warnings.filterwarnings(
+                'ignore', category=RuntimeWarning,
+                message='All-NaN slice encountered',
+            )
+            warnings.filterwarnings(
+                'ignore', category=RuntimeWarning,
+                message='Degrees of freedom <= 0',
+            )
+            mean_amp, h_amp, std_amp = sigma_clipped_stats(
+                ampdata, mask=ampmask, sigma=2.0,
+                cenfunc=np.nanmedian, stdfunc=np.nanstd,
+                axis=1, maxiters=maxiters,
+            )
+        with np.errstate(invalid='ignore', divide='ignore'):
+            asymmetry = np.abs(mean_amp - h_amp) / std_amp
+        # Non-finite (e.g. all-masked rows where std is 0/nan) → treat as
+        # contaminated so the fallback path is taken.
+        asymmetry = np.where(np.isfinite(asymmetry), asymmetry, np.inf)
+
         nmask = np.sum(ampmask, axis=1)
         ampcount = 0
         for i in range(ampmask.shape[0]):
-            if nmask[i] > (ampmask.shape[1] * maskparam):
-                horizontal[i, colstart:colstop] = full_horizontal[i]
-                ampcount += 1
-            elif nmask[i] > (0.95 * ampmask.shape[1]):
-                horizontal[i, colstart:colstop] = full_horizontal[i]
-                ampcount += 1
+            if striping_method == 'mask':
+                # Legacy: fall back when too many pixels are masked.
+                if nmask[i] > (ampmask.shape[1] * maskparam):
+                    horizontal[i, colstart:colstop] = full_horizontal[i]
+                    ampcount += 1
+                elif nmask[i] > (0.95 * ampmask.shape[1]):
+                    horizontal[i, colstart:colstop] = full_horizontal[i]
+                    ampcount += 1
+                else:
+                    horizontal[i, colstart:colstop] = h_amp[i]
             else:
-                horizontal[i, colstart:colstop] = h_amp[i]
+                # Hybrid: per-amp median in clean rows (where the source
+                # mask says nothing's there); asymmetry test only in rows
+                # where the source mask is meaningful AND there are still
+                # enough unmasked pixels to estimate from.
+                nmask_frac_i = nmask[i] / ampmask.shape[1]
+                if nmask_frac_i > 0.95:
+                    # Too few unmasked pixels for any reliable per-amp
+                    # estimate — fall back regardless of asymmetry.
+                    horizontal[i, colstart:colstop] = full_horizontal[i]
+                    ampcount += 1
+                elif (nmask_frac_i > NMASK_PREFILTER
+                      and asymmetry[i] > ASYMMETRY_THRESHOLD):
+                    # Source mask is meaningful here AND the post-clip
+                    # distribution is still asymmetric: contamination
+                    # biased the per-amp median.
+                    horizontal[i, colstart:colstop] = full_horizontal[i]
+                    ampcount += 1
+                else:
+                    horizontal[i, colstart:colstop] = h_amp[i]
         ampcounts.append(f'{amp}-{ampcount}')
 
     log(f"{rootname}: full-row medians used: "
@@ -325,9 +396,9 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
 
     if do_plot:
         from campfire_pipeline.nircam.steps._plots import plot_two
-        diag_dir = _diagnostics_dir(exposure_file)
-        os.makedirs(diag_dir, exist_ok=True)
-        striping_pdf = os.path.join(diag_dir, f'{rootname}_striping.pdf')
+        striping_pdf = os.path.join(
+            os.path.dirname(exposure_file), f'{rootname}_striping.pdf',
+        )
         plot_two(sci_after, sci_before,
                  title1='Striping removed', title2='Original',
                  save_file=striping_pdf)

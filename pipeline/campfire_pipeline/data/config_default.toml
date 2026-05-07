@@ -205,7 +205,14 @@
     mask_set_nan = false
 
 [nircam.bad_pixel]
-    threshold = 0.2
+    # Opt-in "consistently bad" pixel detector: stacks the DO_NOT_USE bit
+    # of cal-file DQ across all exposures of a (filter, detector) and
+    # promotes pixels exceeding `threshold` to permanent DO_NOT_USE.
+    # Only earns its keep when N is large enough for the empirical rate
+    # to beat the CRDS prior (e.g. COSMOS-Web). Disabled by default;
+    # enable per field with `[nircam.bad_pixel].enabled = true`.
+    enabled = false
+    threshold = 0.8
 
 [nircam.outlier]
     # implementation = "jwst" routes outlier detection through

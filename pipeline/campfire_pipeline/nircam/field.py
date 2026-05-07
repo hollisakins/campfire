@@ -61,8 +61,6 @@ class Field:
     raw_root: Optional[str] = None  # $CAMPFIRE_ROOT/raw/nircam (parent of PID dirs)
     products_dir: Optional[str] = None
     reference_dir: Optional[str] = None
-    exposures_dir: Optional[str] = None
-    mosaic_dir: Optional[str] = None
 
     # Reference subdirectories
     bad_pixel_dir: Optional[str] = None
@@ -182,22 +180,34 @@ class Field:
         self.products_dir = os.path.join(campfire_root, 'products', 'nircam', self.name)
         self.reference_dir = os.path.join(campfire_root, 'reference', 'nircam', self.name)
 
-        self.exposures_dir = os.path.join(self.products_dir, 'exposures')
-        self.mosaic_dir = os.path.join(self.products_dir, 'mosaics')
-
         self.bad_pixel_dir = os.path.join(self.reference_dir, 'bad_pixels')
         self.refcat_dir = os.path.join(self.reference_dir, 'astrom_cats')
         self.wisp_dir = os.path.join(self.reference_dir, 'wisps')
         self.mask_dir = os.path.join(self.reference_dir, 'masks')
         self.flats_dir = os.path.join(self.reference_dir, 'flats')
 
-        # Create directories
-        for d in [self.exposures_dir, self.mosaic_dir,
-                  self.bad_pixel_dir, self.refcat_dir,
+        # One flat directory per filter holds everything for that filter:
+        # canonical exposures, drizzled mosaic tiles, split extensions,
+        # diagnostics PDFs, and outlier/mosaic manifests.
+        for filt in self.filters:
+            os.makedirs(os.path.join(self.products_dir, filt), exist_ok=True)
+        for d in [self.bad_pixel_dir, self.refcat_dir,
                   self.wisp_dir, self.mask_dir, self.flats_dir]:
             os.makedirs(d, exist_ok=True)
 
         log(f"Workspace ready for field '{self.name}' at {self.products_dir}")
+
+    def filter_dir(self, filter_name):
+        """Return the flat per-filter products directory for this field.
+
+        ``$CAMPFIRE_ROOT/products/nircam/<field>/<filter>/`` holds every
+        output for the (field, filter) pair: per-exposure FITS files,
+        drizzled mosaic tiles, split extension files, diagnostic PDFs,
+        and outlier/mosaic manifest JSON.
+        """
+        if self.products_dir is None:
+            raise RuntimeError("setup_workspace() must be called first")
+        return os.path.join(self.products_dir, filter_name)
 
     def get_uncal_files(self, filter_name, skip=None):
         """Get uncal files from PID-organized raw directories.
@@ -229,16 +239,19 @@ class Field:
 
     def get_exposure_files(self, filter_name, skip=None, with_step=None,
                            status=None):
-        """Get canonical per-exposure files from ``exposures_dir``.
+        """Get canonical per-exposure files from the filter's flat dir.
 
         These are the files that the new pipeline mutates in place — one FITS
         file per exposure, named simply ``<rootname>.fits`` (no ``_rate`` /
         ``_cal`` / ``_jhat`` / ``_crf`` suffix).
 
+        Mosaic outputs share the same directory but are named ``mosaic_*``,
+        which the ``jw*`` field globs naturally exclude.
+
         Parameters
         ----------
         filter_name : str
-            Filter subdirectory (e.g. ``'f444w'``).
+            Filter (e.g. ``'f444w'``).
         skip : list of str, optional
             Glob patterns to exclude (matched against the same naming root
             used by the field's ``files`` patterns).
@@ -258,14 +271,11 @@ class Field:
         list of str
             Sorted absolute paths.
         """
-        if self.exposures_dir is None:
-            raise RuntimeError("setup_workspace() must be called first")
+        filter_dir = self.filter_dir(filter_name)
 
         result = []
         for pattern in self.files:
-            full_pattern = os.path.join(
-                self.exposures_dir, filter_name, pattern + '*.fits',
-            )
+            full_pattern = os.path.join(filter_dir, pattern + '*.fits')
             # Keep only canonical files — exclude transient sidecars and
             # diagnostic outputs that share the directory.
             for path in glob(full_pattern):
@@ -279,9 +289,7 @@ class Field:
         if skip:
             excluded = set()
             for exc_pattern in skip:
-                full_exc = os.path.join(
-                    self.exposures_dir, filter_name, exc_pattern + '*.fits',
-                )
+                full_exc = os.path.join(filter_dir, exc_pattern + '*.fits')
                 excluded.update(glob(full_exc))
             result = [f for f in result if f not in excluded]
 
@@ -300,9 +308,7 @@ class Field:
         ``rootname`` is the JWST filename stem without any ``_<suffix>.fits``
         (e.g. ``'jw01727028001_04101_00003_nrcalong'``).
         """
-        if self.exposures_dir is None:
-            raise RuntimeError("setup_workspace() must be called first")
-        return os.path.join(self.exposures_dir, filter_name, f'{rootname}.fits')
+        return os.path.join(self.filter_dir(filter_name), f'{rootname}.fits')
 
     def get_tile_wcs(self, tile_name, pixel_scale='30mas'):
         """Get WCS parameters for a tile at the requested pixel scale.

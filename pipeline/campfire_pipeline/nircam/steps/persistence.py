@@ -36,7 +36,8 @@ def persistence_step(exposure_files, field, step_config, overwrite=False,
     Parameters
     ----------
     exposure_files : list of str
-        Canonical ``<rootname>.fits`` paths in ``exposures/<filter>/``.
+        Canonical ``<rootname>.fits`` paths in
+        ``products/nircam/<field>/<filter>/``.
     field : Field
         NIRCam field with workspace set up. (Unused here; kept for orchestrator
         signature uniformity.)

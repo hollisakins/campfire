@@ -13,9 +13,9 @@ with the smallest minimum, and subtracts ``c * template`` from SCI.
 
 No backup file is written — the diagnostic PDFs (one for the fit residuals,
 one for before/after) are generated in-memory while both arrays are live and
-saved to ``exposures/<filter>/diagnostics/``. The pre-mutation SCI snapshot
-also makes the source-detection-on-flat-fielded-copy idiom from the legacy
-implementation work without re-reading from disk.
+saved alongside the canonical FITS in the filter's flat products directory.
+The pre-mutation SCI snapshot also makes the source-detection-on-flat-fielded
+copy idiom from the legacy implementation work without re-reading from disk.
 """
 
 import copy
@@ -49,10 +49,6 @@ def _calc_variance(data, template, coeff):
     """MAD^2 of (data - coeff * template), nan-safe."""
     mad = median_absolute_deviation(data - coeff * template, ignore_nan=True)
     return mad ** 2
-
-
-def _diagnostics_dir(canonical):
-    return os.path.join(os.path.dirname(canonical), 'diagnostics')
 
 
 def _resolve_flat(model, field, use_custom):
@@ -241,9 +237,9 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
         ax1.legend()
         ax2.set_xlabel('coefficient')
         ax2.set_ylabel(r'residuals (10$^{-6}$)')
-        diag_dir = _diagnostics_dir(exposure_file)
-        os.makedirs(diag_dir, exist_ok=True)
-        fit_pdf = os.path.join(diag_dir, f'{rootname}_wisp_fit.pdf')
+        fit_pdf = os.path.join(
+            os.path.dirname(exposure_file), f'{rootname}_wisp_fit.pdf',
+        )
         fig_fit.savefig(fit_pdf)
         plt.close(fig_fit)
         log(f"Saved {os.path.basename(fit_pdf)}")
@@ -273,9 +269,9 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
 
     if plot:
         from campfire_pipeline.nircam.steps._plots import plot_two
-        diag_dir = _diagnostics_dir(exposure_file)
-        os.makedirs(diag_dir, exist_ok=True)
-        wisp_pdf = os.path.join(diag_dir, f'{rootname}_wisp.pdf')
+        wisp_pdf = os.path.join(
+            os.path.dirname(exposure_file), f'{rootname}_wisp.pdf',
+        )
         plot_two(sci_after, sci_before,
                  title1='Wisp removed', title2='Original',
                  save_file=wisp_pdf)

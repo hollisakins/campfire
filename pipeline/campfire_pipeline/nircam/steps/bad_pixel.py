@@ -1,20 +1,31 @@
 """
-bad_pixel: stack DQ across a filter's exposures to flag bad pixels.
+bad_pixel: stack DO_NOT_USE flags across a filter's exposures to derive
+a "consistently bad" reference mask.
+
+This step earns its keep only when N is large enough for the empirical
+per-pixel DO_NOT_USE rate to add information beyond the CRDS bad-pixel
+mask already in cal-file DQ — i.e. the COSMOS-Web-style regime of many
+overlapping exposures. With small N (e.g. 8 exposures per filter), a
+loose threshold turns transient flags into permanent ones; the step is
+therefore **disabled by default** and must be opted in per-field via
+``[nircam.bad_pixel].enabled = true``.
 
 Two entry points:
 
 * ``build_bad_pixel_masks`` (ensemble): glob the per-filter canonical
-  exposure files, stack their DQ arrays per detector, threshold the
-  per-pixel hit fraction, and write
+  exposure files, stack the DO_NOT_USE bit of their DQ arrays per
+  detector, threshold the per-pixel fraction, and write
   ``fl_pixels_<filter>_<detector>.fits`` reference products into
   ``field.bad_pixel_dir``. This is a per-field reference product, not a
   per-exposure mutation.
 
 * ``bad_pixel_step`` (per-exposure): OR the per-detector bad-pixel mask
-  into the canonical DQ. Stamps ``CFP_BPIX`` with the threshold value.
+  into the canonical DQ as DO_NOT_USE. Stamps ``CFP_BPIX`` with the
+  threshold value.
 
-The orchestrator calls ``build_bad_pixel_masks`` once per filter, then
-dispatches ``bad_pixel_step`` across the exposures in parallel.
+Only the DO_NOT_USE bit is considered when stacking — flags such as
+JUMP_DET, SATURATED, and PERSISTENCE are transient and should not
+promote a pixel to "permanently bad" through repeated occurrence.
 """
 
 import os
@@ -62,11 +73,12 @@ def build_bad_pixel_masks(filtname, exposure_files, field, step_config,
         Canonical exposure paths for this filter.
     field : Field
     step_config : dict
-        ``[nircam.bad_pixel]`` block. Reads ``threshold`` (default 0.2 — the
-        fraction of stacked exposures at which a pixel is considered bad).
+        ``[nircam.bad_pixel]`` block. Reads ``threshold`` (default 0.8 — the
+        fraction of stacked exposures at which a pixel must carry the
+        DO_NOT_USE bit to be promoted to permanent bad).
     overwrite : bool
     """
-    threshold = step_config.get('threshold', 0.2)
+    threshold = step_config.get('threshold', 0.8)
     detectors = _detectors_for_filter(filtname)
 
     target_files = [
@@ -78,21 +90,27 @@ def build_bad_pixel_masks(filtname, exposure_files, field, step_config,
         return
 
     log(f"Building bad pixel masks for {filtname} from "
-        f"{len(exposure_files)} exposures")
+        f"{len(exposure_files)} exposures (threshold={threshold:.2f}, "
+        f"DO_NOT_USE only)")
 
-    det_arrays = {det: np.zeros((2048, 2048)) for det in detectors}
+    det_arrays = {det: np.zeros((2048, 2048), dtype=np.float32)
+                  for det in detectors}
+    det_counts = {det: 0 for det in detectors}
     with tqdm.tqdm(total=len(exposure_files)) as pbar:
         for ef in exposure_files:
             try:
-                flag = fits.getdata(ef, extname='DQ').astype(np.float32)
+                dq = fits.getdata(ef, extname='DQ')
             except KeyError:
                 log(f"  skipped {os.path.basename(ef)} (no DQ)")
                 pbar.update(1)
                 continue
-            flag[flag >= 1] = 1
+            # Only consider DO_NOT_USE (bit 0). Transient bits like
+            # JUMP_DET, SATURATED, PERSISTENCE must not contribute.
+            flag = (np.asarray(dq).astype(np.int32) & 1).astype(np.float32)
             det = _detector_of(ef)
             if det in det_arrays:
                 det_arrays[det] += flag
+                det_counts[det] += 1
             pbar.update(1)
 
     # Raw stacked DQ for inspection (kept for diagnostics/debugging)
@@ -104,18 +122,22 @@ def build_bad_pixel_masks(filtname, exposure_files, field, step_config,
             overwrite=True,
         )
 
-    # Threshold to a 0/1 mask
+    # Threshold to a 0/1 mask: pixel is "bad" if DO_NOT_USE in
+    # >= threshold * n_exposures_for_this_detector. Normalising by the
+    # actual count (not np.max) makes the threshold a true exposure
+    # fraction independent of how many static defects the detector has.
     for det in detectors:
         arr = det_arrays[det]
-        mx = float(np.max(arr))
-        if mx > 0:
-            arr /= mx
-            arr[arr > threshold] = 1
-            arr[arr <= threshold] = 0
+        n = det_counts[det]
+        if n > 0:
+            frac = arr / float(n)
+            mask = (frac >= threshold).astype(np.float32)
+        else:
+            mask = np.zeros_like(arr)
         fits.writeto(
             os.path.join(field.bad_pixel_dir,
                          f'fl_pixels_{filtname}_{det}.fits'),
-            arr,
+            mask,
             overwrite=True,
         )
 
@@ -149,7 +171,7 @@ def bad_pixel_step(exposure_file, field, step_config, overwrite=False,
             f"run build_bad_pixel_masks first")
         return
 
-    threshold = step_config.get('threshold', 0.2)
+    threshold = step_config.get('threshold', 0.8)
     log(f"Applying bad-pixel mask to {rootname}")
 
     from jwst.datamodels import ImageModel

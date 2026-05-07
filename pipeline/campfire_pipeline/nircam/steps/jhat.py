@@ -10,7 +10,7 @@ extensions (verified against ``jhat/st_wcs_align.py:1088-1096``), so
 trip without extra handling.
 
 JHAT also writes diagnostic PDFs and photometry tables alongside its
-output; we copy those to ``exposures/<filter>/diagnostics/`` so they're
+output; we copy those into the canonical exposure's directory so they're
 preserved when the scratch directory goes away.
 """
 
@@ -33,7 +33,6 @@ def _copy_diagnostics(scratch_subdir, diag_dir, rootname):
     """Move jhat's diagnostic PDFs and ECSV photometry tables to ``diag_dir``."""
     if not os.path.isdir(scratch_subdir):
         return
-    os.makedirs(diag_dir, exist_ok=True)
     for fname in os.listdir(scratch_subdir):
         if not fname.startswith(rootname):
             continue
@@ -186,9 +185,8 @@ def jhat_step(exposure_file, field, step_config, overwrite=False, status=None):
             )
 
         # Preserve diagnostic plots/tables before the scratch dir is removed
-        diag_dir = os.path.join(input_dir, 'diagnostics')
         _copy_diagnostics(
-            os.path.join(scratch, filtname), diag_dir, rootname,
+            os.path.join(scratch, filtname), input_dir, rootname,
         )
 
         os.replace(scratch_out, exposure_file)

@@ -267,7 +267,7 @@ def status(config, field, filters):
         exposures = field_obj.get_exposure_files(filt)
         if not exposures:
             log(f'{filt}: no canonical exposure files in '
-                f'{field_obj.exposures_dir}/{filt}')
+                f'{field_obj.filter_dir(filt)}')
             continue
 
         # Read CFP_* once per exposure

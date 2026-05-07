@@ -3,7 +3,9 @@ resample: drizzle-combine canonical exposures into mosaic tiles.
 
 Per-tile ensemble step. Selects exposures whose footprints intersect each
 tile polygon, builds an ASN, and runs ``Image3Pipeline`` (resample only) to
-produce ``_i2d.fits`` mosaic tiles in ``field.mosaic_dir/<filter>/``.
+produce ``_i2d.fits`` mosaic tiles in ``field.filter_dir(filter)`` — the
+same flat directory that holds the canonical exposures, split-extension
+files, and manifests for that (field, filter) pair.
 
 Input source for the canonical-exposure layout is
 ``field.get_exposure_files(filter, with_step='CFP_OUT')`` — only exposures
@@ -208,12 +210,10 @@ def resample_step(filtname, exposure_files, field, step_config,
                        .replace('[pixel_scale]', pixel_scale_str)
                        .replace('[version]', version)
                        .replace('[tile]', tile))
-        mosaic_outdir = os.path.join(field.mosaic_dir, filtname)
-        os.makedirs(mosaic_outdir, exist_ok=True)
+        mosaic_outdir = field.filter_dir(filtname)
         mosaic_file = os.path.join(mosaic_outdir, f'{mosaic_name}_i2d.fits')
-        manifest_dir = os.path.join(mosaic_outdir, 'manifests')
         manifest_path = os.path.join(
-            manifest_dir, f'{mosaic_name}_manifest.json',
+            mosaic_outdir, f'{mosaic_name}_manifest.json',
         )
 
         log(f"  mosaic → {mosaic_file}")
@@ -280,7 +280,7 @@ def resample_step(filtname, exposure_files, field, step_config,
                 mosaic_name, field, filtname, tile, pixel_scale_str,
                 version, selected, {'resample': step_config},
             )
-            write_manifest(manifest, manifest_dir)
+            write_manifest(manifest, manifest_path)
 
         if step_config.get('background_subtract', True):
             from campfire_pipeline.nircam.bkgsub import SubtractBackground
@@ -351,8 +351,6 @@ def resample_step(filtname, exposure_files, field, step_config,
 
         if needs_rebuild and step_config.get('split_extensions', True):
             log("  splitting extensions")
-            ext_outdir = os.path.join(mosaic_outdir, 'extensions')
-            os.makedirs(ext_outdir, exist_ok=True)
 
             sci = fits.getdata(mosaic_file, extname='SCI')
             hdr = fits.getheader(mosaic_file, extname='SCI')
@@ -361,17 +359,20 @@ def resample_step(filtname, exposure_files, field, step_config,
 
             base = os.path.basename(mosaic_file)
             fits.PrimaryHDU(data=sci, header=hdr).writeto(
-                os.path.join(ext_outdir, base.replace('_i2d.fits', '_sci.fits')),
+                os.path.join(mosaic_outdir,
+                             base.replace('_i2d.fits', '_sci.fits')),
                 overwrite=True,
             )
             hdr.update({'EXTNAME': 'ERR'})
             fits.PrimaryHDU(data=err, header=hdr).writeto(
-                os.path.join(ext_outdir, base.replace('_i2d.fits', '_err.fits')),
+                os.path.join(mosaic_outdir,
+                             base.replace('_i2d.fits', '_err.fits')),
                 overwrite=True,
             )
             hdr.update({'EXTNAME': 'WHT'})
             fits.PrimaryHDU(data=wht, header=hdr).writeto(
-                os.path.join(ext_outdir, base.replace('_i2d.fits', '_wht.fits')),
+                os.path.join(mosaic_outdir,
+                             base.replace('_i2d.fits', '_wht.fits')),
                 overwrite=True,
             )
 
@@ -380,7 +381,7 @@ def resample_step(filtname, exposure_files, field, step_config,
                 hdr.update({'EXTNAME': 'SRCMASK'})
                 fits.PrimaryHDU(data=srcmask, header=hdr).writeto(
                     os.path.join(
-                        ext_outdir,
+                        mosaic_outdir,
                         base.replace('_i2d.fits', '_srcmask.fits'),
                     ),
                     overwrite=True,
@@ -397,16 +398,15 @@ def resample_step(filtname, exposure_files, field, step_config,
             f"{os.path.basename(mosaic_file)}")
 
         if step_config.get('split_extensions', True):
-            ext_outdir = os.path.join(mosaic_outdir, 'extensions')
             base = os.path.basename(mosaic_file)
             for suffix in ('_sci.fits', '_err.fits',
                            '_wht.fits', '_srcmask.fits'):
                 ver_ext = os.path.join(
-                    ext_outdir, base.replace('_i2d.fits', suffix),
+                    mosaic_outdir, base.replace('_i2d.fits', suffix),
                 )
                 if os.path.exists(ver_ext):
                     latest_ext = os.path.join(
-                        ext_outdir, f'{latest_name}{suffix}',
+                        mosaic_outdir, f'{latest_name}{suffix}',
                     )
                     if (os.path.islink(latest_ext)
                             or os.path.exists(latest_ext)):

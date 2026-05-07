@@ -3,7 +3,8 @@ detector1: JWST ``Detector1Pipeline`` → canonical per-exposure file.
 
 Reads ``<rootname>_uncal.fits`` from ``raw/nircam/<PID>/<filter>/``, runs
 ``Detector1Pipeline`` in memory, atomically saves the calibrated rate-stage
-ImageModel to ``exposures/<filter>/<rootname>.fits``, and stamps ``CFP_DET1``.
+ImageModel to ``products/nircam/<field>/<filter>/<rootname>.fits``, and
+stamps ``CFP_DET1``.
 
 The jump substep keeps ``save_results=True`` so that ``<rootname>_jump.fits``
 lands alongside the canonical file. The persistence step that follows reads
@@ -45,8 +46,7 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
     assert (filtname.lower() in SW_FILTERS) or (filtname.lower() in LW_FILTERS)
 
     rootname = os.path.basename(uncal_file).removesuffix('_uncal.fits')
-    output_dir = os.path.join(field.exposures_dir, filtname)
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = field.filter_dir(filtname)
     canonical = field.get_exposure_path(rootname, filtname)
 
     if os.path.exists(canonical) and not overwrite:

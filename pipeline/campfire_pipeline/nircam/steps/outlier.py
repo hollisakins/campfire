@@ -11,8 +11,8 @@ Two implementations live here, dispatched by the orchestrator based on
   regions), assembles an ASN, and runs Image3 in outlier-only mode
   inside a private scratch directory. Each visit's own scratch outputs
   are then atomically promoted back to their canonical paths with
-  ``CFP_OUT`` stamped. Manifests:
-  ``exposures/<filter>/manifests/outlier_<visit>_manifest.json``.
+  ``CFP_OUT`` stamped. Manifests are written alongside the canonical
+  files at ``products/nircam/<field>/<filter>/outlier_<visit>_manifest.json``.
 
   Cross-program overlap padding (the legacy behavior, where any
   spatially-overlapping exposure regardless of program was included)
@@ -126,9 +126,8 @@ def outlier_step(visit, visit_files, filter_files, sregions,
     filtname = visit_files[0].split('/')[-2]
     log(f"Outlier detection on visit {visit} ({len(visit_files)} exposures)")
 
-    manifest_dir = os.path.join(field.exposures_dir, filtname, 'manifests')
     manifest_path = os.path.join(
-        manifest_dir, f'outlier_{visit}_manifest.json',
+        field.filter_dir(filtname), f'outlier_{visit}_manifest.json',
     )
 
     # Cross-visit overlap padding scope. Default scopes overlap to the
@@ -274,7 +273,6 @@ def outlier_step(visit, visit_files, filter_files, sregions,
 
     # Manifest records ALL inputs (visit + overlap) so we can detect changes
     # in either next time
-    os.makedirs(manifest_dir, exist_ok=True)
     manifest_data = {
         'visit': visit,
         'field': field.name,
@@ -309,9 +307,8 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
     filtname = visit_files[0].split('/')[-2]
     log(f"Outlier (campfire) on visit {visit} ({len(visit_files)} exposures)")
 
-    manifest_dir = os.path.join(field.exposures_dir, filtname, 'manifests')
     manifest_path = os.path.join(
-        manifest_dir, f'outlier_{visit}_manifest.json',
+        field.filter_dir(filtname), f'outlier_{visit}_manifest.json',
     )
 
     cross_program = step_config.get('cross_program_overlap', False)
@@ -396,7 +393,6 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
         extras_per_visit=saved_extras,
     )
 
-    os.makedirs(manifest_dir, exist_ok=True)
     manifest_data = {
         'visit': visit,
         'field': field.name,

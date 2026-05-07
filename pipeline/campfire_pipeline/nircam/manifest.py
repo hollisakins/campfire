@@ -317,8 +317,9 @@ def get_stale_tiles(field, filtname, stage_config):
         mosaic_name = mosaic_name.replace('[version]', version)
         mosaic_name = mosaic_name.replace('[tile]', tile)
 
-        manifest_dir = os.path.join(field.mosaic_dir, filtname, 'manifests')
-        manifest_path = os.path.join(manifest_dir, f'{mosaic_name}_manifest.json')
+        manifest_path = os.path.join(
+            field.filter_dir(filtname), f'{mosaic_name}_manifest.json',
+        )
 
         # Find which canonical exposures overlap this tile
         tile_polygon = Polygon(field.get_tile_corners(tile))

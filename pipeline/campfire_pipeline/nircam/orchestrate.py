@@ -198,6 +198,12 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
         log(f"bad_pixel: no exposures for {filtname}")
         return
     cfg = get_nircam_step_config('bad_pixel', config, field)
+    # Opt-in step: only useful in the many-exposure regime where the empirical
+    # DO_NOT_USE rate beats the CRDS prior. Disabled by default; enable per
+    # field via [nircam.bad_pixel].enabled = true.
+    if not cfg.get('enabled', False):
+        log(f"bad_pixel: disabled by config; skipping {filtname}")
+        return
     # Ensemble: build per-detector masks once (no CFP key — it's a reference
     # product, not a per-exposure mutation). Cheap to call when up-to-date,
     # but we still skip when --overwrite is off and all reference products
@@ -265,9 +271,8 @@ def _run_outlier_per_visit(field, cfg, filtname, overwrite, status,
     def _visit_up_to_date(visit, visit_files):
         if not all(status.has(f, 'CFP_OUT') for f in visit_files):
             return False
-        manifest_dir = os.path.join(field.exposures_dir, filtname, 'manifests')
         manifest_path = os.path.join(
-            manifest_dir, f'outlier_{visit}_manifest.json',
+            field.filter_dir(filtname), f'outlier_{visit}_manifest.json',
         )
         manifest = load_manifest(manifest_path)
         if manifest is None:
