@@ -188,6 +188,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam striping: removed the unused `find_optimal_threshold` maskparam
+  sweep (an 11-point per-exposure search that was dead code under the default
+  asymmetry-based fallback) and the legacy mask-fraction code path
+  (`CAMPFIRE_STRIPING_METHOD` env var, `maskparam` config key). The
+  asymmetry-based per-row fallback introduced in `bb348f4` is now the only
+  behavior. CFP_1F header is now stamped with the asymmetry/prefilter
+  thresholds instead of the (always-overwritten) maskparam.
 - NIRCam now serializes a CRDS reference-file pre-fetch pass before parallel
   `detector1` / `wisp` / `striping` / `image2` dispatch. Mirrors the existing
   NIRSpec pattern (`nirspec/stage1.py`, `nirspec/stage2.py`): one

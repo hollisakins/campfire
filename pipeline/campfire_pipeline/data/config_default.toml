@@ -151,7 +151,6 @@
     apply_flat = true
     use_custom_flat = false
     mask_sources = true
-    maskparam = "none"
     subtract_background = true
     maxiters = 3
     plot = true

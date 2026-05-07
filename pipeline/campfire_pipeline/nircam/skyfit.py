@@ -10,6 +10,8 @@ photutils calls — no JWST datamodels, no I/O — so they're cheap to test
 and reuse.
 """
 
+import warnings
+
 import numpy as np
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from photutils.background import (
@@ -130,11 +132,28 @@ def collapse_image(im, mask, maxiters, dimension='y', sig=2.0):
         axis = 0
     else:
         raise ValueError(f"dimension must be 'y' or 'x' (got {dimension!r})")
-    res = sigma_clipped_stats(
-        im, mask=mask, sigma=sig,
-        cenfunc=np.nanmedian, stdfunc=np.nanstd,
-        axis=axis, maxiters=maxiters,
-    )
+    # Fully-masked rows/columns produce empty / all-NaN slices inside the
+    # sigma-clipper's nanmean/nanmedian/nanstd; the caller treats these
+    # rows as contaminated and falls back to the full-image profile, so
+    # the inner RuntimeWarnings are noise.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore', category=RuntimeWarning,
+            message='Mean of empty slice',
+        )
+        warnings.filterwarnings(
+            'ignore', category=RuntimeWarning,
+            message='All-NaN slice encountered',
+        )
+        warnings.filterwarnings(
+            'ignore', category=RuntimeWarning,
+            message='Degrees of freedom <= 0',
+        )
+        res = sigma_clipped_stats(
+            im, mask=mask, sigma=sig,
+            cenfunc=np.nanmedian, stdfunc=np.nanstd,
+            axis=axis, maxiters=maxiters,
+        )
     return res[1]
 
 
@@ -149,48 +168,3 @@ def measure_fullimage_striping(fitdata, mask, maxiters):
     temp = temp.T
     vertical = collapse_image(temp, mask, maxiters, dimension='x')
     return horizontal, vertical
-
-
-def find_optimal_threshold(model, mask, full_horizontal, maxiters):
-    """Sweep ``maskparam`` and return the value that minimizes residual variance.
-
-    For each candidate threshold, fits per-amp horizontal striping (using
-    the full-row median for amp-rows where too many pixels are masked),
-    subtracts it, fits vertical striping, subtracts that, and measures
-    the residual sigma-clipped MAD. Returns the threshold with the
-    smallest residual.
-    """
-    maskparams = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6,
-                           0.65, 0.70, 0.75, 0.80])
-    var_mad = np.zeros(len(maskparams))
-
-    for m, maskparam in enumerate(maskparams):
-        log(f'trying maskparam = {maskparam}')
-        hstriping = np.zeros(model.data.shape)
-        for amp in ('A', 'B', 'C', 'D'):
-            _, _, colstart, colstop = NIR_AMPS[amp]['data']
-            ampdata = model.data[:, colstart:colstop]
-            ampmask = mask[:, colstart:colstop]
-            hstriping_amp = collapse_image(
-                ampdata, ampmask, maxiters, dimension='y',
-            )
-            nmask = np.sum(ampmask, axis=1)
-            max_nmask = ampmask.shape[1] * maskparam
-            hstriping[nmask > max_nmask, colstart:colstop] = (
-                full_horizontal[nmask > max_nmask][:, None]
-            )
-            hstriping[nmask <= max_nmask, colstart:colstop] = (
-                hstriping_amp[nmask <= max_nmask][:, None]
-            )
-
-        temp_sub = model.data - hstriping
-        vstriping = collapse_image(temp_sub, mask, maxiters, dimension='x')
-        temp_sci = (model.data - hstriping) - vstriping
-
-        sigma_mad = sigma_clipped_stats(
-            temp_sci[~mask],
-            cenfunc=np.nanmedian, stdfunc=np.nanstd, sigma=5,
-        )[2]
-        var_mad[m] = sigma_mad ** 2
-
-    return maskparams[int(np.argmin(var_mad))]

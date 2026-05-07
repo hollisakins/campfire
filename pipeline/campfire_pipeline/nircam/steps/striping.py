@@ -10,12 +10,11 @@ extension on the canonical file (replacing the legacy
 through a single canonical file.
 
 Imports the numerical helpers (``fit_pedestal``, ``fit_sky``,
-``collapse_image``, ``find_optimal_threshold``,
-``measure_fullimage_striping``) from the legacy ``stage1`` module to avoid
-duplicating ~200 lines of tested code; those helpers are pure functions
-without side effects. The mask-builder is re-implemented locally (the
-legacy ``masksources`` writes a sidecar file as a side effect, which we
-explicitly want to avoid).
+``collapse_image``, ``measure_fullimage_striping``) from the legacy
+``stage1`` module to avoid duplicating ~200 lines of tested code; those
+helpers are pure functions without side effects. The mask-builder is
+re-implemented locally (the legacy ``masksources`` writes a sidecar file
+as a side effect, which we explicitly want to avoid).
 """
 
 import copy
@@ -40,7 +39,6 @@ from campfire_pipeline.common import cfp
 from campfire_pipeline.nircam.constants import NIR_AMPS
 from campfire_pipeline.nircam.skyfit import (
     collapse_image,
-    find_optimal_threshold,
     fit_pedestal,
     fit_sky,
     measure_fullimage_striping,
@@ -171,14 +169,10 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
     apply_flat = step_config.get('apply_flat', True)
     use_custom_flat = step_config.get('use_custom_flat', False)
     mask_sources = step_config.get('mask_sources', True)
-    maskparam = step_config.get('maskparam', 'none')
     subtract_background = step_config.get('subtract_background', True)
     maxiters = step_config.get('maxiters', 3)
     use_bottleneck = step_config.get('use_bottleneck', True)
     do_plot = step_config.get('plot', True)
-
-    if maskparam == 'none':
-        maskparam = None
 
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
@@ -242,16 +236,6 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
     full_horizontal, _ = measure_fullimage_striping(
         fit_model.data, mask, maxiters,
     )
-    if maskparam is None:
-        try:
-            log("Auto-determining optimal maskparam")
-            maskparam = float(find_optimal_threshold(
-                fit_model, mask, full_horizontal, maxiters,
-            ))
-        except Exception:
-            log(f"find_optimal_threshold failed on {rootname}")
-            raise
-        log(f"Optimal maskparam: {maskparam:.2f}")
 
     horizontal = np.zeros(fit_model.data.shape)
     ampcounts = []
@@ -270,18 +254,6 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
     # test to rows the source mask thinks have a meaningful source —
     # there N is smaller and the signal we want to detect is larger.
     NMASK_PREFILTER = 0.20
-    # Runtime switch for A/B testing the new asymmetry-based fallback against
-    # the legacy mask-fraction fallback. Defaults to the new method; set
-    # CAMPFIRE_STRIPING_METHOD=mask to use the legacy decision.
-    striping_method = os.environ.get(
-        'CAMPFIRE_STRIPING_METHOD', 'asymmetry',
-    ).lower()
-    if striping_method not in ('asymmetry', 'mask'):
-        raise ValueError(
-            f"CAMPFIRE_STRIPING_METHOD={striping_method!r}; "
-            f"expected 'asymmetry' or 'mask'"
-        )
-    log(f"Striping fallback decision: {striping_method}")
     for amp in ('A', 'B', 'C', 'D'):
         rowstart, rowstop, colstart, colstop = NIR_AMPS[amp]['data']
         ampdata = fit_model.data[:, colstart:colstop]
@@ -318,36 +290,25 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
         nmask = np.sum(ampmask, axis=1)
         ampcount = 0
         for i in range(ampmask.shape[0]):
-            if striping_method == 'mask':
-                # Legacy: fall back when too many pixels are masked.
-                if nmask[i] > (ampmask.shape[1] * maskparam):
-                    horizontal[i, colstart:colstop] = full_horizontal[i]
-                    ampcount += 1
-                elif nmask[i] > (0.95 * ampmask.shape[1]):
-                    horizontal[i, colstart:colstop] = full_horizontal[i]
-                    ampcount += 1
-                else:
-                    horizontal[i, colstart:colstop] = h_amp[i]
+            # Per-amp median in clean rows (where the source mask says
+            # nothing's there); asymmetry test only in rows where the source
+            # mask is meaningful AND there are still enough unmasked pixels
+            # to estimate from.
+            nmask_frac_i = nmask[i] / ampmask.shape[1]
+            if nmask_frac_i > 0.95:
+                # Too few unmasked pixels for any reliable per-amp estimate —
+                # fall back regardless of asymmetry.
+                horizontal[i, colstart:colstop] = full_horizontal[i]
+                ampcount += 1
+            elif (nmask_frac_i > NMASK_PREFILTER
+                  and asymmetry[i] > ASYMMETRY_THRESHOLD):
+                # Source mask is meaningful here AND the post-clip
+                # distribution is still asymmetric: contamination biased
+                # the per-amp median.
+                horizontal[i, colstart:colstop] = full_horizontal[i]
+                ampcount += 1
             else:
-                # Hybrid: per-amp median in clean rows (where the source
-                # mask says nothing's there); asymmetry test only in rows
-                # where the source mask is meaningful AND there are still
-                # enough unmasked pixels to estimate from.
-                nmask_frac_i = nmask[i] / ampmask.shape[1]
-                if nmask_frac_i > 0.95:
-                    # Too few unmasked pixels for any reliable per-amp
-                    # estimate — fall back regardless of asymmetry.
-                    horizontal[i, colstart:colstop] = full_horizontal[i]
-                    ampcount += 1
-                elif (nmask_frac_i > NMASK_PREFILTER
-                      and asymmetry[i] > ASYMMETRY_THRESHOLD):
-                    # Source mask is meaningful here AND the post-clip
-                    # distribution is still asymmetric: contamination
-                    # biased the per-amp median.
-                    horizontal[i, colstart:colstop] = full_horizontal[i]
-                    ampcount += 1
-                else:
-                    horizontal[i, colstart:colstop] = h_amp[i]
+                horizontal[i, colstart:colstop] = h_amp[i]
         ampcounts.append(f'{amp}-{ampcount}')
 
     log(f"{rootname}: full-row medians used: "
@@ -386,7 +347,10 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
     atomic_save(
         model, exposure_file,
         header_updates=cfp.format(
-            CFP_1F=f'maskparam={maskparam:.2f}, maxiters={maxiters}',
+            CFP_1F=(
+                f'asymmetry={ASYMMETRY_THRESHOLD}, '
+                f'nmask_prefilter={NMASK_PREFILTER}, maxiters={maxiters}'
+            ),
         ),
         extra_hdus=[srcmask_hdu],
     )
