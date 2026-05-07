@@ -24,6 +24,7 @@ from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
 
 _PID_RE = re.compile(r'jw(\d{5})')
 _PIXEL_SCALE_RE = re.compile(r'^(\d+)mas$')
+_BRACE_RE = re.compile(r'\{([^{}]*)\}')
 
 
 def _extract_pid(pattern):
@@ -35,6 +36,28 @@ def _extract_pid(pattern):
     """
     m = _PID_RE.match(pattern)
     return str(int(m.group(1))) if m else None
+
+
+def _expand_braces(pattern):
+    """Expand bash-style brace lists in a glob pattern.
+
+    ``'jw01234{001,002,003}*'`` → ``['jw01234001*', 'jw01234002*', 'jw01234003*']``.
+    Multiple/nested braces produce the cartesian product:
+    ``'a{1,2}{x,y}'`` → ``['a1x', 'a1y', 'a2x', 'a2y']``. Patterns without
+    braces pass through unchanged (as a single-element list). Python's stdlib
+    ``glob`` doesn't understand braces, so we expand them up-front into the
+    list of patterns the rest of the pipeline already handles.
+    """
+    m = _BRACE_RE.search(pattern)
+    if m is None:
+        return [pattern]
+    prefix = pattern[:m.start()]
+    suffix = pattern[m.end():]
+    options = m.group(1).split(',')
+    result = []
+    for opt in options:
+        result.extend(_expand_braces(prefix + opt + suffix))
+    return result
 
 
 def _is_pixel_scale_section(value):
@@ -60,6 +83,7 @@ class Field:
     tangent_point: tuple       # (RA, Dec)
     tiles: dict                # tile WCS definitions
     step_overrides: dict = field(default_factory=dict)
+    skip: List[str] = field(default_factory=list)  # field-wide exclude globs
 
     # Populated by setup_workspace()
     campfire_root: Optional[str] = None
@@ -112,6 +136,8 @@ class Field:
         file_patterns = fc['files']
         if isinstance(file_patterns, str):
             file_patterns = [file_patterns]
+        # Expand bash-style brace lists, e.g. 'jw01234{001,002}*' → two patterns.
+        file_patterns = [p for raw in file_patterns for p in _expand_braces(raw)]
         file_patterns = list(np.unique(file_patterns))
 
         # Validate: every pattern must start with jwNNNNN so we can locate
@@ -121,6 +147,20 @@ class Field:
             raise ValueError(
                 f"Field '{name}': every entry in `files` must start with "
                 f"'jwNNNNN' (5-digit PID). Offending patterns: {bad}"
+            )
+
+        # Field-level skip list: applied to every step that resolves files via
+        # get_uncal_files / get_exposure_files. Stacks with caller-passed skip.
+        skip_patterns = fc.get('skip', [])
+        if isinstance(skip_patterns, str):
+            skip_patterns = [skip_patterns]
+        skip_patterns = [p for raw in skip_patterns for p in _expand_braces(raw)]
+        skip_patterns = list(np.unique(skip_patterns))
+        bad_skip = [p for p in skip_patterns if _extract_pid(p) is None]
+        if bad_skip:
+            raise ValueError(
+                f"Field '{name}': every entry in `skip` must start with "
+                f"'jwNNNNN' (5-digit PID). Offending patterns: {bad_skip}"
             )
 
         tangent_point = tuple(fc['tangent_point'])
@@ -139,7 +179,7 @@ class Field:
         # provides at least one `<scale>mas` subsection with `crpix`+`naxis`
         # — in the latter case corners are derived on demand from the WCS.
         tiles = {}
-        reserved_keys = ({'filters', 'files', 'tangent_point'} | known_steps)
+        reserved_keys = ({'filters', 'files', 'skip', 'tangent_point'} | known_steps)
         for key, value in fc.items():
             if key in reserved_keys:
                 continue
@@ -161,6 +201,7 @@ class Field:
             tangent_point=tangent_point,
             tiles=tiles,
             step_overrides=step_overrides,
+            skip=skip_patterns,
         )
 
     @property
@@ -218,7 +259,9 @@ class Field:
         """Get uncal files from PID-organized raw directories.
 
         Globs across ``$CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/`` for every PID
-        derived from this field's ``files`` patterns.
+        derived from this field's ``files`` patterns. The field-wide ``skip``
+        list (from fields.toml) is always applied; caller-passed ``skip`` adds
+        to it.
         """
         if self.raw_root is None:
             raise RuntimeError("setup_workspace() must be called first")
@@ -229,9 +272,13 @@ class Field:
             full_pattern = os.path.join(stage_dir, filter_name, pattern + '*_uncal.fits')
             result.extend(glob(full_pattern))
 
-        if skip:
+        effective_skip = list(self.skip) + list(skip or [])
+        # Brace-expand any caller-passed skip patterns (field-level skip is
+        # already expanded at load time).
+        effective_skip = [p for raw in effective_skip for p in _expand_braces(raw)]
+        if effective_skip:
             excluded = set()
-            for exc_pattern in skip:
+            for exc_pattern in effective_skip:
                 pid = _extract_pid(exc_pattern)
                 if pid is None:
                     continue
@@ -259,7 +306,8 @@ class Field:
             Filter (e.g. ``'f444w'``).
         skip : list of str, optional
             Glob patterns to exclude (matched against the same naming root
-            used by the field's ``files`` patterns).
+            used by the field's ``files`` patterns). Stacks on top of the
+            field-wide ``skip`` list from fields.toml.
         with_step : str, optional
             If given, restrict the results to exposures whose primary header
             already records this CFP step keyword (e.g. ``'CFP_OUT'`` to
@@ -291,9 +339,11 @@ class Field:
                     continue
                 result.append(path)
 
-        if skip:
+        effective_skip = list(self.skip) + list(skip or [])
+        effective_skip = [p for raw in effective_skip for p in _expand_braces(raw)]
+        if effective_skip:
             excluded = set()
-            for exc_pattern in skip:
+            for exc_pattern in effective_skip:
                 full_exc = os.path.join(filter_dir, exc_pattern + '*.fits')
                 excluded.update(glob(full_exc))
             result = [f for f in result if f not in excluded]

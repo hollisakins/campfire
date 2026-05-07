@@ -188,6 +188,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam `fields.toml` now supports bash-style brace expansion in `files`
+  patterns (e.g. `'jw01727{001,002,003}*'` → three patterns), and a
+  field-wide top-level `skip = [...]` exclude list that applies to every step
+  resolving exposures via `Field.get_uncal_files` / `get_exposure_files`.
+  Both lists go through the same `_expand_braces` pre-filter; per-step
+  `files_to_skip` (e.g. under `[field.resample]`) stacks on top of the
+  field-wide list. Skip patterns must start with `jwNNNNN` like `files`.
 - `cfpipe download` now writes raw uncal files to a PID directory named with
   the unpadded integer program ID (e.g. `raw/1727/...` and
   `raw/nircam/1727/{filter}/...`), instead of the 5-digit zero-padded form

@@ -15,7 +15,16 @@
 # Each section defines a field with:
 #   filters       = list of NIRCam filters to reduce
 #   files         = glob pattern(s) matching JWST fileset prefixes
-#                   (e.g. 'jw01727*' = whole program, 'jw01727001*' = obs 1)
+#                   (e.g. 'jw01727*' = whole program, 'jw01727001*' = obs 1).
+#                   Patterns support standard Python glob (`*`, `?`, `[abc]`)
+#                   plus bash-style brace lists, expanded up-front into the
+#                   underlying pattern list:
+#                       'jw01727{001,002,003}*'   →   obs 001/002/003
+#                       'jw01727{001,003}*_nrca?' →   cartesian product
+#   skip          = optional glob pattern(s) to exclude from every step
+#                   (uncal selection, per-exposure stages, mosaic resample).
+#                   Same brace syntax as `files`. Per-step `files_to_skip`
+#                   (e.g. under `[field.resample]`) stacks on top of this.
 #   tangent_point = [RA, Dec] for mosaic WCS reference
 #
 # Tile WCS definitions nest under the field:
@@ -44,6 +53,7 @@
 [example_cosmos]
     filters = ['f115w', 'f150w', 'f200w', 'f277w', 'f356w', 'f410m', 'f444w']
     files = ['jw01727*', 'jw05893*']
+    # skip = ['jw01727099*']   # exclude a known-bad visit from every step
     tangent_point = [150.1163213, 2.200973097]
 
     [example_cosmos.A1]
