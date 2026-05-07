@@ -27,9 +27,14 @@ _PIXEL_SCALE_RE = re.compile(r'^(\d+)mas$')
 
 
 def _extract_pid(pattern):
-    """Pull the 5-digit PID out of a JWST file glob (e.g. 'jw01727*' → '01727')."""
+    """Pull the PID out of a JWST file glob (e.g. 'jw01727*' → '1727').
+
+    JWST filenames carry the PID zero-padded to 5 digits, but the on-disk raw
+    layout under ``$CAMPFIRE_ROOT/raw/nircam/`` uses the unpadded integer form,
+    so leading zeros are stripped.
+    """
     m = _PID_RE.match(pattern)
-    return m.group(1) if m else None
+    return str(int(m.group(1))) if m else None
 
 
 def _is_pixel_scale_section(value):

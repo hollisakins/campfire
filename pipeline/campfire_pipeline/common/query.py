@@ -448,7 +448,7 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
 
     # Annotate every file with the program_id and (NIRCam) the parent fileset's
     # filter, so the path computation has what it needs.
-    pid_str = str(program_id).zfill(5)
+    pid_str = str(int(program_id))
     fileset_index = _build_fileset_index(filesets)
     for f in uncal_files + aux_files:
         f["program_id"] = pid_str

@@ -188,6 +188,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- `cfpipe download` now writes raw uncal files to a PID directory named with
+  the unpadded integer program ID (e.g. `raw/1727/...` and
+  `raw/nircam/1727/{filter}/...`), instead of the 5-digit zero-padded form
+  (`raw/01727/...`). The NIRCam field-config PID extractor strips leading
+  zeros from `jwNNNNN*` patterns to match. Existing downloads under
+  `raw/0NNNN/` need to be renamed (or re-downloaded) to the unpadded form.
 - NIRCam diagnostic plots extended across the per-exposure and mosaic
   steps. Previously only `striping` and `wisp` produced diagnostic PDFs.
   Adds: `<rootname>_sky.pdf` (histogram of the masked sky-pixel
