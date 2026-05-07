@@ -163,7 +163,7 @@
     # No tunable parameters.
 
 [nircam.sky]
-    # No tunable parameters.
+    plot = true
 
 [nircam.variance]
     plot = true
@@ -245,6 +245,7 @@
     # dominant cost driver in heavily-observed footprints (COSMOS center).
     # CR statistics within the program are unchanged.
     cross_program_overlap = false
+    plot = true
 
 [nircam.resample]
     mode = "tile"
@@ -278,3 +279,5 @@
     bg_sigma = 3
     bg_interpolator = "zoom"
     split_extensions = true
+    plot = true
+    plot_downsample = 4

@@ -188,6 +188,26 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam diagnostic plots extended across the per-exposure and mosaic
+  steps. Previously only `striping` and `wisp` produced diagnostic PDFs.
+  Adds: `<rootname>_sky.pdf` (histogram of the masked sky-pixel
+  distribution with the fitted Gaussian and pedestal overlaid, plus
+  before/after SCI stamps); `<rootname>_outlier.pdf` (SCI snapshot plus
+  newly flagged OUTLIER pixels — works for both
+  `[nircam.outlier].implementation = "jwst"` and `"campfire"` paths);
+  `<mosaic>_thumb.png` (block-mean-downsampled ZScale render of the
+  final i2d, default 4× downsample, axis-free PNG); and
+  `<mosaic>_bkgsub.png` (three-panel PNG: pre-bkgsub, post-bkgsub,
+  background model, with shared SCI ZScale on the first two and a
+  symmetric diverging colormap on the model panel — diagnostic for
+  over-subtraction of extended sources). Each is gated behind a
+  `plot = true` flag in the corresponding config block
+  (`[nircam.sky]`, `[nircam.outlier]`, `[nircam.resample]`); mosaic
+  downsample factor is configurable via
+  `[nircam.resample].plot_downsample`. `fit_sky_tot` gains a
+  `return_diagnostics=True` mode that returns the full Gaussian
+  `popt` alongside the fitted mean so the histogram overlay aligns
+  without re-fitting.
 - NIRCam products directory is now flat per (field, filter). The previous
   layout nested outputs under `products/nircam/<field>/exposures/<filter>/`
   (canonical FITS, plus `diagnostics/` and `manifests/` subdirs) and

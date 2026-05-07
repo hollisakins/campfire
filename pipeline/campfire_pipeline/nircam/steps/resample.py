@@ -389,6 +389,33 @@ def resample_step(filtname, exposure_files, field, step_config,
             except KeyError:
                 log(f"  {mosaic_name} has no SRCMASK extension")
 
+        if needs_rebuild and step_config.get('plot', True):
+            from campfire_pipeline.nircam.steps._plots import (
+                plot_mosaic_bkgsub, plot_mosaic_thumbnail,
+            )
+            downsample = int(step_config.get('plot_downsample', 4))
+
+            sci_after_arr = fits.getdata(mosaic_file, extname='SCI')
+            thumb_png = mosaic_file.replace('_i2d.fits', '_thumb.png')
+            plot_mosaic_thumbnail(sci_after_arr, thumb_png,
+                                  downsample=downsample)
+            log(f"  saved {os.path.basename(thumb_png)}")
+
+            if step_config.get('background_subtract', True):
+                pre_bkg_path = mosaic_file.replace(
+                    '_i2d.fits', '_i2d_before_bkgsub.fits',
+                )
+                if os.path.exists(pre_bkg_path):
+                    sci_before_arr = fits.getdata(pre_bkg_path, extname='SCI')
+                    bg_model = sci_before_arr - sci_after_arr
+                    bkg_png = mosaic_file.replace('_i2d.fits', '_bkgsub.png')
+                    plot_mosaic_bkgsub(
+                        sci_before_arr, sci_after_arr, bg_model,
+                        save_file=bkg_png, downsample=downsample,
+                        title=mosaic_name,
+                    )
+                    log(f"  saved {os.path.basename(bkg_png)}")
+
         latest_name = mosaic_name.replace(f'_{version}_', '_latest_')
         latest_link = os.path.join(mosaic_outdir, f'{latest_name}_i2d.fits')
         if os.path.islink(latest_link) or os.path.exists(latest_link):

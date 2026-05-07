@@ -22,6 +22,7 @@ from campfire_pipeline.nircam.skyfit import fit_sky_tot
 
 def sky_step(exposure_file, field, step_config, overwrite=False, status=None):
     """Subtract a fitted sky pedestal from a single canonical exposure."""
+    do_plot = step_config.get('plot', True)
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
     if not overwrite:
@@ -58,10 +59,17 @@ def sky_step(exposure_file, field, step_config, overwrite=False, status=None):
         data = data[~np.isinf(data) & ~np.isnan(data)]
 
         try:
-            sky = float(fit_sky_tot(data))
+            if do_plot:
+                sky_val, popt = fit_sky_tot(data, return_diagnostics=True)
+                sky = float(sky_val)
+            else:
+                sky = float(fit_sky_tot(data))
+                popt = None
         except Exception:
             log(f"Sky fit failed on {rootname}")
             raise
+
+        sci_before = sci.copy() if do_plot else None
 
         model.data = sci - sky
         model.meta.background.level = sky
@@ -73,8 +81,22 @@ def sky_step(exposure_file, field, step_config, overwrite=False, status=None):
             f'Removed sky {now}'
         ))
 
+        sci_after = model.data.copy() if do_plot else None
+
         atomic_save(
             model, exposure_file,
             header_updates=cfp.format(CFP_SKY=f'{sky:.5e}'),
         )
         log(f"Sky removed (pedestal = {sky:.5e}): {rootname}")
+
+    if do_plot:
+        from campfire_pipeline.nircam.steps._plots import plot_sky
+        sky_pdf = os.path.join(
+            os.path.dirname(exposure_file), f'{rootname}_sky.pdf',
+        )
+        plot_sky(
+            sci_before, sci_after, data, popt, sky,
+            save_file=sky_pdf,
+            title=f'{rootname}: sky pedestal',
+        )
+        log(f"Saved {os.path.basename(sky_pdf)}")

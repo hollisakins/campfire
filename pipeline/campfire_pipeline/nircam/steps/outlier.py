@@ -123,6 +123,7 @@ def outlier_step(visit, visit_files, filter_files, sregions,
     if not visit_files:
         return
 
+    do_plot = step_config.get('plot', True)
     filtname = visit_files[0].split('/')[-2]
     log(f"Outlier detection on visit {visit} ({len(visit_files)} exposures)")
 
@@ -253,6 +254,10 @@ def outlier_step(visit, visit_files, filter_files, sregions,
             if f.endswith('.fits') and not f.endswith('_asn.json')
         )
 
+        if do_plot:
+            from jwst.datamodels.dqflags import pixel as pixel_flags
+            OUTLIER_BIT = pixel_flags['OUTLIER']
+
         for canonical in visit_files:
             rootname = os.path.basename(canonical).removesuffix('.fits')
             matches = [f for f in scratch_files if f.startswith(rootname)]
@@ -263,6 +268,11 @@ def outlier_step(visit, visit_files, filter_files, sregions,
                 matches.sort(key=len)  # shortest = closest to canonical
             scratch_out = os.path.join(scratch, matches[0])
 
+            if do_plot:
+                with fits.open(canonical) as hdul:
+                    sci_before = hdul['SCI'].data.copy()
+                    dq_before = hdul['DQ'].data.copy()
+
             with ImageModel(scratch_out) as model:
                 atomic_save(
                     model, canonical,
@@ -270,6 +280,24 @@ def outlier_step(visit, visit_files, filter_files, sregions,
                     extra_hdus=saved_extras.get(rootname),
                 )
             log(f"  outlier promoted: {rootname}")
+
+            if do_plot:
+                from campfire_pipeline.nircam.steps._plots import plot_outlier
+                with fits.open(canonical) as hdul:
+                    dq_after = hdul['DQ'].data.copy()
+                new_outlier = (
+                    ((dq_after & OUTLIER_BIT) != 0)
+                    & ~((dq_before & OUTLIER_BIT) != 0)
+                )
+                out_pdf = os.path.join(
+                    os.path.dirname(canonical), f'{rootname}_outlier.pdf',
+                )
+                plot_outlier(
+                    sci_before, new_outlier,
+                    save_file=out_pdf,
+                    title=f'{rootname}: outlier (jwst)',
+                )
+                log(f"  saved {os.path.basename(out_pdf)}")
 
     # Manifest records ALL inputs (visit + overlap) so we can detect changes
     # in either next time
@@ -304,6 +332,7 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
     if not visit_files:
         return
 
+    do_plot = step_config.get('plot', True)
     filtname = visit_files[0].split('/')[-2]
     log(f"Outlier (campfire) on visit {visit} ({len(visit_files)} exposures)")
 
@@ -391,6 +420,7 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
         good_bits=step_config.get('good_bits', '~DO_NOT_USE'),
         in_memory=bool(step_config.get('in_memory', False)),
         extras_per_visit=saved_extras,
+        plot=do_plot,
     )
 
     manifest_data = {

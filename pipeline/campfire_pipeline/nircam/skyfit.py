@@ -42,13 +42,21 @@ def fit_pedestal(data):
     return popt[1]
 
 
-def fit_sky_tot(data):
+def fit_sky_tot(data, return_diagnostics=False):
     """Fit the sky-flux distribution with a Gaussian; return its mean.
 
     Used by the sky-subtraction step (cal-stage data, where the flux
     scale is set by the photom step rather than rate-stage units, so the
     histogram range is scaled from sigma_clipped_stats rather than
     hard-coded).
+
+    Parameters
+    ----------
+    data : 1D array
+    return_diagnostics : bool
+        If True, return ``(mean, popt)`` instead of just ``mean``.
+        ``popt`` is the full ``(a, mu, sigma)`` Gaussian fit, suitable
+        for overlaying on a histogram in a diagnostic plot.
     """
     _, median, std = sigma_clipped_stats(data)
     bins = np.linspace(median - 10 * std, median + 10 * std, 1000)
@@ -57,6 +65,8 @@ def fit_sky_tot(data):
     bc = 0.5 * (b[1:] + b[:-1])
     p0 = [1, bc[np.argmax(h)], std]
     popt, _ = curve_fit(_gaussian, bc, h, p0=p0)
+    if return_diagnostics:
+        return popt[1], popt
     return popt[1]
 
 

@@ -83,6 +83,7 @@ def outlier_detect_for_visit(
     in_memory=False,
     tempdir=None,
     extras_per_visit=None,
+    plot=False,
 ):
     """Per-visit campfire-native outlier across ``all_inputs``, flag ``visit_files``.
 
@@ -113,6 +114,9 @@ def outlier_detect_for_visit(
     extras_per_visit : dict, optional
         Map ``{rootname: [HDU, ...]}`` of extras (SRCMASK/CFMASK)
         captured before the run, preserved through ``atomic_save``.
+    plot : bool
+        If True, write ``<rootname>_outlier.pdf`` next to each visit
+        exposure showing SCI plus the newly flagged OUTLIER pixels.
 
     Notes
     -----
@@ -183,6 +187,7 @@ def outlier_detect_for_visit(
             continue  # only flag and save the visit's own files
         with ImageModel(crf) as model:
             dq_before = (model.dq & OUTLIER_BIT) != 0
+            sci_for_plot = model.data.copy() if plot else None
             # Match jwst.outlier_detection.imaging.detect_outliers: pass
             # only median_sci. flag_resampled_model_crs falls back to the
             # input model's own ERR for the SNR comparison when median_err
@@ -205,6 +210,19 @@ def outlier_detect_for_visit(
                 header_updates=cfp.format(CFP_OUT=None),
                 extra_hdus=extras_per_visit.get(rootname),
             )
+
+            if plot:
+                from campfire_pipeline.nircam.steps._plots import plot_outlier
+                new_outlier = dq_after & ~dq_before
+                out_pdf = os.path.join(
+                    os.path.dirname(crf), f'{rootname}_outlier.pdf',
+                )
+                plot_outlier(
+                    sci_for_plot, new_outlier,
+                    save_file=out_pdf,
+                    title=f'{rootname}: outlier (campfire)',
+                )
+                log(f"  saved {os.path.basename(out_pdf)}")
 
     log(f"  outlier: flagged {n_flagged_total} new pixels across "
         f"{n_visit_flagged} visit exposures")
