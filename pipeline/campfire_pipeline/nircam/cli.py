@@ -31,6 +31,7 @@ from campfire_pipeline.nircam.orchestrate import (
     STEP_NAMES, ALL_STEPS, PROCESS_STEPS, COMBINE_STEPS,
     run_process, run_combine, run_step,
 )
+from campfire_pipeline.nircam.refcat.cli import refcat as refcat_group
 
 
 # Steps whose mutation is not reversible by re-running on the already-mutated
@@ -194,6 +195,10 @@ def _make_step_command(step_name):
 
 for _step_name in STEP_NAMES:
     main.add_command(_make_step_command(_step_name))
+
+
+# Refcat utilities: `cfpipe nircam refcat {query,extract,merge,compare}`
+main.add_command(refcat_group)
 
 
 # ---------------------------------------------------------------------------

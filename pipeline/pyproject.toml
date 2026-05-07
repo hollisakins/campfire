@@ -23,6 +23,9 @@ dependencies = [
     "regions>=0.6",
     "tomlkit>=0.13",
     "JWST_FOV_plotter>=0.4",
+    "sep>=1.4.1",
+    "astroquery>=0.4.7",
+    "pyvo>=1.5",
 ]
 
 [project.scripts]

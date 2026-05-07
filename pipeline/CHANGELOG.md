@@ -38,6 +38,24 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Algorithm
+- NIRCam ``bad_pixel`` step: now disabled by default, only stacks the
+  DO_NOT_USE bit (not all DQ bits), and defaults to a stricter
+  ``threshold = 0.8``. The previous behaviour — flagging any pixel
+  with *any* nonzero DQ bit in ≥20% of exposures as permanently bad
+  — was adapted from a many-exposure COSMOS-Web reduction and
+  over-rejected in the small-N regime: transient flags like JUMP_DET
+  (cosmic rays, ~4–5%/exposure), SATURATED, and PERSISTENCE were
+  promoted to permanent DO_NOT_USE, producing per-cal NaN fractions
+  of ~20% in fields with only a handful of exposures per filter.
+  Behaviour now: (1) the orchestrator skips the step unless
+  ``[nircam.bad_pixel].enabled = true`` (intended to be opted in
+  for COSMOS-style fields); (2) only the DO_NOT_USE bit (bit 0) is
+  considered when stacking, so transients can no longer accumulate;
+  (3) the threshold is normalised by the count of contributing
+  exposures (was ``np.max(arr)``), making the threshold a true
+  exposure fraction. Existing static defects are already covered by
+  CRDS DQ in cal files, so disabling this step does not regress
+  bad-pixel rejection — it only removes the over-counting.
 - NIRCam tile WCS: ``Field.get_tile_wcs`` now converts the ``crpix``
   declared in ``fields.toml`` (FITS 1-indexed, the natural convention —
   ``(NAXIS+1)/2`` lands at array centre) to 0-indexed before returning.
@@ -170,6 +188,29 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam products directory is now flat per (field, filter). The previous
+  layout nested outputs under `products/nircam/<field>/exposures/<filter>/`
+  (canonical FITS, plus `diagnostics/` and `manifests/` subdirs) and
+  `products/nircam/<field>/mosaics/<filter>/` (i2d files, plus
+  `extensions/` and `manifests/` subdirs); everything now lives directly
+  in `products/nircam/<field>/<filter>/`. `Field.exposures_dir` and
+  `Field.mosaic_dir` are removed; the new `Field.filter_dir(filter_name)`
+  returns the single per-filter directory used by every step (detector1,
+  wisp/striping/jhat diagnostics, outlier and mosaic manifests, mosaic
+  i2d + split extensions). The `jw*` field globs naturally exclude
+  `mosaic_*` outputs from `get_exposure_files`. No change to filenames
+  or FITS contents; existing reductions need to be re-run (or relocated)
+  to populate the new layout.
+- NIRCam: new `cfpipe nircam refcat {query,extract,merge,compare}` utility
+  for building and managing astrometric reference catalogs. ``query``
+  pulls from Gaia DR3 (astroquery) or Legacy Surveys DR10 (NOIRLab TAP);
+  ``extract`` runs SEP-on-SNR detection + Kron/circle photometry on a
+  mosaic to bootstrap relative-alignment refcats from an absolutely-aligned
+  filter; ``merge`` stacks catalogs with positional dedup (first wins);
+  ``compare`` reports ΔRA/ΔDec residuals between two catalogs with a 2D
+  histogram diagnostic. Output schema (`RA`, `DEC`, `mag`, `mag_err` ECSV)
+  matches what `[<field>.jhat.refcat_dict]` already consumes. Adds `sep`,
+  `astroquery`, and `pyvo` to the pipeline dependencies. (`nircam/refcat/`)
 - NIRCam mosaic-level background subtraction (`nircam/bkgsub.py`) is now
   ~10–50× faster on COSMOS-Web-scale tiles. The dominant cost — the
   ring-median filter at `radius=80, width=4` — now runs on a block-reduced
