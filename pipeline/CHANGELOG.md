@@ -38,6 +38,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Algorithm
+- NIRCam tile WCS: ``Field.get_tile_wcs`` now converts the ``crpix``
+  declared in ``fields.toml`` (FITS 1-indexed, the natural convention —
+  ``(NAXIS+1)/2`` lands at array centre) to 0-indexed before returning.
+  Both ``stcal.alignment.util.wcs_from_sregions`` (campfire-native
+  drizzle) and ``jwst.resample.resample_step`` (jwst-path drizzle)
+  document their ``crpix`` argument as 0-indexed; the previous
+  pass-through introduced a constant +1-pixel astrometric offset on
+  every mosaic. ``ResampleImage.update_fits_wcsinfo`` adds the +1 back
+  when serialising to FITS-WCS, so the published ``CRPIX`` matches the
+  user's intent and existing reference mosaics for the same tile. All
+  mosaics produced before this fix carry a one-pixel sky offset
+  relative to their declared ``crval`` and need to be re-drizzled.
 - NIRCam mosaic resample now sets SCI=NaN at WHT=0 pixels in the final i2d
   before extension splitting (`steps/resample.py`), matching the ERR
   convention. The drizzle output already initialises SCI=0 at uncovered
@@ -46,17 +58,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   "no coverage ⇒ no signal" state unambiguous in the published
   `_sci.fits` and `_i2d.fits`, and matches ERR=NaN at the same pixels.
 - NIRCam campfire-native drizzle (`drizzle.drizzle_tile` →
-  `_write_i2d_fits`) now stamps a legacy FITS-WCS (CD-matrix tangent
-  projection) onto the SCI/ERR/WHT/CON image headers in addition to the
-  gwcs that `ImageModel.save` writes into asdf-in-fits. The CD elements
-  are computed numerically from the gwcs by sampling at and around CRPIX,
-  so the stamped WCS is exact regardless of any rotation-sign convention.
-  Without this, DS9 (and any astropy.wcs consumer that doesn't know about
-  asdf-in-fits) saw no celestial WCS at all on campfire-path mosaics.
-  The post-drizzle update pass in `steps/resample.py` additionally
-  converts any `PC + non-unit CDELT` encoding (emitted by the jwst path
-  via stcal) to the same `CD + CDELT=1.0` form so both implementations
-  produce identically-encoded headers. Sky coordinates are unchanged.
+  `_write_i2d_fits`) now calls
+  `jwst.resample.resample.ResampleImage.update_fits_wcsinfo(model)`
+  before `model.save()`, populating `model.meta.wcsinfo` (CRPIX/CRVAL/
+  CDELT/PC/CTYPE) directly from the gwcs's forward-transform parameters.
+  `model.save` then serialises those into the SCI extension header in
+  the standard PC+CDELT form a jwst i2d carries. Previously the campfire
+  path wrote the gwcs only into the asdf-in-fits extension and left the
+  SCI header without any legacy FITS-WCS keys, so DS9 (and astropy.wcs)
+  saw no celestial WCS at all on campfire-path mosaics. Using the
+  canonical jwst helper (rather than re-deriving keys ourselves)
+  guarantees byte-equivalent encoding to a reference jwst pipeline
+  i2d for the same geometry.
 - NIRCam outlier detection's cross-visit overlap padding is now
   scoped to the same JWST program by default. The previous behavior
   (any spatially-overlapping exposure regardless of program) is

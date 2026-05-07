@@ -312,6 +312,16 @@ class Field:
         the tile covers the same sky region. Explicit ``[<scale>mas]``
         subsections always override the derived values.
 
+        ``fields.toml`` declares ``crpix`` in the natural FITS 1-indexed
+        convention (where ``CRPIX = (NAXIS+1)/2`` lands at the array
+        centre). The returned ``crpix`` is converted to **0-indexed**
+        pixel coordinates so it can be passed straight to
+        ``stcal.alignment.util.wcs_from_sregions`` /
+        ``jwst.resample.resample_step`` (both document 0-based crpix).
+        ``ResampleImage.update_fits_wcsinfo`` then adds 1 back when it
+        writes the FITS-WCS keywords, restoring the user's intended
+        1-indexed value in the output header.
+
         Parameters
         ----------
         tile_name : str
@@ -322,8 +332,8 @@ class Field:
         Returns
         -------
         tuple
-            (crpix, crval, shape, rotation) where crval uses tile-specific
-            tangent point if available, otherwise the field tangent point.
+            (crpix, crval, shape, rotation). ``crpix`` is 0-indexed; all
+            other values match the tile config directly.
         """
         if tile_name not in self.tiles:
             raise ValueError(
@@ -349,6 +359,11 @@ class Field:
             ref_naxis = ref_section['naxis']
             crpix = [(c - 0.5) * ratio + 0.5 for c in ref_crpix]
             shape = [int(round(n * ratio)) for n in ref_naxis]
+
+        # Convert FITS 1-indexed crpix (as written in fields.toml and used
+        # by _compute_corners_from_wcs / astropy.wcs) to 0-indexed crpix
+        # (as expected by stcal.wcs_from_sregions and jwst.resample).
+        crpix = [c - 1.0 for c in crpix]
 
         rotation = tile.get('rotation', 0)
         crval = list(tile.get('tangent_point', list(self.tangent_point)))
