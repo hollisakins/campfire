@@ -248,6 +248,26 @@ Release procedure: edit the `## Unreleased` section below, then run
   `common.spectral` LSF resampling) are unaffected — they use
   `numba.set_num_threads(ncores)` against `NUMBA_NUM_THREADS`, which we
   do not pin.
+- Switch `common.parallel.dispatch` from the platform-default multiprocessing
+  start method (`fork` on Linux, `spawn` on macOS) to an explicit `forkserver`
+  context. Forking 32 workers from a multi-GB parent — the state after
+  `persistence` even with batch-by-detector cleanup, since glibc malloc
+  doesn't return arena memory to the OS — was failing on candide with
+  `OSError: [Errno 12] Cannot allocate memory` at `os.fork()` because Linux
+  commit accounting requires `parent_RSS × n_workers` of committable memory
+  upfront, regardless of copy-on-write. Forkserver launches a small helper
+  early in the run; subsequent worker forks come from that ~tens-of-MB helper
+  rather than the bloated main process. Heavy scientific imports (`numpy`,
+  `scipy`, `astropy.io.fits/wcs/table`, `jwst`, `jwst.datamodels`,
+  `stdatamodels`, `stcal`, `crds`, `snowblind`, plus campfire common
+  modules) are listed in `set_forkserver_preload` so workers inherit them
+  COW from the helper instead of re-importing per pool. `jhat` and
+  `tweakreg` are intentionally not preloaded (they touch the CRDS singleton
+  in a way that locks the context — see `feedback_lazy_jwst_imports`); they
+  remain lazy imports inside the worker functions that need them. Behaviour
+  is unchanged on macOS (already used `spawn`-equivalent semantics by
+  default); the change is the cross-platform consistency and the Linux
+  ENOMEM fix.
 - NIRCam `persistence` step: hand snowblind one detector at a time instead of
   the whole filter. Snowblind's `process()` does `results = images.copy()`,
   deep-copying every model's SCI/ERR/DQ; with a full SW filter that doubled

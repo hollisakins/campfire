@@ -1,12 +1,47 @@
 """
 Parallel dispatch helper: replaces repeated Pool/serial patterns across stages.
+
+Workers are launched via the ``forkserver`` start method rather than the Linux
+default ``fork``. Forking from a multi-GB parent (e.g. after the persistence
+step's snowblind deep-copies fragment the heap) blows past Linux's per-process
+commit accounting — the kernel must reserve ``parent_RSS × n_workers`` bytes at
+fork time even though copy-on-write means actual usage will be far smaller, and
+``os.fork()`` returns ``ENOMEM`` before any real allocation happens. The
+forkserver helper is launched once early, stays small (~tens of MB plus the
+preloaded modules below), and is what does the per-task forks.
+
+Preloading the heavy scientific imports into the forkserver lets workers
+inherit them via copy-on-write rather than re-importing per pool. ``jhat`` and
+``tweakreg`` are intentionally absent — importing them touches CRDS singleton
+state in a way that locks the context (see feedback_lazy_jwst_imports), so
+those stay as lazy imports inside the worker functions that need them.
 """
 
 from time import sleep
 from functools import partial
-from multiprocessing import Pool
+from multiprocessing import get_context
 
 from campfire_pipeline.common.io import log
+
+
+_MP_CTX = get_context('forkserver')
+_MP_CTX.set_forkserver_preload([
+    'numpy',
+    'scipy',
+    'astropy.io.fits',
+    'astropy.wcs',
+    'astropy.table',
+    'jwst',
+    'jwst.datamodels',
+    'stdatamodels',
+    'stdatamodels.jwst',
+    'stcal',
+    'crds',
+    'snowblind',
+    'campfire_pipeline.common.io',
+    'campfire_pipeline.common.cfp',
+    'campfire_pipeline.common.parallel',
+])
 
 
 class _RetryOnIOError:
@@ -82,7 +117,7 @@ def dispatch(func, tasks, n_processes=1, use_starmap=False, retry=False,
     if n_processes > 1:
         log(f"Dispatching {len(tasks)} tasks across {n_processes} workers")
         sleep(1)  # brief pause for log readability before pool forks
-        with Pool(processes=n_processes) as pool:
+        with _MP_CTX.Pool(processes=n_processes) as pool:
             if use_starmap:
                 return pool.starmap(worker, tasks)
             else:
