@@ -124,11 +124,11 @@ def wcs_shift_step(exposure_file, field, step_config, overwrite=False,
         # the rule list against the current rootname without a fits.open.
         return
 
-    already_applied = (status.has(exposure_file, 'CFP_SHIFT')
+    already_applied = (status.has(exposure_file, 'CFP_SHFT')
                        if status is not None
-                       else cfp.has_step(exposure_file, 'CFP_SHIFT'))
+                       else cfp.has_step(exposure_file, 'CFP_SHFT'))
     if already_applied and not overwrite:
-        log(f"Skipping wcs_shift on {rootname}: CFP_SHIFT already set")
+        log(f"Skipping wcs_shift on {rootname}: CFP_SHFT already set")
         return
 
     log(f"Running wcs_shift on {rootname}: {_format_cfp_value(rule)}")
@@ -162,7 +162,7 @@ def wcs_shift_step(exposure_file, field, step_config, overwrite=False,
     if already_applied:
         if existing_wcs_bak is None:
             raise RuntimeError(
-                f"wcs_shift overwrite on {rootname}: CFP_SHIFT is set but "
+                f"wcs_shift overwrite on {rootname}: CFP_SHFT is set but "
                 f"WCS_BAK extension is missing. Cannot safely re-apply. "
                 f"Run `cfpipe nircam reset --from image2` and re-run upstream."
             )
@@ -188,7 +188,7 @@ def wcs_shift_step(exposure_file, field, step_config, overwrite=False,
 
     atomic_save(
         model, exposure_file,
-        header_updates=cfp.format(CFP_SHIFT=_format_cfp_value(rule)),
+        header_updates=cfp.format(CFP_SHFT=_format_cfp_value(rule)),
         extra_hdus=extra_hdus,
     )
     model.close()

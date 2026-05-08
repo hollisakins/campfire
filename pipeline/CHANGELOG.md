@@ -47,7 +47,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   The original GWCS is stashed in a ``WCS_BAK`` FITS extension on first
   apply and restored before re-applying on ``--overwrite``, so the step
   is declarative — config specifies the desired shift, on-disk state is
-  brought into agreement. Provenance recorded in ``CFP_SHIFT`` between
+  brought into agreement. Provenance recorded in ``CFP_SHFT`` between
   ``CFP_VAR`` and ``CFP_JHAT``. No-op for fields without rules.
 - NIRCam ``diag_striping`` step (new, opt-in): subtracts scattered-light
   diagonal stripe artifacts caused by off-axis bright stars. Runs after

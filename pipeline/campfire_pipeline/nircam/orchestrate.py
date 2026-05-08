@@ -56,7 +56,7 @@ PROCESS_STEPS = [
     ('edge',        'CFP_EDGE'),
     ('sky',         'CFP_SKY'),
     ('variance',    'CFP_VAR'),
-    ('wcs_shift',   'CFP_SHIFT'),
+    ('wcs_shift',   'CFP_SHFT'),
     ('jhat',        'CFP_JHAT'),
 ]
 
@@ -247,7 +247,7 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
         log(f"wcs_shift: no exposures match any rule for {filtname}")
         return
 
-    pending, _ = _filter_pending('wcs_shift', matched, 'CFP_SHIFT', status,
+    pending, _ = _filter_pending('wcs_shift', matched, 'CFP_SHFT', status,
                                  overwrite)
     if not pending:
         return
@@ -257,7 +257,7 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
     dispatch(wcs_shift_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
-    status.mark_all(pending, 'CFP_SHIFT')
+    status.mark_all(pending, 'CFP_SHFT')
 
 
 def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
