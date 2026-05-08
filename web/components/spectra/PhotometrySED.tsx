@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { Loader2, BarChart3 } from 'lucide-react';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import { getPlotColors } from './plotting-utils';
+import { PhotometryTable } from './PhotometryTable';
 import type { ObjectPhotometry } from '@/lib/types';
 
 const Plot = dynamic(() => import('react-plotly.js'), {
@@ -414,6 +415,9 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
           </div>
         )}
       </div>
+
+      {/* Photometry data table */}
+      <PhotometryTable bands={bands} />
     </div>
   );
 };
