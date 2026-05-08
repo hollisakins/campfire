@@ -18,7 +18,10 @@ suffix. Our canonical files lack that suffix, so we temporarily set
 to ``<rootname>.fits`` before atomic_save.
 """
 
+import gc
 import os
+
+from astropy.io import fits
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
@@ -29,9 +32,67 @@ def _jump_path(exposure_path):
     return os.path.join(os.path.dirname(exposure_path), f'{rootname}_jump.fits')
 
 
+def _run_one_detector(detector, det_files, ImageModel, ModelContainer,
+                      snowblind):
+    """Run snowblind on one detector's exposures and save back.
+
+    Returns the list of canonical paths that were processed (same as
+    ``det_files`` on success). Closes both the input models and the
+    snowblind-owned copies, then forces a gc to release the deep-copied
+    arrays before the caller moves to the next detector.
+    """
+    images = ModelContainer()
+    original_filenames = []
+    for f in det_files:
+        m = ImageModel(f)
+        rootname = os.path.basename(f).removesuffix('.fits')
+        original_filenames.append(m.meta.filename)
+        # Munge filename so snowblind's jumpify hits <rootname>_jump.fits.
+        m.meta.filename = f'{rootname}_rate.fits'
+        images.append(m)
+
+    input_dir = os.path.dirname(det_files[0])
+    log(f"  detector {detector}: {len(det_files)} exposures")
+    output = snowblind.PersistenceFlagStep.call(
+        images,
+        save_results=False,
+        input_dir=input_dir,
+    )
+
+    try:
+        for model, canonical, orig_name in zip(output, det_files,
+                                               original_filenames):
+            # Restore filename to canonical form before saving.
+            model.meta.filename = orig_name or os.path.basename(canonical)
+            atomic_save(
+                model, canonical,
+                header_updates=cfp.format(CFP_PERS=None),
+            )
+            model.close()
+    finally:
+        # Snowblind's process() does ``results = images.copy()``, deep-copying
+        # every array. The originals are independent objects from this point
+        # on and must be closed explicitly so their SCI/ERR/DQ buffers get
+        # released — refcount alone does not always reclaim asdf-backed
+        # ndarrays promptly.
+        for m in images:
+            try:
+                m.close()
+            except Exception:
+                pass
+
+    return det_files
+
+
 def persistence_step(exposure_files, field, step_config, overwrite=False,
                      status=None):
     """Flag persistence across a per-filter set of canonical exposure files.
+
+    Snowblind groups by detector internally (``persist.py``), so we hand it
+    one detector at a time. That caps peak memory at roughly
+    ``exposures_per_detector × 2`` (the deep copy in snowblind's ``process``)
+    instead of the whole filter, and lets us close + gc between detector
+    batches before the next ensemble step inherits a fat parent process.
 
     Parameters
     ----------
@@ -61,52 +122,42 @@ def persistence_step(exposure_files, field, step_config, overwrite=False,
             log("Skipping persistence; CFP_PERS already set on all exposures")
             return
 
-    from jwst.datamodels import ImageModel, ModelContainer
-
-    images = ModelContainer()
-    saved_paths = []
-    original_filenames = []
+    # Group eligible files by detector before loading any datamodels —
+    # only the primary header is read here, no SCI/ERR/DQ.
+    by_detector = {}
     for f in exposure_files:
         jump = _jump_path(f)
         if not os.path.exists(jump):
             log(f"Skipping persistence on {os.path.basename(f)}: no _jump.fits")
             continue
-        m = ImageModel(f)
-        rootname = os.path.basename(f).removesuffix('.fits')
-        original_filenames.append(m.meta.filename)
-        # Munge filename so snowblind's jumpify hits <rootname>_jump.fits.
-        m.meta.filename = f'{rootname}_rate.fits'
-        images.append(m)
-        saved_paths.append(f)
+        detector = fits.getval(f, 'DETECTOR', ext=0).lower()
+        by_detector.setdefault(detector, []).append(f)
 
-    if not saved_paths:
+    if not by_detector:
         log("No _jump.fits sidecars found; persistence skipped")
         return
 
+    from jwst.datamodels import ImageModel, ModelContainer
     import snowblind
-    input_dir = os.path.dirname(saved_paths[0])
 
-    log(f"Running persistence on {len(saved_paths)} exposures in {input_dir}")
-    output = snowblind.PersistenceFlagStep.call(
-        images,
-        save_results=False,
-        input_dir=input_dir,
-    )
+    total = sum(len(v) for v in by_detector.values())
+    log(f"Running persistence on {total} exposures across "
+        f"{len(by_detector)} detector(s): {sorted(by_detector)}")
 
-    for model, canonical, orig_name in zip(output, saved_paths,
-                                           original_filenames):
-        # Restore filename to canonical form before saving.
-        model.meta.filename = orig_name or os.path.basename(canonical)
-        atomic_save(
-            model, canonical,
-            header_updates=cfp.format(CFP_PERS=None),
-        )
-        model.close()
+    saved = []
+    for detector, det_files in sorted(by_detector.items()):
+        try:
+            saved.extend(
+                _run_one_detector(detector, det_files,
+                                  ImageModel, ModelContainer, snowblind)
+            )
+        finally:
+            gc.collect()
 
-    for f in saved_paths:
+    for f in saved:
         try:
             os.remove(_jump_path(f))
         except OSError:
             pass
-    log(f"Persistence flagged {len(saved_paths)} exposures; "
+    log(f"Persistence flagged {len(saved)} exposures; "
         f"removed _jump.fits sidecars")

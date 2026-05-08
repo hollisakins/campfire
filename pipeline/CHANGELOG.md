@@ -212,6 +212,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam `persistence` step: hand snowblind one detector at a time instead of
+  the whole filter. Snowblind's `process()` does `results = images.copy()`,
+  deep-copying every model's SCI/ERR/DQ; with a full SW filter that doubled
+  the working set into multi-GB territory and leaked into the next step.
+  Per-detector batching caps peak at `exposures_per_detector × 2` (≈8× win
+  for SW, 2× for LW). Also explicitly closes input models after each batch
+  (snowblind copies them, so the originals are independent objects whose
+  asdf-backed arrays don't always release on refcount alone) and
+  `gc.collect()`s between detectors so the parent process is lean before
+  wisp/striping dispatch.
 - Fix CRDS serverless-mode lock-in on machines without `CRDS_SERVER_URL` set
   in the shell. The `jhat` step's `from jhat import align_wcs_batch` ran at
   module load and transitively imported `stpipe → crds` before
