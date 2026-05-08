@@ -24,10 +24,6 @@ from astropy.io import fits
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore")
-    from jhat import align_wcs_batch
-
 
 def _copy_diagnostics(scratch_subdir, diag_dir, rootname):
     """Move jhat's diagnostic PDFs and ECSV photometry tables to ``diag_dir``."""
@@ -62,6 +58,14 @@ def jhat_step(exposure_file, field, step_config, overwrite=False, status=None):
     status : StepStatus, optional
         Pre-scanned CFP_* status cache.
     """
+    # Lazy import: ``jhat`` transitively imports stpipe at module load, which
+    # constructs CRDS's server proxy from the env. Importing it at module-load
+    # time fires before ``setup_environment`` has populated CRDS_SERVER_URL,
+    # locking the proxy into serverless mode for the rest of the process.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from jhat import align_wcs_batch
+
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
     filtname = exposure_file.split('/')[-2]
 

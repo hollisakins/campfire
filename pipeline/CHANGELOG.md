@@ -212,11 +212,26 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- Fix CRDS serverless-mode lock-in on machines without `CRDS_SERVER_URL` set
+  in the shell. The `jhat` step's `from jhat import align_wcs_batch` ran at
+  module load and transitively imported `stpipe → crds` before
+  `setup_environment()` populated `CRDS_SERVER_URL`, locking CRDS's module-
+  level proxy into serverless mode for the rest of the process. Moved the
+  import into `jhat_step()` so it fires after env setup. Symptom was
+  `CrdsNetworkError: Failed downloading cache config from: JSON RPC service
+  at 'https://crds-serverless-mode.stsci.edu'` even with a reachable server
+  and `cfpipe info` showing the correct URL.
 - `cfpipe download` accepts a positional filter: `--target` (object name or
   `"RA Dec"` decimal-degree string, repeatable) plus `--radius` /
   `--radius-units` (default 3 arcmin; server cap 30 arcmin). Forwarded to the
   MAST JWST search API's native `target`/`radius` fields, so spatial pruning
   happens server-side and returns only filesets within the cone.
+- `cfpipe download`: parallelized the MAST `/list_products` step. Batches
+  (still 25 filesets each — bigger batches push past the server's per-request
+  budget and time out) are dispatched concurrently via a ThreadPoolExecutor
+  with workers from `--processes` (default 4), and each request retries on
+  429 / 5xx / transient network errors with exponential backoff that honours
+  the `Retry-After` header. Cuts the product-listing phase ~`workers`×.
 - New `cfpipe nircam rgb --field <name>` subcommand: combines per-filter
   per-tile mosaics produced by `cfpipe nircam combine` into trilogy-style
   RGB PNGs (one native-resolution PNG plus one downsampled preview per
