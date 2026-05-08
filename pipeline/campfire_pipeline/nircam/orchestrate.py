@@ -6,8 +6,8 @@ single-step dispatcher (``run_step``). Both phases iterate over the
 field's filters; within a filter, the per-exposure steps run via
 ``common.parallel.dispatch`` (with ``n_processes`` workers), the
 per-filter ensemble steps (persistence, build_bad_pixel_masks) run
-serially, and the per-visit ensemble steps (outlier) iterate over
-visits sequentially.
+serially, and the per-visit ensemble step (outlier) dispatches one
+visit per worker via the same ``dispatch`` helper.
 
 The legacy ``stage1.py`` / ``stage2.py`` / ``stage3.py`` orchestrators
 remain in place for now but are not invoked from the new CLI.
@@ -297,11 +297,11 @@ def _run_outlier(field, config, filtname, n_processes, overwrite, status):
             f"Unknown outlier.implementation {implementation!r}; "
             f"expected 'jwst' or 'campfire'"
         )
-    _run_outlier_per_visit(field, cfg, filtname, overwrite, status,
+    _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
                            implementation=implementation)
 
 
-def _run_outlier_per_visit(field, cfg, filtname, overwrite, status,
+def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
                            implementation='jwst'):
     """Per-visit outlier dispatcher.
 
@@ -314,6 +314,19 @@ def _run_outlier_per_visit(field, cfg, filtname, overwrite, status,
     - ``implementation='campfire'`` → ``outlier_step_campfire``: builds
       a per-visit intermediate WCS via ``wcs_from_sregions`` and runs
       campfire's bbox-sliced drizzle primitive + ``MedianComputer``.
+
+    Parallelization
+    ---------------
+    Visits are dispatched in parallel across ``n_processes`` workers.
+    Each visit writes only to its own canonical files (via ``atomic_save``)
+    while reading other visits' files as cross-visit overlap padding.
+    Because reads/writes are atomic and outlier_detection only ADDS DQ
+    bits (SCI is unchanged), parallel runs cannot crash; the only
+    observable difference vs. serial is that a worker may read an overlap
+    file's DQ before the visit owning that file has stamped its new
+    outlier bits, producing a small median bias in those overlap pixels.
+    Intra-program scoping (the default) keeps overlap small. Set
+    ``--processes 1`` for a strictly sequential, ordering-stable run.
     """
     from campfire_pipeline.nircam.steps.outlier import (
         outlier_step, outlier_step_campfire,
@@ -377,9 +390,18 @@ def _run_outlier_per_visit(field, cfg, filtname, overwrite, status,
     sregions = _read_sregions(exposures)
     log(f"outlier: {len(pending_visits)} visits for {filtname} "
         f"({implementation})")
-    for visit, visit_files in sorted(pending_visits.items()):
-        visit_step(visit, visit_files, exposures, sregions,
-                   field, cfg, overwrite=overwrite, status=status)
+
+    tasks = [(visit, visit_files)
+             for visit, visit_files in sorted(pending_visits.items())]
+    dispatch(visit_step, tasks, n_processes=n_processes, use_starmap=True,
+             filter_files=exposures, sregions=sregions,
+             field=field, step_config=cfg,
+             overwrite=overwrite, status=status)
+    # Stamp CFP_OUT in the parent's status cache after all workers finish.
+    # The on-disk CFP_OUT key is written by each worker via atomic_save;
+    # this just keeps the in-memory cache consistent so the resample step
+    # later in the same combine phase sees freshly-stamped exposures.
+    for _, visit_files in pending_visits.items():
         status.mark_all(visit_files, 'CFP_OUT')
 
 

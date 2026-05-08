@@ -228,6 +228,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam `outlier` step: dispatch one visit per worker via
+  `common.parallel.dispatch` so the combine phase honors `--processes N`
+  past `apply_mask`/`bad_pixel`. Previously visits ran sequentially and
+  `n_processes` was silently dropped past those two steps. Each visit
+  writes only to its own canonical files (atomic_save); cross-visit
+  overlap files are read-only inputs and outlier_detection only adds
+  DQ bits, so parallel runs cannot crash. The only semantic difference
+  vs. serial is that a worker may read an overlap file's DQ before the
+  visit owning that file has stamped its new outlier bits — a small
+  median bias in those overlap pixels. Intra-program overlap scoping
+  (the default) keeps the affected footprint small. Use `--processes 1`
+  for a strictly ordering-stable run.
 - NIRCam `jhat` step: stage the JHAT-aligned exposure to a sibling `.tmp`
   on the products filesystem before the atomic rename, instead of
   `os.replace`-ing directly out of the `tempfile.TemporaryDirectory`
