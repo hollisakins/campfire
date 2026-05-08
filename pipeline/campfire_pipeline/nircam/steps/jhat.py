@@ -193,5 +193,13 @@ def jhat_step(exposure_file, field, step_config, overwrite=False, status=None):
             os.path.join(scratch, filtname), input_dir, rootname,
         )
 
-        os.replace(scratch_out, exposure_file)
+        # Stage to a sibling .tmp on the products filesystem before the
+        # atomic rename. ``scratch`` lives on TMPDIR (often node-local /tmp),
+        # which on networked-FS clusters like CANDIDE is a different device
+        # from the products tree -- a direct ``os.replace`` would fail with
+        # EXDEV. Copying into a sibling .tmp keeps the final swap atomic.
+        base, ext = os.path.splitext(exposure_file)
+        tmp_path = f'{base}.tmp{ext}'
+        shutil.copy2(scratch_out, tmp_path)
+        os.replace(tmp_path, exposure_file)
         log(f"jhat done: {rootname}")

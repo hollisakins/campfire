@@ -228,6 +228,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam `jhat` step: stage the JHAT-aligned exposure to a sibling `.tmp`
+  on the products filesystem before the atomic rename, instead of
+  `os.replace`-ing directly out of the `tempfile.TemporaryDirectory`
+  scratch area. On networked-FS clusters where `TMPDIR` is node-local
+  (e.g. CANDIDE: `/tmp` per compute node, products on `/n23data2/...`),
+  the direct rename failed with `OSError: [Errno 18] Invalid cross-device
+  link`. Copying into `<canonical>.tmp.fits` first puts the rename within
+  the products device, preserving atomicity, and keeps JHAT's many
+  intermediate writes on fast local scratch.
 - Cap BLAS/OpenMP thread counts to 1 by default for all `cfpipe` runs
   (`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS`,
   `NUMEXPR_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `BLIS_NUM_THREADS`),
