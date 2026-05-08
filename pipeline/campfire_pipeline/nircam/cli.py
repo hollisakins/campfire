@@ -16,6 +16,8 @@ registered programmatically from ``orchestrate.STEP_NAMES`` so the
 top-level help auto-includes them.
 """
 
+from campfire_pipeline import _thread_caps  # noqa: F401  (must precede numpy/matplotlib)
+
 import os
 
 import matplotlib

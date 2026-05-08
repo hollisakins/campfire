@@ -19,6 +19,8 @@ Multiple observations are processed serially:
 Also available directly as: campfire-nirspec <command>
 """
 
+from campfire_pipeline import _thread_caps  # noqa: F401  (must precede numpy/matplotlib)
+
 import matplotlib
 matplotlib.use('Agg')
 

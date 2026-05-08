@@ -9,6 +9,8 @@ Usage:
     cfpipe download --program 6585 --instrument nirspec
 """
 
+from campfire_pipeline import _thread_caps  # noqa: F401  (must precede numpy/matplotlib)
+
 import os
 import sys
 from pathlib import Path

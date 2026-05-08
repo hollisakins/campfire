@@ -225,7 +225,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
-- Cap BLAS/OpenMP thread counts to 1 by default in `setup_environment`
+- Cap BLAS/OpenMP thread counts to 1 by default for all `cfpipe` runs
   (`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS`,
   `NUMEXPR_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `BLIS_NUM_THREADS`),
   set only when not already in the environment. Pipeline stages
@@ -238,9 +238,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   by spurious `KeyboardInterrupt` tracebacks inside
   `astropy.modeling.core` (workers losing a thread-spawn race during
   the `world_to_detector` transform on the full reference catalog in
-  `jhat/simple_jwst_phot.py`). Override per-stage via
-  `[environment].OPENBLAS_NUM_THREADS = "N"` in your config or by
-  exporting the variable before `cfpipe`.
+  `jhat/simple_jwst_phot.py`). Implemented as a tiny
+  `campfire_pipeline._thread_caps` shim imported as the first thing in
+  every CLI entry point (before `matplotlib`/`numpy`), with the same
+  defaults applied in `setup_environment` for the programmatic-import
+  path. Override per-run via `[environment].OPENBLAS_NUM_THREADS = "N"`
+  in your config or by exporting the variable before `cfpipe`.
+  Numba-parallel hot paths (NIRSpec redshift fitting,
+  `common.spectral` LSF resampling) are unaffected — they use
+  `numba.set_num_threads(ncores)` against `NUMBA_NUM_THREADS`, which we
+  do not pin.
 - NIRCam `persistence` step: hand snowblind one detector at a time instead of
   the whole filter. Snowblind's `process()` does `results = images.copy()`,
   deep-copying every model's SCI/ERR/DQ; with a full SW filter that doubled
