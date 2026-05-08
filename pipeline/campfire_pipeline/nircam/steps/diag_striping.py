@@ -112,6 +112,76 @@ def diagonal_stripe_model(data, mask, theta_deg, bin_width,
     return bin_medians[bin_idx]
 
 
+def _project_pair_vec(a, b, max_ratio):
+    """Vectorized projection so |a-b| ≤ max_ratio * max(|a|, |b|).
+
+    For violating elements, both endpoints are pulled toward their midpoint
+    by a multiplicative shrinkage that puts the new pair exactly on the
+    constraint boundary. Sign-changing pairs (where the midpoint is near
+    zero) collapse toward zero, which is the right behavior — opposite-sign
+    adjacent strips at the same diagonal bin are noise, not real
+    scattered-light amplitude variation.
+
+    NaN entries pass through unchanged.
+    """
+    a_new = a.astype(np.float64, copy=True)
+    b_new = b.astype(np.float64, copy=True)
+    finite = np.isfinite(a) & np.isfinite(b)
+    if not np.any(finite):
+        return a_new, b_new
+    delta = np.abs(a - b)
+    scale = np.maximum(np.abs(a), np.abs(b))
+    violate = finite & (delta > max_ratio * scale)
+    if not np.any(violate):
+        return a_new, b_new
+    mid = 0.5 * (a + b)
+    # |new_a - new_b| = d, max(|new_a|, |new_b|) = |mid| + d/2
+    # Set d = max_ratio * (|mid| + d/2)  →  d = max_ratio*|mid| / (1 - max_ratio/2)
+    d = max_ratio * np.abs(mid) / (1.0 - max_ratio / 2.0)
+    a_larger = a > b
+    a_proj = np.where(a_larger, mid + d / 2.0, mid - d / 2.0)
+    b_proj = np.where(a_larger, mid - d / 2.0, mid + d / 2.0)
+    a_new = np.where(violate, a_proj, a_new)
+    b_new = np.where(violate, b_proj, b_new)
+    return a_new, b_new
+
+
+def regularize_strip_deltas(M, max_ratio, n_passes=20, tol=1e-6):
+    """Smooth per-strip per-bin medians along the strip axis.
+
+    Parameters
+    ----------
+    M : ndarray of shape (n_strips, n_bins)
+        Per-strip per-bin median amplitudes; NaN where a strip has too
+        few unmasked pixels in a bin.
+    max_ratio : float
+        Maximum fractional delta allowed between adjacent strips at the
+        same bin: ``|M[k+1,b] - M[k,b]| ≤ max_ratio * max(|M[k,b]|, |M[k+1,b]|)``.
+    n_passes : int
+        Forward/backward sweep limit. The constraint set is non-convex in
+        the sign-changing region, so alternating projection is a heuristic;
+        for typical scattered-light amplitudes (same sign across strips)
+        it converges in a handful of passes.
+
+    Returns a copy of M with the constraint enforced as far as possible.
+    """
+    out = M.astype(np.float64, copy=True)
+    n_strips = out.shape[0]
+    if n_strips < 2 or max_ratio <= 0:
+        return out
+    for _ in range(n_passes):
+        prev = out.copy()
+        for k in range(n_strips - 1):
+            out[k], out[k + 1] = _project_pair_vec(out[k], out[k + 1], max_ratio)
+        for k in range(n_strips - 2, -1, -1):
+            out[k], out[k + 1] = _project_pair_vec(out[k], out[k + 1], max_ratio)
+        with np.errstate(invalid='ignore'):
+            diff = np.abs(out - prev)
+            if not np.any(np.isfinite(diff)) or np.nanmax(diff) < tol:
+                break
+    return out
+
+
 def _column_weights(column_width, overlap):
     """Triangular taper across the overlap region; flat in the centre."""
     weights = np.ones(column_width)
@@ -123,8 +193,9 @@ def _column_weights(column_width, overlap):
 
 
 def diagonal_stripe_model_blended(data, mask, theta_deg, bin_width,
-                                  column_width=256, overlap=32,
-                                  sigma=3.0, maxiters=2, min_pixels=5):
+                                  column_width=512, overlap=0,
+                                  sigma=3.0, maxiters=2, min_pixels=5,
+                                  max_strip_delta_ratio=None):
     """Strip-blended diagonal stripe model.
 
     The detector is split into vertical strips of width ``column_width``
@@ -133,26 +204,50 @@ def diagonal_stripe_model_blended(data, mask, theta_deg, bin_width,
     the overlap so amplitude variations along x are captured without
     seams. NaN bins (insufficient unmasked pixels) drop out of the
     weighted average rather than zero-biasing it.
+
+    Bin indices are computed once on the full image so bin ``b`` refers
+    to the same diagonal in every strip. This is a precondition for the
+    optional cross-strip regularization (``max_strip_delta_ratio``),
+    which caps how much the per-bin amplitude is allowed to change
+    between adjacent strips — see ``regularize_strip_deltas``.
     """
     height, width = data.shape
     step = max(column_width - overlap, 1)
     n_columns = max((width - overlap) // step + 1, 1)
 
-    accumulator = np.zeros(data.shape, dtype=np.float64)
-    weight_acc = np.zeros(data.shape, dtype=np.float64)
+    bin_idx = _bin_indices(data.shape, theta_deg, bin_width)
+    n_bins = int(bin_idx.max()) + 1
+    work = np.where(mask | ~np.isfinite(data), np.nan, data)
 
+    strip_bounds = []
+    strip_medians = []
     for col_idx in range(n_columns):
         x_start = col_idx * step
         x_end = min(x_start + column_width, width)
         actual_width = x_end - x_start
         if actual_width < column_width // 2 and col_idx > 0:
             continue
-        col_data = data[:, x_start:x_end]
-        col_mask = mask[:, x_start:x_end]
-        col_model = diagonal_stripe_model(
-            col_data, col_mask, theta_deg, bin_width,
+        col_work = work[:, x_start:x_end]
+        col_bins = bin_idx[:, x_start:x_end]
+        strip_medians.append(_per_bin_clipped_median(
+            col_work, col_bins, n_bins,
             sigma=sigma, maxiters=maxiters, min_pixels=min_pixels,
-        )
+        ))
+        strip_bounds.append((x_start, x_end))
+
+    if not strip_medians:
+        return np.zeros(data.shape, dtype=np.float64)
+
+    M = np.stack(strip_medians, axis=0)
+    if max_strip_delta_ratio is not None and max_strip_delta_ratio > 0:
+        M = regularize_strip_deltas(M, float(max_strip_delta_ratio))
+
+    accumulator = np.zeros(data.shape, dtype=np.float64)
+    weight_acc = np.zeros(data.shape, dtype=np.float64)
+    for k, (x_start, x_end) in enumerate(strip_bounds):
+        actual_width = x_end - x_start
+        col_bins = bin_idx[:, x_start:x_end]
+        col_model = M[k][col_bins]
         weights = _column_weights(actual_width, overlap)
         finite = np.isfinite(col_model)
         contribution = np.where(finite, col_model * weights, 0.0)
@@ -253,8 +348,9 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     fine_step = float(step_config.get('theta_fine_step', 0.1))
     fine_window = float(step_config.get('theta_fine_window', 2.0))
     bin_width = float(step_config.get('bin_width', 3.0))
-    column_width = int(step_config.get('column_width', 256))
-    overlap = int(step_config.get('column_overlap', 32))
+    column_width = int(step_config.get('column_width', 512))
+    overlap = int(step_config.get('column_overlap', 0))
+    max_strip_delta_ratio = float(step_config.get('max_strip_delta_ratio', 0.3))
     maxiters = int(step_config.get('maxiters', 3))
     do_plot = bool(step_config.get('plot', True))
 
@@ -282,6 +378,7 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     diag_model = diagonal_stripe_model_blended(
         sci_before, mask, opt_theta, bin_width,
         column_width=column_width, overlap=overlap,
+        max_strip_delta_ratio=max_strip_delta_ratio,
     )
     sci_diag_subbed = sci_before - diag_model
 
@@ -310,7 +407,8 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
 
     cfp_value = (
         f'theta={opt_theta:.2f}, range=[{theta_min},{theta_max}], '
-        f'bin={bin_width}, col={column_width}/{overlap}'
+        f'bin={bin_width}, col={column_width}/{overlap}, '
+        f'delta={max_strip_delta_ratio}'
     )
     atomic_save(
         model, exposure_file,

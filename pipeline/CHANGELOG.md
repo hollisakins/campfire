@@ -62,6 +62,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   in ``CFP_DIAG``. Disabled by default; enable per field with
   ``[field.diag_striping].enabled = true`` and tune
   ``theta_min``/``theta_max`` to the field's scattered-light geometry.
+- NIRCam ``diag_striping``: default ``column_width`` raised from 256 to
+  512 so each strip is one NIRCam amplifier (4 strips per SCA), with
+  ``column_overlap`` defaulted to 0 (no inter-strip blending — strips
+  align cleanly with amp boundaries). New ``max_strip_delta_ratio`` knob
+  (default 0.3) regularizes the per-bin amplitude across adjacent amps
+  via iterative pair projection — caps ``|M[k+1,b] - M[k,b]| ≤ ratio ·
+  max(|M[k,b]|, |M[k+1,b]|)`` per diagonal bin so the spatial amplitude
+  variation across amps stays smooth without letting any single amp's
+  per-bin median run wild from a single bright source. Bin indices are
+  now computed once on the full image rather than per-strip so bin ``b``
+  refers to the same diagonal in every strip — required for the
+  cross-strip constraint to be meaningful. Set
+  ``max_strip_delta_ratio = 0`` to disable.
 - NIRCam ``bad_pixel`` step: now disabled by default, only stacks the
   DO_NOT_USE bit (not all DQ bits), and defaults to a stricter
   ``threshold = 0.8``. The previous behaviour — flagging any pixel
@@ -212,6 +225,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- Cap BLAS/OpenMP thread counts to 1 by default in `setup_environment`
+  (`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS`,
+  `NUMEXPR_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `BLIS_NUM_THREADS`),
+  set only when not already in the environment. Pipeline stages
+  parallelize via fork-pool processes; without this, each worker spawns
+  one BLAS thread per visible core and on high-core HPC nodes (e.g.
+  candide, 64 cores) the collective thread count exhausts
+  `RLIMIT_NPROC`. Symptom on candide was JHAT failing mid-run with
+  cascading `OpenBLAS blas_thread_init: pthread_create failed for
+  thread N of 64: Resource temporarily unavailable` warnings followed
+  by spurious `KeyboardInterrupt` tracebacks inside
+  `astropy.modeling.core` (workers losing a thread-spawn race during
+  the `world_to_detector` transform on the full reference catalog in
+  `jhat/simple_jwst_phot.py`). Override per-stage via
+  `[environment].OPENBLAS_NUM_THREADS = "N"` in your config or by
+  exporting the variable before `cfpipe`.
 - NIRCam `persistence` step: hand snowblind one detector at a time instead of
   the whole filter. Snowblind's `process()` does `results = images.copy()`,
   deep-copying every model's SCI/ERR/DQ; with a full SW filter that doubled

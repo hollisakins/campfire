@@ -22,6 +22,7 @@ from campfire_pipeline.nircam.steps.diag_striping import (
     _coarse_fine_search,
     diagonal_stripe_model,
     diagonal_stripe_model_blended,
+    regularize_strip_deltas,
 )
 from campfire_pipeline.nircam.steps.striping import fit_residual_striping
 
@@ -157,6 +158,82 @@ def test_residual_helper_composes_with_diagonal():
         f"cleaned rms={rms} vs noise σ={noise_sigma} "
         f"(initial rms={initial_rms})"
     )
+
+
+def test_regularize_strip_deltas_enforces_pair_ratio():
+    """A spike in one strip is pulled toward its neighbors; in-budget
+    smooth variations are left alone; NaN entries pass through."""
+    M = np.array([
+        [1.0, 1.0, 1.0],
+        [1.0, 5.0, 1.1],   # bin 1: huge spike vs. neighbors; bin 2: 10% step (in budget)
+        [1.0, 1.0, 1.2],
+        [1.0, 1.0, np.nan],
+    ])
+    out = regularize_strip_deltas(M, max_ratio=0.3)
+
+    # Bin 0 untouched (all equal).
+    np.testing.assert_allclose(out[:, 0], 1.0)
+    # Bin 2 within 30% across all adjacent pairs already.
+    for k in range(out.shape[0] - 1):
+        a, b = out[k, 2], out[k + 1, 2]
+        if np.isfinite(a) and np.isfinite(b):
+            assert abs(a - b) <= 0.3 * max(abs(a), abs(b)) + 1e-6
+    # Bin 1: spike must be reduced so adjacent pairs satisfy the constraint.
+    for k in range(out.shape[0] - 1):
+        a, b = out[k, 1], out[k + 1, 1]
+        assert abs(a - b) <= 0.3 * max(abs(a), abs(b)) + 1e-6
+    # NaN passes through.
+    assert np.isnan(out[3, 2])
+
+
+def test_regularize_strip_deltas_no_op_when_in_budget():
+    """Smooth variation under the cap should be left unchanged."""
+    rng = np.random.default_rng(7)
+    # 4 strips, 50 bins, with each bin a smooth linear ramp varying ≤ 20% per step.
+    base = rng.uniform(0.5, 1.0, size=50)
+    M = np.stack([base * (1.0 + 0.1 * k) for k in range(4)], axis=0)
+    out = regularize_strip_deltas(M, max_ratio=0.3)
+    np.testing.assert_allclose(out, M, atol=1e-9)
+
+
+def test_blended_model_with_regularization_caps_amp_jumps():
+    """A 5x cross-strip amplitude jump should be pulled back to within the
+    configured per-pair budget by the regularizer, measured as the RMS
+    amplitude ratio between the two amp-aligned strips."""
+    rng = np.random.default_rng(11)
+    shape = (1024, 1024)
+    theta_true = 30.0
+    bin_width = 3
+    base_stripe = _planted_diagonal_stripe(shape, theta_true, bin_width, rng,
+                                           smoothing=8.0)
+    # 5x amplitude jump across the two halves of the detector.
+    amp = np.where(np.arange(shape[1]) < shape[1] // 2, 1.0, 5.0)
+    data = (base_stripe * amp[None, :]).astype(np.float32)
+    mask = np.zeros(shape, dtype=bool)
+
+    unreg = diagonal_stripe_model_blended(
+        data, mask, theta_true, bin_width,
+        column_width=512, overlap=0, max_strip_delta_ratio=0.0,
+    )
+    reg = diagonal_stripe_model_blended(
+        data, mask, theta_true, bin_width,
+        column_width=512, overlap=0, max_strip_delta_ratio=0.3,
+    )
+
+    def _strip_rms_ratio(model):
+        left = np.sqrt(np.mean(model[:, :512] ** 2))
+        right = np.sqrt(np.mean(model[:, 512:] ** 2))
+        return max(left, right) / max(min(left, right), 1e-12)
+
+    # Without regularization the planted 5x amplitude jump comes through.
+    unreg_ratio = _strip_rms_ratio(unreg)
+    reg_ratio = _strip_rms_ratio(reg)
+    assert unreg_ratio > 3.0
+    # Regularization should pull this most of the way back. Bins that
+    # only intersect one strip can't be regularized (no neighbor), which
+    # adds a small residual to the cross-strip RMS — the cap on the
+    # cross-strip *paired* bins is 1/(1-0.3) ≈ 1.43.
+    assert reg_ratio < 0.6 * unreg_ratio
 
 
 @pytest.mark.parametrize('theta', [0.0, 15.0, 45.0, 75.0])

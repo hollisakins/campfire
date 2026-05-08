@@ -175,8 +175,13 @@
     theta_fine_step = 0.1
     theta_fine_window = 2.0
     bin_width = 3
-    column_width = 256
-    column_overlap = 32
+    # 512-px strips align with NIRCam amp boundaries (4 amps × 512 cols).
+    column_width = 512
+    column_overlap = 0
+    # Cap |M[k+1,b] - M[k,b]| <= max_strip_delta_ratio * max(|M[k,b]|, |M[k+1,b]|)
+    # per diagonal bin so the per-amp amplitude varies smoothly across
+    # adjacent amps. Set to 0 to disable cross-strip regularization.
+    max_strip_delta_ratio = 0.3
     maxiters = 3
     plot = true
 
