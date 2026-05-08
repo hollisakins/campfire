@@ -51,9 +51,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   ``CFP_VAR`` and ``CFP_JHAT``. No-op for fields without rules.
 - NIRCam ``diag_striping`` step (new, opt-in): subtracts scattered-light
   diagonal stripe artifacts caused by off-axis bright stars. Runs after
-  ``image2`` (so the data is flat-corrected), before ``edge``. Reads the
-  source mask from the ``SRCMASK`` extension that ``striping`` writes and
-  ``image2`` preserves. Coarse + fine grid search over θ scored by the
+  ``sky`` (so the data is flat-corrected and pedestal-subtracted, which
+  the cross-strip ``max_strip_delta_ratio`` regularization needs to be
+  meaningful — a fractional constraint against a non-zero pedestal is
+  effectively unconstrained), before ``variance``. Reads the source mask
+  from the ``SRCMASK`` extension that ``striping`` writes and that
+  ``image2``/``edge``/``sky`` carry through. Coarse + fine grid search over θ scored by the
   residual MAD² of a global per-bin median; applies a strip-blended
   per-bin median at the optimal θ to capture spatial amplitude variation;
   re-fits horizontal + vertical 1/f residuals via a new

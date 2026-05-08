@@ -7,8 +7,14 @@ field, not the conventional row/column 1/f noise that the ``striping``
 step handles. The angle is set by the off-axis source geometry, so it
 varies per exposure (and per detector within a visit).
 
+Runs after ``sky`` so the per-bin medians sit on a near-zero baseline
+— required for the cross-strip ``max_strip_delta_ratio`` regularization,
+which enforces ``|M[k+1,b] - M[k,b]| ≤ ratio · max(|M[k,b]|, |M[k+1,b]|)``
+and would be effectively unconstrained against a non-zero sky pedestal.
+
 Algorithm:
-1. Read SRCMASK (written by ``striping`` and preserved through ``image2``).
+1. Read SRCMASK (written by ``striping`` and preserved through ``image2``,
+   ``edge``, and ``sky`` via the JWST datamodel save round-trip).
 2. Coarse + fine grid search over θ. Score each angle with a single
    full-image diagonal-bin median (no strip blending) — variance of the
    residual on unmasked pixels. Strip blending doesn't change the
