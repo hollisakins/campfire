@@ -169,8 +169,13 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
   );
 
   // Section 3 — flat list of all member spectra for object-level redshift fit summary.
-  const allMemberSpectra: Spectrum[] = useMemo(
-    () => object.member_targets.flatMap(m => m.spectra),
+  // Each spectrum is annotated with its parent member's observation so the summary
+  // table can show which obs each fit came from.
+  const allMemberSpectra: (Spectrum & { observation: string })[] = useMemo(
+    () =>
+      object.member_targets.flatMap(m =>
+        m.spectra.map(s => ({ ...s, observation: m.observation }))
+      ),
     [object.member_targets]
   );
 
