@@ -470,14 +470,26 @@ def _resolve_reduction_version(config):
     return get_reduction_version(config)
 
 
-def _scan_status(field, filters):
+def _scan_status(field, filters, overwrite=False):
     """Pre-scan canonical exposures for CFP_* keys once per phase.
 
     Builds a single ``StepStatus`` covering every canonical exposure across
     the requested filters. Detector1's output may not exist yet — the scan
     records empty key sets for missing paths so the skip check naturally
     reports "not done".
+
+    With ``overwrite=True`` we skip the scan and return an empty cache:
+    every step is going to run regardless of prior state, and a pre-scanned
+    snapshot would go stale mid-phase (fresh-model steps like image2 and
+    detector1 strip prior CFP_* keys and non-schema extensions like
+    WCS_BAK from disk, but ``StepStatus.mark_all`` only adds keys to the
+    cache — it never removes — so the snapshot would falsely report
+    already-cleared keys as "still present"). With an empty cache,
+    ``StepStatus.has`` falls back to a live ``cfp.has_step`` read for any
+    path not yet seen, keeping the in-step check in sync with disk.
     """
+    if overwrite:
+        return StepStatus()
     paths = []
     for filt in filters:
         try:
@@ -498,7 +510,7 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
     set at once.
     """
     filters = _resolve_filters(filters, field)
-    status = _scan_status(field, filters)
+    status = _scan_status(field, filters, overwrite=overwrite)
     log(f"=== Process phase: field={field.name}, filters={filters} ===")
     prefetch_process_references(field, filters, n_processes)
     for filt in filters:
@@ -512,7 +524,7 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False):
     """Run all combine-phase steps in order across each filter."""
     filters = _resolve_filters(filters, field)
     reduction_version = _resolve_reduction_version(config)
-    status = _scan_status(field, filters)
+    status = _scan_status(field, filters, overwrite=overwrite)
 
     log(f"=== Combine phase: field={field.name}, filters={filters} ===")
     for filt in filters:
@@ -538,7 +550,7 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
         )
 
     filters = _resolve_filters(filters, field)
-    status = _scan_status(field, filters)
+    status = _scan_status(field, filters, overwrite=overwrite)
     log(f"=== Step '{step_name}': field={field.name}, filters={filters} ===")
     if step_name in _CRDS_STEPS:
         prefetch_process_references(field, filters, n_processes)

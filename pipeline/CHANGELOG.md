@@ -302,6 +302,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam orchestrator: skip the `_scan_status` pre-scan when
+  `--overwrite` is set, returning an empty `StepStatus` instead. With
+  `--overwrite`, every step runs regardless of prior state, so the
+  pre-scan's only product (cached "this CFP key is already present"
+  decisions) is unused for skip purposes. But `StepStatus.mark_all`
+  only adds keys to the cache and never removes them, so the
+  pre-scanned snapshot went stale mid-phase whenever a fresh-model
+  step (`detector1`, `image2`) stripped prior CFP_* keys and
+  non-schema extensions like `WCS_BAK` from disk on its rerun. The
+  symptom was a `wcs_shift` `RuntimeError` during a `process
+  --overwrite` rerun ("CFP_SHFT is set but WCS_BAK extension is
+  missing"): the cache lied that `CFP_SHFT` was still present after
+  `image2` had wiped both it and `WCS_BAK` from disk, so `wcs_shift`
+  took the restore-and-reapply branch and found the backup gone.
+  With an empty cache, `StepStatus.has` falls back to a live
+  `cfp.has_step` read for any path not yet seen, so in-step checks
+  match disk reality at the moment they fire.
 - NIRCam `outlier` step: dispatch one visit per worker via
   `common.parallel.dispatch` so the combine phase honors `--processes N`
   past `apply_mask`/`bad_pixel`. Previously visits ran sequentially and
