@@ -15,16 +15,37 @@ and would be effectively unconstrained against a non-zero sky pedestal.
 Algorithm:
 1. Read SRCMASK (written by ``striping`` and preserved through ``image2``,
    ``edge``, and ``sky`` via the JWST datamodel save round-trip).
-2. Coarse + fine grid search over θ. Score each angle with a single
-   full-image diagonal-bin median (no strip blending) — variance of the
-   residual on unmasked pixels. Strip blending doesn't change the
-   argmin, so we skip it during the search to save ~8x.
-3. Apply: column-blended diagonal-bin median at the optimal θ. Strips
-   capture the spatial amplitude variation (closer to the bright star ⇒
-   higher amplitude) that a single global model would average over.
-4. Re-fit horizontal + vertical residual 1/f via the shared
-   ``fit_residual_striping`` helper from the ``striping`` module.
+2. Coarse + fine grid search over θ. Each angle scored as the MAD of
+   ``data − strip_blended_model(θ)`` over unmasked finite pixels — the
+   model used for scoring is the same one used in the actual subtraction
+   (strip-blended with the configured ``column_width`` / ``overlap`` /
+   ``max_strip_delta_ratio``), so the score directly measures the fit
+   quality the pipeline will achieve. Strip blending matters because
+   real scattered-light stripes have spatial amplitude variation that
+   a single global per-bin median averages out; MAD over the full
+   unmasked image gives n_pixels/n_bins more samples than scoring on
+   the per-bin median array, with implicit pixel-count weighting.
+3. **Apply (every iteration).** Subtract the strip-blended per-bin
+   median plus an H+V residual 1/f fit. The per-strip estimator
+   captures the spatial amplitude variation along x — closer to the
+   bright off-axis source the amplitude is higher — that a single
+   global median averages away. Pixels whose every covering strip has
+   too few unmasked values fall back to the global per-bin median (a
+   spatially-uniform estimate strictly better than 0); the trap of
+   SRCMASK eating stripe peaks below ``min_pixels`` in every strip is
+   mitigated this way without giving up per-strip resolution.
+4. **Iter 2+ (optional).** If ``n_iterations > 1`` and
+   ``rebuild_srcmask = true`` (the default), rebuild SRCMASK on the
+   current residual before each subsequent iteration so stripe peaks
+   initially flagged as sources are released as the amplitude bleeds
+   into the running model. θ stays at the iter-1 estimate —
+   re-scoring on a residual with most stripe-aligned signal already
+   removed produces a flat score landscape and argmin walks rather
+   than locks. Per-pass diagonal and H+V contributions accumulate
+   into single cumulative models for the diagnostic plot.
 5. Atomic-save the corrected SCI with a ``CFP_DIAG`` provenance keyword.
+   NaN pixels in the input SCI are preserved as NaN in the output (the
+   DO_NOT_USE bit is set on those pixels, but their value isn't zeroed).
 
 Disabled by default. Enable per field with::
 
@@ -35,11 +56,9 @@ Disabled by default. Enable per field with::
 """
 
 import os
-import warnings
 
 import numpy as np
 from astropy.io import fits
-from astropy.stats import median_absolute_deviation
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
@@ -63,16 +82,28 @@ def _bin_indices(shape, theta_deg, bin_width):
     return (proj / bin_width).astype(np.int64)
 
 
-def _per_bin_clipped_median(values, bin_idx, n_bins, sigma=3.0, maxiters=2,
+_MAD_TO_STD = 1.4826  # mad_std normalization for a Gaussian
+
+
+def _per_bin_clipped_median(values, bin_idx, n_bins, sigma=3.0, maxiters=5,
                             min_pixels=5):
     """Sigma-clipped median per bin. Returns 1D array of length ``n_bins``.
 
     Bins with fewer than ``min_pixels`` finite values get NaN.
 
-    Implementation: argsort/searchsorted to group pixels by bin index in
-    O(N log N + n_bins), then a vectorized clip per bin. Faster than
-    boolean-masking the full image per bin, which is what the legacy
-    script does.
+    Clip threshold uses ``mad_std = 1.4826 * MAD`` rather than
+    ``np.std``: a non-robust threshold is inflated by the very SRCMASK
+    leakers we want to reject — one stripe-peak leaker at +5σ
+    contributes ≈ 25σ²/N to the variance, so for small per-bin N the
+    threshold floats up above the leaker and it survives the clip,
+    defeating the iteration. Inlined rather than calling
+    ``astropy.stats.sigma_clipped_stats`` per bin: that helper has
+    ~50–100 µs of per-call machinery overhead (input validation,
+    ``MaskedArray`` construction), and we call it ~500 K times per
+    exposure (n_bins × n_strips × n_angles).
+
+    Implementation: argsort/searchsorted to group pixels by bin index
+    in O(N log N + n_bins), then a hand-rolled mad-std clip per bin.
     """
     flat_bin = bin_idx.ravel()
     flat_val = values.ravel()
@@ -89,12 +120,16 @@ def _per_bin_clipped_median(values, bin_idx, n_bins, sigma=3.0, maxiters=2,
             continue
         m = np.median(finite)
         for _ in range(maxiters):
-            s = np.std(finite)
-            if s == 0:
+            dev = np.abs(finite - m)
+            mad = np.median(dev)
+            if mad == 0:
                 break
-            keep = np.abs(finite - m) < sigma * s
-            if keep.sum() < min_pixels:
-                break
+            keep = dev < sigma * _MAD_TO_STD * mad
+            n_keep = int(keep.sum())
+            if n_keep == finite.size:
+                break  # nothing was clipped this pass
+            if n_keep < min_pixels:
+                break  # would over-clip; keep the prior estimate
             finite = finite[keep]
             m = np.median(finite)
         out[b] = m
@@ -102,7 +137,7 @@ def _per_bin_clipped_median(values, bin_idx, n_bins, sigma=3.0, maxiters=2,
 
 
 def diagonal_stripe_model(data, mask, theta_deg, bin_width,
-                          sigma=3.0, maxiters=2, min_pixels=5):
+                          sigma=3.0, maxiters=5, min_pixels=5):
     """Per-bin sigma-clipped median assigned back to each pixel.
 
     Pixels in masked or non-finite bins get NaN — caller decides whether
@@ -189,20 +224,33 @@ def regularize_strip_deltas(M, max_ratio, n_passes=20, tol=1e-6):
 
 
 def _column_weights(column_width, overlap):
-    """Triangular taper across the overlap region; flat in the centre."""
+    """Triangular taper across the FULL overlap region; flat in the centre.
+
+    Each strip's weight ramps up over its first ``overlap`` pixels (where
+    it overlaps the previous strip) and ramps down over its last
+    ``overlap`` pixels (where it overlaps the next strip), with a flat
+    centre at weight 1. Adjacent strips' ramps are complementary —
+    ``ramp[i] + ramp[overlap-1-i] = 1`` — so the summed weight in the
+    overlap region is constant (partition of unity) and the blended
+    model is a true linear interpolation between the two strips' models.
+    """
     weights = np.ones(column_width)
-    taper = max(overlap // 2, 1)
-    ramp = np.arange(1, taper + 1) / taper
-    weights[:min(taper, column_width)] = ramp[:min(taper, column_width)]
-    weights[-min(taper, column_width):] = ramp[:min(taper, column_width)][::-1]
+    if overlap <= 0:
+        return weights
+    n = min(overlap, column_width)
+    ramp = np.arange(1, n + 1) / (n + 1)
+    weights[:n] = ramp
+    weights[-n:] = ramp[::-1]
     return weights
 
 
 def diagonal_stripe_model_blended(data, mask, theta_deg, bin_width,
                                   column_width=512, overlap=0,
-                                  sigma=3.0, maxiters=2, min_pixels=5,
-                                  max_strip_delta_ratio=None):
-    """Strip-blended diagonal stripe model.
+                                  sigma=3.0, maxiters=5, min_pixels=5,
+                                  max_strip_delta_ratio=None,
+                                  compute_fallback=True,
+                                  regularize=True):
+    """Strip-blended diagonal stripe model with global-median fallback.
 
     The detector is split into vertical strips of width ``column_width``
     with ``overlap`` between adjacent strips. Each strip computes its
@@ -211,19 +259,75 @@ def diagonal_stripe_model_blended(data, mask, theta_deg, bin_width,
     seams. NaN bins (insufficient unmasked pixels) drop out of the
     weighted average rather than zero-biasing it.
 
+    For pixels whose bin is ``NaN`` in *every* covering strip — typically
+    when SRCMASK is aggressive enough to cut a bin below ``min_pixels``
+    in each individual strip — the per-strip blend has no information.
+    Falling back to zero would leave a stripe untouched at exactly the
+    rows where the bin is hardest to estimate, so we instead substitute
+    the *global* per-bin median (computed over all strips combined). The
+    global estimator pools every strip's pixels into a single bin sample
+    and almost never hits the ``min_pixels`` threshold, giving a
+    spatially-uniform amplitude estimate that's strictly better than 0
+    when the per-strip estimator gives up.
+
     Bin indices are computed once on the full image so bin ``b`` refers
     to the same diagonal in every strip. This is a precondition for the
     optional cross-strip regularization (``max_strip_delta_ratio``),
     which caps how much the per-bin amplitude is allowed to change
     between adjacent strips — see ``regularize_strip_deltas``.
+
+    ``compute_fallback=False`` skips the global per-bin median pass and
+    leaves uncovered pixels as ``NaN``. Scoring callers filter NaN model
+    pixels out of the score anyway, so the fallback is wasted work
+    there — about half of the per-bin-median Python loops per angle.
+
+    ``regularize=False`` skips ``regularize_strip_deltas`` even when
+    ``max_strip_delta_ratio > 0``. Used by the angle-search scoring
+    path: the regularizer compresses ``Var(M)`` slightly without
+    shifting its argmax, so paying for it on every angle is wasted.
     """
-    height, width = data.shape
+    work = np.where(mask | ~np.isfinite(data), np.nan, data)
+    return _model_from_work(
+        work, theta_deg, bin_width,
+        column_width=column_width, overlap=overlap,
+        sigma=sigma, maxiters=maxiters, min_pixels=min_pixels,
+        max_strip_delta_ratio=max_strip_delta_ratio,
+        compute_fallback=compute_fallback,
+        regularize=regularize,
+    )
+
+
+def _model_from_work(work, theta_deg, bin_width,
+                     column_width=512, overlap=0,
+                     sigma=3.0, maxiters=5, min_pixels=5,
+                     max_strip_delta_ratio=None,
+                     compute_fallback=True,
+                     regularize=True):
+    """Inner: same as ``diagonal_stripe_model_blended`` but expects a
+    pre-masked ``work`` array (NaN where mask | ~np.isfinite(data)).
+
+    The angle-search loop calls this per angle on the same
+    ``work`` — pre-computing it once outside the loop saves an O(N)
+    ``np.where`` pass per angle.
+    """
+    height, width = work.shape
     step = max(column_width - overlap, 1)
     n_columns = max((width - overlap) // step + 1, 1)
 
-    bin_idx = _bin_indices(data.shape, theta_deg, bin_width)
+    bin_idx = _bin_indices(work.shape, theta_deg, bin_width)
     n_bins = int(bin_idx.max()) + 1
-    work = np.where(mask | ~np.isfinite(data), np.nan, data)
+
+    if compute_fallback:
+        # Global per-bin median: fallback for pixels whose every covering
+        # strip has fewer than min_pixels unmasked values in the bin.
+        global_M = _per_bin_clipped_median(
+            work, bin_idx, n_bins,
+            sigma=sigma, maxiters=maxiters, min_pixels=min_pixels,
+        )
+        out = np.where(np.isfinite(global_M[bin_idx]),
+                       global_M[bin_idx], 0.0)
+    else:
+        out = np.full(work.shape, np.nan, dtype=np.float64)
 
     strip_bounds = []
     strip_medians = []
@@ -242,14 +346,15 @@ def diagonal_stripe_model_blended(data, mask, theta_deg, bin_width,
         strip_bounds.append((x_start, x_end))
 
     if not strip_medians:
-        return np.zeros(data.shape, dtype=np.float64)
+        return out
 
     M = np.stack(strip_medians, axis=0)
-    if max_strip_delta_ratio is not None and max_strip_delta_ratio > 0:
+    if (regularize and max_strip_delta_ratio is not None
+            and max_strip_delta_ratio > 0):
         M = regularize_strip_deltas(M, float(max_strip_delta_ratio))
 
-    accumulator = np.zeros(data.shape, dtype=np.float64)
-    weight_acc = np.zeros(data.shape, dtype=np.float64)
+    accumulator = np.zeros(work.shape, dtype=np.float64)
+    weight_acc = np.zeros(work.shape, dtype=np.float64)
     for k, (x_start, x_end) in enumerate(strip_bounds):
         actual_width = x_end - x_start
         col_bins = bin_idx[:, x_start:x_end]
@@ -261,50 +366,85 @@ def diagonal_stripe_model_blended(data, mask, theta_deg, bin_width,
         accumulator[:, x_start:x_end] += contribution
         weight_acc[:, x_start:x_end] += eff_weight
 
-    return np.divide(accumulator, weight_acc,
-                     out=np.zeros_like(accumulator),
-                     where=weight_acc > 0)
+    # Reuse ``out`` as the divide target — it already holds the fallback
+    # values where ``compute_fallback=True``, or NaN otherwise. ``where``
+    # leaves the fallback in place at zero-weight pixels.
+    np.divide(accumulator, weight_acc, out=out, where=weight_acc > 0)
+    return out
 
 
-def _score_angle(data, mask, theta_deg, bin_width):
-    """Variance score for one angle; lower is better.
+def _score_angle(work, theta_deg, bin_width,
+                 column_width, overlap, max_strip_delta_ratio,
+                 maxiters):
+    """``-Var(M(θ))`` on the strip-blended model image; lower is better.
 
-    Scoring uses the global (non-blended) per-bin median because strip
-    blending is an amplitude correction, not an angle-selection signal —
-    its argmin agrees with the global model's. Robust statistic
-    (sigma-MAD²) so a few extreme residuals don't dominate.
+    By the total-variance decomposition ``Var(D) = Var(M) + Var(D−M)``
+    on unmasked pixels (with ``Var(D)`` and ``Cov(M, D−M)`` independent
+    of θ for fixed mask), maximizing ``Var(M)`` is equivalent to
+    minimizing residual variance — same argmin as a residual-MAD score,
+    but the score is the captured signal itself. Two practical wins:
+    (a) the un-modeled source-residual floor in the residual is θ-
+    independent and adds noise to a residual-MAD score; ``Var(M)``
+    isolates the θ-dependent piece. (b) ``Var(M)`` is computed only on
+    model values, decoupling it from outliers in ``D``.
+
+    The model is the strip-blended diagonal-bin median that the actual
+    subtraction uses, so the angle search rewards exactly the model
+    that will be applied. ``compute_fallback=False`` skips the global
+    per-bin median pass and ``regularize=False`` skips the cross-strip
+    delta regularizer — both compress ``Var(M)`` slightly without
+    shifting its argmax, so paying for them per-angle is wasted.
+
+    Takes pre-masked ``work`` (NaN where mask | ~np.isfinite(data))
+    rather than ``(data, mask)`` so the masking pass isn't repeated
+    across the ~130 angle evaluations of a coarse+fine search.
     """
-    model = diagonal_stripe_model(data, mask, theta_deg, bin_width)
-    resid = data - np.where(np.isfinite(model), model, 0.0)
-    sample = resid[~mask]
-    sample = sample[np.isfinite(sample)]
-    if sample.size == 0:
+    model = _model_from_work(
+        work, theta_deg, bin_width,
+        column_width=column_width, overlap=overlap,
+        max_strip_delta_ratio=max_strip_delta_ratio,
+        maxiters=maxiters,
+        compute_fallback=False,
+        regularize=False,
+    )
+    valid = np.isfinite(work) & np.isfinite(model)
+    if not np.any(valid):
         return float('inf')
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', category=RuntimeWarning)
-        mad = median_absolute_deviation(sample)
-    return float(mad) ** 2
+    return -float(np.var(model[valid]))
 
 
 def _coarse_fine_search(data, mask, bin_width,
                         theta_min, theta_max,
                         coarse_step, fine_step,
-                        fine_window=2.0):
+                        fine_window=2.0,
+                        column_width=512, overlap=0,
+                        max_strip_delta_ratio=None,
+                        maxiters=5):
     """Two-stage angle search. Returns (opt_theta, thetas, scores).
 
     ``thetas`` and ``scores`` cover both passes for diagnostic plotting,
     sorted by angle. ``fine_window`` is the half-width (in degrees) of
-    the fine pass around the coarse argmin.
+    the fine pass around the coarse argmin. Strip parameters are passed
+    through to ``_score_angle`` so the score model matches the actual
+    subtraction.
     """
+    score_kwargs = dict(column_width=column_width, overlap=overlap,
+                        max_strip_delta_ratio=max_strip_delta_ratio,
+                        maxiters=maxiters)
+    # Hoist the θ-independent masking pass out of the angle loop. Saves
+    # one O(N) ``np.where`` per angle (~130 angles × full-frame).
+    work = np.where(mask | ~np.isfinite(data), np.nan, data)
     coarse_thetas = np.arange(theta_min, theta_max + 1e-9, coarse_step)
-    coarse_scores = np.array([_score_angle(data, mask, t, bin_width)
+    coarse_scores = np.array([_score_angle(work, t, bin_width,
+                                           **score_kwargs)
                               for t in coarse_thetas])
     coarse_min = coarse_thetas[int(np.argmin(coarse_scores))]
 
     fine_lo = max(coarse_min - fine_window, theta_min)
     fine_hi = min(coarse_min + fine_window, theta_max)
     fine_thetas = np.arange(fine_lo, fine_hi + 1e-9, fine_step)
-    fine_scores = np.array([_score_angle(data, mask, t, bin_width)
+    fine_scores = np.array([_score_angle(work, t, bin_width,
+                                         **score_kwargs)
                             for t in fine_thetas])
     opt_theta = float(fine_thetas[int(np.argmin(fine_scores))])
 
@@ -358,18 +498,27 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     overlap = int(step_config.get('column_overlap', 0))
     max_strip_delta_ratio = float(step_config.get('max_strip_delta_ratio', 0.3))
     maxiters = int(step_config.get('maxiters', 3))
+    n_iterations = max(int(step_config.get('n_iterations', 1)), 1)
+    # Rebuild SRCMASK on the running residual between iterations so stripe
+    # pixels that source detection masked at full amplitude (and biased the
+    # per-bin median low) are released as the residual cleans up. Heavy: each
+    # rebuild calls the four-tier ``striping._build_srcmask`` (FFT convs).
+    rebuild_srcmask = bool(step_config.get('rebuild_srcmask',
+                                            n_iterations > 1))
     do_plot = bool(step_config.get('plot', True))
 
     from jwst.datamodels import ImageModel, dqflags
 
     model = ImageModel(exposure_file)
     sci_before = model.data.copy()
+    dq_before = model.dq.copy()
+    err_before = model.err.copy()
 
     seg = _read_srcmask(exposure_file)
     if seg is None:
         log(f"diag_striping: no SRCMASK on {rootname}; rebuilding from DQ only")
         seg = np.zeros(model.data.shape, dtype=bool)
-    mask = (model.dq > 0) | seg | ~np.isfinite(model.data)
+    mask = (dq_before > 0) | seg | ~np.isfinite(sci_before)
 
     log(f"diag_striping: searching θ in [{theta_min}, {theta_max}]° "
         f"(coarse {coarse_step}°, fine {fine_step}°)")
@@ -377,27 +526,82 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
         sci_before, mask, bin_width,
         theta_min, theta_max, coarse_step, fine_step,
         fine_window=fine_window,
-    )
-    log(f"diag_striping: optimal θ = {opt_theta:.2f}°  "
-        f"min-score = {scores.min():.4e}")
-
-    diag_model = diagonal_stripe_model_blended(
-        sci_before, mask, opt_theta, bin_width,
         column_width=column_width, overlap=overlap,
         max_strip_delta_ratio=max_strip_delta_ratio,
+        maxiters=maxiters,
     )
-    sci_diag_subbed = sci_before - diag_model
+    log(f"diag_striping: opt θ = {opt_theta:.2f}°  "
+        f"min-score = {scores.min():.4e}")
+    # One trace per scoring pass — iter 1's coarse+fine plus each later
+    # iter's fine refinement on the cleaned residual. Score landscapes
+    # change across iters (Var(data) shrinks as stripe is subtracted), so
+    # the diagnostic plot draws each in its own colour rather than
+    # concatenating them onto a single y-axis.
+    score_traces = [('iter 1: coarse + fine', thetas, scores)]
 
-    horizontal, vertical, ampcounts = fit_residual_striping(
-        sci_diag_subbed, mask, maxiters,
-    )
+    diag_model = np.zeros(sci_before.shape, dtype=np.float64)
+    hv_model = np.zeros(sci_before.shape, dtype=np.float64)
+    working = sci_before.copy()
+    ampcounts = []
+    for it in range(n_iterations):
+        # Refresh SRCMASK between iterations. θ stays fixed at iter-1's
+        # value: iter 1's score curve is computed on the original
+        # high-signal data and has a clean minimum, while iter 2+ scores
+        # on a residual with most stripe-aligned signal already removed —
+        # the score landscape is flat over the fine window, so argmin
+        # walks toward whichever edge has more residual sky/source slope
+        # rather than toward a real angular optimum.
+        if it > 0 and rebuild_srcmask:
+            from campfire_pipeline.nircam.steps.striping import _build_srcmask
+            stub = ImageModel()
+            stub.data = working.astype(np.float32)
+            stub.err = err_before
+            stub.dq = dq_before
+            seg = _build_srcmask(stub).astype(bool)
+            stub.close()
+            mask = (dq_before > 0) | seg | ~np.isfinite(sci_before)
+            log(f"diag_striping: iter {it + 1}: rebuilt SRCMASK "
+                f"(masked frac = {seg.mean():.3f})")
+
+        # Strip-blended every iteration: the SRCMASK-eats-stripe-peaks
+        # trap that motivated a global-only iter 1 is already mitigated
+        # by the global per-bin median fallback inside
+        # ``diagonal_stripe_model_blended`` (used wherever every covering
+        # strip lacks min_pixels in a bin). A global-only first pass
+        # under-corrects when scattered-light amplitude varies across
+        # strips — the dominant case the strip-blended model was added
+        # to capture.
+        diag_iter = diagonal_stripe_model_blended(
+            working, mask, opt_theta, bin_width,
+            column_width=column_width, overlap=overlap,
+            max_strip_delta_ratio=max_strip_delta_ratio,
+            maxiters=maxiters,
+        )
+        diag_model += diag_iter
+        working = sci_before - diag_model - hv_model
+
+        h_iter, v_iter, ampcounts = fit_residual_striping(
+            working, mask, maxiters,
+        )
+        hv_model += h_iter + v_iter
+        working = sci_before - diag_model - hv_model
+
+        finite = np.isfinite(diag_iter)
+        damp = float(np.nanmax(np.abs(diag_iter[finite]))) if finite.any() else 0.0
+        hamp = float(np.nanmax(np.abs(h_iter + v_iter)))
+        log(f"diag_striping: iter {it + 1}/{n_iterations}: "
+            f"max |Δdiag| = {damp:.3e}, max |ΔHV| = {hamp:.3e}")
+
     log(f"diag_striping: residual full-row medians used: "
         f"{', '.join(ampcounts)}/{sci_before.shape[0]}")
 
-    sci_after = sci_diag_subbed - horizontal - vertical
+    sci_after = working
+    # Restore exact-zero reference-border pixels (the model can drift them
+    # off zero by tiny amounts).
     sci_after[sci_before == 0] = 0
+    # Pre-existing NaNs propagate to the output as NaN — flag DO_NOT_USE
+    # so downstream resampling skips them, but don't overwrite the value.
     wnan = np.isnan(sci_after)
-    sci_after[wnan] = 0
     bpflag = dqflags.pixel['DO_NOT_USE']
     model.dq[wnan] = np.bitwise_or(model.dq[wnan], bpflag)
     model.data = sci_after
@@ -414,7 +618,7 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     cfp_value = (
         f'theta={opt_theta:.2f}, range=[{theta_min},{theta_max}], '
         f'bin={bin_width}, col={column_width}/{overlap}, '
-        f'delta={max_strip_delta_ratio}'
+        f'delta={max_strip_delta_ratio}, niter={n_iterations}'
     )
     atomic_save(
         model, exposure_file,
@@ -432,10 +636,9 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
         plot_diag_striping(
             sci_before=sci_before,
             diag_model=diag_model,
-            residual_model=horizontal + vertical,
+            residual_model=hv_model,
             sci_after=sci_after,
-            thetas=thetas,
-            scores=scores,
+            score_traces=score_traces,
             opt_theta=opt_theta,
             save_file=diag_pdf,
             title=rootname,

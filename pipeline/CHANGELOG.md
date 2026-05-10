@@ -38,6 +38,80 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Algorithm
+- NIRCam ``diag_striping`` step — substantial rewrite of the iteration,
+  amplitude estimator, and angle metric:
+  - **Column blending bug fix**: ``_column_weights`` now ramps each
+    strip's weight across the *full* overlap region (previously only
+    over ``overlap // 2`` on each side). Adjacent strips' weights are
+    now complementary, giving a constant unit weight sum across the
+    overlap (a true partition of unity). The old behavior produced a
+    kink at the strip boundary when adjacent per-bin amplitudes
+    differed — visible as residual edges at strip seams when amplitude
+    varied sharply (e.g. near a bright off-axis source).
+  - **Global per-bin median fallback** in
+    ``diagonal_stripe_model_blended``: when every strip covering a
+    pixel has too few unmasked values in that pixel's bin (below
+    ``min_pixels``), the model falls back to the global per-bin median
+    (computed across all strips combined) instead of silently emitting
+    zero. The previous behavior left stripes untouched at exactly the
+    rows where SRCMASK had eaten the brightest pixels — a
+    self-reinforcing trap once iteration started rebuilding the mask
+    on the (still-bright) residual.
+  - **Strip-blended applied every iteration**, not just iter 2+. The
+    earlier global-only iter 1 was a guard against the SRCMASK-eats-
+    stripe-peaks trap, but the global per-bin median fallback inside
+    ``diagonal_stripe_model_blended`` already covers that case
+    (pixels whose every covering strip lacks ``min_pixels`` in a bin
+    get the global estimate). A global-only first pass meanwhile
+    under-corrects when scattered-light amplitude varies across
+    strips — exactly the regime the strip-blended model was added to
+    handle. Under ``n_iterations >= 2``, iter 2+ rebuilds SRCMASK on
+    the running residual (default when ``n_iterations > 1``) so
+    stripe peaks initially flagged as sources are released as the
+    amplitude bleeds into the running model. θ stays fixed at iter
+    1's optimum: re-scoring on a cleaned residual gives a flat score
+    landscape, so argmin walks rather than locks. Per-iteration
+    diagonal and H+V contributions accumulate into single cumulative
+    models.
+  - **Angle metric**: scoring switched from ``MAD²(residual)`` of a
+    global per-bin median to ``-Var(M(θ))`` on the strip-blended model
+    image. Same argmin by total-variance decomposition
+    (``Var(D) = Var(M) + Var(D−M)`` with the residual-cross-term
+    independent of θ for fixed mask), but the score is the captured
+    signal itself — sharper minimum and decoupled from the θ-
+    independent un-modeled-source-residual floor. The score model now
+    matches the applied model (strip-blended with the configured
+    ``column_width``/``overlap``/``max_strip_delta_ratio``), so the
+    angle search rewards exactly the model the pipeline will subtract.
+  - **Robust per-bin clip**: ``_per_bin_clipped_median`` now uses an
+    inlined ``mad_std = 1.4826 * MAD`` threshold instead of bespoke
+    ``np.std``-based clipping. Non-robust ``np.std`` is inflated by
+    the very SRCMASK leakers the iteration is meant to reject — for
+    small per-bin N, a few stripe-peak leakers float the clip
+    threshold above themselves, defeating the rejection. Inlined
+    rather than calling ``astropy.stats.sigma_clipped_stats`` per bin:
+    that helper has ~50–100 µs of per-call machinery overhead and we
+    call it ~500 K times per exposure (n_bins × n_strips × n_angles).
+  - **``maxiters`` threaded** from ``[nircam.diag_striping].maxiters``
+    all the way through ``diagonal_stripe_model{,_blended}`` →
+    ``_per_bin_clipped_median`` (previously hardcoded to 2 in the
+    helper, so the config knob only affected the H+V residual fit).
+  - **Scoring perf**: angle scoring (a) skips the global per-bin
+    median fallback (``compute_fallback=False``) since NaN model
+    pixels are filtered from the score anyway; (b) skips the
+    cross-strip regularizer (``regularize=False``) since it
+    compresses ``Var(M)`` slightly without shifting argmax; (c)
+    reuses the output buffer as the ``np.divide`` target instead of
+    allocating a (H, W) ``float64`` copy per call; (d) hoists the
+    θ-independent masking pass (``np.where(mask | ~isfinite(data))``)
+    out of the angle loop in ``_coarse_fine_search`` so it runs once
+    instead of once per angle.
+  - **NaN preservation**: pre-existing NaN pixels in the input SCI now
+    propagate through to the corrected output unchanged (with the
+    DO_NOT_USE bit still set). The previous behavior overwrote them
+    with 0, silently changing pixel values relative to the post-sky
+    upstream snapshot.
+  - Provenance recorded as ``niter=N`` in ``CFP_DIAG``.
 - NIRCam ``wcs_shift`` step (new, opt-in): applies a per-rule bulk
   astrometric shift to the GWCS via ``jwst.tweakreg.utils.adjust_wcs``
   before ``jhat``, for visits whose pipeline astrometry lands outside

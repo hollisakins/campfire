@@ -137,13 +137,21 @@ def plot_sky(sci_before, sci_after, hist_data, popt, pedestal,
 
 
 def plot_diag_striping(sci_before, diag_model, residual_model, sci_after,
-                       thetas, scores, opt_theta, save_file=None, title=None):
+                       score_traces, opt_theta, save_file=None, title=None):
     """Diagonal-striping diagnostic.
 
     Five-panel layout:
-      - top: variance vs θ with the chosen optimum marked
+      - top: −Var(M) vs θ, one trace per iteration's angle search
       - row 2: original SCI | diagonal stripe model
       - row 3: residual horizontal+vertical model | corrected SCI
+
+    Parameters
+    ----------
+    score_traces : list of (label, thetas, scores)
+        One entry per iteration's angle scoring pass. Iter 1's coarse +
+        fine pass is one trace; each iter > 0 fine refinement is another.
+        Plotted in distinct colors so the user can see how the score
+        curve changes as the residual is cleaned.
 
     All four image panels share ``sci_before``'s ZScale so amplitudes
     are directly comparable.
@@ -160,11 +168,17 @@ def plot_diag_striping(sci_before, diag_model, residual_model, sci_after,
     ax_resid = fig.add_subplot(gs[2, 0])
     ax_final = fig.add_subplot(gs[2, 1])
 
-    ax_var.plot(thetas, scores, marker='o', ms=3, lw=0.8, color='k')
+    cmap = plt.get_cmap('viridis')
+    n = max(len(score_traces), 1)
+    for i, (label, t, s) in enumerate(score_traces):
+        order = np.argsort(t)
+        color = cmap(0.0 if n == 1 else i / (n - 1))
+        ax_var.plot(np.asarray(t)[order], np.asarray(s)[order],
+                    marker='o', ms=3, lw=0.8, color=color, label=label)
     ax_var.axvline(opt_theta, color='red', ls='--', lw=1,
                    label=f'optimum θ = {opt_theta:.2f}°')
     ax_var.set_xlabel('angle (degrees)')
-    ax_var.set_ylabel('residual MAD²')
+    ax_var.set_ylabel('−Var(M(θ))')
     ax_var.legend(loc='best', fontsize=9)
     if title:
         ax_var.set_title(title, fontsize=10)

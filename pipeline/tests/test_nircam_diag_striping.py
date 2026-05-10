@@ -243,3 +243,42 @@ def test_bin_indices_contiguous(theta):
     unique = np.unique(bin_idx)
     assert unique[0] == 0
     assert np.array_equal(unique, np.arange(unique[-1] + 1))
+
+
+def test_blended_model_falls_back_to_global_when_strips_starved():
+    """When SRCMASK eats every strip's bin sample below ``min_pixels``, the
+    blended model should substitute the global per-bin median rather than
+    silently emit zeros — that's the under-subtraction footgun."""
+    rng = np.random.default_rng(13)
+    shape = (512, 512)
+    theta_true = 30.0
+    bin_width = 3
+    stripe = _planted_diagonal_stripe(shape, theta_true, bin_width, rng,
+                                      smoothing=8.0)
+    noise = rng.normal(0.0, 0.05, shape).astype(np.float32)
+    data = stripe + noise
+
+    # Mask a horizontal band severely enough that any 64-px-wide strip
+    # has fewer than 5 unmasked pixels in many bins of that band, but
+    # the global per-bin median (full image) still has plenty.
+    mask = np.zeros(shape, dtype=bool)
+    mask[230:280, :] = True
+    rng.shuffle(mask[230:280, :].ravel())  # leave just a few unmasked pixels
+
+    blended = diagonal_stripe_model_blended(
+        data, mask, theta_true, bin_width,
+        column_width=64, overlap=0, min_pixels=5,
+    )
+
+    # The blended model in the masked band should track the real stripe
+    # via the global fallback rather than collapse to zero.
+    band_model = blended[230:280, :]
+    band_truth = stripe[230:280, :]
+    # Naive (no-fallback) implementation would have band_model == 0 at most
+    # bins; check residual is well below truth amplitude.
+    band_rms_resid = np.sqrt(np.mean((band_model - band_truth) ** 2))
+    band_rms_truth = np.sqrt(np.mean(band_truth ** 2))
+    assert band_rms_resid < 0.6 * band_rms_truth, (
+        f"fallback insufficient: resid {band_rms_resid:.3f} vs "
+        f"truth {band_rms_truth:.3f}"
+    )
