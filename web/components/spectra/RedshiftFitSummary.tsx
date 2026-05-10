@@ -7,12 +7,13 @@ import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import type { Spectrum } from '@/lib/types';
 
 interface RedshiftFitSummaryProps {
-  spectra: Spectrum[];
+  spectra: (Spectrum & { observation?: string })[];
   redshift_auto: number | null;
 }
 
 interface GratingFit {
   grating: string;
+  observation?: string;
   fitsPath: string;
   redshift?: number;
   chi2Min?: number;
@@ -32,6 +33,7 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
     // Initialize loading state for all gratings
     const initialFits: GratingFit[] = spectra.map(s => ({
       grating: s.grating,
+      observation: s.observation,
       fitsPath: s.fits_path,
       isUsedForAuto: false, // Will be determined after loading
       loading: true,
@@ -142,6 +144,9 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
           <thead>
             <tr className="border-b border-border dark:border-slate-700">
               <th className="text-left py-2 px-3 text-sm font-medium text-text-secondary dark:text-slate-400">
+                Observation
+              </th>
+              <th className="text-left py-2 px-3 text-sm font-medium text-text-secondary dark:text-slate-400">
                 Grating
               </th>
               <th className="text-right py-2 px-3 text-sm font-medium text-text-secondary dark:text-slate-400">
@@ -166,6 +171,9 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
                   fit.isUsedForAuto ? 'bg-green-50 dark:bg-green-950' : ''
                 }`}
               >
+                <td className="py-2 px-3 text-sm text-text-primary dark:text-slate-100">
+                  {fit.observation ?? <span className="text-text-secondary dark:text-slate-400">—</span>}
+                </td>
                 <td className="py-2 px-3 text-sm font-medium text-text-primary dark:text-slate-100">
                   {fit.grating}
                 </td>
