@@ -111,6 +111,42 @@ Release procedure: edit the `## Unreleased` section below, then run
     DO_NOT_USE bit still set). The previous behavior overwrote them
     with 0, silently changing pixel values relative to the post-sky
     upstream snapshot.
+  - **Skip-condition gating** (new, default on via ``skip_abs_range``):
+    after the angle search, exposures whose -Var(M(θ)) curve provides
+    no meaningful stripe signal skip the subtraction entirely. Two-tier
+    OR (empirically derived from the F356W UDS audit of 306 exposures
+    in ``scripts/diag_striping_score_audit.py``):
+      - ``abs_range < skip_abs_range`` (default 1e-7): the score curve
+        is essentially flat at any θ — no real stripe geometry to fit.
+      - ``abs_range < skip_abs_range_at_edge`` (default 2e-7) AND the
+        optimum θ within ``skip_boundary_dist`` (default 0.3°) of the
+        search-range boundary: the search hit a wall with no interior
+        minimum. The flat-tier alone would let these through.
+    Skipped exposures write ``CFP_DIAG = 'SKIPPED: <reason>; would-be
+    theta=..., range=[...]'`` so the decision is auditable, and the
+    diagnostic PDF still renders with a ``[SKIPPED]`` title annotation
+    showing the flat or boundary-walked score curve. The canonical
+    SCI is bit-identical to the post-sky input on skip (apart from
+    the CFP_DIAG header and any new DO_NOT_USE flagging for NaN). Set
+    ``skip_abs_range = 0`` (and the at-edge pair) to disable. Reapply
+    on a different field requires re-auditing — defaults are tuned to
+    UDS data character, not universal.
+  - **Stripe-aware SRCMASK filter** (new, default on via
+    ``unmask_stripe_aligned``): after θ is determined, connected
+    components in the SRCMASK whose principal axis lies within
+    ``stripe_angle_tol_deg`` of θ and whose aspect ratio exceeds
+    ``stripe_aspect_min`` are unmasked before the per-bin median fit
+    (and after every iter 2+ SRCMASK rebuild). The ``striping``
+    masking pass uses a 25-px Gaussian smooth after a 40-px ring-
+    median that occasionally connects a bright scattered-light
+    stripe into a "source"; once masked, the diagonal bin running
+    along that stripe loses every unmasked pixel, the per-bin
+    median collapses to the (also-empty) global-median fallback,
+    and the stripe survives the subtraction intact. The filter
+    targets that failure mode without releasing genuine compact
+    sources (round components fail the aspect test) or off-axis
+    elongated galaxies (axis-orientation gating). Provenance:
+    ``unmask_aligned=1(ar=...,tol=...)`` in ``CFP_DIAG``.
   - Provenance recorded as ``niter=N`` in ``CFP_DIAG``.
 - NIRCam ``wcs_shift`` step (new, opt-in): applies a per-rule bulk
   astrometric shift to the GWCS via ``jwst.tweakreg.utils.adjust_wcs``

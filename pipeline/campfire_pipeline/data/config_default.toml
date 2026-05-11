@@ -183,6 +183,32 @@
     # adjacent amps. Set to 0 to disable cross-strip regularization.
     max_strip_delta_ratio = 0.3
     maxiters = 3
+    # Unmask SRCMASK components that look like θ-aligned stripes (long, thin,
+    # principal axis aligned with the recovered stripe angle). The masking
+    # built in ``striping`` occasionally catches a bright scattered-light
+    # stripe as a "source" — once masked, the diagonal bin running along
+    # that stripe has no unmasked samples and the per-bin median collapses
+    # to the global-median fallback (typically 0), leaving the stripe
+    # unsubtracted. Filtering releases those pixels.
+    unmask_stripe_aligned = true
+    stripe_aspect_min = 3.0
+    stripe_angle_tol_deg = 10.0
+    stripe_min_size = 20
+    # Skip the subtraction when the angle search hasn't found meaningful
+    # stripe signal — applying a model fit to noise does more harm than
+    # good (see ``scripts/diag_striping_score_audit.py`` for derivation).
+    # Skip if EITHER:
+    #   - abs_range = max(-Var(M)) - min(-Var(M)) < skip_abs_range
+    #     (curve is essentially flat at any θ)
+    #   - abs_range < skip_abs_range_at_edge AND the optimum sits within
+    #     skip_boundary_dist degrees of theta_min or theta_max
+    #     (argmin walked to the search wall, no real interior minimum)
+    # Defaults are tuned on F356W UDS; re-audit before exporting to a
+    # different field's data character. Set skip_abs_range = 0 (and the
+    # at-edge pair) to disable.
+    skip_abs_range = 1e-7
+    skip_abs_range_at_edge = 2e-7
+    skip_boundary_dist = 0.3
     plot = true
 
 [nircam.edge]

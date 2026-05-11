@@ -22,6 +22,8 @@ from campfire_pipeline.nircam.steps.diag_striping import (
     _coarse_fine_search,
     diagonal_stripe_model,
     diagonal_stripe_model_blended,
+    evaluate_skip_condition,
+    filter_srcmask_stripes,
     regularize_strip_deltas,
 )
 from campfire_pipeline.nircam.steps.striping import fit_residual_striping
@@ -234,6 +236,172 @@ def test_blended_model_with_regularization_caps_amp_jumps():
     # adds a small residual to the cross-strip RMS — the cap on the
     # cross-strip *paired* bins is 1/(1-0.3) ≈ 1.43.
     assert reg_ratio < 0.6 * unreg_ratio
+
+
+def _planted_mask_stripe(shape, theta_deg, half_width=3):
+    """Boolean mask of pixels lying within ``half_width`` of a line through
+    the image center at angle ``theta_deg`` measured in (x=col, y=row).
+
+    Matches the convention used by ``_bin_indices``: a stripe at θ runs
+    along ``(cos θ, sin θ)`` in array coordinates.
+    """
+    height, width = shape
+    y, x = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
+    cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
+    theta = np.radians(theta_deg)
+    # Perpendicular distance from line through (cx, cy) at angle θ.
+    perp = -(x - cx) * np.sin(theta) + (y - cy) * np.cos(theta)
+    return np.abs(perp) <= half_width
+
+
+def test_filter_srcmask_releases_aligned_stripe():
+    """A long thin component aligned with θ is unmasked; a compact disk
+    is preserved."""
+    shape = (200, 200)
+    mask = _planted_mask_stripe(shape, theta_deg=45.0, half_width=3)
+    yy, xx = np.ogrid[:200, :200]
+    disk = (yy - 150) ** 2 + (xx - 50) ** 2 <= 25
+    mask |= disk
+
+    out = filter_srcmask_stripes(
+        mask, theta_deg=45.0, aspect_min=3.0, angle_tol_deg=10.0,
+        min_size=20,
+    )
+    # Disk preserved.
+    assert out[150, 50]
+    # Stripe pixels released.
+    stripe_only = _planted_mask_stripe(shape, 45.0, half_width=3)
+    assert not out[stripe_only].any()
+
+
+def test_filter_srcmask_off_angle_stripe_preserved():
+    """Stripe outside ``angle_tol_deg`` of θ is left masked."""
+    shape = (200, 200)
+    mask = _planted_mask_stripe(shape, theta_deg=45.0, half_width=3)
+    out = filter_srcmask_stripes(
+        mask, theta_deg=20.0, aspect_min=3.0, angle_tol_deg=10.0,
+        min_size=20,
+    )
+    # 25° from θ → outside tolerance → still masked.
+    np.testing.assert_array_equal(out, mask)
+
+
+def test_filter_srcmask_min_size_skips_small_components():
+    """Tiny stripe-shaped components are not unmasked — moments are noisy
+    on small samples and bad-pixel artifacts shouldn't be released."""
+    mask = np.zeros((200, 200), dtype=bool)
+    # 3x10 thin sliver — aspect ratio looks stripe-like but only 30 px.
+    mask[100, 100:110] = True
+    mask[101, 100:110] = True
+    mask[102, 100:110] = True
+
+    out = filter_srcmask_stripes(
+        mask, theta_deg=0.0, aspect_min=2.0, angle_tol_deg=20.0,
+        min_size=40,
+    )
+    # min_size=40 > 30 px component → preserved.
+    np.testing.assert_array_equal(out, mask)
+
+    out2 = filter_srcmask_stripes(
+        mask, theta_deg=0.0, aspect_min=2.0, angle_tol_deg=20.0,
+        min_size=20,
+    )
+    # min_size=20 < 30 px → released.
+    assert not out2.any()
+
+
+def test_filter_srcmask_preserves_aspect_threshold():
+    """Compact source (aspect ≈ 1) is never released regardless of θ."""
+    mask = np.zeros((200, 200), dtype=bool)
+    yy, xx = np.ogrid[:200, :200]
+    mask |= (yy - 100) ** 2 + (xx - 100) ** 2 <= 100  # round-ish
+
+    for theta in (0.0, 30.0, 45.0, 60.0, 90.0):
+        out = filter_srcmask_stripes(
+            mask, theta_deg=theta, aspect_min=3.0, angle_tol_deg=15.0,
+            min_size=20,
+        )
+        np.testing.assert_array_equal(out, mask, err_msg=f"theta={theta}")
+
+
+def _angle_grid_with_dip(theta_min, theta_max, opt_theta, depth,
+                         step=0.2, baseline=-5e-5, width=0.5):
+    """Synthesize a narrow-Gaussian-dip -Var(M) curve.
+
+    abs_range = depth (within a tiny edge-truncation correction), so the
+    test caller can dial the regime (flat / shallow / deep) and the
+    minimum location independently.
+    """
+    thetas = np.arange(theta_min, theta_max + 1e-9, step)
+    scores = baseline - depth * np.exp(-((thetas - opt_theta) / width) ** 2)
+    return thetas, scores
+
+
+def test_skip_flat_curve():
+    """abs_range below skip_abs_range → skip with 'flat' reason."""
+    thetas, scores = _angle_grid_with_dip(27, 33, opt_theta=30, depth=5e-9)
+    skip, reason, abs_range, bdy = evaluate_skip_condition(
+        thetas, scores, opt_theta=30.0,
+        skip_abs_range=1e-7, skip_abs_range_at_edge=2e-7,
+        skip_boundary_dist=0.3,
+    )
+    assert skip
+    assert 'flat' in reason
+    assert abs_range < 1e-7
+
+
+def test_skip_boundary_walked():
+    """abs_range above flat threshold but below at-edge AND opt at edge → skip."""
+    thetas, scores = _angle_grid_with_dip(27, 33, opt_theta=27.05, depth=1.5e-7)
+    # Push the optimum hard to the lower edge.
+    opt = float(thetas[int(np.argmin(scores))])
+    skip, reason, abs_range, bdy = evaluate_skip_condition(
+        thetas, scores, opt_theta=opt,
+        skip_abs_range=1e-7, skip_abs_range_at_edge=2e-7,
+        skip_boundary_dist=0.3,
+    )
+    assert skip
+    assert 'edge' in reason
+    assert bdy < 0.3
+
+
+def test_no_skip_interior_minimum():
+    """Real interior dip with substantial abs_range → process."""
+    thetas, scores = _angle_grid_with_dip(27, 33, opt_theta=30, depth=1e-6)
+    opt = float(thetas[int(np.argmin(scores))])
+    skip, reason, abs_range, bdy = evaluate_skip_condition(
+        thetas, scores, opt_theta=opt,
+        skip_abs_range=1e-7, skip_abs_range_at_edge=2e-7,
+        skip_boundary_dist=0.3,
+    )
+    assert not skip
+    assert abs_range > 1e-7
+    assert bdy >= 0.3
+
+
+def test_no_skip_marginal_interior():
+    """Borderline abs_range (1e-7 < x < 2e-7) but interior optimum → process.
+    This is the regime where boundary_dist is the discriminator."""
+    thetas, scores = _angle_grid_with_dip(27, 33, opt_theta=30, depth=1.5e-7)
+    opt = float(thetas[int(np.argmin(scores))])
+    skip, reason, abs_range, bdy = evaluate_skip_condition(
+        thetas, scores, opt_theta=opt,
+        skip_abs_range=1e-7, skip_abs_range_at_edge=2e-7,
+        skip_boundary_dist=0.3,
+    )
+    assert not skip
+
+
+def test_skip_disabled_when_thresholds_zero():
+    """skip_abs_range=0 (and friends) disables both tiers."""
+    thetas, scores = _angle_grid_with_dip(27, 33, opt_theta=27.05, depth=1e-10)
+    opt = float(thetas[int(np.argmin(scores))])
+    skip, reason, abs_range, bdy = evaluate_skip_condition(
+        thetas, scores, opt_theta=opt,
+        skip_abs_range=0.0, skip_abs_range_at_edge=0.0,
+        skip_boundary_dist=0.0,
+    )
+    assert not skip
 
 
 @pytest.mark.parametrize('theta', [0.0, 15.0, 45.0, 75.0])

@@ -7,10 +7,11 @@ expensive — once per exposure is enough. This script keeps a sibling
 before diag_striping, so subsequent iterations on θ / bin / strip / niter
 parameters cost only the diag_striping step itself (~seconds).
 
-Default target matches the diagnostic PDF the user shared:
-    field   = uds
-    filter  = f277w
-    rootname = jw01837002011_02201_00001_nrcblong
+Default target is the F356W exposure where the stripe-as-source masking
+failure is visible in the residual:
+    field    = uds
+    filter   = f356w
+    rootname = jw01837002019_04201_00002_nrcblong
 
 Workflow
 --------
@@ -20,6 +21,10 @@ First run (downloads CRDS refs, runs upstream, creates snapshot):
 Subsequent iterations (restores snapshot, re-runs diag_striping):
     python scripts/test_diag_striping.py
     python scripts/test_diag_striping.py --bin-width 0.5 --n-iterations 3
+
+A/B comparison of the stripe-aware SRCMASK filter:
+    python scripts/test_diag_striping.py --no-unmask-stripe-aligned --suffix baseline
+    python scripts/test_diag_striping.py --suffix stripemask
 
 CLI overrides flow into the step config; whatever isn't overridden falls
 back to the merged default + fields.toml config.
@@ -41,9 +46,9 @@ from campfire_pipeline.nircam.field import Field
 from campfire_pipeline.nircam.orchestrate import run_step
 from campfire_pipeline.nircam.steps.diag_striping import diag_striping_step
 
-DEFAULT_ROOTNAME = 'jw01837002011_02201_00001_nrcblong'
+DEFAULT_ROOTNAME = 'jw01837002019_04201_00002_nrcblong'
 DEFAULT_FIELD = 'uds'
-DEFAULT_FILTER = 'f277w'
+DEFAULT_FILTER = 'f356w'
 
 UPSTREAM_STEPS = [
     'detector1', 'persistence', 'wisp', 'striping',
@@ -71,6 +76,25 @@ def parse_args():
     p.add_argument('--column-overlap', type=int, default=None)
     p.add_argument('--n-iterations', type=int, default=None)
     p.add_argument('--max-strip-delta-ratio', type=float, default=None)
+    # Stripe-aware SRCMASK filter (option A from the diagonal-stripe diagnosis):
+    # release connected components that are elongated along θ so a bright stripe
+    # mistakenly captured by source detection doesn't disappear from the per-bin
+    # median sample.
+    p.add_argument('--unmask-stripe-aligned', dest='unmask_stripe_aligned',
+                   action='store_true', default=None)
+    p.add_argument('--no-unmask-stripe-aligned', dest='unmask_stripe_aligned',
+                   action='store_false')
+    p.add_argument('--stripe-aspect-min', type=float, default=None)
+    p.add_argument('--stripe-angle-tol-deg', type=float, default=None)
+    p.add_argument('--stripe-min-size', type=int, default=None)
+    # Skip-condition overrides (set the abs_range pair to 0 to force apply).
+    p.add_argument('--skip-abs-range', type=float, default=None)
+    p.add_argument('--skip-abs-range-at-edge', type=float, default=None)
+    p.add_argument('--skip-boundary-dist', type=float, default=None)
+    p.add_argument('--suffix', default=None,
+                   help='Suffix to append to the output PDF basename so '
+                        'successive runs don\'t overwrite each other '
+                        '(e.g. "baseline" or "stripemask").')
     return p.parse_args()
 
 
@@ -129,6 +153,13 @@ def main():
         'column_overlap': args.column_overlap,
         'n_iterations': args.n_iterations,
         'max_strip_delta_ratio': args.max_strip_delta_ratio,
+        'unmask_stripe_aligned': args.unmask_stripe_aligned,
+        'stripe_aspect_min': args.stripe_aspect_min,
+        'stripe_angle_tol_deg': args.stripe_angle_tol_deg,
+        'stripe_min_size': args.stripe_min_size,
+        'skip_abs_range': args.skip_abs_range,
+        'skip_abs_range_at_edge': args.skip_abs_range_at_edge,
+        'skip_boundary_dist': args.skip_boundary_dist,
     }
     for key, val in overrides.items():
         if val is not None:
@@ -137,13 +168,22 @@ def main():
     print(">>> diag_striping config:")
     for k in ('theta_min', 'theta_max', 'theta_coarse_step', 'theta_fine_step',
               'bin_width', 'column_width', 'column_overlap',
-              'max_strip_delta_ratio', 'n_iterations', 'maxiters'):
+              'max_strip_delta_ratio', 'n_iterations', 'maxiters',
+              'unmask_stripe_aligned', 'stripe_aspect_min',
+              'stripe_angle_tol_deg', 'stripe_min_size',
+              'skip_abs_range', 'skip_abs_range_at_edge',
+              'skip_boundary_dist'):
         if k in cfg:
             print(f"      {k}: {cfg[k]}")
 
     diag_striping_step(canonical, field, cfg, overwrite=True, status=None)
 
     pdf = canonical[:-5] + '_diag_striping.pdf'
+    if args.suffix:
+        suffixed = canonical[:-5] + f'_diag_striping_{args.suffix}.pdf'
+        if os.path.exists(pdf):
+            shutil.move(pdf, suffixed)
+            pdf = suffixed
     print(f">>> done. plot: {pdf}")
 
 

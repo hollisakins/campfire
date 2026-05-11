@@ -462,6 +462,142 @@ def _read_srcmask(exposure_file):
         return hdul['SRCMASK'].data.astype(bool)
 
 
+def filter_srcmask_stripes(seg, theta_deg, aspect_min=3.0,
+                           angle_tol_deg=10.0, min_size=20):
+    """Unmask connected components in ``seg`` that look like θ-aligned stripes.
+
+    The source-detection mask written by ``striping`` is built with
+    Gaussian smoothing at scales up to 25 px after a 40-px ring-median
+    subtraction; a bright scattered-light stripe survives the ring filter
+    and gets connected into a "source" by the smoothing. Once masked, the
+    pixels along that stripe disappear from the per-bin median sample —
+    and because diagonal bins run *along* the stripe direction at the
+    optimum θ, every pixel in the bin overlapping the stripe is masked,
+    leaving the per-bin amplitude unestimable. The fallback yields 0 → no
+    subtraction at exactly the rows that need it most (visible in the
+    diagnostic as a residual stripe in the "Corrected" panel).
+
+    This filter restores those pixels. For each connected component in
+    ``seg`` it computes the 2D second-moment matrix from the component's
+    pixel coordinates (x = column, y = row in array order), then:
+      - ``aspect_ratio = sqrt(λ_major / λ_minor)`` where λ are the
+        eigenvalues of the covariance matrix
+      - principal-axis angle from the eigenvector for λ_major, taken
+        modulo 180° (the major axis is undirected)
+      - if ``aspect_ratio > aspect_min`` AND the principal angle lies
+        within ``angle_tol_deg`` of ``theta_deg``, the component is
+        unmasked
+
+    Components smaller than ``min_size`` pixels skip the test — moments
+    are noisy on tiny components and false positives risk releasing
+    isolated bad pixels that DQ might not have caught.
+
+    Trade-off: a real galaxy (or diffraction spike) whose major axis
+    happens to align with θ will be unmasked too. In practice this is
+    rare for the narrow ``angle_tol_deg`` we use, and the per-bin
+    sigma-clipped median rejects compact bright sources as outliers
+    regardless. Diffraction-spike pixel counts above ``min_size`` along
+    one spike are uncommon at typical PRIMER depth.
+    """
+    from scipy.ndimage import label as nd_label
+
+    if not seg.any():
+        return seg.copy()
+
+    labeled, n_components = nd_label(seg)
+    if n_components == 0:
+        return seg.copy()
+
+    out = seg.copy()
+    # Inclusive-1D histogram is cheaper than np.where per label.
+    sizes = np.bincount(labeled.ravel())
+    candidates = np.where(sizes[1:] >= min_size)[0] + 1
+    if candidates.size == 0:
+        return out
+
+    # Group pixels by label via argsort, same idiom as _per_bin_clipped_median.
+    flat_lab = labeled.ravel()
+    order = np.argsort(flat_lab, kind='stable')
+    sorted_lab = flat_lab[order]
+    splits = np.searchsorted(sorted_lab, np.arange(n_components + 2))
+    height, width = seg.shape
+    ys_all, xs_all = np.divmod(order, width)
+
+    n_unmasked = 0
+    for lab in candidates:
+        s, e = splits[lab], splits[lab + 1]
+        ys = ys_all[s:e]
+        xs = xs_all[s:e]
+        size = ys.size
+        cx = xs.mean()
+        cy = ys.mean()
+        dx = xs - cx
+        dy = ys - cy
+        mxx = float((dx * dx).sum()) / size
+        myy = float((dy * dy).sum()) / size
+        mxy = float((dx * dy).sum()) / size
+        tr = mxx + myy
+        det = mxx * myy - mxy * mxy
+        disc = (tr * tr / 4.0 - det)
+        disc = disc if disc > 0 else 0.0
+        disc = disc ** 0.5
+        lam_major = tr / 2.0 + disc
+        lam_minor = tr / 2.0 - disc
+        if lam_minor <= 0:
+            # Degenerate (single-pixel-wide line): treat as max aspect ratio.
+            aspect = np.inf
+        else:
+            aspect = (lam_major / lam_minor) ** 0.5
+        if aspect < aspect_min:
+            continue
+        # Principal eigenvector for [[mxx, mxy], [mxy, myy]] at λ_major:
+        #   (mxx - λ) vx + mxy vy = 0  →  v = (mxy, λ - mxx)
+        # Falls back to (1, 0) if both components vanish (perfectly axis-aligned
+        # line where mxy = 0 and mxx > myy → λ = mxx).
+        vx = mxy
+        vy = lam_major - mxx
+        if vx == 0 and vy == 0:
+            vx, vy = (1.0, 0.0) if mxx >= myy else (0.0, 1.0)
+        angle = np.degrees(np.arctan2(vy, vx))
+        delta = (angle - theta_deg) % 180.0
+        if delta > 90.0:
+            delta -= 180.0
+        if abs(delta) <= angle_tol_deg:
+            out[labeled == lab] = False
+            n_unmasked += 1
+
+    filter_srcmask_stripes.last_count = n_unmasked  # for caller logging
+    return out
+
+
+def evaluate_skip_condition(thetas, scores, opt_theta,
+                            skip_abs_range, skip_abs_range_at_edge,
+                            skip_boundary_dist):
+    """Return ``(skip: bool, reason: str, abs_range, boundary_dist)``.
+
+    Two-tier OR condition. The thresholds were chosen empirically from
+    the F356W UDS audit (``scripts/diag_striping_score_audit.py``); for
+    other fields, re-audit before lowering them. Pass ``skip_abs_range=0``
+    (or the matching pair=0) to disable each tier.
+    """
+    abs_range = float(scores.max() - scores.min())
+    theta_min = float(thetas.min())
+    theta_max = float(thetas.max())
+    boundary_dist = float(min(opt_theta - theta_min, theta_max - opt_theta))
+    if skip_abs_range > 0 and abs_range < skip_abs_range:
+        reason = (f"flat score curve "
+                  f"(abs_range={abs_range:.2e} < {skip_abs_range:.0e})")
+        return True, reason, abs_range, boundary_dist
+    if (skip_abs_range_at_edge > 0 and skip_boundary_dist > 0
+            and abs_range < skip_abs_range_at_edge
+            and boundary_dist < skip_boundary_dist):
+        reason = (f"shallow curve, optimum at search edge "
+                  f"(abs_range={abs_range:.2e} < {skip_abs_range_at_edge:.0e}, "
+                  f"boundary_dist={boundary_dist:.2f} < {skip_boundary_dist})")
+        return True, reason, abs_range, boundary_dist
+    return False, "", abs_range, boundary_dist
+
+
 def diag_striping_step(exposure_file, field, step_config, overwrite=False,
                        status=None):
     """Subtract scattered-light diagonal striping from a canonical exposure.
@@ -505,6 +641,29 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     # rebuild calls the four-tier ``striping._build_srcmask`` (FFT convs).
     rebuild_srcmask = bool(step_config.get('rebuild_srcmask',
                                             n_iterations > 1))
+    # Filter the SRCMASK to release connected components that are elongated
+    # along θ — bright stripes occasionally get detected as "sources" during
+    # masking and would otherwise leave their host bin with no unmasked
+    # samples (per-bin median NaN → fallback 0 → stripe unsubtracted).
+    unmask_stripe_aligned = bool(step_config.get('unmask_stripe_aligned', True))
+    stripe_aspect_min = float(step_config.get('stripe_aspect_min', 3.0))
+    stripe_angle_tol = float(step_config.get('stripe_angle_tol_deg', 10.0))
+    stripe_min_size = int(step_config.get('stripe_min_size', 20))
+    # Skip the subtraction when the angle search hasn't found meaningful
+    # stripe signal — applying a model fit to noise is the harm-not-help
+    # regime. Two-tier OR condition (see ``scripts/diag_striping_score_audit.py``
+    # for empirical justification on the F356W UDS audit set):
+    #   - ``abs_range = scores.max() - scores.min()`` below
+    #     ``skip_abs_range``: score curve is flat at any θ, no stripe.
+    #   - ``abs_range`` below ``skip_abs_range_at_edge`` AND the optimum
+    #     within ``skip_boundary_dist`` degrees of theta_min/theta_max:
+    #     argmin walked to the search wall (no real interior minimum).
+    # Set ``skip_abs_range = 0`` to disable both tiers; set only the
+    # at-edge pair to 0 to disable just the boundary-walked tier.
+    skip_abs_range = float(step_config.get('skip_abs_range', 0.0))
+    skip_abs_range_at_edge = float(
+        step_config.get('skip_abs_range_at_edge', 0.0))
+    skip_boundary_dist = float(step_config.get('skip_boundary_dist', 0.0))
     do_plot = bool(step_config.get('plot', True))
 
     from jwst.datamodels import ImageModel, dqflags
@@ -532,6 +691,30 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     )
     log(f"diag_striping: opt θ = {opt_theta:.2f}°  "
         f"min-score = {scores.min():.4e}")
+
+    skip, skip_reason, abs_range, boundary_dist = evaluate_skip_condition(
+        thetas, scores, opt_theta,
+        skip_abs_range, skip_abs_range_at_edge, skip_boundary_dist,
+    )
+    if skip:
+        log(f"diag_striping: SKIPPING subtraction — {skip_reason}")
+
+    if not skip and unmask_stripe_aligned and seg.any():
+        seg_in_count = int(seg.sum())
+        seg = filter_srcmask_stripes(
+            seg, opt_theta,
+            aspect_min=stripe_aspect_min,
+            angle_tol_deg=stripe_angle_tol,
+            min_size=stripe_min_size,
+        )
+        n_unmasked_components = getattr(
+            filter_srcmask_stripes, 'last_count', 0)
+        seg_out_count = int(seg.sum())
+        mask = (dq_before > 0) | seg | ~np.isfinite(sci_before)
+        log(f"diag_striping: unmasked {n_unmasked_components} "
+            f"stripe-aligned components ({seg_in_count - seg_out_count} px, "
+            f"{(seg_in_count - seg_out_count) / max(seg_in_count, 1):.3f} of "
+            f"original SRCMASK)")
     # One trace per scoring pass — iter 1's coarse+fine plus each later
     # iter's fine refinement on the cleaned residual. Score landscapes
     # change across iters (Var(data) shrinks as stripe is subtracted), so
@@ -543,7 +726,12 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     hv_model = np.zeros(sci_before.shape, dtype=np.float64)
     working = sci_before.copy()
     ampcounts = []
-    for it in range(n_iterations):
+    # When skipping, the iteration loop is bypassed: ``working`` stays at
+    # ``sci_before`` and the model arrays stay zero, so the saved canonical
+    # is bit-identical to the input (modulo CFP_DIAG header / DQ flag for
+    # NaN propagation). The diagnostic plot still renders below so the
+    # decision is traceable.
+    for it in range(0 if skip else n_iterations):
         # Refresh SRCMASK between iterations. θ stays fixed at iter-1's
         # value: iter 1's score curve is computed on the original
         # high-signal data and has a clean minimum, while iter 2+ scores
@@ -559,6 +747,13 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
             stub.dq = dq_before
             seg = _build_srcmask(stub).astype(bool)
             stub.close()
+            if unmask_stripe_aligned and seg.any():
+                seg = filter_srcmask_stripes(
+                    seg, opt_theta,
+                    aspect_min=stripe_aspect_min,
+                    angle_tol_deg=stripe_angle_tol,
+                    min_size=stripe_min_size,
+                )
             mask = (dq_before > 0) | seg | ~np.isfinite(sci_before)
             log(f"diag_striping: iter {it + 1}: rebuilt SRCMASK "
                 f"(masked frac = {seg.mean():.3f})")
@@ -592,8 +787,9 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
         log(f"diag_striping: iter {it + 1}/{n_iterations}: "
             f"max |Δdiag| = {damp:.3e}, max |ΔHV| = {hamp:.3e}")
 
-    log(f"diag_striping: residual full-row medians used: "
-        f"{', '.join(ampcounts)}/{sci_before.shape[0]}")
+    if not skip:
+        log(f"diag_striping: residual full-row medians used: "
+            f"{', '.join(ampcounts)}/{sci_before.shape[0]}")
 
     sci_after = working
     # Restore exact-zero reference-border pixels (the model can drift them
@@ -615,11 +811,19 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
                 hdu.data.copy(), header=hdu.header.copy(), name='SRCMASK',
             )
 
-    cfp_value = (
-        f'theta={opt_theta:.2f}, range=[{theta_min},{theta_max}], '
-        f'bin={bin_width}, col={column_width}/{overlap}, '
-        f'delta={max_strip_delta_ratio}, niter={n_iterations}'
-    )
+    if skip:
+        cfp_value = (
+            f'SKIPPED: {skip_reason}; would-be theta={opt_theta:.2f}, '
+            f'range=[{theta_min},{theta_max}]'
+        )
+    else:
+        cfp_value = (
+            f'theta={opt_theta:.2f}, range=[{theta_min},{theta_max}], '
+            f'bin={bin_width}, col={column_width}/{overlap}, '
+            f'delta={max_strip_delta_ratio}, niter={n_iterations}, '
+            f'unmask_aligned={int(unmask_stripe_aligned)}'
+            f'(ar={stripe_aspect_min},tol={stripe_angle_tol})'
+        )
     atomic_save(
         model, exposure_file,
         header_updates=cfp.format(CFP_DIAG=cfp_value),
@@ -633,6 +837,11 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
         diag_pdf = os.path.join(
             os.path.dirname(exposure_file), f'{rootname}_diag_striping.pdf',
         )
+        plot_title = rootname
+        if skip:
+            plot_title = (f"{rootname}  [SKIPPED — "
+                          f"abs_range={abs_range:.2e}, "
+                          f"bdy={boundary_dist:.2f}°]")
         plot_diag_striping(
             sci_before=sci_before,
             diag_model=diag_model,
@@ -641,6 +850,6 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
             score_traces=score_traces,
             opt_theta=opt_theta,
             save_file=diag_pdf,
-            title=rootname,
+            title=plot_title,
         )
         log(f"Saved {os.path.basename(diag_pdf)}")
