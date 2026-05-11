@@ -338,6 +338,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam `resample` step (campfire-native drizzle path): log a
+  `[i/N] drizzled <basename>` line per input exposure, mirroring the
+  per-exposure progress the JWST `Image3Pipeline` path already prints.
+  Inputs that don't overlap the tile log `[i/N] <basename>: no tile
+  overlap, skipping` in place of the prior batched summary.
 - NIRCam `outlier` step: keep stcal's on-disk median scratch out of the
   user's home directory. `MedianComputer` creates its temp dir via
   `tempfile.TemporaryDirectory(dir=tempdir)`, where the stcal default

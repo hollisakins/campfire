@@ -326,13 +326,15 @@ def drizzle_tile(
     )
 
     skipped = 0
-    for crf_file in crf_files:
+    for i, crf_file in enumerate(crf_files, start=1):
+        basename = os.path.basename(crf_file)
         prep = _prepare_drizzle_input(
             crf_file, output_wcs, out_shape,
             weight_type=weight_type, good_bits=good_bits,
         )
         if prep is None:
             skipped += 1
+            log(f"  [{i}/{n_inputs}] {basename}: no tile overlap, skipping")
             continue
 
         common = _add_image_kwargs(prep, pixfrac)
@@ -341,9 +343,7 @@ def drizzle_tile(
             data=(prep['var_total'] * prep['weight']).astype(np.float32),
             **common,
         )
-
-    if skipped:
-        log(f"  {skipped} inputs did not overlap tile")
+        log(f"  [{i}/{n_inputs}] drizzled {basename}")
 
     total_exptime = float(sci_drizzle.total_exptime)
 
