@@ -302,6 +302,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam `outlier` step: keep stcal's on-disk median scratch out of the
+  user's home directory. `MedianComputer` creates its temp dir via
+  `tempfile.TemporaryDirectory(dir=tempdir)`, where the stcal default
+  `tempdir=""` resolves against the **current working directory**
+  (not `$TMPDIR`). On networked-FS clusters like CANDIDE, CWD is the
+  user's home, so every visit's median buffer (`tmpXXXX/N.bin` per
+  section) accumulated against the home quota. Both outlier paths are
+  fixed: the campfire path (`outlier_detect_for_visit`) now passes
+  `tempdir=tempfile.gettempdir()` when no explicit tempdir is given,
+  and the jwst path (`outlier_step`) `chdir`s into its `outlier-*`
+  scratch (which already lives under `$TMPDIR` and is auto-cleaned)
+  for the duration of `Image3Pipeline.call`, so the implicit CWD-rooted
+  scratch lands inside the scratch dir.
 - NIRCam orchestrator: skip the `_scan_status` pre-scan when
   `--overwrite` is set, returning an empty `StepStatus` instead. With
   `--overwrite`, every step runs regardless of prior state, so the

@@ -239,14 +239,26 @@ def outlier_step(visit, visit_files, filter_files, sregions,
             _, serialized = asn.dump(format='json')
             fp.write(serialized)
 
+        # Image3Pipeline's outlier step uses stcal MedianComputer, which
+        # creates its on-disk scratch via tempfile.TemporaryDirectory(dir='')
+        # — that resolves against CWD, not $TMPDIR (see
+        # stcal/outlier_detection/median.py:269). On networked-FS clusters
+        # CWD is the user's home dir, filling the home quota with `N.bin`
+        # files. chdir into our scratch (which lives under $TMPDIR and is
+        # auto-cleaned) so the median scratch piggybacks on it.
+        orig_cwd = os.getcwd()
         try:
-            calwebb_image3.Image3Pipeline.call(
-                asn_file, output_dir=scratch, steps=params,
-                save_results=True,
-            )
-        except Exception:
-            log(f"outlier failed on visit {visit}")
-            raise
+            os.chdir(scratch)
+            try:
+                calwebb_image3.Image3Pipeline.call(
+                    asn_file, output_dir=scratch, steps=params,
+                    save_results=True,
+                )
+            except Exception:
+                log(f"outlier failed on visit {visit}")
+                raise
+        finally:
+            os.chdir(orig_cwd)
 
         # Promote only the visit's own outputs back to canonical
         scratch_files = sorted(

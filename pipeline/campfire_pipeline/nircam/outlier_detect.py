@@ -31,6 +31,7 @@ accumulator updates).
 """
 
 import os
+import tempfile
 from copy import deepcopy
 
 import numpy as np
@@ -142,9 +143,14 @@ def outlier_detect_for_visit(
     log(f"  campfire outlier (per-visit): {n_inputs} inputs into "
         f"{nx}x{ny} visit WCS")
 
+    # tempdir='' makes MedianComputer drop its on-disk median scratch in the
+    # current working directory (stcal/outlier_detection/median.py:269 calls
+    # tempfile.TemporaryDirectory(dir=tempdir), and dir='' resolves against
+    # CWD, not $TMPDIR). On networked-FS clusters CWD is the user's home
+    # dir, which fills the home quota. Force a real tempdir.
     sci_mc = MedianComputer(
         full_shape=(n_inputs,) + out_shape,
-        in_memory=in_memory, tempdir=tempdir or '',
+        in_memory=in_memory, tempdir=tempdir or tempfile.gettempdir(),
     )
 
     # Reusable visit-shape scratch for pasting bbox-sliced rasters into
