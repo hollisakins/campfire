@@ -348,6 +348,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   Supports `--stage uncal` (raw quick-look) and `--stage canonical`
   (post-jhat). Default pixel scale 0.5"/pix; per-filter parallelism via
   `-p`.
+- NIRCam `expmap` polish:
+  - **Shared WCS across filters**: the auto-WCS is now sized to enclose
+    the union of S_REGION polygons across *every* filter in the
+    invocation (rather than per-filter), so per-filter expmaps are
+    pixel-registered and can be stacked or differenced directly.
+  - **Header-scan progress**: per-filter `tqdm` bar while reading
+    XPOSURE/S_REGION headers in phase 1 (previously silent).
+  - **PDF colormap**: switched from `Greys` (lowest-exposure pixels
+    indistinguishable from white background) to `magma` with zeros
+    masked, and dropped `vmin` from the 5th percentile to the actual
+    nonzero minimum. Low-exposure edges are now clearly visible against
+    the off-footprint background.
 - NIRCam `resample` step (campfire-native drizzle path): log a
   `[i/N] drizzled <basename>` line per input exposure, mirroring the
   per-exposure progress the JWST `Image3Pipeline` path already prints.

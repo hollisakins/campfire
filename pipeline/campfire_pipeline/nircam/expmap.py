@@ -8,8 +8,11 @@ at footprint edges, which is the wrong physics for an exposure map.
 
 Auto-WCS: TAN projection at a user-chosen pixel scale, centered on the
 centroid of the union of all S_REGIONs and sized to enclose every polygon
-plus padding. No tile dependency — works on fields without a ``[tiles]``
-block, suitable for full-field diagnostics.
+plus padding. The WCS is shared across all filters in the invocation
+(union of polygons across every filter), so per-filter expmaps are
+pixel-registered for direct stacking/comparison. No tile dependency —
+works on fields without a ``[tiles]`` block, suitable for full-field
+diagnostics.
 
 Outputs (per invocation, under ``{products_dir}/expmaps/``):
 
@@ -169,17 +172,22 @@ def _write_pdf(path, expmap, wcs, *, field_name, filter_name, stage, metas):
         log('  expmap is all zero; skipping PDF')
         return
 
-    vmin = max(float(np.percentile(nonzero, 5)), 1.0)
+    vmin = max(float(nonzero.min()), 1.0)
     vmax = float(nonzero.max())
     if vmax <= vmin:
         vmax = vmin * 10
     norm = mpl.colors.LogNorm(vmin=vmin, vmax=vmax)
 
+    # Mask zeros so the off-footprint background renders via ``set_bad``
+    # (white) and remains visually distinct from the lowest exposure
+    # values, which sit at the bottom of the colormap.
+    masked = np.ma.masked_where(expmap <= 0, expmap)
+
     fig = plt.figure(figsize=(7.5, 6.5), dpi=200, constrained_layout=True)
     ax = fig.add_subplot(111, projection=wcs)
-    cmap = mpl.colormaps['Greys'].copy()
+    cmap = mpl.colormaps['magma'].copy()
     cmap.set_bad('w')
-    im = ax.imshow(expmap, origin='lower', cmap=cmap, norm=norm,
+    im = ax.imshow(masked, origin='lower', cmap=cmap, norm=norm,
                    interpolation='nearest')
 
     ax.set_xlabel('RA')
@@ -234,7 +242,8 @@ def _collect_metas(field, filter_name, stage):
             f"unknown stage {stage!r} (use 'uncal' or 'canonical')")
 
     metas = []
-    for f in files:
+    for f in tqdm.tqdm(files, desc=f'[{filter_name}] scanning headers',
+                      unit='file', leave=False):
         try:
             m = _read_metadata(f)
         except Exception as e:
@@ -248,8 +257,13 @@ def _collect_metas(field, filter_name, stage):
 
 
 def _process_filter(args):
-    """One-filter worker. Builds (or reuses) FITS + PDF, returns metas."""
-    field, filter_name, stage, pixel_scale, padding, out_dir, overwrite = args
+    """One-filter worker. Builds (or reuses) FITS + PDF, returns metas.
+
+    Receives a pre-computed WCS shared across all filters in the
+    invocation so the resulting expmaps are pixel-registered.
+    """
+    (field, filter_name, stage, wcs, shape, metas,
+     out_dir, overwrite) = args
 
     fits_path = os.path.join(out_dir, f'expmap_{filter_name}_{stage}.fits')
     pdf_path = os.path.join(out_dir, f'expmap_{filter_name}_{stage}.pdf')
@@ -260,14 +274,9 @@ def _process_filter(args):
         log(f'[{filter_name}] up to date (pass --overwrite to rebuild)')
         return filter_name, [], fits_path, pdf_path
 
-    metas = _collect_metas(field, filter_name, stage)
     if not metas:
         log(f'[{filter_name}] no {stage} files found; skipping')
         return filter_name, [], None, None
-
-    wcs, shape = _auto_wcs(metas, pixel_scale, padding)
-    log(f'[{filter_name}] {len(metas)} exposures · WCS {shape[1]}×{shape[0]} '
-        f'@ {pixel_scale}"/pix')
 
     expmap = _accumulate_expmap(metas, wcs, shape,
                                 desc=f'[{filter_name}] stacking')
@@ -331,7 +340,29 @@ def run_expmap(
     log(f'Expmap: field={field.name}, filters={filter_list}, '
         f'stage={stage}, pixel_scale={pixel_scale}"/pix, out_dir={out_dir}')
 
-    work = [(field, f, stage, pixel_scale, padding, out_dir, overwrite)
+    # Phase 1: scan headers for every filter (sequential so the tqdm bars
+    # don't fight each other — header reads are I/O-cheap relative to the
+    # accumulation phase).
+    per_filter_metas = {}
+    for filt in filter_list:
+        metas = _collect_metas(field, filt, stage)
+        per_filter_metas[filt] = metas
+        log(f'[{filt}] {len(metas)} {stage} exposures')
+
+    all_metas = [m for ms in per_filter_metas.values() for m in ms]
+    if not all_metas:
+        log('No exposures found across any filter; nothing to do.')
+        return
+
+    # Phase 2: one shared WCS sized to enclose every polygon across every
+    # filter, so the per-filter expmaps are pixel-registered.
+    wcs, shape = _auto_wcs(all_metas, pixel_scale, padding)
+    log(f'Shared WCS across {len(filter_list)} filters: '
+        f'{shape[1]}×{shape[0]} @ {pixel_scale}"/pix')
+
+    # Phase 3: per-filter accumulation (parallelizable across filters).
+    work = [(field, f, stage, wcs, shape, per_filter_metas[f],
+             out_dir, overwrite)
             for f in filter_list]
 
     if n_processes <= 1 or len(work) == 1:
