@@ -78,6 +78,7 @@ def common_options(f):
 def processing_options(f):
     """``--filters``, ``-p`` / ``--processes``, ``--overwrite``."""
     f = click.option('--filters', multiple=True, default=None,
+                     cls=VariadicOption,
                      help='Filters to process (default: all from field).')(f)
     f = click.option('--processes', '-p', default=1, type=int,
                      help='Number of parallel processes.')(f)
@@ -210,7 +211,7 @@ main.add_command(refcat_group)
 
 @main.command()
 @common_options
-@click.option('--tiles', multiple=True, default=None,
+@click.option('--tiles', multiple=True, default=None, cls=VariadicOption,
               help='Tile name(s) to render (default: all tiles in field).')
 @click.option('--pixel-scale', default=None,
               help='Pixel scale label (e.g. "30mas"). '
@@ -285,7 +286,7 @@ def expmap(config, field, filters, stage, pixel_scale, padding,
 
 @main.command()
 @common_options
-@click.option('--filters', multiple=True, default=None,
+@click.option('--filters', multiple=True, default=None, cls=VariadicOption,
               help='Filters to check (default: all from field).')
 def check(config, field, filters):
     """Report which mosaic tiles are stale and need re-mosaicking."""
@@ -330,7 +331,7 @@ def check(config, field, filters):
 
 @main.command()
 @common_options
-@click.option('--filters', multiple=True, default=None,
+@click.option('--filters', multiple=True, default=None, cls=VariadicOption,
               help='Filters to check (default: all from field).')
 def status(config, field, filters):
     """Show CFP_* completion status for each canonical exposure."""
@@ -395,7 +396,7 @@ def status(config, field, filters):
 
 @main.command()
 @common_options
-@click.option('--filters', multiple=True, default=None,
+@click.option('--filters', multiple=True, default=None, cls=VariadicOption,
               help='Filters to reset (default: all from field).')
 @click.option('--from', 'from_step', default=None,
               type=click.Choice(STEP_NAMES),
