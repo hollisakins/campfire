@@ -323,8 +323,12 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
         log(f"Applying flat {os.path.basename(flatfile)} for striping fit")
         fit_model = _apply_flat_with_retry(fit_model, flatfile)
 
-    mask = np.zeros(fit_model.data.shape, dtype=bool)
-    mask[fit_model.dq > 0] = True
+    # Only DO_NOT_USE pixels are unusable for fitting — JUMP_DET and other
+    # informational bits flag pixels that have already been corrected and
+    # are still fine for sky/striping estimation. (Some exposures, e.g.
+    # bright-target MSATA pointings on MEDIUM8/NGROUPS=9, get JUMP_DET set
+    # on >97% of pixels; treating dq>0 as bad masks the entire frame.)
+    mask = np.bitwise_and(fit_model.dq, dqflags.pixel['DO_NOT_USE']) != 0
     if mask_sources:
         mask[seg > 0] = True
 

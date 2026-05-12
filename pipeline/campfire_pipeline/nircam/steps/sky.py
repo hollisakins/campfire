@@ -2,7 +2,7 @@
 sky: subtract a constant sky pedestal from the canonical exposure SCI.
 
 Per-exposure step. Reads the ``SRCMASK`` extension written by striping (no
-more cross-stage sidecar lookup), takes pixels with ``DQ == 0`` and
+more cross-stage sidecar lookup), takes pixels without ``DO_NOT_USE`` and
 ``SRCMASK == 0``, sigma-clips, fits a Gaussian to the sky distribution, and
 subtracts the fitted mean from SCI. Updates ``meta.background.*`` and stamps
 ``CFP_SKY`` with the pedestal value.
@@ -44,13 +44,16 @@ def sky_step(exposure_file, field, step_config, overwrite=False, status=None):
 
     log(f"Running sky on {rootname}")
 
-    from jwst.datamodels import ImageModel
+    from jwst.datamodels import ImageModel, dqflags
     from stdatamodels import util as stutil
 
     with ImageModel(exposure_file) as model:
         sci = model.data
         dq = model.dq
-        idx = np.where((dq == 0) & (seg == 0))
+        # Only DO_NOT_USE pixels are unusable for the sky sample —
+        # informational bits like JUMP_DET flag already-corrected pixels.
+        bp = np.bitwise_and(dq, dqflags.pixel['DO_NOT_USE']) != 0
+        idx = np.where(~bp & (seg == 0))
         data = sci[idx].flatten()
 
         data = sigma_clip(

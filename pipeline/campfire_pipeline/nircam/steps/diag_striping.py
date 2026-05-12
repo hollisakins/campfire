@@ -672,12 +672,15 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     sci_before = model.data.copy()
     dq_before = model.dq.copy()
     err_before = model.err.copy()
+    # Only DO_NOT_USE pixels are unusable for fitting — informational bits
+    # like JUMP_DET flag already-corrected pixels. See note in striping.py.
+    bp_before = np.bitwise_and(dq_before, dqflags.pixel['DO_NOT_USE']) != 0
 
     seg = _read_srcmask(exposure_file)
     if seg is None:
         log(f"diag_striping: no SRCMASK on {rootname}; rebuilding from DQ only")
         seg = np.zeros(model.data.shape, dtype=bool)
-    mask = (dq_before > 0) | seg | ~np.isfinite(sci_before)
+    mask = bp_before | seg | ~np.isfinite(sci_before)
 
     log(f"diag_striping: searching θ in [{theta_min}, {theta_max}]° "
         f"(coarse {coarse_step}°, fine {fine_step}°)")
@@ -710,7 +713,7 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
         n_unmasked_components = getattr(
             filter_srcmask_stripes, 'last_count', 0)
         seg_out_count = int(seg.sum())
-        mask = (dq_before > 0) | seg | ~np.isfinite(sci_before)
+        mask = bp_before | seg | ~np.isfinite(sci_before)
         log(f"diag_striping: unmasked {n_unmasked_components} "
             f"stripe-aligned components ({seg_in_count - seg_out_count} px, "
             f"{(seg_in_count - seg_out_count) / max(seg_in_count, 1):.3f} of "
@@ -754,7 +757,7 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
                     angle_tol_deg=stripe_angle_tol,
                     min_size=stripe_min_size,
                 )
-            mask = (dq_before > 0) | seg | ~np.isfinite(sci_before)
+            mask = bp_before | seg | ~np.isfinite(sci_before)
             log(f"diag_striping: iter {it + 1}: rebuilt SRCMASK "
                 f"(masked frac = {seg.mean():.3f})")
 

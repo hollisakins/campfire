@@ -38,6 +38,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PersistenceFlagStep` in the persistence step.
 
 ### Algorithm
+- NIRCam ``striping``, ``diag_striping``, and ``sky`` steps — fit/sample
+  masks now use only the ``DO_NOT_USE`` bit instead of ``dq > 0``.
+  Informational DQ bits (``JUMP_DET``, ``UNRELIABLE_BIAS``, ``NO_LIN_CORR``)
+  flag pixels that have already been corrected and are still usable for
+  background and striping estimation. On most exposures this reduces the
+  fit mask from ~20% to ~3% of pixels; on rare anomalous frames where
+  jump detection flags >97% of pixels (e.g. some MEDIUM8/NGROUPS=9 bright-
+  target MSATA parallels) the previous behavior masked the entire frame
+  and the 2D ``Background2D`` fit raised. Fixed sites: ``striping.py``
+  (per-amp horizontal/vertical fit mask), ``diag_striping.py`` (diagonal
+  stripe fit mask, applied at iter-1, after srcmask filter, and after
+  per-iter SRCMASK rebuild), ``sky.py`` (sky pedestal Gaussian sample).
 - NIRCam ``diag_striping`` step — substantial rewrite of the iteration,
   amplitude estimator, and angle metric:
   - **Column blending bug fix**: ``_column_weights`` now ramps each
