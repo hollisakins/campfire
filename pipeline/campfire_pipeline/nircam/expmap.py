@@ -16,9 +16,13 @@ diagnostics.
 
 Outputs (per invocation, under ``{products_dir}/expmaps/``):
 
-    expmap_{filter}_{stage}.fits   float32, ``BUNIT='s'``, WCS in header
-    expmap_{filter}_{stage}.pdf    diagnostic with RA/Dec gridlines + colorbar
-    footprints_{stage}.reg         ds9 fk5 polygons across all filters
+    expmap_{field}_{filter}_{stage}.fits   float32, ``BUNIT='s'``, WCS in header
+    expmap_{field}_{filter}_{stage}.pdf    diagnostic with RA/Dec gridlines + colorbar
+    footprints_{stage}.reg                 ds9 fk5 polygons across all filters
+
+All per-filter PDFs in one invocation share the same colorbar
+``vmin``/``vmax`` (log-norm across the union of nonzero pixels) so the
+plots are identical apart from the data — easy to tab through.
 
 The .reg file only contains polygons for filters that were (re)built in this
 invocation. To regenerate a combined .reg after up-to-date FITS already exist,
@@ -174,7 +178,15 @@ def _write_fits(path, expmap, wcs, *, field_name, filter_name, stage, metas):
     fits.writeto(path, expmap, header=hdr, overwrite=True)
 
 
-def _write_pdf(path, expmap, wcs, *, field_name, filter_name, stage, metas):
+def _write_pdf(path, expmap, wcs, *, field_name, filter_name, stage, metas,
+               vmin=None, vmax=None):
+    """Render one filter's expmap as a log-norm PDF.
+
+    ``vmin``/``vmax`` default to the filter's own nonzero min/max. The
+    caller in ``run_expmap`` overrides both with values shared across
+    all filters in the invocation so the diagnostic PDFs are visually
+    identical except for the data itself.
+    """
     import matplotlib.pyplot as plt
     import matplotlib as mpl
 
@@ -183,8 +195,10 @@ def _write_pdf(path, expmap, wcs, *, field_name, filter_name, stage, metas):
         log('  expmap is all zero; skipping PDF')
         return
 
-    vmin = max(float(nonzero.min()), 1.0)
-    vmax = float(nonzero.max())
+    if vmin is None:
+        vmin = max(float(nonzero.min()), 1.0)
+    if vmax is None:
+        vmax = float(nonzero.max())
     if vmax <= vmin:
         vmax = vmin * 10
     norm = mpl.colors.LogNorm(vmin=vmin, vmax=vmax)
@@ -207,10 +221,8 @@ def _write_pdf(path, expmap, wcs, *, field_name, filter_name, stage, metas):
     ax.coords[1].set_major_formatter('dd:mm:ss')
     ax.grid(color='lightgray', lw=0.4, alpha=0.6)
 
-    texp_total = sum(m.xposure for m in metas)
     ax.set_title(
-        f'{field_name} · {filter_name.upper()} · {stage} · '
-        f'N={len(metas)} · ΣXPOSURE={texp_total:.0f} s',
+        f'{field_name} · {filter_name.upper()} · {stage} · N={len(metas)}',
         fontsize=10,
     )
 
@@ -377,27 +389,44 @@ def _collect_metas(field, filter_name, stage, *,
     return metas
 
 
-def _process_filter(args):
-    """One-filter worker. Builds (or reuses) FITS + PDF, returns metas.
+def _expmap_paths(out_dir, field_name, filter_name, stage):
+    base = f'expmap_{field_name}_{filter_name}_{stage}'
+    return (os.path.join(out_dir, base + '.fits'),
+            os.path.join(out_dir, base + '.pdf'))
 
-    Receives a pre-computed WCS shared across all filters in the
-    invocation so the resulting expmaps are pixel-registered.
+
+def _nz_range(expmap):
+    """Return (min, max) of strictly-positive pixels, or (None, None)."""
+    nz = expmap[expmap > 0]
+    if nz.size == 0:
+        return None, None
+    return float(nz.min()), float(nz.max())
+
+
+def _accumulate_filter(args):
+    """Parallel worker: build (or reuse) one filter's FITS and report
+    nonzero pixel range.
+
+    Returns ``(filter_name, metas, fits_path, nz_min, nz_max)``. Only
+    the scalar range crosses the multiprocessing boundary — the full
+    array stays on disk so pool workers don't pickle large buffers.
     """
     (field, filter_name, stage, wcs, shape, metas,
      out_dir, overwrite) = args
 
-    fits_path = os.path.join(out_dir, f'expmap_{filter_name}_{stage}.fits')
-    pdf_path = os.path.join(out_dir, f'expmap_{filter_name}_{stage}.pdf')
-
-    if (not overwrite
-            and os.path.exists(fits_path)
-            and os.path.exists(pdf_path)):
-        log(f'[{filter_name}] up to date (pass --overwrite to rebuild)')
-        return filter_name, [], fits_path, pdf_path
+    fits_path, _ = _expmap_paths(out_dir, field.name, filter_name, stage)
 
     if not metas:
         log(f'[{filter_name}] no {stage} files found; skipping')
-        return filter_name, [], None, None
+        return filter_name, [], None, None, None
+
+    if not overwrite and os.path.exists(fits_path):
+        log(f'[{filter_name}] FITS up to date; loading nz-range '
+            f'for shared colorbar')
+        with fits.open(fits_path, memmap=False) as hdul:
+            data = hdul['EXPMAP'].data
+            nz_min, nz_max = _nz_range(data)
+        return filter_name, metas, fits_path, nz_min, nz_max
 
     expmap = _accumulate_expmap(metas, wcs, shape,
                                 desc=f'[{filter_name}] stacking')
@@ -405,11 +434,21 @@ def _process_filter(args):
                 field_name=field.name, filter_name=filter_name,
                 stage=stage, metas=metas)
     log(f'[{filter_name}] wrote {os.path.basename(fits_path)}')
+    nz_min, nz_max = _nz_range(expmap)
+    return filter_name, metas, fits_path, nz_min, nz_max
+
+
+def _render_pdf(field_name, filter_name, stage, metas, fits_path,
+                out_dir, wcs, vmin, vmax):
+    """Re-read FITS from disk and render PDF with the shared colorbar."""
+    _, pdf_path = _expmap_paths(out_dir, field_name, filter_name, stage)
+    with fits.open(fits_path, memmap=False) as hdul:
+        expmap = np.asarray(hdul['EXPMAP'].data, dtype=np.float32)
     _write_pdf(pdf_path, expmap, wcs,
-               field_name=field.name, filter_name=filter_name,
-               stage=stage, metas=metas)
+               field_name=field_name, filter_name=filter_name,
+               stage=stage, metas=metas, vmin=vmin, vmax=vmax)
     log(f'[{filter_name}] wrote {os.path.basename(pdf_path)}')
-    return filter_name, metas, fits_path, pdf_path
+    return pdf_path
 
 
 def run_expmap(
@@ -489,25 +528,52 @@ def run_expmap(
     log(f'Shared WCS across {len(filter_list)} filters: '
         f'{shape[1]}×{shape[0]} @ {pixel_scale}"/pix')
 
-    # Phase 3: per-filter accumulation (parallelizable across filters).
+    # Phase 3a: per-filter accumulation (parallelizable across filters).
+    # Workers write FITS to disk and return only the nonzero pixel range
+    # — avoids pickling large arrays back through the pool.
     work = [(field, f, stage, wcs, shape, per_filter_metas[f],
              out_dir, overwrite)
             for f in filter_list]
 
     if n_processes <= 1 or len(work) == 1:
-        results = [_process_filter(w) for w in work]
+        results = [_accumulate_filter(w) for w in work]
     else:
         ctx = mp.get_context('spawn')
         with ctx.Pool(processes=min(n_processes, len(work))) as pool:
-            results = pool.map(_process_filter, work)
+            results = pool.map(_accumulate_filter, work)
 
-    per_filter_metas = [(name, metas)
-                        for name, metas, *_ in results if metas]
-    if per_filter_metas:
+    # Phase 3b: shared colorbar — vmin/vmax from the union of nonzero
+    # pixels across every filter, so PDFs are visually identical apart
+    # from the actual data.
+    mins = [r[3] for r in results if r[3] is not None]
+    maxes = [r[4] for r in results if r[4] is not None]
+    if mins and maxes:
+        global_vmin = max(min(mins), 1.0)
+        global_vmax = max(maxes)
+        if global_vmax <= global_vmin:
+            global_vmax = global_vmin * 10
+        log(f'Shared colorbar: vmin={global_vmin:.1f} s, '
+            f'vmax={global_vmax:.1f} s '
+            f'(LogNorm across {len(mins)} filters)')
+    else:
+        global_vmin = global_vmax = None
+
+    # Phase 3c: PDFs. Always regenerated (cheap; the shared norm is
+    # invocation-dependent so a cached PDF from a prior run with a
+    # different filter set would not match the current colorbar).
+    for filter_name, metas, fits_path, _, _ in results:
+        if fits_path is None or not metas:
+            continue
+        _render_pdf(field.name, filter_name, stage, metas, fits_path,
+                    out_dir, wcs, global_vmin, global_vmax)
+
+    reg_metas = [(name, metas)
+                 for name, metas, *_ in results if metas]
+    if reg_metas:
         reg_path = os.path.join(out_dir, f'footprints_{stage}.reg')
-        _write_region_file(reg_path, per_filter_metas)
-        n_poly = sum(len(m) for _, m in per_filter_metas)
+        _write_region_file(reg_path, reg_metas)
+        n_poly = sum(len(m) for _, m in reg_metas)
         log(f'wrote {os.path.basename(reg_path)} '
-            f'({n_poly} polygons across {len(per_filter_metas)} filters)')
+            f'({n_poly} polygons across {len(reg_metas)} filters)')
     else:
         log('No new exposures stacked; .reg file not written.')

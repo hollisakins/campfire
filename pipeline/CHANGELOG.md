@@ -353,6 +353,16 @@ Release procedure: edit the `## Unreleased` section below, then run
     the union of S_REGION polygons across *every* filter in the
     invocation (rather than per-filter), so per-filter expmaps are
     pixel-registered and can be stacked or differenced directly.
+  - **Shared colorbar (vmin/vmax) across filters**: PDFs are now
+    rendered with a single LogNorm computed from the union of nonzero
+    pixels across every filter, so the diagnostic plots are visually
+    identical apart from the data — flip through them to compare.
+    PDFs are always regenerated (the shared norm is invocation-
+    dependent); FITS files keep their up-to-date short-circuit. The
+    `ΣXPOSURE` line is dropped from the plot title.
+  - **Field name in output filenames**: now
+    `expmap_{field}_{filter}_{stage}.{fits,pdf}` (was
+    `expmap_{filter}_{stage}.{fits,pdf}`).
   - **Header-scan progress**: per-filter `tqdm` bar while reading
     XPOSURE/S_REGION headers in phase 1 (previously silent).
   - **Threaded header scan + persistent metadata cache**: phase-1 header
