@@ -51,6 +51,15 @@ def image2_step(exposure_file, field, step_config, overwrite=False,
     filtname = exposure_file.split('/')[-2]
     assert (filtname.lower() in SW_FILTERS) or (filtname.lower() in LW_FILTERS)
 
+    # WFSS/TSGRISM exposures hit calc_nircam's imaging branch which only
+    # matches filter+pupil — the phot_table has one row per (filter, pupil,
+    # order) for grism, so find_row returns >1 and raises. Skip here as a
+    # backstop; primary gates are query.py (download) and _run_detector1.
+    exp_type = fits.getval(exposure_file, 'EXP_TYPE', ext=0)
+    if exp_type in ('NRC_WFSS', 'NRC_TSGRISM'):
+        log(f"image2: skipping {rootname}: EXP_TYPE={exp_type} not imaging")
+        return
+
     if not overwrite:
         already_done = (status.has(exposure_file, 'CFP_IMG2')
                         if status is not None

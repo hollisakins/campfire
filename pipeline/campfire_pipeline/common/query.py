@@ -16,6 +16,7 @@ import argparse
 import concurrent.futures
 import sys
 import threading
+import time
 from pathlib import Path
 
 import requests
@@ -55,7 +56,7 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     headers = {"Authorization": f"token {token}"} if token else {}
     select_cols = [
         "fileSetName", "productLevel", "opticalElements",
-        "filter", "date_obs", "duration", "observtn", "exposure",
+        "filter", "exp_type", "date_obs", "duration", "observtn", "exposure",
     ]
     if instrument == "NIRCAM":
         select_cols += ["targ_ra", "targ_dec", "s_region"]
@@ -122,28 +123,77 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     return merged
 
 
-def list_products_batched(filesets, batch_size=25, token=None):
-    """Retrieve product lists for filesets in batches.
+def _list_products_request(batch, headers, max_retries=5, timeout=120):
+    """GET /list_products for one batch with exponential backoff on 429/5xx
+    and on transient network errors (Timeout, ConnectionError).
 
-    Returns a flat list of all product dicts across all filesets.
+    Honours the ``Retry-After`` response header when present; otherwise
+    falls back to ``2**attempt`` seconds (1, 2, 4, 8, 16). Raises the
+    underlying exception or HTTPError if all retries are exhausted.
+    """
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/list_products",
+                params={"dataset_ids": ",".join(batch)},
+                headers=headers,
+                timeout=timeout,
+            )
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt + 1 == max_retries:
+                raise
+            time.sleep(float(2 ** attempt))
+            continue
+
+        if resp.status_code == 429 or 500 <= resp.status_code < 600:
+            if attempt + 1 == max_retries:
+                resp.raise_for_status()
+            retry_after = resp.headers.get("Retry-After")
+            try:
+                wait = float(retry_after) if retry_after else float(2 ** attempt)
+            except ValueError:
+                wait = float(2 ** attempt)
+            time.sleep(wait)
+            continue
+
+        resp.raise_for_status()
+        return resp.json()["products"]
+    return []  # unreachable; loop above always returns or raises
+
+
+def list_products_batched(filesets, batch_size=25, token=None, workers=4):
+    """Retrieve product lists for filesets in parallel batches.
+
+    Returns a flat list of all product dicts across all filesets. Batches
+    are dispatched concurrently via a ThreadPoolExecutor; each request
+    retries on 429 / 5xx with exponential backoff (honouring ``Retry-After``).
     """
     fileset_names = [f["fileSetName"] for f in filesets]
-    all_products = []
-    n_batches = (len(fileset_names) + batch_size - 1) // batch_size
+    if not fileset_names:
+        return []
+
     headers = {"Authorization": f"token {token}"} if token else {}
+    batches = [
+        fileset_names[i : i + batch_size]
+        for i in range(0, len(fileset_names), batch_size)
+    ]
+    n_workers = max(1, min(workers, len(batches)))
 
-    for i in range(0, len(fileset_names), batch_size):
-        batch = fileset_names[i : i + batch_size]
-        batch_num = i // batch_size + 1
-        print(f"  Retrieving product lists... (batch {batch_num}/{n_batches})")
+    print(f"  Retrieving product lists for {len(fileset_names)} filesets "
+          f"({len(batches)} batches of up to {batch_size}, {n_workers} parallel)...")
 
-        resp = requests.get(
-            f"{BASE_URL}/list_products",
-            params={"dataset_ids": ",".join(batch)},
-            headers=headers,
-        )
-        resp.raise_for_status()
-        all_products.extend(resp.json()["products"])
+    all_products = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
+        futures = [ex.submit(_list_products_request, b, headers) for b in batches]
+        with tqdm(total=len(batches), desc="  batches",
+                  unit="batch", dynamic_ncols=True) as pbar:
+            try:
+                for fut in concurrent.futures.as_completed(futures):
+                    all_products.extend(fut.result())
+                    pbar.update(1)
+            except KeyboardInterrupt:
+                ex.shutdown(wait=False, cancel_futures=True)
+                raise
 
     return all_products
 
@@ -475,7 +525,7 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
 
     # Step 2: List products
     print()
-    products = list_products_batched(filesets, token=token)
+    products = list_products_batched(filesets, token=token, workers=workers)
     print(f"  {len(products)} total products across {len(filesets)} filesets")
 
     # Step 3: Filter to uncal + per-instrument aux files
@@ -494,8 +544,10 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
 
         kept = []
         requested = {x.lower() for x in filters} if filters else None
+        requested_exp_type = exp_type.upper() if exp_type else None
         unresolved = 0
         dropped = 0
+        dropped_exp_type = 0
         for f in uncal_files:
             # NIRCam uncal filenames look like '{fileSetName}_{detector}_uncal.fits'
             # where fileSetName has no detector token. Walk back tokens until we
@@ -509,6 +561,17 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
                     fs = fileset_index[candidate]
                     break
                 parts.pop()
+
+            # Defense in depth: MAST's search condition on exp_type filters at
+            # the fileset level, but a fileset whose exp_type leaks through
+            # would land NRC_WFSS exposures in the same per-filter dir as
+            # NRC_IMAGE and break Image2Pipeline's photom row lookup (WFSS
+            # photom rows are per-(filter,pupil,order); imaging matches only
+            # filter+pupil and finds 2). Drop them here.
+            fs_exp_type = (fs.get("exp_type") or "").upper()
+            if requested_exp_type and fs_exp_type and fs_exp_type != requested_exp_type:
+                dropped_exp_type += 1
+                continue
 
             # Resolve the actual filter for THIS detector. The fileset's
             # top-level `filter` is whichever of SW/LW matched our search and
@@ -534,6 +597,9 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
                 continue
             kept.append(f)
 
+        if dropped_exp_type:
+            print(f"  Dropped {dropped_exp_type} uncal file(s) whose fileset "
+                  f"exp_type wasn't {requested_exp_type}")
         if dropped:
             print(f"  Dropped {dropped} uncal file(s) whose detector's actual "
                   f"filter wasn't in --filters")
@@ -639,6 +705,7 @@ def _manifest_row(f):
         "filename":       f["filename"],
         "fileSetName":    fs.get("fileSetName", ""),
         "filter":         (f.get("filter") or "").lower(),
+        "exp_type":       (fs.get("exp_type") or "").upper(),
         "observtn":       str(fs.get("observtn", "")),
         "exposure":       str(fs.get("exposure", "")),
         "targ_ra":        float(fs["targ_ra"]) if fs.get("targ_ra") is not None else float("nan"),

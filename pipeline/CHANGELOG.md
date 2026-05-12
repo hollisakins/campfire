@@ -338,6 +338,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam: reject WFSS/TSGRISM exposures from the imaging pipeline at two
+  layers. The MAST downloader (`cfpipe download --instrument nircam`) now
+  applies a defensive fileset-level `exp_type` filter — anything whose
+  fileset `exp_type` doesn't match the requested type is dropped before
+  download (with a reported count) and the kept `exp_type` is recorded in
+  `manifest.ecsv`. The orchestrator's `_run_detector1` and `image2_step`
+  now read `EXP_TYPE` from the primary header and skip `NRC_WFSS` /
+  `NRC_TSGRISM` exposures. Routing a grism exposure through
+  `Image2Pipeline` raises a cryptic `MatchFitsTableRowError` from
+  `photom.find_row` because NIRCam's photom table has one row per
+  `(filter, pupil, order)` for grism but the imaging branch matches only
+  `filter+pupil`. This change makes the failure mode explicit.
 - NIRCam: new `cfpipe nircam expmap` command. Builds per-filter exposure
   maps by stacking each input's `S_REGION` polygon weighted by `XPOSURE`
   into an auto-sized TAN WCS (no tile dependency, no drizzling — exposure

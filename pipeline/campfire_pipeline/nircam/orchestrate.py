@@ -119,10 +119,46 @@ def _filter_pending(step_name, exposures, cfp_key, status, overwrite):
     return pending, skipped
 
 
+_GRISM_EXP_TYPES = ('NRC_WFSS', 'NRC_TSGRISM')
+
+
+def _filter_imaging_uncals(uncals, step_name):
+    """Drop NIRCam grism uncals before they enter the imaging pipeline.
+
+    Image2Pipeline's photom step matches imaging on (filter, pupil), but the
+    NIRCam phot_table has multiple rows per (filter, pupil) for WFSS — one
+    per spectral order — so a grism exposure routed through the imaging
+    branch raises ``MatchFitsTableRowError``. Defense in depth: the download
+    filter is the primary gate; this catches anything that slips through.
+    """
+    keep = []
+    skipped = 0
+    for u in uncals:
+        try:
+            exp_type = fits.getval(u, 'EXP_TYPE', ext=0)
+        except (OSError, KeyError):
+            # Unreadable / missing keyword: keep, let the step fail loudly
+            keep.append(u)
+            continue
+        if exp_type in _GRISM_EXP_TYPES:
+            skipped += 1
+        else:
+            keep.append(u)
+    if skipped:
+        log(f"{step_name}: skipping {skipped} grism exposure(s) "
+            f"(EXP_TYPE in {_GRISM_EXP_TYPES}); imaging pipeline only")
+    return keep
+
+
 def _run_detector1(field, config, filtname, n_processes, overwrite, status):
     uncals = field.get_uncal_files(filtname)
     if not uncals:
         log(f"detector1: no uncal files for {filtname}")
+        return
+
+    uncals = _filter_imaging_uncals(uncals, 'detector1')
+    if not uncals:
+        log(f"detector1: no imaging uncals for {filtname} after grism filter")
         return
 
     # Skip uncals whose canonical output already has CFP_DET1.
