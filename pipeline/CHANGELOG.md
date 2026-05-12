@@ -350,18 +350,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
-- NIRCam: reject WFSS/TSGRISM exposures from the imaging pipeline at two
-  layers. The MAST downloader (`cfpipe download --instrument nircam`) now
-  applies a defensive fileset-level `exp_type` filter — anything whose
-  fileset `exp_type` doesn't match the requested type is dropped before
-  download (with a reported count) and the kept `exp_type` is recorded in
-  `manifest.ecsv`. The orchestrator's `_run_detector1` and `image2_step`
-  now read `EXP_TYPE` from the primary header and skip `NRC_WFSS` /
-  `NRC_TSGRISM` exposures. Routing a grism exposure through
-  `Image2Pipeline` raises a cryptic `MatchFitsTableRowError` from
+- NIRCam: reject WFSS/TSGRISM exposures from the imaging pipeline at
+  three layers. The MAST downloader (`cfpipe download --instrument
+  nircam`) now filters uncal products by their *per-product* `exp_type`
+  (JWST visits regularly bundle imaging + WFSS exposures into a shared
+  MAST fileset, so the search-level fileset condition isn't enough), and
+  a belt-and-suspenders post-download pass reads `EXP_TYPE` from the
+  FITS primary header of every newly-fetched and previously-present
+  uncal and unlinks anything that doesn't match `--exp-type`. The kept
+  `exp_type` is recorded in `manifest.ecsv`. The orchestrator's
+  `_run_detector1` and `image2_step` read `EXP_TYPE` and skip
+  `NRC_WFSS` / `NRC_TSGRISM` exposures so a stale grism canonical
+  doesn't reach `Image2Pipeline`. Without this, routing grism through
+  the imaging pipeline raised a cryptic `MatchFitsTableRowError` from
   `photom.find_row` because NIRCam's photom table has one row per
-  `(filter, pupil, order)` for grism but the imaging branch matches only
-  `filter+pupil`. This change makes the failure mode explicit.
+  `(filter, pupil, order)` for grism but the imaging branch matches
+  only `filter+pupil`.
 - NIRCam: new `cfpipe nircam expmap` command. Builds per-filter exposure
   maps by stacking each input's `S_REGION` polygon weighted by `XPOSURE`
   into an auto-sized TAN WCS (no tile dependency, no drizzling — exposure

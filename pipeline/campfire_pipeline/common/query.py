@@ -198,18 +198,35 @@ def list_products_batched(filesets, batch_size=25, token=None, workers=4):
     return all_products
 
 
-def filter_products(products, instrument="NIRSPEC"):
+def filter_products(products, instrument="NIRSPEC", exp_type=None):
     """Filter products to uncal FITS and instrument-specific auxiliary files.
 
     For NIRSPEC, also returns deduplicated MSA metadata files.
 
+    When ``exp_type`` is given, uncal products whose own ``exp_type`` is set
+    and doesn't match are dropped. JWST visits can bundle imaging + WFSS
+    exposures into the same MAST fileset, so the search-level fileset
+    condition isn't enough — each product's exp_type has to be checked
+    individually.
+
     Returns (uncal_files, aux_files) where each is a list of
     dicts with 'filename', 'uri', and 'size' keys.
     """
-    uncal_files = [
-        p for p in products
-        if p["filename"].endswith("_uncal.fits")
-    ]
+    requested = exp_type.upper() if exp_type else None
+    uncal_files = []
+    dropped_by_exp_type = 0
+    for p in products:
+        if not p["filename"].endswith("_uncal.fits"):
+            continue
+        if requested:
+            p_exp = (p.get("exp_type") or "").upper()
+            if p_exp and p_exp != requested:
+                dropped_by_exp_type += 1
+                continue
+        uncal_files.append(p)
+    if dropped_by_exp_type:
+        print(f"  Dropped {dropped_by_exp_type} uncal product(s) whose "
+              f"exp_type wasn't {requested}")
 
     aux_files = []
     if instrument == "NIRSPEC":
@@ -528,8 +545,10 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     products = list_products_batched(filesets, token=token, workers=workers)
     print(f"  {len(products)} total products across {len(filesets)} filesets")
 
-    # Step 3: Filter to uncal + per-instrument aux files
-    uncal_files, aux_files = filter_products(products, instrument)
+    # Step 3: Filter to uncal + per-instrument aux files, enforcing exp_type
+    # at the product level (MAST filesets can mix exposure types).
+    uncal_files, aux_files = filter_products(products, instrument,
+                                             exp_type=exp_type)
 
     # Annotate every file with the program_id and (NIRCam) the parent fileset's
     # filter, so the path computation has what it needs.
@@ -544,10 +563,8 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
 
         kept = []
         requested = {x.lower() for x in filters} if filters else None
-        requested_exp_type = exp_type.upper() if exp_type else None
         unresolved = 0
         dropped = 0
-        dropped_exp_type = 0
         for f in uncal_files:
             # NIRCam uncal filenames look like '{fileSetName}_{detector}_uncal.fits'
             # where fileSetName has no detector token. Walk back tokens until we
@@ -561,17 +578,6 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
                     fs = fileset_index[candidate]
                     break
                 parts.pop()
-
-            # Defense in depth: MAST's search condition on exp_type filters at
-            # the fileset level, but a fileset whose exp_type leaks through
-            # would land NRC_WFSS exposures in the same per-filter dir as
-            # NRC_IMAGE and break Image2Pipeline's photom row lookup (WFSS
-            # photom rows are per-(filter,pupil,order); imaging matches only
-            # filter+pupil and finds 2). Drop them here.
-            fs_exp_type = (fs.get("exp_type") or "").upper()
-            if requested_exp_type and fs_exp_type and fs_exp_type != requested_exp_type:
-                dropped_exp_type += 1
-                continue
 
             # Resolve the actual filter for THIS detector. The fileset's
             # top-level `filter` is whichever of SW/LW matched our search and
@@ -597,9 +603,6 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
                 continue
             kept.append(f)
 
-        if dropped_exp_type:
-            print(f"  Dropped {dropped_exp_type} uncal file(s) whose fileset "
-                  f"exp_type wasn't {requested_exp_type}")
         if dropped:
             print(f"  Dropped {dropped} uncal file(s) whose detector's actual "
                   f"filter wasn't in --filters")
@@ -689,12 +692,54 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     downloaded = len(to_download) - errors
     print(f"Complete: {downloaded} downloaded, {len(to_skip)} skipped, {errors} errors")
 
+    # Belt-and-suspenders: read EXP_TYPE from each uncal's FITS header and
+    # delete any whose value disagrees with --exp-type. MAST's per-product
+    # exp_type is the primary gate (in filter_products); this catches the
+    # case where it came back empty or where a stale local file from a
+    # previous --exp-type=NRC_WFSS run is now masquerading in the imaging
+    # tree. The header is the source of truth.
+    purged = _purge_mismatched_uncals(uncal_files, exp_type)
+    if purged:
+        uncal_files = [f for f in uncal_files if f["_path"].exists()]
+
     if instrument == "NIRCAM":
         # Manifest covers everything we know about (downloaded + previously present)
         _write_nircam_manifest(
             download_root, pid_str,
             [_manifest_row(f) for f in uncal_files if f["_path"].exists()],
         )
+
+
+def _purge_mismatched_uncals(uncal_files, requested_exp_type):
+    """Delete uncals on disk whose ``EXP_TYPE`` header doesn't match.
+
+    Walks every uncal that we expect to be on disk after this download
+    (newly fetched + previously present), reads ``EXP_TYPE`` from the
+    primary header, and unlinks any mismatches. Returns the number removed.
+    """
+    if not requested_exp_type:
+        return 0
+    from astropy.io import fits
+    requested = requested_exp_type.upper()
+    removed = 0
+    for f in uncal_files:
+        path = f["_path"]
+        if not path.exists():
+            continue
+        try:
+            header_exp_type = fits.getval(str(path), 'EXP_TYPE', ext=0)
+        except (OSError, KeyError):
+            continue
+        if (header_exp_type or "").upper() != requested:
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            removed += 1
+    if removed:
+        print(f"  Removed {removed} uncal(s) whose EXP_TYPE header "
+              f"wasn't {requested}")
+    return removed
 
 
 def _manifest_row(f):
@@ -705,7 +750,7 @@ def _manifest_row(f):
         "filename":       f["filename"],
         "fileSetName":    fs.get("fileSetName", ""),
         "filter":         (f.get("filter") or "").lower(),
-        "exp_type":       (fs.get("exp_type") or "").upper(),
+        "exp_type":       (f.get("exp_type") or "").upper(),
         "observtn":       str(fs.get("observtn", "")),
         "exposure":       str(fs.get("exposure", "")),
         "targ_ra":        float(fs["targ_ra"]) if fs.get("targ_ra") is not None else float("nan"),
