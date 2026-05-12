@@ -31,10 +31,12 @@ writes; ``crf``/``cal`` files don't exist in the canonical-exposure layout.
 
 from __future__ import annotations
 
+import concurrent.futures
+import json
 import multiprocessing as mp
 import os
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import matplotlib
 matplotlib.use('Agg')
@@ -55,6 +57,15 @@ _REG_COLORS = [
     'green', 'red', 'blue', 'yellow', 'cyan', 'magenta',
     'orange', 'white', 'pink', 'purple',
 ]
+
+# Header-scan tuning. Header reads are I/O-bound (open syscall +
+# two header blocks per file), so threads release the GIL during reads
+# and give near-linear speedup against IOPS-limited backends. The cache
+# lives under ``out_dir`` keyed by (abspath, mtime_ns, size), which
+# self-invalidates on rsync or pipeline re-reduction.
+_DEFAULT_SCAN_THREADS = 8
+_CACHE_VERSION = 1
+_CACHE_FILENAME = '.expmap_cache.json'
 
 
 @dataclass
@@ -231,8 +242,79 @@ def _write_region_file(path, per_filter_metas):
         fh.write('\n'.join(lines) + '\n')
 
 
-def _collect_metas(field, filter_name, stage):
-    """Header-only pass across all matching files for one filter."""
+def _load_metadata_cache(cache_path: str) -> Dict[str, dict]:
+    """Load the on-disk metadata cache. Returns ``{}`` on any failure
+    (missing file, corrupted JSON, version mismatch)."""
+    try:
+        with open(cache_path) as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    if data.get('version') != _CACHE_VERSION:
+        return {}
+    return data.get('entries', {})
+
+
+def _save_metadata_cache(cache_path: str, entries: Dict[str, dict]) -> None:
+    """Atomically write the metadata cache (write to .tmp then rename)."""
+    tmp_path = cache_path + '.tmp'
+    payload = {'version': _CACHE_VERSION, 'entries': entries}
+    try:
+        with open(tmp_path, 'w') as fh:
+            json.dump(payload, fh)
+        os.replace(tmp_path, cache_path)
+    except OSError as e:
+        log(f'  warning: failed to write expmap metadata cache ({e})')
+
+
+def _meta_from_cache_entry(path, entry):
+    return _ExposureMeta(
+        path=path,
+        rootname=entry['rootname'],
+        xposure=float(entry['xposure']),
+        ra=list(entry['ra']),
+        dec=list(entry['dec']),
+    )
+
+
+def _cache_entry_from_meta(meta, stat_key):
+    mtime_ns, size = stat_key
+    return {
+        'mtime_ns': int(mtime_ns),
+        'size': int(size),
+        'rootname': meta.rootname,
+        'xposure': float(meta.xposure),
+        'ra': list(meta.ra),
+        'dec': list(meta.dec),
+    }
+
+
+def _read_metadata_safe(path):
+    """``_read_metadata`` wrapped with the original error/missing-key logging.
+    Returns ``None`` on either failure mode."""
+    try:
+        meta = _read_metadata(path)
+    except Exception as e:
+        log(f'  {os.path.basename(path)}: header read failed ({e}); skipping')
+        return None
+    if meta is None:
+        log(f'  {os.path.basename(path)}: missing XPOSURE or S_REGION; skipping')
+    return meta
+
+
+def _collect_metas(field, filter_name, stage, *,
+                   cache: Optional[Dict[str, dict]] = None,
+                   n_threads: int = _DEFAULT_SCAN_THREADS):
+    """Header-only pass across all matching files for one filter.
+
+    When ``cache`` is supplied, files whose ``(mtime_ns, size)`` match a
+    cached entry skip the FITS open entirely. Cache misses are scanned
+    in parallel via a thread pool — header reads are I/O-bound and
+    threads release the GIL during reads, so this gives near-linear
+    speedup against IOPS-limited backends (network FS, slow disks).
+    The cache is mutated in place; the caller is responsible for
+    persisting it.
+    """
     if stage == 'uncal':
         files = field.get_uncal_files(filter_name)
     elif stage == 'canonical':
@@ -241,18 +323,57 @@ def _collect_metas(field, filter_name, stage):
         raise ValueError(
             f"unknown stage {stage!r} (use 'uncal' or 'canonical')")
 
-    metas = []
-    for f in tqdm.tqdm(files, desc=f'[{filter_name}] scanning headers',
-                      unit='file', leave=False):
+    metas: List[_ExposureMeta] = []
+    misses: List[tuple] = []
+    hits = 0
+    for f in files:
+        path = os.path.abspath(f)
         try:
-            m = _read_metadata(f)
-        except Exception as e:
-            log(f'  {os.path.basename(f)}: header read failed ({e}); skipping')
+            st = os.stat(path)
+        except FileNotFoundError:
+            log(f'  {os.path.basename(path)}: not found; skipping')
             continue
-        if m is None:
-            log(f'  {os.path.basename(f)}: missing XPOSURE or S_REGION; skipping')
-            continue
-        metas.append(m)
+        stat_key = (st.st_mtime_ns, st.st_size)
+        entry = cache.get(path) if cache is not None else None
+        if (entry is not None
+                and entry.get('mtime_ns') == stat_key[0]
+                and entry.get('size') == stat_key[1]):
+            metas.append(_meta_from_cache_entry(path, entry))
+            hits += 1
+        else:
+            misses.append((path, stat_key))
+
+    if not misses:
+        return metas
+
+    desc = f'[{filter_name}] scanning headers'
+    if hits:
+        desc += f' (cached {hits})'
+
+    def _store(path, stat_key, meta):
+        if meta is not None:
+            metas.append(meta)
+            if cache is not None:
+                cache[path] = _cache_entry_from_meta(meta, stat_key)
+
+    if n_threads <= 1 or len(misses) == 1:
+        with tqdm.tqdm(total=len(misses), desc=desc,
+                       unit='file', leave=False) as pbar:
+            for path, stat_key in misses:
+                _store(path, stat_key, _read_metadata_safe(path))
+                pbar.update(1)
+        return metas
+
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(n_threads, len(misses))) as ex:
+        futures = {ex.submit(_read_metadata_safe, path): (path, stat_key)
+                   for path, stat_key in misses}
+        with tqdm.tqdm(total=len(misses), desc=desc,
+                       unit='file', leave=False) as pbar:
+            for fut in concurrent.futures.as_completed(futures):
+                path, stat_key = futures[fut]
+                _store(path, stat_key, fut.result())
+                pbar.update(1)
     return metas
 
 
@@ -340,14 +461,22 @@ def run_expmap(
     log(f'Expmap: field={field.name}, filters={filter_list}, '
         f'stage={stage}, pixel_scale={pixel_scale}"/pix, out_dir={out_dir}')
 
-    # Phase 1: scan headers for every filter (sequential so the tqdm bars
-    # don't fight each other — header reads are I/O-cheap relative to the
-    # accumulation phase).
+    cache_path = os.path.join(out_dir, _CACHE_FILENAME)
+    cache = _load_metadata_cache(cache_path)
+    if cache:
+        log(f'Loaded metadata cache: {len(cache)} entries '
+            f'({os.path.basename(cache_path)})')
+
+    # Phase 1: scan headers for every filter. Per-filter scan is
+    # internally thread-parallel; outer loop is sequential so the tqdm
+    # bars don't fight each other.
     per_filter_metas = {}
     for filt in filter_list:
-        metas = _collect_metas(field, filt, stage)
+        metas = _collect_metas(field, filt, stage, cache=cache)
         per_filter_metas[filt] = metas
         log(f'[{filt}] {len(metas)} {stage} exposures')
+
+    _save_metadata_cache(cache_path, cache)
 
     all_metas = [m for ms in per_filter_metas.values() for m in ms]
     if not all_metas:

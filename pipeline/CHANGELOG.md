@@ -355,6 +355,15 @@ Release procedure: edit the `## Unreleased` section below, then run
     pixel-registered and can be stacked or differenced directly.
   - **Header-scan progress**: per-filter `tqdm` bar while reading
     XPOSURE/S_REGION headers in phase 1 (previously silent).
+  - **Threaded header scan + persistent metadata cache**: phase-1 header
+    reads are now dispatched through an 8-way `ThreadPoolExecutor`
+    (header I/O is GIL-friendly and IOPS-bound, so threads give
+    near-linear speedup on network FS like CANDIDE). Per-file metadata
+    (XPOSURE + parsed S_REGION) is cached to
+    `{out_dir}/.expmap_cache.json`, keyed by `(abspath, mtime_ns, size)`
+    so the cache self-invalidates on rsync or pipeline re-reduction.
+    Cache hits skip the FITS open entirely; repeat invocations of
+    `cfpipe nircam expmap` complete near-instantly.
   - **PDF colormap**: switched from `Greys` (lowest-exposure pixels
     indistinguishable from white background) to `magma` with zeros
     masked, and dropped `vmin` from the 5th percentile to the actual
