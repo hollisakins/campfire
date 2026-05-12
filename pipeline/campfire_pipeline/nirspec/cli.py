@@ -45,23 +45,7 @@ def common_options(f):
     return f
 
 
-class _VariadicOption(click.Option):
-    """Click option that consumes multiple space-separated values after a single flag."""
-
-    def add_to_parser(self, parser, ctx):
-        super().add_to_parser(parser, ctx)
-        name = self.opts[-1]
-        opt = parser._long_opt.get(name)
-        if opt is None:
-            return
-        original_process = opt.process
-
-        def _eat_remaining(value, state):
-            original_process(value, state)
-            while state.rargs and not state.rargs[0].startswith('-'):
-                original_process(state.rargs.pop(0), state)
-
-        opt.process = _eat_remaining
+from campfire_pipeline.common.cli import VariadicOption as _VariadicOption
 
 
 def _parse_source_ids(ctx, param, value):

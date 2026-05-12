@@ -29,6 +29,7 @@ from campfire_pipeline.config import load_config, setup_environment
 from campfire_pipeline.nircam.field import Field
 from campfire_pipeline.common.io import log
 from campfire_pipeline.common import cfp as cfp_mod
+from campfire_pipeline.common.cli import VariadicOption
 from campfire_pipeline.nircam.orchestrate import (
     STEP_NAMES, ALL_STEPS, PROCESS_STEPS, COMBINE_STEPS,
     run_process, run_combine, run_step,
@@ -245,7 +246,7 @@ def rgb(config, field, tiles, pixel_scale, preview_max_dim, processes, overwrite
 
 @main.command()
 @common_options
-@click.option('--filters', multiple=True, default=None,
+@click.option('--filters', multiple=True, default=None, cls=VariadicOption,
               help='Filters to process (default: all from field).')
 @click.option('--stage', type=click.Choice(['uncal', 'canonical']),
               default='canonical', show_default=True,
