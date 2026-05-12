@@ -338,6 +338,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam: new `cfpipe nircam expmap` command. Builds per-filter exposure
+  maps by stacking each input's `S_REGION` polygon weighted by `XPOSURE`
+  into an auto-sized TAN WCS (no tile dependency, no drizzling — exposure
+  time is a scalar per-exposure property, so polygon-mask × XPOSURE is the
+  correct accumulator). Outputs `expmap_{filter}_{stage}.fits` (BUNIT='s',
+  WCS in header), a matching diagnostic PDF with RA/Dec gridlines, and a
+  combined `footprints_{stage}.reg` ds9 file color-coded by filter.
+  Supports `--stage uncal` (raw quick-look) and `--stage canonical`
+  (post-jhat). Default pixel scale 0.5"/pix; per-filter parallelism via
+  `-p`.
 - NIRCam `resample` step (campfire-native drizzle path): log a
   `[i/N] drizzled <basename>` line per input exposure, mirroring the
   per-exposure progress the JWST `Image3Pipeline` path already prints.

@@ -240,6 +240,45 @@ def rgb(config, field, tiles, pixel_scale, preview_max_dim, processes, overwrite
 
 
 # ---------------------------------------------------------------------------
+# Exposure maps
+# ---------------------------------------------------------------------------
+
+@main.command()
+@common_options
+@click.option('--filters', multiple=True, default=None,
+              help='Filters to process (default: all from field).')
+@click.option('--stage', type=click.Choice(['uncal', 'canonical']),
+              default='canonical', show_default=True,
+              help='Source files: uncal (raw quick-look) or canonical '
+                   '(processed exposures post-jhat).')
+@click.option('--pixel-scale', type=float, default=0.5, show_default=True,
+              help='Output pixel scale in arcsec/pix.')
+@click.option('--padding', type=float, default=30.0, show_default=True,
+              help='Sky padding around the union footprint, arcsec.')
+@click.option('--out-dir', default=None,
+              help='Output directory (default: {products}/<field>/expmaps/).')
+@click.option('--processes', '-p', default=1, type=int, show_default=True,
+              help='Per-filter parallelism (one filter per worker).')
+@click.option('--overwrite', is_flag=True,
+              help='Rebuild even if FITS + PDF already exist.')
+def expmap(config, field, filters, stage, pixel_scale, padding,
+           out_dir, processes, overwrite):
+    """Build per-filter exposure maps, footprint regions, and diagnostic plots."""
+    _, field_obj = _setup(config, field)
+    from campfire_pipeline.nircam.expmap import run_expmap
+    run_expmap(
+        field_obj,
+        filters=_resolve_filters(filters, field_obj),
+        stage=stage,
+        pixel_scale=pixel_scale,
+        padding=padding,
+        out_dir=out_dir,
+        n_processes=processes,
+        overwrite=overwrite,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Tile-staleness probe (kept from legacy CLI)
 # ---------------------------------------------------------------------------
 
