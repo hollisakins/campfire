@@ -24,13 +24,9 @@ def edge_step(exposure_file, field, step_config, overwrite=False, status=None):
     """Flag noisy outer edges of a single canonical exposure."""
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
-    if not overwrite:
-        already_done = (status.has(exposure_file, 'CFP_EDGE')
-                        if status is not None
-                        else cfp.has_step(exposure_file, 'CFP_EDGE'))
-        if already_done:
-            log(f"Skipping edge on {rootname}: CFP_EDGE already set")
-            return
+    if cfp.should_skip(exposure_file, 'CFP_EDGE', rootname,
+                       'edge', status, overwrite):
+        return
 
     log(f"Running edge flagging on {rootname}")
 

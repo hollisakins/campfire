@@ -25,13 +25,9 @@ def sky_step(exposure_file, field, step_config, overwrite=False, status=None):
     do_plot = step_config.get('plot', True)
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
-    if not overwrite:
-        already_done = (status.has(exposure_file, 'CFP_SKY')
-                        if status is not None
-                        else cfp.has_step(exposure_file, 'CFP_SKY'))
-        if already_done:
-            log(f"Skipping sky on {rootname}: CFP_SKY already set")
-            return
+    if cfp.should_skip(exposure_file, 'CFP_SKY', rootname,
+                       'sky', status, overwrite):
+        return
 
     # Read SRCMASK from the canonical file's extension (was a sidecar in the
     # legacy layout).

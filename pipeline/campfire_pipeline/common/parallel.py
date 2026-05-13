@@ -17,9 +17,9 @@ state in a way that locks the context (see feedback_lazy_jwst_imports), so
 those stay as lazy imports inside the worker functions that need them.
 """
 
-from time import sleep
 from functools import partial
 from multiprocessing import get_context
+from time import sleep
 
 from campfire_pipeline.common.io import log
 
@@ -116,7 +116,6 @@ def dispatch(func, tasks, n_processes=1, use_starmap=False, retry=False,
 
     if n_processes > 1:
         log(f"Dispatching {len(tasks)} tasks across {n_processes} workers")
-        sleep(1)  # brief pause for log readability before pool forks
         with _MP_CTX.Pool(processes=n_processes) as pool:
             if use_starmap:
                 return pool.starmap(worker, tasks)

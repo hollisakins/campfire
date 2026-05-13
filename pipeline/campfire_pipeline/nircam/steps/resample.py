@@ -349,14 +349,20 @@ def resample_step(filtname, exposure_files, field, step_config,
                         f"({n_no_cov / sci.size * 100:.1f}%)"
                     )
 
-        if needs_rebuild and step_config.get('split_extensions', True):
+        do_split = needs_rebuild and step_config.get('split_extensions', True)
+        do_plot = needs_rebuild and step_config.get('plot', True)
+
+        if do_split or do_plot:
+            with fits.open(mosaic_file) as hdul:
+                sci = hdul['SCI'].data.copy()
+                hdr = hdul['SCI'].header.copy()
+                err = hdul['ERR'].data.copy() if do_split else None
+                wht = hdul['WHT'].data.copy() if do_split else None
+                srcmask = (hdul['SRCMASK'].data.copy()
+                           if do_split and 'SRCMASK' in hdul else None)
+
+        if do_split:
             log("  splitting extensions")
-
-            sci = fits.getdata(mosaic_file, extname='SCI')
-            hdr = fits.getheader(mosaic_file, extname='SCI')
-            err = fits.getdata(mosaic_file, extname='ERR')
-            wht = fits.getdata(mosaic_file, extname='WHT')
-
             base = os.path.basename(mosaic_file)
             fits.PrimaryHDU(data=sci, header=hdr).writeto(
                 os.path.join(mosaic_outdir,
@@ -376,8 +382,7 @@ def resample_step(filtname, exposure_files, field, step_config,
                 overwrite=True,
             )
 
-            try:
-                srcmask = fits.getdata(mosaic_file, extname='SRCMASK')
+            if srcmask is not None:
                 hdr.update({'EXTNAME': 'SRCMASK'})
                 fits.PrimaryHDU(data=srcmask, header=hdr).writeto(
                     os.path.join(
@@ -386,19 +391,17 @@ def resample_step(filtname, exposure_files, field, step_config,
                     ),
                     overwrite=True,
                 )
-            except KeyError:
+            else:
                 log(f"  {mosaic_name} has no SRCMASK extension")
 
-        if needs_rebuild and step_config.get('plot', True):
+        if do_plot:
             from campfire_pipeline.nircam.steps._plots import (
                 plot_mosaic_bkgsub, plot_mosaic_thumbnail,
             )
             downsample = int(step_config.get('plot_downsample', 4))
 
-            sci_after_arr = fits.getdata(mosaic_file, extname='SCI')
             thumb_png = mosaic_file.replace('_i2d.fits', '_thumb.png')
-            plot_mosaic_thumbnail(sci_after_arr, thumb_png,
-                                  downsample=downsample)
+            plot_mosaic_thumbnail(sci, thumb_png, downsample=downsample)
             log(f"  saved {os.path.basename(thumb_png)}")
 
             if step_config.get('background_subtract', True):
@@ -407,10 +410,10 @@ def resample_step(filtname, exposure_files, field, step_config,
                 )
                 if os.path.exists(pre_bkg_path):
                     sci_before_arr = fits.getdata(pre_bkg_path, extname='SCI')
-                    bg_model = sci_before_arr - sci_after_arr
+                    bg_model = sci_before_arr - sci
                     bkg_png = mosaic_file.replace('_i2d.fits', '_bkgsub.png')
                     plot_mosaic_bkgsub(
-                        sci_before_arr, sci_after_arr, bg_model,
+                        sci_before_arr, sci, bg_model,
                         save_file=bkg_png, downsample=downsample,
                         title=mosaic_name,
                     )

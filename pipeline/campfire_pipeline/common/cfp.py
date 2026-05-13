@@ -17,6 +17,8 @@ from datetime import datetime
 
 from astropy.io import fits
 
+from campfire_pipeline.common.io import log
+
 
 # Ordered list of provenance keys, one per pipeline step. The order encodes
 # the dependency chain: clearing key K should also clear every key after K.
@@ -100,6 +102,22 @@ def has_step(path_or_header, key):
         return key in path_or_header
     with fits.open(path_or_header) as hdul:
         return key in hdul[0].header
+
+
+def should_skip(exposure_file, key, rootname, step_name, status, overwrite):
+    """Skip-check shared across per-exposure step modules.
+
+    Returns True (and logs) when the step is already recorded on the file
+    and ``overwrite`` is False. ``status`` may be a pre-scanned StepStatus
+    cache (preferred) or None (falls back to opening the FITS file).
+    """
+    if overwrite:
+        return False
+    done = (status.has(exposure_file, key) if status is not None
+            else has_step(exposure_file, key))
+    if done:
+        log(f"Skipping {step_name} on {rootname}: {key} already set")
+    return done
 
 
 def get_steps(path):

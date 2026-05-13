@@ -57,12 +57,28 @@ Disabled by default. Enable per field with::
 
 import os
 
+from functools import lru_cache
+
 import numpy as np
 from astropy.io import fits
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 from campfire_pipeline.nircam.steps.striping import fit_residual_striping
+
+
+@lru_cache(maxsize=4)
+def _pixel_grid(shape):
+    """Cached read-only ``(y, x)`` index grids for a given shape.
+
+    The angle search calls ``_bin_indices`` ~130 times per exposure on the
+    same image shape; reusing the index grids saves ~32 MB of allocations
+    per call.
+    """
+    y, x = np.indices(shape)
+    y.setflags(write=False)
+    x.setflags(write=False)
+    return y, x
 
 
 def _bin_indices(shape, theta_deg, bin_width):
@@ -73,8 +89,7 @@ def _bin_indices(shape, theta_deg, bin_width):
     contiguous bin indices starting at 0.
     """
     theta = np.radians(theta_deg)
-    height, width = shape
-    y, x = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
+    y, x = _pixel_grid(shape)
     # Perpendicular to the diagonal direction (theta + π/2)
     perp = theta + np.pi / 2
     proj = x * np.cos(perp) + y * np.sin(perp)
@@ -614,13 +629,9 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     """
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
-    if not overwrite:
-        already_done = (status.has(exposure_file, 'CFP_DIAG')
-                        if status is not None
-                        else cfp.has_step(exposure_file, 'CFP_DIAG'))
-        if already_done:
-            log(f"Skipping diag_striping on {rootname}: CFP_DIAG already set")
-            return
+    if cfp.should_skip(exposure_file, 'CFP_DIAG', rootname,
+                       'diag_striping', status, overwrite):
+        return
 
     log(f"Running diag_striping on {rootname}")
 

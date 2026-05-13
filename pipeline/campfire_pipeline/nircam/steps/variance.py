@@ -28,13 +28,9 @@ def variance_step(exposure_file, field, step_config, overwrite=False,
     """Rescale variance maps on a single canonical exposure."""
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
-    if not overwrite:
-        already_done = (status.has(exposure_file, 'CFP_VAR')
-                        if status is not None
-                        else cfp.has_step(exposure_file, 'CFP_VAR'))
-        if already_done:
-            log(f"Skipping variance on {rootname}: CFP_VAR already set")
-            return
+    if cfp.should_skip(exposure_file, 'CFP_VAR', rootname,
+                       'variance', status, overwrite):
+        return
 
     log(f"Rescaling variance for {rootname}")
 

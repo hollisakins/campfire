@@ -35,15 +35,11 @@ def preview_step(exposure_file, field, step_config, overwrite=False,
         os.path.dirname(exposure_file), f'{rootname}_preview.png'
     )
 
-    if not overwrite:
-        already_done = (status.has(exposure_file, 'CFP_PREV')
-                        if status is not None
-                        else cfp.has_step(exposure_file, 'CFP_PREV'))
-        # Both the header stamp and the PNG must exist for a skip — if the
-        # PNG was deleted out-of-band the stamp alone is misleading.
-        if already_done and os.path.exists(out_path):
-            log(f"Skipping preview on {rootname}: CFP_PREV already set")
-            return
+    # Both the header stamp and the PNG must exist for a skip — if the
+    # PNG was deleted out-of-band the stamp alone is misleading.
+    if os.path.exists(out_path) and cfp.should_skip(
+            exposure_file, 'CFP_PREV', rootname, 'preview', status, overwrite):
+        return
 
     log(f"Rendering preview for {rootname}")
 

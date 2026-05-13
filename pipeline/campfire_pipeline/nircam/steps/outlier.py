@@ -35,7 +35,6 @@ Two implementations live here, dispatched by the orchestrator based on
   (same semantic as ``outlier_step``).
 """
 
-import json
 import os
 import tempfile
 
@@ -46,7 +45,7 @@ from matplotlib.path import Path
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 from campfire_pipeline.nircam.manifest import (
-    compute_file_hash, load_manifest, write_manifest,
+    file_unchanged, input_entry, load_manifest, write_manifest,
 )
 
 
@@ -98,6 +97,83 @@ def _polygon_overlap(region_a, region_b):
     return False
 
 
+def _compute_overlap_inputs(visit_files, filter_files, sregions, cross_program):
+    """Find spatially-overlapping exposures from other visits.
+
+    Returns ``visit_files + overlap_files``. Default scopes overlap to the
+    same JWST program (avoids redundantly drizzling each exposure once per
+    overlapping program in COSMOS-area footprints); set ``cross_program=True``
+    for the legacy all-programs behavior.
+    """
+    sregion_map = dict(zip(filter_files, sregions))
+    visit_set = set(visit_files)
+    visit_program = _program_id(visit_files[0])
+
+    overlap_files = []
+    overlap_set = set()
+    for visit_file in visit_files:
+        region_a = sregion_map[visit_file]
+        for other_file, region_b in zip(filter_files, sregions):
+            if other_file in visit_set or other_file in overlap_set:
+                continue
+            if not cross_program and _program_id(other_file) != visit_program:
+                continue
+            if _polygon_overlap(region_a, region_b):
+                overlap_files.append(other_file)
+                overlap_set.add(other_file)
+    return visit_files + overlap_files
+
+
+def _visit_is_up_to_date(visit, visit_files, all_inputs, manifest_path, status):
+    """Decide whether a visit can skip outlier detection.
+
+    Returns True only if every visit file has ``CFP_OUT`` stamped and the
+    input set + content hashes match the on-disk manifest. Logs the reason
+    when a re-run is needed.
+    """
+    if status is not None:
+        all_done = all(status.has(f, 'CFP_OUT') for f in visit_files)
+    else:
+        all_done = all(cfp.has_step(f, 'CFP_OUT') for f in visit_files)
+    if not all_done:
+        log(f"  CFP_OUT missing on some visit members; running")
+        return False
+
+    manifest = load_manifest(manifest_path)
+    if manifest is None:
+        log(f"  no manifest for visit {visit}; running")
+        return False
+
+    new_basenames = sorted(os.path.basename(f) for f in all_inputs)
+    old_basenames = sorted(inp['filename'] for inp in manifest['inputs'])
+    if new_basenames != old_basenames:
+        log(f"  input set changed for visit {visit}")
+        return False
+
+    old_by_name = {inp['filename']: inp for inp in manifest['inputs']}
+    content_changed = []
+    for f in all_inputs:
+        bn = os.path.basename(f)
+        if bn in old_by_name and not file_unchanged(f, old_by_name[bn]):
+            content_changed.append(bn)
+    if content_changed:
+        log(f"  inputs changed: {', '.join(content_changed)}")
+        return False
+
+    log(f"  visit {visit} up-to-date; skipping")
+    return True
+
+
+def _write_outlier_manifest(visit, field, filtname, all_inputs, manifest_path):
+    """Write the per-visit outlier manifest (input filenames + content hashes)."""
+    write_manifest({
+        'visit': visit,
+        'field': field.name,
+        'filter': filtname,
+        'inputs': [input_entry(f) for f in sorted(all_inputs)],
+    }, manifest_path)
+
+
 def outlier_step(visit, visit_files, filter_files, sregions,
                  field, step_config, overwrite=False, status=None):
     """Run outlier detection on one visit's exposures.
@@ -131,72 +207,20 @@ def outlier_step(visit, visit_files, filter_files, sregions,
         field.filter_dir(filtname), f'outlier_{visit}_manifest.json',
     )
 
-    # Cross-visit overlap padding scope. Default scopes overlap to the
-    # same JWST program — avoids redundantly drizzling the same exposure
-    # on behalf of every other program that happens to overlap, which is
-    # the dominant cost driver in COSMOS-area outlier runs. Flip
-    # ``cross_program_overlap = true`` to restore the legacy all-programs
-    # behavior (slower, slightly stronger CR statistics for tiles where
-    # multiple programs dither over the same area).
     cross_program = step_config.get('cross_program_overlap', False)
-    visit_program = _program_id(visit_files[0])
-
-    # Find spatially overlapping exposures from other visits
-    overlap_files = []
-    visit_set = set(visit_files)
-    for visit_file, region_a in zip(visit_files,
-                                    [sregions[filter_files.index(f)]
-                                     for f in visit_files]):
-        for other_file, region_b in zip(filter_files, sregions):
-            if other_file in visit_set or other_file in overlap_files:
-                continue
-            if not cross_program and _program_id(other_file) != visit_program:
-                continue
-            if _polygon_overlap(region_a, region_b):
-                overlap_files.append(other_file)
-
-    all_inputs = visit_files + overlap_files
+    all_inputs = _compute_overlap_inputs(
+        visit_files, filter_files, sregions, cross_program,
+    )
     log(f"  including {len(all_inputs)} files (visit + overlap"
         f"{', intra-program' if not cross_program else ''})")
 
-    # Manifest-based skip
     if not overwrite:
-        if status is not None:
-            all_done = all(status.has(f, 'CFP_OUT') for f in visit_files)
-        else:
-            all_done = all(cfp.has_step(f, 'CFP_OUT') for f in visit_files)
-        if all_done:
-            new_basenames = sorted(os.path.basename(f) for f in all_inputs)
-            manifest = load_manifest(manifest_path)
-            if manifest is not None:
-                old_basenames = sorted(
-                    inp['filename'] for inp in manifest['inputs']
-                )
-                if new_basenames == old_basenames:
-                    old_hashes = {
-                        inp['filename']: inp['file_hash']
-                        for inp in manifest['inputs']
-                    }
-                    content_changed = []
-                    for f in all_inputs:
-                        bn = os.path.basename(f)
-                        if bn in old_hashes:
-                            if compute_file_hash(f) != old_hashes[bn]:
-                                content_changed.append(bn)
-                    if not content_changed:
-                        log(f"  visit {visit} up-to-date; skipping")
-                        return
-                    log(f"  inputs changed: {', '.join(content_changed)}")
-                else:
-                    log(f"  input set changed for visit {visit}")
-            else:
-                log(f"  no manifest for visit {visit}; running")
-        else:
-            log(f"  CFP_OUT missing on some visit members; running")
+        if _visit_is_up_to_date(visit, visit_files, all_inputs, manifest_path,
+                                status):
+            return
     else:
         log(f"  --overwrite; running unconditionally")
 
-    # Capture extras for the visit's own files (we only promote those back)
     saved_extras = {
         os.path.basename(f).removesuffix('.fits'): _capture_extras(f)
         for f in visit_files
@@ -260,7 +284,6 @@ def outlier_step(visit, visit_files, filter_files, sregions,
         finally:
             os.chdir(orig_cwd)
 
-        # Promote only the visit's own outputs back to canonical
         scratch_files = sorted(
             f for f in os.listdir(scratch)
             if f.endswith('.fits') and not f.endswith('_asn.json')
@@ -311,21 +334,7 @@ def outlier_step(visit, visit_files, filter_files, sregions,
                 )
                 log(f"  saved {os.path.basename(out_pdf)}")
 
-    # Manifest records ALL inputs (visit + overlap) so we can detect changes
-    # in either next time
-    manifest_data = {
-        'visit': visit,
-        'field': field.name,
-        'filter': filtname,
-        'inputs': [
-            {
-                'filename': os.path.basename(f),
-                'file_hash': compute_file_hash(f),
-            }
-            for f in sorted(all_inputs)
-        ],
-    }
-    write_manifest(manifest_data, manifest_path)
+    _write_outlier_manifest(visit, field, filtname, all_inputs, manifest_path)
 
 
 def outlier_step_campfire(visit, visit_files, filter_files, sregions,
@@ -353,63 +362,19 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
     )
 
     cross_program = step_config.get('cross_program_overlap', False)
-    visit_program = _program_id(visit_files[0])
-
-    overlap_files = []
-    visit_set = set(visit_files)
-    for visit_file, region_a in zip(visit_files,
-                                    [sregions[filter_files.index(f)]
-                                     for f in visit_files]):
-        for other_file, region_b in zip(filter_files, sregions):
-            if other_file in visit_set or other_file in overlap_files:
-                continue
-            if not cross_program and _program_id(other_file) != visit_program:
-                continue
-            if _polygon_overlap(region_a, region_b):
-                overlap_files.append(other_file)
-
-    all_inputs = visit_files + overlap_files
+    all_inputs = _compute_overlap_inputs(
+        visit_files, filter_files, sregions, cross_program,
+    )
     log(f"  including {len(all_inputs)} files (visit + overlap"
         f"{', intra-program' if not cross_program else ''})")
 
-    # Manifest staleness — same logic as outlier_step
     if not overwrite:
-        if status is not None:
-            all_done = all(status.has(f, 'CFP_OUT') for f in visit_files)
-        else:
-            all_done = all(cfp.has_step(f, 'CFP_OUT') for f in visit_files)
-        if all_done:
-            new_basenames = sorted(os.path.basename(f) for f in all_inputs)
-            manifest = load_manifest(manifest_path)
-            if manifest is not None:
-                old_basenames = sorted(
-                    inp['filename'] for inp in manifest['inputs']
-                )
-                if new_basenames == old_basenames:
-                    old_hashes = {
-                        inp['filename']: inp['file_hash']
-                        for inp in manifest['inputs']
-                    }
-                    content_changed = []
-                    for f in all_inputs:
-                        bn = os.path.basename(f)
-                        if bn in old_hashes:
-                            if compute_file_hash(f) != old_hashes[bn]:
-                                content_changed.append(bn)
-                    if not content_changed:
-                        log(f"  visit {visit} up-to-date; skipping")
-                        return
-                    log(f"  inputs changed: {', '.join(content_changed)}")
-                else:
-                    log(f"  input set changed for visit {visit}")
-            else:
-                log(f"  no manifest for visit {visit}; running")
-        else:
-            log(f"  CFP_OUT missing on some visit members; running")
+        if _visit_is_up_to_date(visit, visit_files, all_inputs, manifest_path,
+                                status):
+            return
     else:
         log(f"  --overwrite; running unconditionally")
 
-    # Capture extras for the visit's own files (only those get saved back)
     saved_extras = {
         os.path.basename(f).removesuffix('.fits'): _capture_extras(f)
         for f in visit_files
@@ -435,16 +400,4 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
         plot=do_plot,
     )
 
-    manifest_data = {
-        'visit': visit,
-        'field': field.name,
-        'filter': filtname,
-        'inputs': [
-            {
-                'filename': os.path.basename(f),
-                'file_hash': compute_file_hash(f),
-            }
-            for f in sorted(all_inputs)
-        ],
-    }
-    write_manifest(manifest_data, manifest_path)
+    _write_outlier_manifest(visit, field, filtname, all_inputs, manifest_path)

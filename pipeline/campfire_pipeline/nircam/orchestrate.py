@@ -163,7 +163,6 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
         log(f"detector1: no imaging uncals for {filtname} after grism filter")
         return
 
-    # Skip uncals whose canonical output already has CFP_DET1.
     if not overwrite:
         pending = []
         for u in uncals:
@@ -187,7 +186,6 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
     dispatch(detector1_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
-    # Mark CFP_DET1 on the newly produced canonicals so later phases see them
     new_canonical = [
         field.get_exposure_path(
             os.path.basename(u).removesuffix('_uncal.fits'), filtname,
@@ -424,7 +422,6 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     if not pending_visits:
         return
 
-    # Read S_REGION only when there's actual outlier work to do
     sregions = _read_sregions(exposures)
     log(f"outlier: {len(pending_visits)} visits for {filtname} "
         f"({implementation})")
@@ -435,10 +432,9 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
              filter_files=exposures, sregions=sregions,
              field=field, step_config=cfg,
              overwrite=overwrite, status=status)
-    # Stamp CFP_OUT in the parent's status cache after all workers finish.
-    # The on-disk CFP_OUT key is written by each worker via atomic_save;
-    # this just keeps the in-memory cache consistent so the resample step
-    # later in the same combine phase sees freshly-stamped exposures.
+    # Each worker writes CFP_OUT on-disk via atomic_save; sync the parent's
+    # in-memory cache so the resample step later in the combine phase sees
+    # freshly-stamped exposures.
     for _, visit_files in pending_visits.items():
         status.mark_all(visit_files, 'CFP_OUT')
 
@@ -457,7 +453,8 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
 
 # Dispatch table: step name → callable that takes (field, config, filtname,
 # n_processes, overwrite, status). Resample needs reduction_version, so it's
-# handled specially in run_combine / run_step.
+# handled specially in run_combine / run_step. The lambda-wrapped entries
+# adapt the (step_name, fn, cfp_key) triple onto _run_per_exposure's signature.
 _RUNNERS = {
     'detector1':   _run_detector1,
     'persistence': _run_persistence,

@@ -50,6 +50,43 @@ def compute_file_hash(filepath):
     return f'sha256:{h.hexdigest()}'
 
 
+def file_stat(filepath):
+    """Return ``(size, mtime_ns)`` for fast change detection."""
+    st = os.stat(filepath)
+    return st.st_size, st.st_mtime_ns
+
+
+def file_unchanged(filepath, old_entry):
+    """True if *filepath* still matches the recorded *old_entry*.
+
+    Fast path: when the manifest carries ``size`` and ``mtime_ns`` AND they
+    match the current stat, the file hasn't been rewritten — skip the
+    SHA-256 read entirely. Otherwise fall back to recomputing the content
+    hash and comparing.
+    """
+    size = old_entry.get('size')
+    mtime_ns = old_entry.get('mtime_ns')
+    if size is not None and mtime_ns is not None:
+        cur_size, cur_mtime = file_stat(filepath)
+        if cur_size == size and cur_mtime == mtime_ns:
+            return True
+    return compute_file_hash(filepath) == old_entry.get('file_hash')
+
+
+def input_entry(filepath, extra=None):
+    """Build a manifest input record with hash + fast-path stat fields."""
+    size, mtime_ns = file_stat(filepath)
+    entry = {
+        'filename': os.path.basename(filepath),
+        'file_hash': compute_file_hash(filepath),
+        'size': size,
+        'mtime_ns': mtime_ns,
+    }
+    if extra:
+        entry.update(extra)
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # Manifest creation / I/O
 # ---------------------------------------------------------------------------
@@ -86,28 +123,19 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
 
     inputs = []
     for f in sorted(input_files):
-        basename = os.path.basename(f)
-        # Extract visit and detector from JWST filename convention
-        parts = basename.split('_')
-        visit = parts[0] if len(parts) > 0 else ''
-        detector = parts[3] if len(parts) > 3 else ''
-
-        entry = {
-            'filename': basename,
-            'file_hash': compute_file_hash(f),
-            'visit': visit,
-            'detector': detector,
+        parts = os.path.basename(f).split('_')
+        extra = {
+            'visit': parts[0] if len(parts) > 0 else '',
+            'detector': parts[3] if len(parts) > 3 else '',
         }
-        # Read DATE-OBS if available
         try:
             with fits.open(f, memmap=True) as hdul:
                 date_obs = hdul[0].header.get('DATE-OBS')
                 if date_obs:
-                    entry['date_obs'] = date_obs
+                    extra['date_obs'] = date_obs
         except Exception:
             pass
-
-        inputs.append(entry)
+        inputs.append(input_entry(f, extra=extra))
 
     # Hash the relevant processing config so we can detect config changes too
     config_str = json.dumps({
@@ -215,13 +243,10 @@ def check_inputs_changed(manifest_path, current_input_files):
     if removed:
         reasons.append(f'{len(removed)} removed file(s): {", ".join(sorted(removed))}')
 
-    # Check hashes for files present in both
     for f in sorted(current_input_files):
         basename = os.path.basename(f)
-        if basename in old_by_name:
-            current_hash = compute_file_hash(f)
-            if current_hash != old_by_name[basename]['file_hash']:
-                reasons.append(f'modified: {basename}')
+        if basename in old_by_name and not file_unchanged(f, old_by_name[basename]):
+            reasons.append(f'modified: {basename}')
 
     changed = len(reasons) > 0
     return changed, reasons

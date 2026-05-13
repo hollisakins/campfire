@@ -21,7 +21,6 @@ import copy
 import os
 import warnings
 from datetime import datetime
-from time import sleep
 
 import numpy as np
 from astropy.io import fits
@@ -37,6 +36,10 @@ from scipy.ndimage import binary_dilation, median_filter
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 from campfire_pipeline.nircam.constants import NIR_AMPS
+from campfire_pipeline.nircam.steps._flat import (
+    apply_flat_with_retry,
+    resolve_flat,
+)
 from campfire_pipeline.nircam.skyfit import (
     collapse_image,
     fit_pedestal,
@@ -221,52 +224,6 @@ def fit_residual_striping(
     return horizontal, vertical, ampcounts
 
 
-def _resolve_flat(model, field, use_custom):
-    crds_dict = {
-        'INSTRUME': 'NIRCAM',
-        'DETECTOR': model.meta.instrument.detector,
-        'FILTER': model.meta.instrument.filter,
-        'PUPIL': model.meta.instrument.pupil,
-        'DATE-OBS': model.meta.observation.date,
-        'TIME-OBS': model.meta.observation.time,
-    }
-    if use_custom:
-        fn = crds_dict['FILTER'].upper()
-        det = crds_dict['DETECTOR'].upper()
-        flatfile = os.path.join(
-            field.flats_dir, f'flat_nircam_{fn}_{det}_CLEAR.fits',
-        )
-        if os.path.exists(flatfile):
-            return flatfile
-        log(f"Custom flat {os.path.basename(flatfile)} not found; "
-            f"falling back to CRDS")
-
-    try:
-        crds_context = os.environ['CRDS_CONTEXT']
-    except KeyError:
-        import crds
-        crds_context = crds.get_default_context()
-    import crds
-    refs = crds.getreferences(crds_dict, reftypes=['flat'], context=crds_context)
-    return refs.get('flat')
-
-
-def _apply_flat_with_retry(model, flatfile):
-    from jwst.datamodels import FlatModel
-    from jwst.flatfield.flat_field import do_correction
-    last_exc = None
-    for delay in (0, 5, 5):
-        if delay:
-            sleep(delay)
-        try:
-            with FlatModel(flatfile) as flat:
-                model, _ = do_correction(model, flat)
-            return model
-        except Exception as e:
-            last_exc = e
-    raise last_exc
-
-
 def striping_step(exposure_file, field, step_config, overwrite=False,
                   status=None):
     """Subtract 1/f striping from a single canonical exposure.
@@ -292,13 +249,9 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
 
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
-    if not overwrite:
-        already_done = (status.has(exposure_file, 'CFP_1F')
-                        if status is not None
-                        else cfp.has_step(exposure_file, 'CFP_1F'))
-        if already_done:
-            log(f"Skipping striping on {rootname}: CFP_1F already set")
-            return
+    if cfp.should_skip(exposure_file, 'CFP_1F', rootname,
+                       'striping', status, overwrite):
+        return
 
     log(f"Running striping on {rootname}")
 
@@ -314,14 +267,14 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
 
     fit_model = copy.deepcopy(model)
     if apply_flat:
-        flatfile = _resolve_flat(fit_model, field, use_custom_flat)
+        flatfile = resolve_flat(fit_model, field, use_custom_flat)
         if flatfile is None:
             log(f"Flat lookup failed for {rootname}; aborting striping")
             fit_model.close()
             model.close()
             return
         log(f"Applying flat {os.path.basename(flatfile)} for striping fit")
-        fit_model = _apply_flat_with_retry(fit_model, flatfile)
+        fit_model = apply_flat_with_retry(fit_model, flatfile)
 
     # Only DO_NOT_USE pixels are unusable for fitting — JUMP_DET and other
     # informational bits flag pixels that have already been corrected and

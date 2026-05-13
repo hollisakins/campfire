@@ -21,7 +21,6 @@ copy idiom from the legacy implementation work without re-reading from disk.
 import copy
 import os
 from datetime import datetime
-from time import sleep
 
 import numpy as np
 from astropy.io import fits
@@ -30,6 +29,10 @@ from photutils.segmentation import detect_sources, detect_threshold
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
+from campfire_pipeline.nircam.steps._flat import (
+    apply_flat_with_retry,
+    resolve_flat,
+)
 
 
 WISP_DETECTORS = {'nrca3', 'nrca4', 'nrcb3', 'nrcb4'}
@@ -49,56 +52,6 @@ def _calc_variance(data, template, coeff):
     """MAD^2 of (data - coeff * template), nan-safe."""
     mad = median_absolute_deviation(data - coeff * template, ignore_nan=True)
     return mad ** 2
-
-
-def _resolve_flat(model, field, use_custom):
-    """Pick the flat reference: custom (if requested + present) else CRDS."""
-    crds_dict = {
-        'INSTRUME': 'NIRCAM',
-        'DETECTOR': model.meta.instrument.detector,
-        'FILTER': model.meta.instrument.filter,
-        'PUPIL': model.meta.instrument.pupil,
-        'DATE-OBS': model.meta.observation.date,
-        'TIME-OBS': model.meta.observation.time,
-    }
-
-    if use_custom:
-        fn = crds_dict['FILTER'].upper()
-        det = crds_dict['DETECTOR'].upper()
-        flatfile = os.path.join(
-            field.flats_dir, f'flat_nircam_{fn}_{det}_CLEAR.fits',
-        )
-        if os.path.exists(flatfile):
-            return flatfile
-        log(f"Custom flat {os.path.basename(flatfile)} not found; "
-            f"falling back to CRDS")
-
-    try:
-        crds_context = os.environ['CRDS_CONTEXT']
-    except KeyError:
-        import crds
-        crds_context = crds.get_default_context()
-    import crds
-    refs = crds.getreferences(crds_dict, reftypes=['flat'], context=crds_context)
-    return refs.get('flat')
-
-
-def _apply_flat_with_retry(model, flatfile):
-    """Apply flat in-memory, retrying once or twice on transient CRDS races."""
-    from jwst.datamodels import FlatModel
-    from jwst.flatfield.flat_field import do_correction
-
-    last_exc = None
-    for delay in (0, 3, 10):
-        if delay:
-            sleep(delay)
-        try:
-            with FlatModel(flatfile) as flat:
-                model, _ = do_correction(model, flat)
-            return model
-        except Exception as e:  # CRDS races, IOErrors, etc.
-            last_exc = e
-    raise last_exc
 
 
 def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
@@ -125,13 +78,9 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     filtname = exposure_file.split('/')[-2]
     detector = rootname.split('_')[3]
 
-    if not overwrite:
-        already_done = (status.has(exposure_file, 'CFP_WISP')
-                        if status is not None
-                        else cfp.has_step(exposure_file, 'CFP_WISP'))
-        if already_done:
-            log(f"Skipping wisp on {rootname}: CFP_WISP already set")
-            return
+    if cfp.should_skip(exposure_file, 'CFP_WISP', rootname,
+                       'wisp', status, overwrite):
+        return
 
     if detector not in WISP_DETECTORS:
         log(f"Skipping wisp on {rootname}: detector {detector} has no wisps")
@@ -170,14 +119,14 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     # the flat to the canonical file.
     fit_model = copy.deepcopy(model)
     if apply_flat:
-        flatfile = _resolve_flat(fit_model, field, use_custom_flat)
+        flatfile = resolve_flat(fit_model, field, use_custom_flat)
         if flatfile is None:
             log(f"Flat lookup failed for {rootname}; skipping")
             fit_model.close()
             model.close()
             return
         log(f"Using flat {os.path.basename(flatfile)} for fit")
-        fit_model = _apply_flat_with_retry(fit_model, flatfile)
+        fit_model = apply_flat_with_retry(fit_model, flatfile)
 
     fit_data = fit_model.data
     mask = np.zeros(fit_data.shape, dtype=bool)

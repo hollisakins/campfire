@@ -49,12 +49,9 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
     output_dir = field.filter_dir(filtname)
     canonical = field.get_exposure_path(rootname, filtname)
 
-    if os.path.exists(canonical) and not overwrite:
-        already_done = (status.has(canonical, 'CFP_DET1') if status is not None
-                        else cfp.has_step(canonical, 'CFP_DET1'))
-        if already_done:
-            log(f"Skipping detector1 on {rootname}, CFP_DET1 already set")
-            return
+    if os.path.exists(canonical) and cfp.should_skip(
+            canonical, 'CFP_DET1', rootname, 'detector1', status, overwrite):
+        return
 
     log(f"Running detector1 on {rootname}")
 

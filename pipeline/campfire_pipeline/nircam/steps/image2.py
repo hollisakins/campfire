@@ -60,13 +60,9 @@ def image2_step(exposure_file, field, step_config, overwrite=False,
         log(f"image2: skipping {rootname}: EXP_TYPE={exp_type} not imaging")
         return
 
-    if not overwrite:
-        already_done = (status.has(exposure_file, 'CFP_IMG2')
-                        if status is not None
-                        else cfp.has_step(exposure_file, 'CFP_IMG2'))
-        if already_done:
-            log(f"Skipping image2 on {rootname}: CFP_IMG2 already set")
-            return
+    if cfp.should_skip(exposure_file, 'CFP_IMG2', rootname,
+                       'image2', status, overwrite):
+        return
 
     log(f"Running image2 on {rootname}")
 

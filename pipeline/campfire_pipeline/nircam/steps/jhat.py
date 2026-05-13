@@ -69,13 +69,9 @@ def jhat_step(exposure_file, field, step_config, overwrite=False, status=None):
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
     filtname = exposure_file.split('/')[-2]
 
-    if not overwrite:
-        already_done = (status.has(exposure_file, 'CFP_JHAT')
-                        if status is not None
-                        else cfp.has_step(exposure_file, 'CFP_JHAT'))
-        if already_done:
-            log(f"Skipping jhat on {rootname}: CFP_JHAT already set")
-            return
+    if cfp.should_skip(exposure_file, 'CFP_JHAT', rootname,
+                       'jhat', status, overwrite):
+        return
 
     if 'refcat_dict' not in step_config:
         raise ValueError(

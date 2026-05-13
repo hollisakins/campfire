@@ -350,6 +350,45 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam: dedup + perf pass on the step-based pipeline.
+  - `outlier.py`: O(N²) → O(N) overlap scan (replaced `filter_files.index(f)`
+    in the per-visit loop with a `{path: sregion}` dict); extracted
+    `_compute_overlap_inputs`, `_visit_is_up_to_date`, and
+    `_write_outlier_manifest` to collapse ~100 lines of byte-identical
+    preamble/epilogue between `outlier_step` and `outlier_step_campfire`.
+  - `common/parallel.py`: removed the unconditional `sleep(1)` before every
+    parallel dispatch (accumulated to >1 minute of pure wait per full run
+    across 12+ per-exposure steps × N filters).
+  - `nircam/manifest.py`: added `(size, mtime_ns)` fast-path to the input
+    change-detection so up-to-date manifests skip the SHA-256 hash of
+    SCI+DQ. Per-tile up-to-date checks no longer re-read ~4 GB of input
+    data on a 200-input mosaic. Backward-compatible: missing prefilter
+    fields fall back to hashing. Manifest writers (`create_manifest`,
+    `_write_outlier_manifest`) now record size and mtime alongside hash
+    via a shared `input_entry` helper.
+  - `nircam/steps/resample.py`: collapsed 4 separate `fits.getdata` /
+    `fits.getheader` calls plus a redundant SCI re-read into one
+    `fits.open` block shared between the split-extensions and thumbnail
+    paths.
+  - `nircam/steps/diag_striping.py`: cached the `(y, x)` pixel-index grids
+    in `_bin_indices` via `lru_cache(maxsize=4)` on a new `_pixel_grid(shape)`
+    helper. The grids are shape-only (independent of θ) so the ~130
+    angle-search calls per exposure each save ~32 MB of array allocation.
+  - `nircam/steps/_flat.py`: new shared module with `resolve_flat` and
+    `apply_flat_with_retry`. Removes a copy-paste pair between `wisp.py`
+    and `striping.py` whose retry delays had accidentally diverged
+    (`(0,5,5)` in striping vs `(0,3,10)` in wisp); settled on `(0,3,10)`
+    with `delays` as a parameter for callers that want different timing.
+  - `common/cfp.py`: new `cfp.should_skip(exposure_file, key, rootname,
+    step_name, status, overwrite)` helper. Replaced the repeated
+    `if not overwrite: already_done = (status.has(...) if status is not
+    None else cfp.has_step(...)); if already_done: log(...); return`
+    block across 12 per-exposure step modules (`detector1`, `wisp`,
+    `striping`, `image2`, `edge`, `sky`, `variance`, `diag_striping`,
+    `bad_pixel`, `apply_masks`, `jhat`, `preview`).
+  - Trimmed narration comments in `orchestrate.py` and `outlier.py` that
+    restated the next 1-2 lines of code.
+  - Net `-127` lines across 18 files; new `_flat.py` helper.
 - NIRCam: new `preview` per-exposure step, inserted as the penultimate
   process step (after `wcs_shift`, before `jhat`). Renders a downsampled
   ZScale-stretched grayscale PNG of the canonical SCI to
