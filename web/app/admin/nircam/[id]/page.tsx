@@ -15,7 +15,12 @@ import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 import { stageBadgeClasses } from '@/lib/nircam-stages';
 import MaskEditor from '@/components/nircam/MaskEditor';
 
-const CDN_BASE = process.env.NEXT_PUBLIC_CDN_BASE_URL || '';
+// PNGs live in R2 under nircam/exposures/<field>/<filter>/...; the
+// /api/nircam-preview proxy handles auth and streams them same-origin.
+function previewUrl(r2Key: string | null): string | null {
+  if (!r2Key) return null;
+  return `/api/nircam-preview?key=${encodeURIComponent(r2Key)}`;
+}
 
 export default function ExposureDetailPage() {
   const params = useParams();
@@ -103,10 +108,8 @@ export default function ExposureDetailPage() {
     );
   }
 
-  const pngUrl = exposure.png_path ? `${CDN_BASE}/${exposure.png_path}` : null;
-  const fullPngUrl = exposure.full_png_path
-    ? `${CDN_BASE}/${exposure.full_png_path}`
-    : null;
+  const pngUrl = previewUrl(exposure.png_path);
+  const fullPngUrl = previewUrl(exposure.full_png_path);
   const editorAvailable = Boolean(
     fullPngUrl && exposure.image_width && exposure.image_height
   );
