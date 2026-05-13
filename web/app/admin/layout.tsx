@@ -4,11 +4,12 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import { Shield, KeyRound, Users, Loader2, AlertTriangle, FolderOpen, Activity, UserPlus, Download } from 'lucide-react';
+import { Shield, KeyRound, Users, Loader2, AlertTriangle, FolderOpen, Activity, UserPlus, Download, Camera } from 'lucide-react';
 
 const adminNavItems = [
   { href: '/admin/activity', label: 'Activity', icon: Activity },
   { href: '/admin/downloads', label: 'Downloads', icon: Download },
+  { href: '/admin/nircam', label: 'NIRCam', icon: Camera },
   { href: '/admin/requests', label: 'Account Requests', icon: UserPlus },
   { href: '/admin/codes', label: 'Access Codes', icon: KeyRound },
   { href: '/admin/users', label: 'Users', icon: Users },

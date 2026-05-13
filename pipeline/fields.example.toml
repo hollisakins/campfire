@@ -3,17 +3,37 @@
 # Place this file at $CAMPFIRE_ROOT/config/fields.toml
 # (or pass --fields-file to the CLI)
 #
+# Raw data layout is PID-organized and filter-binned:
+#   $CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/*_uncal.fits
+# Each PID directory also gets a manifest.ecsv written by `cfpipe download`
+# capturing per-exposure metadata (filter, observtn, target RA/Dec, s_region).
+#
+# A field is defined by a list of file globs (one per PID, or per obs/visit
+# slice), so the field definition selects which exposures contribute to its
+# mosaics. PIDs are inferred from each glob's leading 'jwNNNNN'.
+#
 # Each section defines a field with:
-#   filters     = list of NIRCam filters to reduce
-#   files       = glob pattern(s) matching JWST file prefixes
-#   data_subdir = subdirectory under $CAMPFIRE_ROOT/raw/ containing uncal files
-#                 (organized by filter: {data_subdir}/{filter}/*_uncal.fits)
+#   filters       = list of NIRCam filters to reduce
+#   files         = glob pattern(s) matching JWST fileset prefixes
+#                   (e.g. 'jw01727*' = whole program, 'jw01727001*' = obs 1).
+#                   Patterns support standard Python glob (`*`, `?`, `[abc]`)
+#                   plus bash-style brace lists, expanded up-front into the
+#                   underlying pattern list:
+#                       'jw01727{001,002,003}*'   →   obs 001/002/003
+#                       'jw01727{001,003}*_nrca?' →   cartesian product
+#   skip          = optional glob pattern(s) to exclude from every step
+#                   (uncal selection, per-exposure stages, mosaic resample).
+#                   Same brace syntax as `files`. Per-step `files_to_skip`
+#                   (e.g. under `[field.resample]`) stacks on top of this.
 #   tangent_point = [RA, Dec] for mosaic WCS reference
 #
 # Tile WCS definitions nest under the field:
 #   [field.tile_name]
 #       rotation = degrees
-#       corners  = [[RA, Dec], ...]
+#       # corners  = [[RA, Dec], ...]   # optional override; if omitted,
+#       #                               # corners are auto-computed from the
+#       #                               # first <scale>mas subsection plus
+#       #                               # tangent_point + rotation.
 #       [field.tile_name.30mas]
 #           crpix = [x, y]
 #           naxis = [nx, ny]
@@ -21,15 +41,47 @@
 #           crpix = [x, y]
 #           naxis = [nx, ny]
 #
-# Per-field stage overrides can be nested:
-#   [field.stage1]
-#       [field.stage1.remove_striping_step]
-#           apply_flat = false
+# Per-field per-step overrides use a flat layout matching the
+# canonical-exposure config namespace in config_default.toml:
+#   [field.striping]
+#       apply_flat = false
+#       maxiters = 5
+#   [field.diag_striping]                # off by default; enable per field
+#       enabled = true
+#       theta_min = 25.0
+#       theta_max = 35.0
+#   [field.jhat.refcat_dict]
+#       f444w = "gaia_dr3_f444w.cat"
+#       f200w = "gaia_dr3_f200w.cat"
+#
+# Pre-JHAT astrometric shifts (opt-in, declared as an array of tables):
+#   [[field.wcs_shift]]
+#       files     = ['jw01837002007*', 'jw01837002009*']  # rootname globs
+#       filters   = ['f090w']     # optional; default = all field filters
+#       delta_ra  = -0.0022538    # degrees
+#       delta_dec = -0.003637
+#       delta_roll = 0.0          # default 0.0
+#       scale     = 1.0           # default 1.0
+#   Each entry shifts the GWCS of the matched exposures via
+#   ``jwst.tweakreg.utils.adjust_wcs`` before the ``jhat`` step. Used to
+#   pre-correct visits with bad astrometry that would otherwise fall
+#   outside JHAT's source-matching radius. Multiple ``[[ ]]`` entries
+#   stack independently; first match wins for any given exposure.
+#
+# Per-field RGB composite (consumed only by `cfpipe nircam rgb`):
+#   [field.rgb]
+#       noisesig = 2.0       # blackpoint = noisesig * sigma_clip(SCI), per channel max
+#       noiselum = 0.12      # noise-floor lift in the log stretch (0 = pure log, 1 = white)
+#       satpercent = 0.01    # whitepoint = (100 - satpercent)-th percentile of all pixels
+#       [field.rgb.channels]                 # filter → [r, g, b] color weight
+#           f444w = [0.0, 0.4, 0.0]          #   pure-G push from the LW
+#           f356w = [0.4, 0.2, 0.0]          #   R + G mid-IR
+#           f150w = [0.0, 0.4, 1.0]          #   G + B SW
 
 [example_cosmos]
     filters = ['f115w', 'f150w', 'f200w', 'f277w', 'f356w', 'f410m', 'f444w']
     files = ['jw01727*', 'jw05893*']
-    data_subdir = 'nircam/cosmos'
+    # skip = ['jw01727099*']   # exclude a known-bad visit from every step
     tangent_point = [150.1163213, 2.200973097]
 
     [example_cosmos.A1]
@@ -51,3 +103,12 @@
         [example_cosmos.A2.60mas]
             crpix = [-2845, 11545]
             naxis = [9600, 12455]
+
+    [example_cosmos.rgb]
+        noisesig = 2.0
+        noiselum = 0.12
+        satpercent = 0.01
+        [example_cosmos.rgb.channels]
+            f444w = [0.0, 0.4, 0.0]
+            f356w = [0.4, 0.2, 0.0]
+            f150w = [0.0, 0.4, 1.0]

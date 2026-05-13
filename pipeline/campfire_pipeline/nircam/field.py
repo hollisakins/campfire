@@ -3,9 +3,14 @@ Field dataclass: NIRCam field configuration and workspace management.
 
 Analogous to nirspec/observation.py but organized around sky fields
 (file globs + filters) rather than MSA observations.
+
+Raw uncal layout is PID-organized: ``$CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/``.
+PIDs are derived from the leading ``jwNNNNN`` of each ``files`` glob, so a field
+that spans multiple programs naturally pulls from multiple PID directories.
 """
 
 import os
+import re
 from glob import glob
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -17,24 +22,162 @@ from campfire_pipeline.common.io import log
 from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
 
 
+_PID_RE = re.compile(r'jw(\d{5})')
+_PIXEL_SCALE_RE = re.compile(r'^(\d+)mas$')
+_BRACE_RE = re.compile(r'\{([^{}]*)\}')
+
+
+def _extract_pid(pattern):
+    """Pull the PID out of a JWST file glob (e.g. 'jw01727*' → '1727').
+
+    JWST filenames carry the PID zero-padded to 5 digits, but the on-disk raw
+    layout under ``$CAMPFIRE_ROOT/raw/nircam/`` uses the unpadded integer form,
+    so leading zeros are stripped.
+    """
+    m = _PID_RE.match(pattern)
+    return str(int(m.group(1))) if m else None
+
+
+def _expand_braces(pattern):
+    """Expand bash-style brace lists in a glob pattern.
+
+    ``'jw01234{001,002,003}*'`` → ``['jw01234001*', 'jw01234002*', 'jw01234003*']``.
+    Multiple/nested braces produce the cartesian product:
+    ``'a{1,2}{x,y}'`` → ``['a1x', 'a1y', 'a2x', 'a2y']``. Patterns without
+    braces pass through unchanged (as a single-element list). Python's stdlib
+    ``glob`` doesn't understand braces, so we expand them up-front into the
+    list of patterns the rest of the pipeline already handles.
+    """
+    m = _BRACE_RE.search(pattern)
+    if m is None:
+        return [pattern]
+    prefix = pattern[:m.start()]
+    suffix = pattern[m.end():]
+    options = m.group(1).split(',')
+    result = []
+    for opt in options:
+        result.extend(_expand_braces(prefix + opt + suffix))
+    return result
+
+
+def _is_pixel_scale_section(value):
+    """True for a dict like ``{'crpix': [...], 'naxis': [...]}``."""
+    return isinstance(value, dict) and 'crpix' in value and 'naxis' in value
+
+
+def _tile_has_wcs_subsection(value):
+    """True if ``value`` defines at least one pixel-scale WCS subsection."""
+    if not isinstance(value, dict):
+        return False
+    return any(
+        _PIXEL_SCALE_RE.match(k) and _is_pixel_scale_section(v)
+        for k, v in value.items()
+    )
+
+
+_WCS_SHIFT_REQUIRED = {'files', 'delta_ra', 'delta_dec'}
+_WCS_SHIFT_ALLOWED = (
+    _WCS_SHIFT_REQUIRED | {'filters', 'delta_roll', 'scale'}
+)
+
+
+def _parse_wcs_shift_rules(field_name, raw, field_filters):
+    """Normalize a list of [[<field>.wcs_shift]] entries.
+
+    Each entry must declare ``files`` (string or list of rootname globs) and
+    ``delta_ra``/``delta_dec`` (degrees). Optional: ``filters`` (defaults to
+    every field filter), ``delta_roll`` (default 0.0), ``scale`` (default 1.0).
+    Brace-style globs in ``files`` are expanded up-front.
+
+    Returns
+    -------
+    list of dict
+        Empty list when ``raw`` is None or empty.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"Field '{field_name}': [<field>.wcs_shift] must be an array of "
+            f"tables ([[ ]]), got {type(raw).__name__}"
+        )
+
+    rules = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Field '{field_name}': wcs_shift entry #{i} must be a table"
+            )
+        unknown = set(entry) - _WCS_SHIFT_ALLOWED
+        if unknown:
+            raise ValueError(
+                f"Field '{field_name}': wcs_shift entry #{i} has unknown "
+                f"keys {sorted(unknown)}. Allowed: {sorted(_WCS_SHIFT_ALLOWED)}"
+            )
+        missing = _WCS_SHIFT_REQUIRED - set(entry)
+        if missing:
+            raise ValueError(
+                f"Field '{field_name}': wcs_shift entry #{i} missing required "
+                f"keys {sorted(missing)}"
+            )
+
+        files = entry['files']
+        if isinstance(files, str):
+            files = [files]
+        files = [p for raw_p in files for p in _expand_braces(raw_p)]
+        files = list(np.unique(files))
+        bad = [p for p in files if _extract_pid(p) is None]
+        if bad:
+            raise ValueError(
+                f"Field '{field_name}': wcs_shift entry #{i} `files` patterns "
+                f"must start with 'jwNNNNN' (5-digit PID). Offending: {bad}"
+            )
+
+        filters = entry.get('filters')
+        if filters is None:
+            filters_norm = list(field_filters)
+        else:
+            if isinstance(filters, str):
+                filters = [filters]
+            unknown_f = [f for f in filters if f not in field_filters]
+            if unknown_f:
+                raise ValueError(
+                    f"Field '{field_name}': wcs_shift entry #{i} `filters` "
+                    f"contains values not in field.filters: {unknown_f}"
+                )
+            filters_norm = list(filters)
+
+        rules.append({
+            'files': files,
+            'filters': filters_norm,
+            'delta_ra': float(entry['delta_ra']),
+            'delta_dec': float(entry['delta_dec']),
+            'delta_roll': float(entry.get('delta_roll', 0.0)),
+            'scale': float(entry.get('scale', 1.0)),
+        })
+    return rules
+
+
 @dataclass
 class Field:
     name: str
     filters: List[str]
     files: List[str]           # glob patterns, e.g. ['jw01727*', 'jw05893*']
-    data_subdir: str           # subdir under $CAMPFIRE_ROOT/raw/
     tangent_point: tuple       # (RA, Dec)
     tiles: dict                # tile WCS definitions
-    stage_overrides: dict = field(default_factory=dict)
+    step_overrides: dict = field(default_factory=dict)
+    skip: List[str] = field(default_factory=list)  # field-wide exclude globs
+    rgb: Optional[dict] = None  # optional [field.rgb] block, consumed by `cfpipe nircam rgb`
+    # Parsed [[<field>.wcs_shift]] array-of-tables (pre-JHAT shift rules).
+    # Each entry: {files: [globs], filters: [filtnames] | None,
+    #              delta_ra, delta_dec, delta_roll, scale}.
+    wcs_shift_rules: List[dict] = field(default_factory=list)
 
     # Populated by setup_workspace()
-    raw_dir: Optional[str] = None
+    campfire_root: Optional[str] = None
+    raw_root: Optional[str] = None  # $CAMPFIRE_ROOT/raw/nircam (parent of PID dirs)
     products_dir: Optional[str] = None
     reference_dir: Optional[str] = None
-    stage1_dir: Optional[str] = None
-    stage2_dir: Optional[str] = None
-    stage3_dir: Optional[str] = None
-    mosaic_dir: Optional[str] = None
 
     # Reference subdirectories
     bad_pixel_dir: Optional[str] = None
@@ -81,36 +224,95 @@ class Field:
         file_patterns = fc['files']
         if isinstance(file_patterns, str):
             file_patterns = [file_patterns]
+        # Expand bash-style brace lists, e.g. 'jw01234{001,002}*' → two patterns.
+        file_patterns = [p for raw in file_patterns for p in _expand_braces(raw)]
         file_patterns = list(np.unique(file_patterns))
 
-        data_subdir = fc['data_subdir']
+        # Validate: every pattern must start with jwNNNNN so we can locate
+        # the PID-organized raw directory.
+        bad = [p for p in file_patterns if _extract_pid(p) is None]
+        if bad:
+            raise ValueError(
+                f"Field '{name}': every entry in `files` must start with "
+                f"'jwNNNNN' (5-digit PID). Offending patterns: {bad}"
+            )
+
+        # Field-level skip list: applied to every step that resolves files via
+        # get_uncal_files / get_exposure_files. Stacks with caller-passed skip.
+        skip_patterns = fc.get('skip', [])
+        if isinstance(skip_patterns, str):
+            skip_patterns = [skip_patterns]
+        skip_patterns = [p for raw in skip_patterns for p in _expand_braces(raw)]
+        skip_patterns = list(np.unique(skip_patterns))
+        bad_skip = [p for p in skip_patterns if _extract_pid(p) is None]
+        if bad_skip:
+            raise ValueError(
+                f"Field '{name}': every entry in `skip` must start with "
+                f"'jwNNNNN' (5-digit PID). Offending patterns: {bad_skip}"
+            )
+
         tangent_point = tuple(fc['tangent_point'])
 
-        # Parse tile WCS definitions
+        # Known per-step keys for the canonical-exposure pipeline. Used both
+        # to recognize per-field step overrides and to exclude them from the
+        # tile-detection loop below.
+        known_steps = {
+            'detector1', 'persistence', 'wisp', 'striping',
+            'image2', 'diag_striping', 'edge', 'sky', 'variance',
+            'wcs_shift', 'jhat',
+            'apply_mask', 'bad_pixel', 'outlier', 'resample',
+        }
+
+        # Parse tile WCS definitions. A tile is any non-reserved sub-table
+        # that either declares explicit sky `corners` (legacy / override) or
+        # provides at least one `<scale>mas` subsection with `crpix`+`naxis`
+        # — in the latter case corners are derived on demand from the WCS.
         tiles = {}
-        reserved_keys = {'filters', 'files', 'data_subdir', 'tangent_point',
-                         'stage1', 'stage2', 'stage3'}
+        reserved_keys = ({'filters', 'files', 'skip', 'tangent_point', 'rgb'} | known_steps)
         for key, value in fc.items():
             if key in reserved_keys:
                 continue
-            if isinstance(value, dict) and 'corners' in value:
+            if not isinstance(value, dict):
+                continue
+            if 'corners' in value or _tile_has_wcs_subsection(value):
                 tiles[key] = value
 
-        # Capture per-field stage config overrides
-        stage_overrides = {}
-        for key in ['stage1', 'stage2', 'stage3']:
+        # Optional [<field>.rgb] block, consumed only by `cfpipe nircam rgb`.
+        # Validation of channel filters against `filters` happens at use-site
+        # so a stale RGB block doesn't block other commands.
+        rgb_cfg = fc.get('rgb')
+        if rgb_cfg is not None and not isinstance(rgb_cfg, dict):
+            raise ValueError(
+                f"Field '{name}': [{name}.rgb] must be a table, got {type(rgb_cfg).__name__}"
+            )
+
+        # Capture per-field step config overrides (flat layout)
+        step_overrides = {}
+        for key in known_steps:
             if key in fc and isinstance(fc[key], dict):
-                stage_overrides[key] = fc[key]
+                step_overrides[key] = fc[key]
+
+        # Parse [[<field>.wcs_shift]] array-of-tables (TOML parses these as
+        # a list under fc['wcs_shift']) into a normalized rule list.
+        wcs_shift_rules = _parse_wcs_shift_rules(name, fc.get('wcs_shift'),
+                                                 filters)
 
         return cls(
             name=name,
             filters=filters,
             files=file_patterns,
-            data_subdir=data_subdir,
             tangent_point=tangent_point,
             tiles=tiles,
-            stage_overrides=stage_overrides,
+            step_overrides=step_overrides,
+            skip=skip_patterns,
+            rgb=rgb_cfg,
+            wcs_shift_rules=wcs_shift_rules,
         )
+
+    @property
+    def pids(self):
+        """Unique JWST program IDs referenced by this field's `files` patterns."""
+        return sorted({_extract_pid(p) for p in self.files if _extract_pid(p)})
 
     def setup_workspace(self, campfire_root=None):
         """Create the directory tree for this field.
@@ -124,14 +326,10 @@ class Field:
             from campfire_pipeline.config import _get_campfire_root
             campfire_root = _get_campfire_root()
 
-        self.raw_dir = os.path.join(campfire_root, 'raw', self.data_subdir)
+        self.campfire_root = campfire_root
+        self.raw_root = os.path.join(campfire_root, 'raw', 'nircam')
         self.products_dir = os.path.join(campfire_root, 'products', 'nircam', self.name)
         self.reference_dir = os.path.join(campfire_root, 'reference', 'nircam', self.name)
-
-        self.stage1_dir = os.path.join(self.products_dir, 'stage1')
-        self.stage2_dir = os.path.join(self.products_dir, 'stage2')
-        self.stage3_dir = os.path.join(self.products_dir, 'stage3')
-        self.mosaic_dir = os.path.join(self.products_dir, 'mosaics')
 
         self.bad_pixel_dir = os.path.join(self.reference_dir, 'bad_pixels')
         self.refcat_dir = os.path.join(self.reference_dir, 'astrom_cats')
@@ -139,96 +337,169 @@ class Field:
         self.mask_dir = os.path.join(self.reference_dir, 'masks')
         self.flats_dir = os.path.join(self.reference_dir, 'flats')
 
-        # Create directories
-        for d in [self.stage1_dir, self.stage2_dir, self.stage3_dir,
-                  self.mosaic_dir, self.bad_pixel_dir, self.refcat_dir,
+        # One flat directory per filter holds everything for that filter:
+        # canonical exposures, drizzled mosaic tiles, split extensions,
+        # diagnostics PDFs, and outlier/mosaic manifests.
+        for filt in self.filters:
+            os.makedirs(os.path.join(self.products_dir, filt), exist_ok=True)
+        for d in [self.bad_pixel_dir, self.refcat_dir,
                   self.wisp_dir, self.mask_dir, self.flats_dir]:
             os.makedirs(d, exist_ok=True)
 
         log(f"Workspace ready for field '{self.name}' at {self.products_dir}")
 
-    def get_files(self, stage_dir, filter_name, suffix, skip=None):
-        """Glob for files matching this field's patterns in a stage/filter directory.
+    def filter_dir(self, filter_name):
+        """Return the flat per-filter products directory for this field.
+
+        ``$CAMPFIRE_ROOT/products/nircam/<field>/<filter>/`` holds every
+        output for the (field, filter) pair: per-exposure FITS files,
+        drizzled mosaic tiles, split extension files, diagnostic PDFs,
+        and outlier/mosaic manifest JSON.
+        """
+        if self.products_dir is None:
+            raise RuntimeError("setup_workspace() must be called first")
+        return os.path.join(self.products_dir, filter_name)
+
+    def get_uncal_files(self, filter_name, skip=None):
+        """Get uncal files from PID-organized raw directories.
+
+        Globs across ``$CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/`` for every PID
+        derived from this field's ``files`` patterns. The field-wide ``skip``
+        list (from fields.toml) is always applied; caller-passed ``skip`` adds
+        to it.
+        """
+        if self.raw_root is None:
+            raise RuntimeError("setup_workspace() must be called first")
+        result = []
+        for pattern in self.files:
+            pid = _extract_pid(pattern)
+            stage_dir = os.path.join(self.raw_root, pid)
+            full_pattern = os.path.join(stage_dir, filter_name, pattern + '*_uncal.fits')
+            result.extend(glob(full_pattern))
+
+        effective_skip = list(self.skip) + list(skip or [])
+        # Brace-expand any caller-passed skip patterns (field-level skip is
+        # already expanded at load time).
+        effective_skip = [p for raw in effective_skip for p in _expand_braces(raw)]
+        if effective_skip:
+            excluded = set()
+            for exc_pattern in effective_skip:
+                pid = _extract_pid(exc_pattern)
+                if pid is None:
+                    continue
+                stage_dir = os.path.join(self.raw_root, pid)
+                full_exc = os.path.join(stage_dir, filter_name, exc_pattern + '*_uncal.fits')
+                excluded.update(glob(full_exc))
+            result = [f for f in result if f not in excluded]
+
+        return sorted(result)
+
+    def get_exposure_files(self, filter_name, skip=None, with_step=None,
+                           status=None):
+        """Get canonical per-exposure files from the filter's flat dir.
+
+        These are the files that the new pipeline mutates in place — one FITS
+        file per exposure, named simply ``<rootname>.fits`` (no ``_rate`` /
+        ``_cal`` / ``_jhat`` / ``_crf`` suffix).
+
+        Mosaic outputs share the same directory but are named ``mosaic_*``,
+        which the ``jw*`` field globs naturally exclude.
 
         Parameters
         ----------
-        stage_dir : str
-            Base stage directory (e.g. self.stage1_dir).
         filter_name : str
-            Filter subdirectory name (e.g. 'f444w').
-        suffix : str
-            Glob suffix (e.g. '*_rate.fits').
+            Filter (e.g. ``'f444w'``).
         skip : list of str, optional
-            Glob patterns to exclude from results.
+            Glob patterns to exclude (matched against the same naming root
+            used by the field's ``files`` patterns). Stacks on top of the
+            field-wide ``skip`` list from fields.toml.
+        with_step : str, optional
+            If given, restrict the results to exposures whose primary header
+            already records this CFP step keyword (e.g. ``'CFP_OUT'`` to
+            select only outlier-detection-finished exposures for resample).
+        status : StepStatus, optional
+            If given, ``with_step`` filtering consults the cached status
+            instead of reopening each FITS. Required for correctness only
+            in the orchestrator (which marks fresh CFP_OUT keys onto the
+            cache as outlier finishes); other callers can omit it and pay
+            the per-file fits.open.
 
         Returns
         -------
         list of str
-            Sorted list of matching file paths.
+            Sorted absolute paths.
         """
+        filter_dir = self.filter_dir(filter_name)
+
         result = []
         for pattern in self.files:
-            full_pattern = os.path.join(stage_dir, filter_name, pattern + suffix)
-            result.extend(glob(full_pattern))
+            full_pattern = os.path.join(filter_dir, pattern + '*.fits')
+            # Keep only canonical files — exclude transient sidecars and
+            # diagnostic outputs that share the directory.
+            for path in glob(full_pattern):
+                base = os.path.basename(path)
+                if base.endswith('.tmp'):
+                    continue
+                if base.endswith('_jump.fits'):
+                    continue
+                result.append(path)
 
-        if skip:
+        effective_skip = list(self.skip) + list(skip or [])
+        effective_skip = [p for raw in effective_skip for p in _expand_braces(raw)]
+        if effective_skip:
             excluded = set()
-            for exc_pattern in skip:
-                full_exc = os.path.join(stage_dir, filter_name, exc_pattern + suffix)
+            for exc_pattern in effective_skip:
+                full_exc = os.path.join(filter_dir, exc_pattern + '*.fits')
                 excluded.update(glob(full_exc))
             result = [f for f in result if f not in excluded]
 
+        if with_step is not None:
+            if status is not None:
+                result = [f for f in result if status.has(f, with_step)]
+            else:
+                from campfire_pipeline.common import cfp
+                result = [f for f in result if cfp.has_step(f, with_step)]
+
         return sorted(result)
 
-    def get_uncal_files(self, filter_name, skip=None):
-        """Get uncal files from raw data directory."""
-        return self.get_files(self.raw_dir, filter_name, '*_uncal.fits', skip=skip)
+    def get_exposure_path(self, rootname, filter_name):
+        """Return the canonical path for a given exposure rootname.
 
-    def get_rate_files(self, filter_name, skip=None):
-        """Get rate files from stage1 products."""
-        return self.get_files(self.stage1_dir, filter_name, '*_rate.fits', skip=skip)
-
-    def get_cal_files(self, filter_name, skip=None):
-        """Get cal files from stage2 products."""
-        return self.get_files(self.stage2_dir, filter_name, '*_cal.fits', skip=skip)
-
-    def get_jhat_files(self, filter_name, skip=None):
-        """Get jhat files from stage3 products."""
-        return self.get_files(self.stage3_dir, filter_name, '*_jhat.fits', skip=skip)
-
-    def get_all_jhat_files(self, filter_name, skip=None):
-        """Get all jhat files (any prefix) from stage3 products."""
-        result = []
-        full_pattern = os.path.join(self.stage3_dir, filter_name, '*_jhat.fits')
-        result.extend(glob(full_pattern))
-        if skip:
-            excluded = set()
-            for exc_pattern in skip:
-                full_exc = os.path.join(self.stage3_dir, filter_name,
-                                        exc_pattern + '*_jhat.fits')
-                excluded.update(glob(full_exc))
-            result = [f for f in result if f not in excluded]
-        return sorted(result)
-
-    def get_crf_files(self, filter_name, skip=None):
-        """Get crf files from stage3 products."""
-        return self.get_files(self.stage3_dir, filter_name, '*_crf.fits', skip=skip)
+        ``rootname`` is the JWST filename stem without any ``_<suffix>.fits``
+        (e.g. ``'jw01727028001_04101_00003_nrcalong'``).
+        """
+        return os.path.join(self.filter_dir(filter_name), f'{rootname}.fits')
 
     def get_tile_wcs(self, tile_name, pixel_scale='30mas'):
-        """Get WCS parameters for a tile.
+        """Get WCS parameters for a tile at the requested pixel scale.
+
+        Tiles only need to declare their WCS at one pixel scale; other
+        pixel scales are derived by rescaling ``naxis`` and ``crpix`` so
+        the tile covers the same sky region. Explicit ``[<scale>mas]``
+        subsections always override the derived values.
+
+        ``fields.toml`` declares ``crpix`` in the natural FITS 1-indexed
+        convention (where ``CRPIX = (NAXIS+1)/2`` lands at the array
+        centre). The returned ``crpix`` is converted to **0-indexed**
+        pixel coordinates so it can be passed straight to
+        ``stcal.alignment.util.wcs_from_sregions`` /
+        ``jwst.resample.resample_step`` (both document 0-based crpix).
+        ``ResampleImage.update_fits_wcsinfo`` then adds 1 back when it
+        writes the FITS-WCS keywords, restoring the user's intended
+        1-indexed value in the output header.
 
         Parameters
         ----------
         tile_name : str
             Tile name (e.g. 'A1', 'B3').
         pixel_scale : str
-            Pixel scale key ('30mas' or '60mas').
+            Pixel scale key (e.g. ``'30mas'`` or ``'60mas'``).
 
         Returns
         -------
         tuple
-            (crpix, crval, shape, rotation) where crval uses tile-specific
-            tangent point if available, otherwise the field tangent point.
+            (crpix, crval, shape, rotation). ``crpix`` is 0-indexed; all
+            other values match the tile config directly.
         """
         if tile_name not in self.tiles:
             raise ValueError(
@@ -236,14 +507,52 @@ class Field:
                 f"Available: {list(self.tiles.keys())}"
             )
         tile = self.tiles[tile_name]
-        crpix = tile[pixel_scale]['crpix']
-        shape = tile[pixel_scale]['naxis']
-        rotation = tile['rotation']
-        crval = tile.get('tangent_point', list(self.tangent_point))
+
+        m = _PIXEL_SCALE_RE.match(pixel_scale)
+        if not m:
+            raise ValueError(
+                f"pixel_scale must look like 'NNmas' (got {pixel_scale!r})"
+            )
+        target_mas = int(m.group(1))
+
+        if pixel_scale in tile and _is_pixel_scale_section(tile[pixel_scale]):
+            crpix = list(tile[pixel_scale]['crpix'])
+            shape = list(tile[pixel_scale]['naxis'])
+        else:
+            ref_mas, ref_section = self._reference_pixel_scale(tile_name, tile)
+            ratio = ref_mas / target_mas
+            ref_crpix = ref_section['crpix']
+            ref_naxis = ref_section['naxis']
+            crpix = [(c - 0.5) * ratio + 0.5 for c in ref_crpix]
+            shape = [int(round(n * ratio)) for n in ref_naxis]
+
+        # Convert FITS 1-indexed crpix (as written in fields.toml and used
+        # by _compute_corners_from_wcs / astropy.wcs) to 0-indexed crpix
+        # (as expected by stcal.wcs_from_sregions and jwst.resample).
+        crpix = [c - 1.0 for c in crpix]
+
+        rotation = tile.get('rotation', 0)
+        crval = list(tile.get('tangent_point', list(self.tangent_point)))
         return crpix, crval, shape, rotation
+
+    def _reference_pixel_scale(self, tile_name, tile):
+        """Return ``(scale_mas, section_dict)`` for the first WCS subsection."""
+        for key, value in tile.items():
+            m = _PIXEL_SCALE_RE.match(key)
+            if m and _is_pixel_scale_section(value):
+                return int(m.group(1)), value
+        raise ValueError(
+            f"Tile '{tile_name}' on field '{self.name}' has no "
+            f"`<scale>mas` subsection with `crpix` and `naxis`."
+        )
 
     def get_tile_corners(self, tile_name):
         """Get sky corners for a tile.
+
+        If the tile config provides explicit ``corners``, those are returned
+        verbatim. Otherwise corners are derived from the tile's WCS
+        (``crpix``/``naxis`` of the first pixel-scale subsection plus the
+        tile or field tangent point and rotation).
 
         Parameters
         ----------
@@ -253,14 +562,59 @@ class Field:
         Returns
         -------
         list
-            List of [RA, Dec] corners.
+            List of [RA, Dec] corners (4 entries, FITS pixel order:
+            (1,1), (nx,1), (nx,ny), (1,ny)).
         """
         if tile_name not in self.tiles:
             raise ValueError(
                 f"Tile '{tile_name}' not found for field '{self.name}'. "
                 f"Available: {list(self.tiles.keys())}"
             )
-        return self.tiles[tile_name]['corners']
+        tile = self.tiles[tile_name]
+        if 'corners' in tile:
+            return tile['corners']
+        return self._compute_corners_from_wcs(tile_name, tile)
+
+    def _compute_corners_from_wcs(self, tile_name, tile):
+        """Build a TAN WCS from the tile config and return its sky corners.
+
+        Picks the first ``<scale>mas`` subsection that defines ``crpix`` and
+        ``naxis``. The polygon is sky-equivalent across pixel scales as
+        long as ``naxis`` and ``crpix`` are defined consistently.
+        """
+        from astropy.wcs import WCS
+
+        ref_mas, ref_section = self._reference_pixel_scale(tile_name, tile)
+        pixel_scale_arcsec = ref_mas / 1000.0
+        crpix = list(ref_section['crpix'])
+        naxis = list(ref_section['naxis'])
+
+        rotation = tile.get('rotation', 0)
+        crval = list(tile.get('tangent_point', list(self.tangent_point)))
+
+        scale_deg = pixel_scale_arcsec / 3600.0
+        theta = np.radians(rotation)
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+
+        w = WCS(naxis=2)
+        w.wcs.crpix = crpix
+        w.wcs.crval = crval
+        w.wcs.ctype = ['RA---TAN', 'DEC--TAN']
+        # North-up east-left at rotation=0; rotation interpreted as PA of
+        # output +y measured east-of-north (CCW on sky), matching the
+        # `rotation` argument passed to JWST resample.
+        w.wcs.cd = np.array([
+            [-scale_deg * cos_t,  scale_deg * sin_t],
+            [ scale_deg * sin_t,  scale_deg * cos_t],
+        ])
+
+        nx, ny = naxis
+        pix = np.array(
+            [[1, 1], [nx, 1], [nx, ny], [1, ny]], dtype=float,
+        )
+        sky = w.all_pix2world(pix, 1)
+        return sky.tolist()
 
     def is_sw_filter(self, filter_name):
         """Check if a filter is short-wavelength."""

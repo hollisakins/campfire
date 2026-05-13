@@ -109,7 +109,15 @@ cfpipe nircam stage3 --field <field> --filters f444w
 cfpipe config                                         # Print default config
 cfpipe config > my_config.toml                        # Export for customization
 cfpipe info                                           # Show paths, CRDS, versions
-cfpipe download --program 6585 --instrument nirspec   # Download uncals from MAST
+
+# NIRSpec → $CAMPFIRE_ROOT/raw/{PID}/*_uncal.fits
+cfpipe download --program 6585 --instrument nirspec
+
+# NIRCam  → $CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/*_uncal.fits
+#           (plus manifest.ecsv per PID directory)
+cfpipe download --program 1727 --instrument nircam
+cfpipe download --program 1727 --instrument nircam --filters f444w --filters f150w
+cfpipe download --program 1727 --instrument nircam --obs-id 1 --obs-id 2
 ```
 
 Direct instrument entry points are also available: `campfire-nirspec`, `campfire-nircam`.
@@ -128,9 +136,11 @@ $CAMPFIRE_ROOT/
 │   ├── config.toml          # Pipeline configuration overrides
 │   ├── observations.toml    # NIRSpec observation definitions
 │   └── fields.toml          # NIRCam field definitions
-├── data/                    # Raw uncalibrated FITS from MAST
-├── products/                # Pipeline outputs (per-observation)
-└── cache/                   # Cached pipeline data 
+├── raw/                     # Raw uncalibrated FITS from MAST
+│   ├── {PID}/               #   NIRSpec: flat per-PID
+│   └── nircam/{PID}/{filter}/   #   NIRCam: per-PID + per-filter, plus manifest.ecsv
+├── products/                # Pipeline outputs (per-observation/field)
+└── cache/                   # Cached pipeline data
     ├── crds/                # CRDS cache, set by $CRDS_PATH
     └── templates/           # Cached grids for redshift fitting
 ```

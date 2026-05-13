@@ -699,6 +699,49 @@ ALTER SEQUENCE "public"."nircam_images_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."nircam_images_id_seq" OWNED BY "public"."nircam_images"."id";
 
 
+CREATE TABLE IF NOT EXISTS "public"."nircam_exposures" (
+    "id" integer NOT NULL,
+    "field" "text" NOT NULL,
+    "filter" "text" NOT NULL,
+    "detector" "text" NOT NULL,
+    "filename" "text" NOT NULL,
+    "visit" "text",
+    "date_obs" timestamp without time zone,
+    "ra_center" double precision,
+    "dec_center" double precision,
+    "stage" "text" NOT NULL DEFAULT 'uncal'::"text",
+    "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
+    "masking" "text" NOT NULL DEFAULT 'none'::"text",
+    "correction" "text" NOT NULL DEFAULT 'none'::"text",
+    "png_path" "text",
+    "full_png_path" "text",
+    "image_width" integer,
+    "image_height" integer,
+    "mask_regions" "jsonb",
+    "notes" "text",
+    "created_at" timestamp without time zone DEFAULT "now"(),
+    "updated_at" timestamp without time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."nircam_exposures" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."nircam_exposures_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNED BY "public"."nircam_exposures"."id";
+
+
 
 CREATE TABLE IF NOT EXISTS "public"."password_reset_log" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
@@ -1016,6 +1059,10 @@ ALTER TABLE ONLY "public"."nircam_images" ALTER COLUMN "id" SET DEFAULT "nextval
 
 
 
+ALTER TABLE ONLY "public"."nircam_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nircam_exposures_id_seq"'::"regclass");
+
+
+
 ALTER TABLE ONLY "public"."pending_invites" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."pending_invites_id_seq"'::"regclass");
 
 
@@ -1155,6 +1202,13 @@ ALTER TABLE ONLY "public"."nircam_images"
 
 ALTER TABLE ONLY "public"."nircam_images"
     ADD CONSTRAINT "nircam_images_unique" UNIQUE ("field", "tile", "filter", "pixel_scale", "version", "extension");
+
+
+ALTER TABLE ONLY "public"."nircam_exposures"
+    ADD CONSTRAINT "nircam_exposures_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."nircam_exposures"
+    ADD CONSTRAINT "nircam_exposures_unique" UNIQUE ("field", "filter", "filename");
 
 
 
@@ -1636,6 +1690,10 @@ GRANT ALL ON TABLE "public"."nircam_images" TO "authenticated";
 GRANT ALL ON TABLE "public"."nircam_images" TO "service_role";
 
 
+GRANT ALL ON TABLE "public"."nircam_exposures" TO "authenticated";
+GRANT ALL ON TABLE "public"."nircam_exposures" TO "service_role";
+
+
 
 GRANT ALL ON TABLE "public"."password_reset_log" TO "anon";
 GRANT ALL ON TABLE "public"."password_reset_log" TO "authenticated";
@@ -1716,6 +1774,10 @@ GRANT ALL ON SEQUENCE "public"."map_layers_id_seq" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "service_role";
+
+
+GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "service_role";
 
 
 

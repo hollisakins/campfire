@@ -129,39 +129,95 @@
     gratings = ["g140h", "g235h", "g395h"]
 
 # === NIRCam ===
+# Flat per-step layout for the canonical-exposure pipeline.
+# Run individual steps with `cfpipe nircam <step>` or whole phases with
+# `cfpipe nircam process` (per-exposure) and `cfpipe nircam combine`
+# (ensemble through resample).
 
-[nircam.stage1.detector1]
+# --- process phase (per-exposure) ---
+
+[nircam.detector1]
     clean_flicker_noise = false
 
-[nircam.stage1.remove_snowball]
-    max_fraction = 0.3
-    new_jump_flag = 1024
-    min_radius = 4
-    growth_factor = 1.5
+[nircam.persistence]
+    # No tunable parameters; reserved for future snowblind config.
 
-[nircam.stage1.remove_wisp]
+[nircam.wisp]
     apply_flat = true
     use_custom_flat = false
     plot = true
 
-[nircam.stage1.remove_striping]
+[nircam.striping]
     apply_flat = true
     use_custom_flat = false
     mask_sources = true
-    save_mask = true
-    maskparam = "none"
     subtract_background = true
     maxiters = 3
     plot = true
 
-[nircam.stage1.persistence]
-
-[nircam.stage2.image2]
+[nircam.image2]
     use_custom_flat = false
 
-[nircam.stage2.remove_edge]
+[nircam.diag_striping]
+    # Opt-in scattered-light diagonal striping correction. Some exposures
+    # show stripe-like artifacts from off-axis bright stars; the angle is
+    # set by source geometry so it varies per exposure. Default theta
+    # range is a placeholder — enable per field with a range tuned to the
+    # actual scattered-light geometry, e.g.
+    #     [field.diag_striping]
+    #         enabled = true
+    #         theta_min = 25.0
+    #         theta_max = 35.0
+    enabled = false
+    theta_min = 0.0
+    theta_max = 90.0
+    theta_coarse_step = 1.0
+    theta_fine_step = 0.1
+    theta_fine_window = 2.0
+    bin_width = 3
+    # 512-px strips align with NIRCam amp boundaries (4 amps × 512 cols).
+    column_width = 512
+    column_overlap = 0
+    # Cap |M[k+1,b] - M[k,b]| <= max_strip_delta_ratio * max(|M[k,b]|, |M[k+1,b]|)
+    # per diagonal bin so the per-amp amplitude varies smoothly across
+    # adjacent amps. Set to 0 to disable cross-strip regularization.
+    max_strip_delta_ratio = 0.3
+    maxiters = 3
+    # Unmask SRCMASK components that look like θ-aligned stripes (long, thin,
+    # principal axis aligned with the recovered stripe angle). The masking
+    # built in ``striping`` occasionally catches a bright scattered-light
+    # stripe as a "source" — once masked, the diagonal bin running along
+    # that stripe has no unmasked samples and the per-bin median collapses
+    # to the global-median fallback (typically 0), leaving the stripe
+    # unsubtracted. Filtering releases those pixels.
+    unmask_stripe_aligned = true
+    stripe_aspect_min = 3.0
+    stripe_angle_tol_deg = 10.0
+    stripe_min_size = 20
+    # Skip the subtraction when the angle search hasn't found meaningful
+    # stripe signal — applying a model fit to noise does more harm than
+    # good (see ``scripts/diag_striping_score_audit.py`` for derivation).
+    # Skip if EITHER:
+    #   - abs_range = max(-Var(M)) - min(-Var(M)) < skip_abs_range
+    #     (curve is essentially flat at any θ)
+    #   - abs_range < skip_abs_range_at_edge AND the optimum sits within
+    #     skip_boundary_dist degrees of theta_min or theta_max
+    #     (argmin walked to the search wall, no real interior minimum)
+    # Defaults are tuned on F356W UDS; re-audit before exporting to a
+    # different field's data character. Set skip_abs_range = 0 (and the
+    # at-edge pair) to disable.
+    skip_abs_range = 1e-7
+    skip_abs_range_at_edge = 2e-7
+    skip_boundary_dist = 0.3
+    plot = true
 
-[nircam.stage2.bkgsub_var]
+[nircam.edge]
+    # No tunable parameters.
+
+[nircam.sky]
+    plot = true
+
+[nircam.variance]
     plot = true
     ring_radius_in = 40
     ring_width = 3
@@ -179,10 +235,31 @@
     bg_interpolator = "zoom"
     block_size = 7
 
-[nircam.stage2.apply_mask]
-    mask_flag = 1024
+[nircam.wcs_shift]
+    # Opt-in pre-JHAT astrometric shift. Some exposures land far enough off
+    # the reference catalog that JHAT can't converge; this step applies a
+    # bulk shift (delta_ra, delta_dec, delta_roll, scale) to the GWCS to
+    # bring them close enough for JHAT to finish the alignment.
+    #
+    # Rules live entirely under [<field>.wcs_shift] in fields.toml as an
+    # array of tables — there are no package-level rule defaults. The block
+    # is a no-op for fields that don't define any rules.
+    #
+    # Example fields.toml:
+    #   [[example_uds.wcs_shift]]
+    #       files     = ['jw01837002007*', 'jw01837002009*']
+    #       filters   = ['f090w']
+    #       delta_ra  = -0.0022538
+    #       delta_dec = -0.003637
 
-[nircam.stage3.jhat]
+[nircam.preview]
+    # Per-exposure quick-look PNG for the web admin triage UI. Read-only:
+    # downsamples SCI to ``max_dim`` long-axis pixels, ZScale-stretches,
+    # writes ``{rootname}_preview.png`` next to the canonical FITS.
+    max_dim = 1024
+    cmap = "Greys"
+
+[nircam.jhat]
     verbose = true
     debug = true
     rough_cut_px_min = 2.5
@@ -197,22 +274,34 @@
     saveplots = true
     savephottable = true
 
-[nircam.stage3.bad_pixel]
-    threshold = 0.2
+# --- combine phase (ensemble) ---
 
-[nircam.stage3.skymatch]
-    skymethod = "match"
-    match_down = true
-    subtract = true
-    stepsize = "none"
-    skystat = "mode"
-    dqbits = "~DO_NOT_USE+NON_SCIENCE"
-    lower = "none"
-    upper = "none"
-    nclip = 10
-    binwidth = 0.1
+[nircam.apply_mask]
+    mask_flag = 1024
+    mask_set_nan = false
 
-[nircam.stage3.outlier]
+[nircam.bad_pixel]
+    # Opt-in "consistently bad" pixel detector: stacks the DO_NOT_USE bit
+    # of cal-file DQ across all exposures of a (filter, detector) and
+    # promotes pixels exceeding `threshold` to permanent DO_NOT_USE.
+    # Only earns its keep when N is large enough for the empirical rate
+    # to beat the CRDS prior (e.g. COSMOS-Web). Disabled by default;
+    # enable per field with `[nircam.bad_pixel].enabled = true`.
+    enabled = false
+    threshold = 0.8
+
+[nircam.outlier]
+    # implementation = "jwst" routes outlier detection through
+    # `jwst.pipeline.calwebb_image3.Image3Pipeline` per visit (with
+    # intra-program cross-visit overlap padding). "campfire" runs the
+    # same per-visit grouping and intra-program scoping but routes
+    # the drizzle/median/blot through campfire's bbox-sliced drizzle
+    # primitive + `MedianComputer`, with a per-visit intermediate WCS
+    # built via `wcs_from_sregions` (input native pscale, ref-input
+    # rotation — same convention jwst uses internally). Same
+    # observable contract: per-visit `outlier_<visit>_manifest.json`,
+    # per-exposure CFP_OUT stamping. Issue #138 Phase 2.
+    implementation = "jwst"
     max_radius = 20
     good_bits = "~DO_NOT_USE"
     weight_type = "ivm"
@@ -224,10 +313,27 @@
     snr = "3.0 2.0"
     backg = 0.0
     resample_data = true
+    # cross_program_overlap: when true, each visit's outlier median pool
+    # includes any spatially-overlapping exposure regardless of program
+    # (legacy behavior). When false (default), the pool is scoped to the
+    # same JWST program — avoids drizzling the same CRF once for every
+    # foreign program's visit that happens to overlap, which is the
+    # dominant cost driver in heavily-observed footprints (COSMOS center).
+    # CR statistics within the program are unchanged.
+    cross_program_overlap = false
+    plot = true
 
-[nircam.stage3.resample]
+[nircam.resample]
     mode = "tile"
-    pixel_scale = "60mas"
+    # implementation = "jwst" routes the per-tile drizzle through
+    # `jwst.pipeline.calwebb_image3.Image3Pipeline` (stcal Resample,
+    # the historical default). "campfire" uses the campfire-native
+    # drizzle in `nircam/drizzle.py` — variance trick, output-bbox
+    # slicing, no per-component variance bookkeeping. The two paths
+    # produce SCI bit-equal mod accumulation order on ivm weighting;
+    # ERR agrees to ~1%. See issue #138.
+    implementation = "jwst"
+    pixel_scale = "30mas"
     version = "v0_1"
     mosaic_name = "mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[version]_[tile]"
     pixfrac = 1
@@ -235,6 +341,7 @@
     background_subtract = true
     ring_radius_in = 80
     ring_width = 4
+    ring_downsample = 4
     ring_clip_max_sigma = 5.0
     ring_clip_box_size = 100
     ring_clip_filter_size = 3
@@ -248,3 +355,5 @@
     bg_sigma = 3
     bg_interpolator = "zoom"
     split_extensions = true
+    plot = true
+    plot_downsample = 4

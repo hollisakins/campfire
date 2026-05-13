@@ -118,6 +118,16 @@ def _resolve_path(config_value, campfire_root, default_subdir):
     return os.path.join(campfire_root, default_subdir)
 
 
+_BLAS_THREAD_VARS = (
+    'OPENBLAS_NUM_THREADS',
+    'MKL_NUM_THREADS',
+    'OMP_NUM_THREADS',
+    'NUMEXPR_NUM_THREADS',
+    'VECLIB_MAXIMUM_THREADS',
+    'BLIS_NUM_THREADS',
+)
+
+
 def setup_environment(config):
     """Set environment variables from config file.
 
@@ -125,7 +135,22 @@ def setup_environment(config):
     1. Existing $CRDS_PATH in the user's environment
     2. [environment].CRDS_PATH in config
     3. $CAMPFIRE_ROOT/cache/crds (CAMPFIRE_ROOT defaults to ~/campfire)
+
+    Also pins BLAS/OpenMP thread counts to 1 (unless the user already set
+    them) before any worker pool forks. Pipeline stages parallelize via
+    processes; letting numpy/scipy/astropy spawn one BLAS thread per core
+    inside each worker leads to N_processes * N_cores threads, which on
+    high-core HPC nodes (e.g. candide, 64 cores) exhausts RLIMIT_NPROC and
+    surfaces as cascading "OpenBLAS blas_thread_init: pthread_create
+    failed" errors plus spurious KeyboardInterrupt tracebacks from workers
+    that lost a thread-spawn race inside an astropy.modeling call. Setting
+    the env vars here propagates to fork-pool children automatically.
     """
+    # BLAS thread caps must be set in the parent before pool forks; OpenBLAS
+    # re-reads OPENBLAS_NUM_THREADS in each child on first numpy use.
+    for var in _BLAS_THREAD_VARS:
+        os.environ.setdefault(var, '1')
+
     if 'environment' in config:
         env = config['environment']
 
@@ -259,15 +284,19 @@ def get_stage_config(stage_name, config, obs):
     return merged
 
 
-def get_nircam_stage_config(stage_name, config, field):
-    """Build effective config for a NIRCam pipeline stage.
+def get_nircam_step_config(step_name, config, field):
+    """Build effective config for a single NIRCam pipeline step.
 
-    Merges two layers (highest priority wins):
-        1. Field-specific overrides   (fields.toml  [field.stageN])
+    Reads from the flat ``[nircam.<step>]`` layout in
+    ``config_default.toml`` and the matching flat ``[<field>.<step>]``
+    layout in ``fields.toml``.
+
+    Merges (highest priority wins):
+        1. Field-specific step overrides  (fields.toml [<field>.<step>])
         2. Config defaults + user overrides (already merged in load_config)
     """
-    base = config.get('nircam', {}).get(stage_name, {})
-    return deep_merge(base, field.stage_overrides.get(stage_name, {}))
+    base = config.get('nircam', {}).get(step_name, {})
+    return deep_merge(base, field.step_overrides.get(step_name, {}))
 
 
 # ---------------------------------------------------------------------------
