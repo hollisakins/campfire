@@ -1,7 +1,7 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
-import type { NircamExposure } from '@/lib/types';
+import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -128,6 +128,52 @@ export async function updateExposureReview(
     return {
       exposure: null,
       error: err instanceof Error ? err.message : 'Failed to update exposure',
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Mask polygons
+// ---------------------------------------------------------------------------
+
+/**
+ * Persist the polygon list for a single exposure.
+ *
+ * Vertices are stored as DS9 ``image`` 1-indexed coords so the same payload
+ * round-trips through ``campfire deploy pull-masks`` and ``apply_masks_step``
+ * without any further transform. ``masking`` is flipped to ``'done'`` iff
+ * at least one polygon is present, mirroring the local-file-exists semantic
+ * that the deploy code uses.
+ */
+export async function saveExposureMaskRegions(
+  id: number,
+  regions: MaskRegionsPayload,
+): Promise<{ exposure: NircamExposure | null; error?: string }> {
+  try {
+    const supabase = await requireAdmin();
+    const hasPolygons = (regions?.polygons?.length ?? 0) > 0;
+
+    const { data, error } = await supabase
+      .from('nircam_exposures')
+      .update({
+        mask_regions: hasPolygons ? regions : null,
+        masking: hasPolygons ? 'done' : 'none',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      return { exposure: null, error: error.message };
+    }
+    return { exposure: data };
+  } catch (err) {
+    return {
+      exposure: null,
+      error: err instanceof Error
+        ? err.message
+        : 'Failed to save mask regions',
     };
   }
 }

@@ -9,9 +9,11 @@ import { Loader2, ArrowLeft, Save, Check } from 'lucide-react';
 import {
   getNircamExposureById,
   updateExposureReview,
+  saveExposureMaskRegions,
 } from '@/lib/actions/nircam-exposures';
-import type { NircamExposure } from '@/lib/types';
+import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 import { stageBadgeClasses } from '@/lib/nircam-stages';
+import MaskEditor from '@/components/nircam/MaskEditor';
 
 const CDN_BASE = process.env.NEXT_PUBLIC_CDN_BASE_URL || '';
 
@@ -102,6 +104,18 @@ export default function ExposureDetailPage() {
   }
 
   const pngUrl = exposure.png_path ? `${CDN_BASE}/${exposure.png_path}` : null;
+  const fullPngUrl = exposure.full_png_path
+    ? `${CDN_BASE}/${exposure.full_png_path}`
+    : null;
+  const editorAvailable = Boolean(
+    fullPngUrl && exposure.image_width && exposure.image_height
+  );
+
+  const handleSaveMasks = async (regions: MaskRegionsPayload) => {
+    const res = await saveExposureMaskRegions(exposure.id, regions);
+    if (res.exposure) setExposure(res.exposure);
+    return { error: res.error };
+  };
 
   return (
     <div>
@@ -127,10 +141,21 @@ export default function ExposureDetailPage() {
       )}
 
       <div className="flex gap-6">
-        {/* PNG viewer */}
+        {/* PNG viewer / mask editor */}
         <div className="flex-1 min-w-0">
           <Card className="overflow-hidden">
-            {pngUrl ? (
+            {editorAvailable ? (
+              <div className="h-[80vh]">
+                <MaskEditor
+                  pngUrl={fullPngUrl!}
+                  imageWidth={exposure.image_width!}
+                  imageHeight={exposure.image_height!}
+                  initialRegions={exposure.mask_regions}
+                  onSave={handleSaveMasks}
+                />
+              </div>
+            ) : pngUrl ? (
+              // Fallback: thumbnail-only view (full PNG hasn't been deployed yet).
               <img
                 src={pngUrl}
                 alt={`${exposure.filename} quick-look`}

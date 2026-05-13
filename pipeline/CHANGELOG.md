@@ -350,6 +350,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam preview step now writes a second native-resolution PNG
+  (`{rootname}_full.png`) alongside the existing downsampled
+  `{rootname}_preview.png`. Same ZScale stretch (computed on the
+  downsampled array, reused for both), same `origin='lower'` orientation,
+  no SCI/DQ mutation. The full-res PNG is uploaded to R2 by `campfire
+  deploy nircam` and consumed by the in-browser polygon mask editor at
+  `/admin/nircam/[id]`. SCI pixel data is unchanged.
 - NIRCam: dedup + perf pass on the step-based pipeline.
   - `outlier.py`: O(N²) → O(N) overlap scan (replaced `filter_files.index(f)`
     in the per-visit loop with a `{path: sregion}` dict); extracted

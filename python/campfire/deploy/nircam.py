@@ -189,11 +189,14 @@ def _detect_masking(dirs, basename, filtname):
 def build_upload_tasks(dirs, field, filters):
     """Build R2 upload tasks for per-exposure preview PNGs.
 
-    Previews are written by the ``preview`` pipeline step to
-    ``{filter_dir}/{rootname}_preview.png``. R2 key:
-    ``nircam/exposures/{field}/{filter}/{rootname}_preview.png``.
+    The ``preview`` pipeline step writes two PNGs per exposure:
+    ``{rootname}_preview.png`` (downsampled thumbnail) and
+    ``{rootname}_full.png`` (native resolution, used by the in-browser mask
+    editor). Both are uploaded so the table view stays fast while the
+    editor renders at exposure-pixel resolution.
 
-    Returns list of (UploadTask, basename, filter) tuples.
+    Returns list of (UploadTask, basename, filter, kind) tuples where
+    ``kind`` is ``'thumb'`` or ``'full'``.
     """
     tasks = []
     for filtname in filters:
@@ -206,10 +209,28 @@ def build_upload_tasks(dirs, field, filters):
             tasks.append((
                 UploadTask(local_path=png_path, r2_key=r2_key,
                            content_type='image/png'),
-                basename,
-                filtname,
+                basename, filtname, 'thumb',
+            ))
+        for png_path in sorted(png_dir.glob('jw*_full.png')):
+            basename = png_path.name.removesuffix('_full.png')
+            r2_key = f'nircam/exposures/{field}/{filtname}/{png_path.name}'
+            tasks.append((
+                UploadTask(local_path=png_path, r2_key=r2_key,
+                           content_type='image/png'),
+                basename, filtname, 'full',
             ))
     return tasks
+
+
+def _read_full_png_dimensions(png_path):
+    """Return (width, height) of a PNG without decoding pixel data."""
+    # PNG IHDR: 8-byte signature, 4-byte length, 4-byte 'IHDR',
+    # then width (4 BE) and height (4 BE).
+    import struct
+    with open(png_path, 'rb') as f:
+        f.seek(16)
+        width, height = struct.unpack('>II', f.read(8))
+    return width, height
 
 
 # ---------------------------------------------------------------------------
@@ -259,15 +280,28 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         return
 
     png_tasks = build_upload_tasks(dirs, field, filters)
-    png_r2_keys = {
+    thumb_r2_keys = {
         (filtname, basename): task.r2_key
-        for task, basename, filtname in png_tasks
+        for task, basename, filtname, kind in png_tasks if kind == 'thumb'
     }
-    print(f"Preview PNGs to upload: {len(png_tasks)}")
+    full_r2_keys = {
+        (filtname, basename): task.r2_key
+        for task, basename, filtname, kind in png_tasks if kind == 'full'
+    }
+    # Image dimensions come from the full-res PNG (= native exposure shape),
+    # so the web canvas can place mask polygons in DS9 image coords without
+    # ever needing the FITS file.
+    full_dims = {
+        (filtname, basename): _read_full_png_dimensions(task.local_path)
+        for task, basename, filtname, kind in png_tasks if kind == 'full'
+    }
+    print(f"Preview PNGs to upload: {len(png_tasks)} "
+          f"({len(thumb_r2_keys)} thumb, {len(full_r2_keys)} full)")
 
     records = []
     for (filtname, basename), info in sorted(exposures.items()):
         masking = _detect_masking(dirs, basename, filtname)
+        dims = full_dims.get((filtname, basename))
         record = {
             'field': field,
             'filter': filtname,
@@ -278,7 +312,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
             'ra_center': info['ra_center'],
             'dec_center': info['dec_center'],
             'stage': info['stage'],
-            'png_path': png_r2_keys.get((filtname, basename)),
+            'png_path': thumb_r2_keys.get((filtname, basename)),
+            'full_png_path': full_r2_keys.get((filtname, basename)),
+            'image_width': dims[0] if dims else None,
+            'image_height': dims[1] if dims else None,
         }
         if masking:
             record['masking'] = masking
@@ -353,6 +390,12 @@ def _upsert_exposures(client, records, batch_size=500):
             }
             if r.get('png_path'):
                 update['png_path'] = r['png_path']
+            if r.get('full_png_path'):
+                update['full_png_path'] = r['full_png_path']
+            if r.get('image_width') is not None:
+                update['image_width'] = r['image_width']
+            if r.get('image_height') is not None:
+                update['image_height'] = r['image_height']
             if r.get('visit'):
                 update['visit'] = r['visit']
             if r.get('date_obs'):

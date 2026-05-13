@@ -310,6 +310,25 @@ export const NIRCAM_STAGES = [
 ] as const;
 export type NircamStage = typeof NIRCAM_STAGES[number];
 
+// A polygon in image-pixel coordinates, FITS 1-indexed (DS9 `image` frame),
+// suitable for round-tripping through ds9 .reg files and the `regions` library.
+export interface MaskPolygon {
+  id: string;                      // client-generated uuid
+  vertices: [number, number][];    // [[x, y], ...] in DS9 image coords (1-indexed)
+  label?: string;
+  source: 'imported' | 'web';
+  original_frame?: 'fk5' | 'icrs' | 'image' | string;
+  imported_from?: string;
+  imported_at?: string;
+  created_at?: string;
+  modified_at?: string;
+}
+
+export interface MaskRegionsPayload {
+  version: 1;
+  polygons: MaskPolygon[];
+}
+
 export interface NircamExposure {
   id: number;
   field: string;
@@ -325,6 +344,10 @@ export interface NircamExposure {
   masking: 'none' | 'needed' | 'done';
   correction: 'none' | 'needed' | 'done';
   png_path: string | null;
+  full_png_path: string | null;
+  image_width: number | null;
+  image_height: number | null;
+  mask_regions: MaskRegionsPayload | null;
   notes: string | null;
   created_at: string;
   updated_at: string;

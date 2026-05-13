@@ -777,6 +777,47 @@ def nircam(config_path, field, filter_names, dry_run):
                   dry_run=dry_run)
 
 
+@deploy_group.command('import-masks')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--field', required=True, help='Field name (e.g. cosmos).')
+@click.option('--dry-run', is_flag=True,
+              help='List .reg files that would be imported without writing.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nircam_import_masks(ctx, config_path, field, dry_run, local):
+    """One-time import of legacy reference/.../masks/*.reg into Supabase.
+
+    Converts FK5/ICRS polygons to DS9 image (pixel) coords using each
+    exposure's FITS WCS so the web mask editor sees them in canvas-native
+    coordinates. Source .reg files are not deleted.
+    """
+    from campfire.deploy.nircam_masks import import_masks
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    import_masks(field, config, dry_run=dry_run)
+
+
+@deploy_group.command('pull-masks')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--field', required=True, help='Field name (e.g. cosmos).')
+@click.option('--dry-run', is_flag=True,
+              help='Show what would be written without touching files.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nircam_pull_masks(ctx, config_path, field, dry_run, local):
+    """Materialize Supabase mask_regions back to reference/.../masks/*.reg.
+
+    Only writes files for exposures with a non-null mask_regions row;
+    .reg files without a DB representation are left alone.
+    """
+    from campfire.deploy.nircam_masks import pull_masks
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    pull_masks(field, config, dry_run=dry_run)
+
+
 # ---------------------------------------------------------------------------
 # Tiles subcommand (per-field, does NOT use @shared_options)
 # ---------------------------------------------------------------------------

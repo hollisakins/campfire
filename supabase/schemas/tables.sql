@@ -714,6 +714,10 @@ CREATE TABLE IF NOT EXISTS "public"."nircam_exposures" (
     "masking" "text" NOT NULL DEFAULT 'none'::"text",
     "correction" "text" NOT NULL DEFAULT 'none'::"text",
     "png_path" "text",
+    "full_png_path" "text",
+    "image_width" integer,
+    "image_height" integer,
+    "mask_regions" "jsonb",
     "notes" "text",
     "created_at" timestamp without time zone DEFAULT "now"(),
     "updated_at" timestamp without time zone DEFAULT "now"()
