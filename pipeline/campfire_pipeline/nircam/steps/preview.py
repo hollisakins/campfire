@@ -81,8 +81,14 @@ def preview_step(exposure_file, field, step_config, overwrite=False,
 
 
 def _atomic_imsave(out_path, arr, *, cmap, vmin, vmax):
-    """``plt.imsave`` with origin='lower', via a .tmp + rename for atomicity."""
+    """``plt.imsave`` with origin='lower', via a .tmp + rename for atomicity.
+
+    ``format='png'`` is passed explicitly because matplotlib delegates
+    extension sniffing to Pillow, which raises ``KeyError: 'TMP'`` on the
+    transient ``.tmp`` suffix on newer Pillow versions.
+    """
     import matplotlib.pyplot as plt
     tmp_path = out_path + '.tmp'
-    plt.imsave(tmp_path, arr, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+    plt.imsave(tmp_path, arr, cmap=cmap, vmin=vmin, vmax=vmax,
+               origin='lower', format='png')
     os.replace(tmp_path, out_path)

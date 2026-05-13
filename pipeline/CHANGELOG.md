@@ -350,6 +350,9 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam preview step: pass `format='png'` explicitly to `plt.imsave`.
+  The `.tmp` suffix on the temp path made newer Pillow raise
+  `KeyError: 'TMP'` during format sniffing.
 - NIRCam preview step now writes a second native-resolution PNG
   (`{rootname}_full.png`) alongside the existing downsampled
   `{rootname}_preview.png`. Same ZScale stretch (computed on the
