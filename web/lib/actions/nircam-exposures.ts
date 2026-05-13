@@ -34,6 +34,7 @@ export interface ExposuresResult {
 export async function getNircamExposures(params?: {
   field?: string;
   filter?: string;
+  detector?: string;
   reviewStatus?: string;
   stage?: string;
 }): Promise<ExposuresResult> {
@@ -49,6 +50,7 @@ export async function getNircamExposures(params?: {
 
     if (params?.field) query = query.eq('field', params.field);
     if (params?.filter) query = query.eq('filter', params.filter);
+    if (params?.detector) query = query.eq('detector', params.detector);
     if (params?.reviewStatus) query = query.eq('review_status', params.reviewStatus);
     if (params?.stage) query = query.eq('stage', params.stage);
 
@@ -282,6 +284,7 @@ export async function getExcludedExposures(): Promise<{
 export async function getExposureFilterOptions(): Promise<{
   fields: string[];
   filters: string[];
+  detectors: string[];
   stages: string[];
   error?: string;
 }> {
@@ -290,22 +293,24 @@ export async function getExposureFilterOptions(): Promise<{
 
     const { data, error } = await supabase
       .from('nircam_exposures')
-      .select('field, filter, stage');
+      .select('field, filter, detector, stage');
 
     if (error) {
-      return { fields: [], filters: [], stages: [], error: error.message };
+      return { fields: [], filters: [], detectors: [], stages: [], error: error.message };
     }
 
     const rows = data || [];
     return {
       fields: [...new Set(rows.map(r => r.field))].sort(),
       filters: [...new Set(rows.map(r => r.filter))].sort(),
+      detectors: [...new Set(rows.map(r => r.detector))].sort(),
       stages: [...new Set(rows.map(r => r.stage))].sort(),
     };
   } catch (err) {
     return {
       fields: [],
       filters: [],
+      detectors: [],
       stages: [],
       error: err instanceof Error ? err.message : 'Failed to fetch filter options',
     };

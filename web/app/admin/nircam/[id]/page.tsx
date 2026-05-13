@@ -17,6 +17,11 @@ import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 import { stageBadgeClasses } from '@/lib/nircam-stages';
 import MaskEditor from '@/components/nircam/MaskEditor';
 import { lookupNircamNav, type NircamNavLookup } from '@/lib/nircam-nav-cache';
+import {
+  getCachedExposure,
+  setCachedExposure,
+  prefetchPreviewPng,
+} from '@/lib/nircam-exposure-cache';
 
 // PNGs live in R2 under nircam/exposures/<field>/<filter>/...; the
 // /api/nircam-preview proxy handles auth and streams them same-origin.
@@ -31,6 +36,7 @@ export default function ExposureDetailPage() {
   const id = Number(params.id);
 
   const [exposure, setExposure] = useState<NircamExposure | null>(null);
+  const [exposureForId, setExposureForId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -48,26 +54,73 @@ export default function ExposureDetailPage() {
   const [showHelp, setShowHelp] = useState(false);
   useEffect(() => { setNav(lookupNircamNav(id)); }, [id]);
 
-  const fetchExposure = useCallback(async () => {
-    setLoading(true);
+  // When the route id changes, reset state synchronously from the in-memory
+  // cache so the new exposure paints in the same frame as the URL change —
+  // no spinner, no flash of the previous exposure. The server is hit in the
+  // background to revalidate. (React's "set state during render" pattern,
+  // bounded by the exposureForId guard so we don't loop.)
+  if (exposureForId !== id) {
+    const cached = getCachedExposure(id);
+    setExposureForId(id);
+    setExposure(cached);
+    setReviewStatus(cached?.review_status || 'pending');
+    setMasking(cached?.masking || 'none');
+    setCorrection(cached?.correction || 'none');
+    setNotes(cached?.notes || '');
+    setLoading(!cached);
     setError(null);
+    setSaved(false);
+  }
 
-    const result = await getNircamExposureById(id);
-    if (result.error) {
-      setError(result.error);
-    } else if (result.exposure) {
-      setExposure(result.exposure);
-      setReviewStatus(result.exposure.review_status);
-      setMasking(result.exposure.masking);
-      setCorrection(result.exposure.correction);
-      setNotes(result.exposure.notes || '');
-    }
-    setLoading(false);
+  // Background revalidation against the DB on every id change. Auto-save on
+  // navigation has already flushed any dirty triage state, so it's safe to
+  // overwrite the editable fields with the freshly-fetched values.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const result = await getNircamExposureById(id);
+      if (cancelled) return;
+      if (result.error) {
+        setError(result.error);
+        setLoading(false);
+        return;
+      }
+      if (result.exposure) {
+        setCachedExposure(result.exposure);
+        setExposure(result.exposure);
+        setReviewStatus(result.exposure.review_status);
+        setMasking(result.exposure.masking);
+        setCorrection(result.exposure.correction);
+        setNotes(result.exposure.notes || '');
+      }
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
   }, [id]);
 
+  // Prefetch sibling exposures (data + warm PNG cache) so prev/next paints
+  // instantly. Fires after both `exposure` and `nav` are known. PNG fetches
+  // go through the same /api/nircam-preview proxy the editor uses, so they
+  // populate the same browser-cache bucket.
   useEffect(() => {
-    fetchExposure();
-  }, [fetchExposure]);
+    if (!nav) return;
+    for (const sibId of [nav.next, nav.prev]) {
+      if (sibId == null) continue;
+      const cached = getCachedExposure(sibId);
+      if (cached) {
+        prefetchPreviewPng(previewUrl(cached.full_png_path));
+        prefetchPreviewPng(previewUrl(cached.png_path));
+        continue;
+      }
+      getNircamExposureById(sibId).then((res) => {
+        if (res.exposure) {
+          setCachedExposure(res.exposure);
+          prefetchPreviewPng(previewUrl(res.exposure.full_png_path));
+          prefetchPreviewPng(previewUrl(res.exposure.png_path));
+        }
+      });
+    }
+  }, [exposure, nav]);
 
   const hasChanges = !!(exposure && (
     reviewStatus !== exposure.review_status ||
@@ -96,7 +149,10 @@ export default function ExposureDetailPage() {
       setError(result.error);
       return { ok: false };
     }
-    if (result.exposure) setExposure(result.exposure);
+    if (result.exposure) {
+      setCachedExposure(result.exposure);
+      setExposure(result.exposure);
+    }
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
     return { ok: true };
@@ -173,7 +229,10 @@ export default function ExposureDetailPage() {
 
   const handleSaveMasks = async (regions: MaskRegionsPayload) => {
     const res = await saveExposureMaskRegions(exposure.id, regions);
-    if (res.exposure) setExposure(res.exposure);
+    if (res.exposure) {
+      setCachedExposure(res.exposure);
+      setExposure(res.exposure);
+    }
     return { error: res.error };
   };
 
