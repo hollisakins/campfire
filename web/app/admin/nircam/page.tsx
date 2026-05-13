@@ -235,8 +235,8 @@ export default function AdminNircamPage() {
   const [progress, setProgress] = useState<ReductionProgress[]>([]);
   const [exposures, setExposures] = useState<NircamExposure[]>([]);
   const [excluded, setExcluded] = useState<ExcludedExposure[]>([]);
-  const [filterOptions, setFilterOptions] = useState<{ fields: string[]; filters: string[]; stages: string[] }>({
-    fields: [], filters: [], stages: [],
+  const [filterOptions, setFilterOptions] = useState<{ fields: string[]; filters: string[]; detectors: string[]; stages: string[] }>({
+    fields: [], filters: [], detectors: [], stages: [],
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -244,6 +244,7 @@ export default function AdminNircamPage() {
   // Filters
   const [selectedField, setSelectedField] = useState<string>('');
   const [selectedFilter, setSelectedFilter] = useState<string>('');
+  const [selectedDetector, setSelectedDetector] = useState<string>('');
   const [selectedReview, setSelectedReview] = useState<string>('');
   const [selectedStage, setSelectedStage] = useState<string>('');
 
@@ -257,6 +258,7 @@ export default function AdminNircamPage() {
         getNircamExposures({
           field: selectedField || undefined,
           filter: selectedFilter || undefined,
+          detector: selectedDetector || undefined,
           reviewStatus: selectedReview || undefined,
           stage: selectedStage || undefined,
         }),
@@ -278,7 +280,7 @@ export default function AdminNircamPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedField, selectedFilter, selectedReview, selectedStage]);
+  }, [selectedField, selectedFilter, selectedDetector, selectedReview, selectedStage]);
 
   useEffect(() => {
     fetchData();
@@ -340,6 +342,14 @@ export default function AdminNircamPage() {
           {filterOptions.filters.map(f => <option key={f} value={f}>{f}</option>)}
         </select>
         <select
+          value={selectedDetector}
+          onChange={(e) => setSelectedDetector(e.target.value)}
+          className="text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-1.5 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
+        >
+          <option value="">All detectors</option>
+          {filterOptions.detectors.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+        <select
           value={selectedStage}
           onChange={(e) => setSelectedStage(e.target.value)}
           className="text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-1.5 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
@@ -357,9 +367,9 @@ export default function AdminNircamPage() {
           <option value="approved">Approved</option>
           <option value="excluded">Excluded</option>
         </select>
-        {(selectedField || selectedFilter || selectedStage || selectedReview) && (
+        {(selectedField || selectedFilter || selectedDetector || selectedStage || selectedReview) && (
           <button
-            onClick={() => { setSelectedField(''); setSelectedFilter(''); setSelectedStage(''); setSelectedReview(''); }}
+            onClick={() => { setSelectedField(''); setSelectedFilter(''); setSelectedDetector(''); setSelectedStage(''); setSelectedReview(''); }}
             className="text-sm text-primary hover:underline"
           >
             Clear filters
