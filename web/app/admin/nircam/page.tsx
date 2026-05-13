@@ -4,14 +4,22 @@ import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Loader2, RefreshCw, ChevronRight } from 'lucide-react';
+import { Loader2, RefreshCw, ChevronRight, Copy, Check } from 'lucide-react';
 import {
   getNircamExposures,
   getReductionProgress,
   getExposureFilterOptions,
+  getExcludedExposures,
   type ReductionProgress,
+  type ExcludedExposure,
 } from '@/lib/actions/nircam-exposures';
 import type { NircamExposure } from '@/lib/types';
+import {
+  stageBadgeClasses,
+  stageBarClasses,
+  NIRCAM_STAGES,
+  STAGE_COLUMN_KEYS,
+} from '@/lib/nircam-stages';
 
 // ---------------------------------------------------------------------------
 // Status badge helpers
@@ -44,17 +52,40 @@ function ActionBadge({ status, label }: { status: string; label: string }) {
 }
 
 function StageBadge({ stage }: { stage: string }) {
-  const colors: Record<string, string> = {
-    uncal: 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-400',
-    rate: 'bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400',
-    cal: 'bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300',
-    jhat: 'bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300',
-    crf: 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300',
-  };
   return (
-    <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${colors[stage] || ''}`}>
+    <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full font-mono ${stageBadgeClasses(stage)}`}>
       {stage}
     </span>
+  );
+}
+
+// Horizontal stacked-bar showing distribution of exposures across pipeline
+// stages within a (field, filter) group. Segments are colored by phase
+// bucket; native title-tooltips show the exact step name and count.
+function StageDistributionBar({ progress }: { progress: ReductionProgress }) {
+  const total = progress.total || 1;
+  const segments = STAGE_COLUMN_KEYS
+    .map(({ stage, key }) => ({
+      stage,
+      count: (progress[key] as number) || 0,
+    }))
+    .filter(s => s.count > 0);
+
+  if (segments.length === 0) {
+    return <div className="h-3 bg-gray-100 dark:bg-slate-800 rounded" />;
+  }
+
+  return (
+    <div className="flex h-3 rounded overflow-hidden bg-gray-100 dark:bg-slate-800">
+      {segments.map(({ stage, count }) => (
+        <div
+          key={stage}
+          className={stageBarClasses(stage)}
+          style={{ width: `${(count / total) * 100}%` }}
+          title={`${stage}: ${count}`}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -79,10 +110,7 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
             <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Field</th>
             <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Filter</th>
             <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Total</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">rate</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">cal</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">jhat</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">crf</th>
+            <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase w-1/3">Stage distribution</th>
             <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Pending</th>
             <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Masking</th>
             <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Correction</th>
@@ -94,10 +122,9 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
               <td className="px-3 py-2 font-medium text-text-primary dark:text-slate-100">{row.field}</td>
               <td className="px-3 py-2 text-text-primary dark:text-slate-100">{row.filter}</td>
               <td className="px-3 py-2 text-right text-text-primary dark:text-slate-100">{row.total}</td>
-              <td className="px-3 py-2 text-right text-text-secondary dark:text-slate-400">{row.at_rate || '—'}</td>
-              <td className="px-3 py-2 text-right text-text-secondary dark:text-slate-400">{row.at_cal || '—'}</td>
-              <td className="px-3 py-2 text-right text-text-secondary dark:text-slate-400">{row.at_jhat || '—'}</td>
-              <td className="px-3 py-2 text-right text-text-secondary dark:text-slate-400">{row.at_crf || '—'}</td>
+              <td className="px-3 py-2">
+                <StageDistributionBar progress={row} />
+              </td>
               <td className="px-3 py-2 text-right">
                 {row.pending_review > 0 ? (
                   <span className="text-yellow-600 dark:text-yellow-400 font-medium">{row.pending_review}</span>
@@ -128,12 +155,85 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Excluded exposures panel — copy-paste source for fields.toml skip=[]
+// ---------------------------------------------------------------------------
+
+function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  // Group by (field, filter); within each group emit the TOML-fragment line list.
+  const groups = React.useMemo(() => {
+    const m = new Map<string, ExcludedExposure[]>();
+    for (const e of excluded) {
+      const k = `${e.field} / ${e.filter}`;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(e);
+    }
+    return Array.from(m.entries());
+  }, [excluded]);
+
+  if (excluded.length === 0) return null;
+
+  const copy = (key: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  return (
+    <Card className="mb-6 overflow-hidden">
+      <div className="px-4 py-3 border-b border-border dark:border-slate-700 flex items-baseline justify-between">
+        <h2 className="text-sm font-medium text-text-primary dark:text-slate-100 uppercase tracking-wider">
+          Excluded — copy into <code className="font-mono text-xs">fields.toml</code> <code className="font-mono text-xs">skip = […]</code>
+        </h2>
+        <span className="text-xs text-text-secondary dark:text-slate-400">{excluded.length} total</span>
+      </div>
+      <div className="divide-y divide-border dark:divide-slate-700">
+        {groups.map(([heading, rows]) => {
+          const tomlBlock = rows.map(r => `    "${r.filename}",`).join('\n');
+          return (
+            <div key={heading} className="p-4">
+              <div className="flex items-baseline justify-between mb-2">
+                <h3 className="text-xs font-medium text-text-secondary dark:text-slate-400">
+                  {heading} <span className="text-text-secondary dark:text-slate-500">({rows.length})</span>
+                </h3>
+                <button
+                  onClick={() => copy(heading, tomlBlock)}
+                  className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                >
+                  {copied === heading ? (
+                    <><Check className="w-3 h-3" /> Copied</>
+                  ) : (
+                    <><Copy className="w-3 h-3" /> Copy</>
+                  )}
+                </button>
+              </div>
+              <pre className="text-xs font-mono bg-card dark:bg-slate-900 p-2 rounded overflow-x-auto text-text-primary dark:text-slate-300">{tomlBlock}</pre>
+              {rows.some(r => r.notes) && (
+                <ul className="mt-2 text-xs text-text-secondary dark:text-slate-400 space-y-0.5">
+                  {rows.filter(r => r.notes).map(r => (
+                    <li key={r.filename}>
+                      <span className="font-mono">{r.filename}</span> — {r.notes}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
 export default function AdminNircamPage() {
   const [progress, setProgress] = useState<ReductionProgress[]>([]);
   const [exposures, setExposures] = useState<NircamExposure[]>([]);
+  const [excluded, setExcluded] = useState<ExcludedExposure[]>([]);
   const [filterOptions, setFilterOptions] = useState<{ fields: string[]; filters: string[]; stages: string[] }>({
     fields: [], filters: [], stages: [],
   });
@@ -151,7 +251,7 @@ export default function AdminNircamPage() {
     setError(null);
 
     try {
-      const [progressResult, exposuresResult, optionsResult] = await Promise.all([
+      const [progressResult, exposuresResult, optionsResult, excludedResult] = await Promise.all([
         getReductionProgress(),
         getNircamExposures({
           field: selectedField || undefined,
@@ -160,6 +260,7 @@ export default function AdminNircamPage() {
           stage: selectedStage || undefined,
         }),
         getExposureFilterOptions(),
+        getExcludedExposures(),
       ]);
 
       if (progressResult.error) throw new Error(progressResult.error);
@@ -167,6 +268,7 @@ export default function AdminNircamPage() {
 
       setProgress(progressResult.progress);
       setExposures(exposuresResult.exposures);
+      setExcluded(excludedResult.excluded);
       if (!optionsResult.error) {
         setFilterOptions(optionsResult);
       }
@@ -215,6 +317,9 @@ export default function AdminNircamPage() {
         <ProgressTable progress={progress} />
       </Card>
 
+      {/* Excluded exposures (copy-paste source for fields.toml skip=[]) */}
+      <ExcludedPanel excluded={excluded} />
+
       {/* Filter bar */}
       <div className="flex flex-wrap gap-3 mb-4">
         <select
@@ -239,7 +344,7 @@ export default function AdminNircamPage() {
           className="text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-1.5 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
         >
           <option value="">All stages</option>
-          {filterOptions.stages.map(s => <option key={s} value={s}>{s}</option>)}
+          {NIRCAM_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <select
           value={selectedReview}

@@ -286,6 +286,30 @@ export interface NircamImage {
   file_size?: number; // in bytes, if available
 }
 
+// NIRCam pipeline step names. Matches campfire_pipeline.common.cfp.CFP_KEYS
+// order: 'uncal' means raw exists but no canonical file yet; each subsequent
+// value is the name of the highest-completed step (process phase →
+// detector1..jhat, combine phase → apply_mask..outlier).
+export const NIRCAM_STAGES = [
+  'uncal',
+  'detector1',
+  'persistence',
+  'wisp',
+  'striping',
+  'image2',
+  'edge',
+  'sky',
+  'diag_striping',
+  'variance',
+  'wcs_shift',
+  'preview',
+  'jhat',
+  'apply_mask',
+  'bad_pixel',
+  'outlier',
+] as const;
+export type NircamStage = typeof NIRCAM_STAGES[number];
+
 export interface NircamExposure {
   id: number;
   field: string;
@@ -296,7 +320,7 @@ export interface NircamExposure {
   date_obs: string | null;
   ra_center: number | null;
   dec_center: number | null;
-  stage: 'uncal' | 'rate' | 'cal' | 'jhat' | 'crf';
+  stage: NircamStage;
   review_status: 'pending' | 'approved' | 'excluded';
   masking: 'none' | 'needed' | 'done';
   correction: 'none' | 'needed' | 'done';

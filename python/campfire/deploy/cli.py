@@ -754,7 +754,7 @@ def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
 # NIRCam subcommand group (exposure tracking)
 # ---------------------------------------------------------------------------
 
-@deploy_group.group(invoke_without_command=True)
+@deploy_group.command()
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', required=True,
@@ -763,29 +763,18 @@ def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
               help='Filter(s) to process (default: all).')
 @click.option('--dry-run', is_flag=True,
               help='Show what would be deployed without making changes.')
-@click.pass_context
-def nircam(ctx, config_path, field, filter_names, dry_run):
-    """Deploy NIRCam exposure data (PNGs + metadata) or pull triage results."""
-    ctx.ensure_object(dict)
-    ctx.obj['config_path'] = config_path
-    ctx.obj['field'] = field
-    ctx.obj['filters'] = list(filter_names) if filter_names else None
-    ctx.obj['dry_run'] = dry_run
+def nircam(config_path, field, filter_names, dry_run):
+    """Push NIRCam exposure state (preview PNGs + metadata) to Supabase.
 
-    # Default action (no subcommand) = push
-    if ctx.invoked_subcommand is None:
-        from campfire.deploy.nircam import deploy_nircam
-        config = load_config(config_path)
-        deploy_nircam(field, config, filters=ctx.obj['filters'], dry_run=dry_run)
-
-
-@nircam.command()
-@click.pass_context
-def pull(ctx):
-    """Pull exposure triage results to local contract file (exposures.json)."""
-    from campfire.deploy.nircam import pull_nircam
-    config = load_config(ctx.obj['config_path'])
-    pull_nircam(ctx.obj['field'], config, filters=ctx.obj['filters'])
+    Reviewer-set exclusions (review_status='excluded') are surfaced in the
+    web admin UI for copy-paste into the field's skip=[] block in
+    fields.toml — there is no longer a pull/contract-file workflow.
+    """
+    from campfire.deploy.nircam import deploy_nircam
+    config = load_config(config_path)
+    deploy_nircam(field, config,
+                  filters=list(filter_names) if filter_names else None,
+                  dry_run=dry_run)
 
 
 # ---------------------------------------------------------------------------

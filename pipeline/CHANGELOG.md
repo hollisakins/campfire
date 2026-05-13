@@ -350,6 +350,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- NIRCam: new `preview` per-exposure step, inserted as the penultimate
+  process step (after `wcs_shift`, before `jhat`). Renders a downsampled
+  ZScale-stretched grayscale PNG of the canonical SCI to
+  ``{filter_dir}/{rootname}_preview.png`` for the web admin triage UI.
+  Read-only — no SCI/DQ/ERR mutation. New `CFP_PREV` provenance key
+  registered in the dependency chain so `cfpipe nircam reset --from <step>`
+  invalidates the preview alongside any upstream re-run. Configurable via
+  `[nircam.preview].max_dim` (default 1024) and `cmap` (default "Greys").
+- NIRCam: removed `Field.get_excluded_exposures` (read from a deploy-
+  generated ``reference/nircam/{field}/exposures.json`` contract) and the
+  matching ``campfire deploy nircam pull`` subcommand. Nothing in the
+  pipeline consumed the contract — exclusion was effectively a dead path.
+  Reviewer-set exclusions in the web admin UI are now surfaced as a
+  copy-paste list for the field's ``skip = [...]`` block in fields.toml,
+  keeping fields.toml as the single source of truth for what the pipeline
+  processes.
 - NIRCam: reject WFSS/TSGRISM exposures from the imaging pipeline at
   three layers. The MAST downloader (`cfpipe download --instrument
   nircam`) now filters uncal products by their *per-product* `exp_type`

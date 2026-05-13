@@ -33,6 +33,7 @@ from campfire_pipeline.nircam.steps.edge import edge_step
 from campfire_pipeline.nircam.steps.sky import sky_step
 from campfire_pipeline.nircam.steps.variance import variance_step
 from campfire_pipeline.nircam.steps.wcs_shift import wcs_shift_step, _match_rule
+from campfire_pipeline.nircam.steps.preview import preview_step
 from campfire_pipeline.nircam.steps.jhat import jhat_step
 from campfire_pipeline.nircam.steps.apply_masks import apply_masks_step
 from campfire_pipeline.nircam.steps.bad_pixel import (
@@ -57,6 +58,7 @@ PROCESS_STEPS = [
     ('diag_striping', 'CFP_DIAG'),
     ('variance',    'CFP_VAR'),
     ('wcs_shift',   'CFP_SHFT'),
+    ('preview',     'CFP_PREV'),
     ('jhat',        'CFP_JHAT'),
 ]
 
@@ -479,6 +481,9 @@ _RUNNERS = {
                        'variance', variance_step, 'CFP_VAR',
                        f, c, fl, n, ow, st),
     'wcs_shift':   _run_wcs_shift,
+    'preview':     lambda f, c, fl, n, ow, st: _run_per_exposure(
+                       'preview', preview_step, 'CFP_PREV',
+                       f, c, fl, n, ow, st),
     'jhat':        lambda f, c, fl, n, ow, st: _run_per_exposure(
                        'jhat', jhat_step, 'CFP_JHAT',
                        f, c, fl, n, ow, st),

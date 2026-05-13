@@ -11,6 +11,7 @@ import {
   updateExposureReview,
 } from '@/lib/actions/nircam-exposures';
 import type { NircamExposure } from '@/lib/types';
+import { stageBadgeClasses } from '@/lib/nircam-stages';
 
 const CDN_BASE = process.env.NEXT_PUBLIC_CDN_BASE_URL || '';
 
@@ -174,9 +175,7 @@ export default function ExposureDetailPage() {
               <div className="flex justify-between">
                 <dt className="text-text-secondary dark:text-slate-400">Stage</dt>
                 <dd>
-                  <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${
-                    exposure.stage === 'crf' ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300' : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-400'
-                  }`}>
+                  <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full font-mono ${stageBadgeClasses(exposure.stage)}`}>
                     {exposure.stage}
                   </span>
                 </dd>

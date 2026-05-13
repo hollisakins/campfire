@@ -1,20 +1,19 @@
 """
-NIRCam exposure deployment — push intermediate products to Supabase + R2,
-pull triage results to local contract file.
+NIRCam exposure deployment — push canonical exposure state to Supabase + R2.
 
-Push workflow:
-    1. Scan local products directory for each filter
-    2. Detect per-exposure stage from file existence (uncal → rate → cal → jhat → crf)
-    3. Upload cal PNGs to R2
-    4. Upsert nircam_exposures table (preserve review_status/correction/notes set by web triage)
+Scans the per-filter flat directories (the new canonical layout where each
+exposure is a single ``{rootname}.fits`` mutated in place through the
+``CFP_*`` provenance keys), derives a ``stage`` value from the highest
+completed CFP key, uploads ``*_preview.png`` thumbnails to R2, and upserts
+``nircam_exposures`` while preserving any web-triage fields
+(``review_status``, ``correction``, ``notes``).
 
-Pull workflow:
-    1. Fetch nircam_exposures for field from Supabase
-    2. Write contract file to $CAMPFIRE_ROOT/reference/nircam/{field}/exposures.json
-    3. Print summary + rsync worklist
+Excluded exposures flagged by reviewers in the admin UI are surfaced for
+copy-paste into the field's ``skip = [...]`` block in ``fields.toml``; we no
+longer maintain a local ``exposures.json`` contract since nothing in the
+pipeline consumes it.
 """
 
-import json
 import os
 import sys
 from collections import Counter
@@ -29,11 +28,48 @@ from campfire.deploy.supabase import get_supabase_client
 
 
 # ---------------------------------------------------------------------------
+# CFP key → stage name mapping
+# ---------------------------------------------------------------------------
+# Ordered from earliest to latest, matching campfire_pipeline.common.cfp.CFP_KEYS
+# (kept duplicated here so the deploy package doesn't depend on the pipeline).
+# Each entry: (CFP_* keyword, stage value to report).
+_CFP_TO_STAGE = [
+    ('CFP_DET1', 'detector1'),
+    ('CFP_PERS', 'persistence'),
+    ('CFP_WISP', 'wisp'),
+    ('CFP_1F',   'striping'),
+    ('CFP_IMG2', 'image2'),
+    ('CFP_EDGE', 'edge'),
+    ('CFP_SKY',  'sky'),
+    ('CFP_DIAG', 'diag_striping'),
+    ('CFP_VAR',  'variance'),
+    ('CFP_SHFT', 'wcs_shift'),
+    ('CFP_PREV', 'preview'),
+    ('CFP_JHAT', 'jhat'),
+    ('CFP_MASK', 'apply_mask'),
+    ('CFP_BPIX', 'bad_pixel'),
+    ('CFP_OUT',  'outlier'),
+]
+
+
+def _stage_from_header(header):
+    """Return the highest-completed step name based on CFP_* keys in ``header``.
+
+    Falls back to ``'detector1'`` if a canonical file exists but no CFP key is
+    set — that's unusual but the file's mere existence implies detector1 ran.
+    """
+    stage = 'detector1'
+    for key, name in _CFP_TO_STAGE:
+        if key in header:
+            stage = name
+    return stage
+
+
+# ---------------------------------------------------------------------------
 # Path resolution
 # ---------------------------------------------------------------------------
 
 def _resolve_campfire_root():
-    """Return $CAMPFIRE_ROOT or exit with helpful error."""
     root = os.environ.get('CAMPFIRE_ROOT')
     if not root:
         print("Error: $CAMPFIRE_ROOT is not set.")
@@ -49,22 +85,18 @@ def _resolve_nircam_dirs(field):
     return {
         'root': root,
         'products': products,
-        'stage1': products / 'stage1',
-        'stage2': products / 'stage2',
-        'stage3': products / 'stage3',
-        'mosaics': products / 'mosaics',
         'reference': root / 'reference' / 'nircam' / field,
         'masks': root / 'reference' / 'nircam' / field / 'masks',
     }
 
 
 def _discover_filters(dirs):
-    """List available filters by scanning stage2 subdirectories."""
-    stage2 = dirs['stage2']
-    if not stage2.exists():
+    """List available filters by scanning the products directory."""
+    products = dirs['products']
+    if not products.exists():
         return []
     return sorted(
-        d.name for d in stage2.iterdir()
+        d.name for d in products.iterdir()
         if d.is_dir() and not d.name.startswith('.')
     )
 
@@ -73,130 +105,107 @@ def _discover_filters(dirs):
 # Exposure discovery
 # ---------------------------------------------------------------------------
 
-def _exposure_basename(filename):
-    """Extract the exposure basename (without suffix) from a FITS filename.
-
-    E.g. 'jw01727028001_04101_00003_nrcalong_cal.fits' → 'jw01727028001_04101_00003_nrcalong'
-    """
-    name = filename
-    for suffix in ('_crf.fits', '_jhat.fits', '_cal.fits', '_rate.fits', '_uncal.fits'):
-        if name.endswith(suffix):
-            return name[:-len(suffix)]
-    # Fallback: strip last _xxx.fits
-    stem = Path(name).stem
-    parts = stem.rsplit('_', 1)
-    return parts[0] if len(parts) > 1 else stem
-
-
 def discover_exposures(dirs, filters):
-    """Discover all exposures for given filters, detecting the highest stage.
+    """Discover canonical exposures and derive metadata from their headers.
 
-    Returns a dict keyed by (filter, basename) → exposure info dict.
-    """
-    exposures = {}
-
-    for filtname in filters:
-        # Scan each stage directory for this filter
-        stage_dirs = [
-            (dirs['stage3'], '_crf.fits', 'crf'),
-            (dirs['stage3'], '_jhat.fits', 'jhat'),
-            (dirs['stage2'], '_cal.fits', 'cal'),
-            (dirs['stage1'], '_rate.fits', 'rate'),
-        ]
-
-        for stage_dir, suffix, stage_name in stage_dirs:
-            pattern = str(stage_dir / filtname / f'*{suffix}')
-            for filepath in glob(pattern):
-                filename = os.path.basename(filepath)
-                basename = _exposure_basename(filename)
-                key = (filtname, basename)
-
-                if key not in exposures:
-                    exposures[key] = {
-                        'basename': basename,
-                        'filter': filtname,
-                        'stage': stage_name,
-                        'best_file': filepath,
-                    }
-                # Already found at a higher stage; skip
-
-    return exposures
-
-
-def extract_exposure_metadata(filepath):
-    """Read FITS headers to extract exposure metadata.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to a FITS file (cal preferred, any stage works).
+    Scans ``products/nircam/{field}/{filter}/jw*.fits`` (excluding mosaics and
+    transient files), reads the primary header for CFP_* keys and basic
+    metadata. Mosaics are named ``mosaic_*.fits`` and naturally excluded by
+    the ``jw*`` glob.
 
     Returns
     -------
     dict
-        Keys: visit, detector, date_obs, ra_center, dec_center.
+        ``{(filter, basename): info}`` where info has keys ``basename``,
+        ``filter``, ``stage``, ``visit``, ``detector``, ``date_obs``,
+        ``ra_center``, ``dec_center``.
     """
-    meta = {
+    exposures = {}
+    for filtname in filters:
+        filter_dir = dirs['products'] / filtname
+        if not filter_dir.exists():
+            continue
+        for path in sorted(filter_dir.glob('jw*.fits')):
+            name = path.name
+            if name.endswith('.tmp.fits') or name.endswith('_jump.fits'):
+                continue
+            basename = name.removesuffix('.fits')
+            info = _read_exposure_metadata(path)
+            info['basename'] = basename
+            info['filter'] = filtname
+            exposures[(filtname, basename)] = info
+    return exposures
+
+
+def _read_exposure_metadata(path):
+    """Read header → stage + metadata in a single open."""
+    info = {
+        'stage': 'detector1',
         'visit': None,
         'detector': None,
         'date_obs': None,
         'ra_center': None,
         'dec_center': None,
     }
-
-    basename = os.path.basename(filepath)
-    # JWST naming convention: {visit}_{activity}_{exposure}_{detector}_{suffix}.fits
-    parts = basename.split('_')
+    # JWST naming convention: {visit}_{activity}_{exposure}_{detector}.fits
+    parts = path.stem.split('_')
     if len(parts) >= 1:
-        meta['visit'] = parts[0]
+        info['visit'] = parts[0]
     if len(parts) >= 4:
-        meta['detector'] = parts[3]
+        info['detector'] = parts[3]
 
     try:
-        with fits.open(filepath, memmap=True) as hdul:
-            hdr = hdul[0].header
-            meta['date_obs'] = hdr.get('DATE-OBS')
-            meta['detector'] = hdr.get('DETECTOR', meta['detector'])
-
-            # Try SCI extension for WCS center
+        with fits.open(path, memmap=True) as hdul:
+            hdr0 = hdul[0].header
+            info['stage'] = _stage_from_header(hdr0)
+            info['date_obs'] = hdr0.get('DATE-OBS')
+            info['detector'] = hdr0.get('DETECTOR', info['detector'])
             if len(hdul) > 1:
                 sci_hdr = hdul[1].header
                 ra = sci_hdr.get('CRVAL1')
                 dec = sci_hdr.get('CRVAL2')
                 if ra is not None and dec is not None:
-                    meta['ra_center'] = float(ra)
-                    meta['dec_center'] = float(dec)
+                    info['ra_center'] = float(ra)
+                    info['dec_center'] = float(dec)
     except Exception:
         pass
-
-    return meta
+    return info
 
 
 def _detect_masking(dirs, basename, filtname):
-    """Check if a .reg mask file exists for this exposure."""
-    reg_path = dirs['masks'] / filtname / f'{basename}_cal.reg'
+    """Return 'done' if a .reg mask file exists, else None.
+
+    Pipeline reads masks from ``masks/<filter>/<rootname>.reg`` (no ``_cal``
+    suffix in the new canonical layout).
+    """
+    reg_path = dirs['masks'] / filtname / f'{basename}.reg'
     return 'done' if reg_path.exists() else None
 
 
 # ---------------------------------------------------------------------------
-# PNG discovery
+# Preview PNG discovery
 # ---------------------------------------------------------------------------
 
 def build_upload_tasks(dirs, field, filters):
-    """Build list of UploadTask for cal PNGs.
+    """Build R2 upload tasks for per-exposure preview PNGs.
 
-    Returns list of (UploadTask, basename, filtname) tuples.
+    Previews are written by the ``preview`` pipeline step to
+    ``{filter_dir}/{rootname}_preview.png``. R2 key:
+    ``nircam/exposures/{field}/{filter}/{rootname}_preview.png``.
+
+    Returns list of (UploadTask, basename, filter) tuples.
     """
     tasks = []
     for filtname in filters:
-        png_dir = dirs['stage2'] / filtname
+        png_dir = dirs['products'] / filtname
         if not png_dir.exists():
             continue
-        for png_path in sorted(png_dir.glob('*_cal.png')):
-            basename = _exposure_basename(png_path.name.replace('_cal.png', '_cal.fits'))
+        for png_path in sorted(png_dir.glob('jw*_preview.png')):
+            basename = png_path.name.removesuffix('_preview.png')
             r2_key = f'nircam/exposures/{field}/{filtname}/{png_path.name}'
             tasks.append((
-                UploadTask(local_path=png_path, r2_key=r2_key, content_type='image/png'),
+                UploadTask(local_path=png_path, r2_key=r2_key,
+                           content_type='image/png'),
                 basename,
                 filtname,
             ))
@@ -208,7 +217,7 @@ def build_upload_tasks(dirs, field, filters):
 # ---------------------------------------------------------------------------
 
 def deploy_nircam(field, config, filters=None, dry_run=False):
-    """Deploy NIRCam exposure data: upload PNGs to R2, upsert nircam_exposures.
+    """Push NIRCam exposure state: upload PNGs to R2, upsert nircam_exposures.
 
     Parameters
     ----------
@@ -217,7 +226,8 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
     config : dict
         Deploy config (Supabase + R2 credentials).
     filters : list of str, optional
-        Filters to deploy. If None, discovers all available.
+        Filters to deploy. If None, discovers every directory under
+        ``products/nircam/{field}/``.
     dry_run : bool
         If True, print what would be done without making changes.
     """
@@ -227,15 +237,14 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         print(f"Error: Products directory not found: {dirs['products']}")
         sys.exit(1)
 
-    # Discover filters
+    available = _discover_filters(dirs)
     if filters:
-        available = _discover_filters(dirs)
         missing = [f for f in filters if f not in available]
         if missing:
-            print(f"Warning: No stage2 products for filters: {', '.join(missing)}")
+            print(f"Warning: No products for filters: {', '.join(missing)}")
         filters = [f for f in filters if f in available]
     else:
-        filters = _discover_filters(dirs)
+        filters = available
 
     if not filters:
         print("No filters found to deploy.")
@@ -244,48 +253,41 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
     print(f"Field: {field}")
     print(f"Filters: {', '.join(filters)}")
 
-    # Discover exposures
     exposures = discover_exposures(dirs, filters)
-    print(f"Discovered {len(exposures)} exposures")
-
+    print(f"Discovered {len(exposures)} canonical exposures")
     if not exposures:
         return
 
-    # Build PNG upload tasks
     png_tasks = build_upload_tasks(dirs, field, filters)
-    png_r2_keys = {}  # basename → r2_key
-    for task, basename, filtname in png_tasks:
-        png_r2_keys[(filtname, basename)] = task.r2_key
+    png_r2_keys = {
+        (filtname, basename): task.r2_key
+        for task, basename, filtname in png_tasks
+    }
+    print(f"Preview PNGs to upload: {len(png_tasks)}")
 
-    print(f"PNGs to upload: {len(png_tasks)}")
-
-    # Build exposure records for upsert
     records = []
     for (filtname, basename), info in sorted(exposures.items()):
-        meta = extract_exposure_metadata(info['best_file'])
         masking = _detect_masking(dirs, basename, filtname)
-
         record = {
             'field': field,
             'filter': filtname,
-            'detector': meta['detector'] or 'unknown',
+            'detector': info['detector'] or 'unknown',
             'filename': basename,
-            'visit': meta['visit'],
-            'date_obs': meta['date_obs'],
-            'ra_center': meta['ra_center'],
-            'dec_center': meta['dec_center'],
+            'visit': info['visit'],
+            'date_obs': info['date_obs'],
+            'ra_center': info['ra_center'],
+            'dec_center': info['dec_center'],
             'stage': info['stage'],
             'png_path': png_r2_keys.get((filtname, basename)),
         }
         if masking:
             record['masking'] = masking
-
         records.append(record)
 
     if dry_run:
         stage_counts = Counter(r['stage'] for r in records)
         print("\nStage breakdown:")
-        for stage in ('uncal', 'rate', 'cal', 'jhat', 'crf'):
+        for _, stage in _CFP_TO_STAGE:
             if stage in stage_counts:
                 print(f"  {stage}: {stage_counts[stage]}")
         mask_count = sum(1 for r in records if r.get('masking') == 'done')
@@ -294,7 +296,6 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         print("\nDry run — no changes made.")
         return
 
-    # Upload PNGs to R2
     if png_tasks:
         print("\nUploading PNGs to R2...")
         upload_task_list = [t[0] for t in png_tasks]
@@ -306,7 +307,6 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         for msg in failures:
             print(f"  Error: {msg}")
 
-    # Upsert to Supabase
     print("\nUpserting exposures to Supabase...")
     client = get_supabase_client(config)
     _upsert_exposures(client, records)
@@ -316,14 +316,15 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
 def _upsert_exposures(client, records, batch_size=500):
     """Upsert exposure records, preserving web-triage fields for existing rows.
 
-    New rows get default review_status='pending', masking='none', correction='none'.
-    Existing rows: update stage, png_path, date_obs, coordinates, masking (if .reg detected).
-    Preserve: review_status, correction, notes.
+    New rows get default ``review_status='pending'``, ``masking='none'``,
+    ``correction='none'``. Existing rows: update pipeline-derived columns
+    only (``stage``, ``png_path``, metadata, ``masking='done'`` when a
+    ``.reg`` file is present). Preserve ``review_status``, ``correction``,
+    ``notes``.
     """
     if not records:
         return
 
-    # Check which records already exist
     filenames = [r['filename'] for r in records]
     existing = set()
     for i in range(0, len(filenames), batch_size):
@@ -342,7 +343,6 @@ def _upsert_exposures(client, records, batch_size=500):
     for r in records:
         key = (r['field'], r['filter'], r['filename'])
         if key in existing:
-            # Update pipeline-derived fields only
             update = {
                 'field': r['field'],
                 'filter': r['filter'],
@@ -365,7 +365,6 @@ def _upsert_exposures(client, records, batch_size=500):
                 update['masking'] = 'done'
             update_records.append(update)
         else:
-            # New record with defaults
             new = {
                 **r,
                 'review_status': 'pending',
@@ -377,120 +376,13 @@ def _upsert_exposures(client, records, batch_size=500):
                 new['masking'] = 'none'
             new_records.append(new)
 
-    # Insert new records
     for i in range(0, len(new_records), batch_size):
         batch = new_records[i:i + batch_size]
         client.table('nircam_exposures').insert(batch).execute()
 
-    # Upsert existing records (on_conflict updates only the fields we set)
     for i in range(0, len(update_records), batch_size):
         batch = update_records[i:i + batch_size]
         client.table('nircam_exposures').upsert(
             batch,
             on_conflict='field,filter,filename',
         ).execute()
-
-
-# ---------------------------------------------------------------------------
-# Pull (contract file)
-# ---------------------------------------------------------------------------
-
-def pull_nircam(field, config, filters=None):
-    """Fetch exposure triage data and write local contract file.
-
-    Contract file: $CAMPFIRE_ROOT/reference/nircam/{field}/exposures.json
-
-    Parameters
-    ----------
-    field : str
-        Field name.
-    config : dict
-        Deploy config (Supabase credentials).
-    filters : list of str, optional
-        Filters to pull. If None, pulls all.
-    """
-    dirs = _resolve_nircam_dirs(field)
-
-    client = get_supabase_client(config)
-
-    # Fetch all exposures for this field
-    query = (client.table('nircam_exposures')
-             .select('filename, filter, review_status, masking, correction, notes')
-             .eq('field', field))
-
-    if filters:
-        query = query.in_('filter', filters)
-
-    resp = query.execute()
-
-    if not resp.data:
-        print(f"No exposures found for field '{field}' in database.")
-        return
-
-    # Build contract
-    exposures = {}
-    for row in resp.data:
-        exposures[row['filename']] = {
-            'filter': row['filter'],
-            'review_status': row['review_status'],
-            'masking': row['masking'],
-            'correction': row['correction'],
-            'notes': row['notes'],
-        }
-
-    contract = {
-        'field': field,
-        'pulled_at': datetime.now(timezone.utc).isoformat(),
-        'exposures': exposures,
-    }
-
-    # Write contract file
-    contract_dir = dirs['reference']
-    os.makedirs(contract_dir, exist_ok=True)
-    contract_path = contract_dir / 'exposures.json'
-
-    with open(contract_path, 'w') as f:
-        json.dump(contract, f, indent=2)
-
-    print(f"Wrote contract: {contract_path}")
-
-    # Print summary
-    review_counts = Counter(e['review_status'] for e in exposures.values())
-    masking_counts = Counter(e['masking'] for e in exposures.values())
-    correction_counts = Counter(e['correction'] for e in exposures.values())
-
-    print(f"\n{len(exposures)} exposures:")
-    print(f"  Review: {review_counts.get('approved', 0)} approved, "
-          f"{review_counts.get('pending', 0)} pending, "
-          f"{review_counts.get('excluded', 0)} excluded")
-    if masking_counts.get('needed', 0):
-        print(f"  Masking: {masking_counts['needed']} needed, "
-              f"{masking_counts.get('done', 0)} done")
-    if correction_counts.get('needed', 0):
-        print(f"  Correction: {correction_counts['needed']} needed, "
-              f"{correction_counts.get('done', 0)} done")
-
-    # Print rsync worklist
-    needs_work = [
-        name for name, info in exposures.items()
-        if info['masking'] == 'needed' or info['correction'] == 'needed'
-    ]
-    if needs_work:
-        print(f"\nFiles needing masking/correction ({len(needs_work)}):")
-        for name in sorted(needs_work):
-            info = exposures[name]
-            reasons = []
-            if info['masking'] == 'needed':
-                reasons.append('masking')
-            if info['correction'] == 'needed':
-                reasons.append('correction')
-            note = f" — {info['notes']}" if info.get('notes') else ''
-            print(f"  {name}_cal.fits ({', '.join(reasons)}){note}")
-
-    excluded = [name for name, info in exposures.items()
-                if info['review_status'] == 'excluded']
-    if excluded:
-        print(f"\nExcluded ({len(excluded)}):")
-        for name in sorted(excluded):
-            note = f" — {exposures[name]['notes']}" if exposures[name].get('notes') else ''
-            print(f"  {name}{note}")

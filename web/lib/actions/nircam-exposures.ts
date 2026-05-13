@@ -140,11 +140,23 @@ export interface ReductionProgress {
   field: string;
   filter: string;
   total: number;
+  // Per-step counts (matches the columns in the nircam_reduction_progress view)
   at_uncal: number;
-  at_rate: number;
-  at_cal: number;
+  at_detector1: number;
+  at_persistence: number;
+  at_wisp: number;
+  at_striping: number;
+  at_image2: number;
+  at_edge: number;
+  at_sky: number;
+  at_diag_striping: number;
+  at_variance: number;
+  at_wcs_shift: number;
+  at_preview: number;
   at_jhat: number;
-  at_crf: number;
+  at_apply_mask: number;
+  at_bad_pixel: number;
+  at_outlier: number;
   pending_review: number;
   approved: number;
   excluded: number;
@@ -174,6 +186,45 @@ export async function getReductionProgress(): Promise<{
     return {
       progress: [],
       error: err instanceof Error ? err.message : 'Failed to fetch progress',
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Excluded exposures (copy-paste source for fields.toml skip=[])
+// ---------------------------------------------------------------------------
+
+export interface ExcludedExposure {
+  field: string;
+  filter: string;
+  filename: string;
+  notes: string | null;
+}
+
+export async function getExcludedExposures(): Promise<{
+  excluded: ExcludedExposure[];
+  error?: string;
+}> {
+  try {
+    const supabase = await requireAdmin();
+
+    const { data, error } = await supabase
+      .from('nircam_exposures')
+      .select('field, filter, filename, notes')
+      .eq('review_status', 'excluded')
+      .order('field')
+      .order('filter')
+      .order('filename');
+
+    if (error) {
+      return { excluded: [], error: error.message };
+    }
+
+    return { excluded: data || [] };
+  } catch (err) {
+    return {
+      excluded: [],
+      error: err instanceof Error ? err.message : 'Failed to fetch excluded exposures',
     };
   }
 }

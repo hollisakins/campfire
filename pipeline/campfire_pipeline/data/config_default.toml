@@ -252,6 +252,13 @@
     #       delta_ra  = -0.0022538
     #       delta_dec = -0.003637
 
+[nircam.preview]
+    # Per-exposure quick-look PNG for the web admin triage UI. Read-only:
+    # downsamples SCI to ``max_dim`` long-axis pixels, ZScale-stretches,
+    # writes ``{rootname}_preview.png`` next to the canonical FITS.
+    max_dim = 1024
+    cmap = "Greys"
+
 [nircam.jhat]
     verbose = true
     debug = true

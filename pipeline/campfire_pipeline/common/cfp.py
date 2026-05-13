@@ -33,6 +33,7 @@ CFP_KEYS = [
     'CFP_DIAG',  # diagonal scattered-light striping (opt-in)
     'CFP_VAR',   # variance rescaling
     'CFP_SHFT', # pre-jhat astrometric WCS shift (opt-in, rule-driven)
+    'CFP_PREV',  # per-exposure preview PNG for web admin triage
     'CFP_JHAT',  # WCS alignment
     'CFP_MASK',  # user region masks
     'CFP_BPIX',  # bad pixel mask
@@ -50,6 +51,7 @@ CFP_COMMENTS = {
     'CFP_DIAG': 'campfire: diagonal stripe theta and search range',
     'CFP_VAR':  'campfire: variance correction factor',
     'CFP_SHFT': 'campfire: pre-jhat WCS shift (dra,ddec,droll,scale)',
+    'CFP_PREV': 'campfire: preview PNG rendered',
     'CFP_JHAT': 'campfire: jhat refcat used',
     'CFP_MASK': 'campfire: user masks applied',
     'CFP_BPIX': 'campfire: bad pixel mask applied',

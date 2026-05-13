@@ -55,6 +55,7 @@ _STEP_LABELS = {
     'edge':        'edge',
     'sky':         'sky',
     'variance':    'var',
+    'preview':     'prev',
     'jhat':        'jhat',
     'apply_mask':  'mask',
     'bad_pixel':   'bpix',
