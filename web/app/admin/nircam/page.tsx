@@ -20,6 +20,7 @@ import {
   NIRCAM_STAGES,
   STAGE_COLUMN_KEYS,
 } from '@/lib/nircam-stages';
+import { setNircamNav } from '@/lib/nircam-nav-cache';
 
 // ---------------------------------------------------------------------------
 // Status badge helpers
@@ -389,11 +390,17 @@ export default function AdminNircamPage() {
                 </td>
               </tr>
             ) : (
-              exposures.map((exp) => (
+              exposures.map((exp) => {
+                // Saving the cache on every click means the detail page's
+                // prev/next reflects the current filter state at the moment
+                // the user entered it, even if filters change later.
+                const onRowEnter = () => setNircamNav(exposures.map(e => e.id));
+                return (
                 <tr key={exp.id} className="hover:bg-card/50 dark:hover:bg-slate-700/50">
                   <td className="px-4 py-3">
                     <Link
                       href={`/admin/nircam/${exp.id}`}
+                      onClick={onRowEnter}
                       className="text-sm font-mono text-primary hover:underline"
                     >
                       {exp.filename}
@@ -406,12 +413,13 @@ export default function AdminNircamPage() {
                   <td className="px-4 py-3"><ActionBadge status={exp.masking} label="mask" /></td>
                   <td className="px-4 py-3"><ActionBadge status={exp.correction} label="corr" /></td>
                   <td className="px-4 py-3 text-right">
-                    <Link href={`/admin/nircam/${exp.id}`}>
+                    <Link href={`/admin/nircam/${exp.id}`} onClick={onRowEnter}>
                       <ChevronRight className="w-4 h-4 text-text-secondary dark:text-slate-400" />
                     </Link>
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>

@@ -154,21 +154,39 @@ export default function MaskEditor({
   }, [scale, translate]);
 
   // ----- wheel zoom (cursor-anchored) -----
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    const factor = Math.exp(-e.deltaY * 0.0015);
-    const newScale = Math.max(0.05, Math.min(20, scale * factor));
-    // Keep the PNG point under the cursor stationary:
-    //   client = translate + svg * scale
-    //   solve translate_new so (mx, my) maps to the same svg point.
-    const svgPt = { x: (mx - translate[0]) / scale, y: (my - translate[1]) / scale };
-    setTranslate([mx - svgPt.x * newScale, my - svgPt.y * newScale]);
-    setScale(newScale);
-  }, [scale, translate]);
+  // React's onWheel is registered as a *passive* listener since React 17, so
+  // e.preventDefault() is silently ignored and the page scrolls underneath.
+  // Attach the listener manually with { passive: false } so the zoom owns
+  // the wheel events when the cursor is over the canvas.
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = node.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      // Functional updates — wheel events fire faster than React renders, so
+      // closing over `scale`/`translate` from the last render would drop
+      // intermediate ticks.
+      setScale((prevScale) => {
+        const newScale = Math.max(0.05, Math.min(20, prevScale * factor));
+        setTranslate(([tx, ty]) => {
+          // Keep the PNG point under the cursor stationary:
+          //   client = translate + svg * scale
+          const svgPt = {
+            x: (mx - tx) / prevScale,
+            y: (my - ty) / prevScale,
+          };
+          return [mx - svgPt.x * newScale, my - svgPt.y * newScale];
+        });
+        return newScale;
+      });
+    };
+    node.addEventListener('wheel', handler, { passive: false });
+    return () => node.removeEventListener('wheel', handler);
+  }, []);
 
   const finalizeDraft = useCallback(() => {
     if (draftVertices.length < 3) {
@@ -322,7 +340,6 @@ export default function MaskEditor({
       <div
         ref={containerRef}
         className={`flex-1 relative overflow-hidden bg-black select-none ${cursorClass}`}
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
