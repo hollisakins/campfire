@@ -366,6 +366,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   copy-paste list for the field's ``skip = [...]`` block in fields.toml,
   keeping fields.toml as the single source of truth for what the pipeline
   processes.
+- NIRCam: `cfpipe nircam refcat query --backend hsc_ssp` is now a real
+  query (previously raised `NotImplementedError`). Implements a thin
+  stdlib client against the HSC SSP PDR3 async catalog_jobs API:
+  submit/poll/download/cancel, credentials resolved from CLI flags →
+  `HSC_SSP_USER`/`HSC_SSP_PASSWORD` env vars → `~/.netrc` machine
+  `hsc-release.mtk.nao.ac.jp`, and stripped from the ECSV provenance
+  block. New `--hsc-release {auto,wide,dud}` flag: `auto` (default)
+  uses a coordinate-based check against hard-coded DUD field bounding
+  boxes (COSMOS / DEEP2-3 / ELAIS-N1 / XMM-LSS), routing the cone to
+  `pdr3_dud_rev.summary` and/or `pdr3_wide.summary` and vstacking when
+  it straddles a DUD edge. DUD queries pre-filter with `tractSearch`
+  using the field's known tract envelope; Wide queries rely on
+  `coneSearch` alone. Output uses cmodel mags (`{band}_cmodel_mag`,
+  default `i`); `--no-point-sources` toggles the
+  `{band}_extendedness_value < 0.5` stellar cut.
 - NIRCam: reject WFSS/TSGRISM exposures from the imaging pipeline at
   three layers. The MAST downloader (`cfpipe download --instrument
   nircam`) now filters uncal products by their *per-product* `exp_type`

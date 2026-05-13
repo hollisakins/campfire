@@ -98,13 +98,26 @@ def refcat():
               help="Cone radius in degrees (default 0.1).")
 @click.option("--mag-band", default=None,
               help="Magnitude band: G/BP/RP for gaia (default G), "
-                   "g/r/i/z for ls_dr10 (default i).")
+                   "g/r/i/z for ls_dr10 (default i), g/r/i/z/y for hsc_ssp "
+                   "(default i, cmodel mags).")
 @click.option("--mag-max", default=None, type=float,
               help="Upper magnitude cut applied server-side.")
 @click.option("--no-point-sources", is_flag=True,
-              help="ls_dr10 only: include extended sources too.")
+              help="ls_dr10 / hsc_ssp: include extended sources too.")
 @click.option("--row-limit", default=-1, type=int,
               help="gaia only: cap on returned rows (-1 = unlimited).")
+@click.option("--hsc-release", "hsc_release",
+              type=click.Choice(["auto", "wide", "dud"]), default="auto",
+              show_default=True,
+              help="hsc_ssp only: which PDR3 schema to query. 'auto' "
+                   "splits the cone between pdr3_dud_rev and pdr3_wide "
+                   "based on which tracts it overlaps.")
+@click.option("--hsc-user", default=None,
+              help="hsc_ssp only: HSC SSP account name. Falls back to "
+                   "$HSC_SSP_USER, then ~/.netrc.")
+@click.option("--hsc-password", default=None,
+              help="hsc_ssp only: HSC SSP password. Falls back to "
+                   "$HSC_SSP_PASSWORD, then ~/.netrc.")
 @click.option("--out", "out_path", default=None,
               help="Output path; default = "
                    "<field.refcat_dir>/<field>_<backend>_<band>_refcat.ecsv.")
@@ -112,7 +125,8 @@ def refcat():
               help="Free-form note stamped into the catalog meta.")
 @click.option("--overwrite", is_flag=True)
 def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
-          no_point_sources, row_limit, out_path, notes, overwrite):
+          no_point_sources, row_limit, hsc_release, hsc_user, hsc_password,
+          out_path, notes, overwrite):
     """Query an external catalog over the field."""
     _, field_obj = _refcat_setup(config, field_name)
     center_radec = _parse_center(center, field_obj)
@@ -125,6 +139,11 @@ def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
         kwargs["row_limit"] = row_limit
     elif backend == "ls_dr10":
         kwargs["point_sources"] = not no_point_sources
+    elif backend == "hsc_ssp":
+        kwargs["point_sources"] = not no_point_sources
+        kwargs["release"] = hsc_release
+        kwargs["user"] = hsc_user
+        kwargs["password"] = hsc_password
 
     log(f"refcat query: backend={backend}, center={center_radec}, "
         f"radius={radius_deg} deg, band={mag_band}")
@@ -137,11 +156,13 @@ def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
             f"backend cuts ({backend!r})."
         )
 
+    safe_kwargs = {k: v for k, v in kwargs.items()
+                   if k not in ("user", "password")}
     params = {
         "backend": backend,
         "center": list(center_radec),
         "radius_deg": radius_deg,
-        **kwargs,
+        **safe_kwargs,
     }
     table.meta.update(make_meta(field_obj.name, source="query",
                                 params=params, notes=notes))
