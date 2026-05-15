@@ -744,6 +744,66 @@ class Campfire:
 
         return result
 
+    def get_shutters_region(
+        self,
+        object_id: str,
+        fov: float = 5.0,
+        output: Optional[Union[str, Path]] = None,
+        cache: bool = True,
+    ) -> Path:
+        """Download nearby shutter geometry as a DS9 region (.reg) file.
+
+        Member-spectrum slitlets are coloured green and labelled with their
+        ``target_id`` (``{observation}_{source_id}``); other nearby shutters
+        are grey. Stuck-closed shutters are drawn red dashed.
+
+        Parameters
+        ----------
+        object_id : str
+            Object identifier (IAU name).
+        fov : float, optional
+            Search radius in arcseconds (default 5).
+        output : str or Path, optional
+            Destination path. Defaults to the cutout cache directory.
+        cache : bool, optional
+            Reuse a cached .reg file if present (default True).
+
+        Returns
+        -------
+        Path
+            Path to the written .reg file.
+        """
+        from .config import resolve_data_dir
+        from .imaging import shutters_to_ds9_region
+
+        fov_str = format(fov, "g")
+        filename = f"{object_id}_fov{fov_str}_shutters.reg"
+
+        if output is not None:
+            dest = Path(output)
+        else:
+            cutouts = resolve_data_dir() / "cutouts"
+            dest = _safe_cache_path(cutouts, filename, object_id)
+
+        if cache and dest.exists():
+            return dest
+
+        shutter_data = self.get_shutters(object_id, fov=fov, cache=cache)
+        region_text = shutters_to_ds9_region(
+            shutter_data, target_object_id=object_id
+        )
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        try:
+            tmp.write_text(region_text)
+            tmp.rename(dest)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+
+        return dest
+
     def plot_cutout(
         self,
         object_id: str,
