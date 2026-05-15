@@ -28,22 +28,73 @@ async function requireAdmin() {
 
 export interface ExposuresResult {
   exposures: NircamExposure[];
+  total: number;
   error?: string;
 }
 
-export async function getNircamExposures(params?: {
+export interface ExposureFilters {
   field?: string;
   filter?: string;
   detector?: string;
   reviewStatus?: string;
   stage?: string;
+}
+
+export async function getNircamExposures(params?: ExposureFilters & {
+  page?: number;       // 0-indexed
+  pageSize?: number;   // default 50
 }): Promise<ExposuresResult> {
+  try {
+    const supabase = await requireAdmin();
+
+    const page = Math.max(0, params?.page ?? 0);
+    const pageSize = Math.max(1, params?.pageSize ?? 50);
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+
+    let query = supabase
+      .from('nircam_exposures')
+      .select('*', { count: 'exact' })
+      .order('field')
+      .order('filter')
+      .order('filename')
+      .range(from, to);
+
+    if (params?.field) query = query.eq('field', params.field);
+    if (params?.filter) query = query.eq('filter', params.filter);
+    if (params?.detector) query = query.eq('detector', params.detector);
+    if (params?.reviewStatus) query = query.eq('review_status', params.reviewStatus);
+    if (params?.stage) query = query.eq('stage', params.stage);
+
+    const { data, count, error } = await query;
+
+    if (error) {
+      return { exposures: [], total: 0, error: error.message };
+    }
+
+    return { exposures: data || [], total: count ?? 0 };
+  } catch (err) {
+    return {
+      exposures: [],
+      total: 0,
+      error: err instanceof Error ? err.message : 'Failed to fetch exposures',
+    };
+  }
+}
+
+// Lightweight companion to getNircamExposures: returns just the IDs of every
+// exposure matching the same filters, in the same order. Feeds the detail
+// page's prev/next nav cache so the operator can step through the entire
+// filtered set with arrow keys, not just the current page.
+export async function getNircamExposureIds(
+  params?: ExposureFilters,
+): Promise<{ ids: number[]; error?: string }> {
   try {
     const supabase = await requireAdmin();
 
     let query = supabase
       .from('nircam_exposures')
-      .select('*')
+      .select('id')
       .order('field')
       .order('filter')
       .order('filename');
@@ -55,16 +106,12 @@ export async function getNircamExposures(params?: {
     if (params?.stage) query = query.eq('stage', params.stage);
 
     const { data, error } = await query;
-
-    if (error) {
-      return { exposures: [], error: error.message };
-    }
-
-    return { exposures: data || [] };
+    if (error) return { ids: [], error: error.message };
+    return { ids: (data || []).map(r => r.id) };
   } catch (err) {
     return {
-      exposures: [],
-      error: err instanceof Error ? err.message : 'Failed to fetch exposures',
+      ids: [],
+      error: err instanceof Error ? err.message : 'Failed to fetch exposure IDs',
     };
   }
 }

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { Loader2, RefreshCw, ChevronRight, Copy, Check } from 'lucide-react';
 import {
   getNircamExposures,
+  getNircamExposureIds,
   getReductionProgress,
   getExposureFilterOptions,
   getExcludedExposures,
@@ -21,6 +22,7 @@ import {
   STAGE_COLUMN_KEYS,
 } from '@/lib/nircam-stages';
 import { setNircamNav } from '@/lib/nircam-nav-cache';
+import { TablePagination } from '@/components/ui/TablePagination';
 
 // ---------------------------------------------------------------------------
 // Status badge helpers
@@ -231,14 +233,21 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
 // Main page
 // ---------------------------------------------------------------------------
 
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
+const DEFAULT_PAGE_SIZE = 50;
+
 export default function AdminNircamPage() {
   const [progress, setProgress] = useState<ReductionProgress[]>([]);
   const [exposures, setExposures] = useState<NircamExposure[]>([]);
+  const [total, setTotal] = useState(0);
+  // Full filtered ID list — drives prev/next on the detail page across pages.
+  const [allFilteredIds, setAllFilteredIds] = useState<number[]>([]);
   const [excluded, setExcluded] = useState<ExcludedExposure[]>([]);
   const [filterOptions, setFilterOptions] = useState<{ fields: string[]; filters: string[]; detectors: string[]; stages: string[] }>({
     fields: [], filters: [], detectors: [], stages: [],
   });
   const [loading, setLoading] = useState(true);
+  const [pageLoading, setPageLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Filters
@@ -248,43 +257,75 @@ export default function AdminNircamPage() {
   const [selectedReview, setSelectedReview] = useState<string>('');
   const [selectedStage, setSelectedStage] = useState<string>('');
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  // Pagination
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+
+  // Build the filter object once per render so dependent effects stabilize.
+  const filters = React.useMemo(() => ({
+    field: selectedField || undefined,
+    filter: selectedFilter || undefined,
+    detector: selectedDetector || undefined,
+    reviewStatus: selectedReview || undefined,
+    stage: selectedStage || undefined,
+  }), [selectedField, selectedFilter, selectedDetector, selectedReview, selectedStage]);
+
+  // Reset to first page whenever the filter set changes.
+  useEffect(() => {
+    setPage(0);
+  }, [filters]);
+
+  // One-shot fetch: progress, filter options, excluded list. Don't depend on
+  // page/filters — these are global to the admin view.
+  const refreshGlobal = useCallback(async () => {
+    const [progressResult, optionsResult, excludedResult] = await Promise.all([
+      getReductionProgress(),
+      getExposureFilterOptions(),
+      getExcludedExposures(),
+    ]);
+    if (progressResult.error) throw new Error(progressResult.error);
+    setProgress(progressResult.progress);
+    setExcluded(excludedResult.excluded);
+    if (!optionsResult.error) setFilterOptions(optionsResult);
+  }, []);
+
+  // Fetch the visible page of exposures + the full filtered ID list in
+  // parallel. The ID list is lightweight (one int per row) and feeds the
+  // nav cache so prev/next on the detail page steps through every match.
+  const fetchExposures = useCallback(async () => {
+    setPageLoading(true);
     setError(null);
-
     try {
-      const [progressResult, exposuresResult, optionsResult, excludedResult] = await Promise.all([
-        getReductionProgress(),
-        getNircamExposures({
-          field: selectedField || undefined,
-          filter: selectedFilter || undefined,
-          detector: selectedDetector || undefined,
-          reviewStatus: selectedReview || undefined,
-          stage: selectedStage || undefined,
-        }),
-        getExposureFilterOptions(),
-        getExcludedExposures(),
+      const [exposuresResult, idsResult] = await Promise.all([
+        getNircamExposures({ ...filters, page, pageSize }),
+        getNircamExposureIds(filters),
       ]);
-
-      if (progressResult.error) throw new Error(progressResult.error);
       if (exposuresResult.error) throw new Error(exposuresResult.error);
-
-      setProgress(progressResult.progress);
+      if (idsResult.error) throw new Error(idsResult.error);
       setExposures(exposuresResult.exposures);
-      setExcluded(excludedResult.excluded);
-      if (!optionsResult.error) {
-        setFilterOptions(optionsResult);
-      }
+      setTotal(exposuresResult.total);
+      setAllFilteredIds(idsResult.ids);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load data');
+      setError(err instanceof Error ? err.message : 'Failed to load exposures');
     } finally {
+      setPageLoading(false);
       setLoading(false);
     }
-  }, [selectedField, selectedFilter, selectedDetector, selectedReview, selectedStage]);
+  }, [filters, page, pageSize]);
 
+  useEffect(() => { fetchExposures(); }, [fetchExposures]);
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    refreshGlobal().catch(err =>
+      setError(err instanceof Error ? err.message : 'Failed to load data'),
+    );
+  }, [refreshGlobal]);
+
+  const handleRefresh = useCallback(() => {
+    fetchExposures();
+    refreshGlobal().catch(err =>
+      setError(err instanceof Error ? err.message : 'Failed to load data'),
+    );
+  }, [fetchExposures, refreshGlobal]);
 
   if (loading && exposures.length === 0) {
     return (
@@ -298,8 +339,8 @@ export default function AdminNircamPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100">NIRCam Reductions</h1>
-        <Button variant="secondary" size="sm" onClick={fetchData} disabled={loading}>
-          <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+        <Button variant="secondary" size="sm" onClick={handleRefresh} disabled={loading || pageLoading}>
+          <RefreshCw className={`w-4 h-4 mr-2 ${pageLoading ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
       </div>
@@ -403,8 +444,10 @@ export default function AdminNircamPage() {
               exposures.map((exp) => {
                 // Saving the cache on every click means the detail page's
                 // prev/next reflects the current filter state at the moment
-                // the user entered it, even if filters change later.
-                const onRowEnter = () => setNircamNav(exposures.map(e => e.id));
+                // the user entered it, even if filters change later. We
+                // save the full filtered ID list (not just this page) so
+                // arrow-key navigation walks the entire match set.
+                const onRowEnter = () => setNircamNav(allFilteredIds);
                 return (
                 <tr key={exp.id} className="hover:bg-card/50 dark:hover:bg-slate-700/50">
                   <td className="px-4 py-3">
@@ -433,11 +476,17 @@ export default function AdminNircamPage() {
             )}
           </tbody>
         </table>
+        <TablePagination
+          pageIndex={page}
+          pageSize={pageSize}
+          totalRows={total}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+          pageSizeOptions={PAGE_SIZE_OPTIONS}
+          loading={pageLoading}
+          className="border-t border-border dark:border-slate-700"
+        />
       </Card>
-
-      <p className="text-xs text-text-secondary dark:text-slate-500 mt-2">
-        {exposures.length} exposure{exposures.length !== 1 ? 's' : ''}
-      </p>
     </div>
   );
 }
