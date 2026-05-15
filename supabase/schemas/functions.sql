@@ -826,6 +826,9 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_has_photometry BOOLEAN DEFAULT NULL,
   p_photo_z_min DOUBLE PRECISION DEFAULT NULL,
   p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
+  p_comment_search TEXT DEFAULT NULL,
+  p_comment_search_scope TEXT DEFAULT NULL,
+  p_comment_user_id UUID DEFAULT NULL,
   p_sort_column TEXT DEFAULT 'object_id',
   p_sort_direction TEXT DEFAULT 'asc',
   p_page INTEGER DEFAULT 1,
@@ -838,12 +841,18 @@ AS $$
 DECLARE
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
+  v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
   v_offset INTEGER;
   v_total_count BIGINT;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
+  v_comment_search_active := (
+    p_comment_search IS NOT NULL
+    AND p_comment_search != ''
+    AND p_comment_search_scope IN ('just_me', 'everyone')
+  );
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
@@ -941,7 +950,23 @@ BEGIN
     ))
     AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
     AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
-    AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max);
+    AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
+    AND (
+      NOT v_comment_search_active
+      OR EXISTS (
+        SELECT 1 FROM comments c
+        WHERE c.is_deleted = false
+          AND c.content ILIKE '%' || p_comment_search || '%'
+          AND (
+            p_comment_search_scope = 'everyone'
+            OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
+          )
+          AND (
+            c.object_id = o.id
+            OR c.target_id IN (SELECT t.id FROM targets t WHERE t.object_id = o.id)
+          )
+      )
+    );
 
   -- Step 2: fetch page
   RETURN QUERY
@@ -1037,6 +1062,22 @@ BEGIN
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
+      AND (
+        NOT v_comment_search_active
+        OR EXISTS (
+          SELECT 1 FROM comments c
+          WHERE c.is_deleted = false
+            AND c.content ILIKE '%' || p_comment_search || '%'
+            AND (
+              p_comment_search_scope = 'everyone'
+              OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
+            )
+            AND (
+              c.object_id = o.id
+              OR c.target_id IN (SELECT t.id FROM targets t WHERE t.object_id = o.id)
+            )
+        )
+      )
     ORDER BY
       CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'asc' THEN
         2 * DEGREES(ASIN(SQRT(
@@ -1181,6 +1222,9 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_has_photometry BOOLEAN DEFAULT NULL,
   p_photo_z_min DOUBLE PRECISION DEFAULT NULL,
   p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
+  p_comment_search TEXT DEFAULT NULL,
+  p_comment_search_scope TEXT DEFAULT NULL,
+  p_comment_user_id UUID DEFAULT NULL,
   p_sort_column TEXT DEFAULT 'object_id',
   p_sort_direction TEXT DEFAULT 'asc'
 )
@@ -1191,10 +1235,16 @@ AS $$
 DECLARE
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
+  v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
+  v_comment_search_active := (
+    p_comment_search IS NOT NULL
+    AND p_comment_search != ''
+    AND p_comment_search_scope IN ('just_me', 'everyone')
+  );
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
@@ -1281,6 +1331,22 @@ BEGIN
         SELECT olm.object_id FROM object_list_members olm
         WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
     ))
+    AND (
+      NOT v_comment_search_active
+      OR EXISTS (
+        SELECT 1 FROM comments c
+        WHERE c.is_deleted = false
+          AND c.content ILIKE '%' || p_comment_search || '%'
+          AND (
+            p_comment_search_scope = 'everyone'
+            OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
+          )
+          AND (
+            c.object_id = o.id
+            OR c.target_id IN (SELECT t.id FROM targets t WHERE t.object_id = o.id)
+          )
+      )
+    )
   ORDER BY
     CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'asc' THEN
       2 * DEGREES(ASIN(SQRT(
@@ -1355,7 +1421,10 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_sort_direction TEXT DEFAULT 'asc',
   p_has_photometry BOOLEAN DEFAULT NULL,
   p_photo_z_min DOUBLE PRECISION DEFAULT NULL,
-  p_photo_z_max DOUBLE PRECISION DEFAULT NULL
+  p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
+  p_comment_search TEXT DEFAULT NULL,
+  p_comment_search_scope TEXT DEFAULT NULL,
+  p_comment_user_id UUID DEFAULT NULL
 )
 RETURNS TABLE(prev_object_id TEXT, next_object_id TEXT, current_index BIGINT, total_count BIGINT)
 LANGUAGE plpgsql STABLE
@@ -1364,11 +1433,17 @@ AS $$
 DECLARE
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
+  v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
   v_sort_is_text BOOLEAN;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
+  v_comment_search_active := (
+    p_comment_search IS NOT NULL
+    AND p_comment_search != ''
+    AND p_comment_search_scope IN ('just_me', 'everyone')
+  );
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN v_gratings_mode := 'any'; END IF;
@@ -1453,6 +1528,22 @@ BEGIN
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
+      AND (
+        NOT v_comment_search_active
+        OR EXISTS (
+          SELECT 1 FROM comments c
+          WHERE c.is_deleted = false
+            AND c.content ILIKE '%' || p_comment_search || '%'
+            AND (
+              p_comment_search_scope = 'everyone'
+              OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
+            )
+            AND (
+              c.object_id = o.id
+              OR c.target_id IN (SELECT t.id FROM targets t WHERE t.object_id = o.id)
+            )
+        )
+      )
   ),
   distance_filtered AS MATERIALIZED (
     SELECT
@@ -1733,6 +1824,8 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
   p_has_photometry BOOLEAN DEFAULT NULL,
   p_photo_z_min DOUBLE PRECISION DEFAULT NULL, p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
+  p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
+  p_comment_user_id UUID DEFAULT NULL,
   p_sort_column TEXT DEFAULT 'object_id', p_sort_direction TEXT DEFAULT 'asc'
 )
 RETURNS TABLE(
@@ -1755,10 +1848,16 @@ AS $$
 DECLARE
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
+  v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
+  v_comment_search_active := (
+    p_comment_search IS NOT NULL
+    AND p_comment_search != ''
+    AND p_comment_search_scope IN ('just_me', 'everyone')
+  );
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN v_gratings_mode := 'any'; END IF;
@@ -1853,6 +1952,22 @@ BEGIN
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
+      AND (
+        NOT v_comment_search_active
+        OR EXISTS (
+          SELECT 1 FROM comments c
+          WHERE c.is_deleted = false
+            AND c.content ILIKE '%' || p_comment_search || '%'
+            AND (
+              p_comment_search_scope = 'everyone'
+              OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
+            )
+            AND (
+              c.object_id = o.id
+              OR c.target_id IN (SELECT t.id FROM targets t WHERE t.object_id = o.id)
+            )
+        )
+      )
   ),
   distance_filtered AS (SELECT fo.* FROM filtered_objects fo WHERE NOT v_coord_search_active OR fo.distance <= p_radius_degrees)
   SELECT df.object_id, df.field, df.ra, df.dec,

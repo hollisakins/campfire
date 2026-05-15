@@ -102,7 +102,7 @@ export async function getSpectra(
       : 'get_filtered_objects_paginated';
 
     // Build final params for the chosen RPC
-    // Objects RPC has a smaller parameter set (no bitmask flags, comments, thumbnails)
+    // Objects RPC has a smaller parameter set (no bitmask flags, thumbnails)
     let callParams: Record<string, unknown>;
     if (viewMode === 'objects') {
       callParams = {
@@ -127,6 +127,9 @@ export async function getSpectra(
         p_coord_ra: rpcParams.p_coord_ra,
         p_coord_dec: rpcParams.p_coord_dec,
         p_radius_degrees: rpcParams.p_radius_degrees,
+        p_comment_search: rpcParams.p_comment_search,
+        p_comment_search_scope: rpcParams.p_comment_search_scope,
+        p_comment_user_id: rpcParams.p_comment_user_id,
         p_sort_column: sortColumn,
         p_sort_direction: sortDirection,
         p_page: page,
@@ -754,9 +757,6 @@ export async function getInspectionQueueIds(
       p_dq_flags_include_any: _dqa,
       p_dq_flags_include_all: _dqb,
       p_dq_flags_exclude: _dqc,
-      p_comment_search: _cs,
-      p_comment_search_scope: _css,
-      p_comment_user_id: _cu,
       ...objectParams
     } = baseRpcParams;
     /* eslint-enable @typescript-eslint/no-unused-vars */
@@ -827,7 +827,6 @@ export async function getAdjacentObjectIds(
     /* eslint-disable @typescript-eslint/no-unused-vars */
     const {
       p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
-      p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
       ...objectsParams
     } = rpcParams;
     /* eslint-enable @typescript-eslint/no-unused-vars */
