@@ -60,3 +60,6 @@ logs/
 # Temporary files
 *.tmp
 .cache/
+
+# Claude Code per-user state
+.claude/
