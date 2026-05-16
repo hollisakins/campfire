@@ -125,7 +125,6 @@ export async function generateCSV(
       const {
         p_observations: _obs,
         p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
-        p_comment_search: _cs, p_comment_search_scope: _css, p_comment_user_id: _cu,
         ...objectsParams
       } = { ...rpcParams, p_sort_column: sortColumn, p_sort_direction: sortDirection };
       /* eslint-enable @typescript-eslint/no-unused-vars */

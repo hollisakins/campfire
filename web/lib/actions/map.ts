@@ -242,6 +242,9 @@ export async function getFilteredObjectIds(
       p_coord_ra: baseParams.p_coord_ra,
       p_coord_dec: baseParams.p_coord_dec,
       p_radius_degrees: baseParams.p_radius_degrees,
+      p_comment_search: baseParams.p_comment_search,
+      p_comment_search_scope: baseParams.p_comment_search_scope,
+      p_comment_user_id: baseParams.p_comment_user_id,
     };
 
     const { data: allRows, error: rpcError } = await paginateRpc<{ object_id: string }>(
