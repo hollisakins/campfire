@@ -40,9 +40,11 @@ def main():
 
 from campfire_pipeline.nirspec.cli import main as nirspec_cli
 from campfire_pipeline.nircam.cli import main as nircam_cli
+from campfire_pipeline.miri.cli import main as miri_cli
 
 main.add_command(nirspec_cli, 'nirspec')
 main.add_command(nircam_cli, 'nircam')
+main.add_command(miri_cli, 'miri')
 
 
 # ---------------------------------------------------------------------------
@@ -120,19 +122,20 @@ def info(config_path):
 INSTRUMENT_DEFAULTS = {
     'NIRSPEC': 'NRS_MSASPEC',
     'NIRCAM': 'NRC_IMAGE',
+    'MIRI': 'MIR_IMAGE',
 }
 
 
 @main.command()
 @click.option('--program', type=int, required=True,
               help='JWST program ID.')
-@click.option('--instrument', type=click.Choice(['nirspec', 'nircam'],
+@click.option('--instrument', type=click.Choice(['nirspec', 'nircam', 'miri'],
               case_sensitive=False), default='nirspec',
               help='Instrument (default: nirspec).')
 @click.option('--obs-id', 'obs_ids', type=int, multiple=True,
               help='JWST observation number(s); repeat for multiple (e.g. --obs-id 1 --obs-id 2).')
 @click.option('--filters', 'filters', multiple=True,
-              help='NIRCam: restrict to these filters (repeat for multiple). Ignored for NIRSpec.')
+              help='NIRCam/MIRI: restrict to these filters (repeat for multiple). Ignored for NIRSpec.')
 @click.option('--target', 'targets', multiple=True,
               help='Cone-search center: object name (e.g. "M1") or "RA Dec" in '
                    'decimal degrees (e.g. "150.1163 2.2070"). Repeat for multiple.')
@@ -159,6 +162,7 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
     NIRSpec layout: $CAMPFIRE_ROOT/raw/{PID}/{filename}
     NIRCam layout:  $CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/{filename}
                     plus a manifest.ecsv per PID directory.
+    MIRI layout:    $CAMPFIRE_ROOT/raw/miri/{PID}/{filter}/{filename}
 
     Auxiliary metafiles (e.g. NIRSpec MSA metadata) are fetched first so
     reduction can begin while uncal files are still downloading.
@@ -176,7 +180,7 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
 
     token = token or os.environ.get('MAST_API_TOKEN')
 
-    if filters and instrument_upper != 'NIRCAM':
+    if filters and instrument_upper not in ('NIRCAM', 'MIRI'):
         click.echo("Warning: --filters is ignored for NIRSpec.")
         filters = ()
 
