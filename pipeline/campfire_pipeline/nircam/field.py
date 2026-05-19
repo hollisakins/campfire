@@ -457,7 +457,7 @@ class Field:
             if status is not None:
                 result = [f for f in result if status.has(f, with_step)]
             else:
-                from campfire_pipeline.common import cfp
+                from campfire_pipeline.nircam import cfp
                 result = [f for f in result if cfp.has_step(f, with_step)]
 
         return sorted(result)

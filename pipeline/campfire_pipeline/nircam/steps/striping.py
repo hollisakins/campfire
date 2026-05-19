@@ -34,7 +34,7 @@ from photutils.segmentation import (
 from scipy.ndimage import binary_dilation, median_filter
 
 from campfire_pipeline.common.io import log, atomic_save
-from campfire_pipeline.common import cfp
+from campfire_pipeline.nircam import cfp
 from campfire_pipeline.nircam.constants import NIR_AMPS
 from campfire_pipeline.nircam.steps._flat import (
     apply_flat_with_retry,

@@ -28,7 +28,7 @@ import click
 from campfire_pipeline.config import load_config, setup_environment
 from campfire_pipeline.nircam.field import Field
 from campfire_pipeline.common.io import log
-from campfire_pipeline.common import cfp as cfp_mod
+from campfire_pipeline.nircam import cfp as cfp_mod
 from campfire_pipeline.common.cli import VariadicOption
 from campfire_pipeline.nircam.orchestrate import (
     STEP_NAMES, ALL_STEPS, PROCESS_STEPS, COMBINE_STEPS,

@@ -16,7 +16,7 @@ from astropy.io import fits
 from astropy.stats import sigma_clip
 
 from campfire_pipeline.common.io import log, atomic_save
-from campfire_pipeline.common import cfp
+from campfire_pipeline.nircam import cfp
 from campfire_pipeline.common.imaging.skyfit import fit_sky_tot
 
 
