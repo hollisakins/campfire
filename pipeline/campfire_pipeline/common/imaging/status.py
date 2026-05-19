@@ -1,10 +1,15 @@
 """
-In-memory CFP_* status cache for the NIRCam orchestrator.
+In-memory CFP_* status cache for imaging-arm orchestrators.
 
 Built once at the top of ``run_process`` / ``run_combine`` / ``run_step``
 by scanning the primary header of every canonical exposure file. Steps
 then consult the cache via ``StepStatus.has(path, key)`` instead of
 reopening each FITS for their skip check.
+
+The cache collects any header keyword matching the ``CFP_*`` prefix, so
+it works for any instrument's key set without being told what those keys
+are. Validation of key names against an instrument's allowed list is the
+caller's responsibility (e.g. via per-instrument ``cfp.format``).
 
 Cache freshness: each step has its own CFP_* key, and that key is only
 ever set by that step. So per-step skip checks remain correct without
@@ -19,7 +24,17 @@ import os
 
 from astropy.io import fits
 
-from campfire_pipeline.common import cfp
+
+def _scan_cfp_keys(path):
+    """Return the set of ``CFP_*`` keys present in ``path``'s primary header."""
+    try:
+        with fits.open(path) as hdul:
+            return {k for k in hdul[0].header if k.startswith('CFP_')}
+    except (OSError, IOError):
+        # Corrupt or unreadable: treat as no keys present so the step
+        # itself can decide to fail loudly instead of being silently
+        # skipped here.
+        return set()
 
 
 class StepStatus:
@@ -30,21 +45,13 @@ class StepStatus:
 
     @classmethod
     def scan(cls, paths):
-        """Read primary headers once and record which CFP keys are present."""
+        """Read primary headers once and record which CFP_* keys are present."""
         present = {}
         for p in paths:
             if not os.path.exists(p):
                 present[p] = set()
                 continue
-            try:
-                with fits.open(p) as hdul:
-                    hdr = hdul[0].header
-                    present[p] = {k for k in cfp.CFP_KEYS if k in hdr}
-            except (OSError, IOError):
-                # Corrupt or unreadable: treat as no keys present so the
-                # step itself can decide to fail loudly instead of being
-                # silently skipped here.
-                present[p] = set()
+            present[p] = _scan_cfp_keys(p)
         return cls(present)
 
     def has(self, path, key):
@@ -53,13 +60,11 @@ class StepStatus:
         Falls back to a live FITS read for paths not seen during the
         initial scan (e.g. files written between scan and the check).
         """
-        if key not in cfp.CFP_KEYS:
-            raise ValueError(f"Unknown CFP key: {key}")
         if path in self._present:
             return key in self._present[path]
         if not os.path.exists(path):
             return False
-        return cfp.has_step(path, key)
+        return key in _scan_cfp_keys(path)
 
     def mark(self, path, key):
         self._present.setdefault(path, set()).add(key)
@@ -76,9 +81,4 @@ class StepStatus:
             if not os.path.exists(p):
                 self._present[p] = set()
                 continue
-            try:
-                with fits.open(p) as hdul:
-                    hdr = hdul[0].header
-                    self._present[p] = {k for k in cfp.CFP_KEYS if k in hdr}
-            except (OSError, IOError):
-                self._present[p] = set()
+            self._present[p] = _scan_cfp_keys(p)

@@ -27,7 +27,7 @@ from astropy.io import fits
 from shapely.geometry import Polygon
 
 from campfire_pipeline.common.io import log
-from campfire_pipeline.nircam.geometry import select_overlapping_files
+from campfire_pipeline.common.imaging.geometry import select_overlapping_files
 
 
 def _resolve_pixel_scale(value):
@@ -59,7 +59,7 @@ def _drizzle_tile_via_campfire(
     at ``output_path`` with SCI/ERR/WHT/CON extensions and ``CMPFRTIM`` /
     ``CMPFRVER`` stamped on the primary header.
     """
-    from campfire_pipeline.nircam.drizzle import drizzle_tile
+    from campfire_pipeline.common.imaging.drizzle import drizzle_tile
 
     drizzle_tile(
         selected_files,
@@ -180,7 +180,7 @@ def resample_step(filtname, exposure_files, field, step_config,
         as ``CMPFRVER``.
     overwrite : bool
     """
-    from campfire_pipeline.nircam.manifest import (
+    from campfire_pipeline.common.imaging.manifest import (
         check_config_changed, check_inputs_changed,
         create_manifest, write_manifest,
     )
@@ -283,7 +283,7 @@ def resample_step(filtname, exposure_files, field, step_config,
             write_manifest(manifest, manifest_path)
 
         if step_config.get('background_subtract', True):
-            from campfire_pipeline.nircam.bkgsub import SubtractBackground
+            from campfire_pipeline.common.imaging.bkgsub import SubtractBackground
 
             pre_bkg = mosaic_file.replace('_i2d.fits', '_i2d_before_bkgsub.fits')
             bkgsub_done = os.path.exists(pre_bkg)
@@ -395,7 +395,7 @@ def resample_step(filtname, exposure_files, field, step_config,
                 log(f"  {mosaic_name} has no SRCMASK extension")
 
         if do_plot:
-            from campfire_pipeline.nircam.steps._plots import (
+            from campfire_pipeline.common.imaging.plots import (
                 plot_mosaic_bkgsub, plot_mosaic_thumbnail,
             )
             downsample = int(step_config.get('plot_downsample', 4))

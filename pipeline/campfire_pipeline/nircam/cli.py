@@ -291,7 +291,7 @@ def expmap(config, field, filters, stage, pixel_scale, padding,
               help='Filters to check (default: all from field).')
 def check(config, field, filters):
     """Report which mosaic tiles are stale and need re-mosaicking."""
-    from campfire_pipeline.nircam.manifest import get_stale_tiles
+    from campfire_pipeline.common.imaging.manifest import get_stale_tiles
     from campfire_pipeline.config import get_nircam_step_config
 
     cfg, field_obj = _setup(config, field)

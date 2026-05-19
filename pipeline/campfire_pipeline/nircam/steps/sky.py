@@ -17,7 +17,7 @@ from astropy.stats import sigma_clip
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
-from campfire_pipeline.nircam.skyfit import fit_sky_tot
+from campfire_pipeline.common.imaging.skyfit import fit_sky_tot
 
 
 def sky_step(exposure_file, field, step_config, overwrite=False, status=None):
@@ -89,7 +89,7 @@ def sky_step(exposure_file, field, step_config, overwrite=False, status=None):
         log(f"Sky removed (pedestal = {sky:.5e}): {rootname}")
 
     if do_plot:
-        from campfire_pipeline.nircam.steps._plots import plot_sky
+        from campfire_pipeline.common.imaging.plots import plot_sky
         sky_pdf = os.path.join(
             os.path.dirname(exposure_file), f'{rootname}_sky.pdf',
         )

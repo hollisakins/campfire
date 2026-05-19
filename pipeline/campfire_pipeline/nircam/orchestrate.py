@@ -22,7 +22,7 @@ from campfire_pipeline.common.io import log
 from campfire_pipeline.common.parallel import dispatch
 from campfire_pipeline.config import get_nircam_step_config
 
-from campfire_pipeline.nircam.status import StepStatus
+from campfire_pipeline.common.imaging.status import StepStatus
 from campfire_pipeline.nircam.steps.detector1 import detector1_step
 from campfire_pipeline.nircam.steps.persistence import persistence_step
 from campfire_pipeline.nircam.steps.wisp import wisp_step
@@ -41,7 +41,7 @@ from campfire_pipeline.nircam.steps.bad_pixel import (
 )
 from campfire_pipeline.nircam.steps.outlier import outlier_step
 from campfire_pipeline.nircam.steps.resample import resample_step
-from campfire_pipeline.nircam.prefetch import prefetch_process_references
+from campfire_pipeline.common.imaging.prefetch import prefetch_process_references
 
 
 # Step ordering — also used by the CLI to validate ``cfpipe nircam <step>``
@@ -381,7 +381,7 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     # is unchanged (cheap check); fall back to outlier_step for the rest.
     # The CFP_OUT-only short-circuit avoids the polygon-overlap setup work
     # done at the top of outlier_step on no-op runs.
-    from campfire_pipeline.nircam.manifest import (
+    from campfire_pipeline.common.imaging.manifest import (
         compute_file_hash, load_manifest,
     )
 

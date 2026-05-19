@@ -1,5 +1,5 @@
 """
-geometry: shared overlap geometry for NIRCam tile/exposure selection.
+geometry: shared overlap geometry for imaging-arm tile/exposure selection.
 
 Single source of truth for "which input exposures overlap a given tile
 polygon". Used by ``steps/resample.py``, ``steps/outlier.py``
@@ -23,9 +23,8 @@ def select_overlapping_files(exposure_files, tile_polygon, *, in_shape=(2048, 20
 
     Each file's footprint is computed from the SCI extension WCS via
     ``wcs_pix2world`` on the four corners of an ``in_shape`` rectangle
-    (default 2048×2048 = NIRCam detector). NIRCam detectors are all
-    2048², so the default is correct for the pipeline; the parameter
-    exists so this helper can be reused for other instruments.
+    (default 2048×2048 = NIRCam detector). Override ``in_shape`` for
+    other instruments (e.g. MIRI imager = 1024×1024).
     """
     nx, ny = in_shape
     pixcoords = np.array(

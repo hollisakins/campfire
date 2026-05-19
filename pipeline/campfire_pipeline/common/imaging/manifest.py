@@ -1,8 +1,15 @@
-"""Progeny tracking for NIRCam mosaic tiles.
+"""Progeny tracking for imaging-arm mosaic tiles.
 
 Each mosaic tile gets a JSON manifest recording the input files, their hashes,
 and processing parameters used.  This enables change detection so that only
 stale tiles need to be re-mosaicked when new data arrives.
+
+Instrument-agnostic: takes a duck-typed ``field`` (anything with ``.name``,
+``.tiles``, ``.filter_dir()``, ``.get_tile_corners()``, ``.get_exposure_files()``)
+and a ``stage_config`` dict. The default ``mosaic_name`` template includes
+``nircam`` for historical compatibility with existing NIRCam manifests; new
+callers should pass an explicit ``mosaic_name`` template via their
+``[<instrument>.resample]`` config.
 """
 
 import hashlib
@@ -304,7 +311,7 @@ def get_stale_tiles(field, filtname, stage_config):
     """
     from shapely.geometry import Polygon
 
-    from campfire_pipeline.nircam.geometry import select_overlapping_files
+    from campfire_pipeline.common.imaging.geometry import select_overlapping_files
 
     resample_cfg = stage_config.get('resample', {})
     version = resample_cfg.get('version', 'v0_1')

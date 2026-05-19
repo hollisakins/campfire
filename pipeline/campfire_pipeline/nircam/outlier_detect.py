@@ -129,7 +129,7 @@ def outlier_detect_for_visit(
     from stcal.outlier_detection.median import MedianComputer
     from stdatamodels.jwst.datamodels import ImageModel
 
-    from campfire_pipeline.nircam.drizzle import drizzle_tile_singles
+    from campfire_pipeline.common.imaging.drizzle import drizzle_tile_singles
 
     n_inputs = len(all_inputs)
     if n_inputs == 0:
@@ -218,7 +218,7 @@ def outlier_detect_for_visit(
             )
 
             if plot:
-                from campfire_pipeline.nircam.steps._plots import plot_outlier
+                from campfire_pipeline.common.imaging.plots import plot_outlier
                 new_outlier = dq_after & ~dq_before
                 out_pdf = os.path.join(
                     os.path.dirname(crf), f'{rootname}_outlier.pdf',

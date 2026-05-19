@@ -40,7 +40,7 @@ from campfire_pipeline.nircam.steps._flat import (
     apply_flat_with_retry,
     resolve_flat,
 )
-from campfire_pipeline.nircam.skyfit import (
+from campfire_pipeline.common.imaging.skyfit import (
     collapse_image,
     fit_pedestal,
     fit_sky,
@@ -356,7 +356,7 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
     log(f"Striping removed: {rootname}")
 
     if do_plot:
-        from campfire_pipeline.nircam.steps._plots import plot_two
+        from campfire_pipeline.common.imaging.plots import plot_two
         striping_pdf = os.path.join(
             os.path.dirname(exposure_file), f'{rootname}_striping.pdf',
         )

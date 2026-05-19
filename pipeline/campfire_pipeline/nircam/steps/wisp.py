@@ -217,7 +217,7 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     log(f"Wisp removed: {rootname}")
 
     if plot:
-        from campfire_pipeline.nircam.steps._plots import plot_two
+        from campfire_pipeline.common.imaging.plots import plot_two
         wisp_pdf = os.path.join(
             os.path.dirname(exposure_file), f'{rootname}_wisp.pdf',
         )
