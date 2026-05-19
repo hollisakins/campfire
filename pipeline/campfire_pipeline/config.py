@@ -284,10 +284,10 @@ def get_stage_config(stage_name, config, obs):
     return merged
 
 
-def get_nircam_step_config(step_name, config, field):
-    """Build effective config for a single NIRCam pipeline step.
+def get_step_config(instrument, step_name, config, field):
+    """Build effective config for a single imaging-arm pipeline step.
 
-    Reads from the flat ``[nircam.<step>]`` layout in
+    Reads from the flat ``[<instrument>.<step>]`` layout in
     ``config_default.toml`` and the matching flat ``[<field>.<step>]``
     layout in ``fields.toml``.
 
@@ -295,8 +295,13 @@ def get_nircam_step_config(step_name, config, field):
         1. Field-specific step overrides  (fields.toml [<field>.<step>])
         2. Config defaults + user overrides (already merged in load_config)
     """
-    base = config.get('nircam', {}).get(step_name, {})
+    base = config.get(instrument, {}).get(step_name, {})
     return deep_merge(base, field.step_overrides.get(step_name, {}))
+
+
+def get_nircam_step_config(step_name, config, field):
+    """NIRCam wrapper around :func:`get_step_config`."""
+    return get_step_config('nircam', step_name, config, field)
 
 
 # ---------------------------------------------------------------------------
