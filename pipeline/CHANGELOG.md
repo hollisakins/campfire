@@ -25,6 +25,8 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+## v0.5.0 — 2026-05-21
+
 ### Calibration
 - NIRCam stage 1 no longer runs `snowblind.SnowblindStep` after `Detector1Pipeline`.
   The jump step is already configured with `expand_large_events=True`,
