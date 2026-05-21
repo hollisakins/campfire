@@ -283,9 +283,15 @@ class LocalStore:
             observations = ";".join(obj.get("observations") or [])
             member_ids = ";".join(str(m) for m in (obj.get("member_target_ids") or []))
 
+            # INSERT OR REPLACE: reconciliation on the server can rewrite
+            # either side of the (id, object_id) pair without touching the
+            # other (e.g. a sub-arcsec ra/dec shift bumps the IAU name but
+            # keeps the row id), so a single ON CONFLICT clause can't catch
+            # the crossed case. There are no local-only columns on objects,
+            # so wholesale replacement is safe.
             self._conn.execute(
                 """
-                INSERT INTO objects
+                INSERT OR REPLACE INTO objects
                     (id, object_id, field, ra, dec,
                      n_targets, n_spectra, programs, gratings, observations,
                      member_target_ids, max_snr, max_exposure_time,
@@ -296,33 +302,6 @@ class LocalStore:
                      created_at, updated_at, _synced_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(object_id) DO UPDATE SET
-                    field=excluded.field,
-                    ra=excluded.ra, dec=excluded.dec,
-                    n_targets=excluded.n_targets,
-                    n_spectra=excluded.n_spectra,
-                    programs=excluded.programs,
-                    gratings=excluded.gratings,
-                    observations=excluded.observations,
-                    member_target_ids=excluded.member_target_ids,
-                    max_snr=excluded.max_snr,
-                    max_exposure_time=excluded.max_exposure_time,
-                    redshift=excluded.redshift,
-                    redshift_auto=excluded.redshift_auto,
-                    redshift_inspected=excluded.redshift_inspected,
-                    redshift_quality=excluded.redshift_quality,
-                    last_inspected_at=excluded.last_inspected_at,
-                    last_inspected_by=excluded.last_inspected_by,
-                    last_data_change_at=excluded.last_data_change_at,
-                    staleness_reason=excluded.staleness_reason,
-                    version=excluded.version,
-                    is_active=excluded.is_active,
-                    has_photometry=excluded.has_photometry,
-                    photo_z=excluded.photo_z,
-                    photo_z_err_lo=excluded.photo_z_err_lo,
-                    photo_z_err_hi=excluded.photo_z_err_hi,
-                    updated_at=excluded.updated_at,
-                    _synced_at=excluded._synced_at
                 """,
                 (
                     obj.get("id"),
