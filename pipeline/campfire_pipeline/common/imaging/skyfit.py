@@ -1,13 +1,9 @@
 """
-Sky / pedestal / 1-f striping fit helpers used by NIRCam steps.
+Sky / pedestal / 1-f striping fit helpers used by imaging-arm steps.
 
-Pure-numerical helpers extracted from the legacy ``stage1.py`` /
-``stage2.py`` modules so the canonical-exposure step modules
-(``steps/striping.py``, ``steps/sky.py``) don't depend on legacy code.
-
-The functions are intentionally simple wrappers around scipy / astropy /
-photutils calls — no JWST datamodels, no I/O — so they're cheap to test
-and reuse.
+Pure-numerical helpers wrapping scipy / astropy / photutils calls — no
+JWST datamodels, no I/O — so they're cheap to test and reuse across
+instruments.
 """
 
 import warnings
@@ -22,7 +18,6 @@ from photutils.background import (
 from scipy.optimize import curve_fit
 
 from campfire_pipeline.common.io import log
-from campfire_pipeline.nircam.constants import NIR_AMPS
 
 
 def _gaussian(x, a, mu, sig):

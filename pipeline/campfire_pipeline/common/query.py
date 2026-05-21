@@ -58,7 +58,7 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         "fileSetName", "productLevel", "opticalElements",
         "filter", "exp_type", "date_obs", "duration", "observtn", "exposure",
     ]
-    if instrument == "NIRCAM":
+    if instrument in ("NIRCAM", "MIRI"):
         select_cols += ["targ_ra", "targ_dec", "s_region"]
 
     label_extras = []
@@ -372,12 +372,16 @@ def _output_path_for(file_info, download_root, instrument):
 
     NIRSpec: ``{download_root}/{PID}/{filename}``  (flat per-PID).
     NIRCam:  ``{download_root}/nircam/{PID}/{filter}/{filename}``.
+    MIRI:    ``{download_root}/miri/{PID}/{filter}/{filename}``.
     """
     filename = file_info["filename"]
     pid = file_info["program_id"]
     if instrument == "NIRCAM":
         filt = (file_info.get("filter") or "unknown").lower()
         return Path(download_root) / "nircam" / pid / filt / filename
+    if instrument == "MIRI":
+        filt = (file_info.get("filter") or "unknown").lower()
+        return Path(download_root) / "miri" / pid / filt / filename
     return Path(download_root) / pid / filename
 
 
@@ -609,6 +613,37 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         if unresolved:
             print(f"  Warning: {unresolved} uncal file(s) had no resolvable "
                   f"filter from opticalElements; using fileset.filter as fallback")
+        uncal_files = kept
+
+    elif instrument == "MIRI":
+        # MIRI imaging is single-filter, single-detector. The fileset's
+        # top-level ``filter`` is correct for every product — no per-detector
+        # resolution needed (unlike NIRCam's SW+LW pair).
+        kept = []
+        requested = {x.lower() for x in filters} if filters else None
+        dropped = 0
+        for f in uncal_files:
+            stem = f["filename"].rsplit("_uncal.fits", 1)[0]
+            fs = {}
+            parts = stem.split("_")
+            while parts:
+                candidate = "_".join(parts)
+                if candidate in fileset_index:
+                    fs = fileset_index[candidate]
+                    break
+                parts.pop()
+
+            f["filter"] = (fs.get("filter") or "").lower() or None
+            f["_fileset"] = fs
+
+            if requested is not None and (f["filter"] or "") not in requested:
+                dropped += 1
+                continue
+            kept.append(f)
+
+        if dropped:
+            print(f"  Dropped {dropped} uncal file(s) whose filter "
+                  f"wasn't in --filters")
         uncal_files = kept
 
     # Aux first so reduction can start while uncal files stream in.

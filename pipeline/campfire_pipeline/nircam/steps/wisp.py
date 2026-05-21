@@ -28,7 +28,7 @@ from astropy.stats import median_absolute_deviation
 from photutils.segmentation import detect_sources, detect_threshold
 
 from campfire_pipeline.common.io import log, atomic_save
-from campfire_pipeline.common import cfp
+from campfire_pipeline.nircam import cfp
 from campfire_pipeline.nircam.steps._flat import (
     apply_flat_with_retry,
     resolve_flat,
@@ -217,7 +217,7 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     log(f"Wisp removed: {rootname}")
 
     if plot:
-        from campfire_pipeline.nircam.steps._plots import plot_two
+        from campfire_pipeline.common.imaging.plots import plot_two
         wisp_pdf = os.path.join(
             os.path.dirname(exposure_file), f'{rootname}_wisp.pdf',
         )

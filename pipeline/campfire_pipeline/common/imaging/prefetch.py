@@ -1,11 +1,15 @@
-"""CRDS reference file pre-fetching for the NIRCam pipeline.
+"""CRDS reference file pre-fetching for imaging-arm pipelines.
 
 Multiple workers downloading the same CRDS file simultaneously can leave one
 reading a partially-written file. Running CRDS lookups serially — one query
 per unique detector / filter / pupil combination — before ``dispatch()``
 ensures the cache is fully populated by the time parallel workers start.
 
-Mirrors the NIRSpec pattern in ``nirspec/stage1.py`` and ``nirspec/stage2.py``.
+Both NIRCam and MIRI imaging use the stock ``Detector1Pipeline`` +
+``Image2Pipeline`` JWST pipelines, so this module is instrument-agnostic — the
+``Detector1Pipeline.reference_file_types`` aggregation covers MIRI's
+detector1 reftypes (firstframe, lastframe, reset, rscd, emicorr) the same
+way it covers NIRCam's.
 
 Two correctness anchors keep this in lockstep with the pipeline so we don't
 download references the run will never use:
@@ -91,7 +95,7 @@ def prefetch_detector1_references(uncal_files):
             f"{key[0]} ({key[1]}/{key[2]}) using {os.path.basename(f)}")
         _fetch(_crds_params(f), reftypes,
                key_label='/'.join(map(str, key)))
-    log("NIRCam Detector1Pipeline CRDS reference pre-fetch complete")
+    log("Detector1Pipeline CRDS reference pre-fetch complete")
 
 
 def prefetch_image2_references(uncal_files):
@@ -109,7 +113,7 @@ def prefetch_image2_references(uncal_files):
             f"{key[0]}/{key[1]}/{key[2]} using {os.path.basename(f)}")
         _fetch(_crds_params(f), reftypes,
                key_label='/'.join(map(str, key)))
-    log("NIRCam Image2Pipeline CRDS reference pre-fetch complete")
+    log("Image2Pipeline CRDS reference pre-fetch complete")
 
 
 def prefetch_process_references(field, filters, n_processes):

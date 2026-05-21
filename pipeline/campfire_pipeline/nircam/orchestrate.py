@@ -1,28 +1,30 @@
 """
-Orchestrators for the canonical-exposure NIRCam pipeline.
+NIRCam-specific orchestrator: step ordering, step runners, dispatch table.
 
-Two phase-level entry points (``run_process``, ``run_combine``) and one
-single-step dispatcher (``run_step``). Both phases iterate over the
-field's filters; within a filter, the per-exposure steps run via
-``common.parallel.dispatch`` (with ``n_processes`` workers), the
-per-filter ensemble steps (persistence, build_bad_pixel_masks) run
-serially, and the per-visit ensemble step (outlier) dispatches one
-visit per worker via the same ``dispatch`` helper.
+Phase entry points (``run_process`` / ``run_combine`` / ``run_step``) are
+thin wrappers around the generic skeleton in
+``common.imaging.orchestrate`` — this module owns only the NIRCam-specific
+constants (step lists, CRDS-touching steps) and the per-step runner
+functions that implement NIRCam's pipeline semantics (persistence ensemble,
+diag_striping opt-in, JHAT WCS rules, per-visit outlier dispatch, etc.).
 
-The legacy ``stage1.py`` / ``stage2.py`` / ``stage3.py`` orchestrators
-remain in place for now but are not invoked from the new CLI.
+Within a filter the per-exposure steps run via
+``common.parallel.dispatch`` (with ``n_processes`` workers), the per-filter
+ensemble steps (persistence, build_bad_pixel_masks) run serially, and the
+per-visit ensemble step (outlier) dispatches one visit per worker via the
+same ``dispatch`` helper.
 """
 
 import os
-import warnings
 
 from astropy.io import fits
 
 from campfire_pipeline.common.io import log
 from campfire_pipeline.common.parallel import dispatch
+from campfire_pipeline.common.imaging import orchestrate as _orch
+from campfire_pipeline.common.imaging.prefetch import prefetch_process_references
 from campfire_pipeline.config import get_nircam_step_config
 
-from campfire_pipeline.nircam.status import StepStatus
 from campfire_pipeline.nircam.steps.detector1 import detector1_step
 from campfire_pipeline.nircam.steps.persistence import persistence_step
 from campfire_pipeline.nircam.steps.wisp import wisp_step
@@ -41,7 +43,6 @@ from campfire_pipeline.nircam.steps.bad_pixel import (
 )
 from campfire_pipeline.nircam.steps.outlier import outlier_step
 from campfire_pipeline.nircam.steps.resample import resample_step
-from campfire_pipeline.nircam.prefetch import prefetch_process_references
 
 
 # Step ordering — also used by the CLI to validate ``cfpipe nircam <step>``
@@ -78,48 +79,8 @@ _CRDS_STEPS = {'detector1', 'wisp', 'striping', 'image2'}
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# NIRCam-specific helpers
 # ---------------------------------------------------------------------------
-
-def _group_by_visit(exposure_files):
-    """Return ``{visit: [paths...]}`` keyed on the leading ``jw...`` token."""
-    visits = {}
-    for f in exposure_files:
-        visit = os.path.basename(f).split('_')[0]
-        visits.setdefault(visit, []).append(f)
-    return visits
-
-
-def _read_sregions(exposure_files):
-    """Return S_REGION header strings parallel to ``exposure_files``."""
-    sregions = []
-    for f in exposure_files:
-        with fits.open(f) as hdul:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                sregions.append(hdul[1].header['S_REGION'])
-    return sregions
-
-
-# ---------------------------------------------------------------------------
-# Per-step runners (used by run_process / run_combine / run_step)
-# ---------------------------------------------------------------------------
-
-def _filter_pending(step_name, exposures, cfp_key, status, overwrite):
-    """Drop exposures that already carry ``cfp_key`` per the cache.
-
-    Returns ``(pending, skipped_count)``. Logs a single summary line if
-    anything was filtered out.
-    """
-    if overwrite:
-        return list(exposures), 0
-    pending = [f for f in exposures if not status.has(f, cfp_key)]
-    skipped = len(exposures) - len(pending)
-    if skipped:
-        log(f"{step_name}: {skipped}/{len(exposures)} already have "
-            f"{cfp_key}; skipping those")
-    return pending, skipped
-
 
 _GRISM_EXP_TYPES = ('NRC_WFSS', 'NRC_TSGRISM')
 
@@ -151,6 +112,24 @@ def _filter_imaging_uncals(uncals, step_name):
             f"(EXP_TYPE in {_GRISM_EXP_TYPES}); imaging pipeline only")
     return keep
 
+
+def _per_exposure(step_name, fn, cfp_key, field, config, filtname,
+                  n_processes, overwrite, status):
+    """NIRCam-side wrapper that injects ``get_nircam_step_config``.
+
+    Lets the entries in ``_RUNNERS`` stay short — they pass the step name,
+    callable, and CFP key, and this helper closes over the config-getter.
+    """
+    return _orch.run_per_exposure(
+        step_name, fn, cfp_key, field, config, filtname,
+        n_processes, overwrite, status,
+        get_step_config=get_nircam_step_config,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-step runners (used by run_process / run_combine / run_step)
+# ---------------------------------------------------------------------------
 
 def _run_detector1(field, config, filtname, n_processes, overwrite, status):
     uncals = field.get_uncal_files(filtname)
@@ -214,29 +193,6 @@ def _run_persistence(field, config, filtname, n_processes, overwrite, status):
     status.mark_all(exposures, 'CFP_PERS')
 
 
-def _run_per_exposure(step_name, fn, cfp_key, field, config, filtname,
-                      n_processes, overwrite, status):
-    """Generic per-exposure parallel dispatch.
-
-    Filters out already-stamped exposures *before* spinning up the worker
-    pool — a no-op pass on a finished field skips the Pool entirely.
-    """
-    exposures = field.get_exposure_files(filtname)
-    if not exposures:
-        log(f"{step_name}: no exposures for {filtname}")
-        return
-    pending, _ = _filter_pending(step_name, exposures, cfp_key, status,
-                                 overwrite)
-    if not pending:
-        return
-    cfg = get_nircam_step_config(step_name, config, field)
-    log(f"{step_name}: dispatching {len(pending)} exposures for {filtname}")
-    dispatch(fn, pending, n_processes=n_processes,
-             field=field, step_config=cfg, overwrite=overwrite,
-             status=status)
-    status.mark_all(pending, cfp_key)
-
-
 def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
     """Opt-in scattered-light diagonal striping. Disabled unless a field
     sets ``[field.diag_striping].enabled = true``."""
@@ -248,8 +204,8 @@ def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
     if not exposures:
         log(f"diag_striping: no exposures for {filtname}")
         return
-    pending, _ = _filter_pending('diag_striping', exposures, 'CFP_DIAG',
-                                 status, overwrite)
+    pending, _ = _orch.filter_pending('diag_striping', exposures, 'CFP_DIAG',
+                                      status, overwrite)
     if not pending:
         return
     log(f"diag_striping: dispatching {len(pending)} exposures for {filtname}")
@@ -273,7 +229,7 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
 
     # Pre-filter to exposures actually matched by some rule. Saves I/O on
     # the (typical) majority of files that no rule touches — they're never
-    # stamped, so _filter_pending wouldn't catch them.
+    # stamped, so filter_pending wouldn't catch them.
     matched = []
     for f in exposures:
         rootname = os.path.basename(f).removesuffix('.fits')
@@ -283,8 +239,8 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
         log(f"wcs_shift: no exposures match any rule for {filtname}")
         return
 
-    pending, _ = _filter_pending('wcs_shift', matched, 'CFP_SHFT', status,
-                                 overwrite)
+    pending, _ = _orch.filter_pending('wcs_shift', matched, 'CFP_SHFT', status,
+                                      overwrite)
     if not pending:
         return
     cfg = dict(get_nircam_step_config('wcs_shift', config, field))
@@ -314,8 +270,8 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
     # exist (handled inside build_bad_pixel_masks).
     build_bad_pixel_masks(filtname, exposures, field, cfg, overwrite=overwrite)
     # Per-exposure: OR the masks into each exposure's DQ
-    pending, _ = _filter_pending('bad_pixel', exposures, 'CFP_BPIX', status,
-                                 overwrite)
+    pending, _ = _orch.filter_pending('bad_pixel', exposures, 'CFP_BPIX', status,
+                                      overwrite)
     if not pending:
         return
     log(f"bad_pixel: dispatching {len(pending)} exposures for {filtname}")
@@ -375,13 +331,13 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     if not exposures:
         log(f"outlier: no exposures for {filtname}")
         return
-    visits = _group_by_visit(exposures)
+    visits = _orch.group_by_visit(exposures)
 
     # Pre-filter visits whose members all carry CFP_OUT *AND* whose manifest
     # is unchanged (cheap check); fall back to outlier_step for the rest.
     # The CFP_OUT-only short-circuit avoids the polygon-overlap setup work
     # done at the top of outlier_step on no-op runs.
-    from campfire_pipeline.nircam.manifest import (
+    from campfire_pipeline.common.imaging.manifest import (
         compute_file_hash, load_manifest,
     )
 
@@ -422,7 +378,7 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     if not pending_visits:
         return
 
-    sregions = _read_sregions(exposures)
+    sregions = _orch.read_sregions(exposures)
     log(f"outlier: {len(pending_visits)} visits for {filtname} "
         f"({implementation})")
 
@@ -439,165 +395,89 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
         status.mark_all(visit_files, 'CFP_OUT')
 
 
-def _run_resample(field, config, filtname, n_processes, overwrite, status,
-                  reduction_version):
+def _run_resample(field, config, filtname, n_processes, overwrite, status):
+    """Drizzle CFP_OUT-stamped exposures into per-tile mosaics.
+
+    Resolves the reduction version internally so the runner has the same
+    6-arg signature as every other entry in ``_RUNNERS``.
+    """
     exposures = field.get_exposure_files(filtname, with_step='CFP_OUT',
                                          status=status)
     if not exposures:
         log(f"resample: no CFP_OUT-stamped exposures for {filtname}")
         return
     cfg = get_nircam_step_config('resample', config, field)
+    reduction_version = _orch.resolve_reduction_version(config)
     resample_step(filtname, exposures, field, cfg, reduction_version,
                   overwrite=overwrite)
 
 
 # Dispatch table: step name → callable that takes (field, config, filtname,
-# n_processes, overwrite, status). Resample needs reduction_version, so it's
-# handled specially in run_combine / run_step. The lambda-wrapped entries
-# adapt the (step_name, fn, cfp_key) triple onto _run_per_exposure's signature.
+# n_processes, overwrite, status). The lambda-wrapped entries adapt the
+# (step_name, fn, cfp_key) triple onto ``_per_exposure``'s signature.
 _RUNNERS = {
     'detector1':   _run_detector1,
     'persistence': _run_persistence,
-    'wisp':        lambda f, c, fl, n, ow, st: _run_per_exposure(
+    'wisp':        lambda f, c, fl, n, ow, st: _per_exposure(
                        'wisp', wisp_step, 'CFP_WISP',
                        f, c, fl, n, ow, st),
-    'striping':    lambda f, c, fl, n, ow, st: _run_per_exposure(
+    'striping':    lambda f, c, fl, n, ow, st: _per_exposure(
                        'striping', striping_step, 'CFP_1F',
                        f, c, fl, n, ow, st),
-    'image2':      lambda f, c, fl, n, ow, st: _run_per_exposure(
+    'image2':      lambda f, c, fl, n, ow, st: _per_exposure(
                        'image2', image2_step, 'CFP_IMG2',
                        f, c, fl, n, ow, st),
     'diag_striping': _run_diag_striping,
-    'edge':        lambda f, c, fl, n, ow, st: _run_per_exposure(
+    'edge':        lambda f, c, fl, n, ow, st: _per_exposure(
                        'edge', edge_step, 'CFP_EDGE',
                        f, c, fl, n, ow, st),
-    'sky':         lambda f, c, fl, n, ow, st: _run_per_exposure(
+    'sky':         lambda f, c, fl, n, ow, st: _per_exposure(
                        'sky', sky_step, 'CFP_SKY',
                        f, c, fl, n, ow, st),
-    'variance':    lambda f, c, fl, n, ow, st: _run_per_exposure(
+    'variance':    lambda f, c, fl, n, ow, st: _per_exposure(
                        'variance', variance_step, 'CFP_VAR',
                        f, c, fl, n, ow, st),
     'wcs_shift':   _run_wcs_shift,
-    'preview':     lambda f, c, fl, n, ow, st: _run_per_exposure(
+    'preview':     lambda f, c, fl, n, ow, st: _per_exposure(
                        'preview', preview_step, 'CFP_PREV',
                        f, c, fl, n, ow, st),
-    'jhat':        lambda f, c, fl, n, ow, st: _run_per_exposure(
+    'jhat':        lambda f, c, fl, n, ow, st: _per_exposure(
                        'jhat', jhat_step, 'CFP_JHAT',
                        f, c, fl, n, ow, st),
-    'apply_mask':  lambda f, c, fl, n, ow, st: _run_per_exposure(
+    'apply_mask':  lambda f, c, fl, n, ow, st: _per_exposure(
                        'apply_mask', apply_masks_step, 'CFP_MASK',
                        f, c, fl, n, ow, st),
     'bad_pixel':   _run_bad_pixel,
     'outlier':     _run_outlier,
-    # 'resample' handled in run_combine/run_step (needs reduction_version)
+    'resample':    _run_resample,
 }
 
 
 # ---------------------------------------------------------------------------
-# Phase orchestrators
+# Phase entry points — thin delegates to the common skeleton
 # ---------------------------------------------------------------------------
 
-def _resolve_filters(filters, field):
-    if filters is None:
-        return list(field.filters)
-    return list(filters)
-
-
-def _resolve_reduction_version(config):
-    from campfire_pipeline.common.version import get_reduction_version
-    return get_reduction_version(config)
-
-
-def _scan_status(field, filters, overwrite=False):
-    """Pre-scan canonical exposures for CFP_* keys once per phase.
-
-    Builds a single ``StepStatus`` covering every canonical exposure across
-    the requested filters. Detector1's output may not exist yet — the scan
-    records empty key sets for missing paths so the skip check naturally
-    reports "not done".
-
-    With ``overwrite=True`` we skip the scan and return an empty cache:
-    every step is going to run regardless of prior state, and a pre-scanned
-    snapshot would go stale mid-phase (fresh-model steps like image2 and
-    detector1 strip prior CFP_* keys and non-schema extensions like
-    WCS_BAK from disk, but ``StepStatus.mark_all`` only adds keys to the
-    cache — it never removes — so the snapshot would falsely report
-    already-cleared keys as "still present"). With an empty cache,
-    ``StepStatus.has`` falls back to a live ``cfp.has_step`` read for any
-    path not yet seen, keeping the in-step check in sync with disk.
-    """
-    if overwrite:
-        return StepStatus()
-    paths = []
-    for filt in filters:
-        try:
-            paths.extend(field.get_exposure_files(filt))
-        except RuntimeError:
-            # Workspace not set up for this filter directory — skip silently;
-            # detector1 will create it.
-            continue
-    log(f"Pre-scanning CFP_* status for {len(paths)} canonical exposures")
-    return StepStatus.scan(paths)
-
-
 def run_process(field, config, filters=None, n_processes=1, overwrite=False):
-    """Run all process-phase steps in order across each filter.
-
-    Per-exposure steps run in parallel via ``dispatch``; the per-filter
-    persistence step runs serially since it operates over the whole filter
-    set at once.
-    """
-    filters = _resolve_filters(filters, field)
-    status = _scan_status(field, filters, overwrite=overwrite)
-    log(f"=== Process phase: field={field.name}, filters={filters} ===")
-    prefetch_process_references(field, filters, n_processes)
-    for filt in filters:
-        log(f"--- Process: {filt} ---")
-        for step_name, _ in PROCESS_STEPS:
-            _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
-                                status)
+    """Run all process-phase steps in order across each filter."""
+    return _orch.run_process(
+        field, config, PROCESS_STEPS, _RUNNERS, prefetch_process_references,
+        filters=filters, n_processes=n_processes, overwrite=overwrite,
+    )
 
 
 def run_combine(field, config, filters=None, n_processes=1, overwrite=False):
     """Run all combine-phase steps in order across each filter."""
-    filters = _resolve_filters(filters, field)
-    reduction_version = _resolve_reduction_version(config)
-    status = _scan_status(field, filters, overwrite=overwrite)
-
-    log(f"=== Combine phase: field={field.name}, filters={filters} ===")
-    for filt in filters:
-        log(f"--- Combine: {filt} ---")
-        for step_name, _ in COMBINE_STEPS:
-            if step_name == 'resample':
-                _run_resample(field, config, filt, n_processes, overwrite,
-                              status, reduction_version)
-            else:
-                _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
-                                    status)
+    return _orch.run_combine(
+        field, config, COMBINE_STEPS, _RUNNERS,
+        filters=filters, n_processes=n_processes, overwrite=overwrite,
+    )
 
 
 def run_step(step_name, field, config, filters=None, n_processes=1,
              overwrite=False):
-    """Run a single named step across the field's filters.
-
-    Used by the per-step CLI commands (``cfpipe nircam <step>``).
-    """
-    if step_name not in STEP_NAMES:
-        raise ValueError(
-            f"Unknown step '{step_name}'. Known: {STEP_NAMES}"
-        )
-
-    filters = _resolve_filters(filters, field)
-    status = _scan_status(field, filters, overwrite=overwrite)
-    log(f"=== Step '{step_name}': field={field.name}, filters={filters} ===")
-    if step_name in _CRDS_STEPS:
-        prefetch_process_references(field, filters, n_processes)
-
-    for filt in filters:
-        if step_name == 'resample':
-            reduction_version = _resolve_reduction_version(config)
-            _run_resample(field, config, filt, n_processes, overwrite,
-                          status, reduction_version)
-        else:
-            _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
-                                status)
+    """Run a single named step across the field's filters."""
+    return _orch.run_step(
+        step_name, field, config, STEP_NAMES, _RUNNERS, _CRDS_STEPS,
+        prefetch_process_references,
+        filters=filters, n_processes=n_processes, overwrite=overwrite,
+    )

@@ -63,7 +63,7 @@ import numpy as np
 from astropy.io import fits
 
 from campfire_pipeline.common.io import log, atomic_save
-from campfire_pipeline.common import cfp
+from campfire_pipeline.nircam import cfp
 from campfire_pipeline.nircam.steps.striping import fit_residual_striping
 
 
@@ -847,7 +847,7 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     log(f"diag_striping done: {rootname}")
 
     if do_plot:
-        from campfire_pipeline.nircam.steps._plots import plot_diag_striping
+        from campfire_pipeline.common.imaging.plots import plot_diag_striping
         diag_pdf = os.path.join(
             os.path.dirname(exposure_file), f'{rootname}_diag_striping.pdf',
         )

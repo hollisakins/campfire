@@ -32,6 +32,7 @@ dependencies = [
 cfpipe = "campfire_pipeline.cli:main"
 campfire-nirspec = "campfire_pipeline.nirspec.cli:main"
 campfire-nircam = "campfire_pipeline.nircam.cli:main"
+campfire-miri = "campfire_pipeline.miri.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["campfire_pipeline*"]

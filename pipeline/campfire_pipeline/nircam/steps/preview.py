@@ -29,8 +29,8 @@ import os
 import numpy as np
 
 from campfire_pipeline.common.io import log, atomic_save
-from campfire_pipeline.common import cfp
-from campfire_pipeline.nircam.steps._plots import _block_reduce, _zscale_limits
+from campfire_pipeline.nircam import cfp
+from campfire_pipeline.common.imaging.plots import _block_reduce, _zscale_limits
 
 
 def preview_step(exposure_file, field, step_config, overwrite=False,

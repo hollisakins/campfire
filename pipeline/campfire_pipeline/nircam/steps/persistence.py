@@ -24,7 +24,7 @@ import os
 from astropy.io import fits
 
 from campfire_pipeline.common.io import log, atomic_save
-from campfire_pipeline.common import cfp
+from campfire_pipeline.nircam import cfp
 
 
 def _jump_path(exposure_path):

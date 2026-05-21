@@ -20,7 +20,7 @@ from astropy.nddata import block_reduce
 from astropy.stats import biweight_location, biweight_midvariance
 
 from campfire_pipeline.common.io import log, atomic_save
-from campfire_pipeline.common import cfp
+from campfire_pipeline.nircam import cfp
 
 
 def variance_step(exposure_file, field, step_config, overwrite=False,
@@ -36,7 +36,7 @@ def variance_step(exposure_file, field, step_config, overwrite=False,
 
     from jwst.datamodels import ImageModel
     from stdatamodels import util as stutil
-    from campfire_pipeline.nircam.bkgsub import SubtractBackground
+    from campfire_pipeline.common.imaging.bkgsub import SubtractBackground
 
     bkg = SubtractBackground(
         ring_radius_in=step_config.get('ring_radius_in', 40),

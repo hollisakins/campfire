@@ -43,8 +43,8 @@ from astropy.io import fits
 from matplotlib.path import Path
 
 from campfire_pipeline.common.io import log, atomic_save
-from campfire_pipeline.common import cfp
-from campfire_pipeline.nircam.manifest import (
+from campfire_pipeline.nircam import cfp
+from campfire_pipeline.common.imaging.manifest import (
     file_unchanged, input_entry, load_manifest, write_manifest,
 )
 
@@ -317,7 +317,7 @@ def outlier_step(visit, visit_files, filter_files, sregions,
             log(f"  outlier promoted: {rootname}")
 
             if do_plot:
-                from campfire_pipeline.nircam.steps._plots import plot_outlier
+                from campfire_pipeline.common.imaging.plots import plot_outlier
                 with fits.open(canonical) as hdul:
                     dq_after = hdul['DQ'].data.copy()
                 new_outlier = (

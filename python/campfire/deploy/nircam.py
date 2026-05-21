@@ -30,7 +30,7 @@ from campfire.deploy.supabase import get_supabase_client
 # ---------------------------------------------------------------------------
 # CFP key → stage name mapping
 # ---------------------------------------------------------------------------
-# Ordered from earliest to latest, matching campfire_pipeline.common.cfp.CFP_KEYS
+# Ordered from earliest to latest, matching campfire_pipeline.nircam.cfp.CFP_KEYS
 # (kept duplicated here so the deploy package doesn't depend on the pipeline).
 # Each entry: (CFP_* keyword, stage value to report).
 _CFP_TO_STAGE = [
