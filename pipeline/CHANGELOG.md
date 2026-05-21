@@ -350,6 +350,33 @@ Release procedure: edit the `## Unreleased` section below, then run
   unrelated to the orchestrator-level step we removed.
 
 ### Infrastructure
+- Pipeline restructure to host both NIRCam and MIRI imaging arms from a
+  shared `common/imaging/` substrate. Instrument-agnostic infrastructure
+  (StepStatus cache, drizzle primitive, geometry, sky fit, per-filter
+  background subtraction, manifest helpers, parallel CRDS prefetch, mosaic
+  plots) moved from `nircam/` to `common/imaging/`. Orchestrator skeleton
+  (`run_process`, `run_combine`, `run_step` + per-exposure helpers) factored
+  into `common/imaging/orchestrate.py`; `nircam/orchestrate.py` retains
+  `PROCESS_STEPS`, `COMBINE_STEPS`, `_RUNNERS`, and all NIRCam-specific
+  step runners, delegating phase entry points to the generic skeleton.
+  CFP provenance-key list is now per-instrument: operations stay in
+  `common/cfp.py` (taking explicit `keys_list`/`comments` arguments),
+  while NIRCam's 15 `CFP_*` keys live in `nircam/cfp.py` as thin wrappers.
+  New `ImagingField` base class in `common/imaging/field.py`; `NircamField`
+  subclasses it and contributes only NIRCam-specific bits (`bad_pixel_dir`,
+  `wisp_dir`, SW/LW helpers). Generic `get_step_config(instrument, ...)`
+  added to `config.py`; `get_nircam_step_config` becomes a one-line wrapper.
+  No change to NIRCam algorithms, step ordering, or FITS output — purely
+  structural to unblock the MIRI arm.
+- MIRI module scaffold (`campfire_pipeline/miri/`): `MiriField`,
+  empty orchestrator (`PROCESS_STEPS = []`, `COMBINE_STEPS = []`,
+  `_RUNNERS = {}`), and a working `cfpipe miri {run,process,combine,
+  status,reset}` CLI that exercises the shared imaging infrastructure
+  end-to-end. No reduction steps yet — those land in follow-up PRs per
+  `docs/design-miri-reduction.md`. Top-level `cfpipe download
+  --instrument miri` and a `campfire-miri` console script are wired up
+  so MAST downloads (`raw/miri/{PID}/{filter}/`) can begin alongside the
+  reduction-step work.
 - NIRCam preview step: pass `format='png'` explicitly to `plt.imsave`.
   The `.tmp` suffix on the temp path made newer Pillow raise
   `KeyError: 'TMP'` during format sniffing.
