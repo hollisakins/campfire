@@ -1,5 +1,7 @@
 """Tests for CAMPFIRE API client."""
 
+import warnings
+
 import pytest
 from unittest.mock import Mock, patch
 
@@ -196,7 +198,9 @@ class TestImagingMethods:
     def test_get_cutout_object_id_param(self, mock_api_session, tmp_path):
         mock_api_session.get.return_value = _make_mock_response(json_data={})
         mock_api_session.get.return_value.content = b"PNGDATA"
-        with patch("campfire.config.resolve_data_dir", return_value=tmp_path):
+        with patch("campfire.config.resolve_data_dir", return_value=tmp_path), \
+                warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
             client = Campfire()
             client.get_cutout("CAMPFIRE-J0001+0001", fov=3.0, cache=False)
         params = mock_api_session.get.call_args.kwargs.get("params", {})
@@ -206,7 +210,9 @@ class TestImagingMethods:
         mock_api_session.get.return_value = _make_mock_response(
             json_data={"shutters": [], "meta": {}}
         )
-        with patch("campfire.config.resolve_data_dir", return_value=tmp_path):
+        with patch("campfire.config.resolve_data_dir", return_value=tmp_path), \
+                warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
             client = Campfire()
             client.get_shutters("CAMPFIRE-J0001+0001", fov=3.0, cache=False)
         params = mock_api_session.get.call_args.kwargs.get("params", {})
