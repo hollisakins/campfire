@@ -1,6 +1,7 @@
 """Tests for local-first routing in Campfire client and SpectrumData model."""
 
 import io
+import warnings
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, Mock, patch
@@ -153,8 +154,47 @@ class TestLocalFirstQueryObjects:
     def test_no_local_store(self):
         with patch("campfire.client.APISession") as MockSession:
             MockSession.return_value.base_url = "https://test.com/api/v1"
-            client = Campfire(data_dir="/nonexistent/path")
+            with pytest.warns(UserWarning, match="No local CAMPFIRE catalog"):
+                client = Campfire(data_dir="/nonexistent/path")
             assert client.is_local is False
+
+    def test_warning_names_data_dir_source(self):
+        with patch("campfire.client.APISession") as MockSession:
+            MockSession.return_value.base_url = "https://test.com/api/v1"
+            with pytest.warns(UserWarning, match=r"data_dir='/nonexistent/path'"):
+                Campfire(data_dir="/nonexistent/path")
+
+    def test_warning_names_env_var_source(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CAMPFIRE_ROOT", str(tmp_path / "missing"))
+        with patch("campfire.client.APISession") as MockSession:
+            MockSession.return_value.base_url = "https://test.com/api/v1"
+            with pytest.warns(UserWarning, match=r"\$CAMPFIRE_ROOT="):
+                Campfire()
+
+    def test_warning_on_schema_mismatch(self, tmp_path):
+        import sqlite3
+        meta = tmp_path / "meta"
+        meta.mkdir()
+        db_path = meta / "campfire.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT INTO _meta VALUES ('schema_version', '0')")
+        conn.commit()
+        conn.close()
+        with patch("campfire.client.APISession") as MockSession:
+            MockSession.return_value.base_url = "https://test.com/api/v1"
+            with pytest.warns(UserWarning, match=r"schema v0"):
+                client = Campfire(data_dir=tmp_path)
+            assert client.is_local is False
+
+    def test_no_warning_when_local_db_present(self, local_store):
+        store, tmp_path = local_store
+        with patch("campfire.client.APISession") as MockSession:
+            MockSession.return_value.base_url = "https://test.com/api/v1"
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                client = Campfire(data_dir=tmp_path)
+            assert client.is_local is True
 
 
 class TestLocalFirstQuerySpectra:

@@ -2,6 +2,8 @@
 
 import hashlib
 import logging
+import os
+import warnings
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple, Union
 
@@ -84,19 +86,53 @@ class Campfire:
         self._local_logged = False
         self._api_download_count = 0
 
-        resolved_dir = self._resolve_data_dir(data_dir)
-        if resolved_dir:
-            meta_dir = resolved_dir / "meta"
-            db_path = meta_dir / "campfire.db"
-            if db_path.exists():
-                from .db.store import LocalStore, SchemaMismatchError
-                try:
-                    self._local = LocalStore(db_path)
-                except SchemaMismatchError:
-                    self._local = None
-                else:
-                    self._products_dir = resolved_dir / "products"
-                    self._meta_dir = meta_dir
+        self._open_local_catalog(data_dir)
+
+    def _open_local_catalog(self, data_dir: Optional[Union[str, Path]]) -> None:
+        """Attempt to open the local SQLite catalog; warn if it can't be used.
+
+        Without a local catalog, queries fall back to the remote API and
+        ``get_object`` returns no embedded spectra — a common source of
+        confusion when ``$CAMPFIRE_ROOT`` points somewhere stale (e.g.
+        a path that exists on another machine but not this one).
+        """
+        from .config import resolve_data_dir
+
+        if data_dir:
+            resolved = Path(data_dir).expanduser()
+            source = f"data_dir={str(data_dir)!r}"
+        else:
+            env = os.environ.get("CAMPFIRE_ROOT")
+            resolved = resolve_data_dir()
+            source = f"$CAMPFIRE_ROOT={env!r}" if env else f"default {resolved}"
+
+        db_path = resolved / "meta" / "campfire.db"
+        reason: Optional[str] = None
+
+        if not db_path.exists():
+            reason = f"no campfire.db at {db_path} (from {source})"
+        else:
+            from .db.store import LocalStore, SchemaMismatchError
+            try:
+                self._local = LocalStore(db_path)
+            except SchemaMismatchError as exc:
+                reason = (
+                    f"local catalog at {db_path} has schema v{exc.found_version}, "
+                    f"client expects v{exc.expected_version} — "
+                    f"run `campfire sync --full` to rebuild"
+                )
+            else:
+                self._products_dir = resolved / "products"
+                self._meta_dir = resolved / "meta"
+
+        if self._local is None:
+            warnings.warn(
+                f"No local CAMPFIRE catalog ({reason}); "
+                f"falling back to remote API. Some methods (e.g. "
+                f"`get_object().spectra`) return less data over the API. "
+                f"Run `campfire sync` to enable local-first queries.",
+                stacklevel=3,
+            )
 
     @staticmethod
     def _resolve_data_dir(data_dir: Optional[Union[str, Path]]) -> Optional[Path]:
