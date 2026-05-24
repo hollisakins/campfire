@@ -146,6 +146,35 @@ class TestSpectrumCollection:
         high = col[col.signal_to_noise > 6]
         assert len(high) == 2
 
+    def test_boolean_index_by_program_and_observation(self):
+        spectra = [
+            Spectrum(
+                spectrum_id="s1", object_id="o", grating="PRISM",
+                program="ember", observation="ember_cosmos_p1", field="cosmos",
+            ),
+            Spectrum(
+                spectrum_id="s2", object_id="o", grating="G395M",
+                program="rubies", observation="rubies_uds_p2", field="uds",
+            ),
+            Spectrum(
+                spectrum_id="s3", object_id="o", grating="G395M",
+                program="ember", observation="ember_cosmos_p1", field="cosmos",
+            ),
+        ]
+        col = SpectrumCollection(spectra)
+
+        ember = col[col.program == "ember"]
+        assert len(ember) == 2
+        assert set(ember.spectrum_id) == {"s1", "s3"}
+
+        uds = col[col.field == "uds"]
+        assert len(uds) == 1
+        assert uds[0].spectrum_id == "s2"
+
+        assert col.programs == ["ember", "rubies"]
+        assert col.observations == ["ember_cosmos_p1", "rubies_uds_p2"]
+        assert col.fields == ["cosmos", "uds"]
+
 
 # ---------------------------------------------------------------------------
 # Object.from_dict
@@ -169,6 +198,10 @@ class TestObjectFromDict:
                     "spectrum_id": "ember_cosmos_p1_prism_clear_100",
                     "object_id": "CAMPFIRE-J0001+0001",
                     "grating": "PRISM",
+                    "program_slug": "ember",
+                    "observation": "ember_cosmos_p1",
+                    "field": "cosmos",
+                    "target_id": "t1",
                     "signal_to_noise": 7.0,
                     "exposure_time": 1500.0,
                 },
@@ -176,6 +209,10 @@ class TestObjectFromDict:
                     "spectrum_id": "ember_cosmos_p1_g395m_f290lp_100",
                     "object_id": "CAMPFIRE-J0001+0001",
                     "grating": "G395M",
+                    "program_slug": "ember",
+                    "observation": "ember_cosmos_p1",
+                    "field": "cosmos",
+                    "target_id": "t1",
                     "signal_to_noise": 4.0,
                     "exposure_time": 3000.0,
                 },
@@ -188,6 +225,11 @@ class TestObjectFromDict:
         assert len(obj.spectra) == 2
         assert obj.spectra.gratings == ["G395M", "PRISM"]
         assert obj.photometry is None
+        # program_slug from store rows should be exposed as `.program`
+        assert all(s.program == "ember" for s in obj.spectra)
+        assert obj.spectra[0].observation == "ember_cosmos_p1"
+        assert obj.spectra[0].target_id == "t1"
+        assert len(obj.spectra[obj.spectra.program == "ember"]) == 2
 
     def test_opener_wired(self):
         called = {}
