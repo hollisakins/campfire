@@ -420,6 +420,14 @@ class Spectrum:
         Parent object ID.
     grating : str
         Grating name (e.g. 'PRISM', 'G395M').
+    program : str or None
+        Program slug (e.g. ``'ember'``, ``'rubies'``).
+    observation : str or None
+        Observation name (e.g. ``'ember_cosmos_p1'``).
+    field : str or None
+        Field name (e.g. ``'cosmos'``, ``'uds'``).
+    target_id : str or None
+        Per-program target identifier this spectrum was extracted for.
     signal_to_noise : float or None
         Peak signal-to-noise ratio.
     exposure_time : float or None
@@ -440,6 +448,10 @@ class Spectrum:
     spectrum_id: str
     object_id: str
     grating: str
+    program: Optional[str] = None
+    observation: Optional[str] = None
+    field: Optional[str] = None
+    target_id: Optional[str] = None
     signal_to_noise: Optional[float] = None
     exposure_time: Optional[float] = None
     reduction_version: Optional[str] = None
@@ -497,6 +509,7 @@ class SpectrumCollection:
     Supports numpy-style boolean indexing on any attribute::
 
         prism = obj.spectra[obj.spectra.grating == 'PRISM']
+        ember = obj.spectra[obj.spectra.program == 'ember']
         high_snr = obj.spectra[obj.spectra.signal_to_noise > 10]
 
     Integer indexing returns a single :class:`Spectrum`. Iteration yields
@@ -517,8 +530,24 @@ class SpectrumCollection:
         return np.array([s.object_id for s in self._spectra])
 
     @property
+    def target_id(self) -> np.ndarray:
+        return np.array([s.target_id for s in self._spectra])
+
+    @property
     def grating(self) -> np.ndarray:
         return np.array([s.grating for s in self._spectra])
+
+    @property
+    def program(self) -> np.ndarray:
+        return np.array([s.program for s in self._spectra])
+
+    @property
+    def observation(self) -> np.ndarray:
+        return np.array([s.observation for s in self._spectra])
+
+    @property
+    def field(self) -> np.ndarray:
+        return np.array([s.field for s in self._spectra])
 
     @property
     def signal_to_noise(self) -> np.ndarray:
@@ -529,6 +558,18 @@ class SpectrumCollection:
         return np.array([s.exposure_time for s in self._spectra], dtype=float)
 
     @property
+    def redshift_auto(self) -> np.ndarray:
+        return np.array([s.redshift_auto for s in self._spectra], dtype=float)
+
+    @property
+    def dq_flags(self) -> np.ndarray:
+        return np.array([s.dq_flags for s in self._spectra], dtype=int)
+
+    @property
+    def reduction_version(self) -> np.ndarray:
+        return np.array([s.reduction_version for s in self._spectra])
+
+    @property
     def downloaded(self) -> np.ndarray:
         return np.array([s.downloaded for s in self._spectra])
 
@@ -536,6 +577,21 @@ class SpectrumCollection:
     def gratings(self) -> List[str]:
         """Unique gratings available in this collection."""
         return sorted(set(s.grating for s in self._spectra))
+
+    @property
+    def programs(self) -> List[str]:
+        """Unique programs available in this collection."""
+        return sorted(set(s.program for s in self._spectra if s.program))
+
+    @property
+    def observations(self) -> List[str]:
+        """Unique observations available in this collection."""
+        return sorted(set(s.observation for s in self._spectra if s.observation))
+
+    @property
+    def fields(self) -> List[str]:
+        """Unique fields available in this collection."""
+        return sorted(set(s.field for s in self._spectra if s.field))
 
     # --- Indexing ---
 
@@ -571,10 +627,16 @@ class SpectrumCollection:
             {
                 "spectrum_id": s.spectrum_id,
                 "object_id": s.object_id,
+                "target_id": s.target_id,
+                "program": s.program,
+                "observation": s.observation,
+                "field": s.field,
                 "grating": s.grating,
                 "signal_to_noise": s.signal_to_noise,
                 "exposure_time": s.exposure_time,
                 "reduction_version": s.reduction_version,
+                "redshift_auto": s.redshift_auto,
+                "dq_flags": s.dq_flags,
                 "local_path": s.local_path,
             }
             for s in self._spectra
@@ -724,6 +786,10 @@ class Object:
                 spectrum_id=s.get("spectrum_id") or "",
                 object_id=s.get("object_id") or obj_id,
                 grating=s.get("grating", ""),
+                program=s.get("program") or s.get("program_slug"),
+                observation=s.get("observation"),
+                field=s.get("field"),
+                target_id=s.get("target_id"),
                 signal_to_noise=s.get("signal_to_noise"),
                 exposure_time=s.get("exposure_time"),
                 reduction_version=s.get("reduction_version"),
