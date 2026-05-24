@@ -162,6 +162,20 @@ class TestUpsertObjects:
         assert obj["redshift_quality"] == 3
         assert len(obj["spectra"]) == 2
 
+    def test_upsert_renamed_object_id(self, store, sample_objects):
+        """Server reconcile can rewrite object_id while keeping the same id —
+        e.g. sub-arcsec ra/dec shifts changing the IAU name's last digit.
+        The upsert must overwrite the stale row, not raise UNIQUE failures."""
+        store.upsert_objects(sample_objects)
+        renamed = dict(sample_objects[0])
+        renamed["object_id"] = "CAMPFIRE-J0001+0002"  # same id=1, new name
+        store.upsert_objects([renamed])
+        rows = store.query_objects()
+        assert len(rows) == 2
+        ids = {r["object_id"] for r in rows}
+        assert "CAMPFIRE-J0001+0001" not in ids
+        assert "CAMPFIRE-J0001+0002" in ids
+
 
 class TestQueryObjects:
     def test_query_all(self, store, sample_objects):
