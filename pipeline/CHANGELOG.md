@@ -25,6 +25,11 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- `cfpipe nircam refcat query --backend gaia` now also returns `ruwe`, `pm`,
+  `pmra`, and `pmdec` from `gaiadr3.gaia_source`, so downstream consumers can
+  filter on point-source quality (RUWE) or proper motion without re-querying.
+
 ## v0.5.0 — 2026-05-21
 
 ### Calibration

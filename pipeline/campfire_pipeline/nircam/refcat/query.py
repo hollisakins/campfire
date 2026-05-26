@@ -85,7 +85,8 @@ def query_gaia(center, radius_deg, *, mag_band="G", mag_max=None,
 
     ra, dec = center
     adql = f"""
-        SELECT ra, dec, {mag_col}, {flux_col}, {flux_err_col}
+        SELECT ra, dec, {mag_col}, {flux_col}, {flux_err_col},
+               ruwe, pm, pmra, pmdec
         FROM gaiadr3.gaia_source
         WHERE 1 = CONTAINS(
             POINT('ICRS', ra, dec),
@@ -107,11 +108,18 @@ def query_gaia(center, radius_deg, *, mag_band="G", mag_max=None,
         mag_err = 2.5 / np.log(10) / snr
 
     keep = np.isfinite(mag) & np.isfinite(mag_err) & (mag_err > 0)
+    # ruwe/pm/pmra/pmdec come back as masked columns when Gaia reports no
+    # value (e.g. 2-parameter solutions). np.asarray(..., dtype=float)
+    # turns masked entries into NaN so consumers see a uniform float array.
     out = Table({
         "RA": np.asarray(result["ra"], dtype=float)[keep],
         "DEC": np.asarray(result["dec"], dtype=float)[keep],
         "mag": mag[keep],
         "mag_err": mag_err[keep],
+        "ruwe": np.asarray(result["ruwe"], dtype=float)[keep],
+        "pm": np.asarray(result["pm"], dtype=float)[keep],
+        "pmra": np.asarray(result["pmra"], dtype=float)[keep],
+        "pmdec": np.asarray(result["pmdec"], dtype=float)[keep],
     })
     return out
 
