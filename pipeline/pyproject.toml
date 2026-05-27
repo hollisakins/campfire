@@ -45,8 +45,15 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
 # Versions come from monorepo git tags of the form `pipeline-vX.Y.Z` only.
-# This isolates the pipeline subpackage version from unrelated commits in
-# `web/`, `python/`, `supabase/`, etc.
+# `tag_regex` isolates the tag *namespace*, but does NOT scope the commit
+# counter — `git describe --long` still reports the full monorepo distance,
+# which would bump `.devN` for unrelated `web/`, `python/`, `supabase/`,
+# `scripts/` commits. This config only fires when setuptools-scm writes
+# `_version.py` at install time (the build-time stamp). The runtime version
+# stamped onto reduced data is computed by
+# `campfire_pipeline.common.version._git_version`, which recounts distance
+# scoped to `pipeline/` via `git rev-list <tag>..HEAD --count -- pipeline`.
+# That is the source of truth for `CMPFRVER` and `spectra.cfpipe_version`.
 root = ".."
 tag_regex = "^pipeline-v(?P<version>\\d+\\.\\d+\\.\\d+)$"
 git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "pipeline-v*"]

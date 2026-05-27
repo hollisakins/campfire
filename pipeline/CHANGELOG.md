@@ -25,6 +25,22 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- Pipeline version resolution (`campfire_pipeline.common.version`) now
+  recounts the distance from the last `pipeline-v*.*.*` tag using
+  `git rev-list <tag>..HEAD --count -- pipeline`, so the version stamped
+  onto reduced data (`CMPFRVER`, `spectra.cfpipe_version`) reflects only
+  commits that touched `pipeline/`. Previously the distance came from
+  `git describe --long`, which counts every commit on the branch — any
+  `web/`, `python/`, `supabase/`, or `scripts/` activity bumped a
+  bit-identical reduction from `0.5.0` to `0.5.1.devN+gSHA`, tripping
+  the `campfire deploy` warn-and-confirm prompt for "unreleased" data.
+  The dirty flag was already pipeline-scoped (issue #135); this closes
+  the matching gap for the distance counter. The `setuptools-scm`
+  configuration in `pyproject.toml` is unchanged — it only feeds the
+  build-time stamp in `_version.py`, which the runtime resolver only
+  reads as a last-resort fallback.
+
 ## v0.5.0 — 2026-05-21
 
 ### Calibration

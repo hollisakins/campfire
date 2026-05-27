@@ -12,16 +12,20 @@ Resolution order (first that succeeds wins):
    lookup against installed package metadata.
 5. ``"0.0.0+unknown"`` — sentinel.
 
-The translation from ``git describe`` to PEP 440 (dirty flag below comes
-from a pipeline-scoped ``git status --porcelain -- pipeline``, not from
-``git describe --dirty``, which would be tripped by edits anywhere in the
-monorepo):
+Both the **distance** (``.devN``) and the **dirty flag** are scoped to the
+``pipeline/`` subtree. ``git describe --long``'s commit count and ``git
+describe --dirty``'s working-tree check both span the whole monorepo, so
+unrelated ``web/``, ``python/``, ``supabase/``, and ``scripts/`` activity
+would otherwise bump the version of bit-identical pipeline code. We instead
+use ``git describe --abbrev=0`` to get just the tag, ``git rev-list
+<tag>..HEAD --count -- pipeline`` for distance, and ``git status
+--porcelain -- pipeline`` for the dirty check.
 
-    pipeline-v0.4.0           clean -> 0.4.0
-    pipeline-v0.4.0-3-g7f4e2c1 clean -> 0.4.1.dev3+g7f4e2c1
-    pipeline-v0.4.0-3-g7f4e2c1 dirty -> 0.4.1.dev3+g7f4e2c1.d20260504
-    pipeline-v0.4.0-0-g7f4e2c1 dirty -> 0.4.0+d20260504
-    (no matching tag yet)            -> 0.0.0.dev0+g7f4e2c1[.d20260504]
+    tag pipeline-v0.4.0, 0 pipeline commits since, clean -> 0.4.0
+    tag pipeline-v0.4.0, 3 pipeline commits since, clean -> 0.4.1.dev3+g7f4e2c1
+    tag pipeline-v0.4.0, 3 pipeline commits since, dirty -> 0.4.1.dev3+g7f4e2c1.d20260504
+    tag pipeline-v0.4.0, 0 pipeline commits since, dirty -> 0.4.0+d20260504
+    (no matching tag yet)                                -> 0.0.0.dev0+g7f4e2c1[.d20260504]
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ _DESCRIBE_RE = re.compile(
     r'^pipeline-v(?P<base>\d+\.\d+\.\d+)'
     r'(?:-(?P<distance>\d+)-g(?P<sha>[0-9a-f]+))?$'
 )
+_TAG_RE = re.compile(r'^pipeline-v(?P<base>\d+\.\d+\.\d+)$')
 
 
 def _repo_root() -> Path:
@@ -70,21 +75,13 @@ def _today_local_segment() -> str:
     return datetime.now(timezone.utc).strftime('d%Y%m%d')
 
 
-def _describe_to_pep440(described: str, dirty: bool) -> str | None:
-    m = _DESCRIBE_RE.match(described)
-    if not m:
-        return None
-
-    base = m.group('base')
-    distance = int(m.group('distance') or 0)
-    sha = m.group('sha')
-
+def _build_pep440(base: str, distance: int, sha: str | None, dirty: bool) -> str:
     if distance == 0:
         version = base
         local_parts: list[str] = []
     else:
         version = f"{_bump_patch(base)}.dev{distance}"
-        local_parts = [f"g{sha}"]
+        local_parts = [f"g{sha}"] if sha else []
 
     if dirty:
         local_parts.append(_today_local_segment())
@@ -95,10 +92,43 @@ def _describe_to_pep440(described: str, dirty: bool) -> str | None:
     return version
 
 
+def _describe_to_pep440(described: str, dirty: bool) -> str | None:
+    """Translate a ``git describe --long`` string into a PEP 440 version.
+
+    Retained as a pure parser/formatter for unit tests. The runtime path in
+    :func:`_git_version` does not call this — distance there is recounted
+    scoped to ``pipeline/``, which the raw ``describe --long`` count cannot
+    express.
+    """
+    m = _DESCRIBE_RE.match(described)
+    if not m:
+        return None
+    return _build_pep440(
+        m.group('base'),
+        int(m.group('distance') or 0),
+        m.group('sha'),
+        dirty,
+    )
+
+
 def _pipeline_dirty(repo: Path) -> bool:
     # `git describe --dirty` checks the entire working tree; we only care
     # about edits to pipeline/ since that's what the version string scopes.
     return bool(_run_git(['status', '--porcelain', '--', 'pipeline'], repo))
+
+
+def _pipeline_distance(repo: Path, tag: str) -> int | None:
+    """Commits between *tag* and HEAD that touched ``pipeline/``.
+
+    ``git describe --long`` reports the whole-monorepo count, which would
+    bump ``.devN`` for any ``web/`` or ``python/`` commit even when pipeline
+    code is byte-identical to *tag*. ``rev-list -- pipeline`` reports the
+    count we actually want stamped onto reduced data.
+    """
+    out = _run_git(['rev-list', f'{tag}..HEAD', '--count', '--', 'pipeline'], repo)
+    if out is None or not out.isdigit():
+        return None
+    return int(out)
 
 
 def _git_version() -> str | None:
@@ -106,12 +136,17 @@ def _git_version() -> str | None:
     if not (repo / '.git').exists():
         return None
 
-    described = _run_git(
-        ['describe', '--tags', '--long', '--match', 'pipeline-v*'],
+    tag = _run_git(
+        ['describe', '--tags', '--abbrev=0', '--match', 'pipeline-v*'],
         repo,
     )
-    if described:
-        return _describe_to_pep440(described, _pipeline_dirty(repo))
+    if tag:
+        m = _TAG_RE.match(tag)
+        if not m:
+            return None
+        distance = _pipeline_distance(repo, tag) or 0
+        sha = _run_git(['rev-parse', '--short=7', 'HEAD'], repo) if distance else None
+        return _build_pep440(m.group('base'), distance, sha, _pipeline_dirty(repo))
 
     # No matching tag yet — synthesize a 0.0.0.dev0 string from HEAD.
     sha = _run_git(['rev-parse', '--short=7', 'HEAD'], repo)
