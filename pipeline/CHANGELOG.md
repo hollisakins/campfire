@@ -25,6 +25,8 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+## v0.5.1 — 2026-05-27
+
 ### Infrastructure
 - Pipeline version resolution (`campfire_pipeline.common.version`) now
   recounts the distance from the last `pipeline-v*.*.*` tag using
