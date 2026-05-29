@@ -715,8 +715,11 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
  * same order as the table view it was launched from.
  * If no redshift_quality filter is set, implicitly filters to quality=0 (uninspected).
  *
- * Backed by `get_filtered_object_ids`; observation/feature/DQ filters aren't
- * supported at this lightweight tier.
+ * Backed by `get_filtered_object_ids`; feature/DQ filters aren't supported at
+ * this lightweight tier (they require per-spectrum joins). Observation filtering
+ * is supported via `p_observations` (the objects table carries an aggregated
+ * `observations` array), so the inspection queue stays scoped to the same
+ * observation filter as the table view it was launched from.
  */
 export async function getInspectionQueueIds(
   filters?: Partial<FilterOptions>,
@@ -750,10 +753,11 @@ export async function getInspectionQueueIds(
 
     const baseRpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
-    // Strip params not accepted by get_filtered_object_ids (target-only filters).
+    // Strip params not accepted by get_filtered_object_ids (per-spectrum DQ
+    // filters). p_observations IS accepted and must pass through so the queue
+    // respects the observation filter.
     /* eslint-disable @typescript-eslint/no-unused-vars */
     const {
-      p_observations: _obs,
       p_dq_flags_include_any: _dqa,
       p_dq_flags_include_all: _dqb,
       p_dq_flags_exclude: _dqc,
