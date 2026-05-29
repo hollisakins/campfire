@@ -1,0 +1,54 @@
+name: Supabase MV index guard
+
+# Asserts that every public materialized view has a unique index after applying
+# all migrations. Without one, REFRESH MATERIALIZED VIEW CONCURRENTLY fails and
+# the deploy CLI's cache refreshes soft-fail (the views go stale). migra does
+# not track MV indexes, so a migra-generated drop/recreate can silently strip
+# them — this guard catches that at PR time.
+
+on:
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+      - "supabase/schemas/views.sql"
+      - "supabase/schemas/indexes.sql"
+      - "supabase/tests/check_mv_unique_indexes.sql"
+      - ".github/workflows/supabase-mv-indexes.yml"
+
+# Cancel superseded runs on the same PR to save Actions minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-mv-indexes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start local Postgres
+        run: supabase db start
+
+      - name: Apply migrations
+        # Migrations only (no seed): the MV index invariant is independent of
+        # row data, and skipping the seed keeps this guard fast and focused.
+        run: supabase db reset --no-seed
+
+      - name: Assert materialized views have unique indexes
+        # Fixed local connection string (db.port = 54322 in supabase/config.toml).
+        env:
+          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: |
+          psql "$DB_URL" -v ON_ERROR_STOP=1 \
+            -f supabase/tests/check_mv_unique_indexes.sql
