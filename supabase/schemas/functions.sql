@@ -1205,6 +1205,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_fields TEXT[] DEFAULT NULL,
   p_gratings TEXT[] DEFAULT NULL,
   p_gratings_mode TEXT DEFAULT 'any',
+  p_observations TEXT[] DEFAULT NULL,
   p_redshift_quality INTEGER[] DEFAULT NULL,
   p_redshift_min DOUBLE PRECISION DEFAULT NULL,
   p_redshift_max DOUBLE PRECISION DEFAULT NULL,
@@ -1290,6 +1291,7 @@ BEGIN
       OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
       OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
     )
+    AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
     AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
     AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
     AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
