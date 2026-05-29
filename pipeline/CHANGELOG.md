@@ -25,6 +25,17 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- Multiprocessing start method is now platform-aware: `forkserver` on Linux,
+  `spawn` on macOS. The earlier blanket `forkserver` switch (added to fix
+  `ENOMEM`-at-fork on candide) also forced macOS off its safe `spawn` default,
+  and `forkserver` still `fork()`s its workers — unsafe on macOS, where Apple's
+  threaded frameworks and cv2's `parallel_for_` pool deadlock in the child. The
+  symptom was the NIRSpec stage-1 jump step hanging (`S` / 0% CPU) at "Flagging
+  Snowballs", since stcal's snowball flagging calls into cv2. macOS has no
+  `ENOMEM`-at-fork concern, so `spawn` is both safe and sufficient there;
+  candide keeps `forkserver` and its preload list unchanged.
+
 ## v0.5.1 — 2026-05-27
 
 ### Infrastructure

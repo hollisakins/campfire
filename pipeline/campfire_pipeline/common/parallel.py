@@ -1,22 +1,37 @@
 """
 Parallel dispatch helper: replaces repeated Pool/serial patterns across stages.
 
-Workers are launched via the ``forkserver`` start method rather than the Linux
-default ``fork``. Forking from a multi-GB parent (e.g. after the persistence
-step's snowblind deep-copies fragment the heap) blows past Linux's per-process
-commit accounting — the kernel must reserve ``parent_RSS × n_workers`` bytes at
-fork time even though copy-on-write means actual usage will be far smaller, and
-``os.fork()`` returns ``ENOMEM`` before any real allocation happens. The
-forkserver helper is launched once early, stays small (~tens of MB plus the
-preloaded modules below), and is what does the per-task forks.
+The start method is platform-aware:
 
-Preloading the heavy scientific imports into the forkserver lets workers
+* **Linux → forkserver.** The Linux default ``fork`` blows past per-process
+  commit accounting when forking from a multi-GB parent (e.g. after the
+  persistence step's snowblind deep-copies fragment the heap): the kernel must
+  reserve ``parent_RSS × n_workers`` bytes at fork time even though
+  copy-on-write means actual usage will be far smaller, and ``os.fork()``
+  returns ``ENOMEM`` before any real allocation happens. The forkserver helper
+  is launched once early, stays small (~tens of MB plus the preloaded modules
+  below), and is what does the per-task forks.
+
+* **macOS → spawn.** ``fork()`` (and therefore ``forkserver``, which forks its
+  workers from the helper) is unsafe on macOS: Apple's threaded frameworks
+  (GCD / Accelerate) and cv2's ``parallel_for_`` pool deadlock in the child.
+  This is why Python defaults macOS to ``spawn``. stcal's snowball flagging
+  (``stcal.jump.jump.flag_large_events``) calls into cv2, so a forked worker
+  hangs (``S`` / 0% CPU) the moment it reaches "Flagging Snowballs". The
+  macOS ENOMEM concern that motivates forkserver on candide does not apply
+  here, so ``spawn`` is both safe and sufficient.
+
+Preloading the heavy scientific imports into the forkserver lets Linux workers
 inherit them via copy-on-write rather than re-importing per pool. ``jhat`` and
 ``tweakreg`` are intentionally absent — importing them touches CRDS singleton
 state in a way that locks the context (see feedback_lazy_jwst_imports), so
-those stay as lazy imports inside the worker functions that need them.
+those stay as lazy imports inside the worker functions that need them. ``stcal``
+and ``snowblind`` are likewise absent: pre-importing cv2 into the forkserver
+helper risks the same half-built-pool deadlock there. (``spawn`` ignores the
+preload list entirely — each worker re-imports from scratch.)
 """
 
+import sys
 from functools import partial
 from multiprocessing import get_context
 from time import sleep
@@ -24,24 +39,25 @@ from time import sleep
 from campfire_pipeline.common.io import log
 
 
-_MP_CTX = get_context('forkserver')
-_MP_CTX.set_forkserver_preload([
-    'numpy',
-    'scipy',
-    'astropy.io.fits',
-    'astropy.wcs',
-    'astropy.table',
-    'jwst',
-    'jwst.datamodels',
-    'stdatamodels',
-    'stdatamodels.jwst',
-    'stcal',
-    'crds',
-    'snowblind',
-    'campfire_pipeline.common.io',
-    'campfire_pipeline.common.cfp',
-    'campfire_pipeline.common.parallel',
-])
+if sys.platform == 'darwin':
+    _MP_CTX = get_context('spawn')
+else:
+    _MP_CTX = get_context('forkserver')
+    _MP_CTX.set_forkserver_preload([
+        'numpy',
+        'scipy',
+        'astropy.io.fits',
+        'astropy.wcs',
+        'astropy.table',
+        'jwst',
+        'jwst.datamodels',
+        'stdatamodels',
+        'stdatamodels.jwst',
+        'crds',
+        'campfire_pipeline.common.io',
+        'campfire_pipeline.common.cfp',
+        'campfire_pipeline.common.parallel',
+    ])
 
 
 class _RetryOnIOError:
