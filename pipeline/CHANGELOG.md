@@ -26,6 +26,12 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- `cfpipe --version` now reports the same live, git-derived version as
+  `cfpipe info` (via `get_reduction_version()`) instead of the package
+  metadata frozen at install time. Previously the two could diverge in a
+  checkout — `--version` showed the last-installed tag (e.g. `0.5.1`) while
+  `info` showed the live `0.5.2.devN+g<sha>`. The version stamped into output
+  FITS headers is unchanged; only the `--version` display source moved.
 - Multiprocessing start method is now platform-aware: `forkserver` on Linux,
   `spawn` on macOS. The earlier blanket `forkserver` switch (added to fix
   `ENOMEM`-at-fork on candide) also forced macOS off its safe `spawn` default,

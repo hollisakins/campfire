@@ -21,6 +21,7 @@ matplotlib.use('Agg')
 import click
 
 from campfire_pipeline.config import load_config, setup_environment, resolve_paths
+from campfire_pipeline.common.version import get_reduction_version
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +29,7 @@ from campfire_pipeline.config import load_config, setup_environment, resolve_pat
 # ---------------------------------------------------------------------------
 
 @click.group()
-@click.version_option(package_name='campfire-pipeline')
+@click.version_option(version=get_reduction_version(), prog_name='cfpipe')
 def main():
     """CAMPFIRE data reduction pipeline."""
     pass
