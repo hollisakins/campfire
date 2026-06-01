@@ -25,6 +25,27 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
+  ERR map no longer fills with `inf`/`nan`. The variance pass summed the three
+  variance components before drizzling, so a single input pixel with a
+  non-finite or negative component (e.g. `var_poisson = inf` at a pixel that is
+  not flagged `DO_NOT_USE`) poisoned `var_total`, and cdriz spread it across
+  every output pixel its kernel touched — `inf` is sticky in the running
+  weighted mean, so one bad input pixel blew up the ERR for all co-located
+  inputs and could dominate a tile. Each variance component is now masked
+  independently with `(var >= 0) & isfinite(var)` before the sum (matching the
+  per-component masking stcal applies in `resample_variance_arrays`): a bad
+  component drops only its own term, so a component that is bad across many
+  inputs (e.g. a flat-field column) degrades gracefully to the surviving terms
+  instead of leaving a NaN hole. A pixel is dropped entirely only where no
+  component is valid, and dropped pixels are excluded from both the variance
+  numerator and its normalizing weight (`outvarw`, now used in place of the SCI
+  weight) so there is no dilution bias. The SCI/WHT pass is unchanged; ERR is
+  bit-identical to before at pixels with no masked components, and only
+  previously-`inf`/`nan` pixels change. The default `jwst` implementation was
+  never affected.
+
 ### Infrastructure
 - `cfpipe --version` now reports the same live, git-derived version as
   `cfpipe info` (via `get_reduction_version()`) instead of the package
