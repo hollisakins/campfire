@@ -73,6 +73,7 @@ def _drizzle_tile_via_campfire(
         kernel=resample_cfg.get('kernel', 'square'),
         weight_type=resample_cfg.get('weight_type', 'ivm'),
         good_bits=resample_cfg.get('good_bits', '~DO_NOT_USE'),
+        blendheaders=resample_cfg.get('blendheaders', True),
         reduction_version=reduction_version,
     )
 

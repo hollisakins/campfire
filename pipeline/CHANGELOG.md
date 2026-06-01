@@ -47,6 +47,27 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
+  output mosaic i2d now carries the same header metadata as a jwst
+  `Image3Pipeline` product. Previously `_write_i2d_fits` built a blank
+  `ImageModel` and set only the WCS + exposure time, so the i2d (and the
+  split `_sci/_err/_wht` files derived from its SCI header) were missing
+  `BUNIT`, `PIXAR_SR`/`PIXAR_A2`, `PHOTMJSR`/`PHOTUJA2`, all instrument/program/
+  target identity, exposure timing, and the HDRTAB provenance table — 220
+  PRIMARY and 39 SCI keywords absent vs. the jwst path on real rj0911 data.
+  The drizzle now feeds each contributing input through
+  `jwst.model_blender.ModelBlender` (reusing the open already done per input)
+  and `_apply_output_metadata` finalizes the blend into the output model.
+  `PIXAR_SR`/`PIXAR_A2` are recomputed for the output pixel scale (copying the
+  native value would bias MJy/sr → Jy/pixel by the scale ratio squared, ~4× at
+  30 mas); `BUNIT`/`PHOTMJSR`/`PHOTUJA2` are per-steradian and ride along
+  unchanged; `WCSAXES`/`CUNIT`, `NDRIZ`, `PXSCLRT`, and `S_REGION` are set for
+  the resampled grid. SCI/ERR header parity with jwst is now complete except
+  for `VELOSYS` (a radial-velocity keyword irrelevant to imaging); `S_OUTLIR`/
+  `S_SKYMAT` are intentionally left unset because campfire runs its own outlier
+  and background steps rather than jwst's. Pixel/flux/ERR array values are
+  unchanged. Controlled by the new `resample.blendheaders` knob (default true);
+  the `jwst` implementation is unaffected.
 - `cfpipe --version` now reports the same live, git-derived version as
   `cfpipe info` (via `get_reduction_version()`) instead of the package
   metadata frozen at install time. Previously the two could diverge in a
