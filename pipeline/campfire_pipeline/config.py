@@ -278,10 +278,16 @@ def get_stage_config(stage_name, config, obs):
     Merges two layers (highest priority wins):
         1. Observation-specific overrides  (observations.toml  [obs.stageN])
         2. Config defaults + user overrides (already merged in load_config)
+
+    Uses a deep merge (matching get_nircam_step_config) so a partial per-obs
+    override of a nested sub-table (e.g. [obs.stage1.ramp] or
+    [obs.stage1.override_wavelength_range]) preserves the other keys of that
+    sub-table instead of replacing it wholesale.
     """
-    merged = dict(config.get('nirspec', {}).get(stage_name, {}))
-    merged.update(obs.stage_overrides.get(stage_name, {}))
-    return merged
+    return deep_merge(
+        config.get('nirspec', {}).get(stage_name, {}),
+        obs.stage_overrides.get(stage_name, {}),
+    )
 
 
 def get_nircam_step_config(step_name, config, field):

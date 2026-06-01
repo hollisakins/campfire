@@ -466,7 +466,8 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
 
 def plot_bkg_subtraction(rate_file, image_data, mask, *,
                          pictureframe_model=None, pedestal_model=None,
-                         bkg2d_model=None, col_model=None, row_model=None):
+                         bkg2d_model=None, col_model=None, row_model=None,
+                         output_pdf=None):
     """Multi-column diagnostic showing background subtraction stages.
 
     Top row: each background component.  Bottom row: cumulative residual
@@ -475,7 +476,8 @@ def plot_bkg_subtraction(rate_file, image_data, mask, *,
     Parameters
     ----------
     rate_file : str
-        Path to the rate file (used to derive the output PDF path).
+        Path to the rate file (used to derive the output PDF path when
+        ``output_pdf`` is not given).
     image_data : ndarray
         Raw rate image (2D).
     mask : ndarray
@@ -484,6 +486,10 @@ def plot_bkg_subtraction(rate_file, image_data, mask, *,
         Optional background component arrays.
     col_model, row_model : ndarray or None
         Column and row 1/f noise models.
+    output_pdf : str or None
+        Explicit output path for the PDF. If None, derived from ``rate_file``
+        by replacing ``_rate.fits`` with ``_bkg.pdf``. Used by the per-group
+        ramp step to emit ``*_ramp_bkg.pdf``.
     """
     norm = ImageNormalize(image_data[mask], interval=ZScaleInterval())
 
@@ -604,7 +610,7 @@ def plot_bkg_subtraction(rate_file, image_data, mask, *,
         ax[1, i].set_title(col['bottom_title'])
 
     plt.tight_layout()
-    plot_file = rate_file.replace('_rate.fits', '_bkg.pdf')
+    plot_file = output_pdf if output_pdf is not None else rate_file.replace('_rate.fits', '_bkg.pdf')
     log(f'Saving to {plot_file}')
     plt.savefig(plot_file, dpi=_STYLE['dpi'])
     plt.close()

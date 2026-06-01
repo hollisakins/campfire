@@ -583,6 +583,11 @@ def run_stage2a_single_rate(
 
 
             steps = {
+                # jwst >= 2.0 runs clean_flicker_noise by default in spec2;
+                # skip it — 1/f is handled by the stage-1 per-group ramp step.
+                'clean_flicker_noise': {
+                    'skip': True,
+                },
                 'extract_1d': {
                     'skip': True,
                 },

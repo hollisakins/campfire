@@ -9,7 +9,7 @@
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
-    CRDS_CONTEXT = "jwst_1481.pmap"   # uncomment to pin
+    CRDS_CONTEXT = "jwst_1535.pmap"   # uncomment to pin
 
 [paths]
     # Resolved from $CAMPFIRE_ROOT by default. Uncomment to override:
@@ -23,10 +23,14 @@
 # === NIRSpec ===
 
 [nirspec.stage1]
-    do_clean_flicker_noise = true # handled by iterative bkg subtraction
-    mask_science_regions = true
     cleanup_uncal = true
     cleanup_rateints = true
+
+    # --- Phase 2: residual background cleanup on the 2D rate ---
+    # Single-pass picture-frame + 1/f cleanup + VAR_RNOISE rescale, applied to
+    # the rate after the per-group ramp step (below). Manual DS9 masks are
+    # applied here. The same picture-frame template fit + column/row 1/f run as
+    # the ramp step, mopping up whatever residual structure survives in the rate.
     subtract_2d = false
     box_size = 64
     sigma_clip = true
@@ -35,7 +39,7 @@
     col_1f_method = "template" # "median" (flat per-column) or "template" (per-column PF template fit)
     do_row_1f = true # only used for PRISM
     plot = true
-    
+
     [nirspec.stage1.override_wavelength_range] # mask beyond the nominal wavelength range, to cover higher-order spectra
         G140M = [0.70, 2.5]
         G235M = [1.66, 4.0]
@@ -43,6 +47,22 @@
         G140H = [0.70, 2.5]
         G235H = [1.66, 4.0]
         G395H = [2.87, 5.5]
+
+    # --- Phase 1: per-group picture-frame + 1/f on the 4D ramp ---
+    # CampfireRampBkgStep replaces the stock jwst picture_frame and
+    # clean_flicker_noise steps (jwst >= 2.0). Runs between jump and ramp_fit.
+    # Inherits override_wavelength_range above for the slit mask.
+    [nirspec.stage1.ramp]
+        do_picture_frame = true
+        subtract_2d = false
+        box_size = 64
+        sigma_clip = true
+        bkg_estimator = "median"
+        do_col_1f = true
+        col_1f_method = "template"
+        do_row_1f = true # only used for PRISM
+        n_iter = 1 # background fit iterations per group
+        plot = true
 
 [nirspec.masks]
     auto_apply = true   # at stage2a entry, auto re-apply manual masks if they're stale vs the rate file
