@@ -23,9 +23,13 @@ construction.
 import numpy as np
 import pytest
 
-from campfire_pipeline.nircam.drizzle import _sanitize_variance
+from campfire_pipeline.nircam.drizzle import (
+    _apply_output_metadata, _sanitize_variance,
+)
 
 Drizzle = pytest.importorskip("drizzle.resample").Drizzle
+ImageModel = pytest.importorskip("stdatamodels.jwst.datamodels").ImageModel
+ModelBlender = pytest.importorskip("jwst.model_blender.blender").ModelBlender
 
 
 # ---------------------------------------------------------------------------
@@ -182,3 +186,103 @@ def test_variance_trick_all_components_bad_gives_nan_not_inf():
     assert np.isnan(err[1, 1])
     other = (wht > 0).copy(); other[1, 1] = False
     assert np.isfinite(err[other]).all()
+
+
+# ---------------------------------------------------------------------------
+# output metadata: blend inputs + recompute output-grid photometry
+# ---------------------------------------------------------------------------
+
+# native NIRCam LONG values, so we can assert pixel area is recomputed (not
+# inherited) and the per-sr photometry is inherited unchanged.
+_NATIVE_PIXAR_A2 = 0.003957788
+_NATIVE_PIXAR_SR = 9.30255e-14
+_PHOTMJSR = 0.402
+
+
+def _fake_input_model(filt='F444W'):
+    m = ImageModel((4, 4))
+    m.meta.telescope = 'JWST'
+    m.meta.instrument.name = 'NIRCAM'
+    m.meta.instrument.filter = filt
+    m.meta.instrument.detector = 'NRCALONG'
+    m.meta.observation.program_number = '06882'
+    m.meta.target.proposer_name = 'RXCJ0911+1746'
+    m.meta.exposure.exposure_time = 418.734
+    m.meta.bunit_data = 'MJy/sr'
+    m.meta.photometry.conversion_megajanskys = _PHOTMJSR
+    m.meta.photometry.pixelarea_arcsecsq = _NATIVE_PIXAR_A2
+    m.meta.photometry.pixelarea_steradians = _NATIVE_PIXAR_SR
+    return m
+
+
+def _blender():
+    return ModelBlender(blend_ignore_attrs=[
+        'meta.photometry.pixelarea_steradians',
+        'meta.photometry.pixelarea_arcsecsq',
+        'meta.wcs',
+    ])
+
+
+def test_apply_output_metadata_recomputes_pixel_area_for_output_grid():
+    """PIXAR_A2/PIXAR_SR must reflect the OUTPUT pixel scale, not the native
+    input scale — copying the input would bias MJy/sr -> Jy/pixel by the scale
+    ratio squared. PHOTMJSR (per-sr) is scale-invariant and rides along."""
+    blender = _blender()
+    for _ in range(2):
+        blender.accumulate(_fake_input_model())
+
+    out = ImageModel((4, 4))
+    _apply_output_metadata(
+        out, blender=blender, pixel_scale=0.03,
+        pixfrac=1.0, kernel='square', weight_type='ivm', exptime=837.468,
+    )
+
+    # recomputed for the 0.03" output grid
+    assert out.meta.photometry.pixelarea_arcsecsq == pytest.approx(0.03 ** 2)
+    assert out.meta.photometry.pixelarea_steradians == pytest.approx(
+        0.03 ** 2 * (np.pi / (180.0 * 3600.0)) ** 2)
+    # explicitly NOT the inherited native value
+    assert out.meta.photometry.pixelarea_arcsecsq != pytest.approx(
+        _NATIVE_PIXAR_A2)
+    # per-sr photometry inherited unchanged
+    assert out.meta.photometry.conversion_megajanskys == pytest.approx(
+        _PHOTMJSR)
+
+
+def test_apply_output_metadata_blends_identity_and_sets_provenance():
+    blender = _blender()
+    for _ in range(2):
+        blender.accumulate(_fake_input_model())
+
+    out = ImageModel((4, 4))
+    _apply_output_metadata(
+        out, blender=blender, pixel_scale=0.03,
+        pixfrac=0.8, kernel='square', weight_type='ivm', exptime=837.468,
+    )
+
+    # inherited identity from the blended inputs
+    assert out.meta.instrument.name == 'NIRCAM'
+    assert out.meta.instrument.filter == 'F444W'
+    assert out.meta.observation.program_number == '06882'
+    # units on both SCI and ERR
+    assert out.meta.bunit_data == 'MJy/sr'
+    assert out.meta.bunit_err == 'MJy/sr'
+    # resample provenance + step flag describe THIS run
+    assert out.meta.resample.pixfrac == pytest.approx(0.8)
+    assert out.meta.resample.weight_type == 'ivm'
+    assert out.meta.exposure.exposure_time == pytest.approx(837.468)
+    assert out.meta.cal_step.resample == 'COMPLETE'
+
+
+def test_apply_output_metadata_without_blender_still_sets_photometry():
+    """blendheaders=False (or an all-skipped tile) must still produce a
+    well-formed product: units, pixel area, and the resample step flag."""
+    out = ImageModel((4, 4))
+    _apply_output_metadata(
+        out, blender=None, pixel_scale=0.06,
+        pixfrac=1.0, kernel='square', weight_type='ivm', exptime=100.0,
+    )
+    assert out.meta.photometry.pixelarea_arcsecsq == pytest.approx(0.06 ** 2)
+    assert out.meta.bunit_data == 'MJy/sr'
+    assert out.meta.bunit_err == 'MJy/sr'
+    assert out.meta.cal_step.resample == 'COMPLETE'

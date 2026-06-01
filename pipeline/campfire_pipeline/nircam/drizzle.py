@@ -51,6 +51,21 @@ SCI/ERR/WHT/CON HDU layout that ``bkgsub`` and ``_split_extensions``
 consume. Per-component variance arrays
 (VAR_RNOISE/VAR_POISSON/VAR_FLAT) are intentionally not written: nothing
 in pipeline/, python/, or web/ reads them from i2d files.
+
+Output metadata is populated the same way jwst's resample does, so the
+campfire i2d carries the same header keywords as an ``Image3Pipeline``
+product (BUNIT, PHOTMJSR/PHOTUJA2, instrument/program/target identity,
+exposure times, an HDRTAB provenance table, etc.). Each input model is
+fed to ``jwst.model_blender.blender.ModelBlender`` during the drizzle
+loop (reusing the open we already do per input), and ``_apply_output_metadata``
+finalizes the blend into the output model. The two values that must *not*
+be inherited from the inputs are recomputed for the output grid:
+``PIXAR_SR``/``PIXAR_A2`` (pixel area scales as ``pixel_scale**2``;
+copying the native value would bias MJy/sr → Jy/pixel by the square of the
+scale ratio) and the WCS keywords (overwritten from the output gwcs via
+``ResampleImage.update_fits_wcsinfo``). ``BUNIT`` and ``PHOTMJSR``/
+``PHOTUJA2`` are surface-brightness (per-sr) quantities and are
+scale-invariant, so they ride along unchanged.
 """
 
 import os
@@ -160,20 +175,83 @@ def _output_bbox_in_tile(pixmap, out_shape, pad=4):
     return slice(y_min, y_max), slice(x_min, x_max)
 
 
+def _apply_output_metadata(model, *, blender, pixel_scale, pixfrac, kernel,
+                           weight_type, exptime, n_pointings=None,
+                           pixel_scale_ratio=None):
+    """Populate the output model's metadata to match a jwst resample i2d.
+
+    Two-part contract, mirroring ``jwst.resample.resample.ResampleImage``:
+
+    1. **Inherited** — ``blender.finalize_model`` writes the blended input
+       metadata (instrument/program/target identity, exposure timing, the
+       surface-brightness photometry keywords ``PHOTMJSR``/``PHOTUJA2``, the
+       per-input HDRTAB provenance table, …) into ``model``. ``blender`` is
+       built in ``drizzle_tile`` with ``meta.photometry.pixelarea_*`` and
+       ``meta.wcs`` on its ignore list, so those are *not* inherited.
+
+    2. **Recomputed for the output grid** — the values that would be wrong if
+       copied from the native inputs:
+
+       - ``PIXAR_A2`` / ``PIXAR_SR``: pixel area scales as ``pixel_scale**2``.
+         Copying the native ~0.06" value onto a 0.03" mosaic would bias every
+         MJy/sr → Jy/pixel conversion by the square of the scale ratio (~4×).
+         ``BUNIT`` and ``PHOTMJSR``/``PHOTUJA2`` are per-steradian and
+         scale-invariant, so they are left as inherited.
+       - drizzle provenance (``pixfrac``/``kernel``/``weight_type``), the
+         resample-product exposure time, and ``cal_step.resample`` reflect this
+         resampling run, not any single input.
+
+    The WCS keywords are handled by the caller (``update_fits_wcsinfo`` on the
+    output gwcs), which runs after this and overwrites any inherited wcsinfo.
+    """
+    if blender is not None:
+        blender.finalize_model(model)
+
+    arcsec_to_rad = np.pi / (180.0 * 3600.0)
+    pixar_a2 = float(pixel_scale) ** 2
+    model.meta.photometry.pixelarea_arcsecsq = pixar_a2
+    model.meta.photometry.pixelarea_steradians = pixar_a2 * arcsec_to_rad ** 2
+
+    # photom always emits MJy/sr; set on SCI (bunit_data) and ERR (bunit_err)
+    # so the split-extension files inherit units.
+    model.meta.bunit_data = 'MJy/sr'
+    model.meta.bunit_err = 'MJy/sr'
+
+    model.meta.resample.pixfrac = float(pixfrac)
+    model.meta.resample.kernel = str(kernel)
+    model.meta.resample.weight_type = str(weight_type)
+    if n_pointings is not None:
+        model.meta.resample.pointings = int(n_pointings)  # -> NDRIZ
+    if pixel_scale_ratio is not None:
+        model.meta.resample.pixel_scale_ratio = float(pixel_scale_ratio)  # -> PXSCLRT
+    model.meta.exposure.exposure_time = float(exptime)
+    model.meta.resample.product_exposure_time = float(exptime)
+    model.meta.cal_step.resample = 'COMPLETE'
+
+
 def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
-                    cmpfrver, exptime):
+                    cmpfrver, exptime, *, pixel_scale, pixfrac, kernel,
+                    weight_type, blender=None, n_pointings=None,
+                    pixel_scale_ratio=None):
     """Write i2d FITS with the schema bkgsub and _split_extensions consume.
 
     Uses ``stdatamodels.jwst.datamodels.ImageModel`` so the HDU layout
     (SCI/ERR/CON/WHT) and primary header conventions match stcal's output.
 
+    Metadata is populated via ``_apply_output_metadata`` (the blended input
+    headers plus the output-grid-specific photometry/provenance keywords), so
+    the i2d carries the same header keywords as a jwst ``Image3Pipeline``
+    product. ``blender`` is the ``ModelBlender`` accumulated over the inputs in
+    ``drizzle_tile`` (``None`` to skip blending).
+
     Calls ``jwst.resample.resample.ResampleImage.update_fits_wcsinfo`` —
     the canonical helper jwst's own resample step uses — to populate
     ``model.meta.wcsinfo`` (CRPIX/CRVAL/CDELT/PC/CTYPE) directly from the
-    gwcs's forward-transform parameters. ``model.save`` then serialises
-    those into the SCI extension header in the same PC+CDELT form a
-    standard jwst i2d carries, so downstream tools (DS9, astropy.wcs)
-    read the WCS the same way they would from any pipeline output.
+    gwcs's forward-transform parameters, then ``update_s_region_imaging`` to
+    stamp the footprint. ``model.save`` serialises those into the SCI extension
+    header in the same PC+CDELT form a standard jwst i2d carries, so downstream
+    tools (DS9, astropy.wcs) read the WCS the same way they would from any
+    pipeline output.
     """
     from jwst.resample.resample import ResampleImage
     from stdatamodels.jwst.datamodels import ImageModel
@@ -186,11 +264,28 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
         model.con = ctx[0].astype(np.int32, copy=False)
     else:
         model.con = ctx.astype(np.int32, copy=False)
-    model.meta.wcs = output_wcs
-    model.meta.exposure.exposure_time = float(exptime)
-    model.meta.resample.product_exposure_time = float(exptime)
 
+    _apply_output_metadata(
+        model, blender=blender, pixel_scale=pixel_scale,
+        pixfrac=pixfrac, kernel=kernel, weight_type=weight_type,
+        exptime=exptime, n_pointings=n_pointings,
+        pixel_scale_ratio=pixel_scale_ratio,
+    )
+
+    model.meta.wcs = output_wcs
     ResampleImage.update_fits_wcsinfo(model)
+    # update_fits_wcsinfo writes the projection keywords (CRPIX/CDELT/PC/CTYPE)
+    # but not WCSAXES/CUNIT — in the jwst path those carry over from the input
+    # wcsinfo. The output is always a 2D celestial TAN in degrees, so set them
+    # explicitly so the SCI header (and the split-extension files) is complete.
+    model.meta.wcsinfo.wcsaxes = 2
+    model.meta.wcsinfo.cunit1 = 'deg'
+    model.meta.wcsinfo.cunit2 = 'deg'
+    try:
+        from jwst.assign_wcs import util as assign_wcs_util
+        assign_wcs_util.update_s_region_imaging(model)
+    except Exception as exc:  # footprint stamping is best-effort
+        log(f"  could not stamp S_REGION: {exc}")
 
     model.save(output_path)
 
@@ -247,13 +342,18 @@ def _sanitize_variance(var_rnoise, var_poisson, var_flat, weight):
 
 
 def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
-                           weight_type, good_bits):
+                           weight_type, good_bits, blender=None):
     """Open one CRF and prepare the per-input arrays drizzle needs.
 
     Returns a dict with ``data``, ``err``, ``var_total``, ``weight``,
     ``pixmap``, ``exptime``, ``xmin``/``xmax``/``ymin``/``ymax``,
     ``in_shape``, ``input_gwcs`` — or ``None`` if the input footprint
     does not overlap the tile.
+
+    If ``blender`` is given (the resample path), the input model is fed to it
+    for header blending — only once we know the input overlaps the tile, so
+    skipped inputs don't contribute metadata. This reuses the single open the
+    array prep already does. ``drizzle_tile_singles`` (outlier) passes ``None``.
 
     Shared by ``drizzle_tile`` (accumulate mode for resample) and
     ``drizzle_tile_singles`` (per-input rasters for outlier).
@@ -268,12 +368,16 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
         in_shape = data.shape
         input_gwcs = deepcopy(model.meta.wcs)
         exptime = float(model.meta.exposure.exposure_time)
+        input_pixelarea_a2 = model.meta.photometry.pixelarea_arcsecsq
 
         pixmap = _input_to_output_pixmap(input_gwcs, output_wcs, in_shape)
         bbox = _output_bbox_in_tile(pixmap, out_shape)
         if bbox is None:
             return None
         sly, slx = bbox
+
+        if blender is not None:
+            blender.accumulate(model)
 
         weight = build_driz_weight(
             {'data': model.data, 'dq': model.dq,
@@ -302,6 +406,7 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
         'pixmap': pixmap, 'exptime': exptime,
         'xmin': xmin, 'xmax': xmax, 'ymin': ymin, 'ymax': ymax,
         'in_shape': in_shape, 'input_gwcs': input_gwcs,
+        'input_pixelarea_a2': input_pixelarea_a2,
         'sly': sly, 'slx': slx,
         'bbox_shape': (sly.stop - sly.start, slx.stop - slx.start),
     }
@@ -333,6 +438,7 @@ def drizzle_tile(
     kernel='square',
     weight_type='ivm',
     good_bits='~DO_NOT_USE',
+    blendheaders=True,
     reduction_version='unknown',
 ):
     """Drizzle ``crf_files`` into a single i2d at ``output_path``.
@@ -350,7 +456,10 @@ def drizzle_tile(
 
     Parameters mirror ``Field.get_tile_wcs`` outputs (``crpix``, ``crval``,
     ``shape``, ``rotation``) and ``[nircam.resample]`` config knobs
-    (``pixfrac``, ``kernel``, ``weight_type``, ``good_bits``).
+    (``pixfrac``, ``kernel``, ``weight_type``, ``good_bits``,
+    ``blendheaders``). With ``blendheaders`` (default), input header metadata
+    is blended into the output i2d via ``jwst.model_blender`` so the product
+    carries the same keywords as a jwst ``Image3Pipeline`` mosaic.
     """
     from drizzle.resample import Drizzle
 
@@ -363,6 +472,18 @@ def drizzle_tile(
     output_wcs = _build_output_wcs(
         crf_files, crpix, crval, shape, rotation, pixel_scale,
     )
+
+    blender = None
+    if blendheaders:
+        from jwst.model_blender.blender import ModelBlender
+        # Pixel area and WCS are recomputed for the output grid in
+        # _apply_output_metadata / update_fits_wcsinfo, so they must not be
+        # inherited from the native-scale inputs.
+        blender = ModelBlender(blend_ignore_attrs=[
+            'meta.photometry.pixelarea_steradians',
+            'meta.photometry.pixelarea_arcsecsq',
+            'meta.wcs',
+        ])
 
     outsci = np.zeros(out_shape, dtype=np.float32)
     outwht = np.zeros(out_shape, dtype=np.float32)
@@ -383,16 +504,20 @@ def drizzle_tile(
     )
 
     skipped = 0
+    input_pixelarea_a2 = None
     for i, crf_file in enumerate(crf_files, start=1):
         basename = os.path.basename(crf_file)
         prep = _prepare_drizzle_input(
             crf_file, output_wcs, out_shape,
-            weight_type=weight_type, good_bits=good_bits,
+            weight_type=weight_type, good_bits=good_bits, blender=blender,
         )
         if prep is None:
             skipped += 1
             log(f"  [{i}/{n_inputs}] {basename}: no tile overlap, skipping")
             continue
+
+        if input_pixelarea_a2 is None:
+            input_pixelarea_a2 = prep['input_pixelarea_a2']
 
         common = _add_image_kwargs(prep, pixfrac)
         sci_drizzle.add_image(data=prep['data'], **common)
@@ -425,12 +550,28 @@ def drizzle_tile(
         out_var_final = np.where(outvarw > 0, outvar / outvarw, np.nan)
         outerr = np.sqrt(out_var_final).astype(np.float32)
 
+    # Only blend if at least one input actually contributed; finalizing an
+    # empty blender would have no input metadata to draw from.
+    contributing = n_inputs - skipped
+
+    # Pixel scale ratio (output/native input) -> PXSCLRT, for parity with jwst.
+    pixel_scale_ratio = None
+    if input_pixelarea_a2:
+        pixel_scale_ratio = float(pixel_scale) / float(np.sqrt(input_pixelarea_a2))
+
     _write_i2d_fits(
         output_path,
         sci=outsci, err=outerr, wht=outwht, ctx=outctx,
         output_wcs=output_wcs,
         cmpfrver=reduction_version,
         exptime=total_exptime,
+        pixel_scale=pixel_scale,
+        pixfrac=pixfrac,
+        kernel=kernel,
+        weight_type=weight_type,
+        blender=blender if contributing > 0 else None,
+        n_pointings=contributing if contributing > 0 else None,
+        pixel_scale_ratio=pixel_scale_ratio,
     )
 
     log(f"  wrote {os.path.basename(output_path)} "
