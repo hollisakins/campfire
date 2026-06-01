@@ -25,6 +25,24 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Calibration
+- Upgraded `jwst` 1.20.2 → 2.0.1 and CRDS context `jwst_1481.pmap` →
+  `jwst_1535.pmap`. This changes pixel/flux values for the same input
+  (calibration-equivalent), and is the umbrella change for the NIRSpec stage-1
+  restructure below.
+- **NIRSpec stage 1 now corrects picture-frame + 1/f per group on the 4D
+  ramp**, replacing the stock jwst `picture_frame` and `clean_flicker_noise`
+  steps. A new `CampfireDetector1Pipeline` (subclass of `Detector1Pipeline`)
+  runs the stock steps through `jump`, then a custom `CampfireRampBkgStep`
+  between `jump` and `ramp_fit` that builds CAMPFIRE's WCS-derived open-slit
+  mask (`mask_slits`) once and subtracts an iterative per-quarter picture-frame
+  template fit + column/row 1/f model (`_iterate_background`) from each group
+  (configured under `[nirspec.stage1.ramp]`). The existing rate-level
+  `subtract_background_from_rate_file` remains as a single-pass residual cleanup
+  and is still where the VAR_RNOISE rescale and manual-mask handling live. jwst
+  2.0's new in-ramp `picture_frame` and spec2 `clean_flicker_noise` (default-on)
+  are both skipped. Pixel values change versus the 1.20.2 reduction.
+
 ### Algorithm
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
   ERR map no longer fills with `inf`/`nan`. The variance pass summed the three

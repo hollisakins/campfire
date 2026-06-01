@@ -6,6 +6,6 @@ dependencies:
   - numba>=0.59
   - pip
   - pip:
-    - jwst>=1.20,<1.21
+    - jwst>=2.0.1,<2.1
     - -e ./pipeline
     - -e ./python

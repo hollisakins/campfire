@@ -56,25 +56,27 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     else: 
         uncals_to_process = [os.path.basename(f) for f in uncal_files]
 
-    kwargs = dict(
-        do_clean_flicker_noise=stage_config['do_clean_flicker_noise'],
-        mask_science_regions=stage_config['mask_science_regions'],
-        cleanup_uncal=stage_config['cleanup_uncal'],
-        cleanup_rateints=stage_config['cleanup_rateints'],
-    )
+    # Per-group ramp background config (the [nirspec.stage1.ramp] table), used
+    # by CampfireRampBkgStep in place of the stock picture_frame /
+    # clean_flicker_noise steps. The slit-mask wavelength-range overrides are
+    # shared with the phase-2 rate cleanup.
+    ramp_config = dict(stage_config.get('ramp', {}))
+    ramp_config.setdefault(
+        'override_wavelength_range', stage_config.get('override_wavelength_range', {}))
 
-    # Phase 1: Run Detector1Pipeline on all uncal files
+    # Phase 1: Run the CAMPFIRE Detector1 pipeline on all uncal files
     if n_processes > 1 and uncals_to_process:
         _prefetch_detector1_references(
             [os.path.join(obs.workspace_dir, f) for f in uncals_to_process],
-            mask_science_regions=stage_config['do_clean_flicker_noise'] and stage_config['mask_science_regions'],
         )
     dispatch(
         run_stage1_single_uncal,
         uncals_to_process,
         n_processes=n_processes,
         workspace_dir=obs.workspace_dir,
-        **kwargs,
+        ramp_config=ramp_config,
+        cleanup_uncal=stage_config.get('cleanup_uncal', True),
+        cleanup_rateints=stage_config.get('cleanup_rateints', True),
     )
 
     # Phase 2: Background subtraction on resulting rate files
@@ -294,36 +296,46 @@ def mask_slits(
         #     bkg_total += pedestal_model
 
 
-def _prefetch_detector1_references(uncal_files, mask_science_regions=False):
-    """Pre-cache CRDS reference files for Detector1Pipeline to avoid race conditions.
+def _prefetch_detector1_references(uncal_files):
+    """Pre-cache CRDS reference files for the CAMPFIRE Detector1 pipeline to
+    avoid multiprocessing race conditions.
 
     Multiple workers downloading the same CRDS file simultaneously can cause
     one to read a partially-written file. Running CRDS lookups on one file per
     unique detector beforehand ensures everything is cached.
+
+    The WCS / MSA / picture-frame references are always fetched: the per-group
+    ``CampfireRampBkgStep`` builds the open-slit mask (assign_wcs + msaflagopen)
+    and subtracts the picture-frame template in-ramp during phase 1.
     """
     import crds
 
     reftypes = [
         'dark', 'gain', 'ipc', 'linearity', 'mask',
         'readnoise', 'refpix', 'saturation', 'superbias',
+        # WCS + MSA + picture-frame, used by CampfireRampBkgStep:
+        'camera', 'collimator', 'disperser', 'fore', 'fpa',
+        'msa', 'ote', 'wavelengthrange', 'msaoper', 'flat', 'pictureframe',
     ]
-    if mask_science_regions:
-        reftypes += [
-            'camera', 'collimator', 'disperser', 'fore', 'fpa',
-            'msa', 'ote', 'wavelengthrange', 'msaoper', 'flat',
-        ]
 
-    seen_detectors = set()
+    # Dedup on (detector, grating, filter): the WCS references selected by
+    # assign_wcs (disperser, fore) vary by grating/filter, so a multi-grating
+    # observation needs one prefetch per config — not just per detector — or
+    # the non-first gratings' refs race to download in parallel workers.
+    seen_configs = set()
     for uncal_file in uncal_files:
         hdr = fits.getheader(uncal_file)
         det = hdr.get('DETECTOR', 'NRS1')
+        grating = hdr.get('GRATING', 'G140M')
+        filt = hdr.get('FILTER', 'CLEAR')
+        config_key = (det, grating, filt)
 
-        if det in seen_detectors:
+        if config_key in seen_configs:
             continue
-        seen_detectors.add(det)
+        seen_configs.add(config_key)
 
-        log(f"Pre-fetching Detector1Pipeline CRDS references for {det} "
-            f"using {os.path.basename(uncal_file)}")
+        log(f"Pre-fetching Detector1Pipeline CRDS references for "
+            f"{det}/{grating}/{filt} using {os.path.basename(uncal_file)}")
 
         params = {
             "INSTRUME": "NIRSPEC",
@@ -337,12 +349,9 @@ def _prefetch_detector1_references(uncal_files, mask_science_regions=False):
             "SUBSIZE2": hdr.get('SUBSIZE2', 2048),
             "DATE-OBS": hdr.get('DATE-OBS', '2023-01-01'),
             "TIME-OBS": hdr.get('TIME-OBS', '00:00:00'),
+            "FILTER": filt,
+            "GRATING": grating,
         }
-        if mask_science_regions:
-            params.update({
-                "FILTER": hdr.get('FILTER', 'CLEAR'),
-                "GRATING": hdr.get('GRATING', 'G140M'),
-            })
 
         try:
             refs = crds.getreferences(params, reftypes=reftypes, observatory='jwst')
@@ -351,7 +360,7 @@ def _prefetch_detector1_references(uncal_files, mask_science_regions=False):
             log(f"  Cached {len(cached)}/{len(reftypes)} references: "
                 f"{', '.join(sorted(cached))}")
         except Exception as e:
-            log(f"  CRDS prefetch warning for {det}: {e}")
+            log(f"  CRDS prefetch warning for {det}/{grating}/{filt}: {e}")
 
     log("Detector1Pipeline CRDS reference pre-fetch complete")
 
@@ -473,6 +482,203 @@ def _fit_col_template(residual, mask, template, sigma_clip=True,
     return col_model
 
 
+# ---------------------------------------------------------------------------
+# Background-fit building blocks
+#
+# Extracted from subtract_background_from_rate_file so the same picture-frame +
+# 1/f model runs both on a 2D rate (phase-2 cleanup) and per-group on the 4D
+# ramp (CampfireRampBkgStep). Each ``_fit_*`` takes a 2D residual image + a
+# boolean mask (True = background pixel to use) and returns a 2D model to
+# subtract. ``_iterate_background`` is the shared n_iter accumulation loop.
+# ---------------------------------------------------------------------------
+
+
+def _fit_picture_frame(img, mask, template, sigma_clip=True, n_quarters=4, verbose=False):
+    """Per-quarter 2-parameter fit ``data = coeff*template + pedestal``.
+
+    Splits the detector into ``n_quarters`` horizontal bands and fits each
+    independently with iterative 3-sigma (MAD) clipping. Returns a 2D model.
+    """
+    from astropy.stats import median_absolute_deviation
+
+    model = np.zeros_like(img)
+    quarter_height = img.shape[0] // n_quarters
+
+    for i in range(n_quarters):
+        row_start = i * quarter_height
+        row_end = (i + 1) * quarter_height
+
+        q_data = img[row_start:row_end, :]
+        q_mask = mask[row_start:row_end, :]
+        q_template = template[row_start:row_end, :]
+
+        # 2-parameter fit: data = coeff * template + pedestal
+        q_valid = q_data[q_mask]
+        q_templ_valid = q_template[q_mask]
+        A = np.column_stack([q_templ_valid, np.ones_like(q_templ_valid)])
+        (best_coeff, pedestal), _, _, _ = np.linalg.lstsq(A, q_valid, rcond=None)
+
+        # Iterative sigma clipping on the residuals
+        if sigma_clip:
+            for _iteration in range(5):
+                residual = q_valid - (best_coeff * q_templ_valid + pedestal)
+                sigma_mad = median_absolute_deviation(residual)
+                clip_mask = np.abs(residual - np.median(residual)) < 3.0 * sigma_mad
+                if clip_mask.sum() == len(q_valid):
+                    break  # converged, nothing more to clip
+                q_valid = q_valid[clip_mask]
+                q_templ_valid = q_templ_valid[clip_mask]
+                A = np.column_stack([q_templ_valid, np.ones_like(q_templ_valid)])
+                (best_coeff, pedestal), _, _, _ = np.linalg.lstsq(A, q_valid, rcond=None)
+
+        if verbose:
+            log(f'  Quarter {i+1} (rows {row_start}:{row_end}): '
+                f'PF coeff = {best_coeff:.4f}, pedestal = {pedestal:.4f}')
+
+        model[row_start:row_end, :] = best_coeff * q_template + pedestal
+
+    return model
+
+
+def _fit_bkg2d(img, mask, box_size=64, bkg_estimator='median', sigma_clip=True):
+    """2D background via photutils ``Background2D`` over background pixels."""
+    from photutils.background import Background2D, MedianBackground
+    from astropy.stats import SigmaClip
+
+    match bkg_estimator:
+        case 'median':
+            bkg_est = MedianBackground()
+        case _:
+            bkg_est = None
+    sclip = SigmaClip(sigma=3.0, maxiters=5) if sigma_clip else None
+
+    bkg = Background2D(
+        img,
+        box_size=box_size,
+        filter_size=(3, 3),
+        mask=~mask,
+        sigma_clip=sclip,
+        bkg_estimator=bkg_est,
+    )
+    return bkg.background
+
+
+def _fit_col_1f(img, mask, template=None, col_1f_method='template',
+                sigma_clip=True, use_pictureframe=False, verbose=False):
+    """Column 1/f model: per-column PF-template fit (``template`` method) or a
+    flat per-column median. Returns a row-broadcastable / 2D model."""
+    if col_1f_method == 'template' and use_pictureframe:
+        if verbose:
+            log('Subtracting column 1/f via per-column PF template fit')
+        return _fit_col_template(img, mask, template, sigma_clip=sigma_clip)
+
+    if col_1f_method == 'template' and not use_pictureframe and verbose:
+        # Gated on verbose: in the per-group ramp loop this helper is called
+        # once per group*integration, so an ungated warning floods the log.
+        log('WARNING: col_1f_method="template" requested but no PF template '
+            'available; falling back to per-column median')
+    rate_masked = img.copy()
+    rate_masked[~mask] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        col_model = np.nanmedian(rate_masked, axis=0)[np.newaxis, :]
+    col_model[~np.isfinite(col_model)] = 0.0
+    return col_model
+
+
+def _fit_row_1f(img, mask):
+    """Per-row median 1/f model (PRISM only). Returns a column vector."""
+    rate_masked = img.copy()
+    rate_masked[~mask] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        full_row_masked = np.sum(np.isfinite(rate_masked), axis=1) == 0
+        rate_masked[full_row_masked, :] = np.nanmedian(rate_masked)
+        row_model = np.nanmedian(rate_masked, axis=1)[:, np.newaxis]
+    row_model[~np.isfinite(row_model)] = 0.0
+    return row_model
+
+
+def _iterate_background(
+        img, slitmask, *,
+        n_iter=5, n_sigma=2.0, fit_histogram=False,
+        do_picture_frame=False, template=None,
+        subtract_2d=False, box_size=64, bkg_estimator='median', sigma_clip=True,
+        do_col_1f=True, col_1f_method='template', do_row_1f=True,
+        verbose=False,
+    ):
+    """Iterative additive background model for one 2D image.
+
+    Shared core for the phase-2 rate cleanup and the per-group ramp step. On
+    each of ``n_iter`` passes it re-derives the background mask from
+    ``slitmask`` via ``clip_to_background``, then accumulates picture-frame,
+    optional 2D background, and column/row 1/f components into ``bkg_total``.
+
+    Returns ``(bkg_total, mask, components)`` where ``components`` maps
+    ``'pictureframe'``/``'bkg2d'``/``'col'``/``'row'`` to the summed-over-
+    iterations 2D model (or ``None`` if that component was disabled). ``mask``
+    is the final background mask, suitable for the variance-rescale statistics.
+    """
+    from jwst.clean_flicker_noise.clean_flicker_noise import clip_to_background
+
+    bkg_total = np.zeros_like(img)
+    use_pictureframe = do_picture_frame and template is not None
+
+    pf_total = np.zeros_like(img) if use_pictureframe else None
+    bkg2d_total = np.zeros_like(img) if subtract_2d else None
+    col_total = np.zeros_like(img) if do_col_1f else None
+    row_total = np.zeros_like(img) if do_row_1f else None
+
+    mask = slitmask.copy()
+    for j in range(n_iter):
+        if verbose:
+            log(f'Iteration {j+1}/{n_iter}')
+
+        mask = slitmask.copy()
+        clip_to_background(img - bkg_total, mask, sigma_upper=n_sigma,
+                           fit_histogram=fit_histogram, verbose=verbose)
+
+        if use_pictureframe:
+            if verbose:
+                log('Subtracting "picture frame" template (per-quarter fitting)')
+            pf = _fit_picture_frame(img - bkg_total, mask, template,
+                                    sigma_clip=sigma_clip, verbose=verbose)
+            pf_total += pf
+            bkg_total += pf
+
+            # Re-clip mask against the post-PF residual so subsequent steps
+            # (2D background, 1/f) use a mask consistent with the post-PF data.
+            mask = slitmask.copy()
+            clip_to_background(img - bkg_total, mask, sigma_upper=n_sigma,
+                               fit_histogram=fit_histogram, verbose=False)
+
+        if subtract_2d:
+            b2 = _fit_bkg2d(img - bkg_total, mask, box_size=box_size,
+                            bkg_estimator=bkg_estimator, sigma_clip=sigma_clip)
+            bkg_total += b2
+            bkg2d_total += b2
+
+        if do_col_1f:
+            c = _fit_col_1f(img - bkg_total, mask, template=template,
+                            col_1f_method=col_1f_method, sigma_clip=sigma_clip,
+                            use_pictureframe=use_pictureframe, verbose=verbose)
+            bkg_total += c
+            col_total += c
+
+        if do_row_1f:
+            r = _fit_row_1f(img - bkg_total, mask)
+            bkg_total += r
+            row_total += r
+
+    components = {
+        'pictureframe': pf_total,
+        'bkg2d': bkg2d_total,
+        'col': col_total,
+        'row': row_total,
+    }
+    return bkg_total, mask, components
+
+
 def subtract_background_from_rate_file(
         rate_file: str,
         override_wavelength_range: dict = {},
@@ -490,8 +696,6 @@ def subtract_background_from_rate_file(
 
     from stdatamodels import util as stutil
     from jwst.datamodels import ImageModel
-    from jwst.clean_flicker_noise.clean_flicker_noise import _make_processed_rate_image
-    from astropy.stats import median_absolute_deviation
 
     input_dir = os.path.dirname(rate_file)
 
@@ -532,220 +736,27 @@ def subtract_background_from_rate_file(
 
         slitmask[model.dq > 0] = False
 
-        detector = 'nrs2'
-        if 'nrs1' in rate_file:
-            detector = 'nrs1'
-
-        # Initialize background model
-        bkg_total = np.zeros_like(model.data)
-
-        # Track components for plotting
-        pictureframe_model = None
-        pedestal_model = None
-        bkg2d_model = None
-        col_model = None
-        row_model = None
-
         # Look up pictureframe reference via CRDS
         pictureframe_file = _get_pictureframe_file(rate_file)
         use_pictureframe = pictureframe_file is not None
+        pictureframe_template = fits.getdata(pictureframe_file) if use_pictureframe else None
 
-        if use_pictureframe:
-            pictureframe_model_total = np.zeros_like(model.data)
-            pictureframe_template = fits.getdata(pictureframe_file)
-        if subtract_2d:
-            bkg2d_model_total = np.zeros_like(model.data)
-        if do_col_1f:
-            col_model_total = np.zeros_like(model.data)
-        if do_row_1f:
-            row_model_total = np.zeros_like(model.data)
+        bkg_total, mask, components = _iterate_background(
+            model.data, slitmask,
+            n_iter=n_iter, do_picture_frame=use_pictureframe,
+            template=pictureframe_template,
+            subtract_2d=subtract_2d, box_size=box_size,
+            bkg_estimator=bkg_estimator, sigma_clip=sigma_clip,
+            do_col_1f=do_col_1f, col_1f_method=col_1f_method, do_row_1f=do_row_1f,
+            verbose=True,
+        )
 
-
-        from jwst.clean_flicker_noise.clean_flicker_noise import clip_to_background
-        n_sigma, fit_histogram = 2.0, False
-
-        for j in range(n_iter):
-            log(f'Iteration {j+1}/{n_iter}')
-
-            mask = slitmask.copy()
-            clip_to_background(model.data-bkg_total, mask, sigma_upper=n_sigma, fit_histogram=fit_histogram, verbose=True)
-
-            if use_pictureframe:
-                log(f'Subtracting "picture frame" template (per-quarter fitting)')
-                n_quarters = 4
-                quarter_height = 2048 // n_quarters
-
-                pictureframe_model = np.zeros_like(model.data)
-
-                for i in range(n_quarters):
-                    row_start = i * quarter_height
-                    row_end = (i + 1) * quarter_height
-
-                    q_data = model.data[row_start:row_end, :] - bkg_total[row_start:row_end, :]
-                    q_mask = mask[row_start:row_end, :]
-                    q_template = pictureframe_template[row_start:row_end, :]
-
-                    # 2-parameter fit: data = coeff * template + pedestal
-                    q_valid = q_data[q_mask]
-                    q_templ_valid = q_template[q_mask]
-                    A = np.column_stack([q_templ_valid, np.ones_like(q_templ_valid)])
-                    (best_coeff, pedestal), _, _, _ = np.linalg.lstsq(A, q_valid, rcond=None)
-
-                    # Iterative sigma clipping on the residuals
-                    if sigma_clip:
-                        for iteration in range(5):
-                            residual = q_valid - (best_coeff * q_templ_valid + pedestal)
-                            sigma_mad = median_absolute_deviation(residual)
-                            clip_mask = np.abs(residual - np.median(residual)) < 3.0 * sigma_mad
-                            if clip_mask.sum() == len(q_valid):
-                                break  # converged, nothing more to clip
-                            q_valid = q_valid[clip_mask]
-                            q_templ_valid = q_templ_valid[clip_mask]
-                            A = np.column_stack([q_templ_valid, np.ones_like(q_templ_valid)])
-                            (best_coeff, pedestal), _, _, _ = np.linalg.lstsq(A, q_valid, rcond=None)
-
-                    log(f'  Quarter {i+1} (rows {row_start}:{row_end}): '
-                        f'PF coeff = {best_coeff:.4f}, pedestal = {pedestal:.4f}')
-
-                    pictureframe_model[row_start:row_end, :] = best_coeff * q_template + pedestal
-
-                pictureframe_model_total += pictureframe_model
-                bkg_total += pictureframe_model
-
-                # Re-clip mask against updated residual so subsequent steps
-                # (2D background, 1/f) use a mask consistent with the post-PF data
-                mask = slitmask.copy()
-                clip_to_background(model.data-bkg_total, mask, sigma_upper=n_sigma, fit_histogram=fit_histogram, verbose=False)
-
-            # if pictureframe_dir:
-            #     log(f'Subtracting "picture frame" template (global coeff + per-quarter pedestal)')
-            #     n_quarters = 4
-            #     quarter_height = 2048 // n_quarters
-
-            #     pictureframe_model = np.zeros_like(model.data)
-
-            #     residual = (model.data - bkg_total)
-
-            #     # Step 1: Fit a single global coefficient for the template
-            #     global_valid = residual[mask]
-            #     global_templ_valid = pictureframe_template[mask]
-
-            #     A = global_templ_valid[:, np.newaxis]  # single-parameter fit (no constant)
-            #     (best_coeff,), _, _, _ = np.linalg.lstsq(A, global_valid, rcond=None)
-
-            #     if sigma_clip:
-            #         for iteration in range(5):
-            #             resid = global_valid - best_coeff * global_templ_valid
-            #             sigma_mad = median_absolute_deviation(resid)
-            #             clip_mask = np.abs(resid - np.median(resid)) < 3.0 * sigma_mad
-            #             if clip_mask.sum() == len(global_valid):
-            #                 break
-            #             global_valid = global_valid[clip_mask]
-            #             global_templ_valid = global_templ_valid[clip_mask]
-            #             A = global_templ_valid[:, np.newaxis]
-            #             (best_coeff,), _, _, _ = np.linalg.lstsq(A, global_valid, rcond=None)
-
-            #     log(f'  Global PF coeff = {best_coeff:.4f}')
-            #     pictureframe_model = best_coeff * pictureframe_template
-
-            #     # Step 2: Fit per-quarter pedestals on the PF-subtracted residual
-            #     pedestal_model = np.zeros_like(model.data)
-            #     pf_residual = residual - pictureframe_model
-
-            #     for i in range(n_quarters):
-            #         row_start = i * quarter_height
-            #         row_end = (i + 1) * quarter_height
-
-            #         q_resid = pf_residual[row_start:row_end, :]
-            #         q_mask = mask[row_start:row_end, :]
-
-            #         if sigma_clip:
-            #             from astropy.stats import sigma_clipped_stats
-            #             pedestal = sigma_clipped_stats(q_resid[q_mask], sigma=3.0, maxiters=5)[1]
-            #         else:
-            #             pedestal = np.nanmedian(q_resid[q_mask])
-
-            #         log(f'  Quarter {i+1} (rows {row_start}:{row_end}): pedestal = {pedestal:.4f}')
-            #         pedestal_model[row_start:row_end, :] = pedestal
-
-            #     pictureframe_model_total += pictureframe_model
-            #     pedestal_model_total += pedestal_model
-            #     bkg_total += pictureframe_model + pedestal_model
-
-            if subtract_2d:
-                from photutils.background import Background2D, MedianBackground
-                from astropy.stats import SigmaClip
-                match bkg_estimator:
-                    case 'median':
-                        bkg_est = MedianBackground()
-                    case _:
-                        bkg_est = None
-                if sigma_clip:
-                    sclip = SigmaClip(sigma=3.0, maxiters=5)
-                else:
-                    sclip = None
-
-                bkg = Background2D(
-                    model.data - bkg_total,
-                    box_size=box_size,
-                    filter_size=(3,3),
-                    mask=~mask,
-                    sigma_clip=sclip,
-                    bkg_estimator=bkg_est,
-                )
-
-                bkg2d_model = bkg.background
-                bkg_total += bkg2d_model
-                bkg2d_model_total += bkg2d_model
-
-
-            if do_col_1f:
-                if col_1f_method == 'template' and use_pictureframe:
-                    log(f'Subtracting column 1/f via per-column PF template fit')
-                    col_model = _fit_col_template(
-                        model.data - bkg_total, mask, pictureframe_template,
-                        sigma_clip=sigma_clip,
-                    )
-                else:
-                    if col_1f_method == 'template' and not use_pictureframe:
-                        log(f'WARNING: col_1f_method="template" requested but no PF template '
-                            f'available; falling back to per-column median')
-                    rate_masked = (model.data - bkg_total).copy()
-                    rate_masked[~mask] = np.nan
-
-                    with warnings.catch_warnings():
-                        warnings.simplefilter('ignore')
-                        col_model = np.nanmedian(rate_masked, axis=0)[np.newaxis,:]
-                    col_model[~np.isfinite(col_model)] = 0.0
-
-                bkg_total += col_model
-                col_model_total += col_model
-
-            if do_row_1f:
-                rate_masked = (model.data - bkg_total).copy()
-                rate_masked[~mask] = np.nan
-
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    full_row_masked = np.sum(np.isfinite(rate_masked),axis=1)==0
-                    rate_masked[full_row_masked,:] = np.nanmedian(rate_masked)
-                    row_model = np.nanmedian(rate_masked, axis=1)[:,np.newaxis]
-                row_model[~np.isfinite(row_model)] = 0.0
-
-                bkg_total += row_model
-                row_model_total += row_model
-
-
-        # Point the names the plotting code expects at the totals
-        if use_pictureframe:
-            pictureframe_model = pictureframe_model_total
-            # pedestal_model = pedestal_model_total
-        if subtract_2d:
-            bkg2d_model = bkg2d_model_total
-        if do_col_1f:
-            col_model = col_model_total
-        if do_row_1f:
-            row_model = row_model_total
+        # Names the plotting code expects (pedestal component is unused)
+        pictureframe_model = components['pictureframe']
+        pedestal_model = None
+        bkg2d_model = components['bkg2d']
+        col_model = components['col']
+        row_model = components['row']
 
         if plot:
             from campfire_pipeline.nirspec.plots import plot_bkg_subtraction
@@ -796,43 +807,64 @@ def subtract_background_from_rate_file(
 def run_stage1_single_uncal(
         uncal_file,
         workspace_dir,
-        do_clean_flicker_noise=True,
-        mask_science_regions=True,
+        ramp_config=None,
         cleanup_uncal=True,
         cleanup_rateints=True,
     ):
+    """Run the CAMPFIRE Detector1 pipeline on a single *_uncal.fits file.
+
+    Uses ``CampfireDetector1Pipeline``, which runs the per-group picture-frame
+    + 1/f background step (``CampfireRampBkgStep``) in place of the stock
+    ``picture_frame`` and ``clean_flicker_noise`` steps.
+
+    ``ramp_config`` is the merged ``[nirspec.stage1.ramp]`` table (plus an
+    ``override_wavelength_range`` dict for the slit mask).
     """
-    Runs the JWST Detector1Pipeline on a single *_uncal.fits file.
-    Optionally includes the clean_flicker_noise step.
-    """
+    ramp_config = dict(ramp_config or {})
 
     # Handle directory changes
     prev_cwd = os.getcwd()
-
     os.chdir(workspace_dir)
 
     try:
-        from jwst.pipeline import Detector1Pipeline
+        from campfire_pipeline.nirspec.detector1 import (
+            CampfireDetector1Pipeline, CampfireRampBkgStep,
+        )
+
+        # override_wavelength_range is a dict and can't live in a Step `spec`;
+        # set it as a class attribute (this worker process is isolated, so it
+        # won't race other obs/gratings).
+        CampfireRampBkgStep.override_wavelength_range = (
+            ramp_config.get('override_wavelength_range', {}) or {})
+
+        scalar_keys = (
+            'do_picture_frame', 'subtract_2d', 'box_size', 'sigma_clip',
+            'bkg_estimator', 'do_col_1f', 'do_row_1f', 'col_1f_method',
+            'n_iter', 'plot',
+        )
+        campfire_bkg_steps = {k: ramp_config[k] for k in scalar_keys if k in ramp_config}
+
         steps = {
-                'clean_flicker_noise' :{
-                    'skip': not do_clean_flicker_noise,
-                    'mask_science_regions':mask_science_regions,
-                    'save_mask': False,
-                },
-                'jump': {
-                    'skip': False, # testing, should be False normally
-                    'expand_large_events': True, # testing, should be True normally
-                }
-            }
-        Detector1Pipeline.call(uncal_file,
+            'jump': {
+                'skip': False,
+                'expand_large_events': True,
+            },
+            'campfire_bkg': campfire_bkg_steps,
+        }
+        CampfireDetector1Pipeline.call(
+            uncal_file,
             save_results=True,
+            output_dir=workspace_dir,
             steps=steps,
         )
+
         if cleanup_uncal:
             log(f'Finished Detector1Pipeline for {uncal_file}, removing...')
             os.remove(uncal_file)
         if cleanup_rateints:
-            os.remove(uncal_file.replace('_uncal.fits', '_rateints.fits'))
+            rateints = uncal_file.replace('_uncal.fits', '_rateints.fits')
+            if os.path.exists(rateints):
+                os.remove(rateints)
 
         return 1
 
