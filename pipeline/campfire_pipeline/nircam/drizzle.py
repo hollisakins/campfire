@@ -5,10 +5,21 @@ NIRCam stage-3 resample (issue #138).
 Structural win over ``stcal.resample.resample.Resample``: the **variance
 trick**. A single persistent accumulator ``outvar`` is filled by drizzling
 ``var_total · wht`` weighted by ``wht``; the final ERR is
-``sqrt(outvar / outwht)``. Replaces stcal's three transient per-component
+``sqrt(outvar / outvarw)``. Replaces stcal's three transient per-component
 variance drizzles plus Python-level full-tile masked accumulator updates
 (~21 s/input × 200 inputs ≈ 70 min/tile of bookkeeping at COSMOS-Web
 scale).
+
+Non-finite or negative input variances are masked *per component* before the
+sum (``_sanitize_variance``) — without this, one input pixel with ``inf``/
+``nan`` variance poisons every output pixel its kernel touches (``inf`` is
+sticky in cdriz's running weighted mean), which is what stcal's per-component
+``isfinite`` masking quietly prevents. A bad component drops only its own term
+(so a component that is bad across many inputs degrades gracefully instead of
+punching a NaN hole); a pixel is dropped entirely only when no component is
+valid. The surviving weight is accumulated in ``outvarw`` and used to normalize
+``outvar``, so excluded pixels bias neither the numerator nor the denominator.
+The SCI/WHT pass is unaffected.
 
 The trick is the canonical kernel-weighted variance estimator
 ``V = (Σᵢ kᵢ wᵢ² varᵢ_total) / (Σᵢ kᵢ wᵢ)²``. This is *not* identical
@@ -194,6 +205,47 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
         )
 
 
+def _sanitize_variance(var_rnoise, var_poisson, var_flat, weight):
+    """Sum the variance components for the variance pass, masking per component.
+
+    Each component is validated independently with ``(c >= 0) & isfinite(c)``
+    (the same condition stcal applies per component in
+    ``stcal.resample.resample.resample_variance_arrays``) and contributes 0
+    where it is non-finite or negative. A single bad component — e.g.
+    ``var_poisson = inf`` at a pixel that is *not* flagged ``DO_NOT_USE`` —
+    therefore drops only that term; the pixel keeps its surviving components
+    instead of being discarded wholesale. This matters most when a bad
+    component is correlated across inputs (a flat-field column, a reference
+    region): masking the *summed* variance would zero every input there and
+    punch a NaN hole into the ERR map, whereas per-component masking keeps the
+    good terms (``var_rnoise`` is essentially always finite and positive, so
+    the pixel stays finite).
+
+    Returns ``(var_total, var_weight)``:
+
+    - ``var_total`` is the sum of the validated components — finite and ``>= 0``
+      everywhere, so the ``var·weight`` data array handed to cdriz never carries
+      an ``inf``/``nan``.
+    - ``var_weight`` is the SCI ``weight`` zeroed only at *fully dead* pixels,
+      where no component is valid. Those are dropped from both the variance
+      numerator and its normalizing weight (``outvarw``), so they become
+      ERR = NaN rather than a spurious ERR = 0; everywhere else ``var_weight``
+      equals ``weight``, leaving the SCI/coverage weight untouched.
+
+    Without any masking, one input pixel with ``inf``/``nan`` variance poisons
+    every output pixel its kernel touches (``inf`` is sticky in cdriz's running
+    weighted mean), blowing up the final ERR for all co-located inputs.
+    """
+    var_total = np.zeros(weight.shape, dtype=np.float32)
+    any_valid = np.zeros(weight.shape, dtype=bool)
+    for component in (var_rnoise, var_poisson, var_flat):
+        valid = np.isfinite(component) & (component >= 0)
+        var_total += np.where(valid, component, np.float32(0.0))
+        any_valid |= valid
+    var_weight = np.where(any_valid, weight, np.float32(0.0)).astype(np.float32)
+    return var_total, var_weight
+
+
 def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
                            weight_type, good_bits):
     """Open one CRF and prepare the per-input arrays drizzle needs.
@@ -231,10 +283,13 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
             flag_name_map=pixel_flags,
         ).astype(np.float32)
 
-        var_total = (
-            np.asarray(model.var_rnoise, dtype=np.float32)
-            + np.asarray(model.var_poisson, dtype=np.float32)
-            + np.asarray(model.var_flat, dtype=np.float32)
+        # Sum the variance components, masking each independently (see
+        # _sanitize_variance) so one bad component can't poison the ERR map.
+        var_total, var_weight = _sanitize_variance(
+            np.asarray(model.var_rnoise, dtype=np.float32),
+            np.asarray(model.var_poisson, dtype=np.float32),
+            np.asarray(model.var_flat, dtype=np.float32),
+            weight,
         )
 
         xmin, xmax, ymin, ymax = resample_range(
@@ -243,7 +298,7 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
 
     return {
         'data': data, 'err': err,
-        'var_total': var_total, 'weight': weight,
+        'var_total': var_total, 'weight': weight, 'var_weight': var_weight,
         'pixmap': pixmap, 'exptime': exptime,
         'xmin': xmin, 'xmax': xmax, 'ymin': ymin, 'ymax': ymax,
         'in_shape': in_shape, 'input_gwcs': input_gwcs,
@@ -287,9 +342,11 @@ def drizzle_tile(
       writes weighted-mean SCI and weight sum, tracks input contributions
       in the context array).
     - ``outvar`` / ``outvarw`` — variance-trick pass (drizzle ``var·wht``
-      weighted by ``wht``; ``outvarw`` exists only because Drizzle requires
-      an out_wht buffer, its values are discarded and equal ``outwht`` mod
-      float32 accumulation order).
+      weighted by the *masked* variance weight; ``outvarw`` is the running
+      sum of that weight and is used to normalize ``outvar`` into the final
+      variance. It equals ``outwht`` bit-for-bit except at pixels where some
+      input's variance was non-finite/negative and thus excluded from the
+      variance estimate — see ``_prepare_drizzle_input``).
 
     Parameters mirror ``Field.get_tile_wcs`` outputs (``crpix``, ``crval``,
     ``shape``, ``rotation``) and ``[nircam.resample]`` config knobs
@@ -339,21 +396,33 @@ def drizzle_tile(
 
         common = _add_image_kwargs(prep, pixfrac)
         sci_drizzle.add_image(data=prep['data'], **common)
+        # The variance pass uses the *masked* variance weight from
+        # _sanitize_variance (zero only at fully-dead pixels, where no variance
+        # component is valid) so those are excluded from both the numerator and
+        # ``outvarw`` (the denominator). var_total is finite everywhere (bad
+        # components contribute 0), so the ``var·weight`` data array is finite.
+        # ``data`` keeps the unmasked SCI ``weight`` so the numerator carries
+        # the wᵢ² factor; ``weight_map`` carries the masked weight.
         var_drizzle.add_image(
             data=(prep['var_total'] * prep['weight']).astype(np.float32),
-            **common,
+            **dict(common, weight_map=prep['var_weight']),
         )
         log(f"  [{i}/{n_inputs}] drizzled {basename}")
 
     total_exptime = float(sci_drizzle.total_exptime)
 
     # Final ERR. The variance trick gives outvar (per pixel) =
-    # Σwᵢ²kᵢvarᵢ / Σwᵢkᵢ; dividing by outwht (= Σwᵢkᵢ) yields the canonical
-    # weighted variance Σwᵢ²kᵢvarᵢ / (Σwᵢkᵢ)². Pixels with zero weight
+    # Σwᵢ²kᵢvarᵢ / Σwᵢkᵢ; dividing by outvarw (= Σwᵢkᵢ over the inputs with a
+    # valid variance estimate) yields the canonical weighted variance
+    # Σwᵢ²kᵢvarᵢ / (Σwᵢkᵢ)². outvarw is used in place of outwht so that inputs
+    # masked out of the variance estimate are excluded from its normalization
+    # too; at pixels with no masking the two are bit-identical (same inputs,
+    # weights, and pixmap in the same order). Pixels with zero variance weight
     # become ERR = NaN (matches stcal's missing-data convention used by
-    # bkgsub.off_detector via np.isnan(err)).
+    # bkgsub.off_detector via np.isnan(err)) — including pixels that hold flux
+    # but where no contributing input had any valid variance component.
     with np.errstate(divide='ignore', invalid='ignore'):
-        out_var_final = np.where(outwht > 0, outvar / outwht, np.nan)
+        out_var_final = np.where(outvarw > 0, outvar / outvarw, np.nan)
         outerr = np.sqrt(out_var_final).astype(np.float32)
 
     _write_i2d_fits(
