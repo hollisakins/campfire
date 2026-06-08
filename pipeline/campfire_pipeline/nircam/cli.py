@@ -131,23 +131,31 @@ def main():
 @main.command()
 @common_options
 @processing_options
-def process(config, field, filters, processes, overwrite):
+@click.option('--no-tui', 'no_tui', is_flag=True,
+              help='Disable the live dashboard; stream plain merged logs.')
+def process(config, field, filters, processes, overwrite, no_tui):
     """Run the per-exposure process phase (detector1 → jhat)."""
+    from campfire_pipeline.common.reporting import ReportingSession
     cfg, field_obj = _setup(config, field)
-    run_process(field_obj, cfg,
-                filters=_resolve_filters(filters, field_obj),
-                n_processes=processes, overwrite=overwrite)
+    with ReportingSession.from_config(cfg, force_plain=no_tui):
+        run_process(field_obj, cfg,
+                    filters=_resolve_filters(filters, field_obj),
+                    n_processes=processes, overwrite=overwrite)
 
 
 @main.command()
 @common_options
 @processing_options
-def combine(config, field, filters, processes, overwrite):
+@click.option('--no-tui', 'no_tui', is_flag=True,
+              help='Disable the live dashboard; stream plain merged logs.')
+def combine(config, field, filters, processes, overwrite, no_tui):
     """Run the ensemble combine phase (apply_mask → resample)."""
+    from campfire_pipeline.common.reporting import ReportingSession
     cfg, field_obj = _setup(config, field)
-    run_combine(field_obj, cfg,
-                filters=_resolve_filters(filters, field_obj),
-                n_processes=processes, overwrite=overwrite)
+    with ReportingSession.from_config(cfg, force_plain=no_tui):
+        run_combine(field_obj, cfg,
+                    filters=_resolve_filters(filters, field_obj),
+                    n_processes=processes, overwrite=overwrite)
 
 
 @main.command()
@@ -159,9 +167,12 @@ def combine(config, field, filters, processes, overwrite):
               help='Run the combine phase.')
 @click.option('--all', 'do_all', is_flag=True,
               help='Run both phases.')
+@click.option('--no-tui', 'no_tui', is_flag=True,
+              help='Disable the live dashboard; stream plain merged logs.')
 def run(config, field, filters, processes, overwrite,
-        do_process, do_combine, do_all):
+        do_process, do_combine, do_all, no_tui):
     """Run process and/or combine in one invocation."""
+    from campfire_pipeline.common.reporting import ReportingSession
     if do_all:
         do_process = do_combine = True
     if not (do_process or do_combine):
@@ -172,12 +183,13 @@ def run(config, field, filters, processes, overwrite,
     cfg, field_obj = _setup(config, field)
     filter_list = _resolve_filters(filters, field_obj)
 
-    if do_process:
-        run_process(field_obj, cfg, filters=filter_list,
-                    n_processes=processes, overwrite=overwrite)
-    if do_combine:
-        run_combine(field_obj, cfg, filters=filter_list,
-                    n_processes=processes, overwrite=overwrite)
+    with ReportingSession.from_config(cfg, force_plain=no_tui):
+        if do_process:
+            run_process(field_obj, cfg, filters=filter_list,
+                        n_processes=processes, overwrite=overwrite)
+        if do_combine:
+            run_combine(field_obj, cfg, filters=filter_list,
+                        n_processes=processes, overwrite=overwrite)
 
 
 # ---------------------------------------------------------------------------

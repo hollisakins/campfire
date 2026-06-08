@@ -484,13 +484,17 @@ def summary(config, obs):
 @click.option('--zfit', 'do_zfit', is_flag=True, help='Run redshift fitting.')
 @click.option('--summary', 'do_summary', is_flag=True, help='Generate summary.')
 @click.option('--all', 'do_all', is_flag=True, help='Run all stages.')
+@click.option('--no-tui', 'no_tui', is_flag=True,
+              help='Disable the live dashboard; stream plain merged logs.')
 def run(config, obs, source_ids, processes, overwrite,
-        do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary, do_all):
+        do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary,
+        do_all, no_tui):
     """Run multiple pipeline stages in sequence."""
     from campfire_pipeline.nirspec.stage1 import run_stage1 as _run_stage1
     from campfire_pipeline.nirspec.stage2 import run_stage2a, run_stage2b
     from campfire_pipeline.nirspec.stage3 import run_stage3 as _run_stage3
     from campfire_pipeline.nirspec.redshift_fitting import fit_redshifts
+    from campfire_pipeline.common.reporting import ReportingSession
 
     if do_all:
         do_stage1 = do_stage2a = do_stage2b = do_stage3 = do_zfit = do_summary = True
@@ -498,7 +502,10 @@ def run(config, obs, source_ids, processes, overwrite,
     if not any([do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary]):
         raise click.UsageError("Specify at least one stage flag, or use --all.")
 
-    for obs_name in obs:
+    session = ReportingSession.from_config(load_config(config),
+                                           force_plain=no_tui)
+    with session:
+      for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
         sids = _resolve_source_ids(source_ids)
 

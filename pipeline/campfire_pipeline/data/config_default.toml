@@ -19,6 +19,14 @@
 [logging]
     level = "INFO"
     format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    # Live reporting renderer for `run` commands:
+    #   "auto"  -> rich dashboard on an interactive terminal, plain merged
+    #              output when piped/redirected (HPC batch logs)
+    #   "rich"  -> always use the dashboard
+    #   "plain" -> always use plain merged output (same as --no-tui)
+    #   "off"   -> legacy behavior (no demultiplexing, logs as-is)
+    renderer = "auto"
+    log_lines = 15   # lines kept in the dashboard's scrolling log panel
 
 # === NIRSpec ===
 

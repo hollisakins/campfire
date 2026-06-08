@@ -31,6 +31,7 @@ helper risks the same half-built-pool deadlock there. (``spawn`` ignores the
 preload list entirely — each worker re-imports from scratch.)
 """
 
+import os
 import sys
 from functools import partial
 from multiprocessing import get_context
@@ -97,7 +98,7 @@ class _RetryOnIOError:
 
 
 def dispatch(func, tasks, n_processes=1, use_starmap=False, retry=False,
-             **kwargs):
+             label=None, **kwargs):
     """Run *func* over *tasks* serially or in parallel.
 
     Parameters
@@ -114,13 +115,16 @@ def dispatch(func, tasks, n_processes=1, use_starmap=False, retry=False,
         If True, each task is unpacked as positional args.
     retry : bool
         If True, wrap worker with retry logic for CRDS file errors.
+    label : str, optional
+        Human-readable name for this batch, shown as a progress group when a
+        reporting session is active. Defaults to ``func.__name__``.
     **kwargs
         Extra keyword arguments bound to *func* via functools.partial.
 
     Returns
     -------
     list
-        Collected return values (one per task).
+        Collected return values (one per task, in task order).
     """
     if retry:
         func = _RetryOnIOError(func)
@@ -129,6 +133,16 @@ def dispatch(func, tasks, n_processes=1, use_starmap=False, retry=False,
         worker = partial(func, **kwargs)
     else:
         worker = func
+
+    # When a reporting session is active, take the instrumented path so the
+    # live renderer gets progress + per-worker status + merged logs. Otherwise
+    # behaviour below is byte-identical to before.
+    from campfire_pipeline.common import reporting
+    session = reporting.active_session()
+    if session is not None:
+        group_label = label or getattr(func, '__name__', 'tasks')
+        return _dispatch_reported(worker, tasks, n_processes, use_starmap,
+                                  session, group_label)
 
     if n_processes > 1:
         log(f"Dispatching {len(tasks)} tasks across {n_processes} workers")
@@ -146,3 +160,44 @@ def dispatch(func, tasks, n_processes=1, use_starmap=False, retry=False,
             else:
                 results.append(worker(task))
         return results
+
+
+def _dispatch_reported(worker, tasks, n_processes, use_starmap, session, label):
+    """Instrumented dispatch: same result list/order/exceptions, plus events.
+
+    Order matters — some callers (e.g. nirspec ``stuck_shutters``) zip results
+    against the input tasks — so the parallel path uses ordered ``pool.imap``,
+    never ``imap_unordered``.
+    """
+    from campfire_pipeline.common import reporting
+
+    gid = session.start_group(label, len(tasks))
+    results = []
+    try:
+        if n_processes > 1:
+            log(f"Dispatching {len(tasks)} tasks across {n_processes} workers")
+            shim = reporting._ReportingShim(worker, use_starmap)
+            with _MP_CTX.Pool(processes=n_processes,
+                              initializer=reporting.worker_init,
+                              initargs=(session.queue,)) as pool:
+                for result in pool.imap(shim, tasks):
+                    results.append(result)
+                    session.advance_group(gid)
+        else:
+            log(f"Processing {len(tasks)} tasks serially")
+            pid = os.getpid()
+            for task in tasks:
+                task_label = reporting._label(task, use_starmap)
+                session.emit((reporting.TASK_START, pid, task_label))
+                try:
+                    result = worker(*task) if use_starmap else worker(task)
+                except BaseException as exc:
+                    session.emit((reporting.TASK_ERROR, pid, task_label,
+                                  repr(exc)))
+                    raise
+                session.emit((reporting.TASK_DONE, pid, task_label))
+                results.append(result)
+                session.advance_group(gid)
+    finally:
+        session.finish_group(gid)
+    return results

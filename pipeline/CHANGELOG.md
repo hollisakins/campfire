@@ -47,6 +47,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- Live reporting renderer for `run` commands (`cfpipe nirspec run`,
+  `cfpipe nircam run`/`process`/`combine`). Under multiprocessing, each worker
+  previously wrote both `cfpipe`'s own `log()` and JWST/stpipe's stdlib logging
+  straight to the shared terminal, interleaving into unparseable output with no
+  sense of progress. A `ReportingSession` (opened by the `run` CLI commands) now
+  routes every worker's logs, root-logger records, and stdout/stderr onto a
+  single queue drained by one renderer: a `rich` dashboard with progress,
+  per-worker status, and a merged log panel on an interactive terminal, falling
+  back to plain, line-ordered, demultiplexed output when piped/redirected (HPC
+  batch logs). Controlled by `[logging].renderer` (`auto`/`rich`/`plain`/`off`,
+  default `auto`) and `--no-tui`. All parallelism funnels through
+  `common.parallel.dispatch`, which is instrumented at this single chokepoint;
+  the instrumented path uses ordered `pool.imap` so result order (and exception
+  propagation) is unchanged, and behavior is byte-identical to before when no
+  session is active. No change to scientific output.
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
   output mosaic i2d now carries the same header metadata as a jwst
   `Image3Pipeline` product. Previously `_write_i2d_fits` built a blank

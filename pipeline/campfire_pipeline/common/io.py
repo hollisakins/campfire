@@ -6,9 +6,38 @@ import os
 from datetime import datetime
 
 
+# Pluggable log sink. When ``None`` (the default, and the state in any plain
+# ``cfpipe`` invocation), ``log()`` behaves exactly as it always has: a
+# timestamped ``print`` to stdout. When a reporting session is active it
+# installs a sink here — in the parent process to feed the TUI/plain renderer,
+# and in each worker process (via the pool initializer) to push structured
+# events onto the cross-process queue. The sink is a module global rather than a
+# swapped-out ``log`` function because ``log`` is imported by value in ~60 files;
+# only its *body* can be made pluggable, never its identity.
+_SINK = None
+
+
+def set_sink(sink):
+    """Install (or clear, with ``None``) the active log sink.
+
+    ``sink`` is a callable ``sink(timestamp, args, kwargs)`` where ``args`` and
+    ``kwargs`` are exactly what was passed to :func:`log`.
+    """
+    global _SINK
+    _SINK = sink
+
+
 def log(*args, **kwargs):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}]", *args, **kwargs)
+    sink = _SINK
+    if sink is None:
+        print(f"[{timestamp}]", *args, **kwargs)
+        return
+    try:
+        sink(timestamp, args, kwargs)
+    except Exception:
+        # A misbehaving renderer must never swallow or break a log call.
+        print(f"[{timestamp}]", *args, **kwargs)
 
 
 def atomic_save(model_or_hdul, path, header_updates=None, extra_hdus=None):

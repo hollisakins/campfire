@@ -184,6 +184,7 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
     cfg = get_nircam_step_config('detector1', config, field)
     log(f"detector1: dispatching {len(pending)} files for {filtname}")
     dispatch(detector1_step, pending, n_processes=n_processes,
+             label=f"detector1 ({filtname})",
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
     new_canonical = [
@@ -232,6 +233,7 @@ def _run_per_exposure(step_name, fn, cfp_key, field, config, filtname,
     cfg = get_nircam_step_config(step_name, config, field)
     log(f"{step_name}: dispatching {len(pending)} exposures for {filtname}")
     dispatch(fn, pending, n_processes=n_processes,
+             label=f"{step_name} ({filtname})",
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
     status.mark_all(pending, cfp_key)
@@ -254,6 +256,7 @@ def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
         return
     log(f"diag_striping: dispatching {len(pending)} exposures for {filtname}")
     dispatch(diag_striping_step, pending, n_processes=n_processes,
+             label=f"diag_striping ({filtname})",
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
     status.mark_all(pending, 'CFP_DIAG')
@@ -291,6 +294,7 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
     cfg['rules'] = rules
     log(f"wcs_shift: dispatching {len(pending)} exposures for {filtname}")
     dispatch(wcs_shift_step, pending, n_processes=n_processes,
+             label=f"wcs_shift ({filtname})",
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
     status.mark_all(pending, 'CFP_SHFT')
@@ -320,6 +324,7 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
         return
     log(f"bad_pixel: dispatching {len(pending)} exposures for {filtname}")
     dispatch(bad_pixel_step, pending, n_processes=n_processes,
+             label=f"bad_pixel ({filtname})",
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
     status.mark_all(pending, 'CFP_BPIX')
@@ -429,6 +434,7 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     tasks = [(visit, visit_files)
              for visit, visit_files in sorted(pending_visits.items())]
     dispatch(visit_step, tasks, n_processes=n_processes, use_starmap=True,
+             label=f"outlier ({filtname})",
              filter_files=exposures, sregions=sregions,
              field=field, step_config=cfg,
              overwrite=overwrite, status=status)
