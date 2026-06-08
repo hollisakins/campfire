@@ -232,11 +232,24 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     if stage_config.get('empirical_wavecorr'):
         wavecorr_override = build_empirical_wavecorr()
 
+    # Build extended-wavelength reference overrides if enabled. Done serially here,
+    # before the parallel dispatch, so the cache writes never race across workers.
+    # (This block re-runs on the stuck-shutter self-recursion below; the build is
+    # cache-skipped, so that is cheap and the kwargs are reconstructed, not forwarded.)
+    extended_refs = None
+    if stage_config.get('extend_g140m_g235m'):
+        from campfire_pipeline.nirspec.extended_wavelength import (
+            verify_extension_crds_compatibility, build_extended_reference_files,
+        )
+        verify_extension_crds_compatibility(obs.rate_files)
+        extended_refs = build_extended_reference_files(obs.rate_files)
+
     kwargs = dict(
         set_stellarity=stage_config.get('set_stellarity'),
         source_ids=source_ids,
         overwrite=overwrite,
         wavecorr_override=wavecorr_override,
+        extended_refs=extended_refs,
     )
 
     if not obs.directories_setup:
@@ -468,6 +481,7 @@ def run_stage2a_single_rate(
         source_ids='all',
         overwrite: bool = False,
         wavecorr_override=None,
+        extended_refs=None,
         **kwargs
     ):
 
@@ -506,6 +520,19 @@ def run_stage2a_single_rate(
     root = '_'.join(os.path.basename(rate_file).split('_')[:2])
     nod = int(os.path.basename(rate_file).split('_')[2])
     dither_point_index = fits.getheader(rate_file)['PATT_NUM']
+
+    # Resolve the extended-wavelength override for this rate file's config (if any).
+    # Constant across source_ids in this exposure; used for both the provenance card
+    # and the spec2 step overrides below. None for non-gated gratings even when the
+    # extend_g140m_g235m flag is on, so those run normally.
+    extended_override = None
+    if extended_refs:
+        _ehdr = fits.getheader(rate_file)
+        extended_override = extended_refs.get((
+            str(_ehdr.get('DETECTOR', '')).strip(),
+            str(_ehdr.get('GRATING', '')).strip(),
+            str(_ehdr.get('FILTER', '')).strip(),
+        ))
 
     source_ids_processed = []
     try:
@@ -553,6 +580,7 @@ def run_stage2a_single_rate(
             stuck = obs.stuck_closed_shutters[(obs.stuck_closed_shutters['root']==root)&(obs.stuck_closed_shutters['source_id']==source_id)]
             cards.append(('STKSHFIL', os.path.basename(obs.stuck_closed_shutters_file), 'Stuck shutter file name'))
             cards.append(('STKSHTIM', obs.stuck_closed_shutters_mtime, 'Stuck shutter file mtime'))
+            cards.append(('CFEXTWAV', extended_override is not None, 'Extended wavelength reduction applied'))
             if len(stuck) > 0:
                 cards.append(('STKSHTRS', str(stuck['shutters'][0]), 'Stuck shutters masked'))
                 for stuck_shutter in np.sort(stuck['shutters'][0])[::-1]:
@@ -599,6 +627,19 @@ def run_stage2a_single_rate(
 
             if wavecorr_override:
                 steps['wavecorr'] = {'override_wavecorr': wavecorr_override}
+
+            if extended_override:
+                steps['flat_field'] = {
+                    'override_fflat': extended_override['fflat'],
+                    'override_sflat': extended_override['sflat'],
+                }
+                steps['assign_wcs'] = {
+                    'override_wavelengthrange': extended_override['wavelengthrange'],
+                }
+                steps['photom'] = {
+                    'override_photom': extended_override['photom'],
+                }
+                log(f"Applying extended-wavelength overrides for {prod_name}")
 
             log(f"Running Spec2Pipeline for {prod_name}")
             try:

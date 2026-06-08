@@ -176,6 +176,11 @@ The package ships with calibration reference data in `campfire_pipeline/data/`:
 - NIRSpec grating dispersion tables (FITS)
 - `inoue14_igm.hdf5` — IGM absorption model (Inoue+14)
 - `jades_dr4_empirical_wavecorr.asdf` — empirical wavelength correction
+- `extended_jwst_nirspec_photom_0015.fits` — SPURS-derived calibration for the
+  opt-in extended-wavelength reduction (`[nirspec.stage2].extend_g140m_g235m`),
+  which extracts G140M/F100LP and G235M/F170LP out to 5.3 um. `Generate_Extended_Cals.py`
+  is the maintainer-only tool for re-deriving this calibration if the CRDS flats change
+  (see `docs/extended-wavelength-integration.md`).
 
 ## Package Structure
 

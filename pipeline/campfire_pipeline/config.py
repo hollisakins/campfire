@@ -278,9 +278,61 @@ def get_stage_config(stage_name, config, obs):
     Merges two layers (highest priority wins):
         1. Observation-specific overrides  (observations.toml  [obs.stageN])
         2. Config defaults + user overrides (already merged in load_config)
+
+    When ``[nirspec.stage2].extend_g140m_g235m`` is enabled for this
+    observation, stage1's background-subtraction wavelength caps for the
+    extended gratings are auto-widened (see
+    ``_widen_stage1_ranges_for_extension``) so stage1 does not subtract the
+    extended-order flux as background before stage2 can recover it.
     """
     merged = dict(config.get('nirspec', {}).get(stage_name, {}))
     merged.update(obs.stage_overrides.get(stage_name, {}))
+
+    if stage_name == 'stage1':
+        stage2 = dict(config.get('nirspec', {}).get('stage2', {}))
+        stage2.update(obs.stage_overrides.get('stage2', {}))
+        if stage2.get('extend_g140m_g235m'):
+            merged = _widen_stage1_ranges_for_extension(merged)
+
+    return merged
+
+
+def _widen_stage1_ranges_for_extension(stage1_config):
+    """Widen stage1's background-subtraction wavelength caps for extended gratings.
+
+    Extended-wavelength reductions (``[nirspec.stage2].extend_g140m_g235m``) push
+    the extracted range of G140M/F100LP and G235M/F170LP out to
+    ``EXTENDED_MAX_WAVELENGTH_UM``. Stage1's ``override_wavelength_range`` defines
+    the science footprint protected from the background estimate; if its red caps
+    stay at the nominal values, the extended-order flux is treated as background and
+    subtracted in place before stage2 runs.
+
+    Returns a copy of *stage1_config* with the red edge of the extended gratings
+    raised to the extension limit (the blue edge is preserved). The nested
+    ``override_wavelength_range`` dict is deep-copied before mutation so the loaded
+    config is never modified.
+    """
+    import copy
+    from campfire_pipeline.common.io import log
+    from campfire_pipeline.nirspec.constants import (
+        EXTENDED_MAX_WAVELENGTH_UM, EXTENDED_GRATING_FILTERS,
+    )
+
+    gratings_to_widen = {grating for grating, _filt in EXTENDED_GRATING_FILTERS}
+
+    merged = dict(stage1_config)
+    ranges = copy.deepcopy(merged.get('override_wavelength_range', {}))
+    for grating in gratings_to_widen:
+        if grating in ranges:
+            lo, hi = ranges[grating]
+            if hi < EXTENDED_MAX_WAVELENGTH_UM:
+                ranges[grating] = [lo, EXTENDED_MAX_WAVELENGTH_UM]
+                log(f"extend_g140m_g235m: widened stage1 {grating} background mask "
+                    f"red edge {hi} -> {EXTENDED_MAX_WAVELENGTH_UM} um")
+        else:
+            log(f"extend_g140m_g235m: no stage1 override_wavelength_range entry for "
+                f"{grating}; extended-order flux may be subtracted as background")
+    merged['override_wavelength_range'] = ranges
     return merged
 
 
@@ -345,5 +397,26 @@ def get_r_curve_path(grating):
         available = sorted(p.name for p in data_dir.glob('jwst_nirspec_*_disp.fits'))
         raise FileNotFoundError(
             f"R-curve file not found: {path}\nAvailable: {available}"
+        )
+    return str(path)
+
+
+def get_extended_photom_path():
+    """Get the path to the committed extended-wavelength photom reference file.
+
+    This is the SPURS-derived calibrated photom for the extended-wavelength
+    feature (``[nirspec.stage2].extend_g140m_g235m``), shipped as package data.
+
+    Returns
+    -------
+    str
+        Absolute path to ``extended_jwst_nirspec_photom_0015.fits``.
+    """
+    data_dir = Path(__file__).parent / 'data'
+    path = data_dir / 'extended_jwst_nirspec_photom_0015.fits'
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Extended photom reference not found: {path}\n"
+            "It ships with the pipeline (PR #163); ensure the package data is installed."
         )
     return str(path)

@@ -59,6 +59,29 @@ def r_curve_R_range(r_wav, r_val):
     return float(np.min(r_val)), float(np.max(r_val))
 
 
+def r_at_observed(obs_wav, r_wav, r_val):
+    """Spectral resolution R at observed wavelengths, with red-end extrapolation.
+
+    Linearly interpolates within the tabulated R-curve, but **linearly extrapolates**
+    wavelengths redward of the table instead of holding R flat (``np.interp``'s
+    default). The shipped R-curve (dispersion) files cover only the nominal grating
+    range — e.g. g140m to 2.0 um, g235m to 3.5 um — so extended-wavelength reductions
+    (``[nirspec.stage2].extend_g140m_g235m``) sample wavelengths past the table.
+    Flat-holding R there mis-models the LSF; R varies smoothly and ~linearly with
+    wavelength for a fixed grating, so a fit to the reddest tail of the curve is a
+    better extrapolant. A no-op for nominal reductions, which never reach that range.
+    """
+    obs_wav = np.asarray(obs_wav, dtype=np.float64)
+    r = np.interp(obs_wav, r_wav, r_val)
+    red = obs_wav > r_wav[-1]
+    if np.any(red):
+        tail = r_wav >= np.quantile(r_wav, 0.8)
+        if np.count_nonzero(tail) >= 2:
+            slope, intercept = np.polyfit(r_wav[tail], r_val[tail], 1)
+            r[red] = np.clip(slope * obs_wav[red] + intercept, 1.0, None)
+    return r
+
+
 def preconvolve_at_discrete_R(templates, dloglam, R_min, R_max, K):
     """Pre-convolve templates at K log-spaced spectral resolution values.
 
@@ -454,7 +477,7 @@ def assemble_templates_for_spectrum(cont_conv, line_conv, r_knots, r_wav, r_val,
     obs_wav = obs_wav.astype(np.float64)
     wav_lo, wav_hi = compute_pixel_edges(obs_wav)
 
-    r_at_obs = np.interp(obs_wav, r_wav, r_val)
+    r_at_obs = r_at_observed(obs_wav, r_wav, r_val)
     log_obs_lo = np.log(wav_lo)
     log_obs_hi = np.log(wav_hi)
     log_rest_start = np.log(wave_rest[0])

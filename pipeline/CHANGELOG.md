@@ -25,6 +25,21 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Calibration
+- Opt-in extended-wavelength reduction for G140M/F100LP and G235M/F170LP
+  (`[nirspec.stage2].extend_g140m_g235m`, default off). The F100LP/F170LP
+  long-pass filters pass light redward of the nominal grating cutoffs; when
+  enabled, spec2 extracts the redder 1st-order light out to 5.3 um. Ships a
+  SPURS-derived calibrated `photom` reference (`extended_jwst_nirspec_photom_0015.fits`,
+  PR #163) and generates extended `fflat`/`sflat`/`wavelengthrange` references on
+  the fly (cached under `$CAMPFIRE_ROOT/cache`). Stage 1's background-subtraction
+  mask auto-widens for these gratings so the extended-order flux is not subtracted
+  as background; the R-curve is linearly extrapolated past the tabulated range for
+  redshift fitting. A CRDS-compatibility guard refuses to run if the active context
+  resolves the flats/photom to versions newer than the calibration baseline
+  (re-derive with `data/Generate_Extended_Cals.py`). Only those two grating/filter
+  combos are affected; every other config is unchanged.
+
 ### Algorithm
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
   ERR map no longer fills with `inf`/`nan`. The variance pass summed the three
