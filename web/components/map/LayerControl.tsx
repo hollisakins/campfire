@@ -48,11 +48,11 @@ export function LayerControl({
   const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <div className="absolute top-[80px] left-2.5 z-[1000] bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-gray-200 dark:border-slate-700 min-w-[180px]">
+    <div className="absolute top-[80px] left-2.5 z-[1000] bg-card rounded-lg shadow-lg border border-border min-w-[180px]">
       {/* Header — always visible, click to collapse */}
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-500 dark:text-slate-400 uppercase tracking-wide hover:bg-gray-50 dark:hover:bg-slate-700/50 rounded-t-lg transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-text-secondary uppercase tracking-wide hover:bg-card-hover dark:hover:bg-slate-700/50 rounded-t-lg transition-colors"
       >
         <span className="flex items-center gap-1.5">
           <Layers className="w-3.5 h-3.5" />
@@ -70,14 +70,14 @@ export function LayerControl({
           {/* Field selector */}
           {fields.length > 1 && (
             <div className="mb-3">
-              <label className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-1 uppercase tracking-wide">
+              <label className="block text-xs font-medium text-text-secondary mb-1 uppercase tracking-wide">
                 Field
               </label>
               <div className="relative">
                 <select
                   value={selectedField}
                   onChange={(e) => onFieldChange(e.target.value)}
-                  className="w-full appearance-none bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded px-3 py-1.5 text-sm text-gray-900 dark:text-slate-100 pr-8 uppercase"
+                  className="w-full appearance-none bg-card-hover border border-border dark:border-border-strong rounded px-3 py-1.5 text-sm text-text-primary pr-8 uppercase"
                 >
                   {fields.map((f) => (
                     <option key={f} value={f}>
@@ -85,14 +85,14 @@ export function LayerControl({
                     </option>
                   ))}
                 </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary pointer-events-none" />
               </div>
             </div>
           )}
 
           {/* Filter/layer selector — 3-column grid */}
           <div className="mb-3">
-            <label className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-1.5 uppercase tracking-wide">
+            <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
               Band
             </label>
             <div className="grid grid-cols-3 gap-1">
@@ -105,7 +105,7 @@ export function LayerControl({
                   } ${
                     activeLayer?.id === layer.id
                       ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 font-medium'
-                      : 'hover:bg-gray-100 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300'
+                      : 'hover:bg-card-hover text-text-primary dark:text-text-secondary'
                   }`}
                 >
                   {layer.filter.toUpperCase()}
@@ -115,23 +115,23 @@ export function LayerControl({
           </div>
 
           {/* Marker toggle */}
-          <div className="pt-2 border-t border-gray-200 dark:border-slate-700">
+          <div className="pt-2 border-t border-border">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
                 checked={showMarkers}
                 onChange={(e) => onToggleMarkers(e.target.checked)}
-                className="rounded border-gray-300 dark:border-slate-600"
+                className="rounded border-border-strong"
               />
-              <MapPin className="w-3.5 h-3.5 text-gray-500 dark:text-slate-400" />
-              <span className="text-sm text-gray-700 dark:text-slate-300">
+              <MapPin className="w-3.5 h-3.5 text-text-secondary" />
+              <span className="text-sm text-text-primary dark:text-text-secondary">
                 Objects
                 {isLoadingMarkers ? (
-                  <span className="text-xs text-gray-400 ml-1">loading...</span>
+                  <span className="text-xs text-text-tertiary ml-1">loading...</span>
                 ) : filteredMarkerCount !== undefined && markerCount > 0 ? (
-                  <span className="text-xs text-gray-400 ml-1">({filteredMarkerCount} of {markerCount})</span>
+                  <span className="text-xs text-text-tertiary ml-1">({filteredMarkerCount} of {markerCount})</span>
                 ) : markerCount > 0 ? (
-                  <span className="text-xs text-gray-400 ml-1">({markerCount})</span>
+                  <span className="text-xs text-text-tertiary ml-1">({markerCount})</span>
                 ) : null}
               </span>
             </label>
@@ -145,17 +145,17 @@ export function LayerControl({
                 checked={showSlits}
                 onChange={(e) => onToggleSlits(e.target.checked)}
                 disabled={isLoadingSlits || slitCount === 0}
-                className="rounded border-gray-300 dark:border-slate-600 disabled:opacity-50"
+                className="rounded border-border-strong disabled:opacity-50"
               />
-              <Grid3X3 className="w-3.5 h-3.5 text-gray-500 dark:text-slate-400" />
-              <span className="text-sm text-gray-700 dark:text-slate-300">
+              <Grid3X3 className="w-3.5 h-3.5 text-text-secondary" />
+              <span className="text-sm text-text-primary dark:text-text-secondary">
                 Shutters
                 {isLoadingSlits ? (
-                  <span className="text-xs text-gray-400 ml-1">loading...</span>
+                  <span className="text-xs text-text-tertiary ml-1">loading...</span>
                 ) : filteredSlitCount !== undefined && slitCount > 0 ? (
-                  <span className="text-xs text-gray-400 ml-1">({filteredSlitCount} of {slitCount})</span>
+                  <span className="text-xs text-text-tertiary ml-1">({filteredSlitCount} of {slitCount})</span>
                 ) : slitCount > 0 ? (
-                  <span className="text-xs text-gray-400 ml-1">({slitCount})</span>
+                  <span className="text-xs text-text-tertiary ml-1">({slitCount})</span>
                 ) : null}
               </span>
             </label>
@@ -163,14 +163,14 @@ export function LayerControl({
 
           {/* Filter button */}
           {onOpenFilters && (
-            <div className="pt-2 border-t border-gray-200 dark:border-slate-700 mt-2">
+            <div className="pt-2 border-t border-border mt-2">
               <button
                 onClick={onOpenFilters}
                 className={`
                   w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-sm transition-colors
                   ${hasActiveFilters
                     ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 font-medium'
-                    : 'hover:bg-gray-100 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300'
+                    : 'hover:bg-card-hover text-text-primary dark:text-text-secondary'
                   }
                 `}
               >

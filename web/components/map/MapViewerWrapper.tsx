@@ -9,8 +9,8 @@ const MapViewer = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="flex items-center justify-center h-full bg-surface dark:bg-slate-900">
-        <div className="text-text-secondary dark:text-slate-400">Loading map...</div>
+      <div className="flex items-center justify-center h-full bg-surface dark:bg-background">
+        <div className="text-text-secondary">Loading map...</div>
       </div>
     ),
   }
