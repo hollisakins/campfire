@@ -138,8 +138,21 @@ def _input_to_output_pixmap(input_gwcs, output_wcs, in_shape):
     """
     in_ny, in_nx = in_shape
     iy, ix = np.indices((in_ny, in_nx), dtype=np.float64)
+    # ``with_bounding_box=False`` on the inverse is essential: with the default
+    # (True), ``invert`` returns NaN for every input pixel whose footprint maps
+    # outside the output WCS bounding box (e.g. an exposure that only partially
+    # overlaps the tile). cdriz (``drizzle`` 2.x) then raises "No or too few
+    # valid pixels in the pixel map" when the *finite* remainder is degenerate,
+    # aborting the whole tile. A finite, geometrically-continuous pixmap instead
+    # lets cdriz drop off-frame pixels via its normal output-bounds clipping
+    # while keeping correct kernel geometry at the tile edge. This is how
+    # jwst/stcal treat the pixmap — a pure coordinate map, with all masking
+    # (DQ, low weight) carried by the weight array, not by NaNs in the pixmap.
+    # Replacing the NaNs with a sentinel does *not* work: cdriz derives each
+    # pixel's drizzle footprint from neighbouring pixmap entries, so a sentinel
+    # poisons the geometry and zeroes the whole exposure's contribution.
     ra, dec = input_gwcs(ix, iy)
-    out_x, out_y = output_wcs.invert(ra, dec)
+    out_x, out_y = output_wcs.invert(ra, dec, with_bounding_box=False)
     pixmap = np.empty((in_ny, in_nx, 2), dtype=np.float64)
     pixmap[..., 0] = out_x
     pixmap[..., 1] = out_y
@@ -149,16 +162,25 @@ def _input_to_output_pixmap(input_gwcs, output_wcs, in_shape):
 def _output_bbox_in_tile(pixmap, out_shape, pad=4):
     """Return ``(sly, slx)`` bbox of input footprint in output frame, or None.
 
-    Pads by ``pad`` pixels on each side to cover the kernel halo, then clips
-    to the tile bounds. Returns ``None`` if the input does not overlap the
-    output tile.
+    Considers only input pixels that map *inside* the output frame (the pixmap
+    is now finite and continuous everywhere — see ``_input_to_output_pixmap`` —
+    so an in-frame test, not an ``isfinite`` test, is what identifies the
+    overlapping footprint). Pads by ``pad`` pixels on each side to cover the
+    kernel halo, then clips to the tile bounds. Returns ``None`` if the input
+    does not overlap the output tile.
     """
     out_ny, out_nx = out_shape
-    valid = np.isfinite(pixmap).all(axis=-1)
-    if not valid.any():
+    out_x = pixmap[..., 0]
+    out_y = pixmap[..., 1]
+    inside = (
+        np.isfinite(out_x) & np.isfinite(out_y)
+        & (out_x >= 0) & (out_x <= out_nx - 1)
+        & (out_y >= 0) & (out_y <= out_ny - 1)
+    )
+    if not inside.any():
         return None
-    out_x = pixmap[..., 0][valid]
-    out_y = pixmap[..., 1][valid]
+    out_x = out_x[inside]
+    out_y = out_y[inside]
 
     x_min = int(np.floor(out_x.min())) - pad
     x_max = int(np.ceil(out_x.max())) + pad + 1
