@@ -68,15 +68,15 @@ export default function DocsPage() {
         <div className="w-16 h-16 bg-red-100 dark:bg-red-950 rounded-full flex items-center justify-center mx-auto mb-4">
           <AlertCircle className="w-8 h-8 text-red-600 dark:text-red-400" />
         </div>
-        <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+        <h1 className="text-2xl font-semibold text-text-primary mb-2">
           Page Not Found
         </h1>
-        <p className="text-text-secondary dark:text-slate-400 mb-6">
+        <p className="text-text-secondary mb-6">
           The documentation page you&apos;re looking for doesn&apos;t exist.
         </p>
         <Link
           href="/docs"
-          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
         >
           Back to Docs
         </Link>
@@ -89,7 +89,7 @@ export default function DocsPage() {
       <article className="flex-1 min-w-0">
         {/* Breadcrumbs */}
         {breadcrumbs.length > 0 && (
-          <nav className="flex items-center gap-1 text-sm text-text-secondary dark:text-slate-400 mb-6">
+          <nav className="flex items-center gap-1 text-sm text-text-secondary mb-6">
             <Link href="/docs" className="hover:text-primary transition-colors">
               Docs
             </Link>
@@ -97,7 +97,7 @@ export default function DocsPage() {
               <React.Fragment key={crumb.slug}>
                 <ChevronRight className="w-4 h-4" />
                 {index === breadcrumbs.length - 1 ? (
-                  <span className="text-text-primary dark:text-slate-200">{crumb.title}</span>
+                  <span className="text-text-primary">{crumb.title}</span>
                 ) : (
                   <Link
                     href={`/docs/${crumb.slug}`}

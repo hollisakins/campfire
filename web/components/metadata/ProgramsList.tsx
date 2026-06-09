@@ -22,8 +22,8 @@ export const ProgramsList: React.FC<ProgramsListProps> = ({ programs }) => {
   }
 
   return (
-    <div className="bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
-      <div className="grid grid-cols-[auto,1fr,auto,auto] gap-4 px-4 py-2 bg-card-hover dark:bg-slate-700/40 text-[11px] uppercase tracking-wider font-semibold text-text-secondary dark:text-slate-400 border-b border-border dark:border-slate-700">
+    <div className="bg-card border border-border rounded-lg overflow-hidden">
+      <div className="grid grid-cols-[auto,1fr,auto,auto] gap-4 px-4 py-2 bg-card-hover dark:bg-card-hover/40 text-[11px] uppercase tracking-wider font-semibold text-text-secondary border-b border-border">
         <div className="w-8" />
         <div>Program · stats</div>
         <div className="text-right">Status</div>

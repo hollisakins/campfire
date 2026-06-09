@@ -49,20 +49,20 @@ export function InlineRange({
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <label className="text-sm font-medium text-text-primary dark:text-slate-200">
+        <label className="text-sm font-medium text-text-primary">
           {label}
         </label>
         {isActive && (
           <button
             onClick={() => onChange(null, null)}
-            className="text-xs text-text-secondary dark:text-slate-400 hover:text-primary transition-colors"
+            className="text-xs text-text-secondary hover:text-primary transition-colors"
           >
             Clear
           </button>
         )}
       </div>
       {description && (
-        <p className="text-xs text-text-secondary dark:text-slate-500 mb-2">{description}</p>
+        <p className="text-xs text-text-tertiary mb-2">{description}</p>
       )}
       <div className="flex items-center gap-3">
         <div className="flex-1">
@@ -75,14 +75,14 @@ export function InlineRange({
             placeholder={`Min (${minBound})`}
             step={step}
             className={`
-              w-full px-3 py-2 text-sm border rounded-lg bg-background dark:bg-slate-900
-              text-text-primary dark:text-slate-200 transition-all duration-200
+              w-full px-3 py-2 text-sm border rounded-lg bg-background
+              text-text-primary transition-all duration-200
               focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary
-              ${isActive ? 'border-primary/50' : 'border-border dark:border-slate-700'}
+              ${isActive ? 'border-primary/50' : 'border-border'}
             `}
           />
         </div>
-        <span className="text-sm text-text-secondary dark:text-slate-400">to</span>
+        <span className="text-sm text-text-secondary">to</span>
         <div className="flex-1">
           <input
             type="number"
@@ -93,10 +93,10 @@ export function InlineRange({
             placeholder={`Max (${maxBound})`}
             step={step}
             className={`
-              w-full px-3 py-2 text-sm border rounded-lg bg-background dark:bg-slate-900
-              text-text-primary dark:text-slate-200 transition-all duration-200
+              w-full px-3 py-2 text-sm border rounded-lg bg-background
+              text-text-primary transition-all duration-200
               focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary
-              ${isActive ? 'border-primary/50' : 'border-border dark:border-slate-700'}
+              ${isActive ? 'border-primary/50' : 'border-border'}
             `}
           />
         </div>

@@ -36,11 +36,11 @@ export const GratingDetails: React.FC<GratingDetailsProps> = ({ spectrum }) => {
         className="flex items-center w-full text-left"
       >
         {isOpen ? (
-          <ChevronDown className="w-5 h-5 text-text-secondary dark:text-slate-400 mr-2" />
+          <ChevronDown className="w-5 h-5 text-text-secondary mr-2" />
         ) : (
-          <ChevronRight className="w-5 h-5 text-text-secondary dark:text-slate-400 mr-2" />
+          <ChevronRight className="w-5 h-5 text-text-secondary mr-2" />
         )}
-        <h3 className="text-sm font-semibold text-text-primary dark:text-slate-100 uppercase tracking-wide">
+        <h3 className="text-sm font-semibold text-text-primary uppercase tracking-wide">
           Grating Details
         </h3>
       </button>
@@ -49,19 +49,19 @@ export const GratingDetails: React.FC<GratingDetailsProps> = ({ spectrum }) => {
         <div className="mt-4">
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <div>
-              <div className="text-xs text-text-secondary dark:text-slate-400 uppercase tracking-wide mb-1">
+              <div className="text-xs text-text-secondary uppercase tracking-wide mb-1">
                 Configuration
               </div>
-              <div className="text-sm font-mono text-text-primary dark:text-slate-100">
+              <div className="text-sm font-mono text-text-primary">
                 {spectrum.grating}
               </div>
             </div>
 
             <div>
-              <div className="text-xs text-text-secondary dark:text-slate-400 uppercase tracking-wide mb-1">
+              <div className="text-xs text-text-secondary uppercase tracking-wide mb-1">
                 Exposure Time
               </div>
-              <div className="text-sm font-mono text-text-primary dark:text-slate-100">
+              <div className="text-sm font-mono text-text-primary">
                 {spectrum.exposure_time != null
                   ? spectrum.exposure_time > 3600
                     ? `${spectrum.exposure_time.toFixed(0)} s (${(spectrum.exposure_time / 3600).toFixed(2)} hr)`
@@ -73,28 +73,28 @@ export const GratingDetails: React.FC<GratingDetailsProps> = ({ spectrum }) => {
             </div>
 
             <div>
-              <div className="text-xs text-text-secondary dark:text-slate-400 uppercase tracking-wide mb-1">
+              <div className="text-xs text-text-secondary uppercase tracking-wide mb-1">
                 Max S/N
               </div>
-              <div className="text-sm font-mono text-text-primary dark:text-slate-100">
+              <div className="text-sm font-mono text-text-primary">
                 {spectrum.signal_to_noise ? spectrum.signal_to_noise.toFixed(1) : 'N/A'}
               </div>
             </div>
 
             <div>
-              <div className="text-xs text-text-secondary dark:text-slate-400 uppercase tracking-wide mb-1">
+              <div className="text-xs text-text-secondary uppercase tracking-wide mb-1">
                 Version
               </div>
-              <div className="text-sm font-mono text-text-primary dark:text-slate-100">
+              <div className="text-sm font-mono text-text-primary">
                 {spectrum.reduction_version || 'N/A'}
               </div>
             </div>
 
             <div>
-              <div className="text-xs text-text-secondary dark:text-slate-400 uppercase tracking-wide mb-1">
+              <div className="text-xs text-text-secondary uppercase tracking-wide mb-1">
                 FITS File
               </div>
-              <div className="text-sm font-mono text-text-primary dark:text-slate-100 truncate" title={spectrum.fits_path}>
+              <div className="text-sm font-mono text-text-primary truncate" title={spectrum.fits_path}>
                 {spectrum.fits_path.split('/').pop() || spectrum.fits_path}
               </div>
             </div>

@@ -374,25 +374,25 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[200] bg-background dark:bg-slate-900 flex flex-col overflow-hidden"
+      className="fixed inset-0 z-[200] bg-background flex flex-col overflow-hidden"
       style={{ isolation: 'isolate' }}
       data-inspection-mode
     >
       {!queueReady ? (
-        <div className="h-12 border-b border-border dark:border-slate-700 px-4 flex items-center justify-between bg-background dark:bg-slate-900 flex-shrink-0">
+        <div className="h-12 border-b border-border px-4 flex items-center justify-between bg-background flex-shrink-0">
           <div />
-          <Loader2 className="w-4 h-4 animate-spin text-text-secondary dark:text-slate-400" />
+          <Loader2 className="w-4 h-4 animate-spin text-text-secondary" />
           <div className="flex items-center gap-1">
             <button
               onClick={() => setShowHelp(prev => !prev)}
-              className="p-1.5 rounded hover:bg-card dark:hover:bg-slate-700 transition-colors text-text-secondary dark:text-slate-400"
+              className="p-1.5 rounded hover:bg-card dark:hover:bg-card-hover transition-colors text-text-secondary"
               title="Keyboard shortcuts (?)"
             >
               <HelpCircle className="w-4 h-4" />
             </button>
             <button
               onClick={handleClose}
-              className="p-1.5 rounded hover:bg-card dark:hover:bg-slate-700 transition-colors text-text-secondary dark:text-slate-400"
+              className="p-1.5 rounded hover:bg-card dark:hover:bg-card-hover transition-colors text-text-secondary"
               title="Exit inspection mode (Esc)"
             >
               <X className="w-5 h-5" />
@@ -448,7 +448,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 
       {!queueReady && (
         <div className="flex-1 flex items-center justify-center">
-          <div className="text-center text-text-secondary dark:text-slate-400">
+          <div className="text-center text-text-secondary">
             Loading inspection queue...
           </div>
         </div>
@@ -457,12 +457,12 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
       {queueReady && queue.isEmpty && (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
-            <p className="text-lg text-text-secondary dark:text-slate-400 mb-4">
+            <p className="text-lg text-text-secondary mb-4">
               No uninspected objects match your filters.
             </p>
             <button
               onClick={handleClose}
-              className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+              className="px-4 py-2 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
             >
               Exit Inspection Mode
             </button>

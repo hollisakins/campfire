@@ -152,7 +152,7 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
 
   return (
     <div ref={containerRef} className="relative w-full max-w-xl">
-      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary dark:text-slate-500" />
+      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary dark:text-text-tertiary" />
       <input
         type="text"
         value={value}
@@ -163,7 +163,7 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
         onFocus={() => setOpen(true)}
         onKeyDown={handleKey}
         placeholder="Search programs, observations, PIs, or JWST PIDs…"
-        className="w-full pl-9 pr-9 py-2 text-sm border border-border dark:border-slate-700 rounded-md bg-background dark:bg-slate-900 text-text-primary dark:text-slate-100 placeholder:text-text-secondary dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-primary"
+        className="w-full pl-9 pr-9 py-2 text-sm border border-border rounded-md bg-background text-text-primary placeholder:text-text-secondary dark:placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-primary"
       />
       {value && (
         <button
@@ -171,7 +171,7 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
             onChange('');
             setOpen(false);
           }}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary dark:text-slate-500 hover:text-text-primary dark:hover:text-slate-200"
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary dark:text-text-tertiary hover:text-text-primary"
           aria-label="Clear search"
         >
           <X className="w-4 h-4" />
@@ -179,13 +179,13 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
       )}
 
       {open && value.trim() && (
-        <div className="absolute z-40 mt-1 w-full bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg overflow-hidden">
+        <div className="absolute z-40 mt-1 w-full bg-background dark:bg-card border border-border rounded-lg shadow-lg overflow-hidden">
           {results.length === 0 ? (
-            <div className="px-3 py-3 text-sm text-text-secondary dark:text-slate-500 text-center">
+            <div className="px-3 py-3 text-sm text-text-secondary dark:text-text-tertiary text-center">
               No matches
             </div>
           ) : (
-            <ul className="max-h-[320px] overflow-y-auto divide-y divide-border dark:divide-slate-700">
+            <ul className="max-h-[320px] overflow-y-auto divide-y divide-border">
               {results.map((r, i) => {
                 const ResultIcon = Icon(r.kind);
                 return (
@@ -197,22 +197,22 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
                       onMouseEnter={() => setHighlight(i)}
                       className={`w-full flex items-start gap-3 px-3 py-2 text-left transition-colors ${
                         i === highlight
-                          ? 'bg-card-hover dark:bg-slate-700/60'
-                          : 'hover:bg-card-hover dark:hover:bg-slate-700/40'
+                          ? 'bg-card-hover dark:bg-card-hover/60'
+                          : 'hover:bg-card-hover dark:hover:bg-card-hover/40'
                       }`}
                     >
-                      <ResultIcon className="w-4 h-4 mt-0.5 flex-shrink-0 text-text-secondary dark:text-slate-400" />
+                      <ResultIcon className="w-4 h-4 mt-0.5 flex-shrink-0 text-text-secondary" />
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium text-text-primary dark:text-slate-100 truncate">
+                        <div className="text-sm font-medium text-text-primary truncate">
                           {r.label}
                         </div>
                         {r.sublabel && (
-                          <div className="text-xs text-text-secondary dark:text-slate-400 truncate">
+                          <div className="text-xs text-text-secondary truncate">
                             {r.sublabel}
                           </div>
                         )}
                       </div>
-                      <span className="text-[10px] uppercase tracking-wider text-text-secondary dark:text-slate-500 self-center">
+                      <span className="text-[10px] uppercase tracking-wider text-text-secondary dark:text-text-tertiary self-center">
                         {r.kind}
                       </span>
                     </button>

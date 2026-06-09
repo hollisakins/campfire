@@ -49,7 +49,7 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
           return (
             <div key={member.target_id}>
               {/* Target row */}
-              <div className="flex items-start gap-2 px-1 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-slate-800">
+              <div className="flex items-start gap-2 px-1 py-1 rounded-md hover:bg-card-hover dark:hover:bg-card">
                 <input
                   type="checkbox"
                   checked={tState === 'on'}
@@ -58,17 +58,17 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
                   }}
                   onChange={() => onTargetVisibility(member.target_id, tState !== 'on')}
                   style={{ accentColor: targetColor }}
-                  className="mt-1 rounded border-gray-300 dark:border-slate-600 focus:ring-accent w-3.5 h-3.5"
+                  className="mt-1 rounded border-border-strong focus:ring-accent w-3.5 h-3.5"
                   title={`Toggle ${member.target_id} + shutters`}
                 />
                 <div className="flex-1 min-w-0">
                   <span
-                    className="text-xs font-mono truncate text-text-primary dark:text-slate-200 block"
+                    className="text-xs font-mono truncate text-text-primary block"
                     title={member.target_id}
                   >
                     {member.target_id}
                   </span>
-                  <span className="text-[11px] text-text-secondary dark:text-slate-500 truncate block">
+                  <span className="text-[11px] text-text-secondary dark:text-text-tertiary truncate block">
                     {member.program_name}
                   </span>
                 </div>
@@ -90,17 +90,17 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
                         checked={visible}
                         onChange={(e) => onSpectrumVisibility(spectrum.id, e.target.checked)}
                         style={{ accentColor: childColor }}
-                        className="rounded border-gray-300 dark:border-slate-600 focus:ring-accent w-3.5 h-3.5"
+                        className="rounded border-border-strong focus:ring-accent w-3.5 h-3.5"
                         title={`Toggle ${spectrum.grating} on the comparison plot`}
                       />
                       <button
                         type="button"
                         onClick={() => onJumpToSpectrum(spectrum.id)}
-                        className="flex-1 min-w-0 text-left text-xs px-1 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-slate-800 hover:text-primary dark:hover:text-primary text-text-primary dark:text-slate-200"
+                        className="flex-1 min-w-0 text-left text-xs px-1 py-0.5 rounded hover:bg-card-hover dark:hover:bg-card hover:text-primary dark:hover:text-primary text-text-primary"
                         title={`Jump to ${spectrum.grating} card`}
                       >
                         <span className="font-mono">{spectrum.grating}</span>
-                        <span className="ml-1.5 text-text-secondary dark:text-slate-500">
+                        <span className="ml-1.5 text-text-secondary dark:text-text-tertiary">
                           ({formatExposureTime(spectrum.exposure_time)})
                         </span>
                       </button>

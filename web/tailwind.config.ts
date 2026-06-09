@@ -12,14 +12,24 @@ const config: Config = {
       colors: {
         primary: 'var(--primary)',
         'primary-hover': 'var(--primary-hover)',
+        'primary-text': 'var(--primary-text)',
+        'on-primary': 'var(--on-primary)',
+        'primary-soft': 'var(--primary-soft)',
         header: '#475569',       // Dark slate header
         background: 'var(--background)',
         card: 'var(--card)',
         'card-hover': 'var(--card-hover)',
+        'surface-2': 'var(--surface-2)',
         border: 'var(--border)',
+        'border-strong': 'var(--border-strong)',
+        success: 'var(--success)',
+        warning: 'var(--warning)',
+        danger: 'var(--danger)',
+        info: 'var(--info)',
         text: {
           primary: 'var(--text-primary)',
           secondary: 'var(--text-secondary)',
+          tertiary: 'var(--text-tertiary)',
         }
       },
       fontFamily: {

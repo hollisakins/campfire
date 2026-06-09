@@ -91,12 +91,12 @@ export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ objectDbId, me
 
   if (commentCount === 0) {
     return (
-      <div className="p-4 border-b border-border dark:border-slate-700">
-        <h3 className="text-xs font-semibold text-text-secondary dark:text-slate-400 uppercase flex items-center gap-1">
+      <div className="p-4 border-b border-border">
+        <h3 className="text-xs font-semibold text-text-secondary uppercase flex items-center gap-1">
           <MessageSquare className="w-3 h-3" />
           Comments (0)
         </h3>
-        <p className="text-xs text-text-secondary dark:text-slate-500 mt-2">
+        <p className="text-xs text-text-secondary dark:text-text-tertiary mt-2">
           No comments yet
         </p>
       </div>
@@ -104,20 +104,20 @@ export const CommentsPreview: React.FC<CommentsPreviewProps> = ({ objectDbId, me
   }
 
   return (
-    <div className="p-4 border-b border-border dark:border-slate-700">
-      <h3 className="text-xs font-semibold text-text-secondary dark:text-slate-400 uppercase mb-2 flex items-center gap-1">
+    <div className="p-4 border-b border-border">
+      <h3 className="text-xs font-semibold text-text-secondary uppercase mb-2 flex items-center gap-1">
         <MessageSquare className="w-3 h-3" />
         Comments ({commentCount})
       </h3>
       <div className="space-y-2 max-h-32 overflow-y-auto">
         {comments.slice().reverse().map(comment => (
           <div key={comment.id} className="text-xs">
-            <div className="flex items-center gap-1 text-text-secondary dark:text-slate-400">
+            <div className="flex items-center gap-1 text-text-secondary">
               <span className="font-medium">{comment.user_profile?.full_name || 'Anonymous'}</span>
               <span>·</span>
               <span>{formatDistanceToNow(new Date(comment.created_at))} ago</span>
             </div>
-            <p className="text-text-primary dark:text-slate-100 mt-0.5 line-clamp-2">
+            <p className="text-text-primary mt-0.5 line-clamp-2">
               {comment.content}
             </p>
           </div>

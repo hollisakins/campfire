@@ -103,7 +103,7 @@ export default function TableOfContents({ items }: TableOfContentsProps) {
 
   return (
     <nav className="hidden xl:block sticky top-24 self-start w-56 flex-shrink-0 pl-8 max-h-[calc(100vh-8rem)] overflow-y-auto">
-      <h4 className="text-sm font-semibold text-text-primary dark:text-slate-200 mb-2">
+      <h4 className="text-sm font-semibold text-text-primary mb-2">
         On this page
       </h4>
       <ul className="space-y-0.5 text-sm">
@@ -116,7 +116,7 @@ export default function TableOfContents({ items }: TableOfContentsProps) {
                 block py-0.5 transition-colors
                 ${activeId === group.parent.id
                   ? 'text-primary font-medium'
-                  : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                  : 'text-text-secondary hover:text-text-primary'
                 }
               `}
             >
@@ -125,7 +125,7 @@ export default function TableOfContents({ items }: TableOfContentsProps) {
 
             {/* Subsections - only visible when this section is active */}
             {activeH2Id === group.parent.id && group.children.length > 0 && (
-              <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-border dark:border-slate-700 pl-2">
+              <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-border pl-2">
                 {group.children.map((child) => (
                   <li key={child.id}>
                     <a
@@ -134,7 +134,7 @@ export default function TableOfContents({ items }: TableOfContentsProps) {
                         block py-0.5 transition-colors text-[13px]
                         ${activeId === child.id
                           ? 'text-primary font-medium'
-                          : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                          : 'text-text-secondary hover:text-text-primary'
                         }
                       `}
                     >

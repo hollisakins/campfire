@@ -68,11 +68,11 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
 
   if (loading) {
     return (
-      <div className="px-4 py-3 border-b border-border dark:border-slate-700">
-        <h3 className="text-xs font-semibold text-text-secondary dark:text-slate-400 uppercase tracking-wide">
+      <div className="px-4 py-3 border-b border-border">
+        <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wide">
           Nearby
         </h3>
-        <p className="text-xs text-text-secondary dark:text-slate-500 mt-1">Searching...</p>
+        <p className="text-xs text-text-secondary dark:text-text-tertiary mt-1">Searching...</p>
       </div>
     );
   }
@@ -82,8 +82,8 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
   const queueIdSet = new Set(queueIds);
 
   return (
-    <div className="px-4 py-3 border-b border-border dark:border-slate-700">
-      <h3 className="text-xs font-semibold text-text-secondary dark:text-slate-400 uppercase tracking-wide mb-2">
+    <div className="px-4 py-3 border-b border-border">
+      <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wide mb-2">
         Nearby{' '}
         <span className="font-normal normal-case">
           ({nearbyObjects.length} within 0.3&quot;)
@@ -106,30 +106,30 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
                   window.open(`/nirspec/objects/${encodeURIComponent(objId)}`, '_blank');
                 }
               }}
-              className="w-full text-left px-2 py-1.5 rounded hover:bg-card dark:hover:bg-slate-800 transition-colors group"
+              className="w-full text-left px-2 py-1.5 rounded hover:bg-card transition-colors group"
             >
               <div className="flex items-center gap-1.5 text-xs">
                 <span className="flex-shrink-0">{getQualityIcon(obj.redshift_quality)}</span>
-                <span className="font-mono text-text-primary dark:text-slate-200 truncate flex-1">
+                <span className="font-mono text-text-primary truncate flex-1">
                   {objId}
                 </span>
-                <span className="font-mono text-text-secondary dark:text-slate-500 flex-shrink-0">
+                <span className="font-mono text-text-secondary dark:text-text-tertiary flex-shrink-0">
                   {obj.distance != null ? formatDistance(obj.distance) : ''}
                 </span>
                 {!inQueue && (
-                  <ExternalLink className="w-3 h-3 text-text-secondary dark:text-slate-500 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <ExternalLink className="w-3 h-3 text-text-secondary dark:text-text-tertiary flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
                 )}
               </div>
               <div className="flex items-center gap-1 mt-0.5 ml-5">
                 {gratings.map(g => (
                   <span
                     key={g}
-                    className="px-1 rounded text-[10px] leading-tight bg-card dark:bg-slate-700 text-text-secondary dark:text-slate-400"
+                    className="px-1 rounded text-[10px] leading-tight bg-card dark:bg-card-hover text-text-secondary"
                   >
                     {g}
                   </span>
                 ))}
-                <span className="font-mono text-text-secondary dark:text-slate-500 text-[11px] ml-auto">
+                <span className="font-mono text-text-secondary dark:text-text-tertiary text-[11px] ml-auto">
                   {obj.redshift !== null ? `z=${obj.redshift.toFixed(4)}` : 'z=?'}
                 </span>
               </div>

@@ -11,7 +11,7 @@ import type { ObjectPhotometry } from '@/lib/types';
 const Plot = dynamic(() => import('react-plotly.js'), {
   ssr: false,
   loading: () => (
-    <div className="flex items-center justify-center h-[400px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
+    <div className="flex items-center justify-center h-[400px] bg-card border border-border rounded-lg">
       <Loader2 className="w-6 h-6 animate-spin text-primary" />
     </div>
   ),
@@ -351,7 +351,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <BarChart3 className="w-5 h-5 text-text-secondary" />
-          <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+          <h3 className="text-lg font-semibold text-text-primary">
             Photometry
           </h3>
           <span className="text-sm text-text-secondary">
@@ -365,7 +365,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
 
       {/* Photo-z summary */}
       {photometry.photo_z != null && (
-        <div className="text-sm text-text-secondary dark:text-slate-400 px-1">
+        <div className="text-sm text-text-secondary px-1">
           Photo-z: <span className="font-mono text-text-primary dark:text-slate-200">
             {photometry.photo_z.toFixed(4)}
           </span>
@@ -387,7 +387,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
       {/* SED + P(z) side by side */}
       <div className="flex gap-3">
         {/* SED Plot */}
-        <div className={`bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden ${hasPzPanel ? 'flex-[2]' : 'flex-1'} min-w-0`}>
+        <div className={`bg-card border border-border rounded-lg overflow-hidden ${hasPzPanel ? 'flex-[2]' : 'flex-1'} min-w-0`}>
           <Plot
             data={traces}
             layout={layout}
@@ -398,7 +398,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
 
         {/* P(z) Panel */}
         {hasPzPanel && (
-          <div className="flex-1 min-w-0 bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+          <div className="flex-1 min-w-0 bg-card border border-border rounded-lg overflow-hidden">
             {pzLoading ? (
               <div className="flex items-center justify-center h-[400px]">
                 <Loader2 className="w-5 h-5 animate-spin text-primary" />

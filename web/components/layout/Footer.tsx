@@ -4,8 +4,8 @@ const GITHUB_REPO = 'https://github.com/hollisakins/campfire';
 
 export function Footer() {
   return (
-    <footer className="border-t border-border dark:border-slate-700">
-      <div className="container mx-auto px-4 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-sm text-text-secondary dark:text-slate-400">
+    <footer className="border-t border-border">
+      <div className="container mx-auto px-4 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-sm text-text-secondary">
         <span>&copy; 2025 Hollis Akins &middot; MIT License</span>
         <div className="flex items-center gap-4">
           <a
@@ -17,7 +17,7 @@ export function Footer() {
             <Github className="w-4 h-4" />
             GitHub
           </a>
-          <span className="text-border dark:text-slate-600">|</span>
+          <span className="text-border dark:text-border-strong">|</span>
           <a
             href={`${GITHUB_REPO}/issues/new?template=bug_report.yml`}
             target="_blank"
@@ -27,7 +27,7 @@ export function Footer() {
             <Bug className="w-4 h-4" />
             Report a Bug
           </a>
-          <span className="text-border dark:text-slate-600">|</span>
+          <span className="text-border dark:text-border-strong">|</span>
           <a
             href={`${GITHUB_REPO}/issues/new?template=feature_request.yml`}
             target="_blank"

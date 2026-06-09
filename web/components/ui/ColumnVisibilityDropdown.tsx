@@ -73,15 +73,15 @@ export const ColumnVisibilityDropdown: React.FC<ColumnVisibilityDropdownProps> =
         className={`
           inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium
           border transition-all duration-150
-          bg-card dark:bg-slate-800 border-border dark:border-slate-700
-          text-text-secondary dark:text-slate-400
-          hover:border-text-secondary dark:hover:border-slate-600
-          hover:text-text-primary dark:hover:text-slate-200
+          bg-card border-border
+          text-text-secondary
+          hover:border-text-secondary dark:hover:border-border-strong
+          hover:text-text-primary
         `}
       >
         <Columns3 className="w-4 h-4" />
         <span>Columns</span>
-        <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-text-secondary dark:text-slate-400">
+        <span className="text-xs px-1.5 py-0.5 rounded bg-surface-2 text-text-secondary">
           {visibleCount}
         </span>
         <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
@@ -89,19 +89,19 @@ export const ColumnVisibilityDropdown: React.FC<ColumnVisibilityDropdownProps> =
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute right-0 z-50 mt-2 w-64 max-h-[400px] overflow-y-auto bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
+        <div className="absolute right-0 z-50 mt-2 w-64 max-h-[400px] overflow-y-auto bg-card border border-border rounded-lg shadow-lg">
           {/* Header with quick actions */}
-          <div className="sticky top-0 z-10 bg-background dark:bg-slate-800 border-b border-border dark:border-slate-700 p-2 flex gap-2">
+          <div className="sticky top-0 z-10 bg-card border-b border-border p-2 flex gap-2">
             <button
               onClick={showAll}
-              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-xs rounded bg-slate-100 dark:bg-slate-700 text-text-secondary dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-xs rounded bg-surface-2 text-text-secondary hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
             >
               <Eye className="w-3 h-3" />
               Show all
             </button>
             <button
               onClick={resetToDefaults}
-              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-xs rounded bg-slate-100 dark:bg-slate-700 text-text-secondary dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-xs rounded bg-surface-2 text-text-secondary hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
             >
               <RotateCcw className="w-3 h-3" />
               Defaults
@@ -123,10 +123,10 @@ export const ColumnVisibilityDropdown: React.FC<ColumnVisibilityDropdownProps> =
                     w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-left
                     transition-colors
                     ${isLocked
-                      ? 'opacity-60 cursor-not-allowed bg-slate-50 dark:bg-slate-800'
+                      ? 'opacity-60 cursor-not-allowed bg-card'
                       : isVisible
-                        ? 'bg-primary/10 dark:bg-primary/20 text-text-primary dark:text-slate-100'
-                        : 'text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700'
+                        ? 'bg-primary/10 dark:bg-primary/20 text-text-primary'
+                        : 'text-text-secondary hover:bg-card-hover'
                     }
                   `}
                 >
@@ -135,10 +135,10 @@ export const ColumnVisibilityDropdown: React.FC<ColumnVisibilityDropdownProps> =
                     w-4 h-4 rounded border flex items-center justify-center flex-shrink-0
                     ${isVisible
                       ? 'bg-primary border-primary'
-                      : 'border-border dark:border-slate-600'
+                      : 'border-border dark:border-border-strong'
                     }
                   `}>
-                    {isVisible && <Check className="w-3 h-3 text-white" />}
+                    {isVisible && <Check className="w-3 h-3 text-on-primary" />}
                   </div>
 
                   {/* Label */}
@@ -146,7 +146,7 @@ export const ColumnVisibilityDropdown: React.FC<ColumnVisibilityDropdownProps> =
 
                   {/* Lock indicator */}
                   {isLocked && (
-                    <span className="text-xs text-text-secondary dark:text-slate-500">
+                    <span className="text-xs text-text-secondary dark:text-text-tertiary">
                       required
                     </span>
                   )}

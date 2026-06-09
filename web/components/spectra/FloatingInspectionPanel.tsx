@@ -72,7 +72,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
   const qualityOptions = REDSHIFT_QUALITY.filter(q => q.value > 0);
 
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-xl shadow-xl px-5 py-3 max-w-5xl w-auto">
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-card border border-border rounded-xl shadow-xl px-5 py-3 max-w-5xl w-auto">
       {inspection.versionConflict && inspection.conflictInfo && (
         <div className="mb-2">
           <ConflictBanner
@@ -103,17 +103,17 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
           <ObjectListsSection ref={listsRef} objectId={objectId} ra={ra} dec={dec} dropdownPlacement="top" />
         </div>
 
-        <div className="h-px bg-border dark:bg-slate-700" />
+        <div className="h-px bg-border" />
 
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-base">
-            <span className="text-text-secondary dark:text-slate-400">z:</span>
+            <span className="text-text-secondary">z:</span>
             {inspection.redshiftQuality === 1 ? (
-              <span className="font-mono text-text-secondary dark:text-slate-400 line-through">
+              <span className="font-mono text-text-secondary line-through">
                 {inspection.currentRedshift?.toFixed(4) ?? '\u2014'}
               </span>
             ) : (
-              <span className="font-mono font-semibold text-text-primary dark:text-slate-100">
+              <span className="font-mono font-semibold text-text-primary">
                 {inspection.currentRedshift?.toFixed(4) ?? '\u2014'}
               </span>
             )}
@@ -127,9 +127,9 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
               value={inspection.redshiftInspected}
               onChange={e => inspection.setRedshiftInspected(e.target.value)}
               placeholder="Override"
-              className="w-36 pl-2.5 pr-7 py-1.5 text-sm font-mono border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              className="w-36 pl-2.5 pr-7 py-1.5 text-sm font-mono border border-border dark:border-border-strong rounded bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-1 focus:ring-primary [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
             />
-            <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-xs text-text-secondary dark:text-slate-400 opacity-60">O</kbd>
+            <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-xs text-text-secondary opacity-60">O</kbd>
           </div>
 
           <div role="radiogroup" aria-label="Redshift quality" className="flex items-center gap-1.5">
@@ -144,8 +144,8 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
                   onClick={() => setRedshiftQuality(q.value)}
                   className={`px-2.5 py-1.5 text-sm font-medium rounded transition-all
                     ${isSelected
-                      ? 'ring-2 ring-offset-1 dark:ring-offset-slate-800 ring-text-primary'
-                      : 'border border-border dark:border-slate-600 hover:bg-background dark:hover:bg-slate-700 text-text-primary dark:text-slate-100'
+                      ? 'ring-2 ring-offset-1 dark:ring-offset-card ring-text-primary'
+                      : 'border border-border dark:border-border-strong hover:bg-background dark:hover:bg-card-hover text-text-primary'
                     }`}
                   style={isSelected ? { backgroundColor: q.color, color: getContrastColor(q.color) } : undefined}
                   title={`${q.label} \u2014 ${q.description}`}

@@ -35,14 +35,14 @@ function ReviewBadge({ status }: { status: string }) {
     excluded: 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-300',
   };
   return (
-    <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${colors[status] || 'bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-300'}`}>
+    <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${colors[status] || 'bg-surface-2 dark:bg-slate-700 text-text-primary dark:text-slate-300'}`}>
       {status}
     </span>
   );
 }
 
 function ActionBadge({ status, label }: { status: string; label: string }) {
-  if (status === 'none') return <span className="text-xs text-text-secondary dark:text-slate-500">&mdash;</span>;
+  if (status === 'none') return <span className="text-xs text-text-secondary dark:text-text-tertiary">&mdash;</span>;
   const colors: Record<string, string> = {
     needed: 'bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-300',
     done: 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-300',
@@ -75,11 +75,11 @@ function StageDistributionBar({ progress }: { progress: ReductionProgress }) {
     .filter(s => s.count > 0);
 
   if (segments.length === 0) {
-    return <div className="h-3 bg-gray-100 dark:bg-slate-800 rounded" />;
+    return <div className="h-3 bg-surface-2 dark:bg-slate-800 rounded" />;
   }
 
   return (
-    <div className="flex h-3 rounded overflow-hidden bg-gray-100 dark:bg-slate-800">
+    <div className="flex h-3 rounded overflow-hidden bg-surface-2 dark:bg-slate-800">
       {segments.map(({ stage, count }) => (
         <div
           key={stage}
@@ -99,8 +99,8 @@ function StageDistributionBar({ progress }: { progress: ReductionProgress }) {
 function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
   if (progress.length === 0) {
     return (
-      <p className="text-sm text-text-secondary dark:text-slate-400 py-4">
-        No reduction data available. Deploy exposures with <code className="text-xs bg-card dark:bg-slate-700 px-1 py-0.5 rounded">campfire deploy nircam</code>.
+      <p className="text-sm text-text-secondary py-4">
+        No reduction data available. Deploy exposures with <code className="text-xs bg-card dark:bg-card-hover px-1 py-0.5 rounded">campfire deploy nircam</code>.
       </p>
     );
   }
@@ -108,23 +108,23 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
-        <thead className="border-b border-border dark:border-slate-700">
+        <thead className="border-b border-border">
           <tr>
-            <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Field</th>
-            <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Filter</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Total</th>
-            <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase w-1/3">Stage distribution</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Pending</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Masking</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Correction</th>
+            <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary uppercase">Field</th>
+            <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary uppercase">Filter</th>
+            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Total</th>
+            <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary uppercase w-1/3">Stage distribution</th>
+            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Pending</th>
+            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Masking</th>
+            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Correction</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-border dark:divide-slate-700">
+        <tbody className="divide-y divide-border">
           {progress.map((row) => (
             <tr key={`${row.field}-${row.filter}`} className="hover:bg-card/50 dark:hover:bg-slate-700/50">
-              <td className="px-3 py-2 font-medium text-text-primary dark:text-slate-100">{row.field}</td>
-              <td className="px-3 py-2 text-text-primary dark:text-slate-100">{row.filter}</td>
-              <td className="px-3 py-2 text-right text-text-primary dark:text-slate-100">{row.total}</td>
+              <td className="px-3 py-2 font-medium text-text-primary">{row.field}</td>
+              <td className="px-3 py-2 text-text-primary">{row.filter}</td>
+              <td className="px-3 py-2 text-right text-text-primary">{row.total}</td>
               <td className="px-3 py-2">
                 <StageDistributionBar progress={row} />
               </td>
@@ -132,21 +132,21 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
                 {row.pending_review > 0 ? (
                   <span className="text-yellow-600 dark:text-yellow-400 font-medium">{row.pending_review}</span>
                 ) : (
-                  <span className="text-text-secondary dark:text-slate-500">0</span>
+                  <span className="text-text-secondary dark:text-text-tertiary">0</span>
                 )}
               </td>
               <td className="px-3 py-2 text-right">
                 {row.needs_masking > 0 ? (
                   <span className="text-orange-600 dark:text-orange-400 font-medium">{row.needs_masking}</span>
                 ) : (
-                  <span className="text-text-secondary dark:text-slate-500">0</span>
+                  <span className="text-text-secondary dark:text-text-tertiary">0</span>
                 )}
               </td>
               <td className="px-3 py-2 text-right">
                 {row.needs_correction > 0 ? (
                   <span className="text-orange-600 dark:text-orange-400 font-medium">{row.needs_correction}</span>
                 ) : (
-                  <span className="text-text-secondary dark:text-slate-500">0</span>
+                  <span className="text-text-secondary dark:text-text-tertiary">0</span>
                 )}
               </td>
             </tr>
@@ -185,20 +185,20 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
 
   return (
     <Card className="mb-6 overflow-hidden">
-      <div className="px-4 py-3 border-b border-border dark:border-slate-700 flex items-baseline justify-between">
-        <h2 className="text-sm font-medium text-text-primary dark:text-slate-100 uppercase tracking-wider">
+      <div className="px-4 py-3 border-b border-border flex items-baseline justify-between">
+        <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
           Excluded — copy into <code className="font-mono text-xs">fields.toml</code> <code className="font-mono text-xs">skip = […]</code>
         </h2>
-        <span className="text-xs text-text-secondary dark:text-slate-400">{excluded.length} total</span>
+        <span className="text-xs text-text-secondary">{excluded.length} total</span>
       </div>
-      <div className="divide-y divide-border dark:divide-slate-700">
+      <div className="divide-y divide-border">
         {groups.map(([heading, rows]) => {
           const tomlBlock = rows.map(r => `    "${r.filename}",`).join('\n');
           return (
             <div key={heading} className="p-4">
               <div className="flex items-baseline justify-between mb-2">
-                <h3 className="text-xs font-medium text-text-secondary dark:text-slate-400">
-                  {heading} <span className="text-text-secondary dark:text-slate-500">({rows.length})</span>
+                <h3 className="text-xs font-medium text-text-secondary">
+                  {heading} <span className="text-text-secondary dark:text-text-tertiary">({rows.length})</span>
                 </h3>
                 <button
                   onClick={() => copy(heading, tomlBlock)}
@@ -213,7 +213,7 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
               </div>
               <pre className="text-xs font-mono bg-card dark:bg-slate-900 p-2 rounded overflow-x-auto text-text-primary dark:text-slate-300">{tomlBlock}</pre>
               {rows.some(r => r.notes) && (
-                <ul className="mt-2 text-xs text-text-secondary dark:text-slate-400 space-y-0.5">
+                <ul className="mt-2 text-xs text-text-secondary space-y-0.5">
                   {rows.filter(r => r.notes).map(r => (
                     <li key={r.filename}>
                       <span className="font-mono">{r.filename}</span> — {r.notes}
@@ -338,7 +338,7 @@ export default function AdminNircamPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100">NIRCam Reductions</h1>
+        <h1 className="text-2xl font-semibold text-text-primary">NIRCam Reductions</h1>
         <Button variant="secondary" size="sm" onClick={handleRefresh} disabled={loading || pageLoading}>
           <RefreshCw className={`w-4 h-4 mr-2 ${pageLoading ? 'animate-spin' : ''}`} />
           Refresh
@@ -353,8 +353,8 @@ export default function AdminNircamPage() {
 
       {/* Progress summary */}
       <Card className="mb-6 overflow-hidden">
-        <div className="px-4 py-3 border-b border-border dark:border-slate-700">
-          <h2 className="text-sm font-medium text-text-primary dark:text-slate-100 uppercase tracking-wider">
+        <div className="px-4 py-3 border-b border-border">
+          <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
             Reduction Progress
           </h2>
         </div>
@@ -369,7 +369,7 @@ export default function AdminNircamPage() {
         <select
           value={selectedField}
           onChange={(e) => setSelectedField(e.target.value)}
-          className="text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-1.5 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
+          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
         >
           <option value="">All fields</option>
           {filterOptions.fields.map(f => <option key={f} value={f}>{f}</option>)}
@@ -377,7 +377,7 @@ export default function AdminNircamPage() {
         <select
           value={selectedFilter}
           onChange={(e) => setSelectedFilter(e.target.value)}
-          className="text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-1.5 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
+          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
         >
           <option value="">All filters</option>
           {filterOptions.filters.map(f => <option key={f} value={f}>{f}</option>)}
@@ -385,7 +385,7 @@ export default function AdminNircamPage() {
         <select
           value={selectedDetector}
           onChange={(e) => setSelectedDetector(e.target.value)}
-          className="text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-1.5 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
+          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
         >
           <option value="">All detectors</option>
           {filterOptions.detectors.map(d => <option key={d} value={d}>{d}</option>)}
@@ -393,7 +393,7 @@ export default function AdminNircamPage() {
         <select
           value={selectedStage}
           onChange={(e) => setSelectedStage(e.target.value)}
-          className="text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-1.5 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
+          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
         >
           <option value="">All stages</option>
           {NIRCAM_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
@@ -401,7 +401,7 @@ export default function AdminNircamPage() {
         <select
           value={selectedReview}
           onChange={(e) => setSelectedReview(e.target.value)}
-          className="text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-1.5 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
+          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
         >
           <option value="">All review statuses</option>
           <option value="pending">Pending</option>
@@ -421,22 +421,22 @@ export default function AdminNircamPage() {
       {/* Exposure table */}
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
+          <thead className="bg-card border-b border-border">
             <tr>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Filename</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Filter</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Detector</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Stage</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Review</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Masking</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase">Correction</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Filename</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Filter</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Detector</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Stage</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Review</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Masking</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Correction</th>
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
-          <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
+          <tbody className="bg-card divide-y divide-border">
             {exposures.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-text-secondary dark:text-slate-400">
+                <td colSpan={8} className="px-4 py-12 text-center text-text-secondary">
                   No exposures found.
                 </td>
               </tr>
@@ -459,15 +459,15 @@ export default function AdminNircamPage() {
                       {exp.filename}
                     </Link>
                   </td>
-                  <td className="px-4 py-3 text-sm text-text-primary dark:text-slate-100">{exp.filter}</td>
-                  <td className="px-4 py-3 text-sm text-text-secondary dark:text-slate-400">{exp.detector}</td>
+                  <td className="px-4 py-3 text-sm text-text-primary">{exp.filter}</td>
+                  <td className="px-4 py-3 text-sm text-text-secondary">{exp.detector}</td>
                   <td className="px-4 py-3"><StageBadge stage={exp.stage} /></td>
                   <td className="px-4 py-3"><ReviewBadge status={exp.review_status} /></td>
                   <td className="px-4 py-3"><ActionBadge status={exp.masking} label="mask" /></td>
                   <td className="px-4 py-3"><ActionBadge status={exp.correction} label="corr" /></td>
                   <td className="px-4 py-3 text-right">
                     <Link href={`/admin/nircam/${exp.id}`} onClick={onRowEnter}>
-                      <ChevronRight className="w-4 h-4 text-text-secondary dark:text-slate-400" />
+                      <ChevronRight className="w-4 h-4 text-text-secondary" />
                     </Link>
                   </td>
                 </tr>
@@ -484,7 +484,7 @@ export default function AdminNircamPage() {
           onPageSizeChange={setPageSize}
           pageSizeOptions={PAGE_SIZE_OPTIONS}
           loading={pageLoading}
-          className="border-t border-border dark:border-slate-700"
+          className="border-t border-border"
         />
       </Card>
     </div>

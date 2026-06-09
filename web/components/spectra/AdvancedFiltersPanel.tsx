@@ -272,25 +272,25 @@ export function AdvancedFiltersPanel({
       <div
         className={`
           absolute right-0 top-0 bottom-0 w-[420px] max-w-[90vw]
-          bg-background dark:bg-slate-900 border-l border-border dark:border-slate-700
+          bg-background dark:bg-slate-900 border-l border-border
           shadow-2xl flex flex-col
           transition-transform duration-300 ease-out
           ${isOpen ? 'translate-x-0 pointer-events-auto' : 'translate-x-full'}
         `}
       >
         {/* Panel Header */}
-        <div className="flex items-center justify-between p-4 border-b border-border dark:border-slate-700 bg-card dark:bg-slate-800">
+        <div className="flex items-center justify-between p-4 border-b border-border bg-card">
           <div>
-            <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+            <h2 className="text-lg font-semibold text-text-primary">
               {showBasicFilters ? 'Filters' : 'Advanced Filters'}
             </h2>
-            <p className="text-xs text-text-secondary dark:text-slate-400 mt-0.5">
+            <p className="text-xs text-text-secondary mt-0.5">
               {showBasicFilters ? 'Filter objects shown on the map' : 'Multi-value filters and spectra properties'}
             </p>
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-lg text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+            className="p-2 rounded-lg text-text-secondary hover:bg-card-hover hover:text-text-primary transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -302,10 +302,10 @@ export function AdvancedFiltersPanel({
           {showBasicFilters && (
             <>
               {/* Programs — collapsible */}
-              <div className="border-b border-border dark:border-slate-700">
+              <div className="border-b border-border">
                 <button
                   onClick={() => setProgramsExpanded(!programsExpanded)}
-                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 hover:bg-card-hover dark:hover:bg-slate-800/50 transition-colors"
+                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-text-tertiary hover:bg-card-hover dark:hover:bg-slate-800/50 transition-colors"
                 >
                   <span>
                     Programs
@@ -331,10 +331,10 @@ export function AdvancedFiltersPanel({
               </div>
 
               {/* Observations — collapsible */}
-              <div className="border-b border-border dark:border-slate-700">
+              <div className="border-b border-border">
                 <button
                   onClick={() => setObservationsExpanded(!observationsExpanded)}
-                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 hover:bg-card-hover dark:hover:bg-slate-800/50 transition-colors"
+                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-text-tertiary hover:bg-card-hover dark:hover:bg-slate-800/50 transition-colors"
                 >
                   <span className="flex flex-col items-start">
                     <span>
@@ -343,7 +343,7 @@ export function AdvancedFiltersPanel({
                         <span className="ml-1.5 text-[10px] font-bold text-primary">({filters.observations.length})</span>
                       )}
                     </span>
-                    <span className="text-[10px] font-normal normal-case tracking-normal text-gray-400 dark:text-slate-500">Filters objects and map shutters</span>
+                    <span className="text-[10px] font-normal normal-case tracking-normal text-text-tertiary">Filters objects and map shutters</span>
                   </span>
                   <ChevronDown className={`w-4 h-4 transition-transform ${observationsExpanded ? 'rotate-180' : ''}`} />
                 </button>
@@ -363,7 +363,7 @@ export function AdvancedFiltersPanel({
               </div>
 
               {/* Redshift Quality */}
-              <div className="p-4 border-b border-border dark:border-slate-700">
+              <div className="p-4 border-b border-border">
                 <InlineMultiFilter
                   label="Redshift Quality"
                   options={qualityOptions}
@@ -376,7 +376,7 @@ export function AdvancedFiltersPanel({
               </div>
 
               {/* Redshift Range */}
-              <div className="p-4 border-b border-border dark:border-slate-700">
+              <div className="p-4 border-b border-border">
                 <InlineRange
                   label="Redshift"
                   description="Filter by redshift range"
@@ -394,9 +394,9 @@ export function AdvancedFiltersPanel({
 
           {/* Position Search Section - Inline Form (hidden on map view) */}
           {!showBasicFilters && (
-            <div className="p-4 border-b border-border dark:border-slate-700">
+            <div className="p-4 border-b border-border">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-text-tertiary">
                   Position Search
                 </h3>
                 {isCoordSearchActive && (
@@ -410,7 +410,7 @@ export function AdvancedFiltersPanel({
               <div className="space-y-3">
                 {/* Coordinate input */}
                 <div>
-                  <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">
+                  <label className="block text-xs text-text-secondary mb-1">
                     Coordinates (RA Dec)
                   </label>
                   <input
@@ -419,8 +419,8 @@ export function AdvancedFiltersPanel({
                     onChange={(e) => setCoordInput(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder="150.5 -2.3  or  10h02m30s -02d18m00s"
-                    className={`w-full px-3 py-2 text-sm border rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
-                      ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border dark:border-slate-600'}
+                    className={`w-full px-3 py-2 text-sm border rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
+                      ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border dark:border-border-strong'}
                     `}
                   />
                   {validationError && (
@@ -430,7 +430,7 @@ export function AdvancedFiltersPanel({
 
                 {/* Radius input with units */}
                 <div>
-                  <label className="block text-xs text-text-secondary dark:text-slate-400 mb-1">
+                  <label className="block text-xs text-text-secondary mb-1">
                     Search radius (max 1 degree)
                   </label>
                   <div className="flex gap-2">
@@ -442,12 +442,12 @@ export function AdvancedFiltersPanel({
                       placeholder="1"
                       min="0"
                       step="0.1"
-                      className="w-24 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                      className="w-24 px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                     />
                     <select
                       value={unitInput}
                       onChange={(e) => setUnitInput(e.target.value as 'degrees' | 'arcmin' | 'arcsec')}
-                      className="flex-1 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                      className="flex-1 px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                     >
                       <option value="arcsec">arcseconds</option>
                       <option value="arcmin">arcminutes</option>
@@ -460,14 +460,14 @@ export function AdvancedFiltersPanel({
                 <div className="flex gap-2 pt-1">
                   <button
                     onClick={handleClearCoordSearch}
-                    className="flex-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 border border-border dark:border-slate-600 rounded-md hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
+                    className="flex-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary border border-border dark:border-border-strong rounded-md hover:bg-card-hover transition-colors"
                   >
                     Clear
                   </button>
                   <button
                     onClick={handleApplyCoordSearch}
                     disabled={validationError !== null && coordInput.trim() !== ''}
-                    className="flex-1 px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex-1 px-3 py-1.5 text-sm bg-primary text-on-primary rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Apply
                   </button>
@@ -477,7 +477,7 @@ export function AdvancedFiltersPanel({
           )}
 
           {/* Gratings Section */}
-          <div className="p-4 border-b border-border dark:border-slate-700">
+          <div className="p-4 border-b border-border">
             <InlineMultiFilter
               label="Gratings"
               options={gratingOptions}
@@ -488,14 +488,14 @@ export function AdvancedFiltersPanel({
               hideModeSelector={viewMode === 'spectra'}
             />
             {viewMode === 'spectra' && (filters.gratings?.length ?? 0) > 0 && (
-              <p className="mt-2 text-xs text-text-secondary dark:text-slate-500">
+              <p className="mt-2 text-xs text-text-secondary dark:text-text-tertiary">
                 Showing only rows with these gratings
               </p>
             )}
           </div>
 
           {/* S/N and Exposure Time Section */}
-          <div className="p-4 border-b border-border dark:border-slate-700">
+          <div className="p-4 border-b border-border">
             <div className="flex items-start gap-2 mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
               <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
               <div className="text-xs text-amber-700 dark:text-amber-300">
@@ -536,7 +536,7 @@ export function AdvancedFiltersPanel({
 
           {/* Tags Section */}
           {listOptions.length > 0 && (
-            <div className="p-4 border-b border-border dark:border-slate-700">
+            <div className="p-4 border-b border-border">
               <InlineMultiFilter
                 label="Tags"
                 options={listOptions}
@@ -551,7 +551,7 @@ export function AdvancedFiltersPanel({
 
           {/* Data Quality Section */}
           <div className="p-4">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 mb-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-text-tertiary mb-4">
               Data Quality
             </h3>
             <InlineMultiFilter
@@ -566,18 +566,18 @@ export function AdvancedFiltersPanel({
         </div>
 
         {/* Panel Footer */}
-        <div className="p-4 border-t border-border dark:border-slate-700 bg-card dark:bg-slate-800">
+        <div className="p-4 border-t border-border bg-card">
           <div className="flex gap-3">
             <button
               onClick={clearPanelFilters}
               disabled={panelFilterCount === 0}
-              className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg border border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
+              className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg border border-border text-text-secondary hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
             >
               Clear Filters{panelFilterCount > 0 ? ` (${panelFilterCount})` : ''}
             </button>
             <button
               onClick={onClose}
-              className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary-hover shadow-sm hover:shadow transition-all duration-200"
+              className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-hover shadow-sm hover:shadow transition-all duration-200"
             >
               Done
             </button>

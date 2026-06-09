@@ -17,7 +17,7 @@ export const Button: React.FC<ButtonProps> = ({
   const baseClasses = 'inline-flex items-center justify-center whitespace-nowrap rounded-lg font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background';
 
   const variantClasses = {
-    primary: 'bg-primary hover:bg-primary-hover text-white focus:ring-primary',
+    primary: 'bg-primary hover:bg-primary-hover text-on-primary focus:ring-primary',
     secondary: 'border-2 border-border hover:border-text-secondary text-text-primary bg-card',
     ghost: 'text-text-primary hover:bg-card',
   };

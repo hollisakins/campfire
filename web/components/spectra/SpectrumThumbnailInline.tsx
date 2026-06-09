@@ -69,7 +69,7 @@ export const SpectrumThumbnailInline: React.FC<SpectrumThumbnailInlineProps> = (
         className="flex items-center justify-center"
         style={{ width, height }}
       >
-        <span className="text-gray-400 dark:text-slate-500 text-xs">--</span>
+        <span className="text-text-tertiary text-xs">--</span>
       </div>
     );
   }

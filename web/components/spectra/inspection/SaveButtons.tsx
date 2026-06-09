@@ -33,8 +33,8 @@ export const SaveButtons: React.FC<SaveButtonsProps> = ({ state, canEdit, onSave
           onClick={onSave}
           disabled={!state.hasChanges || state.saving || state.redshiftQuality === 0}
           className="inline-flex items-center justify-center gap-1 px-3 py-2
-                     text-sm font-medium rounded-lg border border-border dark:border-slate-600
-                     text-text-primary dark:text-slate-100 hover:bg-card dark:hover:bg-slate-700
+                     text-sm font-medium rounded-lg border border-border dark:border-border-strong
+                     text-text-primary hover:bg-card dark:hover:bg-card-hover
                      transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           title="Save (S)"
         >
@@ -50,7 +50,7 @@ export const SaveButtons: React.FC<SaveButtonsProps> = ({ state, canEdit, onSave
           onClick={onSaveAndNext}
           className="inline-flex items-center justify-center gap-1 px-3 py-2
                      text-sm font-medium rounded-lg bg-primary hover:bg-primary-hover
-                     text-white transition-colors"
+                     text-on-primary transition-colors"
           title="Save & Next (→)"
         >
           <span>Save & Next</span>
@@ -58,7 +58,7 @@ export const SaveButtons: React.FC<SaveButtonsProps> = ({ state, canEdit, onSave
         </button>
       </div>
 
-      <p className="text-xs text-text-secondary dark:text-slate-400 text-center">
+      <p className="text-xs text-text-secondary text-center">
         S = Save • → = Save & Next
       </p>
     </div>

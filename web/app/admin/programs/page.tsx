@@ -81,7 +81,7 @@ export default function AdminProgramsPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100">Programs</h1>
+        <h1 className="text-2xl font-semibold text-text-primary">Programs</h1>
         <Button variant="secondary" size="sm" onClick={fetchPrograms}>
           <RefreshCw className="w-4 h-4 mr-2" />
           Refresh
@@ -103,32 +103,32 @@ export default function AdminProgramsPage() {
 
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
+          <thead className="bg-card border-b border-border">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Program
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 PI
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Targets
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Users with Access
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Visibility
               </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-right text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Actions
               </th>
             </tr>
           </thead>
-          <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
+          <tbody className="bg-card divide-y divide-border">
             {programs.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-6 py-12 text-center text-text-secondary dark:text-slate-400">
+                <td colSpan={6} className="px-6 py-12 text-center text-text-secondary">
                   No programs found.
                 </td>
               </tr>
@@ -137,26 +137,26 @@ export default function AdminProgramsPage() {
                 <tr key={program.slug}>
                   <td className="px-6 py-4">
                     <div>
-                      <div className="text-sm font-medium text-text-primary dark:text-slate-100">
+                      <div className="text-sm font-medium text-text-primary">
                         {program.program_name || program.slug}
                       </div>
-                      <div className="text-xs text-text-secondary dark:text-slate-400">
+                      <div className="text-xs text-text-secondary">
                         {program.slug}
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-sm text-text-secondary dark:text-slate-400">
+                  <td className="px-6 py-4 text-sm text-text-secondary">
                     {program.pi_name || '—'}
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex items-center gap-1 text-sm text-text-primary dark:text-slate-100">
-                      <FileText className="w-4 h-4 text-text-secondary dark:text-slate-400" />
+                    <div className="flex items-center gap-1 text-sm text-text-primary">
+                      <FileText className="w-4 h-4 text-text-secondary" />
                       {program.target_count}
                     </div>
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex items-center gap-1 text-sm text-text-primary dark:text-slate-100">
-                      <Users className="w-4 h-4 text-text-secondary dark:text-slate-400" />
+                    <div className="flex items-center gap-1 text-sm text-text-primary">
+                      <Users className="w-4 h-4 text-text-secondary" />
                       {program.is_public ? 'All' : program.user_access_count}
                     </div>
                   </td>
@@ -165,7 +165,7 @@ export default function AdminProgramsPage() {
                       className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full ${
                         program.is_public
                           ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-300'
-                          : 'bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-300'
+                          : 'bg-surface-2 text-text-primary dark:text-text-secondary'
                       }`}
                     >
                       {program.is_public ? (

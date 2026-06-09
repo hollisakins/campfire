@@ -39,9 +39,9 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
   const memberTargetIds = object.member_targets.map(m => m.id);
 
   return (
-    <div className="flex-shrink-0 w-[320px] border-l border-border dark:border-slate-700
-                    flex flex-col overflow-hidden bg-background dark:bg-slate-900">
-      <div className="p-4 flex justify-center border-b border-border dark:border-slate-700 flex-shrink-0">
+    <div className="flex-shrink-0 w-[320px] border-l border-border
+                    flex flex-col overflow-hidden bg-background">
+      <div className="p-4 flex justify-center border-b border-border flex-shrink-0">
         <TileThumbnail
           targetId={object.object_id}
           size={560}
@@ -80,7 +80,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
         />
       </div>
 
-      <div className="p-4 border-t border-border dark:border-slate-700 bg-background dark:bg-slate-900 flex-shrink-0">
+      <div className="p-4 border-t border-border bg-background flex-shrink-0">
         <SaveButtons
           state={inspectionState}
           canEdit={canEdit}

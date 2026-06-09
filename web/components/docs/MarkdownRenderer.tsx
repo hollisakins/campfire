@@ -91,7 +91,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
   const components: Components = {
     // Headings with anchor links
     h1: ({ children }) => (
-      <h1 className="text-3xl font-bold text-text-primary dark:text-slate-100 mt-8 mb-4 first:mt-0">
+      <h1 className="text-3xl font-bold text-text-primary mt-8 mb-4 first:mt-0">
         {children}
       </h1>
     ),
@@ -99,7 +99,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       const text = extractTextFromChildren(children);
       const id = headingToId(text);
       return (
-        <h2 id={id} className="text-2xl font-semibold text-text-primary dark:text-slate-100 mt-8 mb-4 scroll-mt-4 group">
+        <h2 id={id} className="text-2xl font-semibold text-text-primary mt-8 mb-4 scroll-mt-4 group">
           <a href={`#${id}`} className="no-underline hover:underline">
             {children}
           </a>
@@ -111,7 +111,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       const text = extractTextFromChildren(children);
       const id = headingToId(text);
       return (
-        <h3 id={id} className="text-xl font-semibold text-text-primary dark:text-slate-100 mt-6 mb-3 scroll-mt-4 group">
+        <h3 id={id} className="text-xl font-semibold text-text-primary mt-6 mb-3 scroll-mt-4 group">
           <a href={`#${id}`} className="no-underline hover:underline">
             {children}
           </a>
@@ -123,7 +123,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       const text = extractTextFromChildren(children);
       const id = headingToId(text);
       return (
-        <h4 id={id} className="text-lg font-semibold text-text-primary dark:text-slate-100 mt-4 mb-2 scroll-mt-4 group">
+        <h4 id={id} className="text-lg font-semibold text-text-primary mt-4 mb-2 scroll-mt-4 group">
           <a href={`#${id}`} className="no-underline hover:underline">
             {children}
           </a>
@@ -186,7 +186,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
 
     // Blockquotes
     blockquote: ({ children }) => (
-      <blockquote className="border-l-4 border-primary pl-4 italic text-text-secondary dark:text-slate-400 mb-4">
+      <blockquote className="border-l-4 border-primary pl-4 italic text-text-secondary mb-4">
         {children}
       </blockquote>
     ),
@@ -194,22 +194,22 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
     // Tables
     table: ({ children }) => (
       <div className="overflow-x-auto mb-4">
-        <table className="min-w-full border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+        <table className="min-w-full border border-border rounded-lg overflow-hidden">
           {children}
         </table>
       </div>
     ),
     thead: ({ children }) => (
-      <thead className="bg-card dark:bg-slate-800">{children}</thead>
+      <thead className="bg-card">{children}</thead>
     ),
     tbody: ({ children }) => (
-      <tbody className="divide-y divide-border dark:divide-slate-700">{children}</tbody>
+      <tbody className="divide-y divide-border">{children}</tbody>
     ),
     tr: ({ children }) => (
       <tr className="hover:bg-card-hover dark:hover:bg-slate-800/50">{children}</tr>
     ),
     th: ({ children }) => (
-      <th className="px-4 py-2 text-left font-semibold text-text-primary dark:text-slate-200">
+      <th className="px-4 py-2 text-left font-semibold text-text-primary">
         {children}
       </th>
     ),
@@ -219,12 +219,12 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
 
     // Horizontal rule
     hr: () => (
-      <hr className="border-border dark:border-slate-700 my-8" />
+      <hr className="border-border my-8" />
     ),
 
     // Strong and emphasis
     strong: ({ children }) => (
-      <strong className="font-semibold text-text-primary dark:text-slate-100">{children}</strong>
+      <strong className="font-semibold text-text-primary">{children}</strong>
     ),
     em: ({ children }) => (
       <em className="italic">{children}</em>
@@ -236,11 +236,11 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
         <img
           src={typeof src === 'string' ? src : undefined}
           alt={alt || ''}
-          className="rounded-lg border border-border dark:border-slate-700 shadow-sm max-w-full cursor-pointer hover:opacity-90 transition-opacity"
+          className="rounded-lg border border-border shadow-sm max-w-full cursor-pointer hover:opacity-90 transition-opacity"
           onClick={() => typeof src === 'string' && setLightbox({ src, alt: alt || '' })}
         />
         {alt && (
-          <figcaption className="mt-2 text-center text-sm text-text-secondary dark:text-slate-400 italic">
+          <figcaption className="mt-2 text-center text-sm text-text-secondary italic">
             {alt}
           </figcaption>
         )}

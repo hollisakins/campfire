@@ -80,10 +80,10 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   if (hasError) {
     const placeholder = (
       <div
-        className={`bg-gray-200 dark:bg-slate-700 rounded flex items-center justify-center ${className || ''}`}
+        className={`bg-surface-2 rounded flex items-center justify-center ${className || ''}`}
         style={{ width: cssSize, height: cssSize }}
       >
-        <span className="text-gray-400 dark:text-slate-500 text-xs">N/A</span>
+        <span className="text-text-tertiary text-xs">N/A</span>
       </div>
     );
     return linkToMap ? (
@@ -98,14 +98,14 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
 
   const img = (
     <div
-      className={`relative rounded overflow-hidden border border-gray-200 dark:border-slate-600 ${
+      className={`relative rounded overflow-hidden border border-border dark:border-border-strong ${
         linkToMap ? 'hover:border-primary dark:hover:border-primary transition-colors' : ''
       } ${className || ''}`}
       style={{ width: cssSize, height: cssSize }}
     >
       {isLoading && (
         <div
-          className="absolute inset-0 bg-gray-200 dark:bg-slate-700 animate-pulse"
+          className="absolute inset-0 bg-surface-2 animate-pulse"
           style={{ width: cssSize, height: cssSize }}
         />
       )}

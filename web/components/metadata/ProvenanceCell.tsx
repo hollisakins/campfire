@@ -63,18 +63,18 @@ export const ProvenanceCell: React.FC<ProvenanceCellProps> = ({ provenance, comp
           className="group inline-flex items-center gap-1.5 text-left hover:text-primary transition-colors"
           title="Show reduction details"
         >
-          <span className={compact ? 'text-sm font-medium text-text-primary dark:text-slate-100' : 'font-semibold'}>
+          <span className={compact ? 'text-sm font-medium text-text-primary' : 'font-semibold'}>
             {reduction_version ?? '—'}
           </span>
           {reducedRel && (
-            <span className="text-xs text-text-secondary dark:text-slate-400">
+            <span className="text-xs text-text-secondary">
               {reducedRel}
             </span>
           )}
-          <Info className="w-3 h-3 text-text-secondary dark:text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+          <Info className="w-3 h-3 text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity" />
         </button>
       ) : (
-        <span className="text-xs text-text-secondary dark:text-slate-400 italic">no full reduction</span>
+        <span className="text-xs text-text-secondary italic">no full reduction</span>
       )}
 
       {n_patches_since_full > 0 && (
@@ -89,41 +89,41 @@ export const ProvenanceCell: React.FC<ProvenanceCellProps> = ({ provenance, comp
 
       {open && hasFull && (
         <div
-          className="absolute z-30 top-full left-0 mt-2 w-80 rounded-md border border-border dark:border-slate-700 bg-card dark:bg-slate-800 shadow-lg p-3 text-xs leading-relaxed"
+          className="absolute z-30 top-full left-0 mt-2 w-80 rounded-md border border-border bg-card shadow-lg p-3 text-xs leading-relaxed"
           onMouseDown={(e) => e.preventDefault()}
         >
-          <div className="font-semibold text-text-primary dark:text-slate-100 mb-2">
+          <div className="font-semibold text-text-primary mb-2">
             Last full reduction
           </div>
-          <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-text-secondary dark:text-slate-400">
+          <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-text-secondary">
             <dt>Version</dt>
-            <dd className="font-mono text-text-primary dark:text-slate-100">{reduction_version ?? '—'}</dd>
+            <dd className="font-mono text-text-primary">{reduction_version ?? '—'}</dd>
             <dt>cfpipe</dt>
-            <dd className="font-mono text-text-primary dark:text-slate-100">{cfpipe_version ?? '—'}</dd>
+            <dd className="font-mono text-text-primary">{cfpipe_version ?? '—'}</dd>
             <dt>jwst</dt>
-            <dd className="font-mono text-text-primary dark:text-slate-100">{jwst_version ?? '—'}</dd>
+            <dd className="font-mono text-text-primary">{jwst_version ?? '—'}</dd>
             <dt>CRDS</dt>
-            <dd className="font-mono text-text-primary dark:text-slate-100">{crds_context ?? '—'}</dd>
+            <dd className="font-mono text-text-primary">{crds_context ?? '—'}</dd>
             <dt>Reduced</dt>
-            <dd className="font-mono text-text-primary dark:text-slate-100">{formatTimestamp(reduced_at)}</dd>
+            <dd className="font-mono text-text-primary">{formatTimestamp(reduced_at)}</dd>
             <dt>Deployed</dt>
-            <dd className="font-mono text-text-primary dark:text-slate-100">{formatTimestamp(deployed_at)}</dd>
+            <dd className="font-mono text-text-primary">{formatTimestamp(deployed_at)}</dd>
             <dt>By</dt>
-            <dd className="text-text-primary dark:text-slate-100" title={deployed_by_full_name ?? undefined}>
+            <dd className="text-text-primary" title={deployed_by_full_name ?? undefined}>
               {deployed_by_username ?? deployed_by_full_name ?? '—'}
             </dd>
           </dl>
           {n_patches_since_full > 0 && (
-            <div className="mt-3 pt-2 border-t border-border dark:border-slate-700">
+            <div className="mt-3 pt-2 border-t border-border">
               <div className="font-semibold text-amber-700 dark:text-amber-300 mb-1">
                 {n_patches_since_full} patch{n_patches_since_full === 1 ? '' : 'es'} since
               </div>
-              <p className="text-text-secondary dark:text-slate-400">
+              <p className="text-text-secondary">
                 Per-source re-reductions exist after this full reduction. Affected spectra
                 may have a newer reduction version than shown above.
               </p>
               {last_patch_at && (
-                <div className="mt-1 text-text-secondary dark:text-slate-400">
+                <div className="mt-1 text-text-secondary">
                   Most recent: <span className="font-mono">{formatTimestamp(last_patch_at)}</span>
                 </div>
               )}

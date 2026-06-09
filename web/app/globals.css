@@ -10,6 +10,11 @@
   /* Accent color (applied dynamically by AccentColorContext) */
   --primary: #c026d3;
   --primary-hover: #a21caf;
+  /* Phase 1 vocabulary — accent extras. Values mirror current usage (no visual change);
+     retuned to ember in the restyle phase. See docs/token-migration-plan.md */
+  --primary-text: #c026d3;          /* accent used as inline text/links (today = --primary) */
+  --on-primary: #ffffff;            /* text/icon on a primary fill */
+  --primary-soft: rgba(192, 38, 211, 0.10); /* active-chip / selected background */
 
   /* Theme colors — adapt in dark mode */
   --background: #ffffff;
@@ -18,6 +23,16 @@
   --border: #e2e8f0;
   --text-primary: #0f172a;
   --text-secondary: #64748b;
+  /* Phase 1 vocabulary — extended neutrals/text. Values match the current slate scale. */
+  --surface-2: #f1f5f9;             /* table headers, insets (today ≈ slate-100) */
+  --border-strong: #cbd5e1;         /* emphasized edges, inputs (today ≈ slate-300) */
+  --text-tertiary: #94a3b8;         /* muted, placeholder, icons (today ≈ slate-400) */
+
+  /* Phase 1 vocabulary — UI status (semantic). Approximate current usage; retuned later. */
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --info: #2563eb;
 
   /* Plotly chart colors (read via JavaScript) */
   --plot-bg: #ffffff;
@@ -50,6 +65,9 @@
   /* Accent color - muted/pale for dark mode (applied dynamically) */
   --primary: #e879f9;
   --primary-hover: #f0abfc;
+  --primary-text: #e879f9;          /* accent as inline text/links (today = --primary) */
+  --on-primary: #ffffff;            /* text/icon on a primary fill */
+  --primary-soft: rgba(232, 121, 249, 0.14); /* active-chip / selected background */
   --background-start-rgb: 15, 23, 42;
   --background-end-rgb: 15, 23, 42;
 
@@ -60,6 +78,16 @@
   --border: #334155;
   --text-primary: #f1f5f9;
   --text-secondary: #94a3b8;
+  /* Phase 1 vocabulary — extended neutrals/text (dark). Values match the current slate scale. */
+  --surface-2: #334155;             /* table headers, insets (today ≈ slate-700) */
+  --border-strong: #475569;         /* emphasized edges, inputs (today ≈ slate-600) */
+  --text-tertiary: #64748b;         /* muted, placeholder, icons (today ≈ slate-500) */
+
+  /* Phase 1 vocabulary — UI status (semantic, dark). Approximate current usage. */
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --info: #60a5fa;
 
   --plot-bg: #0f172a;
   --plot-paper: #1e293b;

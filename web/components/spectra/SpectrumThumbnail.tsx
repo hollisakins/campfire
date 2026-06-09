@@ -35,7 +35,7 @@ export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
         className="flex items-center justify-center"
         style={{ width, height }}
       >
-        <span className="text-gray-400 dark:text-slate-500 text-xs">--</span>
+        <span className="text-text-tertiary text-xs">--</span>
       </div>
     );
   }
@@ -47,7 +47,7 @@ export const SpectrumThumbnail: React.FC<SpectrumThumbnailProps> = ({
     >
       {isLoading && (
         <div
-          className="absolute inset-0 bg-gray-200 dark:bg-slate-700 animate-pulse rounded"
+          className="absolute inset-0 bg-surface-2 animate-pulse rounded"
           style={{ width, height }}
         />
       )}

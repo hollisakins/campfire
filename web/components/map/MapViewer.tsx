@@ -339,8 +339,8 @@ export function MapViewer({
   if (!activeLayer || !mapConfig) {
     if (layers.length === 0) {
       return (
-        <div className="flex items-center justify-center h-full bg-surface dark:bg-slate-900">
-          <div className="text-center text-text-secondary dark:text-slate-400">
+        <div className="flex items-center justify-center h-full bg-surface dark:bg-background">
+          <div className="text-center text-text-secondary">
             <p className="text-lg font-medium mb-2">No map layers available</p>
             <p className="text-sm">Map tiles have not been generated yet.</p>
           </div>
