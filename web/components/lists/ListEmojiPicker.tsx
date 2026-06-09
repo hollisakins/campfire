@@ -29,15 +29,15 @@ export function ListEmojiPicker({ value, onChange }: ListEmojiPickerProps) {
         <button
           type="button"
           onClick={() => setOpen(!open)}
-          className="w-10 h-10 rounded-md border border-border dark:border-slate-600 bg-background dark:bg-slate-700 flex items-center justify-center text-lg hover:bg-gray-50 dark:hover:bg-slate-600 transition-colors"
+          className="w-10 h-10 rounded-md border border-border dark:border-border-strong bg-background dark:bg-slate-700 flex items-center justify-center text-lg hover:bg-gray-50 dark:hover:bg-slate-600 transition-colors"
         >
-          {value || <span className="text-text-secondary dark:text-slate-500 text-sm">+</span>}
+          {value || <span className="text-text-secondary dark:text-text-tertiary text-sm">+</span>}
         </button>
         {value && (
           <button
             type="button"
             onClick={() => onChange(null)}
-            className="text-[11px] text-text-secondary dark:text-slate-400 hover:text-red-500 dark:hover:text-red-400"
+            className="text-[11px] text-text-secondary hover:text-red-500 dark:hover:text-red-400"
           >
             Clear
           </button>
@@ -45,7 +45,7 @@ export function ListEmojiPicker({ value, onChange }: ListEmojiPickerProps) {
       </div>
 
       {open && (
-        <div className="absolute z-50 top-12 left-0 w-[320px] h-[360px] rounded-lg border border-border dark:border-slate-600 bg-card dark:bg-slate-800 shadow-lg overflow-hidden">
+        <div className="absolute z-50 top-12 left-0 w-[320px] h-[360px] rounded-lg border border-border dark:border-border-strong bg-card shadow-lg overflow-hidden">
           <EmojiPicker.Root
             onEmojiSelect={(emoji) => {
               onChange(emoji.emoji);
@@ -54,18 +54,18 @@ export function ListEmojiPicker({ value, onChange }: ListEmojiPickerProps) {
             className="flex flex-col h-full"
           >
             <EmojiPicker.Search
-              className="w-full px-3 py-2 text-sm border-b border-border dark:border-slate-600 bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 outline-none placeholder:text-text-secondary dark:placeholder:text-slate-500"
+              className="w-full px-3 py-2 text-sm border-b border-border dark:border-border-strong bg-background dark:bg-slate-700 text-text-primary outline-none placeholder:text-text-secondary dark:placeholder:text-slate-500"
               placeholder="Search emoji..."
               autoFocus
             />
             <EmojiPicker.Viewport className="flex-1 overflow-y-auto p-1">
               <EmojiPicker.Loading>
-                <div className="flex items-center justify-center h-full text-xs text-text-secondary dark:text-slate-400">
+                <div className="flex items-center justify-center h-full text-xs text-text-secondary">
                   Loading...
                 </div>
               </EmojiPicker.Loading>
               <EmojiPicker.Empty>
-                <div className="flex items-center justify-center h-full text-xs text-text-secondary dark:text-slate-400">
+                <div className="flex items-center justify-center h-full text-xs text-text-secondary">
                   No emoji found
                 </div>
               </EmojiPicker.Empty>
@@ -73,7 +73,7 @@ export function ListEmojiPicker({ value, onChange }: ListEmojiPickerProps) {
                 className="select-none"
                 components={{
                   CategoryHeader: ({ category, ...props }) => (
-                    <div {...props} className="px-1 py-1.5 text-[10px] font-semibold text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+                    <div {...props} className="px-1 py-1.5 text-[10px] font-semibold text-text-secondary uppercase tracking-wider">
                       {category.label}
                     </div>
                   ),

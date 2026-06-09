@@ -142,15 +142,15 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
 
   const slugIcon = {
     idle: null,
-    checking: <Loader2 className="w-3.5 h-3.5 animate-spin text-text-secondary dark:text-slate-500" />,
+    checking: <Loader2 className="w-3.5 h-3.5 animate-spin text-text-secondary dark:text-text-tertiary" />,
     available: <Check className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />,
     taken: <XIcon className="w-3.5 h-3.5 text-red-500 dark:text-red-400" />,
     invalid: <XIcon className="w-3.5 h-3.5 text-red-500 dark:text-red-400" />,
   }[slugStatus];
 
   return (
-    <form onSubmit={handleSubmit} className="border border-border dark:border-slate-700 rounded-lg p-4 bg-card dark:bg-slate-800/50">
-      <h3 className="text-sm font-semibold text-text-primary dark:text-slate-100 mb-3">
+    <form onSubmit={handleSubmit} className="border border-border rounded-lg p-4 bg-card dark:bg-slate-800/50">
+      <h3 className="text-sm font-semibold text-text-primary mb-3">
         {mode === 'create' ? 'Create New Tag' : 'Edit Tag'}
       </h3>
 
@@ -162,7 +162,7 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
 
       <div className="space-y-3">
         <div>
-          <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+          <label className="block text-xs font-medium text-text-secondary mb-1">
             Name
           </label>
           <input
@@ -172,30 +172,30 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
             placeholder="e.g., AGN Candidates"
             maxLength={100}
             minLength={2}
-            className="w-full px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+            className="w-full px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
             autoFocus
             required
           />
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+          <label className="block text-xs font-medium text-text-secondary mb-1">
             Shortname
           </label>
           <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-text-secondary dark:text-slate-500">#</span>
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-text-secondary dark:text-text-tertiary">#</span>
             <input
               type="text"
               value={slug}
               onChange={(e) => handleSlugChange(e.target.value)}
               placeholder={username ? `${username}/my-tag` : 'my-tag'}
               maxLength={60}
-              className={`w-full pl-7 pr-8 py-2 text-sm font-mono border rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:border-transparent ${
+              className={`w-full pl-7 pr-8 py-2 text-sm font-mono border rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:border-transparent ${
                 slugStatus === 'taken' || slugStatus === 'invalid'
                   ? 'border-red-300 dark:border-red-700 focus:ring-red-500'
                   : slugStatus === 'available'
                   ? 'border-green-300 dark:border-green-700 focus:ring-green-500'
-                  : 'border-border dark:border-slate-600 focus:ring-primary'
+                  : 'border-border dark:border-border-strong focus:ring-primary'
               }`}
             />
             {slugIcon && (
@@ -204,7 +204,7 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
               </span>
             )}
           </div>
-          <p className="mt-1 text-[11px] text-text-secondary dark:text-slate-500">
+          <p className="mt-1 text-[11px] text-text-secondary dark:text-text-tertiary">
             {slugStatus === 'taken'
               ? 'This shortname is already taken'
               : slugStatus === 'invalid'
@@ -214,7 +214,7 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+          <label className="block text-xs font-medium text-text-secondary mb-1">
             Description
           </label>
           <textarea
@@ -222,32 +222,32 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Optional description"
             rows={2}
-            className="w-full px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent resize-none"
+            className="w-full px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent resize-none"
           />
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+          <label className="block text-xs font-medium text-text-secondary mb-1">
             Icon
           </label>
           <ListEmojiPicker value={icon} onChange={setIcon} />
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+          <label className="block text-xs font-medium text-text-secondary mb-1">
             Color
           </label>
           <ListColorPicker value={color} onChange={setColor} />
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+          <label className="block text-xs font-medium text-text-secondary mb-1">
             Visibility
           </label>
           <select
             value={visibility}
             onChange={(e) => setVisibility(e.target.value as typeof visibility)}
-            className="w-full px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-md bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+            className="w-full px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
           >
             <option value="private">Private — only you can see</option>
             <option value="public_read">Public — others can view</option>

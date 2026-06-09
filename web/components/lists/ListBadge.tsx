@@ -9,7 +9,7 @@ interface ListBadgeProps {
 }
 
 const visibilityConfig = {
-  private: { label: 'Private', icon: Lock, bg: 'bg-slate-100 dark:bg-slate-700', text: 'text-slate-600 dark:text-slate-300' },
+  private: { label: 'Private', icon: Lock, bg: 'bg-surface-2', text: 'text-text-secondary' },
   public_read: { label: 'Public', icon: Globe, bg: 'bg-blue-50 dark:bg-blue-950', text: 'text-blue-700 dark:text-blue-300' },
   public_edit: { label: 'Collaborative', icon: Users, bg: 'bg-emerald-50 dark:bg-emerald-950', text: 'text-emerald-700 dark:text-emerald-300' },
 };

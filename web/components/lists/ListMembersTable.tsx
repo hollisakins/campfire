@@ -19,7 +19,7 @@ function formatCoord(val: number, decimals: number = 6): string {
 
 function QualityBadge({ quality }: { quality: number }) {
   const def = REDSHIFT_QUALITY.find(q => q.value === quality);
-  if (!def || quality === 0) return <span className="text-text-secondary dark:text-slate-500">—</span>;
+  if (!def || quality === 0) return <span className="text-text-secondary dark:text-text-tertiary">—</span>;
   return (
     <span
       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
@@ -37,7 +37,7 @@ export function ListMembersTable({ members, totalMembers, page, pageSize, onPage
   if (members.length === 0 && page === 1) {
     return (
       <Card className="p-8 text-center">
-        <p className="text-text-secondary dark:text-slate-400">
+        <p className="text-text-secondary">
           No objects with this tag yet.
         </p>
       </Card>
@@ -50,14 +50,14 @@ export function ListMembersTable({ members, totalMembers, page, pageSize, onPage
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border dark:border-slate-700 bg-card dark:bg-slate-800/50">
-                <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Object ID</th>
-                <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Field</th>
-                <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">RA</th>
-                <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Dec</th>
-                <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Redshift</th>
-                <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Quality</th>
-                <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Spectra</th>
+              <tr className="border-b border-border bg-card dark:bg-slate-800/50">
+                <th className="text-left px-4 py-3 font-medium text-text-secondary">Object ID</th>
+                <th className="text-left px-4 py-3 font-medium text-text-secondary">Field</th>
+                <th className="text-right px-4 py-3 font-medium text-text-secondary">RA</th>
+                <th className="text-right px-4 py-3 font-medium text-text-secondary">Dec</th>
+                <th className="text-right px-4 py-3 font-medium text-text-secondary">Redshift</th>
+                <th className="text-left px-4 py-3 font-medium text-text-secondary">Quality</th>
+                <th className="text-right px-4 py-3 font-medium text-text-secondary">Spectra</th>
               </tr>
             </thead>
             <tbody>
@@ -79,7 +79,7 @@ export function ListMembersTable({ members, totalMembers, page, pageSize, onPage
                           {obj.object_id}
                         </Link>
                       ) : (
-                        <span className="text-xs text-text-secondary dark:text-slate-500 italic">
+                        <span className="text-xs text-text-secondary dark:text-text-tertiary italic">
                           Not yet matched
                         </span>
                       )}
@@ -113,24 +113,24 @@ export function ListMembersTable({ members, totalMembers, page, pageSize, onPage
       {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-4 px-1">
-          <p className="text-sm text-text-secondary dark:text-slate-400">
+          <p className="text-sm text-text-secondary">
             Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, totalMembers)} of {totalMembers}
           </p>
           <div className="flex items-center gap-1">
             <button
               onClick={() => onPageChange(page - 1)}
               disabled={page <= 1}
-              className="px-3 py-1.5 text-sm border border-border dark:border-slate-700 rounded-md hover:bg-card-hover dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1.5 text-sm border border-border rounded-md hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Previous
             </button>
-            <span className="px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400">
+            <span className="px-3 py-1.5 text-sm text-text-secondary">
               {page} / {totalPages}
             </span>
             <button
               onClick={() => onPageChange(page + 1)}
               disabled={page >= totalPages}
-              className="px-3 py-1.5 text-sm border border-border dark:border-slate-700 rounded-md hover:bg-card-hover dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1.5 text-sm border border-border rounded-md hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Next
             </button>

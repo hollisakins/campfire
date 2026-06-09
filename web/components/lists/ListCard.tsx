@@ -27,17 +27,17 @@ export function ListCard({ list }: ListCardProps) {
               />
             )}
             <div>
-              <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+              <h3 className="text-lg font-semibold text-text-primary">
                 {list.name}
               </h3>
-              <span className="text-xs font-mono text-text-secondary dark:text-slate-500">#{list.slug}</span>
+              <span className="text-xs font-mono text-text-secondary dark:text-text-tertiary">#{list.slug}</span>
             </div>
           </div>
           <ListBadge visibility={list.visibility} isSystem={list.is_system} />
         </div>
 
         {list.description && (
-          <p className="text-sm text-text-secondary dark:text-slate-400 mb-3 line-clamp-2">
+          <p className="text-sm text-text-secondary mb-3 line-clamp-2">
             {list.description}
           </p>
         )}
@@ -48,7 +48,7 @@ export function ListCard({ list }: ListCardProps) {
             {list.member_count.toLocaleString()} {list.member_count === 1 ? 'object' : 'objects'}
           </span>
           {list.creator_name && (
-            <span className="inline-flex items-center gap-1 text-xs text-text-secondary dark:text-slate-500">
+            <span className="inline-flex items-center gap-1 text-xs text-text-secondary dark:text-text-tertiary">
               <User className="w-3 h-3" />
               {list.creator_name}
             </span>
