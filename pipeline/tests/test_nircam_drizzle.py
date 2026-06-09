@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 from campfire_pipeline.nircam.drizzle import (
-    _apply_output_metadata, _sanitize_variance,
+    _apply_output_metadata, _sanitize_variance, _output_bbox_in_tile,
 )
 
 Drizzle = pytest.importorskip("drizzle.resample").Drizzle
@@ -72,6 +72,97 @@ def test_sanitize_variance_drops_pixel_with_no_valid_component():
     assert var_weight[0, 1] == 0.0      # fully dead -> dropped
     assert np.isfinite(var_total).all()
     assert weight[0, 1] == 9.0          # input weight not mutated
+
+
+# ---------------------------------------------------------------------------
+# pixmap overlap detection + the cdriz "too few valid pixels" crash guard
+# ---------------------------------------------------------------------------
+
+def test_output_bbox_in_tile_uses_in_frame_pixels():
+    """``_output_bbox_in_tile`` must key off pixels that map *inside* the
+    output frame, not merely finite ones — the pixmap is finite everywhere now.
+    """
+    out_shape = (50, 50)
+    pm = np.empty((10, 10, 2), np.float64)
+    iy, ix = np.indices((10, 10), dtype=np.float64)
+    # map the whole input far off-frame except a 3x3 patch landing at (5..7, 5..7)
+    pm[..., 0] = ix - 1000.0
+    pm[..., 1] = iy - 1000.0
+    pm[:3, :3, 0] = ix[:3, :3] + 5.0
+    pm[:3, :3, 1] = iy[:3, :3] + 5.0
+
+    sly, slx = _output_bbox_in_tile(pm, out_shape, pad=1)
+    # the in-frame patch spans output [5,7]x[5,7]; pad=1 grows + clips to tile
+    assert slx.start <= 5 and slx.stop >= 8
+    assert sly.start <= 5 and sly.stop >= 8
+    assert slx.stop <= 50 and sly.stop <= 50
+
+    # a footprint entirely off-frame -> no overlap
+    pm_off = np.empty((10, 10, 2), np.float64)
+    pm_off[..., 0] = ix - 1000.0
+    pm_off[..., 1] = iy - 1000.0
+    assert _output_bbox_in_tile(pm_off, out_shape) is None
+
+
+def test_drizzle_does_not_crash_on_grazing_finite_pixmap():
+    """A finite, geometrically-continuous pixmap whose footprint barely grazes
+    the output frame must drizzle (the in-frame pixels) without raising.
+
+    This is the corner-graze case (exposure 19): with the default
+    ``with_bounding_box=True`` invert, off-frame pixels became NaN and cdriz
+    raised "No or too few valid pixels in the pixel map" on the degenerate
+    finite remainder. With the finite-everywhere pixmap, cdriz clips the
+    off-frame pixels itself and keeps correct edge geometry — no crash, and the
+    in-frame contribution (here ~0) is handled gracefully.
+    """
+    ny = nx = 64
+    out_shape = (16, 16)
+    iy, ix = np.indices((ny, nx), dtype=np.float64)
+    # continuous identity-shifted map; only a corner pokes into the 16x16 frame
+    pm = np.empty((ny, nx, 2), np.float64)
+    pm[..., 0] = ix - 62.0
+    pm[..., 1] = iy - 62.0
+
+    out = np.zeros(out_shape, np.float32)
+    wht = np.zeros(out_shape, np.float32)
+    d = Drizzle(out_img=out, out_wht=wht, kernel="square",
+                fillval="INDEF", disable_ctx=True)
+    # must not raise ValueError("No or too few valid pixels ...")
+    d.add_image(data=np.ones((ny, nx), np.float32),
+                weight_map=np.ones((ny, nx), np.float32),
+                exptime=1.0, pixmap=pm, pixfrac=1.0, in_units="cps")
+    assert np.isfinite(wht).all()
+
+
+def test_drizzle_partial_overlap_keeps_full_interior_weight():
+    """A finite, continuous pixmap that half-overlaps the output frame must
+    deposit full weight across the in-frame bulk (not just the boundary).
+
+    Guards against the rejected sentinel approach, which poisoned cdriz's
+    per-pixel geometry (it derives each footprint from neighbouring pixmap
+    entries) and zeroed the entire exposure's contribution. A continuous map —
+    what ``invert(with_bounding_box=False)`` actually produces — has no such
+    discontinuity at the frame edge.
+    """
+    ny = nx = 64
+    iy, ix = np.indices((ny, nx), dtype=np.float64)
+    pm = np.empty((ny, nx, 2), np.float64)
+    # continuous shift: input cols 0..19 map off-frame (output x < 0),
+    # cols 20..63 map in-frame to output x 0..43.
+    pm[..., 0] = ix - 20.0
+    pm[..., 1] = iy
+
+    out = np.zeros((ny, nx), np.float32)
+    wht = np.zeros((ny, nx), np.float32)
+    d = Drizzle(out_img=out, out_wht=wht, kernel="square",
+                fillval="INDEF", disable_ctx=True)
+    d.add_image(data=np.ones((ny, nx), np.float32),
+                weight_map=np.ones((ny, nx), np.float32),
+                exptime=1.0, pixmap=pm, pixfrac=1.0, in_units="cps")
+    # interior of the in-frame region gets full unit weight
+    assert wht[:, 5:40].min() > 0.99
+    # output columns no input maps to stay empty (no smear from the edge)
+    assert wht[:, 45:].max() == 0.0
 
 
 # ---------------------------------------------------------------------------
