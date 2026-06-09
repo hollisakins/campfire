@@ -33,18 +33,18 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
   if (!authLoading && !user) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
-          <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
+        <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
+          <LogIn className="w-8 h-8 text-text-secondary" />
         </div>
-        <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+        <h2 className="text-2xl font-semibold text-text-primary mb-2">
           Sign in to view program details
         </h2>
-        <p className="text-text-secondary dark:text-slate-400 mb-6 max-w-md">
+        <p className="text-text-secondary mb-6 max-w-md">
           Access to program information requires authentication.
         </p>
         <Link
           href="/login"
-          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
         >
           <LogIn className="w-5 h-5" />
           Sign In
@@ -57,7 +57,7 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
     return (
       <div className="flex items-center justify-center py-16">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
-        <span className="ml-3 text-text-secondary dark:text-slate-400">Loading program...</span>
+        <span className="ml-3 text-text-secondary">Loading program...</span>
       </div>
     );
   }
@@ -68,17 +68,17 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
         <div className="w-16 h-16 bg-red-100 dark:bg-red-950 rounded-full flex items-center justify-center mb-4">
           <AlertCircle className="w-8 h-8 text-red-600 dark:text-red-400" />
         </div>
-        <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+        <h2 className="text-2xl font-semibold text-text-primary mb-2">
           {error === 'Access denied' ? 'Access Denied' : 'Program Not Found'}
         </h2>
-        <p className="text-text-secondary dark:text-slate-400 mb-6">
+        <p className="text-text-secondary mb-6">
           {error === 'Access denied'
             ? 'You do not have access to this program.'
             : 'The program you are looking for does not exist.'}
         </p>
         <Link
           href="/docs/data-products/programs"
-          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
         >
           Back to Programs
         </Link>
@@ -94,14 +94,14 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
   return (
     <div>
       {/* Breadcrumbs */}
-      <nav className="flex items-center gap-1 text-sm text-text-secondary dark:text-slate-400 mb-6">
+      <nav className="flex items-center gap-1 text-sm text-text-secondary mb-6">
         <Link href="/docs" className="hover:text-primary transition-colors">Docs</Link>
         <ChevronRight className="w-4 h-4" />
         <Link href="/docs/data-products" className="hover:text-primary transition-colors">Data Products</Link>
         <ChevronRight className="w-4 h-4" />
         <Link href="/docs/data-products/programs" className="hover:text-primary transition-colors">NIRSpec Programs</Link>
         <ChevronRight className="w-4 h-4" />
-        <span className="text-text-primary dark:text-slate-200">{programLabel}</span>
+        <span className="text-text-primary">{programLabel}</span>
       </nav>
 
       {/* Header */}
@@ -110,10 +110,10 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
           <div className="flex items-center gap-3">
             <Telescope className="w-8 h-8 text-primary flex-shrink-0" />
             <div>
-              <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">
+              <h1 className="text-2xl font-bold text-text-primary">
                 {program.program_name || program.slug}
               </h1>
-              <p className="text-sm text-text-secondary dark:text-slate-400">
+              <p className="text-sm text-text-secondary">
                 {program.jwst_pids && program.jwst_pids.length > 0 && (
                   <>PID{program.jwst_pids.length > 1 ? 's' : ''} {program.jwst_pids.join(', ')}</>
                 )}
@@ -130,7 +130,7 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
                   href={`https://www.stsci.edu/jwst-program-info/program/?program=${pid}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-primary border border-border dark:border-slate-700 rounded-lg transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary hover:text-primary border border-border rounded-lg transition-colors"
                 >
                   <ExternalLink className="w-4 h-4" />
                   {program.jwst_pids.length > 1 ? `PID ${pid}` : 'STScI'}
@@ -141,7 +141,7 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
         </div>
 
         {program.description && (
-          <p className="text-text-secondary dark:text-slate-400 mb-6">
+          <p className="text-text-secondary mb-6">
             {program.description}
           </p>
         )}
@@ -165,41 +165,41 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
       {/* Observations Table */}
       {observations.length > 0 && (
         <div className="mb-8">
-          <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100 mb-4">
+          <h2 className="text-lg font-semibold text-text-primary mb-4">
             Observations
           </h2>
           <Card className="overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-border dark:border-slate-700 bg-gray-50 dark:bg-slate-800/50">
-                    <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Observation</th>
-                    <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Field</th>
-                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Targets</th>
-                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Spectra</th>
-                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Total Size</th>
-                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400"></th>
+                  <tr className="border-b border-border bg-gray-50 dark:bg-slate-800/50">
+                    <th className="text-left px-4 py-3 font-medium text-text-secondary">Observation</th>
+                    <th className="text-left px-4 py-3 font-medium text-text-secondary">Field</th>
+                    <th className="text-right px-4 py-3 font-medium text-text-secondary">Targets</th>
+                    <th className="text-right px-4 py-3 font-medium text-text-secondary">Spectra</th>
+                    <th className="text-right px-4 py-3 font-medium text-text-secondary">Total Size</th>
+                    <th className="text-right px-4 py-3 font-medium text-text-secondary"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {observations.map((obs) => (
                     <tr
                       key={obs.observation}
-                      className="border-b border-border dark:border-slate-700 last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-800/30 transition-colors"
+                      className="border-b border-border last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-800/30 transition-colors"
                     >
-                      <td className="px-4 py-3 text-text-primary dark:text-slate-100 font-medium">
+                      <td className="px-4 py-3 text-text-primary font-medium">
                         {obs.observation}
                       </td>
-                      <td className="px-4 py-3 text-text-secondary dark:text-slate-400">
+                      <td className="px-4 py-3 text-text-secondary">
                         {obs.field}
                       </td>
-                      <td className="px-4 py-3 text-right text-text-primary dark:text-slate-100">
+                      <td className="px-4 py-3 text-right text-text-primary">
                         {obs.target_count.toLocaleString()}
                       </td>
-                      <td className="px-4 py-3 text-right text-text-primary dark:text-slate-100">
+                      <td className="px-4 py-3 text-right text-text-primary">
                         {obs.spectrum_count.toLocaleString()}
                       </td>
-                      <td className="px-4 py-3 text-right text-text-secondary dark:text-slate-400">
+                      <td className="px-4 py-3 text-right text-text-secondary">
                         {formatBytes(obs.total_size_bytes)}
                       </td>
                       <td className="px-4 py-3 text-right">
@@ -224,7 +224,7 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
       <div className="text-center">
         <Link
           href={`/nirspec?programs=${program.slug}`}
-          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
         >
           View all spectra from this program
           <ArrowRight className="w-4 h-4" />
