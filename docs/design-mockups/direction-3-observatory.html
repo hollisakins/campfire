@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAMPFIRE — Direction 3: Observatory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* DIRECTION 3 — OBSERVATORY  (most expressive, still subtle)
+   Character comes from TYPE, not theming: a warm optical serif (Fraunces) for the
+   wordmark, page titles and object names — evoking classic star-chart / observatory
+   plates — paired with Inter for UI and JetBrains Mono for all data. Warm "paper" light
+   mode; a true deep night-sky dark mode. The most editorial / generous of the three,
+   yet no one would say "campfire" — it just reads as a considered scientific instrument. */
+:root{
+  --bg:#f7f2e9; --paper:#fffdf8; --card-2:#f1ebdd; --card-hover:#f0e9d8; --border:#e6dcc7;
+  --text:#231d13; --muted:#796f5b;
+  --primary:#b54708; --primary-2:#c2410c; --primary-soft:rgba(181,71,8,.08);
+  --ok:#3f6212; --warn:#a16207; --bad:#9f1239;
+  --shadow:0 1px 2px rgba(70,55,25,.06),0 10px 24px -16px rgba(70,55,25,.18);
+  --serif:'Fraunces',Georgia,serif; --ui:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+}
+.dark{
+  /* deep night sky */
+  --bg:#0f1118; --paper:#171a24; --card-2:#1b1f2b; --card-hover:#222636; --border:#2a2f3e;
+  --text:#f3efe6; --muted:#9aa0b0;
+  --primary:#fb923c; --primary-2:#fdba74; --primary-soft:rgba(251,146,60,.12);
+  --ok:#a3e635; --warn:#fcd34d; --bad:#fb7185;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 30px -18px rgba(0,0,0,.7);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--ui);background:
+  radial-gradient(1200px 500px at 80% -10%,var(--primary-soft),transparent 60%),var(--bg);
+  color:var(--text);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.serif{font-family:var(--serif)}
+a{color:inherit;text-decoration:none}
+
+.nav{display:flex;align-items:center;gap:32px;padding:0 30px;height:62px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--bg) 72%,transparent);backdrop-filter:blur(8px)}
+.brand{display:flex;align-items:center;gap:11px;font-family:var(--serif);font-weight:600;font-size:19px;letter-spacing:.01em}
+.links{display:flex;gap:26px;font-size:14px;color:var(--muted);font-weight:500}
+.links a.active{color:var(--text)}
+.links a:hover{color:var(--text)}
+.navright{margin-left:auto;display:flex;align-items:center;gap:15px}
+.iconbtn{width:34px;height:34px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--muted);display:grid;place-items:center;cursor:pointer}
+.iconbtn:hover{color:var(--text);background:var(--card-hover)}
+.avatar{width:32px;height:32px;border-radius:50%;background:var(--primary);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:600;font-family:var(--ui)}
+
+.wrap{max-width:1220px;margin:0 auto;padding:42px 30px 80px}
+.eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--primary);font-weight:600;margin-bottom:10px}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:30px}
+h1{font-family:var(--serif);font-size:42px;font-weight:500;letter-spacing:-.01em;line-height:1.02}
+.sub{color:var(--muted);font-size:14.5px;margin-top:10px}
+.search{display:flex;align-items:center;gap:9px;background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:10px 14px;width:330px;color:var(--muted);box-shadow:var(--shadow)}
+.search input{border:0;background:transparent;outline:0;color:var(--text);font:inherit;width:100%}
+
+.filters{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:24px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:8px 15px;border-radius:999px;border:1px solid var(--border);background:var(--paper);color:var(--muted);font-size:13px;font-weight:500;cursor:pointer}
+.chip:hover{background:var(--card-hover);color:var(--text)}
+.chip.on{border-color:var(--primary);background:var(--primary-soft);color:var(--primary)}
+.chip.add{border-style:dashed}
+.fcount{margin-left:auto;color:var(--muted);font-size:12.5px}
+
+.panel{border:1px solid var(--border);border-radius:18px;overflow:hidden;background:var(--paper);box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse}
+thead th{text-align:left;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:15px 22px;border-bottom:1px solid var(--border)}
+tbody td{padding:16px 22px;border-bottom:1px solid var(--border);font-size:14px;vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--card-hover)}
+.id{font-family:var(--serif);font-weight:500;font-size:16px}
+.idsub{color:var(--muted);font-size:12px;margin-top:2px}
+.q{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.q.secure{color:var(--ok)} .q.tent{color:var(--warn)} .q.unc{color:var(--bad)}
+.tag{font-size:11.5px;color:var(--muted);background:var(--card-2);border:1px solid var(--border);padding:3px 9px;border-radius:7px;font-family:var(--mono)}
+.zbig{font-size:16px;font-weight:500}
+.foot{display:flex;justify-content:space-between;align-items:center;padding:15px 22px;color:var(--muted);font-size:13px}
+.pager{display:flex;gap:5px}
+.pager span{min-width:29px;height:29px;display:grid;place-items:center;border-radius:9px;font-size:13px;cursor:pointer}
+.pager span.cur{background:var(--primary);color:#fff}
+.legend{margin-top:42px;color:var(--muted);font-size:12.5px;text-align:center}
+.label{position:fixed;left:14px;bottom:14px;background:var(--paper);border:1px solid var(--border);border-radius:10px;padding:8px 13px;font-size:11.5px;color:var(--muted);box-shadow:var(--shadow)}
+.label b{color:var(--text);font-family:var(--serif)}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <span class="brand">
+    <svg width="19" height="21" viewBox="0 0 18 20" fill="none"><path d="M9 1C9 1 3 6 3 11.5C3 15.6 5.7 19 9 19C12.3 19 15 15.6 15 11.5C15 9.5 14 8 14 8C14 8 13 10 11.5 10C11.5 7 9 1 9 1Z" fill="var(--primary)"/><path d="M9 19C7.3 19 6 17.2 6 15.2C6 13 9 11 9 11C9 11 12 13 12 15.2C12 17.2 10.7 19 9 19Z" fill="var(--primary-2)"/></svg>
+    Campfire
+  </span>
+  <span class="links"><a class="active">Targets</a><a>Fields</a><a>Programs</a><a>About</a></span>
+  <span class="navright">
+    <button class="iconbtn" id="toggle" title="Toggle theme">◐</button>
+    <span class="avatar">HA</span>
+  </span>
+</nav>
+
+<div class="wrap">
+  <div class="head">
+    <div>
+      <div class="eyebrow">COSMOS · NIRSpec</div>
+      <h1>Targets</h1>
+      <div class="sub">1,284 spectra across 9 programs</div>
+    </div>
+    <label class="search">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input placeholder="Search ID or RA, Dec…">
+    </label>
+  </div>
+
+  <div class="filters">
+    <span class="chip on">Program: 6585 ×</span>
+    <span class="chip on">z &gt; 5.0 ×</span>
+    <span class="chip">Quality ▾</span>
+    <span class="chip">Instrument ▾</span>
+    <span class="chip">Grating ▾</span>
+    <span class="chip add">+ Add filter</span>
+    <span class="fcount">Sorted by redshift ↓</span>
+  </div>
+
+  <div class="panel">
+    <table>
+      <thead><tr>
+        <th>Target</th><th>R.A.</th><th>Dec.</th><th>Redshift</th><th>Quality</th><th>Grating</th><th>S/N</th><th>Spectrum</th>
+      </tr></thead>
+      <tbody>
+        <tr><td><div class="id">COSMOS-027731</div><div class="idsub">candidate z≈10</div></td><td class="mono">150.18004</td><td class="mono">+2.49271</td><td class="mono zbig">10.21</td><td><span class="q unc"><span class="dot"></span>Uncertain</span></td><td><span class="tag">PRISM</span></td><td class="mono">4.2</td><td><svg class="spark" width="92" height="24"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-024418</div><div class="idsub">—</div></td><td class="mono">150.14260</td><td class="mono">+2.41097</td><td class="mono zbig">8.679</td><td><span class="q secure"><span class="dot"></span>Secure</span></td><td><span class="tag">PRISM</span></td><td class="mono">22.6</td><td><svg class="spark" width="92" height="24"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-021045</div><div class="idsub">—</div></td><td class="mono">150.11903</td><td class="mono">+2.27551</td><td class="mono zbig">7.044</td><td><span class="q secure"><span class="dot"></span>Secure</span></td><td><span class="tag">G235M</span></td><td class="mono">12.1</td><td><svg class="spark" width="92" height="24"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-022860</div><div class="idsub">—</div></td><td class="mono">150.13351</td><td class="mono">+2.35509</td><td class="mono zbig">6.853</td><td><span class="q secure"><span class="dot"></span>Secure</span></td><td><span class="tag">G235M</span></td><td class="mono">15.0</td><td><svg class="spark" width="92" height="24"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-018734</div><div class="idsub">JADES-GS+53.1</div></td><td class="mono">150.07421</td><td class="mono">+2.31884</td><td class="mono zbig">6.241</td><td><span class="q secure"><span class="dot"></span>Secure</span></td><td><span class="tag">G140M</span></td><td class="mono">18.4</td><td><svg class="spark" width="92" height="24"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-016590</div><div class="idsub">—</div></td><td class="mono">150.05118</td><td class="mono">+2.18840</td><td class="mono zbig">5.998</td><td><span class="q tent"><span class="dot"></span>Tentative</span></td><td><span class="tag">G235M</span></td><td class="mono">9.3</td><td><svg class="spark" width="92" height="24"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-019982</div><div class="idsub">—</div></td><td class="mono">150.09337</td><td class="mono">+2.30012</td><td class="mono zbig">5.331</td><td><span class="q tent"><span class="dot"></span>Tentative</span></td><td><span class="tag">G140M</span></td><td class="mono">7.8</td><td><svg class="spark" width="92" height="24"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-013207</div><div class="idsub">—</div></td><td class="mono">150.02990</td><td class="mono">+2.12663</td><td class="mono zbig">4.770</td><td><span class="q secure"><span class="dot"></span>Secure</span></td><td><span class="tag">G140M</span></td><td class="mono">31.5</td><td><svg class="spark" width="92" height="24"></svg></td></tr>
+      </tbody>
+    </table>
+    <div class="foot">
+      <span>1–8 of 1,284</span>
+      <span class="pager"><span>‹</span><span class="cur">1</span><span>2</span><span>3</span><span>…</span><span>161</span><span>›</span></span>
+    </div>
+  </div>
+
+  <div class="legend">Direction 3 · <b>Observatory</b> — Fraunces serif for the wordmark, titles &amp; object names; Inter for UI; JetBrains Mono for data. Warm paper light mode, deep night-sky dark mode, generous spacing. Click ◐ for dark mode.</div>
+</div>
+
+<div class="label">Direction&nbsp;3 · <b>Observatory</b></div>
+
+<script>
+document.getElementById('toggle').onclick=()=>document.documentElement.classList.toggle('dark');
+document.querySelectorAll('.spark').forEach((s,i)=>{
+  const w=92,h=24,pts=[];const peak=16+(i*9)%58;
+  for(let x=0;x<=w;x+=3){let y=h-4-2*Math.sin(x/6+i)-(Math.abs(x-peak)<6?(6-Math.abs(x-peak))*2.6:0);pts.push(x+','+Math.max(2,Math.min(h-2,y)));}
+  s.innerHTML='<polyline fill="none" stroke="var(--primary)" stroke-width="1.3" opacity=".8" points="'+pts.join(' ')+'"/>';
+});
+</script>
+</body>
+</html>
