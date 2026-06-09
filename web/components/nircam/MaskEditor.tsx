@@ -306,7 +306,7 @@ export default function MaskEditor({
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center justify-between p-2 border-b border-border dark:border-slate-700 bg-surface dark:bg-slate-900 flex-shrink-0">
+      <div className="flex items-center justify-between p-2 border-b border-border bg-surface dark:bg-slate-900 flex-shrink-0">
         <div className="flex items-center gap-1">
           <ToolButton active={mode === 'inspect'} onClick={() => { setMode('inspect'); setDraftVertices([]); }}
             label="Inspect (pan/zoom)"><Hand className="w-4 h-4" /></ToolButton>
@@ -324,7 +324,7 @@ export default function MaskEditor({
             </ToolButton>
           )}
         </div>
-        <div className="flex items-center gap-3 text-xs text-text-secondary dark:text-slate-400">
+        <div className="flex items-center gap-3 text-xs text-text-secondary">
           <span>{polygons.length} polygon{polygons.length === 1 ? '' : 's'}</span>
           <span>{(scale * 100).toFixed(0)}%</span>
           {saveError && <span className="text-red-500">{saveError}</span>}
@@ -488,7 +488,7 @@ function ToolButton({
       className={`p-1.5 rounded text-sm ${
         active
           ? 'bg-primary/15 text-primary'
-          : 'text-text-secondary dark:text-slate-400 hover:bg-surface-hover dark:hover:bg-slate-800'
+          : 'text-text-secondary hover:bg-surface-hover dark:hover:bg-slate-800'
       }`}
     >
       {children}
