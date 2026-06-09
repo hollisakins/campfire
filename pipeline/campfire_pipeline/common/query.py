@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import concurrent.futures
+import random
 import sys
 import threading
 import time
@@ -142,7 +143,9 @@ def _list_products_request(batch, headers, max_retries=5, timeout=120):
         except (requests.Timeout, requests.ConnectionError):
             if attempt + 1 == max_retries:
                 raise
-            time.sleep(float(2 ** attempt))
+            # Jittered backoff so parallel workers don't retry in lockstep
+            # against an already-overloaded endpoint.
+            time.sleep(float(2 ** attempt) + random.uniform(0, 1))
             continue
 
         if resp.status_code == 429 or 500 <= resp.status_code < 600:
@@ -153,7 +156,7 @@ def _list_products_request(batch, headers, max_retries=5, timeout=120):
                 wait = float(retry_after) if retry_after else float(2 ** attempt)
             except ValueError:
                 wait = float(2 ** attempt)
-            time.sleep(wait)
+            time.sleep(wait + random.uniform(0, 1))
             continue
 
         resp.raise_for_status()
@@ -161,12 +164,20 @@ def _list_products_request(batch, headers, max_retries=5, timeout=120):
     return []  # unreachable; loop above always returns or raises
 
 
-def list_products_batched(filesets, batch_size=25, token=None, workers=4):
+def list_products_batched(filesets, batch_size=25, token=None, workers=4,
+                          max_rounds=3):
     """Retrieve product lists for filesets in parallel batches.
 
     Returns a flat list of all product dicts across all filesets. Batches
     are dispatched concurrently via a ThreadPoolExecutor; each request
     retries on 429 / 5xx with exponential backoff (honouring ``Retry-After``).
+
+    A batch that exhausts its per-request retries is isolated rather than
+    aborting the whole run: failed batches are collected and retried in up
+    to ``max_rounds`` successive rounds, so a few persistently-slow
+    ``/list_products`` responses don't discard the batches that already
+    succeeded. If batches still fail after the final round, raises
+    ``RuntimeError`` listing how many.
     """
     fileset_names = [f["fileSetName"] for f in filesets]
     if not fileset_names:
@@ -183,17 +194,45 @@ def list_products_batched(filesets, batch_size=25, token=None, workers=4):
           f"({len(batches)} batches of up to {batch_size}, {n_workers} parallel)...")
 
     all_products = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
-        futures = [ex.submit(_list_products_request, b, headers) for b in batches]
-        with tqdm(total=len(batches), desc="  batches",
-                  unit="batch", dynamic_ncols=True) as pbar:
-            try:
-                for fut in concurrent.futures.as_completed(futures):
-                    all_products.extend(fut.result())
-                    pbar.update(1)
-            except KeyboardInterrupt:
-                ex.shutdown(wait=False, cancel_futures=True)
-                raise
+    pending = list(batches)  # batches still needing a successful fetch
+    with tqdm(total=len(batches), desc="  batches",
+              unit="batch", dynamic_ncols=True) as pbar:
+        for round_num in range(1, max_rounds + 1):
+            if not pending:
+                break
+            if round_num > 1:
+                print(f"  Retrying {len(pending)} batch(es) that timed out "
+                      f"(round {round_num}/{max_rounds})...")
+            failed = []
+            round_workers = max(1, min(workers, len(pending)))
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=round_workers) as ex:
+                future_to_batch = {
+                    ex.submit(_list_products_request, b, headers): b
+                    for b in pending
+                }
+                try:
+                    for fut in concurrent.futures.as_completed(future_to_batch):
+                        try:
+                            products = fut.result()
+                        except (requests.RequestException, OSError):
+                            failed.append(future_to_batch[fut])
+                            continue
+                        all_products.extend(products)
+                        pbar.update(1)
+                except KeyboardInterrupt:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                    raise
+            pending = failed
+
+    if pending:
+        failed_filesets = sum(len(b) for b in pending)
+        raise RuntimeError(
+            f"{len(pending)} of {len(batches)} product-list batches "
+            f"({failed_filesets} filesets) still failed after {max_rounds} "
+            f"rounds — MAST /list_products kept timing out. Try re-running "
+            f"the download command, or wait and retry when MAST is less loaded."
+        )
 
     return all_products
 
