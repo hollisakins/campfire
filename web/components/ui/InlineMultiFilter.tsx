@@ -95,12 +95,12 @@ export function InlineMultiFilter({
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <label className="text-sm font-medium text-text-primary dark:text-slate-200">
+        <label className="text-sm font-medium text-text-primary">
           {label}
         </label>
         {/* Mode selector (hidden for filters where mode doesn't apply) */}
         {!hideModeSelector && (
-          <div className={`flex gap-0.5 bg-slate-100 dark:bg-slate-800 rounded-md p-0.5 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+          <div className={`flex gap-0.5 bg-surface-2 dark:bg-slate-800 rounded-md p-0.5 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
             {(['any', 'all', 'none'] as FilterMode[]).map((m) => (
               <button
                 key={m}
@@ -110,11 +110,11 @@ export function InlineMultiFilter({
                   px-2.5 py-1 text-xs font-medium rounded transition-all duration-200
                   ${mode === m
                     ? m === 'any'
-                      ? 'bg-primary text-white shadow-sm'
+                      ? 'bg-primary text-on-primary shadow-sm'
                       : m === 'all'
                         ? 'bg-green-500 text-white shadow-sm'
                         : 'bg-red-500 text-white shadow-sm'
-                    : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                    : 'text-text-secondary hover:text-text-primary'
                   }
                 `}
               >
@@ -135,8 +135,8 @@ export function InlineMultiFilter({
                 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm
                 border transition-all duration-200
                 ${isSelected
-                  ? 'border-transparent text-gray-900 dark:text-slate-100 shadow-sm'
-                  : 'border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
+                  ? 'border-transparent text-text-primary shadow-sm'
+                  : 'border-border text-text-secondary hover:bg-card dark:hover:bg-slate-700 hover:border-border-strong'
                 }
               `}
               style={
@@ -155,7 +155,7 @@ export function InlineMultiFilter({
       </div>
       {/* Mode description (hidden when mode selector is hidden) */}
       {!hideModeSelector && (
-        <p className={`mt-2 text-xs text-text-secondary dark:text-slate-500 h-4 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-0'}`}>
+        <p className={`mt-2 text-xs text-text-tertiary h-4 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-0'}`}>
           {mode === 'any' && 'Show targets with any of the selected'}
           {mode === 'all' && 'Show targets with all of the selected'}
           {mode === 'none' && 'Exclude targets with any of the selected'}

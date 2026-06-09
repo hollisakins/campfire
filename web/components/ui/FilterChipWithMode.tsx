@@ -167,7 +167,7 @@ export const FilterChipWithMode: React.FC<FilterChipWithModeProps> = ({
           ${disabled ? 'opacity-60 cursor-not-allowed' : ''}
           ${isActive
             ? getModeColor()
-            : 'bg-card dark:bg-slate-800 border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200'
+            : 'bg-card border-border text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary'
           }
         `}
       >
@@ -184,7 +184,7 @@ export const FilterChipWithMode: React.FC<FilterChipWithModeProps> = ({
 
       {/* Dropdown */}
       {isOpen && !disabled && (
-        <div className="absolute z-50 mt-1 min-w-[280px] max-w-[360px] max-h-[450px] overflow-y-auto bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
+        <div className="absolute z-50 mt-1 min-w-[280px] max-w-[360px] max-h-[450px] overflow-y-auto bg-card border border-border rounded-lg shadow-lg">
           {/* Options */}
           <div className="p-3 flex flex-wrap gap-2">
             {options.map((option) => {
@@ -197,8 +197,8 @@ export const FilterChipWithMode: React.FC<FilterChipWithModeProps> = ({
                     inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm
                     border transition-all duration-150
                     ${isSelected
-                      ? 'border-transparent text-gray-900 dark:text-slate-100'
-                      : 'border-border dark:border-slate-700 bg-card/50 dark:bg-slate-800/50 text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200'
+                      ? 'border-transparent text-text-primary'
+                      : 'border-border bg-card/50 text-text-secondary hover:bg-card-hover hover:text-text-primary'
                     }
                   `}
                   style={
@@ -224,8 +224,8 @@ export const FilterChipWithMode: React.FC<FilterChipWithModeProps> = ({
 
           {/* Mode selector - only show when there are selections and mode toggle is enabled */}
           {showModeToggle && selected.length > 0 && (
-            <div className="border-t border-border dark:border-slate-700 p-3">
-              <div className="text-xs font-medium text-text-secondary dark:text-slate-400 mb-2">
+            <div className="border-t border-border p-3">
+              <div className="text-xs font-medium text-text-secondary mb-2">
                 Filter mode
               </div>
               <div className="flex gap-1">
@@ -237,11 +237,11 @@ export const FilterChipWithMode: React.FC<FilterChipWithModeProps> = ({
                       flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors
                       ${mode === m
                         ? m === 'any'
-                          ? 'bg-primary text-white'
+                          ? 'bg-primary text-on-primary'
                           : m === 'all'
-                            ? 'bg-green-500 text-white'
-                            : 'bg-red-500 text-white'
-                        : 'bg-slate-100 dark:bg-slate-700 text-text-secondary dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600'
+                            ? 'bg-green-500 text-on-primary'
+                            : 'bg-red-500 text-on-primary'
+                        : 'bg-surface-2 text-text-secondary hover:bg-slate-200 dark:hover:bg-slate-600'
                       }
                     `}
                   >
@@ -249,7 +249,7 @@ export const FilterChipWithMode: React.FC<FilterChipWithModeProps> = ({
                   </button>
                 ))}
               </div>
-              <p className="mt-2 text-xs text-text-secondary dark:text-slate-500">
+              <p className="mt-2 text-xs text-text-secondary dark:text-text-tertiary">
                 {mode === 'any' && 'Show objects matching ANY selected option'}
                 {mode === 'all' && 'Show objects matching ALL selected options'}
                 {mode === 'none' && 'Exclude objects matching ANY selected option'}
@@ -259,13 +259,13 @@ export const FilterChipWithMode: React.FC<FilterChipWithModeProps> = ({
 
           {/* Clear button */}
           {selected.length > 0 && (
-            <div className="border-t border-border dark:border-slate-700 p-2">
+            <div className="border-t border-border p-2">
               <button
                 onClick={() => {
                   onChange([]);
                   setIsOpen(false);
                 }}
-                className="w-full px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card dark:hover:bg-slate-700 rounded-md text-left"
+                className="w-full px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-card-hover rounded-md text-left"
               >
                 Clear all
               </button>

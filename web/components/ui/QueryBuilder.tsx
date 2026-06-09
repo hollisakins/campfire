@@ -213,24 +213,24 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
     <div className={`
       rounded-lg border
       ${isRoot
-        ? 'border-border dark:border-slate-700 bg-card dark:bg-slate-800'
-        : 'border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50'
+        ? 'border-border bg-card'
+        : 'border-dashed border-border-strong bg-card dark:bg-slate-800/50'
       }
     `}>
       {/* Group header */}
-      <div className="flex items-center gap-2 p-3 border-b border-border dark:border-slate-700">
+      <div className="flex items-center gap-2 p-3 border-b border-border">
         {!isRoot && (
-          <GripVertical className="w-4 h-4 text-text-secondary dark:text-slate-500 cursor-grab" />
+          <GripVertical className="w-4 h-4 text-text-tertiary cursor-grab" />
         )}
 
         {/* Logic toggle */}
-        <div className="flex rounded-md overflow-hidden border border-border dark:border-slate-600">
+        <div className="flex rounded-md overflow-hidden border border-border dark:border-border-strong">
           <button
             onClick={() => onUpdateGroupLogic(group.id, 'AND')}
             className={`px-3 py-1 text-xs font-medium transition-colors ${
               group.logic === 'AND'
-                ? 'bg-primary text-white'
-                : 'bg-card dark:bg-slate-700 text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-600'
+                ? 'bg-primary text-on-primary'
+                : 'bg-card dark:bg-slate-700 text-text-secondary hover:bg-card-hover dark:hover:bg-slate-600'
             }`}
           >
             AND
@@ -240,14 +240,14 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
             className={`px-3 py-1 text-xs font-medium transition-colors ${
               group.logic === 'OR'
                 ? 'bg-orange-500 text-white'
-                : 'bg-card dark:bg-slate-700 text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-600'
+                : 'bg-card dark:bg-slate-700 text-text-secondary hover:bg-card-hover dark:hover:bg-slate-600'
             }`}
           >
             OR
           </button>
         </div>
 
-        <span className="text-xs text-text-secondary dark:text-slate-500 ml-2">
+        <span className="text-xs text-text-tertiary ml-2">
           {group.logic === 'AND' ? 'All conditions must match' : 'Any condition can match'}
         </span>
 
@@ -257,7 +257,7 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
         {!isRoot && (
           <button
             onClick={() => onRemoveItem(group.id)}
-            className="p-1 text-text-secondary dark:text-slate-400 hover:text-red-500 transition-colors"
+            className="p-1 text-text-secondary hover:text-red-500 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
@@ -267,7 +267,7 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
       {/* Conditions */}
       <div className="p-3 space-y-2">
         {group.conditions.length === 0 ? (
-          <div className="text-sm text-text-secondary dark:text-slate-500 text-center py-4">
+          <div className="text-sm text-text-tertiary text-center py-4">
             No conditions yet. Add a condition or group below.
           </div>
         ) : (
@@ -276,7 +276,7 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
               {/* Logic separator */}
               {index > 0 && (
                 <div className="flex items-center gap-2 py-1">
-                  <div className="flex-1 h-px bg-border dark:bg-slate-700" />
+                  <div className="flex-1 h-px bg-border" />
                   <span className={`text-xs font-medium px-2 ${
                     group.logic === 'AND'
                       ? 'text-primary'
@@ -284,7 +284,7 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
                   }`}>
                     {group.logic}
                   </span>
-                  <div className="flex-1 h-px bg-border dark:bg-slate-700" />
+                  <div className="flex-1 h-px bg-border" />
                 </div>
               )}
 
@@ -312,17 +312,17 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
       </div>
 
       {/* Add buttons */}
-      <div className="flex gap-2 p-3 border-t border-border dark:border-slate-700">
+      <div className="flex gap-2 p-3 border-t border-border">
         <button
           onClick={() => onAddCondition(group.id)}
-          className="flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors"
+          className="flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-card-hover rounded-md transition-colors"
         >
           <Plus className="w-4 h-4" />
           Add condition
         </button>
         <button
           onClick={() => onAddGroup(group.id)}
-          className="flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors"
+          className="flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-card-hover rounded-md transition-colors"
         >
           <Plus className="w-4 h-4" />
           Add group
@@ -360,14 +360,14 @@ const ConditionComponent: React.FC<ConditionComponentProps> = ({
   };
 
   return (
-    <div className="flex items-center gap-2 p-2 bg-background dark:bg-slate-900 rounded-md border border-border dark:border-slate-700">
-      <GripVertical className="w-4 h-4 text-text-secondary dark:text-slate-500 cursor-grab flex-shrink-0" />
+    <div className="flex items-center gap-2 p-2 bg-background rounded-md border border-border">
+      <GripVertical className="w-4 h-4 text-text-tertiary cursor-grab flex-shrink-0" />
 
       {/* Field selector */}
       <select
         value={condition.field}
         onChange={(e) => handleFieldChange(e.target.value)}
-        className="px-2 py-1 text-sm bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded text-text-primary dark:text-slate-200"
+        className="px-2 py-1 text-sm bg-card border border-border rounded text-text-primary"
       >
         {fields.map(f => (
           <option key={f.id} value={f.id}>{f.label}</option>
@@ -378,7 +378,7 @@ const ConditionComponent: React.FC<ConditionComponentProps> = ({
       <select
         value={condition.operator}
         onChange={(e) => onUpdate({ operator: e.target.value as Operator })}
-        className="px-2 py-1 text-sm bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded text-text-primary dark:text-slate-200"
+        className="px-2 py-1 text-sm bg-card border border-border rounded text-text-primary"
       >
         {operators.map(op => (
           <option key={op.value} value={op.value}>{op.label}</option>
@@ -397,7 +397,7 @@ const ConditionComponent: React.FC<ConditionComponentProps> = ({
             });
             onUpdate({ value: selected });
           }}
-          className="flex-1 min-w-[150px] px-2 py-1 text-sm bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded text-text-primary dark:text-slate-200"
+          className="flex-1 min-w-[150px] px-2 py-1 text-sm bg-card border border-border rounded text-text-primary"
           size={Math.min(field.options.length, 4)}
         >
           {field.options.map(opt => (
@@ -411,7 +411,7 @@ const ConditionComponent: React.FC<ConditionComponentProps> = ({
             const numVal = Number(e.target.value);
             onUpdate({ value: isNaN(numVal) ? e.target.value : numVal });
           }}
-          className="flex-1 px-2 py-1 text-sm bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded text-text-primary dark:text-slate-200"
+          className="flex-1 px-2 py-1 text-sm bg-card border border-border rounded text-text-primary"
         >
           <option value="">Select...</option>
           {field.options.map(opt => (
@@ -423,7 +423,7 @@ const ConditionComponent: React.FC<ConditionComponentProps> = ({
           type="number"
           value={condition.value as number}
           onChange={(e) => onUpdate({ value: parseFloat(e.target.value) || 0 })}
-          className="flex-1 px-2 py-1 text-sm bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded text-text-primary dark:text-slate-200"
+          className="flex-1 px-2 py-1 text-sm bg-card border border-border rounded text-text-primary"
           step="any"
         />
       ) : (
@@ -431,7 +431,7 @@ const ConditionComponent: React.FC<ConditionComponentProps> = ({
           type="text"
           value={condition.value as string}
           onChange={(e) => onUpdate({ value: e.target.value })}
-          className="flex-1 px-2 py-1 text-sm bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded text-text-primary dark:text-slate-200"
+          className="flex-1 px-2 py-1 text-sm bg-card border border-border rounded text-text-primary"
           placeholder="Enter value..."
         />
       )}
@@ -439,7 +439,7 @@ const ConditionComponent: React.FC<ConditionComponentProps> = ({
       {/* Remove button */}
       <button
         onClick={onRemove}
-        className="p-1 text-text-secondary dark:text-slate-400 hover:text-red-500 transition-colors flex-shrink-0"
+        className="p-1 text-text-secondary hover:text-red-500 transition-colors flex-shrink-0"
       >
         <X className="w-4 h-4" />
       </button>
