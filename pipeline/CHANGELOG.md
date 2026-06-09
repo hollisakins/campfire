@@ -62,6 +62,25 @@ Release procedure: edit the `## Unreleased` section below, then run
   the instrumented path uses ordered `pool.imap` so result order (and exception
   propagation) is unchanged, and behavior is byte-identical to before when no
   session is active. No change to scientific output.
+- NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): a
+  tile no longer aborts with `ValueError: No or too few valid pixels in the
+  pixel map` when a selected exposure only partially overlaps it. The pixmap
+  was built with `output_wcs.invert(ra, dec)` at its default
+  `with_bounding_box=True`, which returns NaN for every input pixel mapping
+  outside the output WCS bounding box. cdriz (`drizzle` 2.x) raises on *any*
+  NaN in the pixmap, so an exposure that merely grazes a (rotated) tile — e.g.
+  a COSMOS exposure overlapping tile `B2` by ~2 pixels at a corner — crashed
+  the entire drizzle. The inverse is now called with `with_bounding_box=False`,
+  producing a finite, geometrically-continuous pixmap; cdriz drops off-frame
+  pixels through its normal output-bounds clipping while keeping correct kernel
+  geometry at the tile edge, and overlap detection (`_output_bbox_in_tile`) now
+  keys off pixels mapping *inside* the frame rather than finite ones. Replacing
+  the NaNs with an out-of-frame sentinel was rejected: cdriz derives each
+  pixel's drizzle footprint from neighbouring pixmap entries, so a sentinel
+  poisons the geometry and silently zeroes the whole exposure's contribution.
+  Output for tiles that already built is unchanged (any exposure that
+  previously succeeded had an all-finite pixmap, computed identically here).
+  The default `jwst` implementation was never affected.
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
   output mosaic i2d now carries the same header metadata as a jwst
   `Image3Pipeline` product. Previously `_write_i2d_fits` built a blank
