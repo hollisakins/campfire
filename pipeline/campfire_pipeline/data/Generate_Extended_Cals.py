@@ -23,10 +23,10 @@ os.environ['CRDS_PATH'] = os.environ.get('CAMPFIRE_ROOT')+'/cache/crds/'
 os.environ['CRDS_SERVER_URL'] = 'https://jwst-crds.stsci.edu'
 os.environ['CRDS_CONTEXT']='jwst_1464.pmap'
 
-steps={'detector1':False,
+steps={'detector1':True,
        'extend_flats':True,
-       'spec2':False,
-       'spec3':False,
+       'spec2':True,
+       'spec3':True,
        'calibrate':True}
 
 ncores=10
@@ -111,10 +111,11 @@ def generate_extended_cals(rate_files,cwd):
             for num,i in enumerate(fflat):
                 if num in [5,10,15,20]:
                     tab=table.Table.read(file,hdu=num)
-                    newwave=np.round(np.arange(np.round(np.min(tab['wavelength'][0]),3),5.301,0.001),3)
-                    newflux=np.interp(newwave,tab['wavelength'][0],tab['data'][0])#
-                    newflux[newwave>=maxwaves[grat][filt]]=newflux[newwave==maxwaves[grat][filt]] #flat after last real value
-                    newflux[np.isnan(newflux)]=0
+                    newwave=np.concatenate([tab['wavelength'][0],np.round(np.arange(np.round(np.max(tab['wavelength'][0])+0.001,3),5.301,0.001),3)])
+                    newflux=np.ones_like(newwave)
+                    newflux[:len(tab['wavelength'][0])]=tab['data'][0]
+                    newflux[newwave>=maxwaves[grat][filt]]=newflux[np.argmin(np.abs(newwave-maxwaves[grat][filt]))] #flat after last real value
+                    newflux[newflux<=0]=np.nan
                     tab['newwavelength']=newwave[:,None].T.astype('float32')
                     tab['newdata']=newflux[:,None].T.astype('float32')
                     tab['newerror']=newflux[:,None].T.astype('float32')*np.nan
@@ -140,9 +141,11 @@ def generate_extended_cals(rate_files,cwd):
                 print(f"Grating: {grat} not supported")
                 continue    
             tab=table.Table.read(file,hdu=5)
-            newwave=np.round(np.arange(np.round(np.min(tab['wavelength'][0][tab['wavelength'][0]>0]),3),5.301,0.001),3)
-            newflux=interp1d(tab['wavelength'][0],tab['data'][0],bounds_error=0,fill_value='extrapolate')(newwave)
-            newflux[newwave>=maxwaves[grat][filt]]=newflux[newwave==maxwaves[grat][filt]] # flat after last real value
+            newwave=np.concatenate([tab['wavelength'][0],np.round(np.arange(np.round(np.max(tab['wavelength'][0])+0.001,3),5.301,0.001),3)])
+            newflux=np.ones_like(newwave)
+            newflux[:len(tab['wavelength'][0])]=tab['data'][0]
+            newflux[newwave>=maxwaves[grat][filt]]=newflux[np.argmin(np.abs(newwave-maxwaves[grat][filt]))] #flat after last real value
+            newflux[newflux<=0]=np.nan
             tab['newwavelength']=newwave[:,None].T.astype('float32')
             tab['newdata']=newflux[:,None].T.astype('float32')
             for col in ['wavelength','data']:
