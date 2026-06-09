@@ -96,15 +96,13 @@ def _build_extended_fflat(src_path, grating, filt, out_path):
             if num in _FFLAT_TABLE_HDUS:
                 tab = Table.read(src_path, hdu=num)
                 wav0 = np.asarray(tab["wavelength"][0], dtype=float)
-                newwave = np.round(
-                    np.arange(np.round(np.min(wav0), 3),
-                              EXTENDED_GRID_MAX_UM, _FLAT_GRID_STEP_UM), 3)
-                newflux = np.interp(newwave, wav0,
-                                    np.asarray(tab["data"][0], dtype=float))
+                newwave = np.concatenate([wav0, np.round(np.arange(np.round(np.max(tab['wavelength'][0])+_FLAT_GRID_STEP_UM, 3), EXTENDED_GRID_MAX_UM, _FLAT_GRID_STEP_UM), 3)])
+                newflux=np.ones_like(newwave)
+                newflux[:len(wav0)]=tab['data'][0]
                 # Hold the flat constant beyond the last measured wavelength.
                 hold_idx = int(np.argmin(np.abs(newwave - hold)))
                 newflux[newwave >= hold] = newflux[hold_idx]
-                newflux[np.isnan(newflux)] = 0
+                newflux[newflux<=0] = np.nan
                 tab["newwavelength"] = newwave[:, None].T.astype("float32")
                 tab["newdata"] = newflux[:, None].T.astype("float32")
                 tab["newerror"] = newflux[:, None].T.astype("float32") * np.nan
@@ -126,14 +124,13 @@ def _build_extended_sflat(src_path, grating, filt, out_path):
     with fits.open(src_path) as sflat:
         tab = Table.read(src_path, hdu=_SFLAT_TABLE_HDU)
         wav0 = np.asarray(tab["wavelength"][0], dtype=float)
-        positive = wav0[wav0 > 0]
-        newwave = np.round(
-            np.arange(np.round(np.min(positive), 3),
-                      EXTENDED_GRID_MAX_UM, _FLAT_GRID_STEP_UM), 3)
-        newflux = interp1d(wav0, np.asarray(tab["data"][0], dtype=float),
-                           bounds_error=False, fill_value="extrapolate")(newwave)
+        newwave = np.concatenate([wav0, np.round(np.arange(np.round(np.max(tab['wavelength'][0])+_FLAT_GRID_STEP_UM, 3), EXTENDED_GRID_MAX_UM, _FLAT_GRID_STEP_UM), 3)])
+        newflux=np.ones_like(newwave)
+        newflux[:len(wav0)]=tab['data'][0]
+        # Hold the flat constant beyond the last measured wavelength.
         hold_idx = int(np.argmin(np.abs(newwave - hold)))
         newflux[newwave >= hold] = newflux[hold_idx]
+        newflux[newflux<=0] = np.nan
         tab["newwavelength"] = newwave[:, None].T.astype("float32")
         tab["newdata"] = newflux[:, None].T.astype("float32")
         for col in ("wavelength", "data"):
