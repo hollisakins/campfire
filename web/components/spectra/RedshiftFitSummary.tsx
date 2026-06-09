@@ -105,7 +105,7 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
       <Card className="p-6">
         <div className="flex items-center justify-center py-8">
           <Loader2 className="w-5 h-5 animate-spin text-primary mr-3" />
-          <span className="text-text-secondary dark:text-slate-400">Loading redshift fits...</span>
+          <span className="text-text-secondary">Loading redshift fits...</span>
         </div>
       </Card>
     );
@@ -115,11 +115,11 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
     return (
       <Card className="p-6">
         <div className="flex flex-col items-center justify-center py-8 text-center">
-          <AlertCircle className="w-6 h-6 text-text-secondary dark:text-slate-400 mb-2" />
-          <p className="text-text-secondary dark:text-slate-400">
+          <AlertCircle className="w-6 h-6 text-text-secondary mb-2" />
+          <p className="text-text-secondary">
             No redshift fitting data available for this object
           </p>
-          <p className="text-xs text-text-secondary dark:text-slate-500 mt-1">
+          <p className="text-xs text-text-secondary dark:text-text-tertiary mt-1">
             Redshift fits have not been computed for any grating
           </p>
         </div>
@@ -130,9 +130,9 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
   return (
     <Card className="p-6">
       <div className="flex items-center gap-2 mb-4">
-        <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">Redshift Fit Summary</h3>
+        <h3 className="text-lg font-semibold text-text-primary">Redshift Fit Summary</h3>
         <div className="group relative">
-          <Info className="w-4 h-4 text-text-secondary dark:text-slate-400 cursor-help" />
+          <Info className="w-4 h-4 text-text-secondary cursor-help" />
           <div className="absolute left-0 top-6 w-64 p-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-10">
             If multiple gratings are available, the automatic redshift is determined from a decision tree, generally preferring PRISM redshifts but using grating redshifts if they agree.
           </div>
@@ -142,23 +142,23 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
-            <tr className="border-b border-border dark:border-slate-700">
-              <th className="text-left py-2 px-3 text-sm font-medium text-text-secondary dark:text-slate-400">
+            <tr className="border-b border-border">
+              <th className="text-left py-2 px-3 text-sm font-medium text-text-secondary">
                 Observation
               </th>
-              <th className="text-left py-2 px-3 text-sm font-medium text-text-secondary dark:text-slate-400">
+              <th className="text-left py-2 px-3 text-sm font-medium text-text-secondary">
                 Grating
               </th>
-              <th className="text-right py-2 px-3 text-sm font-medium text-text-secondary dark:text-slate-400">
+              <th className="text-right py-2 px-3 text-sm font-medium text-text-secondary">
                 Redshift
               </th>
-              <th className="text-right py-2 px-3 text-sm font-medium text-text-secondary dark:text-slate-400">
+              <th className="text-right py-2 px-3 text-sm font-medium text-text-secondary">
                 χ²_min
               </th>
-              <th className="text-right py-2 px-3 text-sm font-medium text-text-secondary dark:text-slate-400">
+              <th className="text-right py-2 px-3 text-sm font-medium text-text-secondary">
                 Confidence
               </th>
-              <th className="text-center py-2 px-3 text-sm font-medium text-text-secondary dark:text-slate-400">
+              <th className="text-center py-2 px-3 text-sm font-medium text-text-secondary">
                 Used
               </th>
             </tr>
@@ -167,37 +167,37 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
             {gratingFits.map((fit, index) => (
               <tr
                 key={index}
-                className={`border-b border-border dark:border-slate-700 last:border-0 ${
+                className={`border-b border-border last:border-0 ${
                   fit.isUsedForAuto ? 'bg-green-50 dark:bg-green-950' : ''
                 }`}
               >
-                <td className="py-2 px-3 text-sm text-text-primary dark:text-slate-100">
-                  {fit.observation ?? <span className="text-text-secondary dark:text-slate-400">—</span>}
+                <td className="py-2 px-3 text-sm text-text-primary">
+                  {fit.observation ?? <span className="text-text-secondary">—</span>}
                 </td>
-                <td className="py-2 px-3 text-sm font-medium text-text-primary dark:text-slate-100">
+                <td className="py-2 px-3 text-sm font-medium text-text-primary">
                   {fit.grating}
                 </td>
-                <td className="py-2 px-3 text-sm text-right text-text-primary dark:text-slate-100 tabular-nums">
+                <td className="py-2 px-3 text-sm text-right text-text-primary tabular-nums">
                   {fit.error ? (
-                    <span className="text-text-secondary dark:text-slate-400 text-xs">{fit.error}</span>
+                    <span className="text-text-secondary text-xs">{fit.error}</span>
                   ) : fit.redshift !== undefined ? (
                     fit.redshift.toFixed(4)
                   ) : (
-                    <span className="text-text-secondary dark:text-slate-400">—</span>
+                    <span className="text-text-secondary">—</span>
                   )}
                 </td>
-                <td className="py-2 px-3 text-sm text-right text-text-primary dark:text-slate-100 tabular-nums">
+                <td className="py-2 px-3 text-sm text-right text-text-primary tabular-nums">
                   {fit.chi2Min !== undefined ? (
                     fit.chi2Min.toFixed(2)
                   ) : (
-                    <span className="text-text-secondary dark:text-slate-400">—</span>
+                    <span className="text-text-secondary">—</span>
                   )}
                 </td>
-                <td className="py-2 px-3 text-sm text-right text-text-primary dark:text-slate-100 tabular-nums">
+                <td className="py-2 px-3 text-sm text-right text-text-primary tabular-nums">
                   {fit.confidence !== undefined ? (
                     `${fit.confidence.toFixed(1)}%`
                   ) : (
-                    <span className="text-text-secondary dark:text-slate-400">—</span>
+                    <span className="text-text-secondary">—</span>
                   )}
                 </td>
                 <td className="py-2 px-3 text-center">

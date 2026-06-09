@@ -11,10 +11,10 @@ interface MetadataSectionProps {
 
 const MetadataRow: React.FC<{ label: string; value: string; tooltip?: string }> = ({ label, value, tooltip }) => (
   <div className="flex justify-between items-center">
-    <span className="text-text-secondary dark:text-slate-400" title={tooltip}>
+    <span className="text-text-secondary" title={tooltip}>
       {label}:
     </span>
-    <span className="font-mono text-text-primary dark:text-slate-100">
+    <span className="font-mono text-text-primary">
       {value}
     </span>
   </div>
@@ -22,8 +22,8 @@ const MetadataRow: React.FC<{ label: string; value: string; tooltip?: string }> 
 
 export const MetadataSection: React.FC<MetadataSectionProps> = ({ spectrum, activeSpec }) => {
   return (
-    <div className="p-4 border-b border-border dark:border-slate-700">
-      <h3 className="text-xs font-semibold text-text-secondary dark:text-slate-400 uppercase mb-2 flex items-center gap-1">
+    <div className="p-4 border-b border-border">
+      <h3 className="text-xs font-semibold text-text-secondary uppercase mb-2 flex items-center gap-1">
         <Info className="w-3 h-3" />
         Metadata
       </h3>

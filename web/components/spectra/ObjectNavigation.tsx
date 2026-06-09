@@ -137,18 +137,18 @@ export function ObjectNavigation({
       {prevHref ? (
         <Link
           href={prevHref}
-          className="p-2 rounded-lg hover:bg-card dark:hover:bg-slate-700 transition-colors text-text-primary dark:text-slate-100"
+          className="p-2 rounded-lg hover:bg-card dark:hover:bg-card-hover transition-colors text-text-primary"
           aria-label="Previous object"
         >
           <ChevronLeft className="w-5 h-5" />
         </Link>
       ) : (
-        <div className="p-2 text-text-secondary dark:text-slate-500 opacity-50">
+        <div className="p-2 text-text-secondary dark:text-text-tertiary opacity-50">
           <ChevronLeft className="w-5 h-5" />
         </div>
       )}
 
-      <span className="text-sm font-medium text-text-primary dark:text-slate-100 min-w-[60px] text-center">
+      <span className="text-sm font-medium text-text-primary min-w-[60px] text-center">
         {nav.loading ? (
           <Loader2 className="w-4 h-4 animate-spin inline" />
         ) : nav.index > 0 && nav.total > 0 ? (
@@ -161,13 +161,13 @@ export function ObjectNavigation({
       {nextHref ? (
         <Link
           href={nextHref}
-          className="p-2 rounded-lg hover:bg-card dark:hover:bg-slate-700 transition-colors text-text-primary dark:text-slate-100"
+          className="p-2 rounded-lg hover:bg-card dark:hover:bg-card-hover transition-colors text-text-primary"
           aria-label="Next object"
         >
           <ChevronRight className="w-5 h-5" />
         </Link>
       ) : (
-        <div className="p-2 text-text-secondary dark:text-slate-500 opacity-50">
+        <div className="p-2 text-text-secondary dark:text-text-tertiary opacity-50">
           <ChevronRight className="w-5 h-5" />
         </div>
       )}

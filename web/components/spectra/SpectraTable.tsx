@@ -166,7 +166,7 @@ const SortableHeader: React.FC<{
       ) : sorted === 'desc' ? (
         <ArrowDown className="w-3.5 h-3.5 text-primary" />
       ) : (
-        <ArrowUpDown className="w-3.5 h-3.5 text-text-secondary dark:text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+        <ArrowUpDown className="w-3.5 h-3.5 text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity" />
       )}
     </button>
   );
@@ -181,7 +181,7 @@ const TableSkeletonRow: React.FC<{ columns: ColumnDef<SpectrumTarget>[] }> = ({ 
         className="px-4 py-3 whitespace-nowrap"
         style={{ width: `${col.minSize || 150}px` }}
       >
-        <div className="h-4 bg-gray-200 dark:bg-slate-700 rounded w-full"></div>
+        <div className="h-4 bg-surface-2 dark:bg-slate-700 rounded w-full"></div>
       </td>
     ))}
   </tr>
@@ -214,15 +214,15 @@ const ViewModeTooltip: React.FC = () => {
     <div ref={ref} className="relative flex items-center">
       <button
         onClick={() => setOpen(!open)}
-        className="text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+        className="text-text-secondary hover:text-text-primary transition-colors"
         aria-label="View mode help"
       >
         <HelpCircle className="w-3.5 h-3.5" />
       </button>
       {open && (
-        <div className="absolute left-0 top-full mt-1.5 z-50 w-64 px-3 py-2 text-xs text-text-secondary dark:text-slate-400 bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
-          <p><span className="font-medium text-text-primary dark:text-slate-200">Objects</span> = unique sources across programs</p>
-          <p><span className="font-medium text-text-primary dark:text-slate-200">Spectra</span> = individual grating exposures</p>
+        <div className="absolute left-0 top-full mt-1.5 z-50 w-64 px-3 py-2 text-xs text-text-secondary bg-background dark:bg-slate-800 border border-border rounded-lg shadow-lg">
+          <p><span className="font-medium text-text-primary">Objects</span> = unique sources across programs</p>
+          <p><span className="font-medium text-text-primary">Spectra</span> = individual grating exposures</p>
         </div>
       )}
     </div>
@@ -354,7 +354,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       <SortableHeader column={column}>Distance</SortableHeader>
     ),
     cell: ({ row }) => (
-      <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+      <span className="text-sm font-mono text-text-primary">
         {row.original.distance != null ? formatDistance(row.original.distance) : 'N/A'}
       </span>
     ),
@@ -463,7 +463,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Field</SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm text-text-primary dark:text-slate-100 uppercase">{row.original.field}</span>
+          <span className="text-sm text-text-primary uppercase">{row.original.field}</span>
         ),
         sortingFn: 'alphanumeric',
       },
@@ -474,7 +474,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>RA</SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+          <span className="text-sm font-mono text-text-primary">
             {row.original.ra.toFixed(6)}
           </span>
         ),
@@ -487,7 +487,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Dec</SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+          <span className="text-sm font-mono text-text-primary">
             {row.original.dec.toFixed(6)}
           </span>
         ),
@@ -506,7 +506,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Redshift</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+          <span className="text-sm font-mono text-text-primary">
             {row.original.redshift !== null ? row.original.redshift.toFixed(4) : 'N/A'}
           </span>
         ),
@@ -529,7 +529,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const name = row.original.program_name;
           return (
-            <span className="text-sm text-text-primary dark:text-slate-100">
+            <span className="text-sm text-text-primary">
               {name || row.original.program_slug}
             </span>
           );
@@ -550,7 +550,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           return (
             <div className="flex items-center gap-1.5">
               <span>{quality.icon}</span>
-              <span className="text-sm text-text-primary dark:text-slate-100">{quality.short}</span>
+              <span className="text-sm text-text-primary">{quality.short}</span>
             </div>
           );
         },
@@ -567,7 +567,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const z = row.original.spectra[0]?.redshift_auto;
           return (
-            <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+            <span className="text-sm font-mono text-text-primary">
               {z != null ? z.toFixed(4) : '—'}
             </span>
           );
@@ -583,7 +583,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const mask = row.original.spectra[0]?.dq_flags ?? 0;
           if (mask === 0) {
-            return <span className="text-xs text-text-secondary dark:text-slate-500">—</span>;
+            return <span className="text-xs text-text-secondary dark:text-text-tertiary">—</span>;
           }
           const active = decodeBitmask(mask, DQ_FLAGS);
           const defs = DQ_FLAGS.filter(f => active.includes(f.value));
@@ -613,7 +613,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column} className="justify-center"># Observations</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <span className="text-sm text-text-primary dark:text-slate-100 text-center block">
+          <span className="text-sm text-text-primary text-center block">
             {row.original.n_targets ?? 0}
           </span>
         ),
@@ -628,7 +628,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column} className="justify-center"># Spectra</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <span className="text-sm text-text-primary dark:text-slate-100 text-center block">
+          <span className="text-sm text-text-primary text-center block">
             {row.original.n_spectra ?? 0}
           </span>
         ),
@@ -643,7 +643,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column} className="justify-end">Photo-z</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <span className="text-sm font-mono text-text-primary dark:text-slate-100 text-right block">
+          <span className="text-sm font-mono text-text-primary text-right block">
             {row.original.photo_z != null ? row.original.photo_z.toFixed(4) : '—'}
           </span>
         ),
@@ -694,7 +694,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         header: () => <span className="normal-case">Tags</span>,
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const lists = row.original.lists ?? [];
-          if (lists.length === 0) return <span className="text-xs text-text-secondary dark:text-slate-500">---</span>;
+          if (lists.length === 0) return <span className="text-xs text-text-secondary dark:text-text-tertiary">---</span>;
           return (
             <div className="flex flex-wrap gap-1 max-w-[200px]">
               {lists.map((l) => (
@@ -726,7 +726,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>S/N</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+          <span className="text-sm font-mono text-text-primary">
             {row.original.max_snr ? row.original.max_snr.toFixed(1) : 'N/A'}
           </span>
         ),
@@ -743,7 +743,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const snr = row.original.spectra[0]?.signal_to_noise;
           return (
-            <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+            <span className="text-sm font-mono text-text-primary">
               {snr != null ? snr.toFixed(1) : 'N/A'}
             </span>
           );
@@ -759,7 +759,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Exp. Time</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+          <span className="text-sm font-mono text-text-primary">
             {row.original.max_exposure_time ? `${row.original.max_exposure_time.toFixed(0)}s` : 'N/A'}
           </span>
         ),
@@ -776,7 +776,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const expTime = row.original.spectra[0]?.exposure_time;
           return (
-            <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+            <span className="text-sm font-mono text-text-primary">
               {expTime != null ? `${expTime.toFixed(0)}s` : 'N/A'}
             </span>
           );
@@ -793,7 +793,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Grating</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+          <span className="text-sm font-mono text-text-primary">
             {row.original.spectra[0]?.grating ?? 'N/A'}
           </span>
         ),
@@ -807,7 +807,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           <SortableHeader column={column}>Observation</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <span className="text-sm font-mono text-text-primary dark:text-slate-100">
+          <span className="text-sm font-mono text-text-primary">
             {row.original.observation || 'N/A'}
           </span>
         ),
@@ -916,23 +916,23 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   return (
     <Card className="overflow-hidden">
       {/* Table header with view mode toggle, column visibility, and download dropdowns */}
-      <div className="flex items-center justify-between px-4 py-2 bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
+      <div className="flex items-center justify-between px-4 py-2 bg-card border-b border-border">
         <div className="flex items-center gap-3">
-          <span className="text-sm text-text-secondary dark:text-slate-400">
+          <span className="text-sm text-text-secondary">
             {loading ? 'Loading...' : `${total.toLocaleString()} ${isObjectsMode ? 'unique objects' : 'spectra'}`}
           </span>
           {/* View mode toggle */}
           {onViewModeChange && (
             <>
-              <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">
+              <div className="flex items-center bg-card-hover rounded-md p-0.5">
                 {(['objects', 'spectra'] as const).map((mode) => (
                   <button
                     key={mode}
                     onClick={() => onViewModeChange(mode)}
                     className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
                       viewMode === mode
-                        ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
-                        : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                        ? 'bg-white dark:bg-slate-600 text-text-primary shadow-sm'
+                        : 'text-text-secondary hover:text-text-primary'
                     }`}
                   >
                     {mode.charAt(0).toUpperCase() + mode.slice(1)}
@@ -960,7 +960,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
                   total,
                 });
               }}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-primary hover:bg-primary-hover text-white transition-colors"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-primary hover:bg-primary-hover text-on-primary transition-colors"
               title="Streamlined fullscreen view for rapid quality inspection. Auto-filters to uninspected objects and supports keyboard shortcuts for efficient review."
             >
               <ScanEye className="w-3.5 h-3.5" />
@@ -987,13 +987,13 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
 
       <div className="overflow-x-auto">
         <table className="w-full">
-          <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
+          <thead className="bg-card border-b border-border">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
                   <th
                     key={header.id}
-                    className="px-4 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider"
+                    className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider"
                     style={{ width: `${header.getSize()}px` }}
                   >
                     {header.isPlaceholder
@@ -1004,7 +1004,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
               </tr>
             ))}
           </thead>
-          <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
+          <tbody className="bg-card divide-y divide-border">
             {loading ? (
               // Loading state: show skeleton rows matching visible columns
               <TableSkeleton
@@ -1023,7 +1023,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
             ) : spectra.length === 0 ? (
               // Empty state: show message
               <tr>
-                <td colSpan={visibleColumnCount} className="px-4 py-12 text-center text-text-secondary dark:text-slate-400">
+                <td colSpan={visibleColumnCount} className="px-4 py-12 text-center text-text-secondary">
                   No results found.
                   <p className="text-sm mt-2">
                     If you&apos;re looking for proprietary data, you may need to enter an access code on your profile page.
@@ -1045,7 +1045,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       </div>
 
       {/* Always show pagination footer */}
-      <div className="border-t border-border dark:border-slate-700">
+      <div className="border-t border-border">
         <TablePagination
           pageIndex={table.getState().pagination.pageIndex}
           pageSize={table.getState().pagination.pageSize}

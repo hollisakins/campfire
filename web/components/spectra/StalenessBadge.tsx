@@ -136,8 +136,8 @@ export const StalenessBadge: React.FC<StalenessBadgeProps> = ({
         Needs Review
       </button>
       {open && (
-        <div className="absolute left-0 top-full mt-1.5 z-50 w-72 p-3 bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
-          <p className="text-sm text-text-primary dark:text-slate-200 mb-3">{tooltip}</p>
+        <div className="absolute left-0 top-full mt-1.5 z-50 w-72 p-3 bg-background dark:bg-card border border-border rounded-lg shadow-lg">
+          <p className="text-sm text-text-primary mb-3">{tooltip}</p>
           {error && (
             <p className="text-xs text-red-600 dark:text-red-400 mb-2">{error}</p>
           )}
@@ -146,12 +146,12 @@ export const StalenessBadge: React.FC<StalenessBadgeProps> = ({
               type="button"
               onClick={handleMarkReviewed}
               disabled={submitting}
-              className="w-full px-3 py-1.5 text-sm font-medium rounded-md bg-primary text-white hover:bg-primary-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              className="w-full px-3 py-1.5 text-sm font-medium rounded-md bg-primary text-on-primary hover:bg-primary-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
             >
               {submitting ? 'Marking…' : 'Mark as reviewed'}
             </button>
           ) : (
-            <p className="text-xs text-text-secondary dark:text-slate-400">
+            <p className="text-xs text-text-secondary">
               You do not have permission to mark objects as reviewed.
             </p>
           )}

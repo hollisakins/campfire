@@ -65,7 +65,7 @@ export const PhotometryTable: React.FC<PhotometryTableProps> = ({ bands }) => {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <h4 className="text-sm font-medium text-text-secondary dark:text-slate-400">
+        <h4 className="text-sm font-medium text-text-secondary">
           Photometry data
         </h4>
         <div className="flex items-center gap-2">
@@ -82,56 +82,56 @@ export const PhotometryTable: React.FC<PhotometryTableProps> = ({ bands }) => {
         </div>
       </div>
 
-      <div className="overflow-x-auto bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
+      <div className="overflow-x-auto bg-card border border-border rounded-lg">
         <table className="text-xs font-mono w-full">
           <tbody>
-            <tr className="border-b border-border dark:border-slate-700">
-              <th className="sticky left-0 bg-white dark:bg-slate-800 text-left px-3 py-1.5 font-medium text-text-secondary dark:text-slate-400 whitespace-nowrap border-r border-border dark:border-slate-700">
+            <tr className="border-b border-border">
+              <th className="sticky left-0 bg-card text-left px-3 py-1.5 font-medium text-text-secondary whitespace-nowrap border-r border-border">
                 Band
               </th>
               {rows.map(r => (
                 <td
                   key={r.name}
-                  className="px-3 py-1.5 text-text-primary dark:text-slate-200 whitespace-nowrap text-right"
+                  className="px-3 py-1.5 text-text-primary whitespace-nowrap text-right"
                 >
                   {r.name}
                 </td>
               ))}
             </tr>
-            <tr className="border-b border-border dark:border-slate-700">
-              <th className="sticky left-0 bg-white dark:bg-slate-800 text-left px-3 py-1.5 font-medium text-text-secondary dark:text-slate-400 whitespace-nowrap border-r border-border dark:border-slate-700">
+            <tr className="border-b border-border">
+              <th className="sticky left-0 bg-card text-left px-3 py-1.5 font-medium text-text-secondary whitespace-nowrap border-r border-border">
                 λ (µm)
               </th>
               {rows.map(r => (
                 <td
                   key={r.name}
-                  className="px-3 py-1.5 text-text-primary dark:text-slate-200 whitespace-nowrap text-right"
+                  className="px-3 py-1.5 text-text-primary whitespace-nowrap text-right"
                 >
                   {formatNumber(r.wav)}
                 </td>
               ))}
             </tr>
-            <tr className="border-b border-border dark:border-slate-700">
-              <th className="sticky left-0 bg-white dark:bg-slate-800 text-left px-3 py-1.5 font-medium text-text-secondary dark:text-slate-400 whitespace-nowrap border-r border-border dark:border-slate-700">
+            <tr className="border-b border-border">
+              <th className="sticky left-0 bg-card text-left px-3 py-1.5 font-medium text-text-secondary whitespace-nowrap border-r border-border">
                 Flux (µJy)
               </th>
               {rows.map(r => (
                 <td
                   key={r.name}
-                  className="px-3 py-1.5 text-text-primary dark:text-slate-200 whitespace-nowrap text-right"
+                  className="px-3 py-1.5 text-text-primary whitespace-nowrap text-right"
                 >
                   {formatNumber(r.flux)}
                 </td>
               ))}
             </tr>
             <tr>
-              <th className="sticky left-0 bg-white dark:bg-slate-800 text-left px-3 py-1.5 font-medium text-text-secondary dark:text-slate-400 whitespace-nowrap border-r border-border dark:border-slate-700">
+              <th className="sticky left-0 bg-card text-left px-3 py-1.5 font-medium text-text-secondary whitespace-nowrap border-r border-border">
                 Error (µJy)
               </th>
               {rows.map(r => (
                 <td
                   key={r.name}
-                  className="px-3 py-1.5 text-text-primary dark:text-slate-200 whitespace-nowrap text-right"
+                  className="px-3 py-1.5 text-text-primary whitespace-nowrap text-right"
                 >
                   {formatNumber(r.flux_err)}
                 </td>
@@ -153,7 +153,7 @@ interface CopyButtonProps {
 const CopyButton: React.FC<CopyButtonProps> = ({ label, active, onClick }) => (
   <button
     onClick={onClick}
-    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-text-primary dark:text-slate-100 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-md hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-text-primary bg-card border border-border rounded-md hover:bg-card-hover transition-colors"
   >
     {active ? (
       <>

@@ -94,17 +94,17 @@ export const InspectionComments: React.FC<InspectionCommentsProps> = ({ targetDb
     });
 
   return (
-    <div className="border-t border-border dark:border-slate-700 flex-shrink-0 bg-background dark:bg-slate-900">
+    <div className="border-t border-border flex-shrink-0 bg-background">
       {/* Collapsed bar */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between px-4 py-2 hover:bg-card dark:hover:bg-slate-800 transition-colors"
+        className="w-full flex items-center justify-between px-4 py-2 hover:bg-card transition-colors"
       >
-        <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400">
+        <div className="flex items-center gap-2 text-sm text-text-secondary">
           <MessageSquare className="w-4 h-4" />
           <span>{loading ? 'Loading...' : `${comments.length} comment${comments.length !== 1 ? 's' : ''}`}</span>
         </div>
-        {expanded ? <ChevronDown className="w-4 h-4 text-text-secondary dark:text-slate-400" /> : <ChevronUp className="w-4 h-4 text-text-secondary dark:text-slate-400" />}
+        {expanded ? <ChevronDown className="w-4 h-4 text-text-secondary" /> : <ChevronUp className="w-4 h-4 text-text-secondary" />}
       </button>
 
       {/* Expanded content */}
@@ -118,13 +118,13 @@ export const InspectionComments: React.FC<InspectionCommentsProps> = ({ targetDb
                 value={newComment}
                 onChange={(e) => setNewComment(e.target.value)}
                 placeholder="Add a comment..."
-                className="flex-1 px-3 py-1.5 text-sm border border-border dark:border-slate-600 rounded bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+                className="flex-1 px-3 py-1.5 text-sm border border-border dark:border-border-strong rounded bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
                 disabled={submitting}
               />
               <button
                 type="submit"
                 disabled={submitting || !newComment.trim()}
-                className="px-2.5 py-1.5 rounded bg-primary hover:bg-primary-hover text-white text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="px-2.5 py-1.5 rounded bg-primary hover:bg-primary-hover text-on-primary text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 <Send className="w-3.5 h-3.5" />
               </button>
@@ -133,16 +133,16 @@ export const InspectionComments: React.FC<InspectionCommentsProps> = ({ targetDb
 
           {/* Comments list */}
           {comments.length === 0 ? (
-            <p className="text-xs text-text-secondary dark:text-slate-400 text-center py-2">No comments yet</p>
+            <p className="text-xs text-text-secondary text-center py-2">No comments yet</p>
           ) : (
             <div className="space-y-1.5">
               {comments.map((comment) => (
                 <div key={comment.id} className="text-xs">
-                  <span className="font-medium text-text-primary dark:text-slate-100">
+                  <span className="font-medium text-text-primary">
                     {comment.user_profile?.full_name || 'Unknown'}
                   </span>
-                  <span className="text-text-secondary dark:text-slate-500 mx-1">{formatDate(comment.created_at)}</span>
-                  <p className="text-text-primary dark:text-slate-100 whitespace-pre-wrap">{comment.content}</p>
+                  <span className="text-text-secondary dark:text-text-tertiary mx-1">{formatDate(comment.created_at)}</span>
+                  <p className="text-text-primary whitespace-pre-wrap">{comment.content}</p>
                 </div>
               ))}
             </div>

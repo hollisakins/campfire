@@ -216,7 +216,7 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400">
+      <div className="flex items-center gap-2 text-sm text-text-secondary">
         <Loader2 className="w-3 h-3 animate-spin" />
         Loading tags...
       </div>
@@ -227,7 +227,7 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
     <div className="relative">
       <div className="flex flex-wrap items-center gap-2">
         {memberLists.length === 0 && canEdit && (
-          <span className="text-xs text-text-secondary dark:text-slate-400">
+          <span className="text-xs text-text-secondary">
             Tag object properties:
           </span>
         )}
@@ -260,7 +260,7 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setShowDropdown(!showDropdown)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border border-dashed border-border dark:border-slate-600 text-text-secondary dark:text-slate-400 hover:border-primary hover:text-primary transition-colors"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border border-dashed border-border dark:border-border-strong text-text-secondary hover:border-primary hover:text-primary transition-colors"
             >
               <Plus className="w-3 h-3" />
               Add tag
@@ -268,11 +268,11 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
             </button>
 
             {showDropdown && (
-              <div className={`absolute ${dropdownPlacement === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'} left-0 z-50 w-72 animate-zoom-in bg-background dark:bg-slate-800 rounded-lg shadow-lg border border-border dark:border-slate-700`}>
+              <div className={`absolute ${dropdownPlacement === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'} left-0 z-50 w-72 animate-zoom-in bg-background dark:bg-card rounded-lg shadow-lg border border-border`}>
                 {/* Search input */}
-                <div className="p-2 border-b border-border dark:border-slate-700">
+                <div className="p-2 border-b border-border">
                   <div className="relative">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary dark:text-slate-500" />
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary dark:text-text-tertiary" />
                     <input
                       ref={searchInputRef}
                       type="text"
@@ -280,7 +280,7 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
                       onChange={(e) => setSearchTerm(e.target.value)}
                       onKeyDown={handleKeyDown}
                       placeholder="Search or create tag..."
-                      className="w-full pl-8 pr-3 py-1.5 text-sm border border-border dark:border-slate-700 rounded-md bg-background dark:bg-slate-900 text-text-primary dark:text-slate-100 placeholder:text-text-secondary dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                      className="w-full pl-8 pr-3 py-1.5 text-sm border border-border rounded-md bg-background text-text-primary placeholder:text-text-secondary dark:placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
                     />
                   </div>
                 </div>
@@ -308,14 +308,14 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
                       ))}
                     </div>
                   ) : !showCreateOption ? (
-                    <div className="px-3 py-4 text-sm text-text-secondary dark:text-slate-500 text-center">
+                    <div className="px-3 py-4 text-sm text-text-secondary dark:text-text-tertiary text-center">
                       {normalizedSearch ? 'No matching tags' : 'All tags applied'}
                     </div>
                   ) : null}
 
                   {/* Create new tag option */}
                   {showCreateOption && (
-                    <div className={sortedAvailable.length > 0 ? 'border-t border-border dark:border-slate-700 mt-1.5 pt-1.5' : ''}>
+                    <div className={sortedAvailable.length > 0 ? 'border-t border-border mt-1.5 pt-1.5' : ''}>
                       <button
                         onClick={handleOpenCreateModal}
                         className="w-full text-left px-3 py-2 text-sm hover:bg-primary/10 rounded-md flex items-center gap-2 transition-colors text-primary"
@@ -332,7 +332,7 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
         )}
 
         {memberLists.length === 0 && !canEdit && (
-          <span className="text-xs text-text-secondary dark:text-slate-400">
+          <span className="text-xs text-text-secondary">
             No tags
           </span>
         )}

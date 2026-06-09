@@ -47,13 +47,13 @@ export const InspectionHeader: React.FC<InspectionHeaderProps> = ({
   onClose,
 }) => {
   return (
-    <div className="h-12 border-b border-border dark:border-slate-700 px-4 flex items-center justify-between bg-background dark:bg-slate-900 flex-shrink-0">
+    <div className="h-12 border-b border-border px-4 flex items-center justify-between bg-background flex-shrink-0">
       {/* Left: Navigation */}
       <div className="flex items-center gap-2">
         <button
           onClick={onPrev}
           disabled={!hasPrev}
-          className="p-1.5 rounded hover:bg-card dark:hover:bg-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-text-primary dark:text-slate-100"
+          className="p-1.5 rounded hover:bg-card dark:hover:bg-card-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-text-primary"
           aria-label="Previous object"
           title="Previous (← or P)"
         >
@@ -62,7 +62,7 @@ export const InspectionHeader: React.FC<InspectionHeaderProps> = ({
         <button
           onClick={onNext}
           disabled={!hasNext}
-          className="p-1.5 rounded hover:bg-card dark:hover:bg-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-text-primary dark:text-slate-100"
+          className="p-1.5 rounded hover:bg-card dark:hover:bg-card-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-text-primary"
           aria-label="Next object"
           title="Next (→ or N)"
         >
@@ -72,19 +72,19 @@ export const InspectionHeader: React.FC<InspectionHeaderProps> = ({
 
       {/* Center: Object info */}
       <div className="flex items-center gap-3">
-        <span className="font-mono font-bold text-text-primary dark:text-slate-100 text-sm">
+        <span className="font-mono font-bold text-text-primary text-sm">
           {targetId}
         </span>
         {commentCount > 0 && (
-          <span className="text-xs text-text-secondary dark:text-slate-400 flex items-center gap-1">
+          <span className="text-xs text-text-secondary flex items-center gap-1">
             <MessageSquare className="w-3 h-3" />
             {commentCount}
           </span>
         )}
-        <span className="text-text-secondary dark:text-slate-400 text-xs uppercase">
+        <span className="text-text-secondary text-xs uppercase">
           {programName && `${programName} / `}{field}
         </span>
-        <span className="text-text-secondary dark:text-slate-400 text-sm">
+        <span className="text-text-secondary text-sm">
           {loading ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin inline" />
           ) : index > 0 && total > 0 ? (
@@ -103,8 +103,8 @@ export const InspectionHeader: React.FC<InspectionHeaderProps> = ({
               title={spec.title}
               className={`px-3 py-1 text-xs font-medium rounded transition-colors
                 ${idx === activeGratingIdx
-                  ? 'bg-primary text-white'
-                  : 'bg-card dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700 border border-border dark:border-slate-600'
+                  ? 'bg-primary text-on-primary'
+                  : 'bg-card text-text-secondary hover:bg-card-hover border border-border dark:border-border-strong'
                 }`}
             >
               <span className="mr-1">{spec.grating}</span>
@@ -120,14 +120,14 @@ export const InspectionHeader: React.FC<InspectionHeaderProps> = ({
       <div className="flex items-center gap-1">
         <button
           onClick={onToggleHelp}
-          className="p-1.5 rounded hover:bg-card dark:hover:bg-slate-700 transition-colors text-text-secondary dark:text-slate-400"
+          className="p-1.5 rounded hover:bg-card dark:hover:bg-card-hover transition-colors text-text-secondary"
           title="Keyboard shortcuts (?)"
         >
           <HelpCircle className="w-4 h-4" />
         </button>
         <button
           onClick={onClose}
-          className="p-1.5 rounded hover:bg-card dark:hover:bg-slate-700 transition-colors text-text-secondary dark:text-slate-400"
+          className="p-1.5 rounded hover:bg-card dark:hover:bg-card-hover transition-colors text-text-secondary"
           title="Exit inspection mode (Esc)"
         >
           <X className="w-5 h-5" />

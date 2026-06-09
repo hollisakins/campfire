@@ -24,7 +24,7 @@ export const EnterInspectionModeButton: React.FC<EnterInspectionModeButtonProps>
     <div className="mb-4">
       <Link
         href={href}
-        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-primary hover:bg-primary-hover text-white transition-colors"
+        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-primary hover:bg-primary-hover text-on-primary transition-colors"
         title="Streamlined fullscreen view for rapid quality inspection. Auto-filters to uninspected objects and supports keyboard shortcuts for efficient review."
       >
         <Maximize2 className="w-4 h-4" />

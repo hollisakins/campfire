@@ -162,7 +162,7 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
     <Card className="p-6">
       <div className="flex items-center gap-2 mb-4">
         <MessageSquare className="w-5 h-5 text-primary" />
-        <h4 className="font-medium text-text-primary dark:text-slate-100">
+        <h4 className="font-medium text-text-primary">
           Discussion ({comments.length})
         </h4>
       </div>
@@ -179,7 +179,7 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
             value={newComment}
             onChange={e => setNewComment(e.target.value)}
             placeholder="Add a comment..."
-            className="w-full px-4 py-2 border border-border dark:border-slate-600 rounded-lg bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary resize-none text-sm"
+            className="w-full px-4 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-2 focus:ring-primary resize-none text-sm"
             rows={2}
             disabled={submitting}
           />
@@ -188,7 +188,7 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
               <select
                 value={selectedTargetId}
                 onChange={e => setSelectedTargetId(e.target.value)}
-                className="px-3 py-1.5 border border-border dark:border-slate-600 rounded-lg bg-background dark:bg-slate-700 text-text-primary dark:text-slate-100 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary"
+                className="px-3 py-1.5 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-card-hover text-text-primary text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary"
                 disabled={submitting}
               >
                 <option value="">General</option>
@@ -213,17 +213,17 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
       )}
 
       {!user && (
-        <div className="mb-4 p-4 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg text-center">
-          <p className="text-sm text-text-secondary dark:text-slate-400">Sign in to add comments</p>
+        <div className="mb-4 p-4 bg-card border border-border rounded-lg text-center">
+          <p className="text-sm text-text-secondary">Sign in to add comments</p>
         </div>
       )}
 
       {loading ? (
-        <div className="text-center py-4 text-text-secondary dark:text-slate-400 text-sm">
+        <div className="text-center py-4 text-text-secondary text-sm">
           Loading comments...
         </div>
       ) : comments.length === 0 ? (
-        <div className="text-center py-4 text-text-secondary dark:text-slate-400 text-sm">
+        <div className="text-center py-4 text-text-secondary text-sm">
           No comments yet
         </div>
       ) : (
@@ -231,24 +231,24 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
           {comments.map(comment => (
             <div
               key={comment.id}
-              className="p-3 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg"
+              className="p-3 bg-card border border-border rounded-lg"
             >
               <div className="flex items-start justify-between mb-1">
                 <div className="flex items-baseline gap-2">
-                  <span className="font-medium text-text-primary dark:text-slate-100 text-sm">
+                  <span className="font-medium text-text-primary text-sm">
                     {comment.user_profile?.full_name || 'Unknown User'}
                   </span>
                   {comment.source_target_display_id && (
-                    <span className="text-xs font-mono text-text-secondary dark:text-slate-400">
+                    <span className="text-xs font-mono text-text-secondary">
                       ({comment.source_target_display_id})
                     </span>
                   )}
                 </div>
-                <span className="text-xs text-text-secondary dark:text-slate-500">
+                <span className="text-xs text-text-secondary dark:text-text-tertiary">
                   {formatDate(comment.created_at)}
                 </span>
               </div>
-              <p className="text-sm text-text-primary dark:text-slate-100 whitespace-pre-wrap">
+              <p className="text-sm text-text-primary whitespace-pre-wrap">
                 {comment.content}
               </p>
             </div>

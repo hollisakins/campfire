@@ -203,22 +203,22 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         <div className="relative">
           <button
             onClick={() => setScopeDropdownOpen(!scopeDropdownOpen)}
-            className="flex items-center gap-1 px-3 py-2 text-sm border border-r-0 border-border dark:border-slate-700 rounded-l-lg bg-card dark:bg-slate-800 text-text-primary dark:text-slate-100 hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
+            className="flex items-center gap-1 px-3 py-2 text-sm border border-r-0 border-border rounded-l-lg bg-card text-text-primary hover:bg-card-hover transition-colors"
           >
             <span className="whitespace-nowrap">{currentScope.label}</span>
             <ChevronDown className={`w-3.5 h-3.5 transition-transform ${scopeDropdownOpen ? 'rotate-180' : ''}`} />
           </button>
           {/* Dropdown menu */}
           {scopeDropdownOpen && (
-            <div className="absolute top-full left-0 mt-1 w-40 bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg z-50 py-1">
+            <div className="absolute top-full left-0 mt-1 w-40 bg-background dark:bg-slate-800 border border-border rounded-lg shadow-lg z-50 py-1">
               {searchScopeOptions.map((option) => (
                 <button
                   key={option.value}
                   onClick={() => handleScopeChange(option.value)}
-                  className={`w-full text-left px-3 py-2 text-sm hover:bg-card-hover dark:hover:bg-slate-700 transition-colors ${
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-card-hover transition-colors ${
                     filters.search_scope === option.value
                       ? 'text-primary font-medium'
-                      : 'text-text-primary dark:text-slate-100'
+                      : 'text-text-primary'
                   }`}
                 >
                   {option.label}
@@ -229,19 +229,19 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         </div>
         {/* Search input */}
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary dark:text-slate-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
           <input
             type="text"
             value={localSearch}
             onChange={(e) => setLocalSearch(e.target.value)}
             placeholder={currentScope.placeholder}
-            className="w-full pl-10 pr-10 py-2 text-sm border border-border dark:border-slate-700 rounded-r-lg bg-background dark:bg-slate-800 text-text-primary dark:text-slate-100 placeholder:text-text-secondary dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+            className="w-full pl-10 pr-10 py-2 text-sm border border-border rounded-r-lg bg-background dark:bg-slate-800 text-text-primary placeholder:text-text-secondary dark:placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
           />
           {/* Show clear button when there's text */}
           {localSearch && (
             <button
               onClick={() => setLocalSearch('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary"
             >
               <X className="w-4 h-4" />
             </button>
@@ -281,7 +281,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         />
 
         {/* Divider */}
-        <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
+        <div className="h-6 w-px bg-border mx-1" />
 
         {/* Redshift range filter */}
         <RangeFilterChip
@@ -312,7 +312,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         />
 
         {/* Divider */}
-        <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
+        <div className="h-6 w-px bg-border mx-1" />
 
         {/* Advanced Filters button */}
         <button
@@ -322,14 +322,14 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
             border transition-all duration-200
             ${panelFilterCount > 0
               ? 'bg-primary/10 border-primary text-primary'
-              : 'bg-card dark:bg-slate-800 border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200'
+              : 'bg-card border-border text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary'
             }
           `}
         >
           <SlidersHorizontal className="w-4 h-4" />
           <span>Advanced</span>
           {panelFilterCount > 0 && (
-            <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-primary text-white">
+            <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-primary text-on-primary">
               {panelFilterCount}
             </span>
           )}
@@ -354,7 +354,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
             const qs = filterParams.toString();
             router.push(`/map${qs ? `?${qs}` : ''}`);
           }}
-          className="inline-flex items-center gap-1.5 px-3 h-8 rounded-full text-sm font-medium border border-border dark:border-slate-700 bg-card dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200 transition-all duration-200"
+          className="inline-flex items-center gap-1.5 px-3 h-8 rounded-full text-sm font-medium border border-border bg-card text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary transition-all duration-200"
           title="Show filtered objects on map"
         >
           <Map className="w-4 h-4" />
@@ -364,10 +364,10 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         {/* Clear all button */}
         {hasActiveFilters && (
           <>
-            <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
+            <div className="h-6 w-px bg-border mx-1" />
             <button
               onClick={handleClearAll}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
             >
               <X className="w-3.5 h-3.5" />
               Clear all

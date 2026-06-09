@@ -343,18 +343,18 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-[700px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
+      <div className="flex items-center justify-center h-[700px] bg-card border border-border rounded-lg">
         <Loader2 className="w-6 h-6 animate-spin text-primary mr-3" />
-        <span className="text-text-secondary dark:text-slate-400">Loading redshift fit...</span>
+        <span className="text-text-secondary">Loading redshift fit...</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-[700px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
+      <div className="flex flex-col items-center justify-center h-[700px] bg-card border border-border rounded-lg">
         <AlertCircle className="w-8 h-8 text-red-500 dark:text-red-400 mb-3" />
-        <p className="text-text-secondary dark:text-slate-400">{error}</p>
+        <p className="text-text-secondary">{error}</p>
       </div>
     );
   }
@@ -364,9 +364,9 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
   }
 
   return (
-    <div className="bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+    <div className="bg-card border border-border rounded-lg overflow-hidden">
       {/* Controls */}
-      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border dark:border-slate-700 bg-gray-50 dark:bg-slate-900">
+      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-gray-50 dark:bg-slate-900">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
 
         <ControlDivider />
