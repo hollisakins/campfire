@@ -272,7 +272,7 @@ export function AdvancedFiltersPanel({
       <div
         className={`
           absolute right-0 top-0 bottom-0 w-[420px] max-w-[90vw]
-          bg-background dark:bg-slate-900 border-l border-border
+          bg-background border-l border-border
           shadow-2xl flex flex-col
           transition-transform duration-300 ease-out
           ${isOpen ? 'translate-x-0 pointer-events-auto' : 'translate-x-full'}
@@ -305,7 +305,7 @@ export function AdvancedFiltersPanel({
               <div className="border-b border-border">
                 <button
                   onClick={() => setProgramsExpanded(!programsExpanded)}
-                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-text-tertiary hover:bg-card-hover dark:hover:bg-slate-800/50 transition-colors"
+                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary hover:bg-card-hover transition-colors"
                 >
                   <span>
                     Programs
@@ -334,7 +334,7 @@ export function AdvancedFiltersPanel({
               <div className="border-b border-border">
                 <button
                   onClick={() => setObservationsExpanded(!observationsExpanded)}
-                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-text-tertiary hover:bg-card-hover dark:hover:bg-slate-800/50 transition-colors"
+                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary hover:bg-card-hover transition-colors"
                 >
                   <span className="flex flex-col items-start">
                     <span>
@@ -419,8 +419,8 @@ export function AdvancedFiltersPanel({
                     onChange={(e) => setCoordInput(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder="150.5 -2.3  or  10h02m30s -02d18m00s"
-                    className={`w-full px-3 py-2 text-sm border rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
-                      ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border dark:border-border-strong'}
+                    className={`w-full px-3 py-2 text-sm border rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
+                      ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border-strong'}
                     `}
                   />
                   {validationError && (
@@ -442,12 +442,12 @@ export function AdvancedFiltersPanel({
                       placeholder="1"
                       min="0"
                       step="0.1"
-                      className="w-24 px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                      className="w-24 px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                     />
                     <select
                       value={unitInput}
                       onChange={(e) => setUnitInput(e.target.value as 'degrees' | 'arcmin' | 'arcsec')}
-                      className="flex-1 px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                      className="flex-1 px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                     >
                       <option value="arcsec">arcseconds</option>
                       <option value="arcmin">arcminutes</option>

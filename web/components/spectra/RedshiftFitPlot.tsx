@@ -366,7 +366,7 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
   return (
     <div className="bg-card border border-border rounded-lg overflow-hidden">
       {/* Controls */}
-      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-gray-50 dark:bg-slate-900">
+      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-surface-2">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
 
         <ControlDivider />

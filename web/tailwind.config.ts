@@ -15,7 +15,12 @@ const config: Config = {
         'primary-text': 'var(--primary-text)',
         'on-primary': 'var(--on-primary)',
         'primary-soft': 'var(--primary-soft)',
-        header: '#475569',       // Dark slate header
+        header: 'var(--header)',
+        'header-elevated': 'var(--header-elevated)',
+        'header-foreground': 'var(--header-foreground)',
+        'header-muted': 'var(--header-muted)',
+        'header-border': 'var(--header-border)',
+        'header-hover': 'var(--header-hover)',
         background: 'var(--background)',
         card: 'var(--card)',
         'card-hover': 'var(--card-hover)',

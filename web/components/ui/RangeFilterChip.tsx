@@ -135,7 +135,7 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
                   min={minBound}
                   max={maxBound}
                   step={step}
-                  className="w-full px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-surface-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  className="w-full px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                 />
               </div>
               <span className="text-text-secondary mt-5">—</span>
@@ -150,7 +150,7 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
                   min={minBound}
                   max={maxBound}
                   step={step}
-                  className="w-full px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-surface-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  className="w-full px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                 />
               </div>
             </div>
@@ -172,7 +172,7 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
                       setLocalMin(preset.min?.toString() ?? '');
                       setLocalMax(preset.max?.toString() ?? '');
                     }}
-                    className="px-2 py-1 text-xs rounded border border-border dark:border-border-strong dark:bg-surface-2 dark:text-slate-300 hover:border-primary hover:text-primary transition-colors"
+                    className="px-2 py-1 text-xs rounded border border-border text-text-secondary hover:border-primary hover:text-primary transition-colors"
                   >
                     {preset.label}
                   </button>

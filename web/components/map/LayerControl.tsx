@@ -52,7 +52,7 @@ export function LayerControl({
       {/* Header — always visible, click to collapse */}
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-text-secondary uppercase tracking-wide hover:bg-card-hover dark:hover:bg-slate-700/50 rounded-t-lg transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-text-secondary uppercase tracking-wide hover:bg-card-hover rounded-t-lg transition-colors"
       >
         <span className="flex items-center gap-1.5">
           <Layers className="w-3.5 h-3.5" />

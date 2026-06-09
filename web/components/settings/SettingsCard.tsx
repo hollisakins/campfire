@@ -93,7 +93,7 @@ export const SettingsCard: React.FC = () => {
               <Palette className="w-4 h-4" />
               Accent Color
             </label>
-            <p className="text-xs text-text-secondary dark:text-text-tertiary mb-3">
+            <p className="text-xs text-text-secondary mb-3">
               Affects buttons, links, and spectrum plot throughout the site
             </p>
             <div className="flex flex-wrap gap-2">
@@ -107,7 +107,7 @@ export const SettingsCard: React.FC = () => {
                     className={`
                       w-10 h-10 rounded-lg border-2 transition-all
                       ${accentColor === color.name
-                        ? 'border-text-primary dark:border-slate-100 scale-110'
+                        ? 'border-text-primary scale-110'
                         : 'border-transparent hover:scale-105'
                       }
                       ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}
@@ -166,7 +166,7 @@ export const SettingsCard: React.FC = () => {
               value={spectrumPreferences.colorscale2D}
               onChange={(e) => updateSpectrumPreferences({ colorscale2D: e.target.value as Colorscale2D })}
               disabled={isGroupAccount}
-              className={`px-4 py-2 text-sm border border-border dark:border-border-strong rounded-lg bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
+              className={`px-4 py-2 text-sm border border-border-strong rounded-lg bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               {COLORSCALE_OPTIONS.map((scale) => (
                 <option key={scale} value={scale}>
@@ -187,7 +187,7 @@ export const SettingsCard: React.FC = () => {
                 value={spectrumPreferences.snrMin}
                 onChange={(e) => updateSpectrumPreferences({ snrMin: parseFloat(e.target.value) || 0 })}
                 disabled={isGroupAccount}
-                className={`w-20 px-3 py-2 text-sm border border-border dark:border-border-strong rounded-lg bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className={`w-20 px-3 py-2 text-sm border border-border-strong rounded-lg bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
               />
               <span className="text-text-secondary">to</span>
               <input
@@ -195,7 +195,7 @@ export const SettingsCard: React.FC = () => {
                 value={spectrumPreferences.snrMax}
                 onChange={(e) => updateSpectrumPreferences({ snrMax: parseFloat(e.target.value) || 0 })}
                 disabled={isGroupAccount}
-                className={`w-20 px-3 py-2 text-sm border border-border dark:border-border-strong rounded-lg bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className={`w-20 px-3 py-2 text-sm border border-border-strong rounded-lg bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
               />
             </div>
           </div>

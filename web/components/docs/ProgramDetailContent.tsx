@@ -172,7 +172,7 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-border bg-gray-50 dark:bg-slate-800/50">
+                  <tr className="bg-surface-2 border-b border-border">
                     <th className="text-left px-4 py-3 font-medium text-text-secondary">Observation</th>
                     <th className="text-left px-4 py-3 font-medium text-text-secondary">Field</th>
                     <th className="text-right px-4 py-3 font-medium text-text-secondary">Targets</th>
@@ -185,7 +185,7 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
                   {observations.map((obs) => (
                     <tr
                       key={obs.observation}
-                      className="border-b border-border last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-800/30 transition-colors"
+                      className="border-b border-border last:border-b-0 hover:bg-card-hover transition-colors"
                     >
                       <td className="px-4 py-3 text-text-primary font-medium">
                         {obs.observation}

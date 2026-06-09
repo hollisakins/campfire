@@ -257,7 +257,7 @@ export default function ExposureDetailPage() {
               onClick={handlePrev}
               disabled={nav.prev == null}
               title="Previous (← / P)"
-              className="p-1.5 rounded hover:bg-surface-hover dark:hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
+              className="p-1.5 rounded hover:bg-card-hover disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <ChevronLeft className="w-5 h-5" />
             </button>
@@ -268,7 +268,7 @@ export default function ExposureDetailPage() {
               onClick={handleNext}
               disabled={nav.next == null}
               title="Next (→ / N)"
-              className="p-1.5 rounded hover:bg-surface-hover dark:hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
+              className="p-1.5 rounded hover:bg-card-hover disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <ChevronRight className="w-5 h-5" />
             </button>
@@ -277,14 +277,14 @@ export default function ExposureDetailPage() {
         <button
           onClick={() => setShowHelp(prev => !prev)}
           title="Keyboard shortcuts (?)"
-          className="p-1.5 rounded text-text-secondary hover:bg-surface-hover dark:hover:bg-slate-800"
+          className="p-1.5 rounded text-text-secondary hover:bg-card-hover"
         >
           <Keyboard className="w-5 h-5" />
         </button>
       </div>
 
       {showHelp && (
-        <div className="mb-6 rounded-lg border border-border bg-card dark:bg-slate-900 p-4">
+        <div className="mb-6 rounded-lg border border-border bg-card p-4">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-semibold text-text-primary">Keyboard shortcuts</h2>
             <button onClick={() => setShowHelp(false)} className="text-xs text-text-secondary hover:underline">close</button>
@@ -399,7 +399,7 @@ export default function ExposureDetailPage() {
                 <select
                   value={reviewStatus}
                   onChange={(e) => setReviewStatus(e.target.value)}
-                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary"
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="pending">Pending</option>
                   <option value="approved">Approved</option>
@@ -414,7 +414,7 @@ export default function ExposureDetailPage() {
                 <select
                   value={masking}
                   onChange={(e) => setMasking(e.target.value)}
-                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary"
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="none">None</option>
                   <option value="needed">Needed</option>
@@ -429,7 +429,7 @@ export default function ExposureDetailPage() {
                 <select
                   value={correction}
                   onChange={(e) => setCorrection(e.target.value)}
-                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary"
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="none">None</option>
                   <option value="needed">Needed</option>
@@ -446,7 +446,7 @@ export default function ExposureDetailPage() {
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Describe artifacts, masking needs, etc."
                   rows={4}
-                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary resize-none"
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary placeholder:text-text-tertiary resize-none"
                 />
               </div>
 

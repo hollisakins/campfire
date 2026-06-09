@@ -98,7 +98,7 @@ export const InspectionComments: React.FC<InspectionCommentsProps> = ({ targetDb
       {/* Collapsed bar */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between px-4 py-2 hover:bg-card transition-colors"
+        className="w-full flex items-center justify-between px-4 py-2 hover:bg-card-hover transition-colors"
       >
         <div className="flex items-center gap-2 text-sm text-text-secondary">
           <MessageSquare className="w-4 h-4" />
@@ -118,7 +118,7 @@ export const InspectionComments: React.FC<InspectionCommentsProps> = ({ targetDb
                 value={newComment}
                 onChange={(e) => setNewComment(e.target.value)}
                 placeholder="Add a comment..."
-                className="flex-1 px-3 py-1.5 text-sm border border-border dark:border-border-strong rounded bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                className="flex-1 px-3 py-1.5 text-sm border border-border dark:border-border-strong rounded bg-background dark:bg-card-hover text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-primary"
                 disabled={submitting}
               />
               <button

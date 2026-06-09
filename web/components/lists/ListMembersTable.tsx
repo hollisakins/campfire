@@ -50,7 +50,7 @@ export function ListMembersTable({ members, totalMembers, page, pageSize, onPage
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border bg-card dark:bg-slate-800/50">
+              <tr className="bg-surface-2 border-b border-border">
                 <th className="text-left px-4 py-3 font-medium text-text-secondary">Object ID</th>
                 <th className="text-left px-4 py-3 font-medium text-text-secondary">Field</th>
                 <th className="text-right px-4 py-3 font-medium text-text-secondary">RA</th>
@@ -68,7 +68,7 @@ export function ListMembersTable({ members, totalMembers, page, pageSize, onPage
                 return (
                   <tr
                     key={member.id}
-                    className="border-b border-border dark:border-slate-700/50 last:border-0 hover:bg-card-hover dark:hover:bg-slate-800/30 transition-colors"
+                    className="border-b border-border last:border-0 hover:bg-card-hover transition-colors"
                   >
                     <td className="px-4 py-3">
                       {hasObject ? (
@@ -84,22 +84,22 @@ export function ListMembersTable({ members, totalMembers, page, pageSize, onPage
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-text-primary dark:text-slate-200">
+                    <td className="px-4 py-3 text-text-primary">
                       {hasObject ? obj.field : '—'}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs text-text-primary dark:text-slate-200">
+                    <td className="px-4 py-3 text-right font-mono text-xs text-text-primary">
                       {formatCoord(hasObject ? obj.ra : member.ra)}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs text-text-primary dark:text-slate-200">
+                    <td className="px-4 py-3 text-right font-mono text-xs text-text-primary">
                       {formatCoord(hasObject ? obj.dec : member.dec)}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs text-text-primary dark:text-slate-200">
+                    <td className="px-4 py-3 text-right font-mono text-xs text-text-primary">
                       {hasObject && obj.redshift != null ? obj.redshift.toFixed(4) : '—'}
                     </td>
                     <td className="px-4 py-3">
                       {hasObject ? <QualityBadge quality={obj.redshift_quality} /> : '—'}
                     </td>
-                    <td className="px-4 py-3 text-right text-text-primary dark:text-slate-200">
+                    <td className="px-4 py-3 text-right text-text-primary">
                       {hasObject ? obj.n_spectra : '—'}
                     </td>
                   </tr>

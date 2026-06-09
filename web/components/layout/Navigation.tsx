@@ -28,8 +28,8 @@ function NavDropdown({ link, isActive }: { link: NavLink; isActive: boolean }) {
         className={`
           flex items-center gap-1 text-sm font-medium transition-colors pb-1 border-b-2
           ${isActive
-            ? 'text-white border-primary'
-            : 'text-gray-300 border-transparent hover:text-white hover:border-gray-400'
+            ? 'text-header-foreground border-primary'
+            : 'text-header-muted border-transparent hover:text-header-foreground hover:border-header-border'
           }
         `}
       >
@@ -37,13 +37,13 @@ function NavDropdown({ link, isActive }: { link: NavLink; isActive: boolean }) {
         <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-2 w-44 bg-header dark:bg-slate-800 rounded-lg shadow-lg border border-gray-700 dark:border-slate-700 py-1 z-[1100]">
+        <div className="absolute top-full left-0 mt-2 w-44 bg-header-elevated rounded-lg shadow-lg border border-header-border py-1 z-[1100]">
           {link.children!.map((child) => (
             <Link
               key={child.href}
               href={child.href}
               onClick={() => setOpen(false)}
-              className="block px-4 py-2 text-sm text-gray-300 hover:text-white hover:bg-white/10 transition-colors"
+              className="block px-4 py-2 text-sm text-header-muted hover:text-header-foreground hover:bg-header-hover transition-colors"
             >
               {child.label}
             </Link>
@@ -94,7 +94,7 @@ export const Navigation: React.FC = () => {
   };
 
   return (
-    <nav className="bg-header dark:bg-slate-900 text-white shadow-md">
+    <nav className="bg-header text-header-foreground shadow-md">
       <div className="container mx-auto px-4 py-4">
         <div className="flex items-center justify-between">
           {/* Logo */}
@@ -115,8 +115,8 @@ export const Navigation: React.FC = () => {
                   className={`
                     text-sm font-medium transition-colors pb-1 border-b-2
                     ${isActive(link.href)
-                      ? 'text-white border-primary'
-                      : 'text-gray-300 border-transparent hover:text-white hover:border-gray-400'
+                      ? 'text-header-foreground border-primary'
+                      : 'text-header-muted border-transparent hover:text-header-foreground hover:border-header-border'
                     }
                   `}
                 >
@@ -128,7 +128,7 @@ export const Navigation: React.FC = () => {
             {/* Theme Toggle */}
             <button
               onClick={cycleTheme}
-              className="flex items-center space-x-1 text-sm text-gray-300 hover:text-white transition-colors"
+              className="flex items-center space-x-1 text-sm text-header-muted hover:text-header-foreground transition-colors"
               aria-label={`Current theme: ${theme}. Click to change.`}
               title={`Theme: ${theme}`}
             >
@@ -140,7 +140,7 @@ export const Navigation: React.FC = () => {
               href="https://github.com/hollisakins/campfire"
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center text-sm text-gray-300 hover:text-white transition-colors"
+              className="flex items-center text-sm text-header-muted hover:text-header-foreground transition-colors"
               aria-label="View on GitHub"
               title="View on GitHub"
             >
@@ -149,11 +149,11 @@ export const Navigation: React.FC = () => {
 
             {/* User Menu */}
             {user ? (
-              <div className="flex items-center space-x-4 ml-4 pl-4 border-l border-gray-600 dark:border-slate-700">
+              <div className="flex items-center space-x-4 ml-4 pl-4 border-l border-header-border">
                 {userProfile?.is_admin && (
                   <Link
                     href="/admin"
-                    className="flex items-center space-x-1 text-sm text-gray-300 hover:text-white transition-colors"
+                    className="flex items-center space-x-1 text-sm text-header-muted hover:text-header-foreground transition-colors"
                   >
                     <Shield className="w-4 h-4" />
                     <span>Admin</span>
@@ -161,14 +161,14 @@ export const Navigation: React.FC = () => {
                 )}
                 <Link
                   href="/profile"
-                  className="flex items-center space-x-2 text-sm text-gray-300 hover:text-white transition-colors"
+                  className="flex items-center space-x-2 text-sm text-header-muted hover:text-header-foreground transition-colors"
                 >
                   <User className="w-4 h-4" />
                   <span>{userProfile?.full_name || user.email}</span>
                 </Link>
                 <button
                   onClick={handleSignOut}
-                  className="flex items-center space-x-1 text-sm text-gray-300 hover:text-white transition-colors"
+                  className="flex items-center space-x-1 text-sm text-header-muted hover:text-header-foreground transition-colors"
                   aria-label="Sign out"
                 >
                   <LogOut className="w-4 h-4" />
@@ -177,7 +177,7 @@ export const Navigation: React.FC = () => {
             ) : (
               <Link
                 href="/login"
-                className="text-sm font-medium text-gray-300 hover:text-white transition-colors ml-4 pl-4 border-l border-gray-600 dark:border-slate-700"
+                className="text-sm font-medium text-header-muted hover:text-header-foreground transition-colors ml-4 pl-4 border-l border-header-border"
               >
                 Sign In
               </Link>

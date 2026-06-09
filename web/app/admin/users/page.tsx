@@ -370,7 +370,7 @@ export default function AdminUsersPage() {
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
                 placeholder="user@example.com"
-                className="w-full px-4 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-surface-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full px-4 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
               />
             </div>
 
@@ -391,7 +391,7 @@ export default function AdminUsersPage() {
                         transition-colors
                         ${selected
                           ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
-                          : 'bg-card-hover text-text-secondary hover:bg-gray-200 dark:hover:bg-slate-600'
+                          : 'bg-card-hover text-text-secondary hover:bg-card-hover'
                         }
                       `}
                     >
@@ -426,7 +426,7 @@ export default function AdminUsersPage() {
                   type="checkbox"
                   checked={inviteCanComment}
                   onChange={(e) => setInviteCanComment(e.target.checked)}
-                  className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary dark:bg-surface-2"
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
                 />
                 <span className="text-sm text-text-primary">Can comment/inspect</span>
               </label>
@@ -435,7 +435,7 @@ export default function AdminUsersPage() {
                   type="checkbox"
                   checked={inviteIsAdmin}
                   onChange={(e) => setInviteIsAdmin(e.target.checked)}
-                  className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary dark:bg-surface-2"
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
                 />
                 <span className="text-sm text-text-primary">Admin privileges</span>
               </label>
@@ -530,7 +530,7 @@ export default function AdminUsersPage() {
 
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-surface-2 border-b border-border">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 User
@@ -629,7 +629,7 @@ export default function AdminUsersPage() {
                   {/* Expanded row for program access */}
                   {expandedUser === user.user_id && (
                     <tr>
-                      <td colSpan={5} className="px-6 py-4 bg-surface-2 border-t border-border dark:border-border-strong">
+                      <td colSpan={5} className="px-6 py-4 bg-surface-2 border-t border-border">
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
                             <span className="text-sm font-medium text-text-primary">
@@ -673,7 +673,7 @@ export default function AdminUsersPage() {
                                       transition-colors disabled:opacity-50
                                       ${hasAccess
                                         ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
-                                        : 'bg-card-hover text-text-secondary hover:bg-gray-200 dark:hover:bg-slate-600'
+                                        : 'bg-card-hover text-text-secondary hover:bg-card-hover'
                                       }
                                     `}
                                   >

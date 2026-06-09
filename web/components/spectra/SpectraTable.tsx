@@ -181,7 +181,7 @@ const TableSkeletonRow: React.FC<{ columns: ColumnDef<SpectrumTarget>[] }> = ({ 
         className="px-4 py-3 whitespace-nowrap"
         style={{ width: `${col.minSize || 150}px` }}
       >
-        <div className="h-4 bg-surface-2 dark:bg-slate-700 rounded w-full"></div>
+        <div className="h-4 bg-surface-2 rounded w-full"></div>
       </td>
     ))}
   </tr>
@@ -220,7 +220,7 @@ const ViewModeTooltip: React.FC = () => {
         <HelpCircle className="w-3.5 h-3.5" />
       </button>
       {open && (
-        <div className="absolute left-0 top-full mt-1.5 z-50 w-64 px-3 py-2 text-xs text-text-secondary bg-background dark:bg-slate-800 border border-border rounded-lg shadow-lg">
+        <div className="absolute left-0 top-full mt-1.5 z-50 w-64 px-3 py-2 text-xs text-text-secondary bg-card border border-border rounded-lg shadow-lg">
           <p><span className="font-medium text-text-primary">Objects</span> = unique sources across programs</p>
           <p><span className="font-medium text-text-primary">Spectra</span> = individual grating exposures</p>
         </div>
@@ -659,7 +659,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           return (
             <div className="flex flex-wrap gap-1">
               {programs.map((p) => (
-                <span key={p} className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-surface-secondary text-text-secondary">
+                <span key={p} className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-surface-2 text-text-secondary">
                   {p}
                 </span>
               ))}
@@ -678,7 +678,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           return (
             <div className="flex flex-wrap gap-1">
               {gratings.map((g) => (
-                <span key={g} className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-surface-secondary text-text-secondary">
+                <span key={g} className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-surface-2 text-text-secondary">
                   {g}
                 </span>
               ))}
@@ -931,7 +931,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
                     onClick={() => onViewModeChange(mode)}
                     className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
                       viewMode === mode
-                        ? 'bg-white dark:bg-slate-600 text-text-primary shadow-sm'
+                        ? 'bg-card text-text-primary shadow-sm'
                         : 'text-text-secondary hover:text-text-primary'
                     }`}
                   >
@@ -987,7 +987,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
 
       <div className="overflow-x-auto">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-surface-2 border-b border-border">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (

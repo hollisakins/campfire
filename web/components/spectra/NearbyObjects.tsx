@@ -122,7 +122,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
 
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead>
+            <thead className="bg-surface-2">
               <tr className="border-b border-border">
                 <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary">
                   Target ID
@@ -150,7 +150,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
                 return (
                   <tr
                     key={obj.id}
-                    className="border-b border-border hover:bg-background-hover dark:hover:bg-card-hover transition-colors"
+                    className="border-b border-border hover:bg-card-hover transition-colors"
                   >
                     <td className="py-3 px-4">
                       <Link

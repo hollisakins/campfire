@@ -170,8 +170,8 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
                 onChange={(e) => setCoordInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="150.5 -2.3  or  10h02m30s -02d18m00s"
-                className={`w-full px-3 py-2 text-sm border rounded-md bg-background dark:bg-surface-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
-                  ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border dark:border-border-strong'}
+                className={`w-full px-3 py-2 text-sm border rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
+                  ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border-strong'}
                 `}
               />
               {validationError && (
@@ -196,12 +196,12 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
                   placeholder="1"
                   min="0"
                   step="0.1"
-                  className="w-24 px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-surface-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  className="w-24 px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                 />
                 <select
                   value={unitInput}
                   onChange={(e) => setUnitInput(e.target.value as 'degrees' | 'arcmin' | 'arcsec')}
-                  className="flex-1 px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-surface-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                  className="flex-1 px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
                 >
                   <option value="arcsec">arcseconds</option>
                   <option value="arcmin">arcminutes</option>

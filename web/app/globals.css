@@ -33,6 +33,16 @@
   --danger: #be123c;
   --info: #1d4ed8;
 
+  /* Header — the top nav is an always-dusk "chrome bar" in BOTH themes
+     (intentionally dark so the ember logo/active accent reads as the brand).
+     Defined once here; .dark inherits these, so the bar is identical in both modes. */
+  --header: #1b1722;                /* deep dusk bar */
+  --header-elevated: #2a2435;       /* dropdown/menu surface on the bar */
+  --header-foreground: #f1ecf6;     /* primary text/icon on the bar */
+  --header-muted: #b8aec6;          /* idle links/icons on the bar */
+  --header-border: #38304a;         /* dividers / hover underline on the bar */
+  --header-hover: rgba(255, 255, 255, 0.07); /* item hover wash */
+
   /* Plotly chart colors (read via JavaScript) — chart chrome, follows theme */
   --plot-bg: #faf7f3;
   --plot-paper: #ffffff;

@@ -82,7 +82,7 @@ export const ObjectSidebar: React.FC<ObjectSidebarProps> = ({
 
                   return (
                     <li key={spectrum.id} className="flex items-center gap-1.5">
-                      <span className="text-text-secondary/40 dark:text-slate-600 text-xs leading-none select-none">
+                      <span className="text-text-tertiary text-xs leading-none select-none">
                         ↳
                       </span>
                       <input

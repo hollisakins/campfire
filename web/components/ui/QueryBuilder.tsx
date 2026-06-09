@@ -214,7 +214,7 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
       rounded-lg border
       ${isRoot
         ? 'border-border bg-card'
-        : 'border-dashed border-border-strong bg-card dark:bg-slate-800/50'
+        : 'border-dashed border-border-strong bg-card'
       }
     `}>
       {/* Group header */}
@@ -224,13 +224,13 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
         )}
 
         {/* Logic toggle */}
-        <div className="flex rounded-md overflow-hidden border border-border dark:border-border-strong">
+        <div className="flex rounded-md overflow-hidden border border-border-strong">
           <button
             onClick={() => onUpdateGroupLogic(group.id, 'AND')}
             className={`px-3 py-1 text-xs font-medium transition-colors ${
               group.logic === 'AND'
                 ? 'bg-primary text-on-primary'
-                : 'bg-card dark:bg-slate-700 text-text-secondary hover:bg-card-hover dark:hover:bg-slate-600'
+                : 'bg-card text-text-secondary hover:bg-card-hover'
             }`}
           >
             AND
@@ -240,7 +240,7 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
             className={`px-3 py-1 text-xs font-medium transition-colors ${
               group.logic === 'OR'
                 ? 'bg-orange-500 text-white'
-                : 'bg-card dark:bg-slate-700 text-text-secondary hover:bg-card-hover dark:hover:bg-slate-600'
+                : 'bg-card text-text-secondary hover:bg-card-hover'
             }`}
           >
             OR
@@ -431,7 +431,7 @@ const ConditionComponent: React.FC<ConditionComponentProps> = ({
           type="text"
           value={condition.value as string}
           onChange={(e) => onUpdate({ value: e.target.value })}
-          className="flex-1 px-2 py-1 text-sm bg-card border border-border rounded text-text-primary"
+          className="flex-1 px-2 py-1 text-sm bg-card border border-border rounded text-text-primary placeholder:text-text-tertiary"
           placeholder="Enter value..."
         />
       )}

@@ -278,7 +278,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-card-hover dark:bg-card-hover/40 sticky top-0">
+          <thead className="bg-surface-2 border-b border-border sticky top-0">
             {table.getHeaderGroups().map((hg) => (
               <tr key={hg.id}>
                 {hg.headers.map((h) => {
