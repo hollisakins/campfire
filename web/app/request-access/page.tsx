@@ -70,7 +70,7 @@ export default function RequestAccessPage() {
                 <p className="text-text-secondary text-center mb-6">
                   {result.message}
                 </p>
-                <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-4 mb-6">
+                <div className="bg-card rounded-lg p-4 mb-6">
                   <p className="text-sm text-text-secondary">
                     <strong>What happens next?</strong>
                   </p>

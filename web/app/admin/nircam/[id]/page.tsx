@@ -213,7 +213,7 @@ export default function ExposureDetailPage() {
   if (!exposure) {
     return (
       <div className="py-8">
-        <p className="text-text-secondary dark:text-slate-400">Exposure not found.</p>
+        <p className="text-text-secondary">Exposure not found.</p>
         <Link href="/admin/nircam" className="text-primary hover:underline mt-2 inline-block">
           Back to NIRCam
         </Link>
@@ -240,19 +240,19 @@ export default function ExposureDetailPage() {
     <div>
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <button onClick={() => router.push('/admin/nircam')} className="text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-100" title="Back to list">
+        <button onClick={() => router.push('/admin/nircam')} className="text-text-secondary hover:text-text-primary" title="Back to list">
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1 min-w-0">
-          <h1 className="text-xl font-semibold font-mono text-text-primary dark:text-slate-100 truncate">
+          <h1 className="text-xl font-semibold font-mono text-text-primary truncate">
             {exposure.filename}
           </h1>
-          <p className="text-sm text-text-secondary dark:text-slate-400">
+          <p className="text-sm text-text-secondary">
             {exposure.field} / {exposure.filter} / {exposure.detector}
           </p>
         </div>
         {nav && (
-          <div className="flex items-center gap-1 text-sm text-text-secondary dark:text-slate-400">
+          <div className="flex items-center gap-1 text-sm text-text-secondary">
             <button
               onClick={handlePrev}
               disabled={nav.prev == null}
@@ -277,28 +277,28 @@ export default function ExposureDetailPage() {
         <button
           onClick={() => setShowHelp(prev => !prev)}
           title="Keyboard shortcuts (?)"
-          className="p-1.5 rounded text-text-secondary dark:text-slate-400 hover:bg-surface-hover dark:hover:bg-slate-800"
+          className="p-1.5 rounded text-text-secondary hover:bg-surface-hover dark:hover:bg-slate-800"
         >
           <Keyboard className="w-5 h-5" />
         </button>
       </div>
 
       {showHelp && (
-        <div className="mb-6 rounded-lg border border-border dark:border-slate-700 bg-card dark:bg-slate-900 p-4">
+        <div className="mb-6 rounded-lg border border-border bg-card dark:bg-slate-900 p-4">
           <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-semibold text-text-primary dark:text-slate-100">Keyboard shortcuts</h2>
-            <button onClick={() => setShowHelp(false)} className="text-xs text-text-secondary dark:text-slate-400 hover:underline">close</button>
+            <h2 className="text-sm font-semibold text-text-primary">Keyboard shortcuts</h2>
+            <button onClick={() => setShowHelp(false)} className="text-xs text-text-secondary hover:underline">close</button>
           </div>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
-            <div className="flex justify-between"><dt>Next exposure</dt><dd className="font-mono text-text-secondary dark:text-slate-400">→ or N</dd></div>
-            <div className="flex justify-between"><dt>Previous</dt><dd className="font-mono text-text-secondary dark:text-slate-400">← or P</dd></div>
-            <div className="flex justify-between"><dt>Mark pending</dt><dd className="font-mono text-text-secondary dark:text-slate-400">1</dd></div>
-            <div className="flex justify-between"><dt>Mark approved</dt><dd className="font-mono text-text-secondary dark:text-slate-400">2</dd></div>
-            <div className="flex justify-between"><dt>Mark excluded</dt><dd className="font-mono text-text-secondary dark:text-slate-400">3</dd></div>
-            <div className="flex justify-between"><dt>Save</dt><dd className="font-mono text-text-secondary dark:text-slate-400">S</dd></div>
-            <div className="flex justify-between"><dt>Help</dt><dd className="font-mono text-text-secondary dark:text-slate-400">?</dd></div>
+            <div className="flex justify-between"><dt>Next exposure</dt><dd className="font-mono text-text-secondary">→ or N</dd></div>
+            <div className="flex justify-between"><dt>Previous</dt><dd className="font-mono text-text-secondary">← or P</dd></div>
+            <div className="flex justify-between"><dt>Mark pending</dt><dd className="font-mono text-text-secondary">1</dd></div>
+            <div className="flex justify-between"><dt>Mark approved</dt><dd className="font-mono text-text-secondary">2</dd></div>
+            <div className="flex justify-between"><dt>Mark excluded</dt><dd className="font-mono text-text-secondary">3</dd></div>
+            <div className="flex justify-between"><dt>Save</dt><dd className="font-mono text-text-secondary">S</dd></div>
+            <div className="flex justify-between"><dt>Help</dt><dd className="font-mono text-text-secondary">?</dd></div>
           </dl>
-          <p className="mt-2 text-xs text-text-secondary dark:text-slate-400">
+          <p className="mt-2 text-xs text-text-secondary">
             Navigation auto-saves the triage panel if there are unsaved changes. Mask edits save separately from the editor toolbar.
           </p>
         </div>
@@ -332,7 +332,7 @@ export default function ExposureDetailPage() {
                 className="w-full h-auto"
               />
             ) : (
-              <div className="flex items-center justify-center py-24 text-text-secondary dark:text-slate-400">
+              <div className="flex items-center justify-center py-24 text-text-secondary">
                 No PNG available
               </div>
             )}
@@ -343,32 +343,32 @@ export default function ExposureDetailPage() {
         <div className="w-80 flex-shrink-0 space-y-4">
           {/* Metadata */}
           <Card className="p-4">
-            <h2 className="text-sm font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider mb-3">
+            <h2 className="text-sm font-medium text-text-secondary uppercase tracking-wider mb-3">
               Metadata
             </h2>
             <dl className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <dt className="text-text-secondary dark:text-slate-400">Field</dt>
-                <dd className="text-text-primary dark:text-slate-100">{exposure.field}</dd>
+                <dt className="text-text-secondary">Field</dt>
+                <dd className="text-text-primary">{exposure.field}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-text-secondary dark:text-slate-400">Filter</dt>
-                <dd className="text-text-primary dark:text-slate-100">{exposure.filter}</dd>
+                <dt className="text-text-secondary">Filter</dt>
+                <dd className="text-text-primary">{exposure.filter}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-text-secondary dark:text-slate-400">Detector</dt>
-                <dd className="text-text-primary dark:text-slate-100">{exposure.detector}</dd>
+                <dt className="text-text-secondary">Detector</dt>
+                <dd className="text-text-primary">{exposure.detector}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-text-secondary dark:text-slate-400">Visit</dt>
-                <dd className="text-text-primary dark:text-slate-100 font-mono text-xs">{exposure.visit || '—'}</dd>
+                <dt className="text-text-secondary">Visit</dt>
+                <dd className="text-text-primary font-mono text-xs">{exposure.visit || '—'}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-text-secondary dark:text-slate-400">Date</dt>
-                <dd className="text-text-primary dark:text-slate-100">{exposure.date_obs || '—'}</dd>
+                <dt className="text-text-secondary">Date</dt>
+                <dd className="text-text-primary">{exposure.date_obs || '—'}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-text-secondary dark:text-slate-400">Stage</dt>
+                <dt className="text-text-secondary">Stage</dt>
                 <dd>
                   <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full font-mono ${stageBadgeClasses(exposure.stage)}`}>
                     {exposure.stage}
@@ -377,8 +377,8 @@ export default function ExposureDetailPage() {
               </div>
               {(exposure.ra_center != null && exposure.dec_center != null) && (
                 <div className="flex justify-between">
-                  <dt className="text-text-secondary dark:text-slate-400">RA, Dec</dt>
-                  <dd className="text-text-primary dark:text-slate-100 font-mono text-xs">
+                  <dt className="text-text-secondary">RA, Dec</dt>
+                  <dd className="text-text-primary font-mono text-xs">
                     {exposure.ra_center.toFixed(5)}, {exposure.dec_center.toFixed(5)}
                   </dd>
                 </div>
@@ -388,18 +388,18 @@ export default function ExposureDetailPage() {
 
           {/* Triage controls */}
           <Card className="p-4">
-            <h2 className="text-sm font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider mb-3">
+            <h2 className="text-sm font-medium text-text-secondary uppercase tracking-wider mb-3">
               Triage
             </h2>
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+                <label className="block text-xs font-medium text-text-secondary mb-1">
                   Review Status
                 </label>
                 <select
                   value={reviewStatus}
                   onChange={(e) => setReviewStatus(e.target.value)}
-                  className="w-full text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
+                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="pending">Pending</option>
                   <option value="approved">Approved</option>
@@ -408,13 +408,13 @@ export default function ExposureDetailPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+                <label className="block text-xs font-medium text-text-secondary mb-1">
                   Masking
                 </label>
                 <select
                   value={masking}
                   onChange={(e) => setMasking(e.target.value)}
-                  className="w-full text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
+                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="none">None</option>
                   <option value="needed">Needed</option>
@@ -423,13 +423,13 @@ export default function ExposureDetailPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+                <label className="block text-xs font-medium text-text-secondary mb-1">
                   Correction
                 </label>
                 <select
                   value={correction}
                   onChange={(e) => setCorrection(e.target.value)}
-                  className="w-full text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100"
+                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="none">None</option>
                   <option value="needed">Needed</option>
@@ -438,7 +438,7 @@ export default function ExposureDetailPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-text-secondary dark:text-slate-400 mb-1">
+                <label className="block text-xs font-medium text-text-secondary mb-1">
                   Notes
                 </label>
                 <textarea
@@ -446,7 +446,7 @@ export default function ExposureDetailPage() {
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Describe artifacts, masking needs, etc."
                   rows={4}
-                  className="w-full text-sm border border-border dark:border-slate-600 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 resize-none"
+                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary resize-none"
                 />
               </div>
 

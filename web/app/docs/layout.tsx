@@ -27,7 +27,7 @@ function NavItem({ item, level = 0 }: { item: DocPage; level?: number }) {
             w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-left transition-colors
             ${isActive || isParentOfActive
               ? 'bg-primary/10 text-primary dark:bg-primary/20'
-              : 'text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-800 hover:text-text-primary dark:hover:text-slate-200'
+              : 'text-text-secondary hover:bg-card hover:text-text-primary'
             }
           `}
         >
@@ -42,7 +42,7 @@ function NavItem({ item, level = 0 }: { item: DocPage; level?: number }) {
           )}
         </button>
         {isOpen && (
-          <div className="ml-4 mt-1 space-y-1 border-l border-border dark:border-slate-700 pl-3">
+          <div className="ml-4 mt-1 space-y-1 border-l border-border pl-3">
             {item.children?.map((child) => (
               <NavItem key={child.slug} item={child} level={level + 1} />
             ))}
@@ -58,8 +58,8 @@ function NavItem({ item, level = 0 }: { item: DocPage; level?: number }) {
       className={`
         flex items-center gap-2 px-3 py-2 rounded-lg transition-colors
         ${isActive
-          ? 'bg-primary text-white'
-          : 'text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-800 hover:text-text-primary dark:hover:text-slate-200'
+          ? 'bg-primary text-on-primary'
+          : 'text-text-secondary hover:bg-card hover:text-text-primary'
         }
       `}
     >
@@ -81,7 +81,7 @@ export default function DocsLayout({
       {/* Mobile sidebar toggle */}
       <button
         onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="lg:hidden fixed bottom-4 right-4 z-50 p-3 bg-primary text-white rounded-full shadow-lg hover:bg-primary-hover transition-colors"
+        className="lg:hidden fixed bottom-4 right-4 z-50 p-3 bg-primary text-on-primary rounded-full shadow-lg hover:bg-primary-hover transition-colors"
         aria-label="Toggle navigation"
       >
         {sidebarOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
@@ -95,7 +95,7 @@ export default function DocsLayout({
             lg:sticky lg:top-24 lg:self-start lg:z-0
             lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto
             w-64 lg:w-56 flex-shrink-0
-            bg-background dark:bg-slate-900 lg:bg-transparent
+            bg-background lg:bg-transparent
             transform transition-transform duration-200 ease-in-out
             ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
             overflow-y-auto
@@ -114,7 +114,7 @@ export default function DocsLayout({
 
           <div className="flex items-center gap-2 mb-6">
             <BookOpen className="w-6 h-6 text-primary" />
-            <h1 className="text-xl font-semibold text-text-primary dark:text-slate-100">
+            <h1 className="text-xl font-semibold text-text-primary">
               Documentation
             </h1>
           </div>

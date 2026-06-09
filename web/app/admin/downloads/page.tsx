@@ -83,7 +83,7 @@ function DownloadTypeIcon({ type }: { type: string }) {
     case 'sed_plot':
       return <FileText className="w-4 h-4 text-pink-600 dark:text-pink-400" />;
     default:
-      return <Download className="w-4 h-4 text-gray-600 dark:text-gray-400" />;
+      return <Download className="w-4 h-4 text-text-secondary" />;
   }
 }
 
@@ -175,7 +175,7 @@ export default function AdminDownloadsPage() {
       <div className="p-8">
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading download statistics...</span>
+          <span className="ml-3 text-text-secondary">Loading download statistics...</span>
         </div>
       </div>
     );
@@ -195,8 +195,8 @@ export default function AdminDownloadsPage() {
     <div className="p-8">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100">Download Analytics</h1>
-          <p className="text-sm text-text-secondary dark:text-slate-400 mt-1">
+          <h1 className="text-2xl font-semibold text-text-primary">Download Analytics</h1>
+          <p className="text-sm text-text-secondary mt-1">
             Track spectrum downloads across all users
           </p>
         </div>
@@ -217,10 +217,10 @@ export default function AdminDownloadsPage() {
 
         {hasActiveFilters && (
           <>
-            <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
+            <div className="h-6 w-px bg-border mx-1" />
             <button
               onClick={handleClearAll}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
             >
               <X className="w-3.5 h-3.5" />
               Reset
@@ -237,8 +237,8 @@ export default function AdminDownloadsPage() {
               <Download className="w-5 h-5 text-blue-600 dark:text-blue-400" />
             </div>
             <div>
-              <p className="text-sm text-text-secondary dark:text-slate-400">Total Downloads</p>
-              <p className="text-2xl font-semibold text-text-primary dark:text-slate-100">
+              <p className="text-sm text-text-secondary">Total Downloads</p>
+              <p className="text-2xl font-semibold text-text-primary">
                 {stats?.total_downloads?.toLocaleString() || 0}
               </p>
             </div>
@@ -251,8 +251,8 @@ export default function AdminDownloadsPage() {
               <Users className="w-5 h-5 text-green-600 dark:text-green-400" />
             </div>
             <div>
-              <p className="text-sm text-text-secondary dark:text-slate-400">Unique Users</p>
-              <p className="text-2xl font-semibold text-text-primary dark:text-slate-100">
+              <p className="text-sm text-text-secondary">Unique Users</p>
+              <p className="text-2xl font-semibold text-text-primary">
                 {stats?.unique_users?.toLocaleString() || 0}
               </p>
             </div>
@@ -265,8 +265,8 @@ export default function AdminDownloadsPage() {
               <File className="w-5 h-5 text-purple-600 dark:text-purple-400" />
             </div>
             <div>
-              <p className="text-sm text-text-secondary dark:text-slate-400">Files Downloaded</p>
-              <p className="text-2xl font-semibold text-text-primary dark:text-slate-100">
+              <p className="text-sm text-text-secondary">Files Downloaded</p>
+              <p className="text-2xl font-semibold text-text-primary">
                 {stats?.total_files?.toLocaleString() || 0}
               </p>
             </div>
@@ -279,8 +279,8 @@ export default function AdminDownloadsPage() {
               <BarChart3 className="w-5 h-5 text-orange-600 dark:text-orange-400" />
             </div>
             <div>
-              <p className="text-sm text-text-secondary dark:text-slate-400">Targets Downloaded</p>
-              <p className="text-2xl font-semibold text-text-primary dark:text-slate-100">
+              <p className="text-sm text-text-secondary">Targets Downloaded</p>
+              <p className="text-2xl font-semibold text-text-primary">
                 {stats?.total_targets?.toLocaleString() || 0}
               </p>
             </div>
@@ -291,16 +291,16 @@ export default function AdminDownloadsPage() {
       {/* Downloads by Type */}
       {stats?.by_type && Object.keys(stats.by_type).length > 0 && (
         <Card className="p-4 mb-6">
-          <h2 className="text-lg font-medium text-text-primary dark:text-slate-100 mb-4">Downloads by Type</h2>
+          <h2 className="text-lg font-medium text-text-primary mb-4">Downloads by Type</h2>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             {Object.entries(stats.by_type).map(([type, count]) => (
               <div key={type} className="flex items-center gap-2">
                 <DownloadTypeIcon type={type} />
                 <div>
-                  <p className="text-xs text-text-secondary dark:text-slate-400">
+                  <p className="text-xs text-text-secondary">
                     {DOWNLOAD_TYPE_LABELS[type] || type}
                   </p>
-                  <p className="text-lg font-semibold text-text-primary dark:text-slate-100">
+                  <p className="text-lg font-semibold text-text-primary">
                     {count.toLocaleString()}
                   </p>
                 </div>
@@ -313,25 +313,25 @@ export default function AdminDownloadsPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Downloads */}
         <Card className="overflow-hidden">
-          <div className="px-4 py-3 border-b border-border dark:border-slate-700">
-            <h2 className="text-lg font-medium text-text-primary dark:text-slate-100">Recent Downloads</h2>
+          <div className="px-4 py-3 border-b border-border">
+            <h2 className="text-lg font-medium text-text-primary">Recent Downloads</h2>
           </div>
           {!stats?.recent_downloads || stats.recent_downloads.length === 0 ? (
             <div className="p-8 text-center">
-              <p className="text-text-secondary dark:text-slate-400">No downloads recorded yet</p>
+              <p className="text-text-secondary">No downloads recorded yet</p>
             </div>
           ) : (
-            <div className="divide-y divide-border dark:divide-slate-700 max-h-96 overflow-y-auto">
+            <div className="divide-y divide-border max-h-96 overflow-y-auto">
               {stats.recent_downloads.map((download) => (
-                <div key={download.id} className="px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-700">
+                <div key={download.id} className="px-4 py-3 hover:bg-card dark:hover:bg-card-hover">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <DownloadTypeIcon type={download.download_type} />
                       <div>
-                        <p className="text-sm text-text-primary dark:text-slate-100">
+                        <p className="text-sm text-text-primary">
                           {download.full_name || download.email || 'Unknown User'}
                         </p>
-                        <p className="text-xs text-text-secondary dark:text-slate-400">
+                        <p className="text-xs text-text-secondary">
                           {DOWNLOAD_TYPE_LABELS[download.download_type] || download.download_type}
                           {download.target_count && download.target_count > 1 && (
                             <span className="ml-1">({download.target_count} targets)</span>
@@ -339,7 +339,7 @@ export default function AdminDownloadsPage() {
                         </p>
                       </div>
                     </div>
-                    <span className="text-xs text-text-secondary dark:text-slate-400">
+                    <span className="text-xs text-text-secondary">
                       {formatTimestamp(download.requested_at)}
                     </span>
                   </div>
@@ -351,20 +351,20 @@ export default function AdminDownloadsPage() {
 
         {/* Most Downloaded Objects */}
         <Card className="overflow-hidden">
-          <div className="px-4 py-3 border-b border-border dark:border-slate-700">
-            <h2 className="text-lg font-medium text-text-primary dark:text-slate-100">Most Downloaded Targets</h2>
+          <div className="px-4 py-3 border-b border-border">
+            <h2 className="text-lg font-medium text-text-primary">Most Downloaded Targets</h2>
           </div>
           {!stats?.most_downloaded_targets || stats.most_downloaded_targets.length === 0 ? (
             <div className="p-8 text-center">
-              <p className="text-text-secondary dark:text-slate-400">No target download data yet</p>
+              <p className="text-text-secondary">No target download data yet</p>
             </div>
           ) : (
-            <div className="divide-y divide-border dark:divide-slate-700 max-h-96 overflow-y-auto">
+            <div className="divide-y divide-border max-h-96 overflow-y-auto">
               {stats.most_downloaded_targets.map((item, index) => (
-                <div key={item.target_id} className="px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-700">
+                <div key={item.target_id} className="px-4 py-3 hover:bg-card dark:hover:bg-card-hover">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <span className="w-6 h-6 flex items-center justify-center text-xs font-medium text-text-secondary dark:text-slate-400 bg-gray-100 dark:bg-slate-800 rounded">
+                      <span className="w-6 h-6 flex items-center justify-center text-xs font-medium text-text-secondary bg-card rounded">
                         {index + 1}
                       </span>
                       <Link
@@ -374,7 +374,7 @@ export default function AdminDownloadsPage() {
                         {item.target_id}
                       </Link>
                     </div>
-                    <span className="text-sm text-text-secondary dark:text-slate-400">
+                    <span className="text-sm text-text-secondary">
                       {item.download_count} download{item.download_count !== 1 ? 's' : ''}
                     </span>
                   </div>

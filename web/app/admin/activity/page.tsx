@@ -141,7 +141,7 @@ export default function AdminActivityPage() {
       <div className="p-8">
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading activity...</span>
+          <span className="ml-3 text-text-secondary">Loading activity...</span>
         </div>
       </div>
     );
@@ -163,8 +163,8 @@ export default function AdminActivityPage() {
     <div className="p-8">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100">User Activity</h1>
-          <p className="text-sm text-text-secondary dark:text-slate-400 mt-1">
+          <h1 className="text-2xl font-semibold text-text-primary">User Activity</h1>
+          <p className="text-sm text-text-secondary mt-1">
             Recent comments and inspection changes from users
           </p>
         </div>
@@ -202,10 +202,10 @@ export default function AdminActivityPage() {
         {/* Clear all button */}
         {hasActiveFilters && (
           <>
-            <div className="h-6 w-px bg-border dark:bg-slate-700 mx-1" />
+            <div className="h-6 w-px bg-border mx-1" />
             <button
               onClick={handleClearAll}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
             >
               <X className="w-3.5 h-3.5" />
               Clear all
@@ -216,50 +216,50 @@ export default function AdminActivityPage() {
 
       {activities.length === 0 ? (
         <Card className="p-8 text-center">
-          <p className="text-text-secondary dark:text-slate-400">No activity yet</p>
+          <p className="text-text-secondary">No activity yet</p>
         </Card>
       ) : (
         <Card className="overflow-hidden">
           <table className="w-full">
-            <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
+            <thead className="bg-card border-b border-border">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                   Type
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                   User
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                   Object
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                   Details
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                   Time
                 </th>
               </tr>
             </thead>
-            <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
+            <tbody className="bg-card divide-y divide-border">
               {activities.map((activity) => (
-                <tr key={activity.id} className="hover:bg-gray-50 dark:hover:bg-slate-700">
+                <tr key={activity.id} className="hover:bg-card dark:hover:bg-card-hover">
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       {activity.type === 'comment' ? (
                         <>
                           <MessageSquare className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                          <span className="text-sm text-text-primary dark:text-slate-100">Comment</span>
+                          <span className="text-sm text-text-primary">Comment</span>
                         </>
                       ) : (
                         <>
                           <Edit3 className="w-4 h-4 text-green-600 dark:text-green-400" />
-                          <span className="text-sm text-text-primary dark:text-slate-100">Inspection</span>
+                          <span className="text-sm text-text-primary">Inspection</span>
                         </>
                       )}
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm text-text-primary dark:text-slate-100">
+                    <div className="text-sm text-text-primary">
                       {activity.user_profile?.full_name || 'Unknown User'}
                     </div>
                     {activity.user_profile?.is_group_account && (
@@ -278,7 +278,7 @@ export default function AdminActivityPage() {
                   </td>
                   <td className="px-6 py-4">
                     {activity.type === 'comment' ? (
-                      <div className="text-sm text-text-secondary dark:text-slate-400 max-w-md">
+                      <div className="text-sm text-text-secondary max-w-md">
                         <span className="line-clamp-2">{activity.content}</span>
                         {activity.edited_at && (
                           <span className="text-xs italic ml-1">(edited)</span>
@@ -286,10 +286,10 @@ export default function AdminActivityPage() {
                       </div>
                     ) : (
                       <div className="text-sm">
-                        <span className="text-text-secondary dark:text-slate-400">
+                        <span className="text-text-secondary">
                           {formatFieldName(activity.field_name)}:
                         </span>
-                        <span className="ml-2 text-text-primary dark:text-slate-100">
+                        <span className="ml-2 text-text-primary">
                           {formatActivityField(activity.field_name, activity.old_value)}
                           {' → '}
                           {formatActivityField(activity.field_name, activity.new_value)}
@@ -297,7 +297,7 @@ export default function AdminActivityPage() {
                       </div>
                     )}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-text-secondary dark:text-slate-400">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-text-secondary">
                     {formatTimestamp(activity.timestamp)}
                   </td>
                 </tr>
@@ -307,8 +307,8 @@ export default function AdminActivityPage() {
 
           {/* Pagination */}
           {data && data.total_count > data.page_size && (
-            <div className="px-6 py-4 border-t border-border dark:border-slate-700 flex items-center justify-between">
-              <div className="text-sm text-text-secondary dark:text-slate-400">
+            <div className="px-6 py-4 border-t border-border flex items-center justify-between">
+              <div className="text-sm text-text-secondary">
                 Showing {(page - 1) * data.page_size + 1} to{' '}
                 {Math.min(page * data.page_size, data.total_count)} of {data.total_count} activities
               </div>

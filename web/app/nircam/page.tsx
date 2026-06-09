@@ -90,19 +90,19 @@ export default function NircamPage() {
         />
 
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
-            <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
+          <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
+            <LogIn className="w-8 h-8 text-text-secondary" />
           </div>
-          <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+          <h2 className="text-2xl font-semibold text-text-primary mb-2">
             Sign in to view NIRCam images
           </h2>
-          <p className="text-text-secondary dark:text-slate-400 mb-6 max-w-md">
+          <p className="text-text-secondary mb-6 max-w-md">
             Access to NIRCam imaging data requires authentication. Please sign in with your
             CAMPFIRE account to browse and download images.
           </p>
           <Link
             href="/login"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
@@ -127,9 +127,9 @@ export default function NircamPage() {
       <div className="mb-6">
         <div className="flex items-center gap-3 mb-2">
           <ImageIcon className="w-8 h-8 text-primary" />
-          <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">NIRCam Imaging</h1>
+          <h1 className="text-2xl font-bold text-text-primary">NIRCam Imaging</h1>
         </div>
-        <p className="text-text-secondary dark:text-slate-400">
+        <p className="text-text-secondary">
           Browse and download NIRCam mosaic images from CAMPFIRE fields
         </p>
       </div>
@@ -152,7 +152,7 @@ export default function NircamPage() {
       {loading && (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading images...</span>
+          <span className="ml-3 text-text-secondary">Loading images...</span>
         </div>
       )}
 
@@ -168,7 +168,7 @@ export default function NircamPage() {
         <>
           {/* Results Count */}
           <div className="mb-4 flex items-center justify-between">
-            <span className="text-sm text-text-secondary dark:text-slate-400">
+            <span className="text-sm text-text-secondary">
               {selectedImages.length.toLocaleString()} of {images.length.toLocaleString()} images selected
             </span>
           </div>
@@ -180,12 +180,12 @@ export default function NircamPage() {
 
           {/* Empty State */}
           {images.length === 0 ? (
-            <div className="text-center py-16 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
-              <ImageIcon className="w-12 h-12 text-text-secondary dark:text-slate-400 mx-auto mb-4" />
-              <p className="text-text-secondary dark:text-slate-400">
+            <div className="text-center py-16 bg-card border border-border rounded-lg">
+              <ImageIcon className="w-12 h-12 text-text-secondary mx-auto mb-4" />
+              <p className="text-text-secondary">
                 No NIRCam images available yet.
               </p>
-              <p className="text-text-secondary dark:text-slate-400 text-sm mt-2">
+              <p className="text-text-secondary text-sm mt-2">
                 Check back later or contact the team if you expected to see data here.
               </p>
             </div>

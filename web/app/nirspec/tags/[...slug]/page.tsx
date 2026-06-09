@@ -69,15 +69,15 @@ export default function ListDetailPage() {
       <div className="container mx-auto px-4 py-8">
         <Breadcrumbs items={breadcrumbs} className="mb-6" />
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
-            <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
+          <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
+            <LogIn className="w-8 h-8 text-text-secondary" />
           </div>
-          <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+          <h2 className="text-2xl font-semibold text-text-primary mb-2">
             Sign in to view this tag
           </h2>
           <Link
             href="/login"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors mt-4"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors mt-4"
           >
             <LogIn className="w-5 h-5" />
             Sign In
@@ -93,7 +93,7 @@ export default function ListDetailPage() {
         <Breadcrumbs items={breadcrumbs} className="mb-6" />
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading tag...</span>
+          <span className="ml-3 text-text-secondary">Loading tag...</span>
         </div>
       </div>
     );
@@ -139,11 +139,11 @@ export default function ListDetailPage() {
                     />
                   )}
                   <div>
-                    <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">
+                    <h1 className="text-2xl font-bold text-text-primary">
                       {list.name}
                     </h1>
                     <div className="mt-1 flex items-center gap-2">
-                      <span className="text-sm font-mono text-text-secondary dark:text-slate-400">#{list.slug}</span>
+                      <span className="text-sm font-mono text-text-secondary">#{list.slug}</span>
                       <ListBadge visibility={list.visibility} isSystem={list.is_system} size="md" />
                     </div>
                   </div>
@@ -173,12 +173,12 @@ export default function ListDetailPage() {
               </div>
 
               {list.description && (
-                <p className="text-text-secondary dark:text-slate-400 mb-4">
+                <p className="text-text-secondary mb-4">
                   {list.description}
                 </p>
               )}
 
-              <div className="flex flex-wrap items-center gap-4 text-sm text-text-secondary dark:text-slate-400">
+              <div className="flex flex-wrap items-center gap-4 text-sm text-text-secondary">
                 <span className="inline-flex items-center gap-1.5">
                   <Hash className="w-4 h-4" />
                   {totalMembers.toLocaleString()} {totalMembers === 1 ? 'object' : 'objects'}
@@ -196,10 +196,10 @@ export default function ListDetailPage() {
               </div>
 
               {/* Action buttons */}
-              <div className="mt-4 pt-4 border-t border-border dark:border-slate-700">
+              <div className="mt-4 pt-4 border-t border-border">
                 <Link
                   href={`/nirspec?view=objects&tags=${list.id}`}
-                  className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+                  className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
                 >
                   <ExternalLink className="w-4 h-4" />
                   View in NIRSpec
@@ -211,7 +211,7 @@ export default function ListDetailPage() {
 
         {/* Members Table */}
         <div>
-          <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100 mb-4 flex items-center gap-2">
+          <h2 className="text-lg font-semibold text-text-primary mb-4 flex items-center gap-2">
             <Tag className="w-5 h-5 text-primary" />
             Members
           </h2>

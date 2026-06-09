@@ -62,7 +62,7 @@ export default function RequestStatusPage() {
       case 'rejected':
         return <XCircle className="w-8 h-8 text-red-600" />;
       case 'not_found':
-        return <Search className="w-8 h-8 text-gray-400 dark:text-slate-500" />;
+        return <Search className="w-8 h-8 text-text-tertiary" />;
     }
   };
 
@@ -75,7 +75,7 @@ export default function RequestStatusPage() {
       case 'rejected':
         return 'bg-red-100 dark:bg-red-900/30';
       case 'not_found':
-        return 'bg-gray-100 dark:bg-slate-700';
+        return 'bg-surface-2';
     }
   };
 
@@ -168,7 +168,7 @@ export default function RequestStatusPage() {
               </p>
 
               {result.created_at && (
-                <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-3 text-sm">
+                <div className="bg-card rounded-lg p-3 text-sm">
                   <p className="text-text-secondary">
                     <strong>Submitted:</strong> {formatDate(result.created_at)}
                   </p>

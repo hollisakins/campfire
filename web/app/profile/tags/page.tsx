@@ -62,15 +62,15 @@ export default function MyListsPage() {
       <div className="container mx-auto px-4 py-8">
         <Breadcrumbs items={breadcrumbs} className="mb-6" />
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
-            <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
+          <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
+            <LogIn className="w-8 h-8 text-text-secondary" />
           </div>
-          <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+          <h2 className="text-2xl font-semibold text-text-primary mb-2">
             Sign in to manage your tags
           </h2>
           <Link
             href="/login"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors mt-4"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors mt-4"
           >
             <LogIn className="w-5 h-5" />
             Sign In
@@ -86,7 +86,7 @@ export default function MyListsPage() {
         <Breadcrumbs items={breadcrumbs} className="mb-6" />
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading tags...</span>
+          <span className="ml-3 text-text-secondary">Loading tags...</span>
         </div>
       </div>
     );
@@ -101,7 +101,7 @@ export default function MyListsPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Tag className="w-8 h-8 text-primary" />
-            <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">My Tags</h1>
+            <h1 className="text-2xl font-bold text-text-primary">My Tags</h1>
           </div>
           {canComment && !showCreateForm && (
             <Button variant="primary" size="sm" onClick={() => setShowCreateForm(true)}>
@@ -138,18 +138,18 @@ export default function MyListsPage() {
         {/* Lists */}
         {lists.length === 0 && !showCreateForm ? (
           <Card className="p-8 text-center">
-            <Tag className="w-12 h-12 text-text-secondary dark:text-slate-500 mx-auto mb-4" />
-            <p className="text-text-secondary dark:text-slate-400 mb-2">
+            <Tag className="w-12 h-12 text-text-secondary dark:text-text-tertiary mx-auto mb-4" />
+            <p className="text-text-secondary mb-2">
               No tags yet.
             </p>
             {canComment && (
-              <p className="text-sm text-text-secondary dark:text-slate-500">
+              <p className="text-sm text-text-secondary dark:text-text-tertiary">
                 Create a tag to organize objects for your research.
               </p>
             )}
           </Card>
         ) : (
-          <Card className="divide-y divide-border dark:divide-slate-700">
+          <Card className="divide-y divide-border">
             {lists.map(list => (
               <div key={list.id} className="p-4">
                 {editingListId === list.id ? (
@@ -168,19 +168,19 @@ export default function MyListsPage() {
                       <div className="flex items-center gap-2 mb-1">
                         <Link
                           href={`/nirspec/tags/${list.slug}`}
-                          className="text-base font-semibold text-text-primary dark:text-slate-100 hover:text-primary transition-colors truncate"
+                          className="text-base font-semibold text-text-primary hover:text-primary transition-colors truncate"
                         >
                           {list.name}
                         </Link>
-                        <span className="text-xs font-mono text-text-secondary dark:text-slate-500">#{list.slug}</span>
+                        <span className="text-xs font-mono text-text-secondary dark:text-text-tertiary">#{list.slug}</span>
                         <ListBadge visibility={list.visibility} />
                       </div>
                       {list.description && (
-                        <p className="text-sm text-text-secondary dark:text-slate-400 line-clamp-1 mb-1">
+                        <p className="text-sm text-text-secondary line-clamp-1 mb-1">
                           {list.description}
                         </p>
                       )}
-                      <div className="flex items-center gap-3 text-xs text-text-secondary dark:text-slate-500">
+                      <div className="flex items-center gap-3 text-xs text-text-secondary dark:text-text-tertiary">
                         <span className="inline-flex items-center gap-1">
                           <Hash className="w-3 h-3" />
                           {list.member_count} {list.member_count === 1 ? 'object' : 'objects'}
@@ -195,7 +195,7 @@ export default function MyListsPage() {
                     <div className="flex items-center gap-1 flex-shrink-0">
                       <Link
                         href={`/nirspec/tags/${list.slug}`}
-                        className="p-2 rounded-lg text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+                        className="p-2 rounded-lg text-text-secondary hover:bg-card-hover hover:text-text-primary transition-colors"
                         title="View tag"
                       >
                         <ExternalLink className="w-4 h-4" />
@@ -204,7 +204,7 @@ export default function MyListsPage() {
                         <>
                           <button
                             onClick={() => setEditingListId(list.id)}
-                            className="p-2 rounded-lg text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+                            className="p-2 rounded-lg text-text-secondary hover:bg-card-hover hover:text-text-primary transition-colors"
                             title="Edit tag"
                           >
                             <Edit2 className="w-4 h-4" />
@@ -212,7 +212,7 @@ export default function MyListsPage() {
                           <button
                             onClick={() => handleDelete(list)}
                             disabled={deletingId === list.id}
-                            className="p-2 rounded-lg text-text-secondary dark:text-slate-400 hover:bg-red-50 dark:hover:bg-red-950 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                            className="p-2 rounded-lg text-text-secondary hover:bg-red-50 dark:hover:bg-red-950 hover:text-red-600 dark:hover:text-red-400 transition-colors"
                             title="Delete tag"
                           >
                             {deletingId === list.id ? (
@@ -235,7 +235,7 @@ export default function MyListsPage() {
         <div className="text-center">
           <Link
             href="/nirspec/tags"
-            className="text-sm text-text-secondary dark:text-slate-400 hover:text-primary transition-colors"
+            className="text-sm text-text-secondary hover:text-primary transition-colors"
           >
             Browse all public tags
           </Link>

@@ -254,7 +254,7 @@ export default function AdminRequestsPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100">Account Requests</h1>
+        <h1 className="text-2xl font-semibold text-text-primary">Account Requests</h1>
         <Button variant="secondary" size="sm" onClick={fetchRequests} disabled={loading}>
           <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
           Refresh
@@ -279,15 +279,15 @@ export default function AdminRequestsPage() {
               className={`
                 px-4 py-2 rounded-lg text-sm font-medium transition-colors
                 ${isActive
-                  ? 'bg-primary text-white'
-                  : 'bg-gray-100 dark:bg-slate-700 text-text-secondary dark:text-slate-400 hover:bg-gray-200 dark:hover:bg-slate-600'
+                  ? 'bg-primary text-on-primary'
+                  : 'bg-card-hover text-text-secondary hover:bg-surface-2'
                 }
               `}
             >
               {status.charAt(0).toUpperCase() + status.slice(1)}
               {count > 0 && (
                 <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${
-                  isActive ? 'bg-white/20' : 'bg-gray-200 dark:bg-slate-600'
+                  isActive ? 'bg-white/20' : 'bg-surface-2'
                 }`}>
                   {count}
                 </span>
@@ -300,26 +300,26 @@ export default function AdminRequestsPage() {
       {/* Requests Table */}
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card dark:bg-slate-800 border-b border-border dark:border-slate-700">
+          <thead className="bg-card border-b border-border">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Requester
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Submitted
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Status
               </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-right text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Actions
               </th>
             </tr>
           </thead>
-          <tbody className="bg-white dark:bg-slate-800 divide-y divide-border dark:divide-slate-700">
+          <tbody className="bg-card divide-y divide-border">
             {requests.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-6 py-12 text-center text-text-secondary dark:text-slate-400">
+                <td colSpan={4} className="px-6 py-12 text-center text-text-secondary">
                   No {statusFilter === 'all' ? '' : statusFilter} requests found.
                 </td>
               </tr>
@@ -328,23 +328,23 @@ export default function AdminRequestsPage() {
                 <tr key={request.id}>
                   <td className="px-6 py-4">
                     <div>
-                      <div className="text-sm font-medium text-text-primary dark:text-slate-100">
+                      <div className="text-sm font-medium text-text-primary">
                         {request.full_name}
                       </div>
-                      <div className="text-sm text-text-secondary dark:text-slate-400 flex items-center gap-1">
+                      <div className="text-sm text-text-secondary flex items-center gap-1">
                         <Mail className="w-3 h-3" />
                         {request.email}
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-sm text-text-secondary dark:text-slate-400">
+                  <td className="px-6 py-4 text-sm text-text-secondary">
                     {formatDate(request.created_at)}
                   </td>
                   <td className="px-6 py-4">
                     <div>
                       {getStatusBadge(request.status)}
                       {request.reviewed_at && request.reviewed_by_name && (
-                        <div className="text-xs text-text-secondary dark:text-slate-400 mt-1">
+                        <div className="text-xs text-text-secondary mt-1">
                           by {request.reviewed_by_name}
                         </div>
                       )}
@@ -374,7 +374,7 @@ export default function AdminRequestsPage() {
                       )}
                       <button
                         onClick={() => handleDelete(request)}
-                        className="text-text-secondary dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors p-2"
+                        className="text-text-secondary hover:text-red-600 dark:hover:text-red-400 transition-colors p-2"
                         title="Delete request"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -393,33 +393,33 @@ export default function AdminRequestsPage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <Card className="w-full max-w-lg p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+              <h2 className="text-lg font-semibold text-text-primary">
                 Approve Request
               </h2>
               <button
                 onClick={() => setShowApproveModal(false)}
-                className="text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-100"
+                className="text-text-secondary hover:text-text-primary"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="mb-4 p-3 bg-gray-50 dark:bg-slate-700 rounded-lg">
-              <p className="text-sm text-text-primary dark:text-slate-100">
+            <div className="mb-4 p-3 bg-surface-2 rounded-lg">
+              <p className="text-sm text-text-primary">
                 <strong>Name:</strong> {selectedRequest.full_name}
               </p>
-              <p className="text-sm text-text-primary dark:text-slate-100">
+              <p className="text-sm text-text-primary">
                 <strong>Email:</strong> {selectedRequest.email}
               </p>
             </div>
 
             {/* Program Access */}
             <div className="mb-4">
-              <label className="block text-sm font-medium text-text-primary dark:text-slate-100 mb-2">
+              <label className="block text-sm font-medium text-text-primary mb-2">
                 Program Access
               </label>
               {programs.length === 0 ? (
-                <p className="text-sm text-text-secondary dark:text-slate-400">No programs available.</p>
+                <p className="text-sm text-text-secondary">No programs available.</p>
               ) : (
                 <>
                   <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
@@ -434,7 +434,7 @@ export default function AdminRequestsPage() {
                             transition-colors
                             ${selected
                               ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
-                              : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-400 hover:bg-gray-200 dark:hover:bg-slate-600'
+                              : 'bg-card-hover text-text-secondary hover:bg-gray-200 dark:hover:bg-slate-600'
                             }
                           `}
                         >
@@ -471,18 +471,18 @@ export default function AdminRequestsPage() {
                   type="checkbox"
                   checked={approveCanComment}
                   onChange={(e) => setApproveCanComment(e.target.checked)}
-                  className="w-4 h-4 rounded border-border dark:border-slate-600 text-primary focus:ring-primary dark:bg-slate-700"
+                  className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary dark:bg-surface-2"
                 />
-                <span className="text-sm text-text-primary dark:text-slate-100">Can comment/inspect</span>
+                <span className="text-sm text-text-primary">Can comment/inspect</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={approveIsAdmin}
                   onChange={(e) => setApproveIsAdmin(e.target.checked)}
-                  className="w-4 h-4 rounded border-border dark:border-slate-600 text-primary focus:ring-primary dark:bg-slate-700"
+                  className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary dark:bg-surface-2"
                 />
-                <span className="text-sm text-text-primary dark:text-slate-100">Admin privileges</span>
+                <span className="text-sm text-text-primary">Admin privileges</span>
               </label>
             </div>
 
@@ -522,38 +522,38 @@ export default function AdminRequestsPage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <Card className="w-full max-w-md p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+              <h2 className="text-lg font-semibold text-text-primary">
                 Reject Request
               </h2>
               <button
                 onClick={() => setShowRejectModal(false)}
-                className="text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-100"
+                className="text-text-secondary hover:text-text-primary"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="mb-4 p-3 bg-gray-50 dark:bg-slate-700 rounded-lg">
-              <p className="text-sm text-text-primary dark:text-slate-100">
+            <div className="mb-4 p-3 bg-surface-2 rounded-lg">
+              <p className="text-sm text-text-primary">
                 <strong>Name:</strong> {selectedRequest.full_name}
               </p>
-              <p className="text-sm text-text-primary dark:text-slate-100">
+              <p className="text-sm text-text-primary">
                 <strong>Email:</strong> {selectedRequest.email}
               </p>
             </div>
 
             <div className="mb-6">
-              <label className="block text-sm font-medium text-text-primary dark:text-slate-100 mb-2">
+              <label className="block text-sm font-medium text-text-primary mb-2">
                 Reason (optional)
               </label>
               <textarea
                 value={rejectReason}
                 onChange={(e) => setRejectReason(e.target.value)}
-                className="w-full px-4 py-2 border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full px-4 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-surface-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
                 placeholder="Enter a reason for rejection..."
                 rows={3}
               />
-              <p className="text-xs text-text-secondary dark:text-slate-400 mt-1">
+              <p className="text-xs text-text-secondary mt-1">
                 This is for internal tracking only.
               </p>
             </div>
