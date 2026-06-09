@@ -93,18 +93,18 @@ export default function ProgramDetailPage() {
       <div className="container mx-auto px-4 py-8">
         {breadcrumbs(programSlug)}
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
-            <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
+          <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
+            <LogIn className="w-8 h-8 text-text-secondary" />
           </div>
-          <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+          <h2 className="text-2xl font-semibold text-text-primary mb-2">
             Sign in to view program details
           </h2>
-          <p className="text-text-secondary dark:text-slate-400 mb-6 max-w-md">
+          <p className="text-text-secondary mb-6 max-w-md">
             Access to program information requires authentication.
           </p>
           <Link
             href="/login"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
@@ -133,17 +133,17 @@ export default function ProgramDetailPage() {
           <div className="w-16 h-16 bg-red-100 dark:bg-red-950 rounded-full flex items-center justify-center mb-4">
             <AlertCircle className="w-8 h-8 text-red-600 dark:text-red-400" />
           </div>
-          <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+          <h2 className="text-2xl font-semibold text-text-primary mb-2">
             {error === 'Access denied' ? 'Access Denied' : 'Program Not Found'}
           </h2>
-          <p className="text-text-secondary dark:text-slate-400 mb-6">
+          <p className="text-text-secondary mb-6">
             {error === 'Access denied'
               ? 'You do not have access to this program.'
               : 'The program you are looking for does not exist.'}
           </p>
           <Link
             href={METADATA_HREF}
-            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             Back to Metadata
           </Link>
@@ -164,10 +164,10 @@ export default function ProgramDetailPage() {
           <div className="flex items-center gap-3">
             <Telescope className="w-8 h-8 text-primary flex-shrink-0" />
             <div>
-              <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">
+              <h1 className="text-2xl font-bold text-text-primary">
                 {program.program_name || program.slug}
               </h1>
-              <p className="text-sm text-text-secondary dark:text-slate-400">
+              <p className="text-sm text-text-secondary">
                 {program.jwst_pids && program.jwst_pids.length > 0 && (
                   <>PID{program.jwst_pids.length > 1 ? 's' : ''} {program.jwst_pids.join(', ')}</>
                 )}
@@ -184,7 +184,7 @@ export default function ProgramDetailPage() {
                   href={`https://www.stsci.edu/jwst-program-info/program/?program=${pid}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-primary border border-border dark:border-slate-700 rounded-lg transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary hover:text-primary border border-border rounded-lg transition-colors"
                 >
                   <ExternalLink className="w-4 h-4" />
                   {program.jwst_pids.length > 1 ? `PID ${pid}` : 'STScI'}
@@ -195,7 +195,7 @@ export default function ProgramDetailPage() {
         </div>
 
         {program.description && (
-          <p className="text-text-secondary dark:text-slate-400 mb-6">
+          <p className="text-text-secondary mb-6">
             {program.description}
           </p>
         )}
@@ -220,14 +220,14 @@ export default function ProgramDetailPage() {
       {observations.length > 0 && (
         <div className="mb-8">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+            <h2 className="text-lg font-semibold text-text-primary">
               Observations
             </h2>
             {totalPointings > 0 && (
               <div className="flex gap-2 text-xs">
                 <button
                   onClick={downloadAllCsv}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-text-secondary dark:text-slate-400 hover:text-primary border border-border dark:border-slate-700 rounded transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-text-secondary hover:text-primary border border-border rounded transition-colors"
                   title={`Download all ${totalPointings} pointings as CSV`}
                 >
                   <Download className="w-3.5 h-3.5" />
@@ -235,7 +235,7 @@ export default function ProgramDetailPage() {
                 </button>
                 <button
                   onClick={downloadAllDs9}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-text-secondary dark:text-slate-400 hover:text-primary border border-border dark:border-slate-700 rounded transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-text-secondary hover:text-primary border border-border rounded transition-colors"
                   title={`Download all ${totalPointings} pointings as DS9 region file`}
                 >
                   <Download className="w-3.5 h-3.5" />
@@ -248,16 +248,16 @@ export default function ProgramDetailPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-border dark:border-slate-700 bg-gray-50 dark:bg-slate-800/50">
+                  <tr className="border-b border-border bg-gray-50 dark:bg-slate-800/50">
                     <th className="px-2 py-3 w-8"></th>
-                    <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Observation</th>
-                    <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Field</th>
-                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Pointings</th>
-                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Targets</th>
-                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Spectra</th>
-                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Total Size</th>
-                    <th className="text-left px-4 py-3 font-medium text-text-secondary dark:text-slate-400">Reduction</th>
-                    <th className="text-right px-4 py-3 font-medium text-text-secondary dark:text-slate-400"></th>
+                    <th className="text-left px-4 py-3 font-medium text-text-secondary">Observation</th>
+                    <th className="text-left px-4 py-3 font-medium text-text-secondary">Field</th>
+                    <th className="text-right px-4 py-3 font-medium text-text-secondary">Pointings</th>
+                    <th className="text-right px-4 py-3 font-medium text-text-secondary">Targets</th>
+                    <th className="text-right px-4 py-3 font-medium text-text-secondary">Spectra</th>
+                    <th className="text-right px-4 py-3 font-medium text-text-secondary">Total Size</th>
+                    <th className="text-left px-4 py-3 font-medium text-text-secondary">Reduction</th>
+                    <th className="text-right px-4 py-3 font-medium text-text-secondary"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -268,7 +268,7 @@ export default function ProgramDetailPage() {
                       <React.Fragment key={obs.observation}>
                         <tr
                           id={obs.observation}
-                          className="border-b border-border dark:border-slate-700 last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-800/30 transition-colors"
+                          className="border-b border-border last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-800/30 transition-colors"
                         >
                           <td className="px-2 py-3 text-center">
                             {hasPointings ? (
@@ -287,22 +287,22 @@ export default function ProgramDetailPage() {
                               <span className="text-text-secondary/40">—</span>
                             )}
                           </td>
-                          <td className="px-4 py-3 text-text-primary dark:text-slate-100 font-medium">
+                          <td className="px-4 py-3 text-text-primary font-medium">
                             {obs.observation}
                           </td>
-                          <td className="px-4 py-3 text-text-secondary dark:text-slate-400">
+                          <td className="px-4 py-3 text-text-secondary">
                             {obs.field}
                           </td>
-                          <td className="px-4 py-3 text-right text-text-primary dark:text-slate-100">
+                          <td className="px-4 py-3 text-right text-text-primary">
                             {hasPointings ? obs.pointings!.length : '—'}
                           </td>
-                          <td className="px-4 py-3 text-right text-text-primary dark:text-slate-100">
+                          <td className="px-4 py-3 text-right text-text-primary">
                             {obs.target_count.toLocaleString()}
                           </td>
-                          <td className="px-4 py-3 text-right text-text-primary dark:text-slate-100">
+                          <td className="px-4 py-3 text-right text-text-primary">
                             {obs.spectrum_count.toLocaleString()}
                           </td>
-                          <td className="px-4 py-3 text-right text-text-secondary dark:text-slate-400">
+                          <td className="px-4 py-3 text-right text-text-secondary">
                             {formatBytes(obs.total_size_bytes)}
                           </td>
                           <td className="px-4 py-3">
@@ -319,7 +319,7 @@ export default function ProgramDetailPage() {
                           </td>
                         </tr>
                         {isExpanded && hasPointings && (
-                          <tr className="border-b border-border dark:border-slate-700 bg-gray-50/50 dark:bg-slate-800/20">
+                          <tr className="border-b border-border bg-gray-50/50 dark:bg-slate-800/20">
                             <td colSpan={9} className="px-4 py-3">
                               <PointingsSubtable
                                 obsName={obs.observation}
@@ -365,13 +365,13 @@ function PointingsSubtable({ pointings, onDownloadCsv, onDownloadDs9 }: Pointing
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wide">
+        <span className="text-xs font-medium text-text-secondary uppercase tracking-wide">
           Pointings ({pointings.length})
         </span>
         <div className="flex gap-2">
           <button
             onClick={onDownloadCsv}
-            className="inline-flex items-center gap-1 px-2 py-1 text-xs text-text-secondary dark:text-slate-400 hover:text-primary border border-border dark:border-slate-700 rounded transition-colors"
+            className="inline-flex items-center gap-1 px-2 py-1 text-xs text-text-secondary hover:text-primary border border-border rounded transition-colors"
             title="Download these pointings as CSV"
           >
             <Download className="w-3 h-3" />
@@ -379,7 +379,7 @@ function PointingsSubtable({ pointings, onDownloadCsv, onDownloadDs9 }: Pointing
           </button>
           <button
             onClick={onDownloadDs9}
-            className="inline-flex items-center gap-1 px-2 py-1 text-xs text-text-secondary dark:text-slate-400 hover:text-primary border border-border dark:border-slate-700 rounded transition-colors"
+            className="inline-flex items-center gap-1 px-2 py-1 text-xs text-text-secondary hover:text-primary border border-border rounded transition-colors"
             title="Download these pointings as DS9 region file"
           >
             <Download className="w-3 h-3" />
@@ -390,7 +390,7 @@ function PointingsSubtable({ pointings, onDownloadCsv, onDownloadDs9 }: Pointing
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="border-b border-border/60 dark:border-slate-700/60 text-text-secondary dark:text-slate-400">
+            <tr className="border-b border-border/60 dark:border-slate-700/60 text-text-secondary">
               <th className="text-left px-2 py-2 font-medium">MSA Design</th>
               <th className="text-right px-2 py-2 font-medium">RA</th>
               <th className="text-right px-2 py-2 font-medium">Dec</th>
@@ -404,28 +404,28 @@ function PointingsSubtable({ pointings, onDownloadCsv, onDownloadDs9 }: Pointing
           <tbody>
             {pointings.map((p) => (
               <tr key={p.msametid} className="border-b border-border/30 dark:border-slate-700/30 last:border-b-0">
-                <td className="px-2 py-1.5 text-text-primary dark:text-slate-100 font-mono">
+                <td className="px-2 py-1.5 text-text-primary font-mono">
                   {p.msametid}
                 </td>
-                <td className="px-2 py-1.5 text-right text-text-primary dark:text-slate-100 font-mono">
+                <td className="px-2 py-1.5 text-right text-text-primary font-mono">
                   {p.ra_center.toFixed(5)}
                 </td>
-                <td className="px-2 py-1.5 text-right text-text-primary dark:text-slate-100 font-mono">
+                <td className="px-2 py-1.5 text-right text-text-primary font-mono">
                   {p.dec_center.toFixed(5)}
                 </td>
-                <td className="px-2 py-1.5 text-right text-text-primary dark:text-slate-100 font-mono">
+                <td className="px-2 py-1.5 text-right text-text-primary font-mono">
                   {p.pa_aper.toFixed(2)}
                 </td>
-                <td className="px-2 py-1.5 text-text-secondary dark:text-slate-400">
+                <td className="px-2 py-1.5 text-text-secondary">
                   {p.gratings.join(', ')}
                 </td>
-                <td className="px-2 py-1.5 text-right text-text-primary dark:text-slate-100">
+                <td className="px-2 py-1.5 text-right text-text-primary">
                   {p.n_dithers}
                 </td>
-                <td className="px-2 py-1.5 text-right text-text-secondary dark:text-slate-400">
+                <td className="px-2 py-1.5 text-right text-text-secondary">
                   {p.exptime_total.toFixed(0)}s
                 </td>
-                <td className="px-2 py-1.5 text-text-secondary dark:text-slate-400">
+                <td className="px-2 py-1.5 text-text-secondary">
                   {p.date_obs_start}
                 </td>
               </tr>

@@ -80,7 +80,7 @@ export const TileThumbnailWithToggle: React.FC<TileThumbnailWithToggleProps> = (
       <div className="flex items-center gap-3">
         <button
           onClick={() => setShowShutters((prev) => !prev)}
-          className="flex items-center gap-1.5 text-xs text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+          className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
         >
           {showShutters ? (
             <EyeOff className="w-3.5 h-3.5" />
@@ -93,7 +93,7 @@ export const TileThumbnailWithToggle: React.FC<TileThumbnailWithToggleProps> = (
           onClick={handleDownloadRegion}
           disabled={downloading}
           title="Download DS9 region file (.reg)"
-          className="flex items-center gap-1.5 text-xs text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
         >
           <Download className="w-3.5 h-3.5" />
           {downloading ? 'Preparing...' : '.reg'}

@@ -153,11 +153,11 @@ function InlineMultiFilter({
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <label className="text-sm font-medium text-text-primary dark:text-slate-200">
+        <label className="text-sm font-medium text-text-primary">
           {label}
         </label>
         {/* Always show mode selector to prevent layout shift */}
-        <div className={`flex gap-0.5 bg-slate-100 dark:bg-slate-800 rounded-md p-0.5 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+        <div className={`flex gap-0.5 bg-surface-2 dark:bg-card rounded-md p-0.5 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
           {(['any', 'all', 'none'] as FilterMode[]).map((m) => (
             <button
               key={m}
@@ -167,11 +167,11 @@ function InlineMultiFilter({
                 px-2.5 py-1 text-xs font-medium rounded transition-all duration-200
                 ${mode === m
                   ? m === 'any'
-                    ? 'bg-primary text-white shadow-sm'
+                    ? 'bg-primary text-on-primary shadow-sm'
                     : m === 'all'
-                      ? 'bg-green-500 text-white shadow-sm'
-                      : 'bg-red-500 text-white shadow-sm'
-                  : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                      ? 'bg-green-500 text-on-primary shadow-sm'
+                      : 'bg-red-500 text-on-primary shadow-sm'
+                  : 'text-text-secondary hover:text-text-primary'
                 }
               `}
             >
@@ -191,8 +191,8 @@ function InlineMultiFilter({
                 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm
                 border transition-all duration-200
                 ${isSelected
-                  ? 'border-transparent text-gray-900 dark:text-slate-100 shadow-sm'
-                  : 'border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
+                  ? 'border-transparent text-text-primary shadow-sm'
+                  : 'border-border text-text-secondary hover:bg-card dark:hover:bg-card-hover hover:border-border-strong'
                 }
               `}
               style={
@@ -210,7 +210,7 @@ function InlineMultiFilter({
         })}
       </div>
       {/* Always reserve space for description to prevent layout shift */}
-      <p className={`mt-2 text-xs text-text-secondary dark:text-slate-500 h-4 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-0'}`}>
+      <p className={`mt-2 text-xs text-text-secondary dark:text-text-tertiary h-4 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-0'}`}>
         {mode === 'any' && 'Show objects with any of the selected'}
         {mode === 'all' && 'Show objects with all of the selected'}
         {mode === 'none' && 'Exclude objects with any of the selected'}
@@ -262,20 +262,20 @@ function InlineRange({ label, description, min, max, onChange, minBound, maxBoun
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <label className="text-sm font-medium text-text-primary dark:text-slate-200">
+        <label className="text-sm font-medium text-text-primary">
           {label}
         </label>
         {isActive && (
           <button
             onClick={() => onChange(null, null)}
-            className="text-xs text-text-secondary dark:text-slate-400 hover:text-primary transition-colors"
+            className="text-xs text-text-secondary hover:text-primary transition-colors"
           >
             Clear
           </button>
         )}
       </div>
       {description && (
-        <p className="text-xs text-text-secondary dark:text-slate-500 mb-2">{description}</p>
+        <p className="text-xs text-text-secondary dark:text-text-tertiary mb-2">{description}</p>
       )}
       <div className="flex items-center gap-3">
         <div className="flex-1">
@@ -288,14 +288,14 @@ function InlineRange({ label, description, min, max, onChange, minBound, maxBoun
             placeholder={`Min (${minBound})`}
             step={step}
             className={`
-              w-full px-3 py-2 text-sm border rounded-lg bg-background dark:bg-slate-900
-              text-text-primary dark:text-slate-200 transition-all duration-200
+              w-full px-3 py-2 text-sm border rounded-lg bg-background
+              text-text-primary transition-all duration-200
               focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary
-              ${isActive ? 'border-primary/50' : 'border-border dark:border-slate-700'}
+              ${isActive ? 'border-primary/50' : 'border-border'}
             `}
           />
         </div>
-        <span className="text-sm text-text-secondary dark:text-slate-400">to</span>
+        <span className="text-sm text-text-secondary">to</span>
         <div className="flex-1">
           <input
             type="number"
@@ -306,10 +306,10 @@ function InlineRange({ label, description, min, max, onChange, minBound, maxBoun
             placeholder={`Max (${maxBound})`}
             step={step}
             className={`
-              w-full px-3 py-2 text-sm border rounded-lg bg-background dark:bg-slate-900
-              text-text-primary dark:text-slate-200 transition-all duration-200
+              w-full px-3 py-2 text-sm border rounded-lg bg-background
+              text-text-primary transition-all duration-200
               focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary
-              ${isActive ? 'border-primary/50' : 'border-border dark:border-slate-700'}
+              ${isActive ? 'border-primary/50' : 'border-border'}
             `}
           />
         </div>
@@ -365,13 +365,13 @@ function SimpleFilter({ label, options, selected, onChange }: SimpleFilterProps)
           border transition-all duration-200
           ${isActive
             ? 'bg-primary/10 border-primary text-primary'
-            : 'bg-card dark:bg-slate-800 border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200'
+            : 'bg-card border-border text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary'
           }
         `}
       >
         <span>{label}</span>
         {isActive && (
-          <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-primary text-white">
+          <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-primary text-on-primary">
             {selected.length}
           </span>
         )}
@@ -383,7 +383,7 @@ function SimpleFilter({ label, options, selected, onChange }: SimpleFilterProps)
       </button>
 
       {isOpen && (
-        <div className="absolute z-50 mt-1 min-w-[200px] max-w-[280px] max-h-[400px] overflow-y-auto bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg animate-in fade-in slide-in-from-top-2 duration-200">
+        <div className="absolute z-50 mt-1 min-w-[200px] max-w-[280px] max-h-[400px] overflow-y-auto bg-background dark:bg-card border border-border rounded-lg shadow-lg animate-in fade-in slide-in-from-top-2 duration-200">
           <div className="p-1">
             {options.map((option) => {
               const isSelected = selected.includes(option.value);
@@ -391,16 +391,16 @@ function SimpleFilter({ label, options, selected, onChange }: SimpleFilterProps)
                 <button
                   key={option.value}
                   onClick={() => toggle(option.value)}
-                  className="w-full flex items-center gap-3 px-3 py-2 text-sm text-left hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors"
+                  className="w-full flex items-center gap-3 px-3 py-2 text-sm text-left hover:bg-card-hover rounded-md transition-colors"
                 >
                   <div className={`
                     w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all duration-200
-                    ${isSelected ? 'bg-primary border-primary scale-110' : 'border-border dark:border-slate-600'}
+                    ${isSelected ? 'bg-primary border-primary scale-110' : 'border-border dark:border-border-strong'}
                   `}>
-                    {isSelected && <Check className="w-3 h-3 text-white" />}
+                    {isSelected && <Check className="w-3 h-3 text-on-primary" />}
                   </div>
                   {option.icon && <span className="text-sm">{option.icon}</span>}
-                  <span className={isSelected ? 'text-text-primary dark:text-slate-100' : 'text-text-secondary dark:text-slate-400'}>
+                  <span className={isSelected ? 'text-text-primary' : 'text-text-secondary'}>
                     {option.label}
                   </span>
                 </button>
@@ -408,10 +408,10 @@ function SimpleFilter({ label, options, selected, onChange }: SimpleFilterProps)
             })}
           </div>
           {selected.length > 0 && (
-            <div className="border-t border-border dark:border-slate-700 p-2">
+            <div className="border-t border-border p-2">
               <button
                 onClick={() => { onChange([]); setIsOpen(false); }}
-                className="w-full px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card dark:hover:bg-slate-700 rounded-md text-left transition-colors"
+                className="w-full px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-card dark:hover:bg-card-hover rounded-md text-left transition-colors"
               >
                 Clear all
               </button>
@@ -465,20 +465,20 @@ function ColumnVisibility({ columns, visibility, onChange }: ColumnVisibilityPro
     <div ref={ref} className="relative inline-block flex-shrink-0">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium border transition-all duration-200 bg-card dark:bg-slate-800 border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200"
+        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium border transition-all duration-200 bg-card border-border text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary"
       >
         <Columns3 className="w-4 h-4" />
-        <span className="px-1.5 py-0.5 text-xs bg-slate-100 dark:bg-slate-700 rounded">
+        <span className="px-1.5 py-0.5 text-xs bg-surface-2 rounded">
           {visibleCount}
         </span>
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 z-50 mt-1 w-64 max-h-[400px] overflow-y-auto bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg animate-in fade-in slide-in-from-top-2 duration-200">
-          <div className="sticky top-0 bg-background dark:bg-slate-800 border-b border-border dark:border-slate-700 p-2">
+        <div className="absolute right-0 z-50 mt-1 w-64 max-h-[400px] overflow-y-auto bg-background dark:bg-card border border-border rounded-lg shadow-lg animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="sticky top-0 bg-background dark:bg-card border-b border-border p-2">
             <button
               onClick={resetToDefaults}
-              className="flex items-center gap-1.5 px-2 py-1 text-xs text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card dark:hover:bg-slate-700 rounded transition-colors"
+              className="flex items-center gap-1.5 px-2 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-card dark:hover:bg-card-hover rounded transition-colors"
             >
               <RotateCcw className="w-3 h-3" />
               Reset to defaults
@@ -496,22 +496,22 @@ function ColumnVisibility({ columns, visibility, onChange }: ColumnVisibilityPro
                   className={`
                     w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-left transition-all duration-200
                     ${isLocked
-                      ? 'opacity-60 cursor-not-allowed bg-slate-50 dark:bg-slate-800'
+                      ? 'opacity-60 cursor-not-allowed bg-card'
                       : isVisible
-                        ? 'bg-primary/10 dark:bg-primary/20 text-text-primary dark:text-slate-100'
-                        : 'text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700'
+                        ? 'bg-primary/10 dark:bg-primary/20 text-text-primary'
+                        : 'text-text-secondary hover:bg-card-hover'
                     }
                   `}
                 >
                   <div className={`
                     w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all duration-200
-                    ${isVisible ? 'bg-primary border-primary' : 'border-border dark:border-slate-600'}
+                    ${isVisible ? 'bg-primary border-primary' : 'border-border dark:border-border-strong'}
                   `}>
-                    {isVisible && <Check className="w-3 h-3 text-white" />}
+                    {isVisible && <Check className="w-3 h-3 text-on-primary" />}
                   </div>
                   <span className="flex-1">{col.label}</span>
                   {isLocked && (
-                    <span className="text-xs text-text-secondary dark:text-slate-500">required</span>
+                    <span className="text-xs text-text-secondary dark:text-text-tertiary">required</span>
                   )}
                 </button>
               );
@@ -617,10 +617,10 @@ export default function OverflowPanelPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-text-primary dark:text-slate-100">
+          <h1 className="text-xl font-bold text-text-primary">
             D: Slide-Out Panel (Enhanced)
           </h1>
-          <p className="text-sm text-text-secondary dark:text-slate-400">
+          <p className="text-sm text-text-secondary">
             Primary filters in bar. Advanced filters + spectra-specific values in panel.
           </p>
         </div>
@@ -632,7 +632,7 @@ export default function OverflowPanelPage() {
       </div>
 
       {/* Main Filter Bar */}
-      <div className="flex items-center gap-2 p-3 bg-card dark:bg-slate-800 rounded-lg border border-border dark:border-slate-700">
+      <div className="flex items-center gap-2 p-3 bg-card rounded-lg border border-border">
         {/* Primary filters */}
         <SimpleFilter
           label="Program"
@@ -670,7 +670,7 @@ export default function OverflowPanelPage() {
         />
 
         {/* Divider */}
-        <div className="h-7 w-px bg-border dark:bg-slate-700 mx-1 flex-shrink-0" />
+        <div className="h-7 w-px bg-border mx-1 flex-shrink-0" />
 
         {/* Advanced Filters button - fixed height to prevent layout shift */}
         <button
@@ -680,14 +680,14 @@ export default function OverflowPanelPage() {
             border transition-all duration-200
             ${panelFilterCount > 0
               ? 'bg-primary/10 border-primary text-primary'
-              : 'bg-card dark:bg-slate-800 border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:border-text-secondary dark:hover:border-slate-600 hover:text-text-primary dark:hover:text-slate-200'
+              : 'bg-card border-border text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary'
             }
           `}
         >
           <SlidersHorizontal className="w-4 h-4" />
           <span>Advanced</span>
           {panelFilterCount > 0 && (
-            <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-primary text-white">
+            <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-primary text-on-primary">
               {panelFilterCount}
             </span>
           )}
@@ -719,7 +719,7 @@ export default function OverflowPanelPage() {
         {hasAnyActiveFilters && (
           <button
             onClick={() => setFilters(DEFAULT_FILTERS)}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors flex-shrink-0"
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors flex-shrink-0"
           >
             <X className="w-3.5 h-3.5" />
             Clear all
@@ -728,18 +728,18 @@ export default function OverflowPanelPage() {
       </div>
 
       {/* Results count */}
-      <div className="text-sm text-text-secondary dark:text-slate-400">
-        <strong className="text-text-primary dark:text-slate-100">{filteredData.length}</strong> of {MOCK_SPECTRA.length} objects
+      <div className="text-sm text-text-secondary">
+        <strong className="text-text-primary">{filteredData.length}</strong> of {MOCK_SPECTRA.length} objects
       </div>
 
       {/* Table */}
-      <div className="border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+      <div className="border border-border rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-slate-50 dark:bg-slate-800 border-b border-border dark:border-slate-700">
+              <tr className="bg-card border-b border-border">
                 {visibleColumns.map(col => (
-                  <th key={col.id} className="px-4 py-3 text-left font-medium text-text-secondary dark:text-slate-400 whitespace-nowrap">
+                  <th key={col.id} className="px-4 py-3 text-left font-medium text-text-secondary whitespace-nowrap">
                     {col.label}
                   </th>
                 ))}
@@ -748,7 +748,7 @@ export default function OverflowPanelPage() {
             <tbody>
               {paginatedData.length === 0 ? (
                 <tr>
-                  <td colSpan={visibleColumns.length} className="px-4 py-8 text-center text-text-secondary dark:text-slate-400">
+                  <td colSpan={visibleColumns.length} className="px-4 py-8 text-center text-text-secondary">
                     No objects match filters
                   </td>
                 </tr>
@@ -759,8 +759,8 @@ export default function OverflowPanelPage() {
                     <tr
                       key={row.id}
                       className={`
-                        border-b border-border dark:border-slate-700 last:border-0
-                        ${idx % 2 === 0 ? 'bg-background dark:bg-slate-900' : 'bg-slate-50/50 dark:bg-slate-800/50'}
+                        border-b border-border last:border-0
+                        ${idx % 2 === 0 ? 'bg-background' : 'bg-slate-50/50 dark:bg-slate-800/50'}
                         hover:bg-slate-100/50 dark:hover:bg-slate-700/30 transition-colors
                       `}
                     >
@@ -770,38 +770,38 @@ export default function OverflowPanelPage() {
                             <span className="font-mono text-sm text-primary">{row.target_id}</span>
                           )}
                           {col.id === 'field' && (
-                            <span className="text-text-primary dark:text-slate-200">{row.field}</span>
+                            <span className="text-text-primary">{row.field}</span>
                           )}
                           {col.id === 'observation' && (
-                            <span className="text-text-secondary dark:text-slate-400">{row.observation || '-'}</span>
+                            <span className="text-text-secondary">{row.observation || '-'}</span>
                           )}
                           {col.id === 'gratings' && (
                             <div className="flex gap-1">
                               {row.spectra.map((s: { grating: string }) => (
-                                <span key={s.grating} className="px-1.5 py-0.5 text-xs rounded bg-slate-100 dark:bg-slate-700 text-text-secondary dark:text-slate-300">
+                                <span key={s.grating} className="px-1.5 py-0.5 text-xs rounded bg-surface-2 text-text-secondary">
                                   {s.grating}
                                 </span>
                               ))}
                             </div>
                           )}
                           {col.id === 'redshift' && (
-                            <span className="text-text-primary dark:text-slate-200">
-                              {row.redshift?.toFixed(4) ?? <span className="text-text-secondary dark:text-slate-500">-</span>}
+                            <span className="text-text-primary">
+                              {row.redshift?.toFixed(4) ?? <span className="text-text-secondary dark:text-text-tertiary">-</span>}
                             </span>
                           )}
                           {col.id === 'quality' && (
                             <span className="inline-flex items-center gap-1">
                               <span>{quality.icon}</span>
-                              <span className="text-xs text-text-secondary dark:text-slate-400">{quality.short}</span>
+                              <span className="text-xs text-text-secondary">{quality.short}</span>
                             </span>
                           )}
                           {col.id === 'max_snr' && (
-                            <span className="text-text-primary dark:text-slate-200">
+                            <span className="text-text-primary">
                               {row.max_snr?.toFixed(1) ?? '-'}
                             </span>
                           )}
                           {col.id === 'exptime' && (
-                            <span className="text-text-secondary dark:text-slate-400">
+                            <span className="text-text-secondary">
                               {(row as typeof row & { total_exptime?: number }).total_exptime?.toFixed(0) ?? '-'}
                             </span>
                           )}
@@ -819,21 +819,21 @@ export default function OverflowPanelPage() {
       {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between text-sm">
-          <span className="text-text-secondary dark:text-slate-400">
+          <span className="text-text-secondary">
             Page {page + 1} of {totalPages}
           </span>
           <div className="flex gap-2">
             <button
               onClick={() => setPage(p => Math.max(0, p - 1))}
               disabled={page === 0}
-              className="px-3 py-1.5 rounded border border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1.5 rounded border border-border text-text-secondary hover:bg-card dark:hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Previous
             </button>
             <button
               onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
               disabled={page === totalPages - 1}
-              className="px-3 py-1.5 rounded border border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1.5 rounded border border-border text-text-secondary hover:bg-card dark:hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Next
             </button>
@@ -864,25 +864,25 @@ export default function OverflowPanelPage() {
         <div
           className={`
             absolute right-0 top-0 bottom-0 w-[420px] max-w-[90vw]
-            bg-background dark:bg-slate-900 border-l border-border dark:border-slate-700
+            bg-background border-l border-border
             shadow-2xl flex flex-col
             transition-transform duration-300 ease-out
             ${panelOpen ? 'translate-x-0 pointer-events-auto' : 'translate-x-full'}
           `}
         >
           {/* Panel Header */}
-          <div className="flex items-center justify-between p-4 border-b border-border dark:border-slate-700 bg-card dark:bg-slate-800">
+          <div className="flex items-center justify-between p-4 border-b border-border bg-card">
             <div>
-              <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+              <h2 className="text-lg font-semibold text-text-primary">
                 Advanced Filters
               </h2>
-              <p className="text-xs text-text-secondary dark:text-slate-400 mt-0.5">
+              <p className="text-xs text-text-secondary mt-0.5">
                 Multi-value filters and spectra properties
               </p>
             </div>
             <button
               onClick={() => setPanelOpen(false)}
-              className="p-2 rounded-lg text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+              className="p-2 rounded-lg text-text-secondary hover:bg-card-hover hover:text-text-primary transition-colors"
             >
               <X className="w-5 h-5" />
             </button>
@@ -891,7 +891,7 @@ export default function OverflowPanelPage() {
           {/* Panel Content */}
           <div className="flex-1 overflow-y-auto">
             {/* Gratings Section */}
-            <div className="p-4 border-b border-border dark:border-slate-700">
+            <div className="p-4 border-b border-border">
               <InlineMultiFilter
                 label="Gratings"
                 options={gratingOptions}
@@ -903,7 +903,7 @@ export default function OverflowPanelPage() {
             </div>
 
             {/* Spectra-Specific Section */}
-            <div className="p-4 border-b border-border dark:border-slate-700">
+            <div className="p-4 border-b border-border">
               <div className="flex items-start gap-2 mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
                 <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
                 <div className="text-xs text-amber-700 dark:text-amber-300">
@@ -938,7 +938,7 @@ export default function OverflowPanelPage() {
                     step={100}
                     precision={0}
                   />
-                  <p className="mt-1 text-xs text-text-secondary dark:text-slate-500 italic">
+                  <p className="mt-1 text-xs text-text-secondary dark:text-text-tertiary italic">
                     Coming soon - requires database migration
                   </p>
                 </div>
@@ -947,7 +947,7 @@ export default function OverflowPanelPage() {
 
             {/* Data Quality Section */}
             <div className="p-4">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-slate-500 mb-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-text-tertiary mb-4">
                 Data Quality
               </h3>
               <InlineMultiFilter
@@ -962,7 +962,7 @@ export default function OverflowPanelPage() {
           </div>
 
           {/* Panel Footer */}
-          <div className="p-4 border-t border-border dark:border-slate-700 bg-card dark:bg-slate-800">
+          <div className="p-4 border-t border-border bg-card">
             <div className="flex gap-3">
               <button
                 onClick={() => {
@@ -977,13 +977,13 @@ export default function OverflowPanelPage() {
                   });
                 }}
                 disabled={panelFilterCount === 0}
-                className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg border border-border dark:border-slate-700 text-text-secondary dark:text-slate-400 hover:bg-card-hover dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
+                className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg border border-border text-text-secondary hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
               >
                 Clear Filters{panelFilterCount > 0 ? ` (${panelFilterCount})` : ''}
               </button>
               <button
                 onClick={() => setPanelOpen(false)}
-                className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary-hover shadow-sm hover:shadow transition-all duration-200"
+                className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-hover shadow-sm hover:shadow transition-all duration-200"
               >
                 Done
               </button>

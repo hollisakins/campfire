@@ -27,7 +27,7 @@ export const CopyLinkButton: React.FC<CopyLinkButtonProps> = ({ targetId, url: u
   return (
     <button
       onClick={copyToClipboard}
-      className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-text-primary dark:text-slate-100 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+      className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-text-primary bg-card border border-border rounded-lg hover:bg-card dark:hover:bg-card-hover transition-colors"
       title="Copy link to this object"
     >
       {copied ? (

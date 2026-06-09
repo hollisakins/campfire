@@ -103,7 +103,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
   return (
     <div
       id={cardId}
-      className="border border-border dark:border-slate-700 rounded-lg overflow-hidden bg-card dark:bg-slate-800"
+      className="border border-border rounded-lg overflow-hidden bg-card"
     >
       {/* Header row — always visible. Compact summary. */}
       <button
@@ -111,11 +111,11 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
         className="w-full flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-left hover:bg-card-hover dark:hover:bg-slate-700/50 transition-colors"
         aria-expanded={expanded}
       >
-        <span className="flex items-center gap-2 text-text-primary dark:text-slate-100">
+        <span className="flex items-center gap-2 text-text-primary">
           {expanded ? (
-            <ChevronDown className="w-4 h-4 text-text-secondary dark:text-slate-400" />
+            <ChevronDown className="w-4 h-4 text-text-secondary" />
           ) : (
-            <ChevronRight className="w-4 h-4 text-text-secondary dark:text-slate-400" />
+            <ChevronRight className="w-4 h-4 text-text-secondary" />
           )}
           <span
             className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
@@ -126,26 +126,26 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
           </span>
         </span>
 
-        <span className="text-sm font-mono text-text-primary dark:text-slate-200">
+        <span className="text-sm font-mono text-text-primary">
           {targetId}
         </span>
 
-        <div className="flex items-center gap-3 text-sm text-text-secondary dark:text-slate-400 ml-auto">
+        <div className="flex items-center gap-3 text-sm text-text-secondary ml-auto">
           <span>
             <span className="opacity-70">z=</span>
-            <span className="font-mono text-text-primary dark:text-slate-200">
+            <span className="font-mono text-text-primary">
               {spectrum.redshift_auto != null ? spectrum.redshift_auto.toFixed(4) : '—'}
             </span>
           </span>
           <span>
             <span className="opacity-70">S/N=</span>
-            <span className="font-mono text-text-primary dark:text-slate-200">
+            <span className="font-mono text-text-primary">
               {spectrum.signal_to_noise != null ? spectrum.signal_to_noise.toFixed(1) : '—'}
             </span>
           </span>
           <span>
             <span className="opacity-70">t=</span>
-            <span className="font-mono text-text-primary dark:text-slate-200">
+            <span className="font-mono text-text-primary">
               {formatExposureTime(spectrum.exposure_time)}
             </span>
           </span>
@@ -154,9 +154,9 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
 
       {/* Expandable body — single border-t separator, no nested card. */}
       {expanded && (
-        <div className="border-t border-border dark:border-slate-700">
+        <div className="border-t border-border">
           {/* Metadata + actions row (sits above the controls bar). */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 bg-card dark:bg-slate-800 text-xs text-text-secondary dark:text-slate-400">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 bg-card text-xs text-text-secondary">
             <div className="flex items-center gap-2">
               <FilterChip
                 label="DQ"
@@ -167,13 +167,13 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
                 dropdownPlacement="bottom"
               />
               {dqSaving && (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-text-secondary dark:text-slate-400" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-text-secondary" />
               )}
             </div>
 
             <span className="flex items-center gap-1.5">
               <span className="opacity-70 uppercase tracking-wide">Version:</span>
-              <span className="font-mono text-text-primary dark:text-slate-200">
+              <span className="font-mono text-text-primary">
                 {spectrum.reduction_version || '—'}
               </span>
             </span>
@@ -183,7 +183,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
               title={spectrum.fits_path}
             >
               <span className="opacity-70 uppercase tracking-wide">FITS:</span>
-              <span className="font-mono text-text-primary dark:text-slate-200 truncate">
+              <span className="font-mono text-text-primary truncate">
                 {spectrum.spectrum_id}
               </span>
             </span>
@@ -191,7 +191,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
             <button
               onClick={handleDownload}
               disabled={downloading}
-              className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium border border-border dark:border-slate-600 rounded hover:bg-card-hover dark:hover:bg-slate-700 text-text-primary dark:text-slate-200 disabled:opacity-50"
+              className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium border border-border dark:border-border-strong rounded hover:bg-card-hover text-text-primary disabled:opacity-50"
             >
               {downloading ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />

@@ -84,18 +84,18 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
         />
 
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
-            <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
+          <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
+            <LogIn className="w-8 h-8 text-text-secondary" />
           </div>
-          <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+          <h2 className="text-2xl font-semibold text-text-primary mb-2">
             Sign in to view this object
           </h2>
-          <p className="text-text-secondary dark:text-slate-400 mb-6 max-w-md">
+          <p className="text-text-secondary mb-6 max-w-md">
             Access to object details requires authentication.
           </p>
           <Link
             href="/login"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In

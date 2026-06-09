@@ -87,7 +87,7 @@ export const SpectraDetailSection: React.FC<SpectraDetailSectionProps> = ({
 
   if (cards.length === 0) {
     return (
-      <div className="text-center py-8 text-sm text-text-secondary dark:text-slate-400 border border-dashed border-border dark:border-slate-700 rounded-lg">
+      <div className="text-center py-8 text-sm text-text-secondary border border-dashed border-border rounded-lg">
         No member spectra are visible. Toggle visibility in the sidebar.
       </div>
     );
@@ -98,12 +98,12 @@ export const SpectraDetailSection: React.FC<SpectraDetailSectionProps> = ({
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+        <h2 className="text-lg font-semibold text-text-primary">
           Spectra
         </h2>
         <button
           onClick={allExpanded ? onCollapseAll : onExpandAll}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 border border-border dark:border-slate-700 rounded-md hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-text-secondary hover:text-text-primary border border-border rounded-md hover:bg-card-hover transition-colors"
           title="Use J / K to step through cards"
         >
           {allExpanded ? (

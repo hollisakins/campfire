@@ -176,7 +176,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
       <button
         onClick={() => setIsOpen(!isOpen)}
         disabled={loading}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-card-hover rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <Download className="w-4 h-4" />
         <span>Download</span>
@@ -185,13 +185,13 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
 
       {/* Dropdown Panel */}
       {isOpen && (
-        <div className="absolute right-0 z-50 mt-1 w-[320px] bg-background dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg shadow-lg">
+        <div className="absolute right-0 z-50 mt-1 w-[320px] bg-background dark:bg-card border border-border rounded-lg shadow-lg">
           {/* Header */}
-          <div className="px-4 py-3 border-b border-border dark:border-slate-700">
-            <div className="text-sm font-medium text-text-primary dark:text-slate-100">
+          <div className="px-4 py-3 border-b border-border">
+            <div className="text-sm font-medium text-text-primary">
               Download Results
             </div>
-            <div className="text-xs text-text-secondary dark:text-slate-400 mt-0.5">
+            <div className="text-xs text-text-secondary mt-0.5">
               {loading ? 'Loading...' : `${totalCount.toLocaleString()} ${viewMode === 'spectra' ? 'spectra' : (totalCount === 1 ? 'object' : 'objects')}`}
             </div>
           </div>
@@ -202,7 +202,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
             <button
               onClick={handleCsvDownload}
               disabled={csvLoading || loading}
-              className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-left hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-left hover:bg-card-hover rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               title={
                 loading
                   ? 'Please wait while objects are loading'
@@ -214,13 +214,13 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
               {csvLoading ? (
                 <Loader2 className="w-4 h-4 animate-spin text-primary" />
               ) : (
-                <FileText className="w-4 h-4 text-text-secondary dark:text-slate-400" />
+                <FileText className="w-4 h-4 text-text-secondary" />
               )}
               <div className="flex-1">
-                <div className="font-medium text-text-primary dark:text-slate-100">
+                <div className="font-medium text-text-primary">
                   {csvLoading ? 'Generating...' : 'CSV Table'}
                 </div>
-                <div className="text-xs text-text-secondary dark:text-slate-400">
+                <div className="text-xs text-text-secondary">
                   Object metadata and properties
                 </div>
               </div>
@@ -230,7 +230,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
             <button
               onClick={handleFitsDownload}
               disabled={fitsLoading || fitsDisabled}
-              className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-left hover:bg-card-hover dark:hover:bg-slate-700 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-left hover:bg-card-hover rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               title={
                 loading
                   ? 'Please wait while objects are loading'
@@ -242,15 +242,15 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
               {fitsLoading ? (
                 <Loader2 className="w-4 h-4 animate-spin text-primary" />
               ) : (
-                <Package className="w-4 h-4 text-text-secondary dark:text-slate-400" />
+                <Package className="w-4 h-4 text-text-secondary" />
               )}
               <div className="flex-1">
-                <div className="font-medium text-text-primary dark:text-slate-100">
+                <div className="font-medium text-text-primary">
                   {fitsProgress
                     ? `Downloading ${fitsProgress.done}/${fitsProgress.total}...`
                     : fitsLoading ? 'Preparing...' : 'FITS ZIP'}
                 </div>
-                <div className="text-xs text-text-secondary dark:text-slate-400">
+                <div className="text-xs text-text-secondary">
                   Spectroscopic data files
                 </div>
               </div>

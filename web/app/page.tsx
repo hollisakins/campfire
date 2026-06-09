@@ -20,13 +20,13 @@ export default function Home() {
           <div className="flex items-center justify-center mb-4">
             <Flame className="w-16 h-16 text-primary" />
           </div>
-          <h1 className="text-5xl font-bold text-text-primary dark:text-slate-100 mb-4">
+          <h1 className="text-5xl font-bold text-text-primary mb-4">
             CAMPFIRE
           </h1>
-          <p className="text-xl text-text-secondary dark:text-slate-400 mb-2">
+          <p className="text-xl text-text-secondary mb-2">
             COSMOS Archive of MultiPle-Field Internal Reductions & Extractions
           </p>
-          <p className="text-lg text-text-secondary dark:text-slate-400">
+          <p className="text-lg text-text-secondary">
             Internal archive for JWST NIRCam imaging and NIRSpec spectroscopy data
           </p>
         </div>
@@ -44,9 +44,9 @@ export default function Home() {
               <Card className="p-8">
                 <div className="flex items-center mb-4">
                   <Camera className="w-8 h-8 text-primary mr-3" />
-                  <h2 className="text-2xl font-bold text-text-primary dark:text-slate-100">NIRCam</h2>
+                  <h2 className="text-2xl font-bold text-text-primary">NIRCam</h2>
                 </div>
-                <p className="text-text-secondary dark:text-slate-400 mb-6">
+                <p className="text-text-secondary mb-6">
                   Browse and download reduced NIRCam imaging mosaics from multiple survey fields.
                 </p>
                 {isLoggedIn ? (
@@ -66,9 +66,9 @@ export default function Home() {
               <Card className="p-8">
                 <div className="flex items-center mb-4">
                   <Sparkles className="w-8 h-8 text-primary mr-3" />
-                  <h2 className="text-2xl font-bold text-text-primary dark:text-slate-100">NIRSpec</h2>
+                  <h2 className="text-2xl font-bold text-text-primary">NIRSpec</h2>
                 </div>
-                <p className="text-text-secondary dark:text-slate-400 mb-6">
+                <p className="text-text-secondary mb-6">
                   Explore reduced spectroscopy data with interactive tools and quality assessments.
                 </p>
                 {isLoggedIn ? (
@@ -94,11 +94,11 @@ export default function Home() {
                     <Card className="p-6">
                       <div className="flex items-center mb-3">
                         <Settings className="w-6 h-6 text-primary mr-2" />
-                        <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+                        <h3 className="text-lg font-semibold text-text-primary">
                           Settings
                         </h3>
                       </div>
-                      <p className="text-text-secondary dark:text-slate-400 text-sm mb-4">
+                      <p className="text-text-secondary text-sm mb-4">
                         Configure your display preferences, spectrum settings, and manage API keys.
                       </p>
                       <Link href="/profile">
@@ -113,11 +113,11 @@ export default function Home() {
                   <Card className="p-6">
                     <div className="flex items-center mb-3">
                       <BookOpen className="w-6 h-6 text-primary mr-2" />
-                      <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+                      <h3 className="text-lg font-semibold text-text-primary">
                         Documentation
                       </h3>
                     </div>
-                    <p className="text-text-secondary dark:text-slate-400 text-sm mb-4">
+                    <p className="text-text-secondary text-sm mb-4">
                       Learn about the data products, inspection workflow, and how to use the archive.
                     </p>
                     <Link href="/docs">
@@ -133,11 +133,11 @@ export default function Home() {
                   <Card className="p-6">
                     <div className="flex items-center mb-3">
                       <LogIn className="w-6 h-6 text-primary mr-2" />
-                      <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+                      <h3 className="text-lg font-semibold text-text-primary">
                         Access Required
                       </h3>
                     </div>
-                    <p className="text-text-secondary dark:text-slate-400 text-sm mb-4">
+                    <p className="text-text-secondary text-sm mb-4">
                       CAMPFIRE contains proprietary JWST data. Log in with your credentials or request access to browse the archive.
                     </p>
                     <div className="flex gap-2">
@@ -158,11 +158,11 @@ export default function Home() {
                   <Card className="p-6">
                     <div className="flex items-center mb-3">
                       <BookOpen className="w-6 h-6 text-primary mr-2" />
-                      <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+                      <h3 className="text-lg font-semibold text-text-primary">
                         Getting Started
                       </h3>
                     </div>
-                    <p className="text-text-secondary dark:text-slate-400 text-sm mb-4">
+                    <p className="text-text-secondary text-sm mb-4">
                       New to CAMPFIRE? Learn about the archive, data products, and how to get started.
                     </p>
                     <Link href="/docs/getting-started">

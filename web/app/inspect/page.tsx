@@ -60,20 +60,20 @@ function InspectPageInner() {
 
   if (!startId || authLoading || !user) {
     return (
-      <div className="fixed inset-0 z-[200] bg-background dark:bg-slate-900 flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-text-secondary dark:text-slate-400" />
+      <div className="fixed inset-0 z-[200] bg-background flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-text-secondary" />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="fixed inset-0 z-[200] bg-background dark:bg-slate-900 flex items-center justify-center">
+      <div className="fixed inset-0 z-[200] bg-background flex items-center justify-center">
         <div className="text-center">
           <p className="text-lg text-red-500 mb-4">{error}</p>
           <button
             onClick={() => router.push('/nirspec')}
-            className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+            className="px-4 py-2 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             Back to NIRSpec
           </button>
@@ -84,8 +84,8 @@ function InspectPageInner() {
 
   if (loading || !object) {
     return (
-      <div className="fixed inset-0 z-[200] bg-background dark:bg-slate-900 flex items-center justify-center">
-        <div className="text-center text-text-secondary dark:text-slate-400">
+      <div className="fixed inset-0 z-[200] bg-background flex items-center justify-center">
+        <div className="text-center text-text-secondary">
           <Loader2 className="w-8 h-8 animate-spin mx-auto mb-3" />
           <p className="text-sm">Loading inspection mode...</p>
         </div>
@@ -108,8 +108,8 @@ export default function InspectPage() {
   return (
     <Suspense
       fallback={
-        <div className="fixed inset-0 z-[200] bg-background dark:bg-slate-900 flex items-center justify-center">
-          <Loader2 className="w-8 h-8 animate-spin text-text-secondary dark:text-slate-400" />
+        <div className="fixed inset-0 z-[200] bg-background flex items-center justify-center">
+          <Loader2 className="w-8 h-8 animate-spin text-text-secondary" />
         </div>
       }
     >

@@ -15,7 +15,7 @@ import { RedshiftSliderControl } from './PlottingControls';
 const Plot = dynamic(() => import('react-plotly.js'), {
   ssr: false,
   loading: () => (
-    <div className="flex items-center justify-center h-[700px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
+    <div className="flex items-center justify-center h-[700px] bg-card border border-border rounded-lg">
       <Loader2 className="w-6 h-6 animate-spin text-primary" />
     </div>
   ),
@@ -664,18 +664,18 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-[700px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
+      <div className="flex items-center justify-center h-[700px] bg-card border border-border rounded-lg">
         <Loader2 className="w-6 h-6 animate-spin text-primary mr-3" />
-        <span className="text-text-secondary dark:text-slate-400">Loading spectrum...</span>
+        <span className="text-text-secondary">Loading spectrum...</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-[700px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
+      <div className="flex flex-col items-center justify-center h-[700px] bg-card border border-border rounded-lg">
         <AlertCircle className="w-8 h-8 text-red-500 mb-3" />
-        <p className="text-text-secondary dark:text-slate-400">{error}</p>
+        <p className="text-text-secondary">{error}</p>
         <button
           onClick={() => window.location.reload()}
           className="mt-4 px-4 py-2 text-sm text-primary hover:underline"
@@ -691,19 +691,19 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   }
 
   return (
-    <div className={bare ? '' : 'bg-white dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg overflow-hidden'}>
+    <div className={bare ? '' : 'bg-card border border-border rounded-lg overflow-hidden'}>
       {/* Controls */}
-      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border dark:border-slate-700 bg-gray-50 dark:bg-slate-900">
+      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-gray-50 dark:bg-slate-900">
         {/* Flux unit toggle */}
         <div className="flex items-center gap-2">
-          <span className="text-sm text-text-secondary dark:text-slate-400">Units:</span>
-          <div className="flex rounded-md overflow-hidden border border-border dark:border-slate-600">
+          <span className="text-sm text-text-secondary">Units:</span>
+          <div className="flex rounded-md overflow-hidden border border-border dark:border-border-strong">
             <button
               onClick={() => setFluxUnit('fnu')}
               className={`px-3 py-1 text-sm transition-colors ${
                 fluxUnit === 'fnu'
-                  ? 'bg-primary text-white'
-                  : 'bg-white dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700'
+                  ? 'bg-primary text-on-primary'
+                  : 'bg-card text-text-secondary hover:bg-card-hover'
               }`}
             >
               fν
@@ -712,8 +712,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
               onClick={() => setFluxUnit('flambda')}
               className={`px-3 py-1 text-sm transition-colors ${
                 fluxUnit === 'flambda'
-                  ? 'bg-primary text-white'
-                  : 'bg-white dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700'
+                  ? 'bg-primary text-on-primary'
+                  : 'bg-card text-text-secondary hover:bg-card-hover'
               }`}
             >
               fλ
@@ -722,31 +722,31 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         </div>
 
         {/* Divider */}
-        <div className="h-6 w-px bg-border dark:bg-slate-600" />
+        <div className="h-6 w-px bg-border dark:bg-border-strong" />
 
         {/* 2D color scale controls */}
         <div className="flex items-center gap-2">
-          <span className="text-sm text-text-secondary dark:text-slate-400">2D scale:</span>
+          <span className="text-sm text-text-secondary">2D scale:</span>
           <input
             type="number"
             value={colorMin}
             onChange={(e) => setColorMin(parseFloat(e.target.value) || 0)}
             step={1}
-            className="w-16 px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-16 px-2 py-1 text-sm border border-border dark:border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
             title="Color minimum (S/N)"
           />
-          <span className="text-sm text-text-secondary dark:text-slate-400">to</span>
+          <span className="text-sm text-text-secondary">to</span>
           <input
             type="number"
             value={colorMax}
             onChange={(e) => setColorMax(parseFloat(e.target.value) || 0)}
             step={1}
-            className="w-16 px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-16 px-2 py-1 text-sm border border-border dark:border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
             title="Color maximum (S/N)"
           />
           <button
             onClick={() => { setColorMin(spectrumPreferences.snrMin); setColorMax(spectrumPreferences.snrMax); }}
-            className="px-2 py-1 text-xs text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-100 border border-border dark:border-slate-600 rounded hover:bg-gray-100 dark:hover:bg-slate-700"
+            className="px-2 py-1 text-xs text-text-secondary hover:text-text-primary border border-border dark:border-border-strong rounded hover:bg-card-hover"
             title="Reset to default"
           >
             Reset
@@ -754,7 +754,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           <select
             value={colorscale}
             onChange={(e) => setColorscale(e.target.value as Colorscale2D)}
-            className="px-2 py-1 text-sm border border-border dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+            className="px-2 py-1 text-sm border border-border dark:border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
             title="Colormap"
           >
             {COLORSCALE_OPTIONS.map((scale) => (
@@ -766,7 +766,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         </div>
 
         {/* Divider */}
-        <div className="h-6 w-px bg-border dark:bg-slate-600" />
+        <div className="h-6 w-px bg-border dark:bg-border-strong" />
 
         {/* Emission lines toggle */}
         <div className="flex items-center gap-2">
@@ -775,9 +775,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
               type="checkbox"
               checked={showEmissionLines}
               onChange={(e) => setShowEmissionLines(e.target.checked)}
-              className="w-4 h-4 rounded border-border dark:border-slate-600 text-primary focus:ring-primary"
+              className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary"
             />
-            <span className="text-sm text-text-secondary dark:text-slate-400">Emission lines</span>
+            <span className="text-sm text-text-secondary">Emission lines</span>
           </label>
         </div>
 
@@ -792,9 +792,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
               checked={showModel && !!fitData}
               disabled={!fitData}
               onChange={(e) => setShowModel(e.target.checked)}
-              className="w-4 h-4 rounded border-border dark:border-slate-600 text-primary focus:ring-primary"
+              className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary"
             />
-            <span className="text-sm text-text-secondary dark:text-slate-400">Model</span>
+            <span className="text-sm text-text-secondary">Model</span>
           </label>
         </div>
 
@@ -832,7 +832,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
       {/* χ²(z) panel — appears below the spectrum when Model is on. */}
       {chi2PlotData && (
-        <div className="border-t border-border dark:border-slate-700">
+        <div className="border-t border-border">
           <Plot
             data={chi2PlotData.traces}
             layout={chi2PlotData.layout}

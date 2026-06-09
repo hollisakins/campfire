@@ -103,19 +103,19 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
     : (redshiftInspected ?? redshiftAuto);
 
   return (
-    <div className="p-4 border-b border-border dark:border-slate-700">
-      <h3 className="text-xs font-semibold text-text-secondary dark:text-slate-400 uppercase mb-2">
+    <div className="p-4 border-b border-border">
+      <h3 className="text-xs font-semibold text-text-secondary uppercase mb-2">
         Redshift
       </h3>
 
       {/* Current redshift - bold and prominent */}
       <div className="mb-3 text-center">
-        <div className="text-xs text-text-secondary dark:text-slate-400 mb-1">Current</div>
-        <div className="text-2xl font-bold font-mono text-text-primary dark:text-slate-100">
+        <div className="text-xs text-text-secondary mb-1">Current</div>
+        <div className="text-2xl font-bold font-mono text-text-primary">
           {currentRedshift?.toFixed(4) || '—'}
         </div>
         {localRedshift && (
-          <div className="text-xs text-text-secondary dark:text-slate-400 mt-0.5">
+          <div className="text-xs text-text-secondary mt-0.5">
             (overridden)
           </div>
         )}
@@ -125,10 +125,10 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
       <div className="grid grid-cols-2 gap-2 text-sm">
         {/* Auto column */}
         <div>
-          <label className="text-xs text-text-secondary dark:text-slate-400 block mb-1">
+          <label className="text-xs text-text-secondary block mb-1">
             Auto:
           </label>
-          <div className="px-2 py-1.5 font-mono text-sm bg-card dark:bg-slate-800 rounded border border-border dark:border-slate-600 text-text-primary dark:text-slate-100">
+          <div className="px-2 py-1.5 font-mono text-sm bg-card rounded border border-border dark:border-border-strong text-text-primary">
             {redshiftAuto?.toFixed(4) || '—'}
           </div>
         </div>
@@ -136,7 +136,7 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
         {/* Override column */}
         <div>
           <div className="flex items-center justify-between mb-1">
-            <label className="text-xs text-text-secondary dark:text-slate-400">
+            <label className="text-xs text-text-secondary">
               Override:
             </label>
             {localRedshift && canEdit && (
@@ -158,19 +158,19 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
             onChange={(e) => handleChange(e.target.value)}
             placeholder="auto"
             disabled={!canEdit}
-            className={`w-full px-2 py-1.5 text-sm font-mono border rounded bg-background dark:bg-slate-700
-                       text-text-primary dark:text-slate-100 focus:outline-none
+            className={`w-full px-2 py-1.5 text-sm font-mono border rounded bg-background dark:bg-card-hover
+                       text-text-primary focus:outline-none
                        focus:ring-1 focus:ring-primary disabled:opacity-60 transition-all duration-300
                        ${isSliderSync
                          ? 'border-amber-400 dark:border-amber-500 ring-1 ring-amber-400/50 dark:ring-amber-500/50'
-                         : 'border-border dark:border-slate-600'
+                         : 'border-border dark:border-border-strong'
                        }`}
             title="Press Z to focus"
           />
         </div>
       </div>
 
-      <p className="text-xs text-text-secondary dark:text-slate-400 mt-2 text-center">
+      <p className="text-xs text-text-secondary mt-2 text-center">
         Press Z to focus override
       </p>
     </div>

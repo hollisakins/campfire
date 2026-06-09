@@ -31,11 +31,11 @@ export function ListColorPicker({ value, onChange }: ListColorPickerProps) {
         className={`w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] ${
           value === null
             ? 'border-primary ring-2 ring-primary/30'
-            : 'border-border dark:border-slate-600'
+            : 'border-border dark:border-border-strong'
         } bg-background dark:bg-slate-700`}
         title="No color"
       >
-        <span className="text-text-secondary dark:text-slate-400">&times;</span>
+        <span className="text-text-secondary">&times;</span>
       </button>
       {PRESET_COLORS.map((color) => (
         <button

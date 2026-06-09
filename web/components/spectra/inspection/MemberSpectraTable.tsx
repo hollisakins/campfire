@@ -32,14 +32,14 @@ export const MemberSpectraTable: React.FC<MemberSpectraTableProps> = ({ object }
   if (rows.length === 0) return null;
 
   return (
-    <div className="px-4 py-3 border-b border-border dark:border-slate-700">
-      <h3 className="text-xs font-semibold text-text-secondary dark:text-slate-400 uppercase mb-2">
+    <div className="px-4 py-3 border-b border-border">
+      <h3 className="text-xs font-semibold text-text-secondary uppercase mb-2">
         Member spectra ({rows.length})
       </h3>
       <div className="overflow-x-auto">
         <table className="w-full text-[11px]">
           <thead>
-            <tr className="text-text-secondary dark:text-slate-500">
+            <tr className="text-text-secondary dark:text-text-tertiary">
               <th className="text-left font-medium pb-1 pr-2">Grating</th>
               <th className="text-left font-medium pb-1 pr-2">Obs</th>
               <th className="text-right font-medium pb-1 pr-2">z_auto</th>
@@ -52,7 +52,7 @@ export const MemberSpectraTable: React.FC<MemberSpectraTableProps> = ({ object }
               const dqDefs = DQ_FLAGS.filter(f => (r.dqMask & f.value) !== 0);
               return (
                 <tr key={r.key} className="border-t border-border/30 dark:border-slate-700/40">
-                  <td className="py-1 pr-2 font-mono text-text-primary dark:text-slate-200">
+                  <td className="py-1 pr-2 font-mono text-text-primary">
                     {r.grating}
                     {r.isSelected && (
                       <span className="ml-1 text-emerald-600 dark:text-emerald-400" title="Drives objects.redshift_auto">
@@ -60,18 +60,18 @@ export const MemberSpectraTable: React.FC<MemberSpectraTableProps> = ({ object }
                       </span>
                     )}
                   </td>
-                  <td className="py-1 pr-2 text-text-secondary dark:text-slate-400 truncate max-w-[80px]" title={`${r.programSlug} · ${r.observation}`}>
+                  <td className="py-1 pr-2 text-text-secondary truncate max-w-[80px]" title={`${r.programSlug} · ${r.observation}`}>
                     {r.observation}
                   </td>
-                  <td className="py-1 pr-2 text-right font-mono text-text-primary dark:text-slate-200">
+                  <td className="py-1 pr-2 text-right font-mono text-text-primary">
                     {r.zAuto != null ? r.zAuto.toFixed(4) : '—'}
                   </td>
-                  <td className="py-1 pr-2 text-right font-mono text-text-primary dark:text-slate-200">
+                  <td className="py-1 pr-2 text-right font-mono text-text-primary">
                     {r.snr != null ? r.snr.toFixed(1) : '—'}
                   </td>
                   <td className="py-1">
                     {dqDefs.length === 0 ? (
-                      <span className="text-text-secondary dark:text-slate-500">—</span>
+                      <span className="text-text-secondary dark:text-text-tertiary">—</span>
                     ) : (
                       <div className="flex flex-wrap gap-0.5">
                         {dqDefs.map(f => (

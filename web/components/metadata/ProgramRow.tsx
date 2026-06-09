@@ -54,7 +54,7 @@ export const ProgramRow: React.FC<ProgramRowProps> = ({ program }) => {
 
   return (
     <div
-      className="group grid grid-cols-[auto,1fr,auto,auto] gap-4 px-4 py-3 border-b border-border dark:border-slate-700 hover:bg-card-hover dark:hover:bg-slate-700/40 cursor-pointer transition-colors"
+      className="group grid grid-cols-[auto,1fr,auto,auto] gap-4 px-4 py-3 border-b border-border hover:bg-card-hover dark:hover:bg-card-hover/40 cursor-pointer transition-colors"
       onClick={() => router.push(`/nirspec/metadata/programs/${program.slug}`)}
     >
       {/* Identity column */}
@@ -63,10 +63,10 @@ export const ProgramRow: React.FC<ProgramRowProps> = ({ program }) => {
           <Telescope className="w-4 h-4 text-primary" />
         </div>
         <div className="min-w-0">
-          <div className="font-semibold text-text-primary dark:text-slate-100 truncate">
+          <div className="font-semibold text-text-primary truncate">
             {program.program_name || program.slug}
           </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5 text-xs text-text-secondary dark:text-slate-400">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5 text-xs text-text-secondary">
             <span className="font-mono">{program.slug}</span>
             {program.pi_name && (
               <span className="inline-flex items-center gap-1">
@@ -80,22 +80,22 @@ export const ProgramRow: React.FC<ProgramRowProps> = ({ program }) => {
 
       {/* Stats column */}
       <div className="flex flex-col justify-center min-w-0">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-secondary dark:text-slate-400">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-secondary">
           <span className="inline-flex items-center gap-1">
             <Hash className="w-3 h-3" />
-            <span className="text-text-primary dark:text-slate-100 font-medium">
+            <span className="text-text-primary font-medium">
               {formatNumber(program.target_count)}
             </span>{' '}
             targets
           </span>
           <span>
-            <span className="text-text-primary dark:text-slate-100 font-medium">
+            <span className="text-text-primary font-medium">
               {program.n_observations}
             </span>{' '}
             obs
           </span>
           <span>
-            <span className="text-text-primary dark:text-slate-100 font-medium">
+            <span className="text-text-primary font-medium">
               {program.fields.length}
             </span>{' '}
             {program.fields.length === 1 ? 'field' : 'fields'}
@@ -120,13 +120,13 @@ export const ProgramRow: React.FC<ProgramRowProps> = ({ program }) => {
               public
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 text-text-secondary dark:text-slate-400" title="Restricted">
+            <span className="inline-flex items-center gap-1 text-text-secondary" title="Restricted">
               <Lock className="w-3 h-3" />
               restricted
             </span>
           )}
         </div>
-        <div className="text-text-secondary dark:text-slate-400 mt-0.5">
+        <div className="text-text-secondary mt-0.5">
           reduced {formatRelative(program.last_reduced_at)}
         </div>
       </div>
@@ -139,13 +139,13 @@ export const ProgramRow: React.FC<ProgramRowProps> = ({ program }) => {
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors"
+            className="text-text-secondary hover:text-primary transition-colors"
             title="View on STScI"
           >
             <ExternalLink className="w-4 h-4" />
           </a>
         )}
-        <ArrowRight className="w-4 h-4 text-text-secondary dark:text-slate-400 group-hover:text-primary transition-colors" />
+        <ArrowRight className="w-4 h-4 text-text-secondary group-hover:text-primary transition-colors" />
       </div>
     </div>
   );

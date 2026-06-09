@@ -77,7 +77,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         cell: ({ row }) => (
           <Link
             href={`/nirspec/metadata/programs/${row.original.program_slug}#${row.original.observation}`}
-            className="font-mono text-sm text-text-primary dark:text-slate-100 hover:text-primary"
+            className="font-mono text-sm text-text-primary hover:text-primary"
           >
             {row.original.observation}
           </Link>
@@ -91,7 +91,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         cell: ({ row }) => (
           <Link
             href={`/nirspec/metadata/programs/${row.original.program_slug}`}
-            className="text-sm text-text-secondary dark:text-slate-400 hover:text-primary"
+            className="text-sm text-text-secondary hover:text-primary"
           >
             {row.original.program_name || row.original.program_slug}
           </Link>
@@ -103,7 +103,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         header: 'Field',
         enableSorting: true,
         cell: ({ getValue }) => (
-          <span className="text-sm text-text-secondary dark:text-slate-400">
+          <span className="text-sm text-text-secondary">
             {String(getValue() || '—')}
           </span>
         ),
@@ -116,7 +116,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         cell: ({ getValue }) => {
           const c = getValue();
           return (
-            <span className="text-sm text-text-secondary dark:text-slate-400">
+            <span className="text-sm text-text-secondary">
               {c == null ? '—' : `Cycle ${c}`}
             </span>
           );
@@ -128,7 +128,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         header: 'Gratings',
         enableSorting: false,
         cell: ({ row }) => (
-          <span className="text-xs font-mono text-text-secondary dark:text-slate-400">
+          <span className="text-xs font-mono text-text-secondary">
             {row.original.gratings.length === 0 ? '—' : row.original.gratings.join(', ')}
           </span>
         ),
@@ -139,7 +139,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         header: 'Pointings',
         enableSorting: true,
         cell: ({ getValue }) => (
-          <span className="text-sm tabular-nums text-text-primary dark:text-slate-100">
+          <span className="text-sm tabular-nums text-text-primary">
             {formatNumber(Number(getValue()) || 0)}
           </span>
         ),
@@ -150,7 +150,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         header: 'Targets',
         enableSorting: true,
         cell: ({ getValue }) => (
-          <span className="text-sm tabular-nums text-text-primary dark:text-slate-100">
+          <span className="text-sm tabular-nums text-text-primary">
             {formatNumber(Number(getValue()) || 0)}
           </span>
         ),
@@ -161,7 +161,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         header: 'Spectra',
         enableSorting: true,
         cell: ({ getValue }) => (
-          <span className="text-sm tabular-nums text-text-primary dark:text-slate-100">
+          <span className="text-sm tabular-nums text-text-primary">
             {formatNumber(Number(getValue()) || 0)}
           </span>
         ),
@@ -172,7 +172,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         header: 'Size',
         enableSorting: true,
         cell: ({ getValue }) => (
-          <span className="text-sm tabular-nums text-text-secondary dark:text-slate-400">
+          <span className="text-sm tabular-nums text-text-secondary">
             {formatBytes(Number(getValue()) || 0)}
           </span>
         ),
@@ -191,7 +191,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         header: 'JWST',
         enableSorting: true,
         cell: ({ getValue }) => (
-          <span className="text-xs font-mono text-text-secondary dark:text-slate-400">
+          <span className="text-xs font-mono text-text-secondary">
             {String(getValue() || '—')}
           </span>
         ),
@@ -202,7 +202,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
         header: 'CRDS',
         enableSorting: true,
         cell: ({ getValue }) => (
-          <span className="text-xs font-mono text-text-secondary dark:text-slate-400">
+          <span className="text-xs font-mono text-text-secondary">
             {String(getValue() || '—')}
           </span>
         ),
@@ -216,11 +216,11 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
           const username = row.original.deployed_by_username;
           const fullName = row.original.deployed_by_full_name;
           if (!username && !fullName) {
-            return <span className="text-xs text-text-secondary dark:text-slate-500">—</span>;
+            return <span className="text-xs text-text-secondary dark:text-text-tertiary">—</span>;
           }
           return (
             <span
-              className="text-xs text-text-secondary dark:text-slate-400"
+              className="text-xs text-text-secondary"
               title={fullName ?? undefined}
             >
               {username ?? fullName}
@@ -261,9 +261,9 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
   }
 
   return (
-    <div className="bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border dark:border-slate-700">
-        <div className="text-sm text-text-secondary dark:text-slate-400">
+    <div className="bg-card border border-border rounded-lg">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+        <div className="text-sm text-text-secondary">
           {observations.length.toLocaleString()} observation
           {observations.length === 1 ? '' : 's'}
         </div>
@@ -278,7 +278,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-card-hover dark:bg-slate-700/40 sticky top-0">
+          <thead className="bg-card-hover dark:bg-card-hover/40 sticky top-0">
             {table.getHeaderGroups().map((hg) => (
               <tr key={hg.id}>
                 {hg.headers.map((h) => {
@@ -287,12 +287,12 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
                   return (
                     <th
                       key={h.id}
-                      className="px-3 py-2 text-left text-[11px] uppercase tracking-wider font-semibold text-text-secondary dark:text-slate-400 border-b border-border dark:border-slate-700 whitespace-nowrap"
+                      className="px-3 py-2 text-left text-[11px] uppercase tracking-wider font-semibold text-text-secondary border-b border-border whitespace-nowrap"
                     >
                       {sortable ? (
                         <button
                           onClick={h.column.getToggleSortingHandler()}
-                          className="inline-flex items-center gap-1 hover:text-text-primary dark:hover:text-slate-200"
+                          className="inline-flex items-center gap-1 hover:text-text-primary"
                         >
                           {flexRender(h.column.columnDef.header, h.getContext())}
                           {sorted === 'asc' ? (
@@ -316,7 +316,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
             {table.getRowModel().rows.map((row) => (
               <tr
                 key={row.id}
-                className="border-b border-border dark:border-slate-700 last:border-b-0 hover:bg-card-hover dark:hover:bg-slate-700/40 transition-colors"
+                className="border-b border-border last:border-b-0 hover:bg-card-hover dark:hover:bg-card-hover/40 transition-colors"
               >
                 {row.getVisibleCells().map((cell) => (
                   <td key={cell.id} className="px-3 py-2 align-middle">

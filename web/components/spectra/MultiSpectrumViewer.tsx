@@ -20,7 +20,7 @@ import { FluxUnitToggle, EmissionLinesControl, RedshiftSliderControl, ControlDiv
 const Plot = dynamic(() => import('react-plotly.js'), {
   ssr: false,
   loading: () => (
-    <div className="flex items-center justify-center h-[500px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
+    <div className="flex items-center justify-center h-[500px] bg-card border border-border rounded-lg">
       <Loader2 className="w-6 h-6 animate-spin text-primary" />
     </div>
   ),
@@ -371,7 +371,7 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
 
   if (visibleCount === 0) {
     return (
-      <div className="flex items-center justify-center h-[200px] bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg text-text-secondary dark:text-slate-400">
+      <div className="flex items-center justify-center h-[200px] bg-card border border-border rounded-lg text-text-secondary">
         No spectra selected. Check targets in the table above to compare.
       </div>
     );
@@ -380,7 +380,7 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
   return (
     <div>
       {/* Controls bar */}
-      <div className="flex items-center gap-4 flex-wrap px-4 py-2 border-b border-border dark:border-slate-700 bg-gray-50 dark:bg-slate-900">
+      <div className="flex items-center gap-4 flex-wrap px-4 py-2 border-b border-border bg-card dark:bg-background">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
         <ControlDivider />
         <EmissionLinesControl showEmissionLines={showEmissionLines} onChange={setShowEmissionLines} />
@@ -395,11 +395,11 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
       {/* Plot */}
       <div className="relative">
         {loading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-card/80 dark:bg-slate-800/80 z-10 rounded-lg">
+          <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-10 rounded-lg">
             <div className="flex items-center gap-2">
               <Loader2 className="w-5 h-5 animate-spin text-primary" />
               {loadingProgress && loadingProgress.total > 1 && (
-                <span className="text-sm text-text-secondary dark:text-slate-400">
+                <span className="text-sm text-text-secondary">
                   Loading spectra ({loadingProgress.loaded}/{loadingProgress.total})
                 </span>
               )}

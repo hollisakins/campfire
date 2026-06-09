@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAMPFIRE — Direction 1: Warm Clinical</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* DIRECTION 1 — WARM CLINICAL
+   Thesis: change as little as possible. Keep Roboto, keep the structure and density.
+   The ONLY move is neutral temperature: cool slate -> warm stone. Magenta accent kept
+   to prove that warming the grays alone shifts the whole feel. Lowest risk to ship. */
+:root{
+  --bg:#fbfaf8; --card:#f6f4f0; --card-hover:#efece6; --border:#e9e4dc;
+  --text:#1b1a17; --muted:#6c655c;
+  --primary:#c026d3; --primary-soft:rgba(192,38,211,.10);
+  --ok:#4d7c0f; --warn:#b45309; --bad:#b91c1c;
+  --shadow:0 1px 2px rgba(40,33,24,.06);
+  --font:'Roboto',system-ui,sans-serif; --mono:'Roboto Mono',ui-monospace,monospace;
+}
+.dark{
+  --bg:#1a1714; --card:#24201b; --card-hover:#2e2922; --border:#37322a;
+  --text:#f4f1ea; --muted:#a79f95;
+  --primary:#e879f9; --primary-soft:rgba(232,121,249,.14);
+  --ok:#a3e635; --warn:#fbbf24; --bad:#f87171;
+  --shadow:0 1px 2px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+a{color:inherit;text-decoration:none}
+
+/* nav */
+.nav{display:flex;align-items:center;gap:28px;padding:0 24px;height:56px;border-bottom:1px solid var(--border);background:var(--card);position:sticky;top:0;z-index:10}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:.02em;font-size:15px}
+.brand svg{display:block}
+.links{display:flex;gap:22px;font-size:13.5px;color:var(--muted)}
+.links a.active{color:var(--text);font-weight:500}
+.links a:hover{color:var(--text)}
+.navright{margin-left:auto;display:flex;align-items:center;gap:14px}
+.iconbtn{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);display:grid;place-items:center;cursor:pointer}
+.iconbtn:hover{color:var(--text);background:var(--card-hover)}
+.avatar{width:30px;height:30px;border-radius:50%;background:var(--primary);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:700}
+
+/* page */
+.wrap{max-width:1180px;margin:0 auto;padding:28px 24px 60px}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:20px}
+h1{font-size:26px;font-weight:700;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:13.5px;margin-top:3px}
+.search{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:8px 12px;width:300px;color:var(--muted)}
+.search input{border:0;background:transparent;outline:0;color:var(--text);font:inherit;width:100%}
+
+/* filters */
+.filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:999px;border:1px solid var(--border);background:var(--card);color:var(--muted);font-size:13px;cursor:pointer}
+.chip:hover{background:var(--card-hover);color:var(--text)}
+.chip.on{border-color:var(--primary);background:var(--primary-soft);color:var(--primary);font-weight:500}
+.chip .x{opacity:.6}
+.chip.add{border-style:dashed}
+
+/* table */
+.panel{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--card);box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse}
+thead th{text-align:left;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:500;padding:11px 16px;border-bottom:1px solid var(--border)}
+tbody td{padding:12px 16px;border-bottom:1px solid var(--border);font-size:13.5px;vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--card-hover)}
+.id{font-weight:500}
+.idsub{color:var(--muted);font-size:12px;margin-top:1px}
+.q{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500}
+.dot{width:8px;height:8px;border-radius:50%}
+.q.secure .dot{background:var(--ok)} .q.secure{color:var(--ok)}
+.q.tent .dot{background:var(--warn)} .q.tent{color:var(--warn)}
+.q.unc .dot{background:var(--bad)} .q.unc{color:var(--bad)}
+.spark{display:block}
+.tag{font-size:11.5px;color:var(--muted);background:var(--bg);border:1px solid var(--border);padding:2px 7px;border-radius:6px;font-family:var(--mono)}
+.foot{display:flex;justify-content:space-between;align-items:center;padding:11px 16px;color:var(--muted);font-size:12.5px}
+.pager{display:flex;gap:4px}
+.pager span{min-width:26px;height:26px;display:grid;place-items:center;border-radius:6px;font-size:12.5px;cursor:pointer}
+.pager span.cur{background:var(--primary);color:#fff}
+.legend{margin-top:34px;color:var(--muted);font-size:12px;text-align:center}
+.label{position:fixed;left:14px;bottom:14px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font-size:11.5px;color:var(--muted);box-shadow:var(--shadow)}
+.label b{color:var(--text)}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <span class="brand">
+    <svg width="18" height="20" viewBox="0 0 18 20" fill="none"><path d="M9 1C9 1 3 6 3 11.5C3 15.6 5.7 19 9 19C12.3 19 15 15.6 15 11.5C15 9.5 14 8 14 8C14 8 13 10 11.5 10C11.5 7 9 1 9 1Z" fill="var(--primary)"/><path d="M9 19C7.3 19 6 17.2 6 15.2C6 13 9 11 9 11C9 11 12 13 12 15.2C12 17.2 10.7 19 9 19Z" fill="#fbbf24"/></svg>
+    CAMPFIRE
+  </span>
+  <span class="links">
+    <a class="active">Targets</a><a>Fields</a><a>Programs</a><a>About</a>
+  </span>
+  <span class="navright">
+    <button class="iconbtn" id="toggle" title="Toggle theme">◐</button>
+    <span class="avatar">HA</span>
+  </span>
+</nav>
+
+<div class="wrap">
+  <div class="head">
+    <div>
+      <h1>Targets</h1>
+      <div class="sub">1,284 spectra across 9 programs · COSMOS field</div>
+    </div>
+    <label class="search">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input placeholder="Search ID or RA, Dec…">
+    </label>
+  </div>
+
+  <div class="filters">
+    <span class="chip on">Program: 6585 <span class="x">×</span></span>
+    <span class="chip on">z &gt; 5.0 <span class="x">×</span></span>
+    <span class="chip">Quality ▾</span>
+    <span class="chip">Instrument ▾</span>
+    <span class="chip">Grating ▾</span>
+    <span class="chip add">+ Add filter</span>
+  </div>
+
+  <div class="panel">
+    <table>
+      <thead><tr>
+        <th>Target</th><th>R.A.</th><th>Dec.</th><th>Redshift</th><th>Quality</th><th>Grating</th><th>S/N</th><th>Spectrum</th>
+      </tr></thead>
+      <tbody>
+        <tr><td><div class="id">COSMOS-018734</div><div class="idsub">JADES-GS+53.1</div></td><td class="mono">150.07421</td><td class="mono">+2.31884</td><td class="mono">6.241</td><td><span class="q secure"><span class="dot"></span>Secure</span></td><td><span class="tag">G140M</span></td><td class="mono">18.4</td><td><svg class="spark" width="84" height="22"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-021045</div><div class="idsub">—</div></td><td class="mono">150.11903</td><td class="mono">+2.27551</td><td class="mono">7.044</td><td><span class="q secure"><span class="dot"></span>Secure</span></td><td><span class="tag">G235M</span></td><td class="mono">12.1</td><td><svg class="spark" width="84" height="22"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-019982</div><div class="idsub">—</div></td><td class="mono">150.09337</td><td class="mono">+2.30012</td><td class="mono">5.331</td><td><span class="q tent"><span class="dot"></span>Tentative</span></td><td><span class="tag">G140M</span></td><td class="mono">7.8</td><td><svg class="spark" width="84" height="22"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-024418</div><div class="idsub">—</div></td><td class="mono">150.14260</td><td class="mono">+2.41097</td><td class="mono">8.679</td><td><span class="q secure"><span class="dot"></span>Secure</span></td><td><span class="tag">PRISM</span></td><td class="mono">22.6</td><td><svg class="spark" width="84" height="22"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-016590</div><div class="idsub">—</div></td><td class="mono">150.05118</td><td class="mono">+2.18840</td><td class="mono">5.998</td><td><span class="q tent"><span class="dot"></span>Tentative</span></td><td><span class="tag">G235M</span></td><td class="mono">9.3</td><td><svg class="spark" width="84" height="22"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-027731</div><div class="idsub">—</div></td><td class="mono">150.18004</td><td class="mono">+2.49271</td><td class="mono">10.21</td><td><span class="q unc"><span class="dot"></span>Uncertain</span></td><td><span class="tag">PRISM</span></td><td class="mono">4.2</td><td><svg class="spark" width="84" height="22"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-013207</div><div class="idsub">—</div></td><td class="mono">150.02990</td><td class="mono">+2.12663</td><td class="mono">4.770</td><td><span class="q secure"><span class="dot"></span>Secure</span></td><td><span class="tag">G140M</span></td><td class="mono">31.5</td><td><svg class="spark" width="84" height="22"></svg></td></tr>
+        <tr><td><div class="id">COSMOS-022860</div><div class="idsub">—</div></td><td class="mono">150.13351</td><td class="mono">+2.35509</td><td class="mono">6.853</td><td><span class="q secure"><span class="dot"></span>Secure</span></td><td><span class="tag">G235M</span></td><td class="mono">15.0</td><td><svg class="spark" width="84" height="22"></svg></td></tr>
+      </tbody>
+    </table>
+    <div class="foot">
+      <span>1–8 of 1,284</span>
+      <span class="pager"><span>‹</span><span class="cur">1</span><span>2</span><span>3</span><span>…</span><span>161</span><span>›</span></span>
+    </div>
+  </div>
+
+  <div class="legend">Direction 1 · <b>Warm Clinical</b> — Roboto kept, slate neutrals swapped for warm stone, magenta accent retained. Click ◐ to preview dark mode.</div>
+</div>
+
+<div class="label">Direction&nbsp;1 · <b>Warm&nbsp;Clinical</b></div>
+
+<script>
+document.getElementById('toggle').onclick=()=>document.documentElement.classList.toggle('dark');
+// draw little spectrum sparklines with an emission bump
+document.querySelectorAll('.spark').forEach((s,i)=>{
+  const w=84,h=22,pts=[];const peak=14+(i*7)%50;
+  for(let x=0;x<=w;x+=3){let y=h-4-2*Math.sin(x/6+i)-(Math.abs(x-peak)<5?(5-Math.abs(x-peak))*2.4:0);pts.push(x+','+Math.max(2,Math.min(h-2,y)));}
+  s.innerHTML='<polyline fill="none" stroke="var(--muted)" stroke-width="1.2" opacity=".75" points="'+pts.join(' ')+'"/>';
+});
+</script>
+</body>
+</html>

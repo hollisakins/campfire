@@ -34,21 +34,21 @@ export const KeyboardShortcutSheet: React.FC<KeyboardShortcutSheetProps> = ({ on
     <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/40">
       <div
         ref={panelRef}
-        className="bg-background dark:bg-slate-800 border border-border dark:border-slate-600 rounded-lg shadow-xl p-5 w-80"
+        className="bg-background dark:bg-card border border-border dark:border-border-strong rounded-lg shadow-xl p-5 w-80"
       >
-        <h3 className="text-sm font-semibold text-text-primary dark:text-slate-100 mb-3">
+        <h3 className="text-sm font-semibold text-text-primary mb-3">
           Keyboard Shortcuts
         </h3>
         <table className="w-full text-sm">
           <tbody>
             {SHORTCUTS.map((s) => (
-              <tr key={s.key} className="border-b border-border/50 dark:border-slate-700/50 last:border-0">
+              <tr key={s.key} className="border-b border-border/50 last:border-0">
                 <td className="py-1.5 pr-3">
-                  <kbd className="font-mono text-xs px-1.5 py-0.5 rounded bg-card dark:bg-slate-700 border border-border dark:border-slate-600 text-text-primary dark:text-slate-100">
+                  <kbd className="font-mono text-xs px-1.5 py-0.5 rounded bg-card dark:bg-card-hover border border-border dark:border-border-strong text-text-primary">
                     {s.key}
                   </kbd>
                 </td>
-                <td className="py-1.5 text-text-secondary dark:text-slate-400">
+                <td className="py-1.5 text-text-secondary">
                   {s.action}
                 </td>
               </tr>

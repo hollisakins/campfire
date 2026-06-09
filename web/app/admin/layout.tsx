@@ -29,7 +29,7 @@ export default function AdminLayout({
     return (
       <div className="container mx-auto px-4 py-16 flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
-        <span className="ml-3 text-text-secondary dark:text-slate-400">Loading...</span>
+        <span className="ml-3 text-text-secondary">Loading...</span>
       </div>
     );
   }
@@ -42,15 +42,15 @@ export default function AdminLayout({
           <div className="w-16 h-16 bg-red-100 dark:bg-red-950 rounded-full flex items-center justify-center mx-auto mb-4">
             <AlertTriangle className="w-8 h-8 text-red-600 dark:text-red-400" />
           </div>
-          <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+          <h1 className="text-2xl font-semibold text-text-primary mb-2">
             Authentication Required
           </h1>
-          <p className="text-text-secondary dark:text-slate-400 mb-6">
+          <p className="text-text-secondary mb-6">
             Please sign in to access the admin area.
           </p>
           <Link
             href="/login"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             Sign In
           </Link>
@@ -67,15 +67,15 @@ export default function AdminLayout({
           <div className="w-16 h-16 bg-red-100 dark:bg-red-950 rounded-full flex items-center justify-center mx-auto mb-4">
             <Shield className="w-8 h-8 text-red-600 dark:text-red-400" />
           </div>
-          <h1 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+          <h1 className="text-2xl font-semibold text-text-primary mb-2">
             Access Denied
           </h1>
-          <p className="text-text-secondary dark:text-slate-400 mb-6">
+          <p className="text-text-secondary mb-6">
             You don&apos;t have permission to access the admin area.
           </p>
           <Link
             href="/"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             Return Home
           </Link>
@@ -91,7 +91,7 @@ export default function AdminLayout({
         <aside className="w-56 flex-shrink-0">
           <div className="flex items-center gap-2 mb-6">
             <Shield className="w-6 h-6 text-primary" />
-            <h1 className="text-xl font-semibold text-text-primary dark:text-slate-100">Admin</h1>
+            <h1 className="text-xl font-semibold text-text-primary">Admin</h1>
           </div>
 
           <nav className="space-y-1">
@@ -106,8 +106,8 @@ export default function AdminLayout({
                   className={`
                     flex items-center gap-3 px-4 py-2 rounded-lg transition-colors
                     ${isActive
-                      ? 'bg-primary text-white'
-                      : 'text-text-secondary dark:text-slate-400 hover:bg-card dark:hover:bg-slate-700 hover:text-text-primary dark:hover:text-slate-100'
+                      ? 'bg-primary text-on-primary'
+                      : 'text-text-secondary hover:bg-card dark:hover:bg-card-hover hover:text-text-primary'
                     }
                   `}
                 >

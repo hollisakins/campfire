@@ -16,16 +16,16 @@ export default function DocNavigation({ prev, next }: DocNavigationProps) {
   }
 
   return (
-    <nav className="flex justify-between items-center mt-12 pt-8 border-t border-border dark:border-slate-700">
+    <nav className="flex justify-between items-center mt-12 pt-8 border-t border-border">
       {prev ? (
         <Link
           href={`/docs/${prev.slug}`}
-          className="group flex items-center gap-2 text-text-secondary dark:text-slate-400 hover:text-primary transition-colors"
+          className="group flex items-center gap-2 text-text-secondary hover:text-primary transition-colors"
         >
           <ChevronLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
           <div className="text-right">
             <div className="text-xs uppercase tracking-wide mb-0.5">Previous</div>
-            <div className="font-medium text-text-primary dark:text-slate-200 group-hover:text-primary">
+            <div className="font-medium text-text-primary group-hover:text-primary">
               {prev.title}
             </div>
           </div>
@@ -36,11 +36,11 @@ export default function DocNavigation({ prev, next }: DocNavigationProps) {
       {next ? (
         <Link
           href={`/docs/${next.slug}`}
-          className="group flex items-center gap-2 text-text-secondary dark:text-slate-400 hover:text-primary transition-colors text-right"
+          className="group flex items-center gap-2 text-text-secondary hover:text-primary transition-colors text-right"
         >
           <div>
             <div className="text-xs uppercase tracking-wide mb-0.5">Next</div>
-            <div className="font-medium text-text-primary dark:text-slate-200 group-hover:text-primary">
+            <div className="font-medium text-text-primary group-hover:text-primary">
               {next.title}
             </div>
           </div>

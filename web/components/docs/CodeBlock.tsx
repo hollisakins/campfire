@@ -52,15 +52,15 @@ export function CodeBlock({ children }: CodeBlockProps) {
   };
 
   return (
-    <div className="relative mb-4 rounded-lg border border-border dark:border-slate-700 overflow-hidden">
+    <div className="relative mb-4 rounded-lg border border-border overflow-hidden">
       {/* Header with language label and copy button */}
-      <div className="flex justify-between items-center px-4 py-1.5 bg-slate-100 dark:bg-slate-800/50 border-b border-border dark:border-slate-700">
-        <span className="text-xs font-medium text-text-secondary dark:text-slate-400 uppercase tracking-wide">
+      <div className="flex justify-between items-center px-4 py-1.5 bg-surface-2 dark:bg-slate-800/50 border-b border-border">
+        <span className="text-xs font-medium text-text-secondary uppercase tracking-wide">
           {language || 'code'}
         </span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 text-xs text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200 transition-colors"
+          className="flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary transition-colors"
           aria-label="Copy code"
         >
           {copied ? (

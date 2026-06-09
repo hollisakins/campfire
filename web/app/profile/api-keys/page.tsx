@@ -196,7 +196,7 @@ export default function ApiKeysPage() {
           </p>
           <Link
             href="/login"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
@@ -316,14 +316,14 @@ export default function ApiKeysPage() {
           <div className="space-y-4">
             <div>
               <p className="text-sm font-medium text-text-primary mb-1.5">1. Install</p>
-              <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-3 font-mono text-sm border border-border">
+              <div className="bg-card rounded-lg p-3 font-mono text-sm border border-border">
                 <span className="text-text-primary">pip install &quot;git+https://github.com/hollisakins/campfire.git#subdirectory=python/&quot;</span>
               </div>
             </div>
 
             <div>
               <p className="text-sm font-medium text-text-primary mb-1.5">2. Authenticate <span className="text-xs font-normal text-text-secondary">(recommended)</span></p>
-              <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-3 font-mono text-sm border border-border">
+              <div className="bg-card rounded-lg p-3 font-mono text-sm border border-border">
                 <span className="text-text-primary">campfire login</span>
               </div>
               <p className="text-xs text-text-secondary mt-1.5">
@@ -333,7 +333,7 @@ export default function ApiKeysPage() {
 
             <div>
               <p className="text-sm font-medium text-text-primary mb-1.5">3. Alternative: API key <span className="text-xs font-normal text-text-secondary">(headless environments)</span></p>
-              <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-3 font-mono text-sm border border-border">
+              <div className="bg-card rounded-lg p-3 font-mono text-sm border border-border">
                 <span className="text-text-primary">campfire login --api-key</span>
               </div>
               <p className="text-xs text-text-secondary mt-1.5">
@@ -359,7 +359,7 @@ export default function ApiKeysPage() {
             <div>
               <h3 className="text-lg font-semibold text-text-primary">Active Sessions</h3>
               <p className="text-sm text-text-secondary mt-0.5">
-                Devices authenticated via <code className="text-xs bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded">campfire login</code>
+                Devices authenticated via <code className="text-xs bg-surface-2 px-1.5 py-0.5 rounded">campfire login</code>
               </p>
             </div>
           </div>
@@ -372,7 +372,7 @@ export default function ApiKeysPage() {
             <div className="text-center py-6">
               <Terminal className="w-10 h-10 text-text-secondary mx-auto mb-2 opacity-50" />
               <p className="text-sm text-text-secondary">
-                No active CLI sessions. Run <code className="text-xs bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded">campfire login</code> to get started.
+                No active CLI sessions. Run <code className="text-xs bg-surface-2 px-1.5 py-0.5 rounded">campfire login</code> to get started.
               </p>
             </div>
           ) : (
@@ -510,13 +510,13 @@ export default function ApiKeysPage() {
                   className={`p-4 border rounded-lg ${
                     key.is_active
                       ? 'border-border bg-background'
-                      : 'border-gray-300 dark:border-slate-600 bg-gray-50 dark:bg-slate-800 opacity-60'
+                      : 'border-border-strong bg-card opacity-60'
                   }`}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-2">
-                        <code className="text-sm font-mono text-text-primary bg-gray-100 dark:bg-slate-700 px-2 py-1 rounded">
+                        <code className="text-sm font-mono text-text-primary bg-surface-2 px-2 py-1 rounded">
                           {key.key_prefix}
                         </code>
                         {!key.is_active && (
@@ -537,7 +537,7 @@ export default function ApiKeysPage() {
                             Last used {new Date(key.last_used_at).toLocaleDateString()}
                           </span>
                         )}
-                        {!key.last_used_at && <span className="text-gray-400 dark:text-slate-500">Never used</span>}
+                        {!key.last_used_at && <span className="text-text-tertiary">Never used</span>}
                       </div>
                     </div>
 

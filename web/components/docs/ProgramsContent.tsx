@@ -21,18 +21,18 @@ function ProgramCard({ program }: { program: ProgramOverview }) {
       <Card hover className="p-5 h-full">
         <div className="flex items-start justify-between mb-3">
           <div>
-            <h3 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+            <h3 className="text-lg font-semibold text-text-primary">
               {program.program_name || program.slug}
             </h3>
             {program.jwst_pids && program.jwst_pids.length > 0 && (
-              <p className="text-sm text-text-secondary dark:text-slate-400">
+              <p className="text-sm text-text-secondary">
                 PID{program.jwst_pids.length > 1 ? 's' : ''} {program.jwst_pids.join(', ')}
               </p>
             )}
           </div>
           {firstPid && (
             <button
-              className="text-text-secondary dark:text-slate-400 hover:text-primary transition-colors flex-shrink-0"
+              className="text-text-secondary hover:text-primary transition-colors flex-shrink-0"
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -46,14 +46,14 @@ function ProgramCard({ program }: { program: ProgramOverview }) {
         </div>
 
         {program.pi_name && (
-          <div className="flex items-center gap-1.5 text-sm text-text-secondary dark:text-slate-400 mb-2">
+          <div className="flex items-center gap-1.5 text-sm text-text-secondary mb-2">
             <Users className="w-3.5 h-3.5 flex-shrink-0" />
             <span>PI: {program.pi_name}</span>
           </div>
         )}
 
         {program.description && (
-          <p className="text-sm text-text-secondary dark:text-slate-400 mb-4 line-clamp-2">
+          <p className="text-sm text-text-secondary mb-4 line-clamp-2">
             {program.description}
           </p>
         )}
@@ -93,19 +93,19 @@ export default function ProgramsContent() {
   if (!authLoading && !user) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="w-16 h-16 bg-card dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
-          <LogIn className="w-8 h-8 text-text-secondary dark:text-slate-400" />
+        <div className="w-16 h-16 bg-card rounded-full flex items-center justify-center mb-6">
+          <LogIn className="w-8 h-8 text-text-secondary" />
         </div>
-        <h2 className="text-2xl font-semibold text-text-primary dark:text-slate-100 mb-2">
+        <h2 className="text-2xl font-semibold text-text-primary mb-2">
           Sign in to view programs
         </h2>
-        <p className="text-text-secondary dark:text-slate-400 mb-6 max-w-md">
+        <p className="text-text-secondary mb-6 max-w-md">
           Access to JWST program information requires authentication. Please sign in with your
           CAMPFIRE account to browse programs.
         </p>
         <Link
           href="/login"
-          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
         >
           <LogIn className="w-5 h-5" />
           Sign In
@@ -120,9 +120,9 @@ export default function ProgramsContent() {
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
           <Telescope className="w-8 h-8 text-primary" />
-          <h1 className="text-2xl font-bold text-text-primary dark:text-slate-100">JWST Programs</h1>
+          <h1 className="text-2xl font-bold text-text-primary">JWST Programs</h1>
         </div>
-        <p className="text-text-secondary dark:text-slate-400">
+        <p className="text-text-secondary">
           Browse JWST programs with data available in CAMPFIRE
         </p>
       </div>
@@ -131,7 +131,7 @@ export default function ProgramsContent() {
       {isLoading && (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary dark:text-slate-400">Loading programs...</span>
+          <span className="ml-3 text-text-secondary">Loading programs...</span>
         </div>
       )}
 
@@ -146,9 +146,9 @@ export default function ProgramsContent() {
       {!isLoading && !error && (
         <>
           {programs.length === 0 ? (
-            <div className="text-center py-16 bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg">
-              <Telescope className="w-12 h-12 text-text-secondary dark:text-slate-400 mx-auto mb-4" />
-              <p className="text-text-secondary dark:text-slate-400">
+            <div className="text-center py-16 bg-card border border-border rounded-lg">
+              <Telescope className="w-12 h-12 text-text-secondary mx-auto mb-4" />
+              <p className="text-text-secondary">
                 No programs available yet.
               </p>
             </div>

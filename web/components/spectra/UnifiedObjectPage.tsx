@@ -235,7 +235,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
       <div className="flex gap-6 pb-24">
         {/* Desktop sidebar: cutout + members control panel */}
         <div className="hidden lg:block">
-          <div className="w-[260px] flex-shrink-0 sticky top-4 max-h-[calc(100vh-6rem)] overflow-y-auto border-r border-border dark:border-slate-700 pr-3">
+          <div className="w-[260px] flex-shrink-0 sticky top-4 max-h-[calc(100vh-6rem)] overflow-y-auto border-r border-border pr-3">
             <div className="mb-3">
               <TileThumbnailWithToggle
                 targetId={object.object_id}
@@ -279,7 +279,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
           {/* === Header === */}
           <div className="mb-6">
             <div className="flex items-center gap-3 mb-2 flex-wrap">
-              <h1 className="text-3xl font-bold font-mono text-text-primary dark:text-slate-100">
+              <h1 className="text-3xl font-bold font-mono text-text-primary">
                 {object.object_id}
               </h1>
               <StalenessBadge
@@ -292,16 +292,16 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                 onReviewed={({ last_inspected_at }) => setLastInspectedOverride(last_inspected_at)}
               />
               {!object.is_active && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-200 dark:bg-slate-700 text-text-secondary dark:text-slate-300">
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-surface-2 text-text-secondary">
                   Inactive
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-2 text-sm text-text-secondary dark:text-slate-400 mb-3">
+            <div className="flex items-center gap-2 text-sm text-text-secondary mb-3">
               <span>Field:</span>
               <Link
                 href={`/nirspec?view=objects&fields=${object.field}`}
-                className="inline-flex items-center hover:bg-gray-100 dark:hover:bg-slate-700 px-2 py-1 rounded transition-colors text-text-primary dark:text-slate-100"
+                className="inline-flex items-center hover:bg-card-hover px-2 py-1 rounded transition-colors text-text-primary"
               >
                 {object.field}
               </Link>
@@ -336,19 +336,19 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
           {/* === Section 1: Spectrum Comparison === */}
           <section className="mb-8">
             <div className="flex flex-wrap gap-5 items-center mb-4">
-              <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+              <h2 className="text-lg font-semibold text-text-primary">
                 Spectrum Comparison{selectedGrating ? ` — ${selectedGrating}` : ''}
               </h2>
               {object.programs.length > 1 && (
                 <div className="flex items-center gap-2">
-                  <span className="text-sm text-text-secondary dark:text-slate-400">Program:</span>
-                  <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">
+                  <span className="text-sm text-text-secondary">Program:</span>
+                  <div className="flex items-center bg-surface-2 rounded-md p-0.5">
                     <button
                       onClick={() => setSelectedProgram(null)}
                       className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
                         selectedProgram === null
-                          ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
-                          : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                          ? 'bg-background dark:bg-slate-600 text-text-primary shadow-sm'
+                          : 'text-text-secondary hover:text-text-primary'
                       }`}
                     >
                       All
@@ -359,8 +359,8 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                         onClick={() => setSelectedProgram(selectedProgram === p ? null : p)}
                         className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
                           selectedProgram === p
-                            ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
-                            : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                            ? 'bg-background dark:bg-slate-600 text-text-primary shadow-sm'
+                            : 'text-text-secondary hover:text-text-primary'
                         }`}
                       >
                         {programNames[p] || p}
@@ -370,14 +370,14 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                 </div>
               )}
               <div className="flex items-center gap-2">
-                <span className="text-sm text-text-secondary dark:text-slate-400">Grating:</span>
-                <div className="flex items-center bg-gray-100 dark:bg-slate-700 rounded-md p-0.5">
+                <span className="text-sm text-text-secondary">Grating:</span>
+                <div className="flex items-center bg-surface-2 rounded-md p-0.5">
                   <button
                     onClick={() => setSelectedGrating(null)}
                     className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
                       selectedGrating === null
-                        ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
-                        : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                        ? 'bg-background dark:bg-slate-600 text-text-primary shadow-sm'
+                        : 'text-text-secondary hover:text-text-primary'
                     }`}
                   >
                     All
@@ -388,8 +388,8 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                       onClick={() => setSelectedGrating(selectedGrating === g ? null : g)}
                       className={`px-2.5 py-1 text-xs font-medium font-mono rounded transition-colors ${
                         g === selectedGrating
-                          ? 'bg-white dark:bg-slate-600 text-text-primary dark:text-slate-100 shadow-sm'
-                          : 'text-text-secondary dark:text-slate-400 hover:text-text-primary dark:hover:text-slate-200'
+                          ? 'bg-background dark:bg-slate-600 text-text-primary shadow-sm'
+                          : 'text-text-secondary hover:text-text-primary'
                       }`}
                     >
                       {g}
@@ -398,7 +398,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                 </div>
               </div>
             </div>
-            <div className="border border-border dark:border-slate-700 rounded-lg overflow-hidden">
+            <div className="border border-border rounded-lg overflow-hidden">
               <MultiSpectrumViewer
                 sources={sources}
                 grating={selectedGrating}
