@@ -72,9 +72,11 @@ the manual `dark:` pairs. Source of truth: `web/app/globals.css`, exposed via
 
 > The Direction-2 mockup used `#d9480f`; the implemented `--primary` is nudged one
 > imperceptible step deeper to `#c63f0c` so white button labels and inline links clear AA.
-> **Accent system:** only `--primary*` swap per user choice; everything else is neutral, so
-> all 8 accents work. The 8 stay defined in `web/lib/types.ts`; default changes to ember
-> (add an `ember` entry or promote/retune `orange` — see migration plan §Accent).
+> **Accent system:** the user's accent choice swaps `--primary`/`--primary-hover` (see
+> `applyAccentColorCSS`); `--primary-text`/`--on-primary`/`--primary-soft` currently track the
+> ember default and are *not* yet recomputed per accent — a known follow-up for non-ember
+> picks. `ember` is now a dedicated entry in `web/lib/types.ts` and the default; the prior
+> 8 accents remain selectable.
 
 ### Status — semantic, both modes  *(meaning, not decoration)*
 | Token | Light | Dark | Use |
@@ -93,8 +95,9 @@ the manual `dark:` pairs. Source of truth: `web/app/globals.css`, exposed via
 ---
 
 ## 6. Typography
-- **UI / body:** **Inter** (400/500/600/700), `--font-inter`, `font-sans`.
-- **Data / code / all numbers:** **JetBrains Mono** (400/500), `font-mono`, tabular figures.
+- **UI / body:** **Inter** (variable), loaded via `next/font` as `--font-sans`, used through
+  `font-sans` (Tailwind). The CSS var name is font-agnostic so swaps don't touch components.
+- **Data / code / all numbers:** **JetBrains Mono**, `--font-mono` / `font-mono`, tabular figures.
   RA/Dec, redshift, S/N, wavelengths are **always** mono.
 - **Scale (rem @16):** `xs .75 · sm .875 · base 1 · lg 1.125 · xl 1.25 · 2xl 1.5 · 3xl 1.875`.
   Body line-height 1.55; dense table rows ~1.35. Heading letter-spacing ≈ −0.02em.

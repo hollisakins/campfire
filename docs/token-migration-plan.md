@@ -16,10 +16,16 @@ Separate the invisible refactor from the visible restyle so each is trivially re
 
 | Phase | What | Visual effect | Review |
 |---|---|---|---|
-| **1 — Vocabulary** | Add all new tokens (`--surface-2`, `--border-strong`, `--text-tertiary`, `--primary-text`, `--on-primary`, `--primary-soft`, `--success/--warning/--danger/--info`) to `globals.css` + `tailwind.config.ts`, **set to today's cool values** | none | tiny |
-| **2 — Migrate** | Replace raw `slate-*`/`gray-*`/`white`/`black` chrome usages → tokens, directory by directory; **delete now-redundant `dark:` color pairs** | **none** (no-op) — tokens still hold old values | easy: diff should show no visual change |
-| **3 — Restyle** | Flip token *values* to Direction-2 warm/dusk; swap fonts (Inter + JetBrains Mono); set ember default accent | the whole new look, at once | small, high-impact, easy to revert |
+| **1 — Vocabulary** ✅ | Add all new tokens (`--surface-2`, `--border-strong`, `--text-tertiary`, `--primary-text`, `--on-primary`, `--primary-soft`, `--success/--warning/--danger/--info`) to `globals.css` + `tailwind.config.ts`, **set to today's cool values** | none | tiny |
+| **2 — Migrate** ✅ | Replace raw `slate-*`/`gray-*`/`white`/`black` chrome usages → tokens, directory by directory; **delete now-redundant `dark:` color pairs** | **none** (no-op) — tokens still hold old values | easy: diff should show no visual change |
+| **3 — Restyle** ✅ | Flip token *values* to Direction-2 warm/dusk; swap fonts (Inter + JetBrains Mono); set ember default accent | the whole new look, at once | small, high-impact, easy to revert |
 | **4 — Guardrail** | Lint rule + docs so it stays clean | none | tiny |
+
+> **Status:** Phases 1–2 merged (#166). Phase 3 is this branch (`design/direction-2-restyle`):
+> token values flipped to warm/dusk in `globals.css`, fonts → Inter + JetBrains Mono in
+> `layout.tsx` (CSS vars renamed to font-agnostic `--font-sans`/`--font-mono`), plot chart
+> chrome (`--plot-*`) and `SpectrumPlot` axis font follow the theme, and an `ember` accent
+> added + defaulted in `lib/types.ts`. Phase 4 (lint guardrail) is the remaining follow-up.
 
 This is the professional sequence: Phase 2 is a large diff but a visual no-op (low risk);
 Phase 3 is a small diff but the entire restyle (high impact, easy rollback).

@@ -463,7 +463,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       // Per-axis uirevision instead of top-level — xaxis3 (rest-frame overlay)
       // must NOT inherit a constant uirevision, otherwise Plotly.react() caches
       // stale tickvals when redshift changes.
-      font: { family: 'Roboto, sans-serif', color: plotColors.text },
+      font: { family: 'Inter, system-ui, sans-serif', color: plotColors.text },
       title: {
         text: `${grating} Spectrum`,
         font: { size: 16 },
@@ -612,7 +612,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           text: `Redshift fit · z = ${fitData.redshift.toFixed(4)}, χ²_min = ${fitData.chi2_min.toFixed(2)}, conf = ${fitData.confidence.toFixed(1)}%`,
           font: { size: 12, color: plotColors.text },
         },
-        font: { family: 'Roboto, sans-serif', color: plotColors.text },
+        font: { family: 'Inter, system-ui, sans-serif', color: plotColors.text },
         xaxis: {
           title: { text: 'Redshift', font: { color: plotColors.text } },
           tickfont: { color: plotColors.textSecondary },

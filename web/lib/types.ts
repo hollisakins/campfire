@@ -30,7 +30,7 @@ export type Colorscale2D = 'Viridis' | 'Plasma' | 'Inferno' | 'Magma' | 'Cividis
 // Accent Color System
 // ============================================
 
-export type AccentColorName = 'magenta' | 'blue' | 'emerald' | 'red' | 'orange' | 'violet' | 'cyan' | 'lime';
+export type AccentColorName = 'ember' | 'magenta' | 'blue' | 'emerald' | 'red' | 'orange' | 'violet' | 'cyan' | 'lime';
 
 export interface AccentColor {
   name: AccentColorName;
@@ -46,6 +46,8 @@ export interface AccentColor {
 // Accent colors with light/dark mode variants
 // Dark mode uses more muted/pale versions for better contrast
 export const ACCENT_COLORS: AccentColor[] = [
+  // Ember — Direction 2 (Ember & Dusk) signature accent. AA-verified on card/dusk surfaces.
+  { name: 'ember', label: 'Ember', light: '#c63f0c', dark: '#fb923c', hover: { light: '#ad3408', dark: '#fdba74' } },
   { name: 'magenta', label: 'Magenta', light: '#c026d3', dark: '#e879f9', hover: { light: '#a21caf', dark: '#f0abfc' } },
   { name: 'blue', label: 'Blue', light: '#2563eb', dark: '#60a5fa', hover: { light: '#1d4ed8', dark: '#93c5fd' } },
   { name: 'emerald', label: 'Emerald', light: '#059669', dark: '#34d399', hover: { light: '#047857', dark: '#6ee7b7' } },
@@ -56,7 +58,7 @@ export const ACCENT_COLORS: AccentColor[] = [
   { name: 'lime', label: 'Lime', light: '#65a30d', dark: '#a3e635', hover: { light: '#4d7c0f', dark: '#bef264' } },
 ];
 
-export const DEFAULT_ACCENT_COLOR: AccentColorName = 'magenta';
+export const DEFAULT_ACCENT_COLOR: AccentColorName = 'ember';
 
 // Helper to get accent color by name
 export function getAccentColor(name: AccentColorName): AccentColor {

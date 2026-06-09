@@ -3,43 +3,42 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 15, 23, 42;
-  --background-start-rgb: 255, 255, 255;
-  --background-end-rgb: 255, 255, 255;
+  --foreground-rgb: 33, 28, 23;
+  --background-start-rgb: 250, 247, 243;
+  --background-end-rgb: 250, 247, 243;
 
-  /* Accent color (applied dynamically by AccentColorContext) */
-  --primary: #c026d3;
-  --primary-hover: #a21caf;
-  /* Phase 1 vocabulary — accent extras. Values mirror current usage (no visual change);
-     retuned to ember in the restyle phase. See docs/token-migration-plan.md */
-  --primary-text: #c026d3;          /* accent used as inline text/links (today = --primary) */
+  /* Accent color — ember (applied dynamically by AccentColorContext; this is the fallback) */
+  --primary: #c63f0c;
+  --primary-hover: #ad3408;
+  /* Direction 2 (Ember & Dusk) — warm accent. AA-verified. See docs/design-system.md */
+  --primary-text: #b8390a;          /* accent used as inline text/links (AA on card) */
   --on-primary: #ffffff;            /* text/icon on a primary fill */
-  --primary-soft: rgba(192, 38, 211, 0.10); /* active-chip / selected background */
+  --primary-soft: rgba(198, 63, 12, 0.10); /* active-chip / selected background */
 
-  /* Theme colors — adapt in dark mode */
-  --background: #ffffff;
-  --card: #f8fafc;
-  --card-hover: #f1f5f9;
-  --border: #e2e8f0;
-  --text-primary: #0f172a;
-  --text-secondary: #64748b;
-  /* Phase 1 vocabulary — extended neutrals/text. Values match the current slate scale. */
-  --surface-2: #f1f5f9;             /* table headers, insets (today ≈ slate-100) */
-  --border-strong: #cbd5e1;         /* emphasized edges, inputs (today ≈ slate-300) */
-  --text-tertiary: #94a3b8;         /* muted, placeholder, icons (today ≈ slate-400) */
+  /* Theme colors — warm light (Ember & Dusk) */
+  --background: #faf7f3;
+  --card: #ffffff;
+  --card-hover: #f4eee6;
+  --border: #ece4d9;
+  --text-primary: #211c17;
+  --text-secondary: #5c5346;
+  /* Extended neutrals/text — warm scale */
+  --surface-2: #f6f1ea;             /* table headers, insets */
+  --border-strong: #ddd2c2;         /* emphasized edges, inputs */
+  --text-tertiary: #766a57;         /* muted, placeholder, icons (AA on card) */
 
-  /* Phase 1 vocabulary — UI status (semantic). Approximate current usage; retuned later. */
-  --success: #16a34a;
-  --warning: #d97706;
-  --danger: #dc2626;
-  --info: #2563eb;
+  /* UI status (semantic). Warm-leaning, AA-verified on card. */
+  --success: #4d7c0f;
+  --warning: #b45309;
+  --danger: #be123c;
+  --info: #1d4ed8;
 
-  /* Plotly chart colors (read via JavaScript) */
-  --plot-bg: #ffffff;
-  --plot-paper: #f8fafc;
-  --plot-grid: #e2e8f0;
-  --plot-text: #0f172a;
-  --plot-text-secondary: #64748b;
+  /* Plotly chart colors (read via JavaScript) — chart chrome, follows theme */
+  --plot-bg: #faf7f3;
+  --plot-paper: #ffffff;
+  --plot-grid: #ece4d9;
+  --plot-text: #211c17;
+  --plot-text-secondary: #5c5346;
 
   /* Code block theming - Light mode (GitHub Light inspired) */
   --code-bg: #f6f8fa;
@@ -60,40 +59,40 @@
 
 /* Dark mode colors */
 .dark {
-  --foreground-rgb: 241, 245, 249;
+  --foreground-rgb: 241, 236, 246;
 
-  /* Accent color - muted/pale for dark mode (applied dynamically) */
-  --primary: #e879f9;
-  --primary-hover: #f0abfc;
-  --primary-text: #e879f9;          /* accent as inline text/links (today = --primary) */
-  --on-primary: #ffffff;            /* text/icon on a primary fill */
-  --primary-soft: rgba(232, 121, 249, 0.14); /* active-chip / selected background */
-  --background-start-rgb: 15, 23, 42;
-  --background-end-rgb: 15, 23, 42;
+  /* Accent color — ember, brightened for dusk (applied dynamically; this is the fallback) */
+  --primary: #fb923c;
+  --primary-hover: #fdba74;
+  --primary-text: #fb923c;          /* accent as inline text/links (AA on dusk surfaces) */
+  --on-primary: #1a1206;            /* text/icon on a primary fill (dark ink on warm fill) */
+  --primary-soft: rgba(251, 146, 60, 0.14); /* active-chip / selected background */
+  --background-start-rgb: 22, 19, 28;
+  --background-end-rgb: 22, 19, 28;
 
-  /* Theme colors — dark mode */
-  --background: #0f172a;
-  --card: #1e293b;
-  --card-hover: #334155;
-  --border: #334155;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  /* Phase 1 vocabulary — extended neutrals/text (dark). Values match the current slate scale. */
-  --surface-2: #334155;             /* table headers, insets (today ≈ slate-700) */
-  --border-strong: #475569;         /* emphasized edges, inputs (today ≈ slate-600) */
-  --text-tertiary: #64748b;         /* muted, placeholder, icons (today ≈ slate-500) */
+  /* Theme colors — dusk (deep warm-violet) */
+  --background: #16131c;
+  --card: #1f1b27;
+  --card-hover: #2a2435;
+  --border: #332c40;
+  --text-primary: #f1ecf6;
+  --text-secondary: #b8aec6;
+  /* Extended neutrals/text — dusk scale */
+  --surface-2: #241f2e;             /* table headers, insets */
+  --border-strong: #423a52;         /* emphasized edges, inputs */
+  --text-tertiary: #8b8398;         /* muted, placeholder, icons */
 
-  /* Phase 1 vocabulary — UI status (semantic, dark). Approximate current usage. */
-  --success: #4ade80;
+  /* UI status (semantic, dusk). AA-verified on dusk surfaces. */
+  --success: #a3e635;
   --warning: #fbbf24;
-  --danger: #f87171;
-  --info: #60a5fa;
+  --danger: #fb7185;
+  --info: #93c5fd;
 
-  --plot-bg: #0f172a;
-  --plot-paper: #1e293b;
-  --plot-grid: #334155;
-  --plot-text: #f1f5f9;
-  --plot-text-secondary: #94a3b8;
+  --plot-bg: #16131c;
+  --plot-paper: #1f1b27;
+  --plot-grid: #332c40;
+  --plot-text: #f1ecf6;
+  --plot-text-secondary: #b8aec6;
 
   /* Code block theming - Dark mode (GitHub Dark Dimmed for less contrast) */
   --code-bg: #22272e;
