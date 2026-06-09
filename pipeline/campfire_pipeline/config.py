@@ -268,6 +268,46 @@ def resolve_fields_file(explicit_path=None):
     )
 
 
+def resolve_programs_file(explicit_path=None):
+    """Find the programs.toml file mapping program slugs to metadata.
+
+    Search order:
+    1. explicit_path (if provided and exists)
+    2. $CAMPFIRE_ROOT/config/programs.toml
+    3. ./programs.toml (backwards compat)
+
+    Returns
+    -------
+    str
+
+    Raises
+    ------
+    FileNotFoundError
+        If no programs file is found. Callers that treat the cross-check as
+        best-effort should catch this.
+    """
+    tried = []
+
+    if explicit_path and os.path.isfile(explicit_path):
+        return explicit_path
+    if explicit_path:
+        tried.append(explicit_path)
+
+    campfire_root = _get_campfire_root()
+    candidate = os.path.join(campfire_root, 'config', 'programs.toml')
+    if os.path.isfile(candidate):
+        return candidate
+    tried.append(candidate)
+
+    if os.path.isfile('programs.toml'):
+        return 'programs.toml'
+    tried.append('programs.toml')
+
+    raise FileNotFoundError(
+        f"programs.toml not found. Searched: {tried}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stage config getters
 # ---------------------------------------------------------------------------

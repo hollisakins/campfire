@@ -47,6 +47,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- `Observation.load` now validates the observations.toml `program` field
+  against `programs.toml` (when present): if the value is not a known program
+  *slug* it raises immediately, with a hint when the value matches a program
+  *name* instead. Previously a slug/name mix-up was silently baked into the
+  ECSV `program_slug` metadata and only surfaced much later at deploy time as
+  a cryptic Supabase row-level-security error.
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
   output mosaic i2d now carries the same header metadata as a jwst
   `Image3Pipeline` product. Previously `_write_i2d_fits` built a blank
