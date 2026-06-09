@@ -46,12 +46,12 @@ const Stat: React.FC<{
   label: string;
 }> = ({ icon: Icon, value, label }) => (
   <div className="flex items-center gap-2 px-3 py-2">
-    <Icon className="w-4 h-4 text-text-secondary dark:text-slate-400 flex-shrink-0" />
+    <Icon className="w-4 h-4 text-text-secondary flex-shrink-0" />
     <div className="flex flex-col leading-tight">
-      <span className="text-sm font-semibold text-text-primary dark:text-slate-100 tabular-nums">
+      <span className="text-sm font-semibold text-text-primary tabular-nums">
         {value}
       </span>
-      <span className="text-[10px] uppercase tracking-wider text-text-secondary dark:text-slate-400">
+      <span className="text-[10px] uppercase tracking-wider text-text-secondary">
         {label}
       </span>
     </div>
@@ -61,7 +61,7 @@ const Stat: React.FC<{
 export const ScopeHeader: React.FC<ScopeHeaderProps> = ({ overview, loading }) => {
   if (loading || !overview) {
     return (
-      <div className="bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg px-2 py-1 mb-6 h-14 animate-pulse" />
+      <div className="bg-card border border-border rounded-lg px-2 py-1 mb-6 h-14 animate-pulse" />
     );
   }
 
@@ -70,7 +70,7 @@ export const ScopeHeader: React.FC<ScopeHeaderProps> = ({ overview, loading }) =
     : formatRelative(overview.latest_deployed_at);
 
   return (
-    <div className="bg-card dark:bg-slate-800 border border-border dark:border-slate-700 rounded-lg px-2 py-1 mb-6 flex flex-wrap items-center divide-x divide-border dark:divide-slate-700">
+    <div className="bg-card border border-border rounded-lg px-2 py-1 mb-6 flex flex-wrap items-center divide-x divide-border">
       <Stat icon={Database} value={formatNumber(overview.n_programs)} label="programs" />
       <Stat icon={Telescope} value={formatNumber(overview.n_observations)} label="observations" />
       <Stat icon={MapPin} value={formatNumber(overview.n_pointings)} label="pointings" />
