@@ -35,7 +35,7 @@ export const SettingsCard: React.FC = () => {
         <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
           <Settings className="w-5 h-5 text-primary" />
         </div>
-        <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">Settings</h2>
+        <h2 className="text-lg font-semibold text-text-primary">Settings</h2>
       </div>
 
       {/* Group Account Notice */}
@@ -50,15 +50,15 @@ export const SettingsCard: React.FC = () => {
 
       {/* Appearance Section */}
       <div className="mb-8">
-        <h3 className="text-sm font-semibold text-text-primary dark:text-slate-100 mb-3 flex items-center gap-2">
+        <h3 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
           <Sun className="w-4 h-4" />
           Appearance
         </h3>
 
         <div className="space-y-6">
           <div>
-            <label className="text-sm text-text-secondary dark:text-slate-400 mb-2 block">Theme</label>
-            <div className="flex rounded-lg border border-border dark:border-slate-600 overflow-hidden w-fit">
+            <label className="text-sm text-text-secondary mb-2 block">Theme</label>
+            <div className="flex rounded-lg border border-border dark:border-border-strong overflow-hidden w-fit">
               {themeOptions.map((option) => {
                 const Icon = option.icon;
                 const isActive = theme === option.value;
@@ -73,8 +73,8 @@ export const SettingsCard: React.FC = () => {
                     className={`
                       flex items-center gap-2 px-4 py-2 text-sm transition-colors
                       ${isActive
-                        ? 'bg-primary text-white'
-                        : 'bg-white dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700'
+                        ? 'bg-primary text-on-primary'
+                        : 'bg-card text-text-secondary hover:bg-card-hover'
                       }
                       ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}
                     `}
@@ -89,11 +89,11 @@ export const SettingsCard: React.FC = () => {
 
           {/* Accent Color */}
           <div>
-            <label className="text-sm text-text-secondary dark:text-slate-400 mb-2 block flex items-center gap-2">
+            <label className="text-sm text-text-secondary mb-2 block flex items-center gap-2">
               <Palette className="w-4 h-4" />
               Accent Color
             </label>
-            <p className="text-xs text-text-secondary dark:text-slate-500 mb-3">
+            <p className="text-xs text-text-secondary dark:text-text-tertiary mb-3">
               Affects buttons, links, and spectrum plot throughout the site
             </p>
             <div className="flex flex-wrap gap-2">
@@ -125,7 +125,7 @@ export const SettingsCard: React.FC = () => {
 
       {/* Spectrum Viewer Defaults Section */}
       <div>
-        <h3 className="text-sm font-semibold text-text-primary dark:text-slate-100 mb-3 flex items-center gap-2">
+        <h3 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
           <BarChart3 className="w-4 h-4" />
           Spectrum Viewer Defaults
         </h3>
@@ -133,10 +133,10 @@ export const SettingsCard: React.FC = () => {
         <div className="space-y-6">
           {/* Flux Unit */}
           <div>
-            <label className="text-sm text-text-secondary dark:text-slate-400 mb-2 block">
+            <label className="text-sm text-text-secondary mb-2 block">
               Default Flux Units
             </label>
-            <div className="flex rounded-lg border border-border dark:border-slate-600 overflow-hidden w-fit">
+            <div className="flex rounded-lg border border-border dark:border-border-strong overflow-hidden w-fit">
               {fluxUnitOptions.map((option) => (
                 <button
                   key={option.value}
@@ -145,8 +145,8 @@ export const SettingsCard: React.FC = () => {
                   className={`
                     px-4 py-2 text-sm transition-colors
                     ${spectrumPreferences.fluxUnit === option.value
-                      ? 'bg-primary text-white'
-                      : 'bg-white dark:bg-slate-800 text-text-secondary dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700'
+                      ? 'bg-primary text-on-primary'
+                      : 'bg-card text-text-secondary hover:bg-card-hover'
                     }
                     ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}
                   `}
@@ -159,14 +159,14 @@ export const SettingsCard: React.FC = () => {
 
           {/* 2D Colorscale */}
           <div>
-            <label className="text-sm text-text-secondary dark:text-slate-400 mb-2 block">
+            <label className="text-sm text-text-secondary mb-2 block">
               2D Spectrum Colormap
             </label>
             <select
               value={spectrumPreferences.colorscale2D}
               onChange={(e) => updateSpectrumPreferences({ colorscale2D: e.target.value as Colorscale2D })}
               disabled={isGroupAccount}
-              className={`px-4 py-2 text-sm border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
+              className={`px-4 py-2 text-sm border border-border dark:border-border-strong rounded-lg bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               {COLORSCALE_OPTIONS.map((scale) => (
                 <option key={scale} value={scale}>
@@ -178,7 +178,7 @@ export const SettingsCard: React.FC = () => {
 
           {/* SNR Range */}
           <div>
-            <label className="text-sm text-text-secondary dark:text-slate-400 mb-2 block">
+            <label className="text-sm text-text-secondary mb-2 block">
               Default 2D Scale Range
             </label>
             <div className="flex items-center gap-3">
@@ -187,15 +187,15 @@ export const SettingsCard: React.FC = () => {
                 value={spectrumPreferences.snrMin}
                 onChange={(e) => updateSpectrumPreferences({ snrMin: parseFloat(e.target.value) || 0 })}
                 disabled={isGroupAccount}
-                className={`w-20 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className={`w-20 px-3 py-2 text-sm border border-border dark:border-border-strong rounded-lg bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
               />
-              <span className="text-text-secondary dark:text-slate-400">to</span>
+              <span className="text-text-secondary">to</span>
               <input
                 type="number"
                 value={spectrumPreferences.snrMax}
                 onChange={(e) => updateSpectrumPreferences({ snrMax: parseFloat(e.target.value) || 0 })}
                 disabled={isGroupAccount}
-                className={`w-20 px-3 py-2 text-sm border border-border dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-text-primary dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className={`w-20 px-3 py-2 text-sm border border-border dark:border-border-strong rounded-lg bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
               />
             </div>
           </div>
