@@ -83,6 +83,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   Snowballs", since stcal's snowball flagging calls into cv2. macOS has no
   `ENOMEM`-at-fork concern, so `spawn` is both safe and sufficient there;
   candide keeps `forkserver` and its preload list unchanged.
+- `cfpipe download` no longer aborts the whole run when a single MAST
+  `/list_products` batch exhausts its retries. `list_products_batched`
+  previously called `fut.result()` directly inside `as_completed`, so one
+  batch that timed out after its per-request retries propagated the
+  exception and discarded every batch that had already succeeded — on a large
+  NIRCam program (e.g. 5893, 1521 filesets / 61 batches) a single slow
+  response near the end threw away ~30 minutes of completed work, and the
+  re-run started from scratch. Failed batches are now isolated per-future and
+  retried in up to `max_rounds=3` successive rounds; only if batches still
+  fail after the last round does it raise a descriptive `RuntimeError`
+  (reporting the failed batch/fileset counts) instead of a raw `ReadTimeout`.
+  Per-request backoff sleeps also gained ±1s of jitter so the parallel
+  workers don't retry in lockstep against an overloaded endpoint. No change
+  to which products are returned on success.
 
 ## v0.5.1 — 2026-05-27
 
