@@ -441,19 +441,30 @@ def get_r_curve_path(grating):
     return str(path)
 
 
-def get_extended_photom_path():
+def get_extended_photom_path(fixed_slit=False):
     """Get the path to the committed extended-wavelength photom reference file.
 
     This is the SPURS-derived calibrated photom for the extended-wavelength
     feature (``[nirspec.stage2].extend_g140m_g235m``), shipped as package data.
+    Fixed-slit sources require a different flux calibration than MSA sources, so
+    they use a dedicated photom reference (v0014) when *fixed_slit* is True.
+
+    Parameters
+    ----------
+    fixed_slit : bool, optional
+        If True, return the fixed-slit photom reference
+        (``extended_jwst_nirspec_photom_0014.fits``) instead of the MSA one
+        (``extended_jwst_nirspec_photom_0015.fits``).
 
     Returns
     -------
     str
-        Absolute path to ``extended_jwst_nirspec_photom_0015.fits``.
+        Absolute path to the appropriate extended photom reference file.
     """
     data_dir = Path(__file__).parent / 'data'
-    path = data_dir / 'extended_jwst_nirspec_photom_0015.fits'
+    fname = ('extended_jwst_nirspec_photom_0014.fits' if fixed_slit
+             else 'extended_jwst_nirspec_photom_0015.fits')
+    path = data_dir / fname
     if not path.exists():
         raise FileNotFoundError(
             f"Extended photom reference not found: {path}\n"
