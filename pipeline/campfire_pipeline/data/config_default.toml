@@ -9,7 +9,7 @@
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
-    CRDS_CONTEXT = "jwst_1481.pmap"   # uncomment to pin
+    CRDS_CONTEXT = "jwst_1481.pmap"
 
 [paths]
     # Resolved from $CAMPFIRE_ROOT by default. Uncomment to override:
@@ -52,6 +52,14 @@
     rectify = true
     plot_bkgsub = true
     empirical_wavecorr = false
+    # Extend G140M/F100LP and G235M/F170LP past their nominal red cutoff, using the
+    # next-redder grating's calibration: a committed extended photom reference plus
+    # extended fflat/sflat/wavelengthrange generated on the fly. Opt-in per observation
+    # ([<obs>.stage2]). Only those two grating/filter combos are affected; every other
+    # config runs normally. When true, stage 1's background-subtraction mask auto-widens
+    # for these gratings (see config.get_stage_config) so the extended-order flux is not
+    # subtracted as background before stage 2 can recover it.
+    extend_g140m_g235m = false
 
     # Stuck shutter auto-detection
     detect_stuck_shutters = true                        # master enable/disable

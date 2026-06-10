@@ -46,6 +46,14 @@
         subtract_2d = true
         box_size = 16
 
+    [example_uds_medium.stage2]
+        # Extract G235M/F170LP (and G140M/F100LP) past their nominal red cutoff,
+        # out to 5.3 um, using the committed SPURS-derived extended calibration.
+        # Stage 1's background mask auto-widens for these gratings automatically.
+        # Only G140M/F100LP and G235M/F170LP are affected; other gratings are
+        # unchanged. The calibration is re-derivable with data/Generate_Extended_Cals.py.
+        extend_g140m_g235m = true
+
     [example_uds_medium.masks]
         "jw05678001001_nrs1" = """
         image
