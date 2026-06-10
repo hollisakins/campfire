@@ -48,9 +48,9 @@ dusk panels). `--surface-2` is the most-elevated surface in both modes (consiste
 
 | Token | Light | Dark (dusk) | Role |
 |---|---|---|---|
-| `--background` | `#faf8f4` | `#16131c` | near-white page; legible base for plot wells & inputs |
-| `--card` | `#f3eee6` | `#1f1b27` | primary surface — warm panels lift off the page |
-| `--surface-2` | `#ede5d9` | `#241f2e` | table header, footer, insets (most elevated) |
+| `--background` | `#faf8f4` | `#16131c` | near-white page; legible base for plot data wells & inputs |
+| `--card` | `#f6f1ea` | `#1f1b27` | primary surface — warm panels lift off the page |
+| `--surface-2` | `#f1ebe1` | `#241f2e` | table header, footer, insets, plot edges (most elevated) |
 | `--card-hover` | `#ece4d8` | `#2a2435` | row & control hover |
 
 ### Borders
@@ -62,9 +62,9 @@ dusk panels). `--surface-2` is the most-elevated surface in both modes (consiste
 ### Text  *(AA verified on `--card`, the worst-case chrome surface)*
 | Token | Light | Dark | Contrast L/D | Role |
 |---|---|---|---|---|
-| `--text-primary` | `#211c17` | `#f1ecf6` | 14.6 / 15.8 | body, headings |
-| `--text-secondary` | `#5c5346` | `#b8aec6` | 6.5 / 8.7 | labels, meta |
-| `--text-tertiary` | `#6c6150` | `#8b8398` | 5.3 / 5.1 | muted, placeholder, icons |
+| `--text-primary` | `#211c17` | `#f1ecf6` | 15.0 / 15.8 | body, headings |
+| `--text-secondary` | `#5c5346` | `#b8aec6` | 6.7 / 8.7 | labels, meta |
+| `--text-tertiary` | `#6c6150` | `#8b8398` | 5.4 / 5.1 | muted, placeholder, icons |
 
 ### Accent — ember  *(all 8 user accents still selectable; ember is the default)*
 | Token | Light | Dark | Notes |
