@@ -15,6 +15,37 @@ from astropy.table import Table
 
 from campfire_pipeline.common.io import log
 
+# Default slitlet assumed when a file is missing the NOD_TYPE keyword.
+# Some Cycle 1 programs do not write NOD_TYPE; the canonical format is
+# "N-SHUTTER-SLITLET", so a 3-shutter slitlet is "3-SHUTTER-SLITLET".
+DEFAULT_NOD_TYPE = '3-SHUTTER-SLITLET'
+
+
+def read_nod_type(hdr, filename):
+    """Read NOD_TYPE from a primary header, defaulting if missing.
+
+    Some Cycle 1 programs do not write the NOD_TYPE keyword. When it is
+    absent we assume a 3-shutter slitlet (`DEFAULT_NOD_TYPE`) and emit a
+    warning so the assumption is visible.
+
+    Parameters
+    ----------
+    hdr : astropy.io.fits.Header
+        Primary header to read from.
+    filename : str
+        File path or name, used only for the warning message.
+
+    Returns
+    -------
+    str
+        The NOD_TYPE value, or `DEFAULT_NOD_TYPE` if the keyword is absent.
+    """
+    if 'NOD_TYPE' in hdr:
+        return hdr['NOD_TYPE']
+    log(f"WARNING: NOD_TYPE keyword missing from {os.path.basename(filename)}; "
+        f"assuming {DEFAULT_NOD_TYPE}")
+    return DEFAULT_NOD_TYPE
+
 
 def _validate_program_slug(obs_name, program_slug):
     """Best-effort check that observations.toml ``program`` is a real slug.
@@ -407,7 +438,7 @@ class Observation:
             PRIDTPTS.append(hdr['PRIDTPTS'])
             PATT_NUM.append(hdr['PATT_NUM'])
             NUMDTHPT.append(hdr['NUMDTHPT'])
-            NOD_TYPE.append(hdr['NOD_TYPE'])
+            NOD_TYPE.append(read_nod_type(hdr, f))
             SUBPXPTS.append(hdr['SUBPXPTS'])
             hdr1 = fits.getheader(f, ext=1)
             SHUTTRID.append(hdr1['SHUTTRID'])

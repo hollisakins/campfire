@@ -161,6 +161,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   Per-request backoff sleeps also gained ±1s of jitter so the parallel
   workers don't retry in lockstep against an overloaded endpoint. No change
   to which products are returned on success.
+- NIRSpec file ingest no longer crashes with `KeyError: 'NOD_TYPE'` on
+  programs whose exposures omit the `NOD_TYPE` primary-header keyword (seen in
+  some Cycle 1 programs). `Observation` table building (`observation.py`) and
+  the stage-3 exposures table (`stage3.py`) now read it through a shared
+  `read_nod_type` helper that falls back to `3-SHUTTER-SLITLET` (the canonical
+  `N-SHUTTER-SLITLET` form for a 3-shutter slitlet) and logs a warning naming
+  the offending file. Files that already carry `NOD_TYPE` are unaffected.
 
 ## v0.5.1 — 2026-05-27
 

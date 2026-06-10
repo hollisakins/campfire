@@ -14,6 +14,7 @@ from astropy.io.fits import table_to_hdu
 from jwst import associations
 
 from campfire_pipeline.common.io import log
+from campfire_pipeline.nirspec.observation import read_nod_type
 from campfire_pipeline.nirspec.extraction import (
     boxcar_profile,
     optext_profile,
@@ -248,7 +249,7 @@ def run_stage3_single_source(
         exposures = Table()
         exposures['filename'] = cal_files
         exposures['dither_type'] = [hdr['PATTTYPE'] for hdr in hdrs0]
-        exposures['nod_type'] = [hdr['NOD_TYPE'] for hdr in hdrs0]
+        exposures['nod_type'] = [read_nod_type(hdr, fn) for hdr, fn in zip(hdrs0, cal_files)]
         exposures['nod_number'] = [hdr['PRIDTPTS'] for hdr in hdrs0]
         exposures['dither_number'] = [hdr['PATT_NUM'] for hdr in hdrs0]
         exposures['exptime'] = [hdr['EFFEXPTM'] for hdr in hdrs0]
