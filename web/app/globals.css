@@ -19,15 +19,15 @@
      Elevation mirrors dark mode: surfaces move *toward the ink color* as they
      lift off the near-white page (page → card → surface-2). The near-white
      base doubles as the legible surface for plot wells and inputs. */
-  --background: #faf8f4;             /* near-white page + plot wells (legible base) */
-  --card: #f6f1ea;                  /* warm-paper panels — carries the tint/character */
-  --card-hover: #ece4d8;
-  --border: #e2d8c9;
+  --background: #fbf9f6;             /* near-white page + plot wells (legible base) */
+  --card: #f8f4ef;                  /* warm-paper panels — carries the tint/character */
+  --card-hover: #ede6db;
+  --border: #e6ddce;
   --text-primary: #211c17;
   --text-secondary: #5c5346;
   /* Extended neutrals/text — warm scale */
-  --surface-2: #f1ebe1;             /* table headers, insets — most elevated */
-  --border-strong: #d3c6b4;         /* emphasized edges, inputs */
+  --surface-2: #f3ede5;             /* table headers, insets — most elevated */
+  --border-strong: #d7cbb9;         /* emphasized edges, inputs */
   --text-tertiary: #6c6150;         /* muted, placeholder, icons (AA on card) */
 
   /* UI status (semantic). Warm-leaning, AA-verified on card. */
@@ -50,9 +50,9 @@
      The data region (--plot-bg) uses the near-white base so data stays
      maximally legible; the paper/edges (--plot-paper) sit a warm step darker
      so the plotting area reads as a lighter inset well. */
-  --plot-bg: #faf8f4;
-  --plot-paper: #f1ebe1;
-  --plot-grid: #e2d8c9;
+  --plot-bg: #fbf9f6;
+  --plot-paper: #f3ede5;
+  --plot-grid: #e6ddce;
   --plot-text: #211c17;
   --plot-text-secondary: #5c5346;
 

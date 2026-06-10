@@ -48,23 +48,23 @@ dusk panels). `--surface-2` is the most-elevated surface in both modes (consiste
 
 | Token | Light | Dark (dusk) | Role |
 |---|---|---|---|
-| `--background` | `#faf8f4` | `#16131c` | near-white page; legible base for plot data wells & inputs |
-| `--card` | `#f6f1ea` | `#1f1b27` | primary surface — warm panels lift off the page |
-| `--surface-2` | `#f1ebe1` | `#241f2e` | table header, footer, insets, plot edges (most elevated) |
-| `--card-hover` | `#ece4d8` | `#2a2435` | row & control hover |
+| `--background` | `#fbf9f6` | `#16131c` | near-white page; legible base for plot data wells & inputs |
+| `--card` | `#f8f4ef` | `#1f1b27` | primary surface — warm panels lift off the page |
+| `--surface-2` | `#f3ede5` | `#241f2e` | table header, footer, insets, plot edges (most elevated) |
+| `--card-hover` | `#ede6db` | `#2a2435` | row & control hover |
 
 ### Borders
 | Token | Light | Dark | Role |
 |---|---|---|---|
-| `--border` | `#e2d8c9` | `#332c40` | hairlines, dividers |
-| `--border-strong` | `#d3c6b4` | `#423a52` | emphasized edges, inputs |
+| `--border` | `#e6ddce` | `#332c40` | hairlines, dividers |
+| `--border-strong` | `#d7cbb9` | `#423a52` | emphasized edges, inputs |
 
 ### Text  *(AA verified on `--card`, the worst-case chrome surface)*
 | Token | Light | Dark | Contrast L/D | Role |
 |---|---|---|---|---|
-| `--text-primary` | `#211c17` | `#f1ecf6` | 15.0 / 15.8 | body, headings |
-| `--text-secondary` | `#5c5346` | `#b8aec6` | 6.7 / 8.7 | labels, meta |
-| `--text-tertiary` | `#6c6150` | `#8b8398` | 5.4 / 5.1 | muted, placeholder, icons |
+| `--text-primary` | `#211c17` | `#f1ecf6` | 15.4 / 15.8 | body, headings |
+| `--text-secondary` | `#5c5346` | `#b8aec6` | 6.9 / 8.7 | labels, meta |
+| `--text-tertiary` | `#6c6150` | `#8b8398` | 5.5 / 5.1 | muted, placeholder, icons |
 
 ### Accent — ember  *(all 8 user accents still selectable; ember is the default)*
 | Token | Light | Dark | Notes |
