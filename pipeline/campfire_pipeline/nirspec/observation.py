@@ -16,6 +16,43 @@ from astropy.table import Table
 from campfire_pipeline.common.io import log
 
 
+def _validate_program_slug(obs_name, program_slug):
+    """Best-effort check that observations.toml ``program`` is a real slug.
+
+    A program *name*/slug mix-up is otherwise baked into the ECSV metadata
+    here and only surfaces much later at deploy time as a cryptic Supabase
+    RLS error. Validation requires programs.toml; its absence is not an error
+    (the pipeline is usable without it).
+    """
+    from campfire_pipeline.config import resolve_programs_file
+
+    try:
+        programs_file = resolve_programs_file()
+    except FileNotFoundError:
+        return
+
+    with open(programs_file, 'r') as f:
+        programs = toml.load(f)
+
+    if program_slug in programs:
+        return
+
+    matches = [
+        slug for slug, info in programs.items()
+        if str(info.get('program_name', '')).lower() == str(program_slug).lower()
+    ]
+    hint = (
+        f" '{program_slug}' is the program_name of slug '{matches[0]}' — use "
+        f"the slug, not the name." if matches else ''
+    )
+    known = ', '.join(sorted(programs)) or '(none)'
+    raise ValueError(
+        f"Observation '{obs_name}': program '{program_slug}' is not a slug in "
+        f"{programs_file}.{hint} Program slugs are the [section] keys in "
+        f"programs.toml; known slugs: {known}."
+    )
+
+
 @dataclass
 class Observation:
     name: str
@@ -46,6 +83,7 @@ class Observation:
 
         field_name = obs['field']
         program_slug = obs['program']
+        _validate_program_slug(name, program_slug)
         data_subdir = obs['data_subdir']
         gratings = obs.get('gratings', [])
 

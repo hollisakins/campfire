@@ -15,7 +15,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from campfire.deploy.config import load_observations, load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir
+from campfire.deploy.config import load_observations, load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir, validate_program_slug
 from campfire.deploy.discover import (
     discover_pointings_ecsv,
     discover_rgb_images,
@@ -159,6 +159,14 @@ def deploy_observation(
 
     field = get_field(summary)
     program_slug = get_program_slug(summary)
+
+    # Validate the program slug resolves to a known program before doing any
+    # work (including dry runs). A slug/name mix-up in observations.toml is
+    # otherwise baked into the ECSV and only surfaces downstream as a cryptic
+    # Supabase RLS error.
+    programs_config = load_programs()
+    validate_program_slug(program_slug, programs_config, obs_name)
+
     objects = get_unique_objects(summary)
     spectra = get_spectra_records(summary, obs_name)
     spec_paths = get_spec_paths(summary, obs_dir)
@@ -279,7 +287,6 @@ def deploy_observation(
         return {'field': field, 'needs_reconcile': False}
 
     # --- Live deployment ---
-    programs_config = load_programs()
     sb = get_supabase_client(config)
 
     # Check for existing targets and confirm

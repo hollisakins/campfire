@@ -280,6 +280,44 @@ def resolve_program_slug(obs_name: str) -> str:
     return ''
 
 
+def validate_program_slug(program_slug: str, programs_config: dict, obs_name: str) -> None:
+    """Ensure *program_slug* is a real slug defined in programs.toml.
+
+    Guards against the common mistake of putting a program *name* (or any
+    other non-slug string) in the observations.toml ``program`` field. That
+    value is baked into the ECSV metadata by the pipeline and, left
+    unguarded, silently creates a junk private program at deploy time; the
+    observation insert then fails its representation read-back with a cryptic
+    Supabase error (``new row violates row-level security policy``). Fail
+    early here with an actionable message instead.
+    """
+    if program_slug in programs_config:
+        return
+
+    # Did they use the program *name* instead of the slug?
+    matches = [
+        slug for slug, info in programs_config.items()
+        if str(info.get('program_name', '')).lower() == str(program_slug).lower()
+    ]
+    known = ', '.join(sorted(programs_config)) or '(none)'
+    print(
+        f"Error: observation '{obs_name}' resolves to program_slug "
+        f"'{program_slug}', which is not a program defined in programs.toml."
+    )
+    if matches:
+        print(
+            f"  '{program_slug}' is the program_name of slug '{matches[0]}' "
+            f"— use the slug, not the name."
+        )
+    print("  Program slugs are the [section] keys in programs.toml.")
+    print(f"  Known slugs: {known}")
+    print(
+        f"  Fix the 'program' field in observations.toml, then regenerate the "
+        f"ECSV metadata (e.g. 'cfpipe nirspec summary --obs {obs_name}')."
+    )
+    sys.exit(1)
+
+
 def resolve_field(obs_name: str) -> str:
     """Get field name for an observation from observations.toml."""
     obs = load_observations()

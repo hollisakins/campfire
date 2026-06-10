@@ -194,7 +194,20 @@ def upsert_programs(
 ) -> None:
     """Upsert program records."""
     for slug in program_slugs:
-        info = programs_config.get(slug, {})
+        if slug not in programs_config:
+            # Refuse to invent a program from defaults: that silently creates
+            # a junk private program (is_public=False, empty metadata) and is
+            # what turns a slug/name mix-up into a cryptic RLS failure on the
+            # observation insert. Callers should validate first; this is the
+            # defense-in-depth backstop.
+            known = ', '.join(sorted(programs_config)) or '(none)'
+            raise ValueError(
+                f"Program slug '{slug}' is not defined in programs.toml; "
+                f"refusing to create a program from defaults. This usually "
+                f"means a program name was used where a slug was expected. "
+                f"Known slugs: {known}."
+            )
+        info = programs_config[slug]
         data = {
             'slug': slug,
             'program_name': info.get('program_name', slug),
