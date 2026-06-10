@@ -53,6 +53,25 @@ Release procedure: edit the `## Unreleased` section below, then run
   *name* instead. Previously a slug/name mix-up was silently baked into the
   ECSV `program_slug` metadata and only surfaced much later at deploy time as
   a cryptic Supabase row-level-security error.
+- NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): a
+  tile no longer aborts with `ValueError: No or too few valid pixels in the
+  pixel map` when a selected exposure only partially overlaps it. The pixmap
+  was built with `output_wcs.invert(ra, dec)` at its default
+  `with_bounding_box=True`, which returns NaN for every input pixel mapping
+  outside the output WCS bounding box. cdriz (`drizzle` 2.x) raises on *any*
+  NaN in the pixmap, so an exposure that merely grazes a (rotated) tile — e.g.
+  a COSMOS exposure overlapping tile `B2` by ~2 pixels at a corner — crashed
+  the entire drizzle. The inverse is now called with `with_bounding_box=False`,
+  producing a finite, geometrically-continuous pixmap; cdriz drops off-frame
+  pixels through its normal output-bounds clipping while keeping correct kernel
+  geometry at the tile edge, and overlap detection (`_output_bbox_in_tile`) now
+  keys off pixels mapping *inside* the frame rather than finite ones. Replacing
+  the NaNs with an out-of-frame sentinel was rejected: cdriz derives each
+  pixel's drizzle footprint from neighbouring pixmap entries, so a sentinel
+  poisons the geometry and silently zeroes the whole exposure's contribution.
+  Output for tiles that already built is unchanged (any exposure that
+  previously succeeded had an all-finite pixmap, computed identically here).
+  The default `jwst` implementation was never affected.
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
   output mosaic i2d now carries the same header metadata as a jwst
   `Image3Pipeline` product. Previously `_write_i2d_fits` built a blank
@@ -89,6 +108,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   Snowballs", since stcal's snowball flagging calls into cv2. macOS has no
   `ENOMEM`-at-fork concern, so `spawn` is both safe and sufficient there;
   candide keeps `forkserver` and its preload list unchanged.
+- `cfpipe download` no longer aborts the whole run when a single MAST
+  `/list_products` batch exhausts its retries. `list_products_batched`
+  previously called `fut.result()` directly inside `as_completed`, so one
+  batch that timed out after its per-request retries propagated the
+  exception and discarded every batch that had already succeeded — on a large
+  NIRCam program (e.g. 5893, 1521 filesets / 61 batches) a single slow
+  response near the end threw away ~30 minutes of completed work, and the
+  re-run started from scratch. Failed batches are now isolated per-future and
+  retried in up to `max_rounds=3` successive rounds; only if batches still
+  fail after the last round does it raise a descriptive `RuntimeError`
+  (reporting the failed batch/fileset counts) instead of a raw `ReadTimeout`.
+  Per-request backoff sleeps also gained ±1s of jitter so the parallel
+  workers don't retry in lockstep against an overloaded endpoint. No change
+  to which products are returned on success.
 
 ## v0.5.1 — 2026-05-27
 
