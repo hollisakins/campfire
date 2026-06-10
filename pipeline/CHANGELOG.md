@@ -62,6 +62,30 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- NIRCam `jhat` WCS-alignment step no longer aborts the entire `process` run
+  on exposures near/over the edge of the reference-catalog footprint. Two
+  distinct jhat crash modes were taking down the whole run (one bad exposure
+  killed the other 1600+):
+  - *Zero refcat overlap.* When no refcat sources land on the detector, jhat
+    skips its matching steps leaving `refcat_xcol` unset, then indexes
+    `phot.t[None]` and raises a bare `KeyError(None)`. `jhat_step` now catches
+    that specific signature, leaves the input WCS untouched, and stamps
+    `CFP_JHAT=NO_REFCAT_OVERLAP` so the exposure reads as
+    intentionally-not-aligned and isn't retried every run.
+  - *Degenerate diagnostic plot.* jhat's dx/dy plotters compute a NaN axis
+    limit from a degenerate best-match panel (few matches, common at the
+    footprint edge) and raise `ValueError: Axis limits cannot be NaN or Inf` —
+    sometimes *after* a perfectly good WCS solution has already been written,
+    so the crash discarded a valid alignment. The plots are diagnostic-only,
+    but jhat gates them on several independent flags not all reachable through
+    `align_wcs`, so the `saveplots` config flag alone can't suppress them.
+    Diagnostic plotting now defaults to off and is enforced by no-op'ing jhat's
+    plot functions at the source; the affected exposures align normally. Plots
+    re-enable per-field with `[<field>.jhat].saveplots = true` (restoring the
+    crash risk on edge exposures).
+  Net effect: the `process` run completes, edge exposures with real refcat
+  coverage are aligned and included, and only the truly-uncoverable ones are
+  skipped (and recorded as such). Genuine alignment errors still propagate.
 - `Observation.load` now validates the observations.toml `program` field
   against `programs.toml` (when present): if the value is not a known program
   *slug* it raises immediately, with a hint when the value matches a program

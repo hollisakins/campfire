@@ -25,6 +25,62 @@ from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 
 
+# Sentinel stamped into CFP_JHAT when an exposure cannot be aligned because it
+# lies at/beyond the edge of the reference catalog footprint (zero refcat
+# sources land on the detector). The input WCS is left untouched. Recorded so
+# the exposure reads as intentionally-not-aligned and isn't retried every run.
+NO_REFCAT_SENTINEL = 'NO_REFCAT_OVERLAP'
+
+
+def _disable_jhat_plots():
+    """No-op jhat's diagnostic plot functions so they can't abort a run.
+
+    jhat's dx/dy diagnostic plotters compute a NaN axis limit and raise
+    ``ValueError: Axis limits cannot be NaN or Inf`` on exposures whose
+    best-match panel is degenerate (common near the edge of the reference
+    catalog's footprint, where few sources match). That crash happens *inside*
+    ``run_all`` and takes down the whole batch -- in some code paths *after* a
+    perfectly good WCS solution has already been written. The plots are purely
+    diagnostic, but jhat gates them on several independent flags (``saveplots``,
+    ``showplots``, ``show_initial_plot``), not all reachable through
+    ``align_wcs``, so the config flag alone can't suppress them. We disable them
+    at the source by replacing the plot functions with no-ops.
+
+    Reaching the right namespace is subtle: jhat's package ``__init__`` rebinds
+    the ``st_wcs_align`` attribute on the ``jhat`` package from the *submodule*
+    to a same-named *class*, so ``import jhat.st_wcs_align`` yields the class,
+    not the module. The plot functions are module-level globals referenced by
+    ``run_all`` at call time, so we patch the dict ``run_all`` actually resolves
+    against: ``run_all.__globals__``.
+    """
+    from jhat.st_wcs_align import st_wcs_align as _WcsAlign
+    plot_globals = _WcsAlign.run_all.__globals__
+
+    def _noop(*args, **kwargs):
+        return None
+
+    for fn_name in ('dxdy_plot', 'initial_dxdy_plot', 'infoplots',
+                    'plot_rotated'):
+        if fn_name in plot_globals:
+            plot_globals[fn_name] = _noop
+
+
+def _stamp_jhat(exposure_file, value):
+    """Atomically set CFP_JHAT=*value* on *exposure_file* (header only).
+
+    Used for the no-refcat-overlap skip path, where jhat produces no output
+    to promote -- we stamp the canonical file in place. Writes to a sibling
+    .tmp on the same filesystem then renames, mirroring the atomicity the rest
+    of this module relies on for networked-FS clusters.
+    """
+    base, ext = os.path.splitext(exposure_file)
+    tmp_path = f'{base}.tmp{ext}'
+    with fits.open(exposure_file) as hdul:
+        hdul[0].header['CFP_JHAT'] = (value, cfp.CFP_COMMENTS['CFP_JHAT'])
+        hdul.writeto(tmp_path, overwrite=True)
+    os.replace(tmp_path, exposure_file)
+
+
 def _copy_diagnostics(scratch_subdir, diag_dir, rootname):
     """Move jhat's diagnostic PDFs and ECSV photometry tables to ``diag_dir``."""
     if not os.path.isdir(scratch_subdir):
@@ -65,6 +121,12 @@ def jhat_step(exposure_file, field, step_config, overwrite=False, status=None):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         from jhat import align_wcs_batch
+
+    # Unless diagnostics are explicitly requested, neutralize jhat's plotting:
+    # it crashes the run on degenerate-match (footprint-edge) exposures and the
+    # config ``saveplots`` flag can't fully suppress it. See _disable_jhat_plots.
+    if not step_config.get('saveplots', False):
+        _disable_jhat_plots()
 
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
     filtname = exposure_file.split('/')[-2]
@@ -163,9 +225,29 @@ def jhat_step(exposure_file, field, step_config, overwrite=False, status=None):
                 iterate_with_xyshifts=step_config.get('iterate_with_xyshifts',
                                                      True),
                 showplots=0,
-                saveplots=step_config.get('saveplots', True),
+                # Off by default; jhat's plotters are also no-op'd above unless
+                # this is set (see _disable_jhat_plots). Re-enable diagnostics
+                # per-field via [<field>.jhat].saveplots = true.
+                saveplots=step_config.get('saveplots', False),
                 savephottable=step_config.get('savephottable', True),
             )
+        except KeyError as e:
+            # jhat raises a bare ``KeyError(None)`` when it finds zero
+            # reference sources within the image bounds: it prints
+            # "0 sources from reference catalog within the image bounderies"
+            # and skips the matching steps, leaving ``refcat_xcol`` unset, then
+            # indexes ``phot.t[None]``. This means the exposure lies at/over
+            # the edge of the refcat footprint -- a data-coverage condition,
+            # not a campfire failure -- so it must not abort the whole run.
+            # Record the skip and move on; the input WCS is preserved.
+            if e.args == (None,):
+                log(f"jhat: no refcat overlap for {rootname}; skipping "
+                    f"alignment (input WCS preserved, CFP_JHAT="
+                    f"{NO_REFCAT_SENTINEL})")
+                _stamp_jhat(exposure_file, NO_REFCAT_SENTINEL)
+                return
+            log(f"jhat failed on {exposure_file}")
+            raise
         except Exception:
             log(f"jhat failed on {exposure_file}")
             raise

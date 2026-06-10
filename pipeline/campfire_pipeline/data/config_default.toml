@@ -279,7 +279,12 @@
     objmag_lim = [19, 28]
     delta_mag_lim = [-3, 4]
     histocut_order = "dxdy"
-    saveplots = true
+    # Off by default: jhat's diagnostic dxdy_plot crashes with "Axis limits
+    # cannot be NaN or Inf" on exposures with a degenerate best-match sub-panel
+    # (common near the refcat-footprint edge), aborting the run *after* a valid
+    # WCS solution is already computed. Plots are diagnostic-only. Set true to
+    # restore them on fields known to be free of edge exposures.
+    saveplots = false
     savephottable = true
 
 # --- combine phase (ensemble) ---
