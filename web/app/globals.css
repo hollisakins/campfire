@@ -4,8 +4,8 @@
 
 :root {
   --foreground-rgb: 33, 28, 23;
-  --background-start-rgb: 250, 247, 243;
-  --background-end-rgb: 250, 247, 243;
+  --background-start-rgb: 250, 248, 244;
+  --background-end-rgb: 250, 248, 244;
 
   /* Accent color — ember (applied dynamically by AccentColorContext; this is the fallback) */
   --primary: #c63f0c;
@@ -15,17 +15,20 @@
   --on-primary: #ffffff;            /* text/icon on a primary fill */
   --primary-soft: rgba(198, 63, 12, 0.10); /* active-chip / selected background */
 
-  /* Theme colors — warm light (Ember & Dusk) */
-  --background: #faf7f3;
-  --card: #ffffff;
-  --card-hover: #f4eee6;
-  --border: #ece4d9;
+  /* Theme colors — warm light (Ember & Dusk).
+     Elevation mirrors dark mode: surfaces move *toward the ink color* as they
+     lift off the near-white page (page → card → surface-2). The near-white
+     base doubles as the legible surface for plot wells and inputs. */
+  --background: #faf8f4;             /* near-white page + plot wells (legible base) */
+  --card: #f3eee6;                  /* warm-paper panels — carries the tint/character */
+  --card-hover: #ece4d8;
+  --border: #e2d8c9;
   --text-primary: #211c17;
   --text-secondary: #5c5346;
   /* Extended neutrals/text — warm scale */
-  --surface-2: #f6f1ea;             /* table headers, insets */
-  --border-strong: #ddd2c2;         /* emphasized edges, inputs */
-  --text-tertiary: #766a57;         /* muted, placeholder, icons (AA on card) */
+  --surface-2: #ede5d9;             /* table headers, insets — most elevated */
+  --border-strong: #d3c6b4;         /* emphasized edges, inputs */
+  --text-tertiary: #6c6150;         /* muted, placeholder, icons (AA on card) */
 
   /* UI status (semantic). Warm-leaning, AA-verified on card. */
   --success: #4d7c0f;
@@ -43,10 +46,11 @@
   --header-border: #38304a;         /* dividers / hover underline on the bar */
   --header-hover: rgba(255, 255, 255, 0.07); /* item hover wash */
 
-  /* Plotly chart colors (read via JavaScript) — chart chrome, follows theme */
-  --plot-bg: #faf7f3;
-  --plot-paper: #ffffff;
-  --plot-grid: #ece4d9;
+  /* Plotly chart colors (read via JavaScript) — chart chrome, follows theme.
+     Plot wells use the near-white page color so data stays maximally legible. */
+  --plot-bg: #faf8f4;
+  --plot-paper: #faf8f4;
+  --plot-grid: #e2d8c9;
   --plot-text: #211c17;
   --plot-text-secondary: #5c5346;
 
