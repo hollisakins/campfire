@@ -1,22 +1,32 @@
 """CRDS reference file pre-fetching for the NIRCam pipeline.
 
-Multiple workers downloading the same CRDS file simultaneously can leave one
-reading a partially-written file. Running CRDS lookups serially — one query
-per unique detector / filter / pupil combination — before ``dispatch()``
-ensures the cache is fully populated by the time parallel workers start.
+Warming the CRDS cache before ``dispatch()`` lets parallel workers start
+against a populated cache instead of a cold one. It is a *performance* pass,
+not a correctness one: the CRDS cache lock (see ``_fetch`` here and
+``steps/_flat.resolve_flat``) makes any residual cache miss in a worker a
+safe, serialized lazy download — the first worker fetches while the rest
+block, then find the file already cached. So the dedup granularity below only
+affects how much is warmed up front, never which references a step selects.
+CRDS still resolves each file by the exposure's own parameters + USEAFTER
+epoch at run time, exactly as ``Step.get_reference_file()`` does.
 
 Mirrors the NIRSpec pattern in ``nirspec/stage1.py`` and ``nirspec/stage2.py``.
 
-Two correctness anchors keep this in lockstep with the pipeline so we don't
-download references the run will never use:
+Two anchors keep the warmed set aligned with what the run will actually use:
 
 1. The reftype lists come from ``Detector1Pipeline.reference_file_types`` and
    ``Image2Pipeline.reference_file_types`` — the same aggregation jwst itself
-   uses, so we cover everything (incl. ``persat``/``trapdensity``/``trappars``)
-   and nothing extra.
+   uses, so we cover everything (incl. ``persat``/``trapdensity``/``trappars``
+   and the flat that wisp/striping resolve directly) and nothing extra.
 2. The CRDS lookup parameters come from ``model.get_crds_parameters()`` on the
    uncal datamodel — the same call ``Step.get_reference_file()`` makes — so
    the rmap match resolves to byte-identical files.
+
+The scan reads each uncal header at most once (both the detector1 and image2
+dedup keys come from one ``getheader``) and skips exposures whose
+detector1/image2 output already exists, so re-running a finished field reads
+no headers at all — the multi-minute NFS header scan only happens for work
+that remains.
 """
 
 import os
@@ -47,32 +57,6 @@ def _reftypes(pipeline_name):
     return out
 
 
-def _pars_reftypes(pipeline_name):
-    """Return the ``pars-*`` step-parameter reftypes for a pipeline.
-
-    These matter for correctness under the hardened worker CRDS environment
-    (``CRDS_READONLY_CACHE=1``, see ``orchestrate._crds_worker_env``): stpipe
-    fetches ``pars-<step>`` references separately from science references on
-    every ``Step.call``, and a read-only worker cannot download one on a
-    cache miss — so the serial prefetch must warm them too. Fetched in a
-    separate ``_fetch`` call from the science reftypes so a pars lookup
-    failure (e.g. a reftype absent from the pinned context) cannot poison
-    the science-reference warming.
-    """
-    key = f'pars:{pipeline_name}'
-    if key in _REFTYPES_CACHE:
-        return _REFTYPES_CACHE[key]
-    from jwst import pipeline as jwst_pipeline
-    cls = getattr(jwst_pipeline, pipeline_name)
-    out = [cls.get_config_reftype()]
-    for step_cls in cls.step_defs.values():
-        rt = step_cls.get_config_reftype()
-        if rt not in out:
-            out.append(rt)
-    _REFTYPES_CACHE[key] = out
-    return out
-
-
 def _crds_params(uncal_file):
     """Build the canonical CRDS lookup parameters dict from an uncal.
 
@@ -88,10 +72,20 @@ def _crds_params(uncal_file):
 
 
 def _fetch(params, reftypes, key_label):
-    """Run one ``crds.getreferences()`` call; non-fatal on failure."""
+    """Run one ``crds.getreferences()`` under the CRDS cache lock; non-fatal.
+
+    The lock is the same global ``crds.cache`` lock stpipe takes for its own
+    lookups, so this serial warm-up shares a download queue with any lazy
+    worker fetch rather than racing it. A lookup failure is logged and
+    swallowed — warming is best-effort, and a genuine miss self-heals as a
+    safe lazy download in the worker.
+    """
     import crds
+    from crds.core import crds_cache_locking
     try:
-        refs = crds.getreferences(params, reftypes=reftypes, observatory='jwst')
+        with crds_cache_locking.get_cache_lock():
+            refs = crds.getreferences(params, reftypes=reftypes,
+                                      observatory='jwst')
         cached = [
             k for k, v in refs.items()
             if v and 'N/A' not in v.upper() and 'NOT FOUND' not in v.upper()
@@ -102,64 +96,81 @@ def _fetch(params, reftypes, key_label):
         log(f"  CRDS prefetch warning for {key_label}: {e}")
 
 
-def prefetch_detector1_references(uncal_files):
-    """Pre-cache Detector1Pipeline CRDS references; dedup on
-    ``(DETECTOR, READPATT, SUBARRAY)`` (read cheaply from the FITS header)."""
-    reftypes = _reftypes('Detector1Pipeline')
-    seen = set()
-    for f in uncal_files:
-        hdr = fits.getheader(f)
-        key = (hdr.get('DETECTOR'), hdr.get('READPATT'), hdr.get('SUBARRAY'))
-        if key in seen:
-            continue
-        seen.add(key)
-        log(f"Pre-fetching Detector1Pipeline CRDS references for "
-            f"{key[0]} ({key[1]}/{key[2]}) using {os.path.basename(f)}")
-        params = _crds_params(f)
-        _fetch(params, reftypes, key_label='/'.join(map(str, key)))
-        _fetch(params, _pars_reftypes('Detector1Pipeline'),
-               key_label='/'.join(map(str, key)) + ' (pars)')
-    log("NIRCam Detector1Pipeline CRDS reference pre-fetch complete")
+def prefetch_process_references(field, filters, status=None, overwrite=False):
+    """Warm Detector1 + Image2 CRDS references for the pending NIRCam work.
 
+    One serial pass over the uncals in ``filters``. Each uncal header is read
+    at most once: the detector1 dedup key ``(DETECTOR, READPATT, SUBARRAY)``
+    and the image2 dedup key ``(DETECTOR, FILTER, PUPIL)`` are both derived
+    from it, and a CRDS lookup runs only for the first uncal of each unique
+    key. Exposures whose detector1 *and* image2 output already exists (per
+    ``status``) are skipped without reading their header, so re-running a
+    finished field is free.
 
-def prefetch_image2_references(uncal_files):
-    """Pre-cache Image2Pipeline (+ wisp/striping flat) CRDS references; dedup
-    on ``(DETECTOR, FILTER, PUPIL)`` (read cheaply from the FITS header)."""
-    reftypes = _reftypes('Image2Pipeline')
-    seen = set()
-    for f in uncal_files:
-        hdr = fits.getheader(f)
-        key = (hdr.get('DETECTOR'), hdr.get('FILTER'), hdr.get('PUPIL'))
-        if key in seen:
-            continue
-        seen.add(key)
-        log(f"Pre-fetching Image2Pipeline CRDS references for "
-            f"{key[0]}/{key[1]}/{key[2]} using {os.path.basename(f)}")
-        params = _crds_params(f)
-        _fetch(params, reftypes, key_label='/'.join(map(str, key)))
-        _fetch(params, _pars_reftypes('Image2Pipeline'),
-               key_label='/'.join(map(str, key)) + ' (pars)')
-    log("NIRCam Image2Pipeline CRDS reference pre-fetch complete")
-
-
-def prefetch_process_references(field, filters, n_processes):
-    """Gather uncals across ``filters`` and pre-fetch detector1 + image2
-    CRDS references.
-
-    Runs unconditionally (``n_processes`` is kept for signature stability):
-    parallel workers now operate with a read-only CRDS cache (see
-    ``orchestrate._crds_worker_env``), which makes this serial, write-capable
-    pass the only sanctioned download path — skipping it for serial runs
-    saved nothing (the lookups happen either way) and skipping it for
-    parallel runs would turn any cache miss into a worker error.
+    ``status`` is the phase's pre-scanned ``StepStatus`` (``None`` warms
+    everything — used by callers that don't track status). With
+    ``overwrite=True`` the skip check is bypassed and every config is warmed.
+    See the module docstring: this only *warms* the cache; the cache lock
+    makes any miss a safe lazy worker download, so the dedup here never
+    affects reference selection.
     """
-    uncals = []
+    det1_reftypes = _reftypes('Detector1Pipeline')
+    img2_reftypes = _reftypes('Image2Pipeline')
+    det1_seen = set()
+    img2_seen = set()
+    det1_n = 0
+    img2_n = 0
+
     for filt in filters:
         try:
-            uncals.extend(field.get_uncal_files(filt))
+            uncals = field.get_uncal_files(filt)
         except RuntimeError:
+            # Workspace not set up for this filter — nothing to warm.
             continue
-    if not uncals:
-        return
-    prefetch_detector1_references(uncals)
-    prefetch_image2_references(uncals)
+        for f in uncals:
+            rootname = os.path.basename(f).removesuffix('_uncal.fits')
+            canonical = field.get_exposure_path(rootname, filt)
+            # Only consult status for a canonical that exists; short-circuit
+            # keeps status.has() off nonexistent paths (first-run canonicals).
+            done = (not overwrite and status is not None
+                    and os.path.exists(canonical))
+            need_det1 = not (done and status.has(canonical, 'CFP_DET1'))
+            need_img2 = not (done and status.has(canonical, 'CFP_IMG2'))
+            if not (need_det1 or need_img2):
+                continue
+
+            hdr = fits.getheader(f)
+            params = None  # built lazily, at most once per uncal
+
+            if need_det1:
+                key = (hdr.get('DETECTOR'), hdr.get('READPATT'),
+                       hdr.get('SUBARRAY'))
+                if key not in det1_seen:
+                    det1_seen.add(key)
+                    params = _crds_params(f)
+                    log(f"Pre-fetching Detector1 CRDS references for "
+                        f"{key[0]} ({key[1]}/{key[2]}) using "
+                        f"{os.path.basename(f)}")
+                    _fetch(params, det1_reftypes,
+                           key_label='/'.join(map(str, key)))
+                    det1_n += 1
+
+            if need_img2:
+                key = (hdr.get('DETECTOR'), hdr.get('FILTER'),
+                       hdr.get('PUPIL'))
+                if key not in img2_seen:
+                    img2_seen.add(key)
+                    if params is None:
+                        params = _crds_params(f)
+                    log(f"Pre-fetching Image2 CRDS references for "
+                        f"{key[0]}/{key[1]}/{key[2]} using "
+                        f"{os.path.basename(f)}")
+                    _fetch(params, img2_reftypes,
+                           key_label='/'.join(map(str, key)))
+                    img2_n += 1
+
+    if det1_n or img2_n:
+        log(f"NIRCam CRDS reference pre-fetch complete "
+            f"({det1_n} detector1, {img2_n} image2 lookups)")
+    else:
+        log("NIRCam CRDS reference pre-fetch: nothing pending")

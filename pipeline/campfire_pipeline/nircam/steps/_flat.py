@@ -3,9 +3,12 @@ Shared flat-field helpers used by ``wisp_step`` and ``striping_step``.
 
 Both steps need to apply a NIRCam flat in-memory (without writing a
 flat-fielded copy to disk). The CRDS lookup falls back to a custom-flat
-override when present, and the apply call is wrapped with a short retry
-loop because parallel workers occasionally collide on CRDS cache files
-during a cold-fetch.
+override when present. The ``crds.getreferences`` call is taken under the
+global CRDS cache lock (the same lock stpipe holds for its own lookups),
+so a cold-fetch is serialized across workers — the first downloads, the
+rest block and then find the file already cached — rather than several
+workers racing to write the same cache file. The apply call keeps a short
+retry loop as defense in depth.
 
 Flat reference data is cached per worker process: the same ~50MB flat
 applies to every exposure sharing a (detector, filter, pupil), and on the
@@ -76,7 +79,18 @@ def resolve_flat(model, field, use_custom):
         import crds
         crds_context = crds.get_default_context()
     import crds
-    refs = crds.getreferences(crds_dict, reftypes=['flat'], context=crds_context)
+    from crds.core import crds_cache_locking
+    # Hold the global "crds.cache" lock around the lookup. This is a direct
+    # getreferences (not via stpipe), so without the lock two workers could
+    # cold-fetch the same flat at once and one read a half-written file. CRDS
+    # double-checks cache existence inside the lock, so a blocked worker finds
+    # the file already downloaded and skips. Forkserver workers share one lock
+    # object (crds is in the preload list), so the coordination is real on the
+    # cluster; on macOS spawn each worker gets a private lock (dev-only no-op).
+    with crds_cache_locking.get_cache_lock():
+        refs = crds.getreferences(
+            crds_dict, reftypes=['flat'], context=crds_context,
+        )
     return refs.get('flat')
 
 

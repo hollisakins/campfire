@@ -31,7 +31,6 @@ helper risks the same half-built-pool deadlock there. (``spawn`` ignores the
 preload list entirely — each worker re-imports from scratch.)
 """
 
-import os
 import sys
 from functools import partial
 from multiprocessing import get_context
@@ -97,19 +96,8 @@ class _RetryOnIOError:
                     raise
 
 
-def _apply_worker_env(env):
-    """Pool initializer: apply per-worker environment overrides.
-
-    Runs once in each worker process after fork/spawn, so the overrides
-    never leak into the parent (which e.g. must keep CRDS cache write
-    access for the serial prefetch).
-    """
-    if env:
-        os.environ.update(env)
-
-
 def dispatch(func, tasks, n_processes=1, use_starmap=False, retry=False,
-             worker_env=None, **kwargs):
+             **kwargs):
     """Run *func* over *tasks* serially or in parallel.
 
     Parameters
@@ -126,11 +114,6 @@ def dispatch(func, tasks, n_processes=1, use_starmap=False, retry=False,
         If True, each task is unpacked as positional args.
     retry : bool
         If True, wrap worker with retry logic for CRDS file errors.
-    worker_env : dict, optional
-        Environment variable overrides applied in each *worker* process
-        (parallel path only). Deliberately NOT applied on the serial path:
-        the parent process keeps its own environment so e.g. CRDS retains
-        cache write access when no worker pool exists.
     **kwargs
         Extra keyword arguments bound to *func* via functools.partial.
 
@@ -149,9 +132,7 @@ def dispatch(func, tasks, n_processes=1, use_starmap=False, retry=False,
 
     if n_processes > 1:
         log(f"Dispatching {len(tasks)} tasks across {n_processes} workers")
-        with _MP_CTX.Pool(processes=n_processes,
-                          initializer=_apply_worker_env if worker_env else None,
-                          initargs=(worker_env,) if worker_env else ()) as pool:
+        with _MP_CTX.Pool(processes=n_processes) as pool:
             if use_starmap:
                 return pool.starmap(worker, tasks)
             else:

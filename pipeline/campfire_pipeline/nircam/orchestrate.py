@@ -67,37 +67,8 @@ ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 STEP_NAMES = [name for name, _ in ALL_STEPS]
 
 # Steps that hit CRDS — used by run_step() to decide when to pre-fetch
-# reference files before parallel dispatch, and to harden the worker CRDS
-# environment (see _crds_worker_env).
+# reference files before parallel dispatch.
 _CRDS_STEPS = {'detector1', 'wisp', 'striping', 'image2'}
-
-
-def _crds_worker_env(config):
-    """Worker env overrides for CRDS-using steps, or None when disabled.
-
-    With the context pinned and the cache warmed by the serial prefetch,
-    workers never legitimately need to download or write to the CRDS cache.
-    ``CRDS_READONLY_CACHE=1`` drops the per-call cache-writability probes
-    and lock handling; ``CRDS_MODE=local`` skips the server-contact /
-    config-refresh bookkeeping of the default ``auto`` mode. Both are pure
-    metadata savings on an NFS-resident cache — reference selection is
-    unchanged (same pinned context, same mappings). A genuinely missing
-    reference becomes a loud CrdsError instead of 16 workers racing to
-    download over NFS; that means the prefetch is broken and we want to
-    hear about it. Escape hatch for cold-cache laptop runs:
-    ``[nircam].crds_readonly_workers = false``.
-
-    Applied only to worker processes (Pool initializer) — the parent keeps
-    write access for the prefetch itself, as does the serial (n_processes
-    <= 1) path, which runs in the parent.
-    """
-    if not config.get('nircam', {}).get('crds_readonly_workers', True):
-        return None
-    if not os.environ.get('CRDS_CONTEXT'):
-        # Without a pinned context, local/readonly mode could resolve a
-        # different (cache-default) context than the parent would.
-        return None
-    return {'CRDS_READONLY_CACHE': '1', 'CRDS_MODE': 'local'}
 
 
 def _detector_sorted(paths):
@@ -257,7 +228,7 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
     log(f"detector1: dispatching {len(pending)} files for {filtname}")
     dispatch(detector1_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
-             status=status, worker_env=_crds_worker_env(config))
+             status=status)
     new_canonical = [
         field.get_exposure_path(
             os.path.basename(u).removesuffix('_uncal.fits'), filtname,
@@ -311,9 +282,7 @@ def _run_per_exposure(step_name, field, config, filtname,
     log(f"{step_name}: dispatching {len(pending)} exposures for {filtname}")
     dispatch(fn, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
-             status=status,
-             worker_env=(_crds_worker_env(config)
-                         if step_name in _CRDS_STEPS else None))
+             status=status)
     status.mark_all(pending, cfp_key)
 
 
@@ -624,7 +593,8 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
     filters = _resolve_filters(filters, field)
     status = _scan_status(field, filters, overwrite=overwrite)
     log(f"=== Process phase: field={field.name}, filters={filters} ===")
-    prefetch_process_references(field, filters, n_processes)
+    prefetch_process_references(field, filters, status=status,
+                               overwrite=overwrite)
     for filt in filters:
         log(f"--- Process: {filt} ---")
         for step_name, _ in PROCESS_STEPS:
@@ -666,7 +636,8 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
     log(f"=== Step '{step_name}': field={field.name}, filters={filters} ===")
     if step_name in _CRDS_STEPS:
         from campfire_pipeline.nircam.prefetch import prefetch_process_references
-        prefetch_process_references(field, filters, n_processes)
+        prefetch_process_references(field, filters, status=status,
+                                    overwrite=overwrite)
 
     for filt in filters:
         if step_name == 'resample':

@@ -251,64 +251,87 @@ server-contact attempts. The audit's "10k+ round trips" figure was a guess
 that likely overstates steady state; the fix hierarchy below doesn't depend
 on which estimate is right.
 
-What the env vars do:
+What the env vars do — **and why we rejected them** (see §4.1a, §4.2):
 
 - **`CRDS_READONLY_CACHE=1`** — the client treats the cache as immutable: no
   downloads, no config-refresh writes, no lock handling. Removes (3) and the
-  write half of (2). Failure mode: a genuinely missing reference becomes a
-  hard error instead of a download — which is *correct* for us, because the
-  serial prefetch is supposed to have warmed everything; a miss means the
-  prefetch is broken and we want to hear about it loudly, not have 16 workers
-  race to download over NFS.
+  write half of (2). The original proposal leaned on "a miss is then a hard
+  error, which is correct because the prefetch warmed everything." That makes
+  the prefetch a *correctness* dependency, and — decisively — readonly and
+  CRDS's own cache locking are mutually exclusive: `create_lock` returns a
+  no-op `FakeLock` under a readonly cache. So this env would *disable* the very
+  mechanism (§4.1a) that makes a cold miss safe. Not taken.
 - **`CRDS_MODE=local`** — never contact the server; resolve purely from the
-  local cache. Removes the network half of (2). Requires pinned context +
-  warm cache, both of which we guarantee.
+  local cache. Removes the network half of (2). Only meaningful paired with
+  readonly; dropped with it.
 
-### 4.2 Recommended approach, in order of preference
+### 4.1a CRDS cache locking (the mechanism we actually rely on)
 
-**Level 1 — workers don't call CRDS at all (the real fix).**
-`prefetch_process_references` already dedups exposures by
-`(DETECTOR, READPATT, SUBARRAY)` / `(DETECTOR, FILTER, PUPIL)` and warms the
-reference bytes. Extend it to also **record the resolved paths** —
-`{(det, filt, pupil): flat_path, ...}` — and pass that dict through
-`step_config` into the chain. `resolve_flat` (_flat.py:39-46, called per
-exposure from wisp and striping) becomes a dict lookup; `getreferences`
-disappears from worker code entirely. Combined with the `lru_cache` on the
-reference *arrays* (audit H4), a worker touches each reference file at most
-once, by plain path.
+CRDS ships a global cache lock and uses it by default: `CRDS_USE_LOCKING`
+defaults **True**, `CRDS_LOCKING_MODE` defaults `multiprocessing`. stpipe
+wraps its entire `crds.getreferences()` in
+`with crds_cache_locking.get_cache_lock():` (`stpipe/crds_client.py`), and the
+cache-existence check (`if not os.path.exists(localpath): download`) runs
+*inside* that guarded region (`crds/client/api.py:get_local_files`). That is
+textbook double-checked locking: worker A acquires the lock, sees the file
+missing, downloads, releases; worker B — blocked on the same lock the whole
+time — then acquires, finds the file present, and skips the download. No two
+workers ever write the same cache file.
 
-Residual: the jwst-internal pipelines (detector1, image2) resolve their own
-references via the datamodel layer. Overriding every reftype through step
-params is invasive; instead we accept their internal lookups — with Level 2
-hardening they cost one mapping-chain load per worker process plus stats of
-already-warm files.
+The lock object is created at crds import (`init_locks()`); forkserver workers
+share **one** lock because `crds` is in the `common/parallel.py` preload list,
+so the helper's lock is inherited by every forked worker — real cross-worker
+coordination on CANDIDE. (macOS spawn re-imports crds per worker → private
+locks → no-op coordination; dev-only, where the `_RetryOnIOError` wrappers
+still self-heal.) The one gap: the lock only guards callers who take it.
+stpipe-internal lookups (detector1, image2) are covered automatically; our two
+**direct** `crds.getreferences` calls — `resolve_flat` and the prefetch
+warm-up — have to take the lock explicitly or they bypass it. Those unguarded
+direct calls are the likely origin of the historical "empty or corrupt FITS"
+races the retry wrappers were written for.
 
-**Level 2 — env hardening for whatever CRDS calls remain.**
-After (and only after) the serial prefetch has run with write access:
+### 4.2 Landed approach (PR 1) and the deeper fix
 
-```python
-# in the worker entry / dispatch initializer, not blanket in setup_environment:
-os.environ.setdefault('CRDS_READONLY_CACHE', '1')
-os.environ.setdefault('CRDS_MODE', 'local')
-```
+**PR 1 — lock the direct calls, slim the prefetch (shipped).** The minimal,
+robust fix: wrap the two direct `crds.getreferences` calls (`resolve_flat`,
+prefetch `_fetch`) in `crds_cache_locking.get_cache_lock()`. Every reference
+fetch in the pipeline is now lock-guarded, so a cold-cache miss in any worker
+is a safe serialized download instead of a race. That demotes the prefetch
+from load-bearing to a pure warm-up, which lets it shrink:
 
-Scoping matters: the prefetch itself must keep write access (it downloads on
-cache miss), and forkserver inherits the environment from when the forkserver
-process starts — so the clean mechanism is a `dispatch` worker-initializer
-(or a `setdefault` at the top of the chain worker), not a global in
-`setup_environment`. Gate behind `[environment]` config flags so a laptop run
-with a cold cache behaves as today. Also fix: `prefetch_process_references`
-currently early-returns when `n_processes <= 1` — it must run unconditionally
-once readonly mode exists, since it's now load-bearing for correctness.
+- one shared header pass — each uncal `getheader` once, both the
+  `(DETECTOR, READPATT, SUBARRAY)` and `(DETECTOR, FILTER, PUPIL)` dedup keys
+  derived from it (was two passes, two header reads per uncal);
+- skip-when-pending — an uncal whose canonical already carries `CFP_DET1` +
+  `CFP_IMG2` is skipped without reading its header, so re-running a finished
+  field touches zero headers (directly addresses the multi-minute NFS header
+  scan that motivated this section).
 
-**Level 3 — measure before going further.** Before considering node-local
-CRDS cache seeding (sync `$CRDS_PATH` to `$TMPDIR` per node), instrument one
-worker (strace `-e trace=%file` or a crds logging hook) on CANDIDE and count
-actual NFS ops attributable to CRDS for one chain task, before and after
-Levels 1–2. My expectation is that Levels 1–2 reduce CRDS to noise and
-Level 3 is unnecessary complexity; the measurement either confirms that or
-tells us otherwise. (Flagged explicitly because the audit's CRDS cost
-estimate was the least-grounded of the High findings.)
+No `CRDS_READONLY_CACHE`, no `CRDS_MODE=local`, no `dispatch(worker_env=...)`
+plumbing (it had no other consumer and was removed). Reference selection is
+unchanged — same `getreferences` args, just lock-wrapped — so the PR-1
+parity/equivalence results hold by construction.
+
+**Deeper fix (PR 2/3) — workers don't call CRDS at all.** Extend the prefetch
+to also **record the resolved paths** — `{(det, filt, pupil): flat_path, ...}`
+— and thread that dict through `step_config` into the chain. `resolve_flat`
+(_flat.py, called per exposure from wisp and striping) becomes a dict lookup
+and `getreferences` disappears from worker code entirely, removing even the
+lock-contended call. Combined with the reference-array `lru_cache` (§5), a
+worker touches each reference at most once, by plain path. Residual: the
+jwst-internal pipelines (detector1, image2) still resolve their own references
+via the datamodel layer; those go through stpipe's lock automatically, costing
+one mapping-chain load per worker process plus stats of already-warm files.
+(This is what the original "Level 1" proposed; with the lock in place it's now
+an optimization, not a correctness requirement.)
+
+**Measure before going further.** Before considering node-local CRDS cache
+seeding (sync `$CRDS_PATH` to `$TMPDIR` per node), instrument one worker
+(`strace -e trace=%file` or a crds logging hook) on CANDIDE and count actual
+NFS ops attributable to CRDS for one chain task. Expectation: the lock +
+slimmed prefetch reduce CRDS to noise and node-local seeding is unnecessary
+complexity; the measurement confirms or refutes. (Flagged because the audit's
+CRDS cost estimate was the least-grounded of the High findings.)
 
 ## 5. Reference-data caching in workers
 
@@ -368,20 +391,21 @@ composed and where they land**.
 | M2 memmap'd full reads ×12 | Subsumed — one `memmap=False` read |
 | H6 diagnostic small-file flood | Addressed — scratch compose + `diagnostics/` export (§6) |
 | H4 reference re-reads | §5 (cache-tier PR, prerequisite) |
-| H5 CRDS | §4 (Levels 1–2 in cache-tier PR; Level 3 measured) |
+| H5 CRDS | §4 (cache-lock + slimmed prefetch in cache-tier PR; worker-side `getreferences` removal in PR 2/3; node-local seeding only if measured to matter) |
 | H7 footprint-per-tile, H8 drizzle/outlier double-opens, M4 hash fast-path | **Not subsumed** — combine phase, separate local-fix PRs |
 | M5 combine-phase + `check`/`status` globs, M9 lazy `--version` | **Not subsumed** — separate small PRs |
 
 ## 8. Migration plan
 
 1. **PR 1 — cache tier** (no architecture change): reference-array
-   `lru_cache` (§5), prefetch records resolved paths + `resolve_flat` lookup
-   (§4.2 L1), CRDS env hardening with worker-scoped setdefault + prefetch
-   unconditional (§4.2 L2), `memmap=False` sweep, lazy `--version`.
+   `lru_cache` (§5), CRDS cache-lock around the two direct `getreferences`
+   calls + slimmed prefetch (single header pass, skip-when-pending) (§4.2),
+   detector-major dispatch ordering, `memmap=False` sweep, lazy `--version`.
    Independently shippable and measurable.
 2. **PR 2 — combine-phase local fixes**: footprint hoisting (H7),
    single-pass drizzle/outlier opens (H8), `_visit_up_to_date` stat
-   fast-path (M4), prefetch single-pass headers.
+   fast-path (M4). (The prefetch single-pass headers originally slated here
+   landed early in PR 1 alongside the CRDS rework.)
 3. **PR 3 — the chain**: `ChainContext`, `*_transform` extraction with kept
    `*_step` wrappers, `process_exposure_chain` driver, scratch workspace +
    diagnostics routing. Gated by a config flag

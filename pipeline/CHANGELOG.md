@@ -85,14 +85,18 @@ Release procedure: edit the `## Unreleased` section below, then run
     (`orchestrate._detector_sorted`): `Pool.map` chunks become
     detector-contiguous so the per-detector caches hit instead of thrash.
     Tasks are independent; only log ordering changes.
-  - CRDS worker hardening (`[nircam].crds_readonly_workers`, default on):
-    parallel workers of detector1/wisp/striping/image2 run with
-    `CRDS_READONLY_CACHE=1` + `CRDS_MODE=local`, dropping per-call
-    server-contact and cache-write bookkeeping against the NFS-resident
-    cache. The serial prefetch now runs unconditionally (previously skipped
-    for `n_processes <= 1`) and additionally warms `pars-*` step-parameter
-    references, which stpipe fetches separately and a read-only worker
-    cannot download on a miss.
+  - CRDS cold-fetch races are closed at the source rather than avoided. The
+    two direct `crds.getreferences` calls outside stpipe — the in-memory flat
+    lookup in `steps/_flat.resolve_flat` and the prefetch warm-up — now take
+    the global `crds.cache` lock, the same lock stpipe holds for its own
+    lookups. A worker that hits a cold reference downloads it once while the
+    others block and then find it already cached (CRDS double-checks existence
+    inside the lock). The serial prefetch is therefore a pure warm-up, not a
+    correctness requirement: it reads each uncal header once (both the
+    detector1 and image2 dedup keys come from one `getheader`) and skips
+    exposures whose detector1/image2 output already exists, so re-running a
+    finished field no longer pays the multi-minute NFS header scan. Reference
+    selection is unchanged.
   - `memmap=False` on FITS opens that read whole arrays or only headers
     (steps, drizzle/outlier inputs, manifest hashing, CFP/status header
     probes, geometry/S_REGION scans): NFS serves one sequential read far
