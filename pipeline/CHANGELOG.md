@@ -39,6 +39,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   resolves the flats/photom to versions newer than the calibration baseline
   (re-derive with `data/Generate_Extended_Cals.py`). Only those two grating/filter
   combos are affected; every other config is unchanged.
+- Extended-wavelength reduction now handles NIRSpec fixed-slit sources, which
+  require a separately-calibrated `photom` reference
+  (`extended_jwst_nirspec_photom_0014.fits`) than MSA sources (v0015). Fixed-slit
+  sources are detected per-source from the `fixed_slit` column of the MSA metafile
+  in `run_stage2a_single_rate`, the correct extended photom is selected, and the
+  status is recorded in the product header (`CFFXSLT`). Previously the extended
+  feature failed for fixed-slit sources.
 
 ### Algorithm
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the

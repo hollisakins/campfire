@@ -179,6 +179,28 @@ class MetaFile:
 
         return ids
 
+    def is_fixed_slit(self, source_id):
+        """Return True if *source_id* is observed through a NIRSpec fixed slit.
+
+        The MSA metafile SHUTTER_INFO table carries a ``fixed_slit`` column that
+        is ``'NONE'`` (or empty) for ordinary MSA shutters and the slit name
+        (e.g. ``'S200A1'``, ``'S1600A1'``) for fixed-slit apertures. Fixed-slit
+        sources need a different extended-wavelength flux calibration, so they
+        must be flagged here before the extended photom override is chosen.
+
+        Returns False if the column is absent (older metafiles) so the MSA path
+        stays the default.
+        """
+        if 'fixed_slit' not in self.shutter_table.colnames:
+            return False
+        rows = self.shutter_table[
+            (self.shutter_table['source_id'] == source_id)
+            & (self.shutter_table['msa_metadata_id'] == self.msametid)
+        ]
+        return any(
+            str(v).strip().upper() not in ('', 'NONE') for v in rows['fixed_slit']
+        )
+
     def filter_by_source_id(self,
             source_id,
             set_stellarity=False,

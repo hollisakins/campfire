@@ -581,6 +581,13 @@ def run_stage2a_single_rate(
             cards.append(('STKSHFIL', os.path.basename(obs.stuck_closed_shutters_file), 'Stuck shutter file name'))
             cards.append(('STKSHTIM', obs.stuck_closed_shutters_mtime, 'Stuck shutter file mtime'))
             cards.append(('CFEXTWAV', extended_override is not None, 'Extended wavelength reduction applied'))
+
+            # Fixed-slit sources need a different extended-wavelength photom
+            # reference than MSA sources (see extended_override block below). Detect
+            # it here from the metafile and thread the status through to the product
+            # metadata so downstream stages can branch on it.
+            source_is_fixed_slit = main_metafile.is_fixed_slit(source_id)
+            cards.append(('CFFXSLT', source_is_fixed_slit, 'NIRSpec fixed-slit source'))
             if len(stuck) > 0:
                 cards.append(('STKSHTRS', str(stuck['shutters'][0]), 'Stuck shutters masked'))
                 for stuck_shutter in np.sort(stuck['shutters'][0])[::-1]:
@@ -629,6 +636,16 @@ def run_stage2a_single_rate(
                 steps['wavecorr'] = {'override_wavecorr': wavecorr_override}
 
             if extended_override:
+                # Fixed-slit sources require a separately-calibrated extended
+                # photom (v0014) than the MSA one resolved in extended_override
+                # (v0015); the flats / wavelengthrange overrides are identical.
+                if source_is_fixed_slit:
+                    from campfire_pipeline.config import get_extended_photom_path
+                    photom_override = get_extended_photom_path(fixed_slit=True)
+                    log(f"Using fixed-slit extended photom for {prod_name}")
+                else:
+                    photom_override = extended_override['photom']
+
                 steps['flat_field'] = {
                     'override_fflat': extended_override['fflat'],
                     'override_sflat': extended_override['sflat'],
@@ -637,7 +654,7 @@ def run_stage2a_single_rate(
                     'override_wavelengthrange': extended_override['wavelengthrange'],
                 }
                 steps['photom'] = {
-                    'override_photom': extended_override['photom'],
+                    'override_photom': photom_override,
                 }
                 log(f"Applying extended-wavelength overrides for {prod_name}")
 
