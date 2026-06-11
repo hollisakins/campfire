@@ -3,7 +3,6 @@ from astropy.io import fits
 from astropy import table
 from astropy.coordinates import SkyCoord
 import numpy as np
-from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
 import crds
 import glob
@@ -23,10 +22,10 @@ os.environ['CRDS_PATH'] = os.environ.get('CAMPFIRE_ROOT')+'/cache/crds/'
 os.environ['CRDS_SERVER_URL'] = 'https://jwst-crds.stsci.edu'
 os.environ['CRDS_CONTEXT']='jwst_1464.pmap'
 
-steps={'detector1':True,
+steps={'detector1':False,
        'extend_flats':True,
-       'spec2':True,
-       'spec3':True,
+       'spec2':False,
+       'spec3':False,
        'calibrate':True}
 
 ncores=10
@@ -86,9 +85,13 @@ def generate_extended_cals(rate_files,cwd):
         try: 
             refs = crds.getreferences(params, reftypes=reftypes, observatory='jwst')
             for i in refs: allrefs.add(refs[i])
+            params['EXP_TYPE']='NRS_FIXEDSLIT' #also get fixed_slit photom file
+            refs = crds.getreferences(params, reftypes=['photom'], observatory='jwst')
+            for i in refs: allrefs.add(refs[i])
         except Exception as e: print(f"CRDS prefetch warning for {config_key}: {e}")
+    
 
-    photom=[ref for ref in allrefs if 'photom' in ref][0]
+    photoms=sorted([ref for ref in allrefs if 'photom' in ref])
     fflats=[ref for ref in allrefs if 'fflat' in ref]
     sflats=[ref for ref in allrefs if 'sflat' in ref]
     wavelengthrange_file=[ref for ref in allrefs if 'wavelengthrange' in ref][0]
@@ -157,19 +160,20 @@ def generate_extended_cals(rate_files,cwd):
             sflat[4].data[-1]=(5.3,)
             sflat.writeto(f'{cwd}/'+file.split('/')[-1].replace('jwst','extended_jwst'),overwrite=1)
 
-    with fits.open(photom) as hdul: #create temporary extended photom file, to be updated later after extended calibration
-        tab=table.Table.read(photom,hdu=1)
-        newwave=np.arange(0.6,5.301,0.001)
-        newflux=np.ones_like(newwave)
-        tab['newwavelength']=newwave[:,None].T.astype('float32')
-        tab['newrelresponse']=newflux[:,None].T.astype('float32')
-        tab['newreluncertainty']=newflux[:,None].T.astype('float32')*0
-        for col in ['wavelength','relresponse','reluncertainty']:
-            del tab[col]
-            tab['new'+col].name=col
-        tab['nelem']=len(newflux)
-        hdul[1]=fits.table_to_hdu(tab)
-        hdul.writeto(f'{cwd}/uncalibrated_extended_'+photom.split('/')[-1],overwrite=1)
+    for photom in photoms:
+        with fits.open(photom) as hdul: #create temporary extended photom file, to be updated later after extended calibration
+            tab=table.Table.read(photom,hdu=1)
+            newwave=np.arange(0.6,5.301,0.001)
+            newflux=np.ones_like(newwave)
+            tab['newwavelength']=newwave[:,None].T.astype('float32')
+            tab['newrelresponse']=newflux[:,None].T.astype('float32')
+            tab['newreluncertainty']=newflux[:,None].T.astype('float32')*0
+            for col in ['wavelength','relresponse','reluncertainty']:
+                del tab[col]
+                tab['new'+col].name=col
+            tab['nelem']=len(newflux)
+            hdul[1]=fits.table_to_hdu(tab)
+            hdul.writeto(f'{cwd}/uncalibrated_extended_'+photom.split('/')[-1],overwrite=1)
 
     wavelength_updates = {'F100LP_G140M': [9.7e-07, 5.3e-06],'F170LP_G235M': [1.66e-06, 5.3e-06]}
     with asdf.open(wavelengthrange_file) as af:
@@ -517,26 +521,29 @@ if steps['calibrate']:
     plt.savefig('Final_Calibration.pdf')
     plt.close()
 
-    photom_file=sorted(glob.glob('uncalibrated_extended_jwst_nirspec_photom_0015.fits'))[0]
-    with fits.open(photom_file) as hdul: #create final extended photom file
-        tab=table.Table.read(photom_file,hdu=1)
-        b_idx=np.where((tab['filter']=='F100LP') & (tab['grating']=='G140M'))[0]
-        g_idx=np.where((tab['filter']=='F170LP') & (tab['grating']=='G235M'))[0]
-        newwave=np.round(np.arange(0.6,5.301,0.001),3)
-        newflux=np.ones_like(newwave)
-        tab['newwavelength']=newwave[:,None].T.astype('float32')
-        tab['newrelresponse']=newflux[:,None].T.astype('float32')
-        tab['newreluncertainty']=newflux[:,None].T.astype('float32')*0
-        tab['newrelresponse'][b_idx]=1/bcorr
-        tab['newwavelength'][b_idx][np.isnan(tab['newrelresponse'][b_idx])]=0
-        tab['newrelresponse'][b_idx][np.isnan(tab['newrelresponse'][b_idx])]=0
-        tab['newrelresponse'][g_idx]=1/gcorr
-        tab['newwavelength'][g_idx][np.isnan(tab['newrelresponse'][g_idx])]=0
-        tab['newrelresponse'][g_idx][np.isnan(tab['newrelresponse'][g_idx])]=0
-        for col in ['wavelength','relresponse','reluncertainty']:
-            del tab[col]
-            tab['new'+col].name=col
-        tab['nelem']=tab['nelem'].astype('int32')
-        for num in range(len(tab)): tab['nelem'][num]=len(tab['relresponse'][num][tab['relresponse'][num]>0])
-        hdul[1]=fits.table_to_hdu(tab)
-        hdul.writeto(photom_file.replace('uncalibrated_extended_','extended_'),overwrite=1)
+    photom_files=sorted(glob.glob('uncalibrated_extended_jwst_nirspec_photom_????.fits'))
+    for photom_file in photom_files:
+        with fits.open(photom_file) as hdul: #create final extended photom file
+            tab=table.Table.read(photom_file,hdu=1)
+            b_idxs=np.where((tab['filter']=='F100LP') & (tab['grating']=='G140M'))
+            g_idxs=np.where((tab['filter']=='F170LP') & (tab['grating']=='G235M'))
+            newwave=np.round(np.arange(0.6,5.301,0.001),3)
+            newflux=np.ones_like(newwave)
+            tab['newwavelength']=newwave[:,None].T.astype('float32')
+            tab['newrelresponse']=newflux[:,None].T.astype('float32')
+            tab['newreluncertainty']=newflux[:,None].T.astype('float32')*0
+            for b_idx in b_idxs:
+                tab['newrelresponse'][b_idx]=1/bcorr
+                tab['newwavelength'][b_idx][np.isnan(tab['newrelresponse'][b_idx])]=0
+                tab['newrelresponse'][b_idx][np.isnan(tab['newrelresponse'][b_idx])]=0
+            for g_idx in g_idxs:
+                tab['newrelresponse'][g_idx]=1/gcorr
+                tab['newwavelength'][g_idx][np.isnan(tab['newrelresponse'][g_idx])]=0
+                tab['newrelresponse'][g_idx][np.isnan(tab['newrelresponse'][g_idx])]=0
+            for col in ['wavelength','relresponse','reluncertainty']:
+                del tab[col]
+                tab['new'+col].name=col
+            tab['nelem']=tab['nelem'].astype('int32')
+            for num in range(len(tab)): tab['nelem'][num]=len(tab['relresponse'][num][tab['relresponse'][num]>0])
+            hdul[1]=fits.table_to_hdu(tab)
+            hdul.writeto(photom_file.replace('uncalibrated_extended_','extended_'),overwrite=1)
