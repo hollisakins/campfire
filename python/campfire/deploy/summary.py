@@ -6,10 +6,30 @@ ECSV per observation; this module reads it and builds the records needed
 for Supabase upserts and R2 upload planning.
 """
 
+import math
 import sys
 from pathlib import Path
 
 from astropy.table import Table
+
+
+def _finite_or_none(value) -> float | None:
+    """Coerce a scalar to a JSON-safe float, mapping non-finite to None.
+
+    PostgREST/httpx serialize request bodies with ``allow_nan=False``, so any
+    ``inf``, ``-inf``, or ``nan`` float raises
+    ``ValueError: Out of range float values are not JSON compliant`` and aborts
+    the whole upsert. Non-finite science values (e.g. signal_to_noise = inf
+    from a zero-noise division, or NaN from a failed fit) carry no meaningful
+    measurement, so they map to SQL NULL.
+
+    Returns None for None input or any non-finite float; otherwise the value
+    as a float.
+    """
+    if value is None:
+        return None
+    val = float(value)
+    return val if math.isfinite(val) else None
 
 
 def load_summary(obs_dir: Path, obs_name: str) -> Table:
@@ -76,7 +96,7 @@ def get_unique_objects(summary: Table) -> list[dict]:
             'observation': observation,
             'ra': float(row['ra']),
             'dec': float(row['dec']),
-            'redshift_best': float(row['redshift_best']) if row['redshift_best'] is not None else None,
+            'redshift_best': _finite_or_none(row['redshift_best']),
         })
 
     return objects
@@ -119,8 +139,8 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
             'grating': row['grating'],
             'fits_path': r2_key,
             'reduction_version': row['reduction_version'],
-            'signal_to_noise': float(row['signal_to_noise']) if row['signal_to_noise'] is not None else None,
-            'exposure_time': float(row['exposure_time']) if row['exposure_time'] is not None else None,
+            'signal_to_noise': _finite_or_none(row['signal_to_noise']),
+            'exposure_time': _finite_or_none(row['exposure_time']),
             'file_hash': row['file_hash'],
             'file_size': int(row['file_size']) if row['file_size'] is not None else None,
         }
@@ -143,12 +163,8 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
         # the previous value rather than silently keeping it.
         if has_redshift_auto:
             raw = row['redshift_auto']
-            if raw is None:
-                rec['redshift_auto'] = None
-            else:
-                val = float(raw)
-                # zfit may emit NaN for failed fits; store as NULL.
-                rec['redshift_auto'] = None if val != val else val
+            # zfit may emit NaN for failed fits (or inf); store either as NULL.
+            rec['redshift_auto'] = _finite_or_none(raw)
 
         records.append(rec)
     return records
