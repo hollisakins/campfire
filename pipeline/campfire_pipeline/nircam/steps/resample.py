@@ -350,7 +350,35 @@ def resample_step(filtname, exposure_files, field, step_config,
                         f"({n_no_cov / sci.size * 100:.1f}%)"
                     )
 
-        do_split = needs_rebuild and step_config.get('split_extensions', True)
+        split_enabled = step_config.get('split_extensions', True)
+
+        # Recover from a prior run that produced the i2d but failed (or was
+        # interrupted) before writing the separated extension files. Since
+        # splitting only reads from the existing i2d, we can re-split without
+        # re-drizzling. needs_rebuild stays False, so bkgsub and the NaN-fill
+        # (both already baked into the on-disk i2d) are not redone.
+        missing_extensions = False
+        if split_enabled and not needs_rebuild and os.path.exists(mosaic_file):
+            base = os.path.basename(mosaic_file)
+            required = ('_sci.fits', '_err.fits', '_wht.fits')
+            missing_extensions = any(
+                not os.path.exists(os.path.join(
+                    mosaic_outdir, base.replace('_i2d.fits', suffix)))
+                for suffix in required
+            )
+            if not missing_extensions:
+                # SRCMASK is only expected when the i2d carries that extension.
+                srcmask_path = os.path.join(
+                    mosaic_outdir, base.replace('_i2d.fits', '_srcmask.fits'),
+                )
+                if not os.path.exists(srcmask_path):
+                    with fits.open(mosaic_file) as hdul:
+                        missing_extensions = 'SRCMASK' in hdul
+            if missing_extensions:
+                log(f"  {mosaic_name} i2d present but split extensions "
+                    f"missing; re-splitting")
+
+        do_split = (needs_rebuild or missing_extensions) and split_enabled
         do_plot = needs_rebuild and step_config.get('plot', True)
 
         if do_split or do_plot:
