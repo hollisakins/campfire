@@ -20,9 +20,6 @@ from campfire_pipeline import _thread_caps  # noqa: F401  (must precede numpy/ma
 
 import os
 
-import matplotlib
-matplotlib.use('Agg')
-
 import click
 
 from campfire_pipeline.config import load_config, setup_environment

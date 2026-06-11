@@ -15,9 +15,6 @@ import os
 import sys
 from pathlib import Path
 
-import matplotlib
-matplotlib.use('Agg')
-
 import click
 
 from campfire_pipeline.config import load_config, setup_environment, resolve_paths

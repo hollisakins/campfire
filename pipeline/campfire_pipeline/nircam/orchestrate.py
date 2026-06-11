@@ -13,8 +13,10 @@ The legacy ``stage1.py`` / ``stage2.py`` / ``stage3.py`` orchestrators
 remain in place for now but are not invoked from the new CLI.
 """
 
+import functools
 import os
 import warnings
+from importlib import import_module
 
 from astropy.io import fits
 
@@ -23,25 +25,17 @@ from campfire_pipeline.common.parallel import dispatch
 from campfire_pipeline.config import get_nircam_step_config
 
 from campfire_pipeline.nircam.status import StepStatus
-from campfire_pipeline.nircam.steps.detector1 import detector1_step
-from campfire_pipeline.nircam.steps.persistence import persistence_step
-from campfire_pipeline.nircam.steps.wisp import wisp_step
-from campfire_pipeline.nircam.steps.striping import striping_step
-from campfire_pipeline.nircam.steps.image2 import image2_step
-from campfire_pipeline.nircam.steps.diag_striping import diag_striping_step
-from campfire_pipeline.nircam.steps.edge import edge_step
-from campfire_pipeline.nircam.steps.sky import sky_step
-from campfire_pipeline.nircam.steps.variance import variance_step
-from campfire_pipeline.nircam.steps.wcs_shift import wcs_shift_step, _match_rule
-from campfire_pipeline.nircam.steps.preview import preview_step
-from campfire_pipeline.nircam.steps.jhat import jhat_step
-from campfire_pipeline.nircam.steps.apply_masks import apply_masks_step
-from campfire_pipeline.nircam.steps.bad_pixel import (
-    build_bad_pixel_masks, bad_pixel_step,
-)
-from campfire_pipeline.nircam.steps.outlier import outlier_step
-from campfire_pipeline.nircam.steps.resample import resample_step
-from campfire_pipeline.nircam.prefetch import prefetch_process_references
+
+# Step worker functions are imported lazily (see ``_load_step`` and the
+# per-runner local imports below), NOT at module top. Each step module pulls
+# in heavy scientific deps — photutils.segmentation via wisp/striping
+# (~140s to import on cluster NFS), matplotlib via outlier, the jwst/crds
+# stack via detector1/image2/jhat. Importing ``orchestrate`` is what every
+# ``cfpipe`` invocation does (the NIRCam CLI imports it at module top), so an
+# eager step import made *every* command — including ``--help`` and a
+# ``combine`` run that never touches the process-phase steps — pay for all of
+# them. Deferring the import to the moment a phase actually dispatches a step
+# keeps startup proportional to the work being done.
 
 
 # Step ordering — also used by the CLI to validate ``cfpipe nircam <step>``
@@ -75,6 +69,33 @@ STEP_NAMES = [name for name, _ in ALL_STEPS]
 # Steps that hit CRDS — used by run_step() to decide when to pre-fetch
 # reference files before parallel dispatch.
 _CRDS_STEPS = {'detector1', 'wisp', 'striping', 'image2'}
+
+# Per-exposure steps dispatched through the generic ``_run_per_exposure``
+# helper: step_name -> (step module basename, worker callable, CFP key). The
+# module is imported lazily inside the runner so ``orchestrate`` import never
+# drags in a step the current phase won't run.
+_PER_EXPOSURE_STEPS = {
+    'wisp':       ('wisp',        'wisp_step',        'CFP_WISP'),
+    'striping':   ('striping',    'striping_step',    'CFP_1F'),
+    'image2':     ('image2',      'image2_step',      'CFP_IMG2'),
+    'edge':       ('edge',        'edge_step',        'CFP_EDGE'),
+    'sky':        ('sky',         'sky_step',         'CFP_SKY'),
+    'variance':   ('variance',    'variance_step',    'CFP_VAR'),
+    'preview':    ('preview',     'preview_step',     'CFP_PREV'),
+    'jhat':       ('jhat',        'jhat_step',        'CFP_JHAT'),
+    'apply_mask': ('apply_masks', 'apply_masks_step', 'CFP_MASK'),
+}
+
+
+def _load_step(module_basename, func_name):
+    """Import and return a step's worker callable on demand.
+
+    Kept tiny and explicit so the lazy-import intent is obvious at each call
+    site — see the module docstring for why step modules are not imported at
+    the top of ``orchestrate``.
+    """
+    module = import_module(f'campfire_pipeline.nircam.steps.{module_basename}')
+    return getattr(module, func_name)
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +202,7 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
     if not pending:
         return
 
+    from campfire_pipeline.nircam.steps.detector1 import detector1_step
     cfg = get_nircam_step_config('detector1', config, field)
     log(f"detector1: dispatching {len(pending)} files for {filtname}")
     dispatch(detector1_step, pending, n_processes=n_processes,
@@ -209,18 +231,22 @@ def _run_persistence(field, config, filtname, n_processes, overwrite, status):
         log(f"persistence: CFP_PERS already set on all {len(exposures)} "
             f"exposures for {filtname}; skipping")
         return
+    from campfire_pipeline.nircam.steps.persistence import persistence_step
     cfg = get_nircam_step_config('persistence', config, field)
     persistence_step(exposures, field, cfg, overwrite=overwrite, status=status)
     status.mark_all(exposures, 'CFP_PERS')
 
 
-def _run_per_exposure(step_name, fn, cfp_key, field, config, filtname,
+def _run_per_exposure(step_name, field, config, filtname,
                       n_processes, overwrite, status):
     """Generic per-exposure parallel dispatch.
 
     Filters out already-stamped exposures *before* spinning up the worker
-    pool — a no-op pass on a finished field skips the Pool entirely.
+    pool — a no-op pass on a finished field skips the Pool entirely. The
+    step's worker callable is imported lazily here (after the early-out
+    checks), so a no-op pass doesn't import the step's heavy deps at all.
     """
+    module_basename, func_name, cfp_key = _PER_EXPOSURE_STEPS[step_name]
     exposures = field.get_exposure_files(filtname)
     if not exposures:
         log(f"{step_name}: no exposures for {filtname}")
@@ -229,6 +255,7 @@ def _run_per_exposure(step_name, fn, cfp_key, field, config, filtname,
                                  overwrite)
     if not pending:
         return
+    fn = _load_step(module_basename, func_name)
     cfg = get_nircam_step_config(step_name, config, field)
     log(f"{step_name}: dispatching {len(pending)} exposures for {filtname}")
     dispatch(fn, pending, n_processes=n_processes,
@@ -252,6 +279,7 @@ def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
                                  status, overwrite)
     if not pending:
         return
+    from campfire_pipeline.nircam.steps.diag_striping import diag_striping_step
     log(f"diag_striping: dispatching {len(pending)} exposures for {filtname}")
     dispatch(diag_striping_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
@@ -271,6 +299,9 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
         log(f"wcs_shift: no exposures for {filtname}")
         return
 
+    from campfire_pipeline.nircam.steps.wcs_shift import (
+        wcs_shift_step, _match_rule,
+    )
     # Pre-filter to exposures actually matched by some rule. Saves I/O on
     # the (typical) majority of files that no rule touches — they're never
     # stamped, so _filter_pending wouldn't catch them.
@@ -308,6 +339,9 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
     if not cfg.get('enabled', False):
         log(f"bad_pixel: disabled by config; skipping {filtname}")
         return
+    from campfire_pipeline.nircam.steps.bad_pixel import (
+        build_bad_pixel_masks, bad_pixel_step,
+    )
     # Ensemble: build per-detector masks once (no CFP key — it's a reference
     # product, not a per-exposure mutation). Cheap to call when up-to-date,
     # but we still skip when --overwrite is off and all reference products
@@ -446,6 +480,7 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
     if not exposures:
         log(f"resample: no CFP_OUT-stamped exposures for {filtname}")
         return
+    from campfire_pipeline.nircam.steps.resample import resample_step
     cfg = get_nircam_step_config('resample', config, field)
     resample_step(filtname, exposures, field, cfg, reduction_version,
                   overwrite=overwrite)
@@ -453,40 +488,24 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
 
 # Dispatch table: step name → callable that takes (field, config, filtname,
 # n_processes, overwrite, status). Resample needs reduction_version, so it's
-# handled specially in run_combine / run_step. The lambda-wrapped entries
-# adapt the (step_name, fn, cfp_key) triple onto _run_per_exposure's signature.
+# handled specially in run_combine / run_step. Per-exposure steps bind their
+# name onto ``_run_per_exposure`` via ``functools.partial``; that runner looks
+# up the (module, worker, cfp_key) triple in ``_PER_EXPOSURE_STEPS`` and
+# imports the worker lazily when it actually dispatches.
 _RUNNERS = {
     'detector1':   _run_detector1,
     'persistence': _run_persistence,
-    'wisp':        lambda f, c, fl, n, ow, st: _run_per_exposure(
-                       'wisp', wisp_step, 'CFP_WISP',
-                       f, c, fl, n, ow, st),
-    'striping':    lambda f, c, fl, n, ow, st: _run_per_exposure(
-                       'striping', striping_step, 'CFP_1F',
-                       f, c, fl, n, ow, st),
-    'image2':      lambda f, c, fl, n, ow, st: _run_per_exposure(
-                       'image2', image2_step, 'CFP_IMG2',
-                       f, c, fl, n, ow, st),
+    'wisp':        functools.partial(_run_per_exposure, 'wisp'),
+    'striping':    functools.partial(_run_per_exposure, 'striping'),
+    'image2':      functools.partial(_run_per_exposure, 'image2'),
     'diag_striping': _run_diag_striping,
-    'edge':        lambda f, c, fl, n, ow, st: _run_per_exposure(
-                       'edge', edge_step, 'CFP_EDGE',
-                       f, c, fl, n, ow, st),
-    'sky':         lambda f, c, fl, n, ow, st: _run_per_exposure(
-                       'sky', sky_step, 'CFP_SKY',
-                       f, c, fl, n, ow, st),
-    'variance':    lambda f, c, fl, n, ow, st: _run_per_exposure(
-                       'variance', variance_step, 'CFP_VAR',
-                       f, c, fl, n, ow, st),
+    'edge':        functools.partial(_run_per_exposure, 'edge'),
+    'sky':         functools.partial(_run_per_exposure, 'sky'),
+    'variance':    functools.partial(_run_per_exposure, 'variance'),
     'wcs_shift':   _run_wcs_shift,
-    'preview':     lambda f, c, fl, n, ow, st: _run_per_exposure(
-                       'preview', preview_step, 'CFP_PREV',
-                       f, c, fl, n, ow, st),
-    'jhat':        lambda f, c, fl, n, ow, st: _run_per_exposure(
-                       'jhat', jhat_step, 'CFP_JHAT',
-                       f, c, fl, n, ow, st),
-    'apply_mask':  lambda f, c, fl, n, ow, st: _run_per_exposure(
-                       'apply_mask', apply_masks_step, 'CFP_MASK',
-                       f, c, fl, n, ow, st),
+    'preview':     functools.partial(_run_per_exposure, 'preview'),
+    'jhat':        functools.partial(_run_per_exposure, 'jhat'),
+    'apply_mask':  functools.partial(_run_per_exposure, 'apply_mask'),
     'bad_pixel':   _run_bad_pixel,
     'outlier':     _run_outlier,
     # 'resample' handled in run_combine/run_step (needs reduction_version)
@@ -547,6 +566,7 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
     persistence step runs serially since it operates over the whole filter
     set at once.
     """
+    from campfire_pipeline.nircam.prefetch import prefetch_process_references
     filters = _resolve_filters(filters, field)
     status = _scan_status(field, filters, overwrite=overwrite)
     log(f"=== Process phase: field={field.name}, filters={filters} ===")
@@ -591,6 +611,7 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
     status = _scan_status(field, filters, overwrite=overwrite)
     log(f"=== Step '{step_name}': field={field.name}, filters={filters} ===")
     if step_name in _CRDS_STEPS:
+        from campfire_pipeline.nircam.prefetch import prefetch_process_references
         prefetch_process_references(field, filters, n_processes)
 
     for filt in filters:

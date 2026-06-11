@@ -42,9 +42,6 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-import matplotlib
-matplotlib.use('Agg')
-
 import numpy as np
 import tqdm
 from astropy.coordinates import SkyCoord
