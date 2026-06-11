@@ -62,6 +62,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- NIRCam `resample` now recovers split-extension files after an interrupted
+  run. Previously the `_sci/_err/_wht/_srcmask` split was gated solely on
+  `needs_rebuild`, which only checks for the `_i2d.fits` mosaic. If a prior run
+  produced the i2d but crashed before splitting, a re-run found the i2d present
+  and inputs unchanged, took the up-to-date branch, and skipped splitting — so
+  the extension files (and their `_latest_` symlinks) were never created
+  without a manual `--overwrite`. The step now detects missing extension files
+  for an otherwise up-to-date tile and re-splits from the existing i2d (no
+  re-drizzle, no bkgsub redo). SRCMASK is only re-split when the i2d actually
+  carries that extension.
 - NIRCam `jhat` WCS-alignment step no longer aborts the entire `process` run
   on exposures near/over the edge of the reference-catalog footprint. Two
   distinct jhat crash modes were taking down the whole run (one bad exposure
