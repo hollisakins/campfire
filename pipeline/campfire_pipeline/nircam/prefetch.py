@@ -47,6 +47,32 @@ def _reftypes(pipeline_name):
     return out
 
 
+def _pars_reftypes(pipeline_name):
+    """Return the ``pars-*`` step-parameter reftypes for a pipeline.
+
+    These matter for correctness under the hardened worker CRDS environment
+    (``CRDS_READONLY_CACHE=1``, see ``orchestrate._crds_worker_env``): stpipe
+    fetches ``pars-<step>`` references separately from science references on
+    every ``Step.call``, and a read-only worker cannot download one on a
+    cache miss — so the serial prefetch must warm them too. Fetched in a
+    separate ``_fetch`` call from the science reftypes so a pars lookup
+    failure (e.g. a reftype absent from the pinned context) cannot poison
+    the science-reference warming.
+    """
+    key = f'pars:{pipeline_name}'
+    if key in _REFTYPES_CACHE:
+        return _REFTYPES_CACHE[key]
+    from jwst import pipeline as jwst_pipeline
+    cls = getattr(jwst_pipeline, pipeline_name)
+    out = [cls.get_config_reftype()]
+    for step_cls in cls.step_defs.values():
+        rt = step_cls.get_config_reftype()
+        if rt not in out:
+            out.append(rt)
+    _REFTYPES_CACHE[key] = out
+    return out
+
+
 def _crds_params(uncal_file):
     """Build the canonical CRDS lookup parameters dict from an uncal.
 
@@ -89,8 +115,10 @@ def prefetch_detector1_references(uncal_files):
         seen.add(key)
         log(f"Pre-fetching Detector1Pipeline CRDS references for "
             f"{key[0]} ({key[1]}/{key[2]}) using {os.path.basename(f)}")
-        _fetch(_crds_params(f), reftypes,
-               key_label='/'.join(map(str, key)))
+        params = _crds_params(f)
+        _fetch(params, reftypes, key_label='/'.join(map(str, key)))
+        _fetch(params, _pars_reftypes('Detector1Pipeline'),
+               key_label='/'.join(map(str, key)) + ' (pars)')
     log("NIRCam Detector1Pipeline CRDS reference pre-fetch complete")
 
 
@@ -107,16 +135,24 @@ def prefetch_image2_references(uncal_files):
         seen.add(key)
         log(f"Pre-fetching Image2Pipeline CRDS references for "
             f"{key[0]}/{key[1]}/{key[2]} using {os.path.basename(f)}")
-        _fetch(_crds_params(f), reftypes,
-               key_label='/'.join(map(str, key)))
+        params = _crds_params(f)
+        _fetch(params, reftypes, key_label='/'.join(map(str, key)))
+        _fetch(params, _pars_reftypes('Image2Pipeline'),
+               key_label='/'.join(map(str, key)) + ' (pars)')
     log("NIRCam Image2Pipeline CRDS reference pre-fetch complete")
 
 
 def prefetch_process_references(field, filters, n_processes):
     """Gather uncals across ``filters`` and pre-fetch detector1 + image2
-    CRDS references. No-op when ``n_processes <= 1``."""
-    if n_processes <= 1:
-        return
+    CRDS references.
+
+    Runs unconditionally (``n_processes`` is kept for signature stability):
+    parallel workers now operate with a read-only CRDS cache (see
+    ``orchestrate._crds_worker_env``), which makes this serial, write-capable
+    pass the only sanctioned download path — skipping it for serial runs
+    saved nothing (the lookups happen either way) and skipping it for
+    parallel runs would turn any cache miss into a worker error.
+    """
     uncals = []
     for filt in filters:
         try:

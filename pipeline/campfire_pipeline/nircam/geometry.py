@@ -35,7 +35,7 @@ def select_overlapping_files(exposure_files, tile_polygon, *, in_shape=(2048, 20
 
     selected = []
     for f in exposure_files:
-        with fits.open(f, ignore_missing_simple=True) as hdul:
+        with fits.open(f, ignore_missing_simple=True, memmap=False) as hdul:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 wcs = WCS(hdul[1].header, naxis=2)

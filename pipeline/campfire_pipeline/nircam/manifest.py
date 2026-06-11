@@ -37,9 +37,10 @@ def compute_file_hash(filepath):
         Hex digest prefixed with ``sha256:``.
     """
     h = hashlib.sha256()
-    # do_not_scale_image_data lets memmap work even when extensions carry
-    # BZERO/BSCALE/BLANK; the raw stored bytes are a fine fingerprint.
-    with fits.open(filepath, memmap=True, do_not_scale_image_data=True) as hdul:
+    # do_not_scale_image_data: hash the raw stored bytes regardless of
+    # BZERO/BSCALE/BLANK. memmap=False: the arrays are read in full anyway,
+    # and one sequential read beats memmap's page-faulted small reads on NFS.
+    with fits.open(filepath, memmap=False, do_not_scale_image_data=True) as hdul:
         for extname in ('SCI', 'DQ'):
             try:
                 data = hdul[extname].data
@@ -129,7 +130,7 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
             'detector': parts[3] if len(parts) > 3 else '',
         }
         try:
-            with fits.open(f, memmap=True) as hdul:
+            with fits.open(f, memmap=False) as hdul:
                 date_obs = hdul[0].header.get('DATE-OBS')
                 if date_obs:
                     extra['date_obs'] = date_obs

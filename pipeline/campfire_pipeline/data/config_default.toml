@@ -142,6 +142,17 @@
 # `cfpipe nircam process` (per-exposure) and `cfpipe nircam combine`
 # (ensemble through resample).
 
+[nircam]
+    # Harden the CRDS environment in parallel workers of CRDS-using steps
+    # (detector1/wisp/striping/image2): CRDS_READONLY_CACHE=1 + CRDS_MODE=local.
+    # The serial prefetch warms the cache (science + pars references) before
+    # dispatch, so workers never legitimately download; readonly/local mode
+    # drops per-call server-contact and cache-write bookkeeping against the
+    # (NFS-resident) cache. Reference selection is unchanged. Set false if a
+    # run must cold-download references from inside workers (e.g. ad-hoc
+    # laptop runs against an empty cache with prefetch failing).
+    crds_readonly_workers = true
+
 # --- process phase (per-exposure) ---
 
 [nircam.detector1]

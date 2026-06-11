@@ -65,7 +65,7 @@ def variance_step(exposure_file, field, step_config, overwrite=False,
 
     block_size = step_config.get('block_size', 7)
 
-    with ImageModel(exposure_file) as model:
+    with ImageModel(exposure_file, memmap=False) as model:
         sci = model.data
         var_rnoise = model.var_rnoise
 

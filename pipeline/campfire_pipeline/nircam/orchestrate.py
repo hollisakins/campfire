@@ -67,8 +67,57 @@ ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 STEP_NAMES = [name for name, _ in ALL_STEPS]
 
 # Steps that hit CRDS — used by run_step() to decide when to pre-fetch
-# reference files before parallel dispatch.
+# reference files before parallel dispatch, and to harden the worker CRDS
+# environment (see _crds_worker_env).
 _CRDS_STEPS = {'detector1', 'wisp', 'striping', 'image2'}
+
+
+def _crds_worker_env(config):
+    """Worker env overrides for CRDS-using steps, or None when disabled.
+
+    With the context pinned and the cache warmed by the serial prefetch,
+    workers never legitimately need to download or write to the CRDS cache.
+    ``CRDS_READONLY_CACHE=1`` drops the per-call cache-writability probes
+    and lock handling; ``CRDS_MODE=local`` skips the server-contact /
+    config-refresh bookkeeping of the default ``auto`` mode. Both are pure
+    metadata savings on an NFS-resident cache — reference selection is
+    unchanged (same pinned context, same mappings). A genuinely missing
+    reference becomes a loud CrdsError instead of 16 workers racing to
+    download over NFS; that means the prefetch is broken and we want to
+    hear about it. Escape hatch for cold-cache laptop runs:
+    ``[nircam].crds_readonly_workers = false``.
+
+    Applied only to worker processes (Pool initializer) — the parent keeps
+    write access for the prefetch itself, as does the serial (n_processes
+    <= 1) path, which runs in the parent.
+    """
+    if not config.get('nircam', {}).get('crds_readonly_workers', True):
+        return None
+    if not os.environ.get('CRDS_CONTEXT'):
+        # Without a pinned context, local/readonly mode could resolve a
+        # different (cache-default) context than the parent would.
+        return None
+    return {'CRDS_READONLY_CACHE': '1', 'CRDS_MODE': 'local'}
+
+
+def _detector_sorted(paths):
+    """Order exposure paths detector-major (stable within detector).
+
+    Tasks are independent, so dispatch order is free to choose — but
+    ``Pool.map`` hands each worker a contiguous chunk, so detector-major
+    order makes a worker's chunk mostly single-detector. Per-worker
+    reference caches (wisp templates, flats, bad-pixel masks — all keyed
+    per detector) then hit instead of thrash.
+    """
+    def key(p):
+        base = os.path.basename(p)
+        parts = base.removesuffix('.fits').split('_')
+        # Detector is the 4th underscore field in both canonical and uncal
+        # names (jw..._<visitgrp>_<expnum>_<detector>[_uncal].fits) — same
+        # token the step modules themselves parse.
+        det = parts[3] if len(parts) > 3 else ''
+        return (det, base)
+    return sorted(paths, key=key)
 
 # Per-exposure steps dispatched through the generic ``_run_per_exposure``
 # helper: step_name -> (step module basename, worker callable, CFP key). The
@@ -115,7 +164,7 @@ def _read_sregions(exposure_files):
     """Return S_REGION header strings parallel to ``exposure_files``."""
     sregions = []
     for f in exposure_files:
-        with fits.open(f) as hdul:
+        with fits.open(f, memmap=False) as hdul:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 sregions.append(hdul[1].header['S_REGION'])
@@ -204,10 +253,11 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
 
     from campfire_pipeline.nircam.steps.detector1 import detector1_step
     cfg = get_nircam_step_config('detector1', config, field)
+    pending = _detector_sorted(pending)
     log(f"detector1: dispatching {len(pending)} files for {filtname}")
     dispatch(detector1_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
-             status=status)
+             status=status, worker_env=_crds_worker_env(config))
     new_canonical = [
         field.get_exposure_path(
             os.path.basename(u).removesuffix('_uncal.fits'), filtname,
@@ -257,10 +307,13 @@ def _run_per_exposure(step_name, field, config, filtname,
         return
     fn = _load_step(module_basename, func_name)
     cfg = get_nircam_step_config(step_name, config, field)
+    pending = _detector_sorted(pending)
     log(f"{step_name}: dispatching {len(pending)} exposures for {filtname}")
     dispatch(fn, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
-             status=status)
+             status=status,
+             worker_env=(_crds_worker_env(config)
+                         if step_name in _CRDS_STEPS else None))
     status.mark_all(pending, cfp_key)
 
 
@@ -352,6 +405,7 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
                                  overwrite)
     if not pending:
         return
+    pending = _detector_sorted(pending)
     log(f"bad_pixel: dispatching {len(pending)} exposures for {filtname}")
     dispatch(bad_pixel_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,

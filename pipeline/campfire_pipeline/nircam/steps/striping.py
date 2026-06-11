@@ -257,7 +257,7 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
 
     from jwst.datamodels import ImageModel, dqflags
 
-    model = ImageModel(exposure_file)
+    model = ImageModel(exposure_file, memmap=False)
     sci_before = model.data.copy()
 
     if mask_sources:

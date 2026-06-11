@@ -100,7 +100,7 @@ def has_step(path_or_header, key):
         raise ValueError(f"Unknown CFP key: {key}")
     if isinstance(path_or_header, fits.Header):
         return key in path_or_header
-    with fits.open(path_or_header) as hdul:
+    with fits.open(path_or_header, memmap=False) as hdul:
         return key in hdul[0].header
 
 
@@ -125,7 +125,7 @@ def get_steps(path):
 
     Used by ``cfpipe nircam status`` to render a per-exposure completion table.
     """
-    with fits.open(path) as hdul:
+    with fits.open(path, memmap=False) as hdul:
         hdr = hdul[0].header
         return {k: hdr[k] for k in CFP_KEYS if k in hdr}
 
@@ -144,7 +144,7 @@ def clear_from(path, key):
 
     base, ext = os.path.splitext(path)
     tmp = f'{base}.tmp{ext}' if ext else f'{path}.tmp'
-    with fits.open(path) as hdul:
+    with fits.open(path, memmap=False) as hdul:
         for k in to_clear:
             if k in hdul[0].header:
                 del hdul[0].header[k]

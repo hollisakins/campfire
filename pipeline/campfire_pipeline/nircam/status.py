@@ -37,7 +37,7 @@ class StepStatus:
                 present[p] = set()
                 continue
             try:
-                with fits.open(p) as hdul:
+                with fits.open(p, memmap=False) as hdul:
                     hdr = hdul[0].header
                     present[p] = {k for k in cfp.CFP_KEYS if k in hdr}
             except (OSError, IOError):
@@ -77,7 +77,7 @@ class StepStatus:
                 self._present[p] = set()
                 continue
             try:
-                with fits.open(p) as hdul:
+                with fits.open(p, memmap=False) as hdul:
                     hdr = hdul[0].header
                     self._present[p] = {k for k in cfp.CFP_KEYS if k in hdr}
             except (OSError, IOError):

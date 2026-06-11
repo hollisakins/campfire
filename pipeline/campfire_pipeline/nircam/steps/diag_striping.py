@@ -471,7 +471,7 @@ def _coarse_fine_search(data, mask, bin_width,
 
 def _read_srcmask(exposure_file):
     """Return SRCMASK as a bool array, or None if the extension is absent."""
-    with fits.open(exposure_file) as hdul:
+    with fits.open(exposure_file, memmap=False) as hdul:
         if 'SRCMASK' not in hdul:
             return None
         return hdul['SRCMASK'].data.astype(bool)
@@ -679,7 +679,7 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
 
     from jwst.datamodels import ImageModel, dqflags
 
-    model = ImageModel(exposure_file)
+    model = ImageModel(exposure_file, memmap=False)
     sci_before = model.data.copy()
     dq_before = model.dq.copy()
     err_before = model.err.copy()
@@ -818,7 +818,7 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
 
     # Preserve SRCMASK (image2 round-trip pattern: re-attach extension).
     srcmask_hdu = None
-    with fits.open(exposure_file) as hdul:
+    with fits.open(exposure_file, memmap=False) as hdul:
         if 'SRCMASK' in hdul:
             hdu = hdul['SRCMASK']
             srcmask_hdu = fits.ImageHDU(

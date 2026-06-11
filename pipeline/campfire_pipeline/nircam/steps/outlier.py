@@ -58,7 +58,7 @@ EXTRA_EXT_NAMES = ('SRCMASK', 'CFMASK')
 
 def _capture_extras(canonical):
     extras = []
-    with fits.open(canonical) as hdul:
+    with fits.open(canonical, memmap=False) as hdul:
         for name in EXTRA_EXT_NAMES:
             if name not in hdul:
                 continue
@@ -304,7 +304,7 @@ def outlier_step(visit, visit_files, filter_files, sregions,
             scratch_out = os.path.join(scratch, matches[0])
 
             if do_plot:
-                with fits.open(canonical) as hdul:
+                with fits.open(canonical, memmap=False) as hdul:
                     sci_before = hdul['SCI'].data.copy()
                     dq_before = hdul['DQ'].data.copy()
 
@@ -318,7 +318,7 @@ def outlier_step(visit, visit_files, filter_files, sregions,
 
             if do_plot:
                 from campfire_pipeline.nircam.steps._plots import plot_outlier
-                with fits.open(canonical) as hdul:
+                with fits.open(canonical, memmap=False) as hdul:
                     dq_after = hdul['DQ'].data.copy()
                 new_outlier = (
                     ((dq_after & OUTLIER_BIT) != 0)

@@ -19,6 +19,7 @@ copy idiom from the legacy implementation work without re-reading from disk.
 """
 
 import copy
+import functools
 import os
 from datetime import datetime
 
@@ -54,6 +55,24 @@ def _calc_variance(data, template, coeff):
     return mad ** 2
 
 
+@functools.lru_cache(maxsize=8)
+def _load_template(path):
+    """Read a wisp template once per worker, NaN-cleaned, read-only.
+
+    The same ~16MB template applies to every exposure of a given
+    (detector, filter), and each exposure's fit loop touches all four
+    candidates plus a fifth read of the winner — over NFS that's pure
+    re-read churn. The NaN replacement is template-intrinsic so it lives
+    in the cache; the exposure-specific ``sci == 0`` masking happens on a
+    copy at the call sites. The array is marked read-only as a guard
+    against accidental in-place mutation of the shared cache entry.
+    """
+    data = fits.getdata(path, memmap=False)
+    data[np.isnan(data)] = 0
+    data.flags.writeable = False
+    return data
+
+
 def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     """Subtract a fitted wisp template from a single canonical exposure.
 
@@ -85,7 +104,7 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     if detector not in WISP_DETECTORS:
         log(f"Skipping wisp on {rootname}: detector {detector} has no wisps")
         from jwst.datamodels import ImageModel
-        with ImageModel(exposure_file) as m:
+        with ImageModel(exposure_file, memmap=False) as m:
             atomic_save(
                 m, exposure_file,
                 header_updates=cfp.format(
@@ -111,7 +130,7 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
 
     from jwst.datamodels import ImageModel
 
-    model = ImageModel(exposure_file)
+    model = ImageModel(exposure_file, memmap=False)
     sci_before = model.data.copy()
 
     # Deep-copy and flat-field for fitting only; the actual subtraction goes
@@ -154,8 +173,7 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     min_x = np.zeros(len(template_files))
     min_y = np.zeros(len(template_files))
     for i, (tname, sname) in enumerate(zip(template_files, short_names)):
-        wisp = fits.getdata(os.path.join(field.wisp_dir, tname))
-        wisp[np.isnan(wisp)] = 0
+        wisp = _load_template(os.path.join(field.wisp_dir, tname)).copy()
         wisp[sci_before == 0] = 0
         seg_w = wisp[y1:y2, x1:x2]
 
@@ -193,9 +211,10 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
         plt.close(fig_fit)
         log(f"Saved {os.path.basename(fit_pdf)}")
 
-    # Subtract from the original (un-flat-fielded) data
-    wisp_final = fits.getdata(os.path.join(field.wisp_dir, template_name))
-    wisp_final[np.isnan(wisp_final)] = 0
+    # Subtract from the original (un-flat-fielded) data. Cache hit: the fit
+    # loop above already loaded this template.
+    wisp_final = _load_template(
+        os.path.join(field.wisp_dir, template_name)).copy()
     wisp_final[sci_before == 0] = 0
     model.data = sci_before - minval * wisp_final
     sci_after = model.data.copy()
