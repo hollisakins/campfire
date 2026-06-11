@@ -62,6 +62,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- NIRCam CLI startup is now proportional to the work being run, not to the
+  whole step catalog. `orchestrate.py` previously imported all 14 step modules
+  at module top, so every `cfpipe nircam` invocation — including `--help` and a
+  `combine` run that touches none of the process-phase steps — eagerly imported
+  `photutils.segmentation` (via `wisp`/`striping`) and `matplotlib` (via
+  `outlier`). On cluster NFS that was ~140s for photutils + ~40s for matplotlib
+  of pure startup latency before the first log line. Step workers are now
+  imported lazily inside their runner functions (only when a phase actually
+  dispatches the step), and the headless matplotlib backend is selected via
+  `MPLBACKEND=Agg` in `_thread_caps` instead of an eager
+  `import matplotlib; matplotlib.use('Agg')` in each CLI module. No change to
+  outputs or step behavior; `import campfire_pipeline.nircam.cli` now loads zero
+  step modules and zero heavy scientific deps.
 - NIRCam `resample` now recovers split-extension files after an interrupted
   run. Previously the `_sci/_err/_wht/_srcmask` split was gated solely on
   `needs_rebuild`, which only checks for the `_i2d.fits` mosaic. If a prior run
