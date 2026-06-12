@@ -69,6 +69,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- NIRCam combine-phase NFS fixes (PR 2 of
+  `docs/design-nircam-exposure-major.md`; findings H7/M4 of `docs/nfs_audit.md`).
+  No change to pixel values, tile selection, or staleness decisions.
+  - Footprint computation hoisted out of the per-tile loop
+    (`geometry.compute_footprints` + pure-geometry `geometry.select_overlapping`).
+    `resample` and `manifest.get_stale_tiles` previously re-opened every candidate
+    exposure's WCS once per tile to test overlap (N_exposures × N_tiles
+    `fits.open`s); footprints are tile-invariant, so they are now computed once
+    per filter and reused across tiles. Selection is bit-identical — same
+    `wcs_pix2world` four-corner polygons, same order.
+  - `outlier`/`resample` staleness takes the manifest stat fast path
+    (`orchestrate._visit_up_to_date` → `manifest.file_unchanged`): an unchanged
+    combine run compares size + `mtime_ns` instead of re-hashing each visit
+    file's full SCI+DQ (~32 MB), falling back to the content hash only on a stat
+    mismatch. Identical staleness decisions.
 - NFS cache tier for the NIRCam pipeline (PR 1 of
   `docs/design-nircam-exposure-major.md`; findings H4/H5/M2/M9 of
   `docs/nfs_audit.md`). No change to pixel values or reference selection —

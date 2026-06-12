@@ -439,7 +439,7 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     # The CFP_OUT-only short-circuit avoids the polygon-overlap setup work
     # done at the top of outlier_step on no-op runs.
     from campfire_pipeline.nircam.manifest import (
-        compute_file_hash, load_manifest,
+        file_unchanged, load_manifest,
     )
 
     def _visit_up_to_date(visit, visit_files):
@@ -451,19 +451,21 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
         manifest = load_manifest(manifest_path)
         if manifest is None:
             return False
-        # Check that visit_files (a subset of all_inputs) hashes still match.
-        # Cross-visit overlaps are validated inside outlier_step on the slow
-        # path; here we only confirm the visit's own files are unchanged so
-        # we can cheaply skip the obvious no-op case.
-        old_hashes = {
-            inp['filename']: inp['file_hash']
+        # Confirm the visit's own files are unchanged so we can cheaply skip
+        # the obvious no-op case. (Cross-visit overlaps are validated inside
+        # outlier_step on the slow path.) ``file_unchanged`` takes the manifest
+        # size+mtime_ns fast path — a stat per file — and only falls back to a
+        # full SCI+DQ hash on a stat mismatch, so an unchanged combine run no
+        # longer re-hashes ~32MB per visit file.
+        old_entries = {
+            inp['filename']: inp
             for inp in manifest['inputs']
         }
         for f in visit_files:
             bn = os.path.basename(f)
-            if bn not in old_hashes:
+            if bn not in old_entries:
                 return False
-            if compute_file_hash(f) != old_hashes[bn]:
+            if not file_unchanged(f, old_entries[bn]):
                 return False
         return True
 

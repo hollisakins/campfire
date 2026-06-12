@@ -27,7 +27,9 @@ from astropy.io import fits
 from shapely.geometry import Polygon
 
 from campfire_pipeline.common.io import log
-from campfire_pipeline.nircam.geometry import select_overlapping_files
+from campfire_pipeline.nircam.geometry import (
+    compute_footprints, select_overlapping,
+)
 
 
 def _resolve_pixel_scale(value):
@@ -198,6 +200,10 @@ def resample_step(filtname, exposure_files, field, step_config,
     if isinstance(tiles, str):
         tiles = [tiles]
 
+    # Footprints are tile-invariant: open each exposure's WCS once here, not
+    # once per tile inside the loop below.
+    footprints = compute_footprints(exposure_files)
+
     for tile in tiles:
         log(f"resample: tile {tile}, {filtname}, {pixel_scale_str}")
 
@@ -220,7 +226,7 @@ def resample_step(filtname, exposure_files, field, step_config,
         log(f"  mosaic → {mosaic_file}")
 
         tile_polygon = Polygon(field.get_tile_corners(tile))
-        selected = select_overlapping_files(exposure_files, tile_polygon)
+        selected = select_overlapping(footprints, tile_polygon)
         if not selected:
             log(f"  no exposures overlap {tile}; skipping")
             continue

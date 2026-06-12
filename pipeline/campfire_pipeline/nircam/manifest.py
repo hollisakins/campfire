@@ -305,7 +305,9 @@ def get_stale_tiles(field, filtname, stage_config):
     """
     from shapely.geometry import Polygon
 
-    from campfire_pipeline.nircam.geometry import select_overlapping_files
+    from campfire_pipeline.nircam.geometry import (
+        compute_footprints, select_overlapping,
+    )
 
     resample_cfg = stage_config.get('resample', {})
     version = resample_cfg.get('version', 'v0_1')
@@ -330,6 +332,9 @@ def get_stale_tiles(field, filtname, stage_config):
         skip=files_to_skip if files_to_skip else None,
         with_step='CFP_OUT',
     )
+    # Footprints are tile-invariant: open each candidate's WCS once here,
+    # not once per tile inside the loop below.
+    footprints = compute_footprints(candidate_files)
 
     results = []
     for tile in tiles:
@@ -349,7 +354,7 @@ def get_stale_tiles(field, filtname, stage_config):
 
         # Find which canonical exposures overlap this tile
         tile_polygon = Polygon(field.get_tile_corners(tile))
-        selected = select_overlapping_files(candidate_files, tile_polygon)
+        selected = select_overlapping(footprints, tile_polygon)
 
         changed, reasons = check_inputs_changed(manifest_path, selected)
 
