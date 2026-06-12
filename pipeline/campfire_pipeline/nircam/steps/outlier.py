@@ -387,6 +387,11 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
     snr = tuple(float(x) for x in snr_str.split())
     scale = tuple(float(x) for x in scale_str.split())
 
+    # The orchestrator already read every input's S_REGION once
+    # (_read_sregions) and passed them as `sregions`; reuse that map so the
+    # per-visit WCS build doesn't re-open each input just for one keyword.
+    sregion_map = dict(zip(filter_files, sregions))
+
     outlier_detect_for_visit(
         all_inputs, visit_files,
         snr=snr, scale=scale,
@@ -395,6 +400,7 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
         kernel=step_config.get('kernel', 'square'),
         weight_type=step_config.get('weight_type', 'ivm'),
         good_bits=step_config.get('good_bits', '~DO_NOT_USE'),
+        sregions=sregion_map,
         in_memory=bool(step_config.get('in_memory', False)),
         extras_per_visit=saved_extras,
         plot=do_plot,

@@ -78,53 +78,66 @@ from astropy.io import fits
 from campfire_pipeline.common.io import log
 
 
-def _build_output_wcs(crf_files, crpix, crval, shape, rotation, pixel_scale):
-    """Build the output gwcs using stcal's TAN convention.
+def _sregion_for(crf_file, sregions):
+    """S_REGION for ``crf_file``: from the supplied map, else read the header.
 
-    ``crpix`` / ``crval`` / ``shape`` / ``rotation`` / ``pixel_scale`` are
-    the campfire tile parameters from ``Field.get_tile_wcs``. The first
-    CRF supplies a reference gwcs and ``wcsinfo`` so stcal can construct
-    the output frame.
+    ``sregions`` is an optional ``{path: s_region}`` mapping passed in by
+    callers that already read every input's header once (the outlier
+    orchestrator's ``_read_sregions``; resample's geometry pass), so the
+    per-visit / per-tile WCS build does not re-open files just to read this
+    one keyword. Falls back to a direct ``getheader`` when absent.
+    """
+    if sregions is not None:
+        s = sregions.get(crf_file)
+        if s is not None:
+            return s
+    return fits.getheader(crf_file, extname='SCI')['S_REGION']
 
-    All inputs' ``S_REGION`` polygons are passed so the gwcs's
-    ``bounding_box`` covers the full union footprint — important for the
-    inverse transform (``world → output_pix``) to return finite values
-    for inputs whose footprint extends beyond the first CRF's bbox. The
-    output ``shape``, ``crpix``, and ``crval`` are explicit overrides so
-    the geometry is fully determined by the campfire tile parameters and
-    does not depend on input ordering.
 
-    Parameters
-    ----------
-    crf_files : list of str
-    crpix, crval, shape, rotation, pixel_scale : tile WCS overrides
-        (see ``Field.get_tile_wcs``).
+def build_output_wcs_from_ref(ref_model, crf_files, sregions=None, *,
+                              crpix=None, crval=None, shape=None,
+                              rotation=None, pixel_scale=None):
+    """Build the drizzle output gwcs from an already-open reference model.
 
-    Returns
-    -------
-    `gwcs.wcs.WCS`
+    ``crf_files[0]`` must be the model passed as ``ref_model``: its embedded
+    gwcs + ``wcsinfo`` anchor the output frame, and reusing this single open
+    is what lets the reduce pass avoid a separate WCS-sizing traversal that
+    re-opened it. The remaining inputs contribute only their ``S_REGION``
+    footprint strings (so the gwcs ``bounding_box`` covers the union
+    footprint — important for the inverse transform to return finite values
+    for inputs extending beyond the reference's bbox), taken from
+    ``sregions`` when supplied (no opens) or read from the header otherwise.
+
+    With all grid overrides ``None`` (outlier per-visit WCS) the grid is
+    auto-derived from the reference, matching ``wcs_from_sregions`` defaults.
+    With them supplied (resample tile WCS from ``Field.get_tile_wcs``) they
+    pin ``pscale``/``rotation``/``shape``/``crpix``/``crval`` so the geometry
+    is fully determined by the tile parameters and does not depend on input
+    ordering — exactly as before.
     """
     from stcal.alignment.util import wcs_from_sregions
-    from stdatamodels.jwst.datamodels import ImageModel
 
-    sregions = []
-    with ImageModel(crf_files[0], memmap=False) as ref:
-        ref_wcs = deepcopy(ref.meta.wcs)
-        ref_wcsinfo = ref.meta.wcsinfo.instance
-        sregions.append(ref.meta.wcsinfo.s_region)
+    ref_wcs = deepcopy(ref_model.meta.wcs)
+    ref_wcsinfo = ref_model.meta.wcsinfo.instance
+    s_regions = [ref_model.meta.wcsinfo.s_region]
     for crf in crf_files[1:]:
-        sregions.append(fits.getheader(crf, extname='SCI')['S_REGION'])
+        s_regions.append(_sregion_for(crf, sregions))
 
-    nx, ny = shape
+    kwargs = {}
+    if pixel_scale is not None:
+        kwargs['pscale'] = pixel_scale / 3600.0
+    if rotation is not None:
+        kwargs['rotation'] = rotation
+    if shape is not None:
+        nx, ny = shape
+        kwargs['shape'] = (ny, nx)
+    if crpix is not None:
+        kwargs['crpix'] = tuple(crpix)
+    if crval is not None:
+        kwargs['crval'] = tuple(crval)
+
     return wcs_from_sregions(
-        sregions,
-        ref_wcs=ref_wcs,
-        ref_wcsinfo=ref_wcsinfo,
-        pscale=pixel_scale / 3600.0,
-        rotation=rotation,
-        shape=(ny, nx),
-        crpix=tuple(crpix),
-        crval=tuple(crval),
+        s_regions, ref_wcs=ref_wcs, ref_wcsinfo=ref_wcsinfo, **kwargs,
     )
 
 
@@ -363,64 +376,60 @@ def _sanitize_variance(var_rnoise, var_poisson, var_flat, weight):
     return var_total, var_weight
 
 
-def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
-                           weight_type, good_bits, blender=None):
-    """Open one CRF and prepare the per-input arrays drizzle needs.
+def _prep_from_model(model, output_wcs, out_shape, *,
+                     weight_type, good_bits, blender=None):
+    """Prepare the per-input arrays drizzle needs from an already-open model.
 
     Returns a dict with ``data``, ``err``, ``var_total``, ``weight``,
     ``pixmap``, ``exptime``, ``xmin``/``xmax``/``ymin``/``ymax``,
-    ``in_shape``, ``input_gwcs`` — or ``None`` if the input footprint
-    does not overlap the tile.
+    ``in_shape``, ``input_gwcs`` — or ``None`` if the input footprint does
+    not overlap the tile.
 
-    If ``blender`` is given (the resample path), the input model is fed to it
-    for header blending — only once we know the input overlaps the tile, so
-    skipped inputs don't contribute metadata. This reuses the single open the
-    array prep already does. ``drizzle_tile_singles`` (outlier) passes ``None``.
-
-    Shared by ``drizzle_tile`` (accumulate mode for resample) and
-    ``drizzle_tile_singles`` (per-input rasters for outlier).
+    Split from ``_prepare_drizzle_input`` so a caller that has *already*
+    opened the model — notably the reference input, whose open also builds
+    the output WCS — can prep it without a second open. ``blender`` (resample
+    path) accumulates the model's header metadata, but only once we know the
+    input overlaps the tile, so skipped inputs don't contribute metadata.
     """
     from jwst.datamodels.dqflags import pixel as pixel_flags
     from stcal.resample.utils import build_driz_weight, resample_range
-    from stdatamodels.jwst.datamodels import ImageModel
 
-    with ImageModel(crf_file, memmap=False) as model:
-        data = np.asarray(model.data, dtype=np.float32)
-        err = np.asarray(model.err, dtype=np.float32)
-        in_shape = data.shape
-        input_gwcs = deepcopy(model.meta.wcs)
-        exptime = float(model.meta.exposure.exposure_time)
-        input_pixelarea_a2 = model.meta.photometry.pixelarea_arcsecsq
+    data = np.asarray(model.data, dtype=np.float32)
+    err = np.asarray(model.err, dtype=np.float32)
+    in_shape = data.shape
+    input_gwcs = deepcopy(model.meta.wcs)
+    exptime = float(model.meta.exposure.exposure_time)
+    input_pixelarea_a2 = model.meta.photometry.pixelarea_arcsecsq
 
-        pixmap = _input_to_output_pixmap(input_gwcs, output_wcs, in_shape)
-        bbox = _output_bbox_in_tile(pixmap, out_shape)
-        if bbox is None:
-            return None
-        sly, slx = bbox
+    pixmap = _input_to_output_pixmap(input_gwcs, output_wcs, in_shape)
+    bbox = _output_bbox_in_tile(pixmap, out_shape)
+    if bbox is None:
+        return None
+    sly, slx = bbox
 
-        if blender is not None:
-            blender.accumulate(model)
+    if blender is not None:
+        blender.accumulate(model)
 
-        weight = build_driz_weight(
-            {'data': model.data, 'dq': model.dq,
-             'var_rnoise': model.var_rnoise},
-            weight_type=weight_type,
-            good_bits=good_bits,
-            flag_name_map=pixel_flags,
-        ).astype(np.float32)
+    weight = build_driz_weight(
+        {'data': model.data, 'dq': model.dq,
+         'var_rnoise': model.var_rnoise},
+        weight_type=weight_type,
+        good_bits=good_bits,
+        flag_name_map=pixel_flags,
+    ).astype(np.float32)
 
-        # Sum the variance components, masking each independently (see
-        # _sanitize_variance) so one bad component can't poison the ERR map.
-        var_total, var_weight = _sanitize_variance(
-            np.asarray(model.var_rnoise, dtype=np.float32),
-            np.asarray(model.var_poisson, dtype=np.float32),
-            np.asarray(model.var_flat, dtype=np.float32),
-            weight,
-        )
+    # Sum the variance components, masking each independently (see
+    # _sanitize_variance) so one bad component can't poison the ERR map.
+    var_total, var_weight = _sanitize_variance(
+        np.asarray(model.var_rnoise, dtype=np.float32),
+        np.asarray(model.var_poisson, dtype=np.float32),
+        np.asarray(model.var_flat, dtype=np.float32),
+        weight,
+    )
 
-        xmin, xmax, ymin, ymax = resample_range(
-            in_shape, input_gwcs.bounding_box,
-        )
+    xmin, xmax, ymin, ymax = resample_range(
+        in_shape, input_gwcs.bounding_box,
+    )
 
     return {
         'data': data, 'err': err,
@@ -434,6 +443,25 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
     }
 
 
+def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
+                           weight_type, good_bits, blender=None):
+    """Open one CRF and prepare the per-input arrays drizzle needs.
+
+    Thin wrapper over ``_prep_from_model`` that owns the file open. Returns
+    the prep dict or ``None`` if the input footprint does not overlap the
+    tile. Shared by ``drizzle_tile`` (resample) and ``drizzle_tile_singles``
+    (outlier) for the non-reference inputs; the reference input is opened by
+    the caller and prepped via ``_prep_from_model`` directly.
+    """
+    from stdatamodels.jwst.datamodels import ImageModel
+
+    with ImageModel(crf_file, memmap=False) as model:
+        return _prep_from_model(
+            model, output_wcs, out_shape,
+            weight_type=weight_type, good_bits=good_bits, blender=blender,
+        )
+
+
 def _add_image_kwargs(prep, pixfrac):
     """Common kwargs for `Drizzle.add_image` from a `_prepare_drizzle_input` dict."""
     return dict(
@@ -445,6 +473,32 @@ def _add_image_kwargs(prep, pixfrac):
         xmin=prep['xmin'], xmax=prep['xmax'],
         ymin=prep['ymin'], ymax=prep['ymax'],
     )
+
+
+def _bbox_drizzle_single(prep, *, kernel, pixfrac):
+    """Drizzle one prepped input into its bbox-sized buffer; return (sci, wht).
+
+    Extracted from ``drizzle_tile_singles`` so the reference input — prepped
+    from the same open that built the output WCS — drizzles through the exact
+    same path as the streamed inputs (the pixmap is shifted by the bbox
+    origin so cdriz writes into bbox-local coordinates).
+    """
+    from drizzle.resample import Drizzle
+
+    sly, slx = prep['sly'], prep['slx']
+    pixmap_local = prep['pixmap'].copy()
+    pixmap_local[..., 0] -= slx.start
+    pixmap_local[..., 1] -= sly.start
+
+    common = _add_image_kwargs(prep, pixfrac)
+    common['pixmap'] = pixmap_local
+
+    sci_driz = Drizzle(
+        out_shape=prep['bbox_shape'], kernel=kernel, fillval='NaN',
+        disable_ctx=True,
+    )
+    sci_driz.add_image(data=prep['data'], **common)
+    return sci_driz.out_img, sci_driz.out_wht
 
 
 def drizzle_tile(
@@ -462,6 +516,7 @@ def drizzle_tile(
     good_bits='~DO_NOT_USE',
     blendheaders=True,
     reduction_version='unknown',
+    sregions=None,
 ):
     """Drizzle ``crf_files`` into a single i2d at ``output_path``.
 
@@ -490,10 +545,6 @@ def drizzle_tile(
     out_shape = (ny, nx)
 
     log(f"  campfire drizzle: {n_inputs} inputs into {nx}x{ny} tile")
-
-    output_wcs = _build_output_wcs(
-        crf_files, crpix, crval, shape, rotation, pixel_scale,
-    )
 
     blender = None
     if blendheaders:
@@ -525,14 +576,34 @@ def drizzle_tile(
         disable_ctx=True,
     )
 
+    # Open the reference input (crf_files[0]) once: its gwcs + wcsinfo anchor
+    # the output WCS (built from that open plus the other inputs' S_REGION
+    # strings, supplied via `sregions` or read cheaply), and its arrays are
+    # prepped from the same open. Previously the WCS-sizing pass opened it a
+    # first time and the drizzle loop opened it a second time.
+    from stdatamodels.jwst.datamodels import ImageModel
+    with ImageModel(crf_files[0], memmap=False) as _ref:
+        output_wcs = build_output_wcs_from_ref(
+            _ref, crf_files, sregions,
+            crpix=crpix, crval=crval, shape=shape, rotation=rotation,
+            pixel_scale=pixel_scale,
+        )
+        ref_prep = _prep_from_model(
+            _ref, output_wcs, out_shape,
+            weight_type=weight_type, good_bits=good_bits, blender=blender,
+        )
+
     skipped = 0
     input_pixelarea_a2 = None
     for i, crf_file in enumerate(crf_files, start=1):
         basename = os.path.basename(crf_file)
-        prep = _prepare_drizzle_input(
-            crf_file, output_wcs, out_shape,
-            weight_type=weight_type, good_bits=good_bits, blender=blender,
-        )
+        if i == 1:
+            prep = ref_prep
+        else:
+            prep = _prepare_drizzle_input(
+                crf_file, output_wcs, out_shape,
+                weight_type=weight_type, good_bits=good_bits, blender=blender,
+            )
         if prep is None:
             skipped += 1
             log(f"  [{i}/{n_inputs}] {basename}: no tile overlap, skipping")
@@ -648,8 +719,6 @@ def drizzle_tile_singles(
 
     Inputs that don't overlap the tile are skipped (no yield).
     """
-    from drizzle.resample import Drizzle
-
     skipped = 0
     for crf_file in crf_files:
         prep = _prepare_drizzle_input(
@@ -660,21 +729,8 @@ def drizzle_tile_singles(
             skipped += 1
             continue
 
-        sly, slx = prep['sly'], prep['slx']
-        pixmap_local = prep['pixmap'].copy()
-        pixmap_local[..., 0] -= slx.start
-        pixmap_local[..., 1] -= sly.start
-
-        common = _add_image_kwargs(prep, pixfrac)
-        common['pixmap'] = pixmap_local
-
-        sci_driz = Drizzle(
-            out_shape=prep['bbox_shape'], kernel=kernel, fillval='NaN',
-            disable_ctx=True,
-        )
-        sci_driz.add_image(data=prep['data'], **common)
-
-        yield sci_driz.out_img, sci_driz.out_wht, prep
+        sci, wht = _bbox_drizzle_single(prep, kernel=kernel, pixfrac=pixfrac)
+        yield sci, wht, prep
 
     if skipped:
         log(f"  {skipped} inputs did not overlap tile")

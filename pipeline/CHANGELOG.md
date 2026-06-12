@@ -70,15 +70,29 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Infrastructure
 - NIRCam combine-phase NFS fixes (PR 2 of
-  `docs/design-nircam-exposure-major.md`; findings H7/M4 of `docs/nfs_audit.md`).
-  No change to pixel values, tile selection, or staleness decisions.
+  `docs/design-nircam-exposure-major.md`; findings H7/H8/M4 of
+  `docs/nfs_audit.md`). No change to pixel values, tile selection, staleness
+  decisions, or drizzle/outlier output.
   - Footprint computation hoisted out of the per-tile loop
-    (`geometry.compute_footprints` + pure-geometry `geometry.select_overlapping`).
-    `resample` and `manifest.get_stale_tiles` previously re-opened every candidate
-    exposure's WCS once per tile to test overlap (N_exposures × N_tiles
-    `fits.open`s); footprints are tile-invariant, so they are now computed once
-    per filter and reused across tiles. Selection is bit-identical — same
-    `wcs_pix2world` four-corner polygons, same order.
+    (`geometry.compute_input_geometry` + pure-geometry
+    `geometry.select_overlapping`). `resample` and `manifest.get_stale_tiles`
+    previously re-opened every candidate exposure's WCS once per tile to test
+    overlap (N_exposures × N_tiles `fits.open`s); footprints are tile-invariant,
+    so they are now computed once per filter and reused across tiles. Selection
+    is bit-identical — same `wcs_pix2world` four-corner polygons, same order.
+  - One CRDS-input open per file in the combine reducers (drizzle + outlier).
+    `drizzle_tile` and `outlier_detect_for_visit` previously walked their input
+    set twice — a WCS-sizing pass that opened the reference input and
+    `getheader`-scanned every other input's `S_REGION`, then an array pass that
+    re-opened every input. The output WCS is now bootstrapped from the
+    reference input's array-pass open (no separate sizing open), and the other
+    inputs' `S_REGION` strings are passed in from a read that already happens —
+    the orchestrator's `_read_sregions` (outlier) and the resample geometry
+    pass (`compute_input_geometry` now also returns `S_REGION`) — so the
+    per-tile / per-visit `getheader` scan is gone. Verified bit-identical
+    (drizzle SCI/ERR/WHT/CON and flagged outlier DQ, byte-for-byte) on a real
+    visit via an A/B run. The outlier flag-write pass (a second open of visit
+    files only) is unchanged — it necessarily follows the median.
   - `outlier`/`resample` staleness takes the manifest stat fast path
     (`orchestrate._visit_up_to_date` → `manifest.file_unchanged`): an unchanged
     combine run compares size + `mtime_ns` instead of re-hashing each visit

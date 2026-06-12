@@ -32,42 +32,11 @@ accumulator updates).
 
 import os
 import tempfile
-from copy import deepcopy
 
 import numpy as np
-from astropy.io import fits
 
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import atomic_save, log
-
-
-def _build_visit_wcs(crf_files):
-    """Build per-visit intermediate WCS via ``wcs_from_sregions`` auto-derivation.
-
-    With ``pscale=None``, ``rotation=None``, ``shape=None`` (all defaults),
-    ``wcs_from_sregions`` derives:
-    - pixel scale from the reference CRF's gwcs at the field reference point
-      (``compute_scale``);
-    - rotation from ``ref_wcsinfo['roll_ref']`` / ``v3yangle`` / ``vparity``
-      (instrument frame, not ICRS-aligned);
-    - shape sized to enclose the union footprint of all input s_regions.
-
-    The resulting gwcs has ``.pixel_shape = (Nx, Ny)`` baked in. Returning
-    array-shape ``(Ny, Nx)`` for downstream use is the caller's job.
-    """
-    from stcal.alignment.util import wcs_from_sregions
-    from stdatamodels.jwst.datamodels import ImageModel
-
-    sregions = []
-    with ImageModel(crf_files[0], memmap=False) as ref:
-        ref_wcs = deepcopy(ref.meta.wcs)
-        ref_wcsinfo = ref.meta.wcsinfo.instance
-        sregions.append(ref.meta.wcsinfo.s_region)
-    for crf in crf_files[1:]:
-        sregions.append(fits.getheader(crf, extname='SCI')['S_REGION'])
-    return wcs_from_sregions(
-        sregions, ref_wcs=ref_wcs, ref_wcsinfo=ref_wcsinfo,
-    )
 
 
 def outlier_detect_for_visit(
@@ -81,6 +50,7 @@ def outlier_detect_for_visit(
     kernel='square',
     weight_type='ivm',
     good_bits='~DO_NOT_USE',
+    sregions=None,
     in_memory=False,
     tempdir=None,
     extras_per_visit=None,
@@ -129,16 +99,29 @@ def outlier_detect_for_visit(
     from stcal.outlier_detection.median import MedianComputer
     from stdatamodels.jwst.datamodels import ImageModel
 
-    from campfire_pipeline.nircam.drizzle import drizzle_tile_singles
+    from campfire_pipeline.nircam.drizzle import (
+        build_output_wcs_from_ref, drizzle_tile_singles,
+        _bbox_drizzle_single, _prep_from_model,
+    )
 
     n_inputs = len(all_inputs)
     if n_inputs == 0:
         log("  outlier (per-visit): no inputs")
         return
 
-    output_wcs = _build_visit_wcs(all_inputs)
-    nx, ny = output_wcs.pixel_shape
-    out_shape = (ny, nx)
+    # Open the reference input (all_inputs[0]) once: build the per-visit WCS
+    # from its gwcs + the other inputs' S_REGION strings (supplied via
+    # `sregions` — read once by the orchestrator's _read_sregions — or read
+    # from the header on a miss), and prep its arrays from the same open. The
+    # remaining inputs are streamed one open each by drizzle_tile_singles.
+    with ImageModel(all_inputs[0], memmap=False) as _ref:
+        output_wcs = build_output_wcs_from_ref(_ref, all_inputs, sregions)
+        nx, ny = output_wcs.pixel_shape
+        out_shape = (ny, nx)
+        ref_prep = _prep_from_model(
+            _ref, output_wcs, out_shape,
+            weight_type=weight_type, good_bits=good_bits,
+        )
 
     log(f"  campfire outlier (per-visit): {n_inputs} inputs into "
         f"{nx}x{ny} visit WCS")
@@ -158,21 +141,33 @@ def outlier_detect_for_visit(
     scratch_sci = np.full(out_shape, np.nan, dtype=np.float32)
 
     contributing_paths = []
-    for idx, ((sci_bbox, _wht_bbox, prep), crf) in enumerate(zip(
-        drizzle_tile_singles(
-            all_inputs, output_wcs, out_shape,
-            pixfrac=pixfrac, kernel=kernel,
-            weight_type=weight_type, good_bits=good_bits,
-        ),
-        all_inputs,
-    )):
-        sly, slx = prep['sly'], prep['slx']
 
+    def _accumulate(idx, crf, prep, sci_bbox):
+        sly, slx = prep['sly'], prep['slx']
         scratch_sci[sly, slx] = sci_bbox
         sci_mc.append(scratch_sci, idx=idx)
         scratch_sci[sly, slx] = np.nan
-
         contributing_paths.append(crf)
+
+    idx = 0
+    # Reference first — its arrays came from the WCS-building open above; it
+    # drizzles through the same bbox path as the streamed inputs.
+    if ref_prep is not None:
+        ref_sci, _ = _bbox_drizzle_single(
+            ref_prep, kernel=kernel, pixfrac=pixfrac)
+        _accumulate(idx, all_inputs[0], ref_prep, ref_sci)
+        idx += 1
+    # Remaining inputs streamed one open each.
+    for (sci_bbox, _wht_bbox, prep), crf in zip(
+        drizzle_tile_singles(
+            all_inputs[1:], output_wcs, out_shape,
+            pixfrac=pixfrac, kernel=kernel,
+            weight_type=weight_type, good_bits=good_bits,
+        ),
+        all_inputs[1:],
+    ):
+        _accumulate(idx, crf, prep, sci_bbox)
+        idx += 1
 
     log("  computing median...")
     median_sci = sci_mc.evaluate()

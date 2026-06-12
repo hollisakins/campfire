@@ -28,7 +28,7 @@ from shapely.geometry import Polygon
 
 from campfire_pipeline.common.io import log
 from campfire_pipeline.nircam.geometry import (
-    compute_footprints, select_overlapping,
+    compute_input_geometry, select_overlapping,
 )
 
 
@@ -53,6 +53,7 @@ def _drizzle_tile_via_campfire(
     pixel_scale,
     resample_cfg,
     reduction_version,
+    sregions=None,
 ):
     """Drizzle ``selected_files`` to ``output_path`` via the campfire-native
     drizzle (issue #138).
@@ -77,6 +78,7 @@ def _drizzle_tile_via_campfire(
         good_bits=resample_cfg.get('good_bits', '~DO_NOT_USE'),
         blendheaders=resample_cfg.get('blendheaders', True),
         reduction_version=reduction_version,
+        sregions=sregions,
     )
 
 
@@ -91,6 +93,7 @@ def _drizzle_tile_via_jwst(
     pixel_scale,
     resample_cfg,
     reduction_version,
+    sregions=None,  # accepted for dispatch parity; jwst resamples its own WCS
 ):
     """Drizzle ``selected_files`` to ``output_path`` via JWST ``Image3Pipeline``.
 
@@ -200,9 +203,9 @@ def resample_step(filtname, exposure_files, field, step_config,
     if isinstance(tiles, str):
         tiles = [tiles]
 
-    # Footprints are tile-invariant: open each exposure's WCS once here, not
-    # once per tile inside the loop below.
-    footprints = compute_footprints(exposure_files)
+    # Geometry (footprint + S_REGION) is tile-invariant: open each exposure's
+    # SCI header once here, not once per tile inside the loop below.
+    geometry = compute_input_geometry(exposure_files)
 
     for tile in tiles:
         log(f"resample: tile {tile}, {filtname}, {pixel_scale_str}")
@@ -226,7 +229,7 @@ def resample_step(filtname, exposure_files, field, step_config,
         log(f"  mosaic → {mosaic_file}")
 
         tile_polygon = Polygon(field.get_tile_corners(tile))
-        selected = select_overlapping(footprints, tile_polygon)
+        selected = select_overlapping(geometry, tile_polygon)
         if not selected:
             log(f"  no exposures overlap {tile}; skipping")
             continue
@@ -281,6 +284,10 @@ def resample_step(filtname, exposure_files, field, step_config,
                 pixel_scale=pixel_scale,
                 resample_cfg=step_config,
                 reduction_version=reduction_version,
+                # S_REGIONs read once in the geometry pass above; the campfire
+                # drizzle reuses them for its output-WCS build instead of
+                # re-opening each selected input per tile (jwst path ignores).
+                sregions={f: geometry[f].s_region for f in selected},
             )
 
             manifest = create_manifest(
