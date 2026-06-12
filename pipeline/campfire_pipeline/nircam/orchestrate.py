@@ -70,6 +70,26 @@ STEP_NAMES = [name for name, _ in ALL_STEPS]
 # reference files before parallel dispatch.
 _CRDS_STEPS = {'detector1', 'wisp', 'striping', 'image2'}
 
+
+def _detector_sorted(paths):
+    """Order exposure paths detector-major (stable within detector).
+
+    Tasks are independent, so dispatch order is free to choose — but
+    ``Pool.map`` hands each worker a contiguous chunk, so detector-major
+    order makes a worker's chunk mostly single-detector. Per-worker
+    reference caches (wisp templates, flats, bad-pixel masks — all keyed
+    per detector) then hit instead of thrash.
+    """
+    def key(p):
+        base = os.path.basename(p)
+        parts = base.removesuffix('.fits').split('_')
+        # Detector is the 4th underscore field in both canonical and uncal
+        # names (jw..._<visitgrp>_<expnum>_<detector>[_uncal].fits) — same
+        # token the step modules themselves parse.
+        det = parts[3] if len(parts) > 3 else ''
+        return (det, base)
+    return sorted(paths, key=key)
+
 # Per-exposure steps dispatched through the generic ``_run_per_exposure``
 # helper: step_name -> (step module basename, worker callable, CFP key). The
 # module is imported lazily inside the runner so ``orchestrate`` import never
@@ -115,7 +135,7 @@ def _read_sregions(exposure_files):
     """Return S_REGION header strings parallel to ``exposure_files``."""
     sregions = []
     for f in exposure_files:
-        with fits.open(f) as hdul:
+        with fits.open(f, memmap=False) as hdul:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 sregions.append(hdul[1].header['S_REGION'])
@@ -204,6 +224,7 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
 
     from campfire_pipeline.nircam.steps.detector1 import detector1_step
     cfg = get_nircam_step_config('detector1', config, field)
+    pending = _detector_sorted(pending)
     log(f"detector1: dispatching {len(pending)} files for {filtname}")
     dispatch(detector1_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
@@ -257,6 +278,7 @@ def _run_per_exposure(step_name, field, config, filtname,
         return
     fn = _load_step(module_basename, func_name)
     cfg = get_nircam_step_config(step_name, config, field)
+    pending = _detector_sorted(pending)
     log(f"{step_name}: dispatching {len(pending)} exposures for {filtname}")
     dispatch(fn, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
@@ -352,6 +374,7 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
                                  overwrite)
     if not pending:
         return
+    pending = _detector_sorted(pending)
     log(f"bad_pixel: dispatching {len(pending)} exposures for {filtname}")
     dispatch(bad_pixel_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
@@ -570,7 +593,8 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
     filters = _resolve_filters(filters, field)
     status = _scan_status(field, filters, overwrite=overwrite)
     log(f"=== Process phase: field={field.name}, filters={filters} ===")
-    prefetch_process_references(field, filters, n_processes)
+    prefetch_process_references(field, filters, status=status,
+                               overwrite=overwrite)
     for filt in filters:
         log(f"--- Process: {filt} ---")
         for step_name, _ in PROCESS_STEPS:
@@ -612,7 +636,8 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
     log(f"=== Step '{step_name}': field={field.name}, filters={filters} ===")
     if step_name in _CRDS_STEPS:
         from campfire_pipeline.nircam.prefetch import prefetch_process_references
-        prefetch_process_references(field, filters, n_processes)
+        prefetch_process_references(field, filters, status=status,
+                                    overwrite=overwrite)
 
     for filt in filters:
         if step_name == 'resample':

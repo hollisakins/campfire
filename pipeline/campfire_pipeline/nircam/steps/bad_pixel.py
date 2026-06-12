@@ -28,6 +28,7 @@ JUMP_DET, SATURATED, and PERSISTENCE are transient and should not
 promote a pixel to "permanently bad" through repeated occurrence.
 """
 
+import functools
 import os
 from datetime import datetime
 
@@ -46,6 +47,22 @@ LW_DETECTORS = ['nrcalong', 'nrcblong']
 ALL_DETECTORS = LW_DETECTORS + SW_DETECTORS  # LW first so the loop below
                                               # matches 'nrcalong' before
                                               # 'nrca1' on substring fallback
+
+
+@functools.lru_cache(maxsize=16)
+def _load_fl_mask(fl_path):
+    """Read a per-detector bad-pixel mask once per worker, read-only.
+
+    The same ``fl_pixels_<filter>_<detector>.fits`` applies to every
+    exposure of that detector; without caching each worker re-reads it
+    from NFS per exposure. The mask is only ever used as a boolean index,
+    so a single read-only array is safe to share. The cache dies with the
+    step's worker pool (``dispatch`` builds a fresh Pool per step), so a
+    rebuilt reference product is always re-read on the next run.
+    """
+    mask = fits.getdata(fl_path, memmap=False).astype(bool)
+    mask.flags.writeable = False
+    return mask
 
 
 def _detectors_for_filter(filtname):
@@ -99,7 +116,7 @@ def build_bad_pixel_masks(filtname, exposure_files, field, step_config,
     with tqdm.tqdm(total=len(exposure_files)) as pbar:
         for ef in exposure_files:
             try:
-                dq = fits.getdata(ef, extname='DQ')
+                dq = fits.getdata(ef, extname='DQ', memmap=False)
             except KeyError:
                 log(f"  skipped {os.path.basename(ef)} (no DQ)")
                 pbar.update(1)
@@ -173,9 +190,9 @@ def bad_pixel_step(exposure_file, field, step_config, overwrite=False,
     from jwst.datamodels import ImageModel
     from stdatamodels import util as stutil
 
-    fl = fits.getdata(fl_path).astype(bool)
+    fl = _load_fl_mask(fl_path)
 
-    with ImageModel(exposure_file) as model:
+    with ImageModel(exposure_file, memmap=False) as model:
         model.dq[fl] |= 1  # DO_NOT_USE
 
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

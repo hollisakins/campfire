@@ -31,7 +31,7 @@ def sky_step(exposure_file, field, step_config, overwrite=False, status=None):
 
     # Read SRCMASK from the canonical file's extension (was a sidecar in the
     # legacy layout).
-    with fits.open(exposure_file) as hdul:
+    with fits.open(exposure_file, memmap=False) as hdul:
         if 'SRCMASK' not in hdul:
             log(f"No SRCMASK on {rootname}; cannot run sky step "
                 f"(striping must run first)")
@@ -43,7 +43,7 @@ def sky_step(exposure_file, field, step_config, overwrite=False, status=None):
     from jwst.datamodels import ImageModel, dqflags
     from stdatamodels import util as stutil
 
-    with ImageModel(exposure_file) as model:
+    with ImageModel(exposure_file, memmap=False) as model:
         sci = model.data
         dq = model.dq
         # Only DO_NOT_USE pixels are unusable for the sky sample —

@@ -144,7 +144,7 @@ def wcs_shift_step(exposure_file, field, step_config, overwrite=False,
     # (so it survives the datamodel save round-trip).
     existing_wcs_bak = None
     srcmask_hdu = None
-    with fits.open(exposure_file) as hdul:
+    with fits.open(exposure_file, memmap=False) as hdul:
         if WCS_BAK_EXTNAME in hdul:
             wb = hdul[WCS_BAK_EXTNAME]
             existing_wcs_bak = fits.ImageHDU(
@@ -157,7 +157,7 @@ def wcs_shift_step(exposure_file, field, step_config, overwrite=False,
                 data=sm.data.copy(), header=sm.header.copy(), name='SRCMASK',
             )
 
-    model = ImageModel(exposure_file)
+    model = ImageModel(exposure_file, memmap=False)
 
     if already_applied:
         if existing_wcs_bak is None:

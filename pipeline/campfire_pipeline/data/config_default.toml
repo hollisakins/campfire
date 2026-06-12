@@ -142,6 +142,8 @@
 # `cfpipe nircam process` (per-exposure) and `cfpipe nircam combine`
 # (ensemble through resample).
 
+[nircam]
+
 # --- process phase (per-exposure) ---
 
 [nircam.detector1]

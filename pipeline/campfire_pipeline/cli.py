@@ -25,8 +25,25 @@ from campfire_pipeline.common.version import get_reduction_version
 # Top-level group
 # ---------------------------------------------------------------------------
 
+def _print_version(ctx, param, value):
+    """Eager ``--version`` callback so the git interrogation is lazy.
+
+    ``click.version_option(version=get_reduction_version())`` evaluated the
+    version at module import — i.e. on *every* cfpipe invocation — and
+    ``get_reduction_version()`` runs four git subprocesses including a
+    ``git status`` walk of the pipeline subtree, which on a cluster NFS
+    checkout is pure startup latency for commands that never print it.
+    Reduction runs still resolve the version when they stamp CMPFRVER.
+    """
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(f'cfpipe, version {get_reduction_version()}')
+    ctx.exit()
+
+
 @click.group()
-@click.version_option(version=get_reduction_version(), prog_name='cfpipe')
+@click.option('--version', is_flag=True, expose_value=False, is_eager=True,
+              callback=_print_version, help='Show the version and exit.')
 def main():
     """CAMPFIRE data reduction pipeline."""
     pass

@@ -33,7 +33,7 @@ def edge_step(exposure_file, field, step_config, overwrite=False, status=None):
     from jwst.datamodels import ImageModel
     from stdatamodels import util as stutil
 
-    with ImageModel(exposure_file) as model:
+    with ImageModel(exposure_file, memmap=False) as model:
         size = model.data.shape[0]
 
         mean_cols = np.array([np.mean(model.data[:, ii]) for ii in range(size)])

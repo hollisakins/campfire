@@ -22,7 +22,7 @@ from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
 
 def _extract_srcmask(exposure_file):
     """Return a copy of the SRCMASK HDU from ``exposure_file``, or None."""
-    with fits.open(exposure_file) as hdul:
+    with fits.open(exposure_file, memmap=False) as hdul:
         if 'SRCMASK' not in hdul:
             return None
         hdu = hdul['SRCMASK']

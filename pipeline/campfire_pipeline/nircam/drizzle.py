@@ -108,7 +108,7 @@ def _build_output_wcs(crf_files, crpix, crval, shape, rotation, pixel_scale):
     from stdatamodels.jwst.datamodels import ImageModel
 
     sregions = []
-    with ImageModel(crf_files[0]) as ref:
+    with ImageModel(crf_files[0], memmap=False) as ref:
         ref_wcs = deepcopy(ref.meta.wcs)
         ref_wcsinfo = ref.meta.wcsinfo.instance
         sregions.append(ref.meta.wcsinfo.s_region)
@@ -384,7 +384,7 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
     from stcal.resample.utils import build_driz_weight, resample_range
     from stdatamodels.jwst.datamodels import ImageModel
 
-    with ImageModel(crf_file) as model:
+    with ImageModel(crf_file, memmap=False) as model:
         data = np.asarray(model.data, dtype=np.float32)
         err = np.asarray(model.err, dtype=np.float32)
         in_shape = data.shape

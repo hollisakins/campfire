@@ -69,6 +69,42 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- NFS cache tier for the NIRCam pipeline (PR 1 of
+  `docs/design-nircam-exposure-major.md`; findings H4/H5/M2/M9 of
+  `docs/nfs_audit.md`). No change to pixel values or reference selection —
+  verified by the parity/equivalence checks noted below.
+  - Per-worker reference-data caches: wisp templates are read once per worker
+    instead of 5x per exposure (`wisp._load_template`, lru, NaN-cleaning in
+    the cache, exposure-specific masking on a copy); flat references are
+    cached as pristine `FlatModel`s with a deep copy handed to each
+    `do_correction` call (jwst mutates the flat it is given, so the cache
+    never exposes a mutated model); per-detector bad-pixel masks are read
+    once per worker (`bad_pixel._load_fl_mask`). Caches die with each step's
+    worker pool, so rebuilt references are always re-read on the next step.
+  - Detector-major dispatch ordering for per-exposure steps
+    (`orchestrate._detector_sorted`): `Pool.map` chunks become
+    detector-contiguous so the per-detector caches hit instead of thrash.
+    Tasks are independent; only log ordering changes.
+  - CRDS cold-fetch races are closed at the source rather than avoided. The
+    two direct `crds.getreferences` calls outside stpipe — the in-memory flat
+    lookup in `steps/_flat.resolve_flat` and the prefetch warm-up — now take
+    the global `crds.cache` lock, the same lock stpipe holds for its own
+    lookups. A worker that hits a cold reference downloads it once while the
+    others block and then find it already cached (CRDS double-checks existence
+    inside the lock). The serial prefetch is therefore a pure warm-up, not a
+    correctness requirement: it reads each uncal header once (both the
+    detector1 and image2 dedup keys come from one `getheader`) and skips
+    exposures whose detector1/image2 output already exists, so re-running a
+    finished field no longer pays the multi-minute NFS header scan. Reference
+    selection is unchanged.
+  - `memmap=False` on FITS opens that read whole arrays or only headers
+    (steps, drizzle/outlier inputs, manifest hashing, CFP/status header
+    probes, geometry/S_REGION scans): NFS serves one sequential read far
+    better than memmap's page-faulted small reads. Hash values are unchanged
+    (`do_not_scale_image_data` still reads raw stored bytes).
+  - `cfpipe --version` is resolved lazily: the four git subprocesses
+    (including a `git status` walk of the pipeline subtree on NFS) no longer
+    run at module import on every cfpipe invocation.
 - NIRCam CLI startup is now proportional to the work being run, not to the
   whole step catalog. `orchestrate.py` previously imported all 14 step modules
   at module top, so every `cfpipe nircam` invocation — including `--help` and a
