@@ -82,8 +82,7 @@ def _sregion_for(crf_file, sregions):
     """S_REGION for ``crf_file``: from the supplied map, else read the header.
 
     ``sregions`` is an optional ``{path: s_region}`` mapping passed in by
-    callers that already read every input's header once (the outlier
-    orchestrator's ``_read_sregions``; resample's geometry pass), so the
+    callers that already read every input's header once, so the
     per-visit / per-tile WCS build does not re-open files just to read this
     one keyword. Falls back to a direct ``getheader`` when absent.
     """
@@ -385,11 +384,11 @@ def _prep_from_model(model, output_wcs, out_shape, *,
     ``in_shape``, ``input_gwcs`` — or ``None`` if the input footprint does
     not overlap the tile.
 
-    Split from ``_prepare_drizzle_input`` so a caller that has *already*
-    opened the model — notably the reference input, whose open also builds
-    the output WCS — can prep it without a second open. ``blender`` (resample
-    path) accumulates the model's header metadata, but only once we know the
-    input overlaps the tile, so skipped inputs don't contribute metadata.
+    A caller that has *already* opened the model — notably the reference
+    input, whose open also builds the output WCS — can prep it without a
+    second open. ``blender`` (resample path) accumulates the model's header
+    metadata, but only once we know the input overlaps the tile, so skipped
+    inputs don't contribute metadata.
     """
     from jwst.datamodels.dqflags import pixel as pixel_flags
     from stcal.resample.utils import build_driz_weight, resample_range
@@ -449,9 +448,7 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
 
     Thin wrapper over ``_prep_from_model`` that owns the file open. Returns
     the prep dict or ``None`` if the input footprint does not overlap the
-    tile. Shared by ``drizzle_tile`` (resample) and ``drizzle_tile_singles``
-    (outlier) for the non-reference inputs; the reference input is opened by
-    the caller and prepped via ``_prep_from_model`` directly.
+    tile.
     """
     from stdatamodels.jwst.datamodels import ImageModel
 
@@ -478,10 +475,10 @@ def _add_image_kwargs(prep, pixfrac):
 def _bbox_drizzle_single(prep, *, kernel, pixfrac):
     """Drizzle one prepped input into its bbox-sized buffer; return (sci, wht).
 
-    Extracted from ``drizzle_tile_singles`` so the reference input — prepped
-    from the same open that built the output WCS — drizzles through the exact
-    same path as the streamed inputs (the pixmap is shifted by the bbox
-    origin so cdriz writes into bbox-local coordinates).
+    The reference input — prepped from the same open that built the output
+    WCS — drizzles through the exact same path as the streamed inputs (the
+    pixmap is shifted by the bbox origin so cdriz writes into bbox-local
+    coordinates).
     """
     from drizzle.resample import Drizzle
 
@@ -579,8 +576,7 @@ def drizzle_tile(
     # Open the reference input (crf_files[0]) once: its gwcs + wcsinfo anchor
     # the output WCS (built from that open plus the other inputs' S_REGION
     # strings, supplied via `sregions` or read cheaply), and its arrays are
-    # prepped from the same open. Previously the WCS-sizing pass opened it a
-    # first time and the drizzle loop opened it a second time.
+    # prepped from the same open.
     from stdatamodels.jwst.datamodels import ImageModel
     with ImageModel(crf_files[0], memmap=False) as _ref:
         output_wcs = build_output_wcs_from_ref(

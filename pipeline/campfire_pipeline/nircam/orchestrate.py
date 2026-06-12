@@ -455,8 +455,7 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
         # the obvious no-op case. (Cross-visit overlaps are validated inside
         # outlier_step on the slow path.) ``file_unchanged`` takes the manifest
         # size+mtime_ns fast path — a stat per file — and only falls back to a
-        # full SCI+DQ hash on a stat mismatch, so an unchanged combine run no
-        # longer re-hashes ~32MB per visit file.
+        # full SCI+DQ hash on a stat mismatch.
         old_entries = {
             inp['filename']: inp
             for inp in manifest['inputs']

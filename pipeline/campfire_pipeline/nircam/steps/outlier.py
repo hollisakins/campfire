@@ -387,9 +387,9 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
     snr = tuple(float(x) for x in snr_str.split())
     scale = tuple(float(x) for x in scale_str.split())
 
-    # The orchestrator already read every input's S_REGION once
-    # (_read_sregions) and passed them as `sregions`; reuse that map so the
-    # per-visit WCS build doesn't re-open each input just for one keyword.
+    # `sregions` is pre-populated by the caller (one S_REGION read per input);
+    # reuse that map so the per-visit WCS build doesn't re-open each input just
+    # for one keyword.
     sregion_map = dict(zip(filter_files, sregions))
 
     outlier_detect_for_visit(

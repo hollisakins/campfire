@@ -111,9 +111,8 @@ def outlier_detect_for_visit(
 
     # Open the reference input (all_inputs[0]) once: build the per-visit WCS
     # from its gwcs + the other inputs' S_REGION strings (supplied via
-    # `sregions` — read once by the orchestrator's _read_sregions — or read
-    # from the header on a miss), and prep its arrays from the same open. The
-    # remaining inputs are streamed one open each by drizzle_tile_singles.
+    # `sregions`, or read from the header on a miss), and prep its arrays from
+    # the same open. The remaining inputs are streamed one open each.
     with ImageModel(all_inputs[0], memmap=False) as _ref:
         output_wcs = build_output_wcs_from_ref(_ref, all_inputs, sregions)
         nx, ny = output_wcs.pixel_shape
@@ -157,7 +156,6 @@ def outlier_detect_for_visit(
             ref_prep, kernel=kernel, pixfrac=pixfrac)
         _accumulate(idx, all_inputs[0], ref_prep, ref_sci)
         idx += 1
-    # Remaining inputs streamed one open each.
     for (sci_bbox, _wht_bbox, prep), crf in zip(
         drizzle_tile_singles(
             all_inputs[1:], output_wcs, out_shape,
