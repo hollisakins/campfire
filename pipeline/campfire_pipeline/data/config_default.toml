@@ -153,16 +153,17 @@
     # No tunable parameters; reserved for future snowblind config.
 
 [nircam.wisp]
-    apply_flat = true
-    use_custom_flat = false
+    # Runs after image2 on flat-fielded, flux-calibrated cal-stage data, so
+    # there is no flat to apply here; the per-exposure scale coefficient is
+    # fit in the cal frame (and is frame-agnostic via a least-squares prefactor).
     plot = true
 
 [nircam.striping]
-    apply_flat = true
-    use_custom_flat = false
+    # Runs after image2 on cal-stage data (no flat applied here).
     mask_sources = true
-    subtract_background = true
+    subtract_background = false
     maxiters = 3
+    estimator = "lowclip"
     plot = true
 
 [nircam.image2]

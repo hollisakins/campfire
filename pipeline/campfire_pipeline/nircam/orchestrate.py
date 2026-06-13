@@ -44,9 +44,9 @@ from campfire_pipeline.nircam.status import StepStatus
 PROCESS_STEPS = [
     ('detector1',   'CFP_DET1'),
     ('persistence', 'CFP_PERS'),
+    ('image2',      'CFP_IMG2'),
     ('wisp',        'CFP_WISP'),
     ('striping',    'CFP_1F'),
-    ('image2',      'CFP_IMG2'),
     ('edge',        'CFP_EDGE'),
     ('sky',         'CFP_SKY'),
     ('diag_striping', 'CFP_DIAG'),
@@ -67,8 +67,10 @@ ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 STEP_NAMES = [name for name, _ in ALL_STEPS]
 
 # Steps that hit CRDS — used by run_step() to decide when to pre-fetch
-# reference files before parallel dispatch.
-_CRDS_STEPS = {'detector1', 'wisp', 'striping', 'image2'}
+# reference files before parallel dispatch. wisp and striping now run *after*
+# image2 (on flat-fielded, flux-calibrated cal-stage data), so they no longer
+# resolve a flat themselves; only detector1 and image2 touch CRDS.
+_CRDS_STEPS = {'detector1', 'image2'}
 
 
 def _detector_sorted(paths):

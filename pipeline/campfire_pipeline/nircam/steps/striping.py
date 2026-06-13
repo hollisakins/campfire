@@ -1,23 +1,24 @@
 """
 striping: 1/f striping subtraction with ``SRCMASK`` extension write.
 
-Per-exposure step. Builds a tiered source mask, fits pedestal + (optional)
-2D background + horizontal + vertical striping patterns on a flat-fielded
-copy of the data, then subtracts the additive striping patterns from the
-original un-flat-fielded SCI. Writes the source mask as a ``SRCMASK``
-extension on the canonical file (replacing the legacy
-``_rate_1fmask.fits`` sidecar) so the sky_subtraction step can read it
-through a single canonical file.
+Per-exposure step. Runs **after** ``image2`` on flat-fielded, flux-calibrated
+cal-stage data (JADES-style ordering). Builds a tiered source mask, fits
+pedestal + (optional) 2D background + horizontal + vertical striping patterns
+directly in the cal frame, then subtracts the additive striping patterns from
+the SCI. Writes the source mask as a ``SRCMASK`` extension on the canonical
+file (replacing the legacy ``_rate_1fmask.fits`` sidecar) so the sky-subtraction
+and diag_striping steps can read it through a single canonical file.
 
-Imports the numerical helpers (``fit_pedestal``, ``fit_sky``,
-``collapse_image``, ``measure_fullimage_striping``) from the legacy
-``stage1`` module to avoid duplicating ~200 lines of tested code; those
-helpers are pure functions without side effects. The mask-builder is
-re-implemented locally (the legacy ``masksources`` writes a sidecar file
-as a side effect, which we explicitly want to avoid).
+The per-amp-row offset estimator is selectable via ``estimator`` (default
+``'lowclip'`` — an asymmetric low-side clip robust to leaked source wings;
+``'baseline'`` — the legacy median + asymmetry-triggered full-row fallback).
+
+Imports the numerical helpers (``fit_sky``, ``fit_sky_tot``, ``collapse_image``,
+``measure_fullimage_striping``) from ``skyfit``; those are pure, scale-free
+functions. The mask-builder is re-implemented locally (the legacy
+``masksources`` writes a sidecar file as a side effect, which we avoid).
 """
 
-import copy
 import os
 import warnings
 from datetime import datetime
@@ -36,14 +37,10 @@ from scipy.ndimage import binary_dilation, median_filter
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 from campfire_pipeline.nircam.constants import NIR_AMPS
-from campfire_pipeline.nircam.steps._flat import (
-    apply_flat_with_retry,
-    resolve_flat,
-)
 from campfire_pipeline.nircam.skyfit import (
     collapse_image,
-    fit_pedestal,
     fit_sky,
+    fit_sky_tot,
     measure_fullimage_striping,
 )
 
@@ -108,41 +105,77 @@ def _build_srcmask(model):
     return out
 
 
+def _amp_row_lowclip(vals, min_pixels=8):
+    """Asymmetric low-side-clipped location of a 1-D amp-row sample.
+
+    ``vals`` is a row slice with NaN at masked pixels. Rejects the high
+    (source-wing) tail at 2σ harder than the low tail at 4σ, iterating on a
+    robust MAD scale, so leaked source flux that biases a plain median is
+    rejected while the negative noise tail (real 1/f excursions) is kept.
+    Returns NaN when fewer than ``min_pixels`` finite values survive — the
+    caller then falls back to the full-image row median.
+
+    This is the cal-frame analogue validated in
+    ``experiments/oneoverf_noise/oneoverf_experiments.ipynb``, where it
+    recovered the per-amp-row 1/f on source-contaminated rows ~20% better
+    than the legacy full-row-median fallback while matching it on clean rows.
+    """
+    v = vals[np.isfinite(vals)]
+    if v.size < min_pixels:
+        return np.nan
+    m = float(np.median(v))
+    for _ in range(5):
+        s = 1.4826 * np.median(np.abs(v - m))
+        if s == 0:
+            break
+        keep = (v < m + 2.0 * s) & (v > m - 4.0 * s)
+        n_keep = int(keep.sum())
+        if n_keep < min_pixels or n_keep == v.size:
+            break
+        v = v[keep]
+        m = float(np.median(v))
+    return m
+
+
 def fit_residual_striping(
     data,
     mask,
     maxiters,
     asymmetry_threshold=0.1,
     nmask_prefilter=0.20,
+    estimator='lowclip',
+    min_pixels=8,
 ):
     """Fit per-amp per-row horizontal + per-column vertical 1/f striping.
 
-    Pure function. Operates on a flat-fielded (and ideally pedestal-/
-    background-subtracted) frame. Returns 2D additive correction arrays
-    that should be subtracted from the un-flat-fielded SCI.
+    Pure function. Operates on a (pedestal-/background-subtracted) frame and
+    returns 2D additive correction arrays to subtract from the SCI. Frame-
+    agnostic: post-image2 the input is cal-stage data and the corrections are
+    applied in the cal frame.
 
     Parameters
     ----------
-    data : (H, W) ndarray
-        Input frame (flat-fielded, pedestal/background pre-subtracted).
-    mask : (H, W) bool ndarray
-        True where pixels are masked (DQ flagged or source).
-    maxiters : int
-        Sigma-clipping iterations.
-    asymmetry_threshold : float
-        Distribution asymmetry threshold (|mean − median| / std on the
-        post-clip per-row sample) above which a row falls back to the
-        full-image row median. Detects rows where 2σ clipping failed to
-        reject one-sided source-wing contamination. Clean / successfully
-        clipped rows give ratio ≈ 0; heavy bright-source contamination
-        gives ratio ≳ 0.3.
-    nmask_prefilter : float
-        Apply the asymmetry test only to rows where the source mask
-        covers ≥ this fraction of the amp-row width. Below this, take
-        the per-amp median directly. In low-mask (clean) rows the
-        asymmetry statistic has its own sample-noise floor (~0.07 for
-        N ≈ 508 pixels), so a tight threshold like 0.1 would produce
-        many false positives without this prefilter.
+    data, mask, maxiters
+        Input frame, mask (True = DQ/source), sigma-clip iterations.
+    estimator : {'lowclip', 'baseline'}
+        ``'lowclip'`` (default): estimate each amp-row offset from its
+        surviving pixels with an asymmetric low-side clip
+        (``_amp_row_lowclip``), keeping the local estimate even on
+        source-contaminated rows instead of discarding it; fall back to the
+        full-image row median only when too few pixels survive
+        (``> 0.95`` masked or ``< min_pixels`` finite). ``'baseline'``: the
+        legacy per-amp 2σ-clipped median with an asymmetry-triggered
+        full-row-median fallback (parameters ``asymmetry_threshold`` /
+        ``nmask_prefilter`` apply to this path only).
+    asymmetry_threshold, nmask_prefilter : float
+        Used by ``estimator='baseline'`` only. ``asymmetry_threshold`` is the
+        ``|mean − median| / std`` post-clip threshold above which a row falls
+        back to the full-row median; ``nmask_prefilter`` gates that test to
+        rows whose source-mask fraction exceeds it (the asymmetry statistic
+        has a ~0.07 sample-noise floor on clean rows).
+    min_pixels : int
+        ``estimator='lowclip'`` only: minimum surviving pixels for a local
+        estimate before falling back to the full-row median.
 
     Returns
     -------
@@ -154,6 +187,9 @@ def fit_residual_striping(
         Per-amp diagnostic strings ``'A-N'`` ... ``'D-N'`` where ``N`` is
         the number of rows that fell back to the full-image median.
     """
+    if estimator not in ('lowclip', 'baseline'):
+        raise ValueError(f"unknown estimator {estimator!r}")
+
     full_horizontal, _ = measure_fullimage_striping(data, mask, maxiters)
 
     horizontal = np.zeros(data.shape)
@@ -162,12 +198,32 @@ def fit_residual_striping(
         _, _, colstart, colstop = NIR_AMPS[amp]['data']
         ampdata = data[:, colstart:colstop]
         ampmask = mask[:, colstart:colstop]
-        # Replaces a separate `collapse_image(...)` call: returns the same
-        # per-row median in `h_amp`, plus the mean and std needed for the
-        # asymmetry test below — all from one sigma-clip pass.
-        # Fully-masked rows produce all-NaN slices; the asymmetry guard
-        # below treats them as contaminated, so the inner RuntimeWarnings
-        # are noise.
+        width = ampmask.shape[1]
+        nmask = np.sum(ampmask, axis=1)
+        ampcount = 0
+
+        if estimator == 'lowclip':
+            vals_all = np.where(ampmask, np.nan, ampdata)
+            for i in range(ampmask.shape[0]):
+                if nmask[i] / width > 0.95:
+                    est = np.nan
+                else:
+                    est = _amp_row_lowclip(vals_all[i], min_pixels)
+                if not np.isfinite(est):
+                    fb = full_horizontal[i]
+                    horizontal[i, colstart:colstop] = fb if np.isfinite(fb) else 0.0
+                    ampcount += 1
+                else:
+                    horizontal[i, colstart:colstop] = est
+            ampcounts.append(f'{amp}-{ampcount}')
+            continue
+
+        # estimator == 'baseline': legacy per-amp median + asymmetry fallback.
+        # Replaces a separate `collapse_image(...)` call: returns the per-row
+        # median in `h_amp` plus the mean/std for the asymmetry test below —
+        # all from one sigma-clip pass. Fully-masked rows give all-NaN slices;
+        # the asymmetry guard treats them as contaminated, so the inner
+        # RuntimeWarnings are noise.
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 'ignore', category=RuntimeWarning,
@@ -188,28 +244,15 @@ def fit_residual_striping(
             )
         with np.errstate(invalid='ignore', divide='ignore'):
             asymmetry = np.abs(mean_amp - h_amp) / std_amp
-        # Non-finite (e.g. all-masked rows where std is 0/nan) → treat as
-        # contaminated so the fallback path is taken.
         asymmetry = np.where(np.isfinite(asymmetry), asymmetry, np.inf)
 
-        nmask = np.sum(ampmask, axis=1)
-        ampcount = 0
         for i in range(ampmask.shape[0]):
-            # Per-amp median in clean rows (where the source mask says
-            # nothing's there); asymmetry test only in rows where the
-            # source mask is meaningful AND there are still enough
-            # unmasked pixels to estimate from.
-            nmask_frac_i = nmask[i] / ampmask.shape[1]
+            nmask_frac_i = nmask[i] / width
             if nmask_frac_i > 0.95:
-                # Too few unmasked pixels for any reliable per-amp
-                # estimate — fall back regardless of asymmetry.
                 horizontal[i, colstart:colstop] = full_horizontal[i]
                 ampcount += 1
             elif (nmask_frac_i > nmask_prefilter
                   and asymmetry[i] > asymmetry_threshold):
-                # Source mask is meaningful here AND the post-clip
-                # distribution is still asymmetric: contamination biased
-                # the per-amp median.
                 horizontal[i, colstart:colstop] = full_horizontal[i]
                 ampcount += 1
             else:
@@ -239,12 +282,11 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
     status : StepStatus, optional
         Pre-scanned CFP_* status cache.
     """
-    apply_flat = step_config.get('apply_flat', True)
-    use_custom_flat = step_config.get('use_custom_flat', False)
     mask_sources = step_config.get('mask_sources', True)
-    subtract_background = step_config.get('subtract_background', True)
+    subtract_background = step_config.get('subtract_background', False)
     maxiters = step_config.get('maxiters', 3)
     use_bottleneck = step_config.get('use_bottleneck', True)
+    estimator = step_config.get('estimator', 'lowclip')
     do_plot = step_config.get('plot', True)
 
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
@@ -253,7 +295,7 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
                        'striping', status, overwrite):
         return
 
-    log(f"Running striping on {rootname}")
+    log(f"Running striping on {rootname} (estimator={estimator})")
 
     from jwst.datamodels import ImageModel, dqflags
 
@@ -265,60 +307,59 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
     else:
         seg = np.zeros(model.data.shape, dtype=np.uint8)
 
-    fit_model = copy.deepcopy(model)
-    if apply_flat:
-        flatfile = resolve_flat(fit_model, field, use_custom_flat)
-        if flatfile is None:
-            log(f"Flat lookup failed for {rootname}; aborting striping")
-            fit_model.close()
-            model.close()
-            return
-        log(f"Applying flat {os.path.basename(flatfile)} for striping fit")
-        fit_model = apply_flat_with_retry(fit_model, flatfile)
-
+    # Runs after image2, so model.data is already flat-fielded and flux-
+    # calibrated — fit and apply the 1/f correction directly in the cal frame
+    # (no flat-fielded copy, no apply-to-rate round-trip). The fit operates on
+    # a pedestal-/background-subtracted working copy; the corrections are
+    # subtracted from the SCI itself.
+    #
     # Only DO_NOT_USE pixels are unusable for fitting — JUMP_DET and other
-    # informational bits flag pixels that have already been corrected and
-    # are still fine for sky/striping estimation. (Some exposures, e.g.
-    # bright-target MSATA pointings on MEDIUM8/NGROUPS=9, get JUMP_DET set
-    # on >97% of pixels; treating dq>0 as bad masks the entire frame.)
-    mask = np.bitwise_and(fit_model.dq, dqflags.pixel['DO_NOT_USE']) != 0
+    # informational bits flag pixels that have already been corrected and are
+    # still fine for sky/striping estimation. (Some exposures, e.g. bright-
+    # target MSATA pointings on MEDIUM8/NGROUPS=9, get JUMP_DET set on >97% of
+    # pixels; treating dq>0 as bad masks the entire frame.)
+    mask = np.bitwise_and(model.dq, dqflags.pixel['DO_NOT_USE']) != 0
     if mask_sources:
         mask[seg > 0] = True
 
+    fitdata = model.data.astype(np.float64, copy=True)
+
     log("Measuring pedestal")
-    pedestal_data = fit_model.data[~mask].flatten()
-    median_image = float(np.median(pedestal_data))
+    pedestal_data = fitdata[~mask & np.isfinite(fitdata)].flatten()
+    median_image = float(np.median(pedestal_data)) if pedestal_data.size else 0.0
     try:
-        pedestal = float(fit_pedestal(pedestal_data))
-    except RuntimeError:
+        # Scale-free Gaussian sky-peak fit (cal-frame units); the rate-tuned
+        # fit_pedestal with its hard-coded -1..1.5 histogram range cannot be
+        # used here.
+        pedestal = float(fit_sky_tot(pedestal_data))
+    except (RuntimeError, ValueError, TypeError):
         log("Pedestal fit failed, using median")
         pedestal = median_image
     log(f"Pedestal: {pedestal:.5e}")
-    fit_model.data -= pedestal
+    fitdata -= pedestal
 
     if subtract_background:
         try:
             log("Subtracting 2D background for fit")
-            bg_input = fit_model.data.copy()
+            bg_input = fitdata.copy()
             bg_input[mask > 0] = 0
             bkgd = fit_sky(bg_input, use_bottleneck=use_bottleneck)
-            fit_model.data -= bkgd
+            fitdata -= bkgd
         except Exception as e:
             log(f"2D background failed for {rootname}: {e}; pedestal-only")
 
     ASYMMETRY_THRESHOLD = 0.1
     NMASK_PREFILTER = 0.20
     horizontal, vertical, ampcounts = fit_residual_striping(
-        fit_model.data, mask, maxiters,
+        fitdata, mask, maxiters,
         asymmetry_threshold=ASYMMETRY_THRESHOLD,
         nmask_prefilter=NMASK_PREFILTER,
+        estimator=estimator,
     )
     log(f"{rootname}: full-row medians used: "
-        f"{', '.join(ampcounts)}/{fit_model.data.shape[0]}")
+        f"{', '.join(ampcounts)}/{fitdata.shape[0]}")
 
-    fit_model.close()
-
-    # Apply additive corrections to the original (un-flat-fielded) SCI
+    # Apply additive corrections to the (cal-stage) SCI
     outsci = sci_before - horizontal - vertical
     outsci[sci_before == 0] = 0
     wnan = np.isnan(outsci)
@@ -345,8 +386,8 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
         model, exposure_file,
         header_updates=cfp.format(
             CFP_1F=(
-                f'asymmetry={ASYMMETRY_THRESHOLD}, '
-                f'nmask_prefilter={NMASK_PREFILTER}, maxiters={maxiters}'
+                f'estimator={estimator}, maxiters={maxiters}, '
+                f'bkg={int(bool(subtract_background))} (cal-frame)'
             ),
         ),
         extra_hdus=[srcmask_hdu],

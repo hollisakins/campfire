@@ -48,6 +48,34 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- NIRCam `wisp` and `striping` now run **after** `image2`, on flat-fielded,
+  flux-calibrated cal-stage data (JADES-style ordering), instead of before
+  flat-fielding. Process-step order is now detector1 → persistence → image2 →
+  wisp → striping → edge → sky → … Both steps fit and apply their corrections
+  directly in the cal frame, removing the previous "flat-field a copy, fit on
+  it, subtract from the un-flat rate SCI" round-trip (which was only exact for
+  `flat ≈ 1`). Consequences: (1) `striping` measures its pedestal with the
+  scale-free `fit_sky_tot` Gaussian sky-peak fit rather than the rate-tuned
+  `fit_pedestal` (hard-coded −1..1.5 histogram); (2) `wisp` anchors its
+  per-exposure scale-coefficient grid to the data with a robust least-squares
+  prefactor, so the fit is valid regardless of the template's units/frame;
+  (3) `[nircam.wisp]`/`[nircam.striping]` no longer take `apply_flat` /
+  `use_custom_flat`; (4) `striping` no longer resolves a flat, so it and `wisp`
+  are dropped from CRDS prefetch. `steps/_flat.py` is now unused (left in place).
+- NIRCam `striping`: new per-amp-row offset estimator, selectable via
+  `[nircam.striping].estimator` (default **`"lowclip"`**; legacy behavior under
+  `"baseline"`). `lowclip` estimates each amp-row offset from its surviving
+  pixels with an asymmetric low-side clip — rejecting leaked bright-source wings
+  rather than discarding the row to the full-row median when the asymmetry guard
+  trips. In the synthetic testbed (`experiments/oneoverf_noise/`) this recovers
+  the per-amp-row 1/f on source-contaminated rows ~20% better than the legacy
+  fallback while matching it on clean rows. The legacy full-row median is kept
+  only as the too-few-survivors fallback (`>0.95` masked or `<8` finite pixels).
+- NIRCam `striping`: `[nircam.striping].subtract_background` now defaults to
+  **off**. The cal-frame `Background2D` pre-subtraction gave no 1/f-recovery
+  gain on synthetic flat-sky frames and over-subtracts bright-source flux at
+  fine box sizes (`experiments/oneoverf_noise/` §11); enable per field if a
+  real large-scale background needs removing (use a coarse box, ≥256 px).
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
   ERR map no longer fills with `inf`/`nan`. The variance pass summed the three
   variance components before drizzling, so a single input pixel with a
