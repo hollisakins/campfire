@@ -69,6 +69,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- Experimental, non-shipping testbed for the NIRCam 1/f ("striping") correction
+  around bright sources (`experiments/oneoverf_noise/`). A purely-synthetic
+  notebook injects model-matched 1/f (constant per amp-row + per column) and
+  benchmarks alternative per-amp-row estimators against the canonical
+  `striping.fit_residual_striping` for recovery of the known intrinsic image vs.
+  amp-row fill fraction. No change to pipeline behaviour — the production
+  algorithm is imported and tested, not modified.
 - NFS cache tier for the NIRCam pipeline (PR 1 of
   `docs/design-nircam-exposure-major.md`; findings H4/H5/M2/M9 of
   `docs/nfs_audit.md`). No change to pixel values or reference selection —
