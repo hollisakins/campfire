@@ -476,7 +476,7 @@ def _coarse_source_model(filled, block=64):
     the median over `block` rows drives its contribution toward ~0, so the
     per-row offset largely SURVIVES in (data - model) and stays measurable.
     (A naive *along-row* smooth would instead reproduce the constant per-row
-    offset exactly and erase the very signal we fit — see the section-10 note.)
+    offset exactly and erase the very signal we fit — see the section-11 note.)
     Larger `block` leaks less offset into the model but captures source wings
     more coarsely — a real trade-off, which is why source-model subtraction is
     delicate.
@@ -808,7 +808,138 @@ summary
 
 # ---------------------------------------------------------------------------
 md(r"""
-## 10. Notes, caveats, and next steps
+## 10. Masking vs. estimator: how much headroom is in the mask?
+
+The sweep above gave **every** algorithm the same detection mask, so it isolates
+the *estimator*. This section instead isolates the *mask*: it runs the two
+endpoints — the production `baseline` and the winning `local_lowclip` — under
+**both**
+
+- the **detection mask** (`detection_mask`, leaks faint source wings, as in
+  production), and
+- a **truth mask** (`truth_mask`, every scene pixel above 2σ of the noise-free
+  scene — an idealized "perfect detection" upper bound),
+
+and scores per-amp-row recovery over a **fixed** contaminated-row set defined
+from the *truth* scene (not from each mask), so the two mask choices are compared
+on identical rows. The four curves apportion the blame:
+
+- **`baseline·detection` → `baseline·truth`** = the headroom a perfect mask buys
+  the current algorithm (the pure *masking* lever).
+- **`baseline·truth` vs `local_lowclip·detection`** = does a robust estimator on
+  an imperfect mask already match what a perfect mask would give the baseline?
+- **gap that survives even under `truth`** = the irreducible part (rows the
+  source buries past the survivor/fallback limit — no mask can fix it).
+""")
+
+code(r"""
+def truth_contaminated_rows(scene, sky, frac=0.20, nsigma=2.0):
+    tm = truth_mask(scene, sky, nsigma)
+    return {a: tm[:, c0:c1].mean(axis=1) > frac for a, (c0, c1) in AMP_COLS.items()}
+
+def h_rms_over(H_inj, horizontal, contam):
+    He = _demean_per_amp(est_h_per_amp(horizontal)); Hi = _demean_per_amp(H_inj)
+    errs = []
+    for a in "ABCD":
+        d = (He[a] - Hi[a])[REF:NY-REF]; c = contam[a][REF:NY-REF]
+        errs.append(d[c])
+    e = np.concatenate(errs)
+    return float(np.sqrt(np.nanmean(e**2))) if e.size else np.nan
+
+def run_mask_experiment(seeds=(1, 2, 3), fluxes=(2500, 6000, 14000, 32000),
+                        reff=45.0, algos=("baseline", "local_lowclip")):
+    rows = []
+    for seed in seeds:
+        srng = np.random.default_rng(seed)
+        for flux in fluxes:
+            scene, planted = make_scene(
+                srng, sky=SKY, n_gal=200, n_star=30, psf_fwhm=2.0,
+                planted=dict(flux=flux, reff=reff, n=1.5, q=0.85, pa=20.0,
+                             yc=1024, xc=512))
+            pn = make_pixnoise(srng, scene, t_exp=1000.0, read_noise=5.0)
+            onef, H_inj, V_inj = make_oneoverf(srng, sigma_h=SIGMA_H, sigma_v=SIGMA_V)
+            obs = scene + pn + onef
+            errm = np.sqrt(np.maximum(scene, 0)/1000.0 + (5.0/1000.0)**2)
+            det = detection_mask(obs, errm)
+            tru = truth_mask(scene, SKY)
+            contam = truth_contaminated_rows(scene, SKY)   # fixed row set
+            fill = np.mean([contam[a].mean() for a in "ABCD"])
+            for mname, msk in (("detection", det), ("truth", tru)):
+                ped = float(np.median(obs[SCIENCE & ~msk]))
+                fd = obs - ped; fd[~SCIENCE] = 0.0
+                for aname in algos:
+                    h, v, info = ALGORITHMS[aname](fd, msk, maxiters=3)
+                    rows.append(dict(seed=seed, flux=flux, fill=fill,
+                                     algo=aname, mask=mname,
+                                     mask_frac_det=det.mean(), mask_frac_tru=tru.mean(),
+                                     h_rms_contam=h_rms_over(H_inj, h, contam)))
+    return pd.DataFrame(rows)
+
+t0 = time.time()
+maskexp = run_mask_experiment()
+print(f"mask experiment done in {time.time()-t0:.0f}s; {len(maskexp)} runs")
+magg = (maskexp.groupby(["algo", "mask", "flux"])
+               .agg(fill=("fill","mean"), h_rms_contam=("h_rms_contam","mean"))
+               .reset_index())
+maskexp.groupby(["algo","mask"]).agg(
+    h_rms_contam=("h_rms_contam","mean"),
+    mean_det_maskfrac=("mask_frac_det","mean"),
+    mean_tru_maskfrac=("mask_frac_tru","mean"))
+""")
+
+code(r"""
+fig, ax = plt.subplots(figsize=(7.5, 5))
+styles = {("baseline","detection"): "C0-o", ("baseline","truth"): "C0--s",
+          ("local_lowclip","detection"): "C1-o", ("local_lowclip","truth"): "C1--s"}
+for (algo, mask), st in styles.items():
+    sub = magg[(magg.algo==algo) & (magg.mask==mask)].sort_values("fill")
+    ax.plot(sub.fill, sub.h_rms_contam, st, label=f"{algo} · {mask}")
+ax.axhline(SIGMA_H, ls=":", color="k", alpha=0.5, label="σ_H floor")
+ax.set_xlabel("truth amp-row fill fraction (A+B)")
+ax.set_ylabel("h_rms_contam over fixed truth-contaminated rows")
+ax.set_title("Masking vs. estimator: perfect mask (dashed) vs detection (solid)")
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+plt.tight_layout(); plt.show()
+
+# Apportioning, averaged over the sweep:
+piv = maskexp.groupby(["algo","mask"]).h_rms_contam.mean().unstack()
+masking_lever = piv.loc["baseline","detection"] - piv.loc["baseline","truth"]
+estimator_lever = piv.loc["baseline","detection"] - piv.loc["local_lowclip","detection"]
+residual_floor = piv.loc["local_lowclip","truth"]
+print(f"baseline·detection     : {piv.loc['baseline','detection']:.4f}")
+print(f"baseline·truth         : {piv.loc['baseline','truth']:.4f}")
+print(f"local_lowclip·detection: {piv.loc['local_lowclip','detection']:.4f}")
+print(f"local_lowclip·truth    : {piv.loc['local_lowclip','truth']:.4f}")
+print(f"-> masking lever  (baseline: detection - truth)        = {masking_lever:+.4f}")
+print(f"-> estimator lever(detection: baseline - local_lowclip)= {estimator_lever:+.4f}")
+print(f"-> residual floor (local_lowclip·truth)                = {residual_floor:.4f}")
+""")
+
+# ---------------------------------------------------------------------------
+md(r"""
+**Result (this run, and the key finding).** The "masking lever" for the baseline
+came out **negative** — a *more complete* (truth) mask made the baseline
+**worse**, not better (`baseline·truth` ≈ 0.0052 vs `baseline·detection` ≈
+0.0037). The reason is structural: the truth mask removes more pixels, which
+pushes more contaminated amp-rows past the baseline's survivor / asymmetry
+triggers and into the **full-row-median fallback** — and the fallback is exactly
+what hurts, so masking *more* aggressively feeds it *more* rows. `local_lowclip`,
+by contrast, improves monotonically with a cleaner mask (`truth` ≈ 0.0013 <
+`detection` ≈ 0.0031) and already beats `baseline·truth` even on the imperfect
+detection mask.
+
+So the answer to "is the masking just not thorough enough?" is **mostly no**:
+under model-matched 1/f the *estimator/fallback is the dominant lever*, and
+making the mask more aggressive is counterproductive for the current algorithm
+because it triggers the destructive fallback on more rows. Masking improvements
+(brightness-adaptive dilation, surface-brightness-floor masking, iterative
+re-masking) only pay off **after** the full-row fallback is replaced by a robust
+local estimator — at which point a cleaner mask helps monotonically, as the
+`local_lowclip·truth` curve shows. Caveat: this is the independent-per-row,
+model-matched regime; with cross-amp common mode or correlated rows the masking
+balance can shift, so re-check with those knobs before generalizing to a field.
+
+## 11. Notes, caveats, and next steps
 
 **What this MVP establishes.** Under strict model-matched, independent-per-row
 1/f, the production baseline's asymmetry-triggered fall-back to the full-row
