@@ -380,7 +380,7 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
   return (
     <div>
       {/* Controls bar */}
-      <div className="flex items-center gap-4 flex-wrap px-4 py-2 border-b border-border bg-card dark:bg-background">
+      <div className="flex items-center gap-4 flex-wrap px-4 py-2 border-b border-border bg-surface-2">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
         <ControlDivider />
         <EmissionLinesControl showEmissionLines={showEmissionLines} onChange={setShowEmissionLines} />

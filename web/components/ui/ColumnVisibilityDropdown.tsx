@@ -91,17 +91,17 @@ export const ColumnVisibilityDropdown: React.FC<ColumnVisibilityDropdownProps> =
       {isOpen && (
         <div className="absolute right-0 z-50 mt-2 w-64 max-h-[400px] overflow-y-auto bg-card border border-border rounded-lg shadow-lg">
           {/* Header with quick actions */}
-          <div className="sticky top-0 z-10 bg-card border-b border-border p-2 flex gap-2">
+          <div className="sticky top-0 z-10 bg-surface-2 border-b border-border p-2 flex gap-2">
             <button
               onClick={showAll}
-              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-xs rounded bg-surface-2 text-text-secondary hover:bg-card-hover transition-colors"
+              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-xs rounded bg-card text-text-secondary hover:bg-card-hover transition-colors"
             >
               <Eye className="w-3 h-3" />
               Show all
             </button>
             <button
               onClick={resetToDefaults}
-              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-xs rounded bg-surface-2 text-text-secondary hover:bg-card-hover transition-colors"
+              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-xs rounded bg-card text-text-secondary hover:bg-card-hover transition-colors"
             >
               <RotateCcw className="w-3 h-3" />
               Defaults

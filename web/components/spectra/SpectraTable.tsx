@@ -916,7 +916,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   return (
     <Card className="overflow-hidden">
       {/* Table header with view mode toggle, column visibility, and download dropdowns */}
-      <div className="flex items-center justify-between px-4 py-2 bg-card border-b border-border">
+      <div className="flex items-center justify-between px-4 py-2 bg-surface-2 border-b border-border">
         <div className="flex items-center gap-3">
           <span className="text-sm text-text-secondary">
             {loading ? 'Loading...' : `${total.toLocaleString()} ${isObjectsMode ? 'unique objects' : 'spectra'}`}

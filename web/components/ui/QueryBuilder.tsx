@@ -218,7 +218,7 @@ const GroupComponent: React.FC<GroupComponentProps> = ({
       }
     `}>
       {/* Group header */}
-      <div className="flex items-center gap-2 p-3 border-b border-border">
+      <div className="flex items-center gap-2 p-3 border-b border-border bg-surface-2">
         {!isRoot && (
           <GripVertical className="w-4 h-4 text-text-tertiary cursor-grab" />
         )}

@@ -279,7 +279,7 @@ export function AdvancedFiltersPanel({
         `}
       >
         {/* Panel Header */}
-        <div className="flex items-center justify-between p-4 border-b border-border bg-card">
+        <div className="flex items-center justify-between p-4 border-b border-border bg-surface-2">
           <div>
             <h2 className="text-lg font-semibold text-text-primary">
               {showBasicFilters ? 'Filters' : 'Advanced Filters'}

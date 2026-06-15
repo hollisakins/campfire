@@ -185,7 +185,7 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
 
   return (
     <Card className="mb-6 overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex items-baseline justify-between">
+      <div className="px-4 py-3 border-b border-border flex items-baseline justify-between bg-surface-2">
         <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
           Excluded — copy into <code className="font-mono text-xs">fields.toml</code> <code className="font-mono text-xs">skip = […]</code>
         </h2>
@@ -353,7 +353,7 @@ export default function AdminNircamPage() {
 
       {/* Progress summary */}
       <Card className="mb-6 overflow-hidden">
-        <div className="px-4 py-3 border-b border-border">
+        <div className="px-4 py-3 border-b border-border bg-surface-2">
           <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
             Reduction Progress
           </h2>
