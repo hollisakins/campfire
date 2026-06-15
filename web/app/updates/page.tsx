@@ -1,14 +1,14 @@
 import Link from 'next/link';
 import type { Metadata } from 'next';
-import { Megaphone } from 'lucide-react';
-import { getAllUpdates } from '@/lib/updates/loader';
+import { Lock, Megaphone } from 'lucide-react';
+import { getVisibleUpdates } from '@/lib/updates/visibility';
 import { CURRENT_VERSIONS } from '@/lib/updates/versions';
 import { formatUpdateDate } from '@/lib/updates/format';
 import { CategoryChip } from '@/components/updates/CategoryChip';
 import { MarkdownRenderer } from '@/components/docs';
 
-// Read from the filesystem at build time; render statically.
-export const dynamic = 'force-static';
+// Rendering mode is decided by getVisibleUpdates: static when no updates are
+// program-gated, dynamic (per-viewer) once a gated update is published.
 
 export const metadata: Metadata = {
   title: 'Updates — CAMPFIRE',
@@ -16,8 +16,8 @@ export const metadata: Metadata = {
     'New observations, pipeline re-reductions, and CLI / client changes for the CAMPFIRE archive.',
 };
 
-export default function UpdatesPage() {
-  const updates = getAllUpdates();
+export default async function UpdatesPage() {
+  const updates = await getVisibleUpdates();
 
   return (
     <div className="container mx-auto px-4 py-12">
@@ -68,6 +68,15 @@ export default function UpdatesPage() {
                     {formatUpdateDate(entry.date)}
                   </time>
                   <CategoryChip category={entry.category} />
+                  {entry.programs.length > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 text-xs text-text-tertiary"
+                      title={`Restricted to program ${entry.programs.join(', ')}`}
+                    >
+                      <Lock className="w-3 h-3" />
+                      {entry.programs.join(', ')}
+                    </span>
+                  )}
                   <a
                     href={`#${entry.slug}`}
                     className="ml-auto text-text-tertiary hover:text-primary"

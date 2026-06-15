@@ -29,6 +29,10 @@ summary: "One or two sentences shown in the landing-page feed."
 links:
   - { label: "Reduction docs", href: "/docs/reduction/nirspec" }
 pinned: false
+# Optional: restrict this update to specific program(s). Omit for a public
+# (everyone) update. When set, the update is only shown to viewers who can
+# access at least one listed program — same rule as the data itself.
+programs: ["ember", "zenith"]
 ---
 
 The full update body in markdown. The first paragraph should stand alone as
@@ -50,6 +54,11 @@ rendered in full on /updates; the landing feed shows the `summary` instead.
   (`/docs/...`, `/nirspec`, `/profile`); external `http(s)` links open in a new tab.
 - **pinned** — optional; `true` floats the entry to the top regardless of date.
   Default `false`.
+- **programs** — optional list of program slugs (or a single `program: slug`).
+  Omit for a public update visible to everyone. When set, the update is gated:
+  shown only to viewers who can access at least one listed program (signed-in
+  users via their grants, anonymous visitors only if a program is public).
+  Use this for announcements about proprietary programs.
 
 ## Steps
 

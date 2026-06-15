@@ -1,6 +1,12 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
+  // Ensure the Updates markdown is bundled into the serverless functions for
+  // these routes, which render dynamically once a gated update is published.
+  outputFileTracingIncludes: {
+    '/': ['./lib/updates/content/**/*'],
+    '/updates': ['./lib/updates/content/**/*'],
+  },
   webpack: (config) => {
     // Handle raw markdown file imports
     config.module.rules.push({

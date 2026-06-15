@@ -35,4 +35,7 @@ export interface UpdateEntry {
   links: UpdateLink[];
   /** Pinned entries sort to the top regardless of date. */
   pinned: boolean;
+  /** Program slugs this update is restricted to. Empty = public (everyone).
+   *  Non-empty = visible only to viewers who can access ≥1 of these programs. */
+  programs: string[];
 }

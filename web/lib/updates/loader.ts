@@ -29,6 +29,18 @@ function normalizeCategory(value: unknown): UpdateCategory {
     : 'data';
 }
 
+/** Accept either `programs: [slug, ...]` or a single `program: slug`. */
+function normalizePrograms(value: unknown, single: unknown): string[] {
+  const raw = value ?? single;
+  if (typeof raw === 'string') return raw.trim() ? [raw.trim()] : [];
+  if (Array.isArray(raw)) {
+    return raw
+      .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+      .map((s) => s.trim());
+  }
+  return [];
+}
+
 function normalizeLinks(value: unknown): UpdateLink[] {
   if (!Array.isArray(value)) return [];
   return value.filter(
@@ -78,6 +90,7 @@ export function getAllUpdates(): UpdateEntry[] {
       body,
       links: normalizeLinks(data.links),
       pinned: Boolean(data.pinned),
+      programs: normalizePrograms(data.programs, data.program),
     };
   });
 
@@ -86,13 +99,4 @@ export function getAllUpdates(): UpdateEntry[] {
     if (a.date !== b.date) return a.date < b.date ? 1 : -1;
     return a.slug < b.slug ? 1 : -1; // stable tiebreak, newest-ish first
   });
-}
-
-/** The `limit` most recent entries, plus the total count (for the "view all" link). */
-export function getRecentUpdates(limit: number): {
-  entries: UpdateEntry[];
-  total: number;
-} {
-  const all = getAllUpdates();
-  return { entries: all.slice(0, limit), total: all.length };
 }
