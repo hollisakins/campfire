@@ -21,7 +21,7 @@ export const FluxUnitToggle: React.FC<FluxUnitToggleProps> = ({ fluxUnit, onChan
           className={`px-3 py-1 text-sm transition-colors ${
             fluxUnit === 'fnu'
               ? 'bg-primary text-on-primary'
-              : 'bg-background dark:bg-card-hover text-text-secondary hover:bg-card-hover dark:hover:bg-slate-600'
+              : 'bg-background text-text-secondary hover:bg-card-hover'
           }`}
         >
           fν
@@ -31,7 +31,7 @@ export const FluxUnitToggle: React.FC<FluxUnitToggleProps> = ({ fluxUnit, onChan
           className={`px-3 py-1 text-sm transition-colors ${
             fluxUnit === 'flambda'
               ? 'bg-primary text-on-primary'
-              : 'bg-background dark:bg-card-hover text-text-secondary hover:bg-card-hover dark:hover:bg-slate-600'
+              : 'bg-background text-text-secondary hover:bg-card-hover'
           }`}
         >
           fλ
@@ -117,7 +117,7 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
   };
 
   const stepBtnClass =
-    'p-0.5 rounded text-text-secondary hover:bg-card-hover dark:hover:bg-slate-600 hover:text-text-primary transition-colors disabled:opacity-30 disabled:pointer-events-none';
+    'p-0.5 rounded text-text-secondary hover:bg-card-hover hover:text-text-primary transition-colors disabled:opacity-30 disabled:pointer-events-none';
 
   return (
     <div className="flex items-center gap-2 flex-1 max-w-md">
@@ -155,7 +155,7 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
         min={min}
         max={max}
         step={step}
-        className="flex-1 h-2 bg-surface-2 dark:bg-slate-600 rounded-lg appearance-none cursor-pointer accent-primary"
+        className="flex-1 h-2 bg-surface-2 rounded-lg appearance-none cursor-pointer accent-primary"
       />
       <div className="flex items-center gap-0.5">
         <button

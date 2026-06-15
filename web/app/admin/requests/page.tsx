@@ -300,7 +300,7 @@ export default function AdminRequestsPage() {
       {/* Requests Table */}
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-table-header border-b border-border">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Requester
@@ -434,7 +434,7 @@ export default function AdminRequestsPage() {
                             transition-colors
                             ${selected
                               ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
-                              : 'bg-card-hover text-text-secondary hover:bg-gray-200 dark:hover:bg-slate-600'
+                              : 'bg-card-hover text-text-secondary hover:bg-card-hover'
                             }
                           `}
                         >
@@ -471,7 +471,7 @@ export default function AdminRequestsPage() {
                   type="checkbox"
                   checked={approveCanComment}
                   onChange={(e) => setApproveCanComment(e.target.checked)}
-                  className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary dark:bg-surface-2"
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
                 />
                 <span className="text-sm text-text-primary">Can comment/inspect</span>
               </label>
@@ -480,7 +480,7 @@ export default function AdminRequestsPage() {
                   type="checkbox"
                   checked={approveIsAdmin}
                   onChange={(e) => setApproveIsAdmin(e.target.checked)}
-                  className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary dark:bg-surface-2"
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
                 />
                 <span className="text-sm text-text-primary">Admin privileges</span>
               </label>
@@ -549,7 +549,7 @@ export default function AdminRequestsPage() {
               <textarea
                 value={rejectReason}
                 onChange={(e) => setRejectReason(e.target.value)}
-                className="w-full px-4 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-surface-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full px-4 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
                 placeholder="Enter a reason for rejection..."
                 rows={3}
               />

@@ -159,7 +159,7 @@ export const RedshiftSection = forwardRef<RedshiftSectionHandle, RedshiftSection
             placeholder="auto"
             disabled={!canEdit}
             className={`w-full px-2 py-1.5 text-sm font-mono border rounded bg-background dark:bg-card-hover
-                       text-text-primary focus:outline-none
+                       text-text-primary placeholder:text-text-tertiary focus:outline-none
                        focus:ring-1 focus:ring-primary disabled:opacity-60 transition-all duration-300
                        ${isSliderSync
                          ? 'border-amber-400 dark:border-amber-500 ring-1 ring-amber-400/50 dark:ring-amber-500/50'

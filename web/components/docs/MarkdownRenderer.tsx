@@ -134,19 +134,19 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
 
     // Paragraphs
     p: ({ children }) => (
-      <p className="text-text-primary dark:text-slate-300 leading-7 mb-4">
+      <p className="text-text-primary leading-7 mb-4">
         {children}
       </p>
     ),
 
     // Lists
     ul: ({ children }) => (
-      <ul className="list-disc list-outside ml-6 mb-4 space-y-2 text-text-primary dark:text-slate-300">
+      <ul className="list-disc list-outside ml-6 mb-4 space-y-2 text-text-primary">
         {children}
       </ul>
     ),
     ol: ({ children }) => (
-      <ol className="list-decimal list-outside ml-6 mb-4 space-y-2 text-text-primary dark:text-slate-300">
+      <ol className="list-decimal list-outside ml-6 mb-4 space-y-2 text-text-primary">
         {children}
       </ol>
     ),
@@ -206,7 +206,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       <tbody className="divide-y divide-border">{children}</tbody>
     ),
     tr: ({ children }) => (
-      <tr className="hover:bg-card-hover dark:hover:bg-slate-800/50">{children}</tr>
+      <tr className="hover:bg-card-hover">{children}</tr>
     ),
     th: ({ children }) => (
       <th className="px-4 py-2 text-left font-semibold text-text-primary">
@@ -214,7 +214,7 @@ export default function MarkdownRenderer({ content, onTOCChange }: MarkdownRende
       </th>
     ),
     td: ({ children }) => (
-      <td className="px-4 py-2 text-text-primary dark:text-slate-300">{children}</td>
+      <td className="px-4 py-2 text-text-primary">{children}</td>
     ),
 
     // Horizontal rule

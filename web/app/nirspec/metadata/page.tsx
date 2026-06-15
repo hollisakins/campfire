@@ -337,7 +337,7 @@ const ObservationsBulkActions: React.FC<{ filtered: ObservationOverview[] }> = (
       <button
         onClick={downloadCsv}
         disabled={!hasPointings}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border border-border hover:bg-card-hover dark:hover:bg-slate-700/40 disabled:opacity-50 disabled:cursor-not-allowed text-text-secondary hover:text-text-primary transition-colors"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border border-border hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed text-text-secondary hover:text-text-primary transition-colors"
         title="Download CSV of pointings for filtered observations"
       >
         <Download className="w-3.5 h-3.5" />
@@ -346,7 +346,7 @@ const ObservationsBulkActions: React.FC<{ filtered: ObservationOverview[] }> = (
       <button
         onClick={downloadDs9}
         disabled={!hasPointings}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border border-border hover:bg-card-hover dark:hover:bg-slate-700/40 disabled:opacity-50 disabled:cursor-not-allowed text-text-secondary hover:text-text-primary transition-colors"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border border-border hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed text-text-secondary hover:text-text-primary transition-colors"
         title="Download DS9 region file for filtered observations"
       >
         <FileText className="w-3.5 h-3.5" />

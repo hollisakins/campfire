@@ -38,8 +38,8 @@ export const MemberSpectraTable: React.FC<MemberSpectraTableProps> = ({ object }
       </h3>
       <div className="overflow-x-auto">
         <table className="w-full text-[11px]">
-          <thead>
-            <tr className="text-text-secondary dark:text-text-tertiary">
+          <thead className="bg-table-header">
+            <tr className="text-text-secondary">
               <th className="text-left font-medium pb-1 pr-2">Grating</th>
               <th className="text-left font-medium pb-1 pr-2">Obs</th>
               <th className="text-right font-medium pb-1 pr-2">z_auto</th>
@@ -51,7 +51,7 @@ export const MemberSpectraTable: React.FC<MemberSpectraTableProps> = ({ object }
             {rows.map(r => {
               const dqDefs = DQ_FLAGS.filter(f => (r.dqMask & f.value) !== 0);
               return (
-                <tr key={r.key} className="border-t border-border/30 dark:border-slate-700/40">
+                <tr key={r.key} className="border-t border-border/30">
                   <td className="py-1 pr-2 font-mono text-text-primary">
                     {r.grating}
                     {r.isSelected && (

@@ -217,7 +217,7 @@ function SpectraPageContent() {
           </div>
           <Link
             href="/profile#access-code"
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors whitespace-nowrap"
+            className="flex items-center gap-2 px-4 py-2 bg-primary text-on-primary text-sm rounded-md hover:bg-primary-hover transition-colors whitespace-nowrap"
           >
             <KeyRound className="w-4 h-4" />
             Enter Code

@@ -169,13 +169,13 @@ export const ChangeEmailForm: React.FC = () => {
               Current Email Address
             </label>
             <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-text-secondary" />
+              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-text-tertiary" />
               <input
                 id="currentEmail"
                 type="email"
                 value={currentEmail}
                 disabled
-                className="w-full pl-10 pr-4 py-2 bg-background-hover text-text-secondary border border-border rounded-lg cursor-not-allowed"
+                className="w-full pl-10 pr-4 py-2 bg-surface-2 text-text-secondary border border-border rounded-lg cursor-not-allowed"
               />
             </div>
           </div>
@@ -189,7 +189,7 @@ export const ChangeEmailForm: React.FC = () => {
               type="email"
               value={newEmail}
               onChange={(e) => setNewEmail(e.target.value)}
-              className="w-full px-4 py-2 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+              className="w-full px-4 py-2 bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
               placeholder="your.new.email@example.com"
               required
               disabled={loading}
@@ -205,7 +205,7 @@ export const ChangeEmailForm: React.FC = () => {
               type="email"
               value={confirmEmail}
               onChange={(e) => setConfirmEmail(e.target.value)}
-              className="w-full px-4 py-2 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+              className="w-full px-4 py-2 bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
               placeholder="your.new.email@example.com"
               required
               disabled={loading}

@@ -272,7 +272,7 @@ export const ResetPasswordForm: React.FC = () => {
               type={showPassword ? 'text' : 'password'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2 pr-10 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+              className="w-full px-4 py-2 pr-10 bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
               placeholder="Enter new password"
               required
               minLength={8}
@@ -281,7 +281,7 @@ export const ResetPasswordForm: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary"
             >
               {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
             </button>
@@ -301,7 +301,7 @@ export const ResetPasswordForm: React.FC = () => {
               type={showConfirmPassword ? 'text' : 'password'}
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full px-4 py-2 pr-10 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+              className="w-full px-4 py-2 pr-10 bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
               placeholder="Confirm new password"
               required
               minLength={8}
@@ -310,7 +310,7 @@ export const ResetPasswordForm: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary"
             >
               {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
             </button>

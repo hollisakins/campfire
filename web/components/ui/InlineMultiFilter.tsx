@@ -100,7 +100,7 @@ export function InlineMultiFilter({
         </label>
         {/* Mode selector (hidden for filters where mode doesn't apply) */}
         {!hideModeSelector && (
-          <div className={`flex gap-0.5 bg-surface-2 dark:bg-slate-800 rounded-md p-0.5 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+          <div className={`flex gap-0.5 bg-surface-2 rounded-md p-0.5 transition-opacity duration-200 ${hasSelection ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
             {(['any', 'all', 'none'] as FilterMode[]).map((m) => (
               <button
                 key={m}
@@ -136,7 +136,7 @@ export function InlineMultiFilter({
                 border transition-all duration-200
                 ${isSelected
                   ? 'border-transparent text-text-primary shadow-sm'
-                  : 'border-border text-text-secondary hover:bg-card dark:hover:bg-slate-700 hover:border-border-strong'
+                  : 'border-border text-text-secondary hover:bg-card-hover hover:border-border-strong'
                 }
               `}
               style={

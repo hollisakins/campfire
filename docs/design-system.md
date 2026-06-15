@@ -41,25 +41,31 @@ the manual `dark:` pairs. Source of truth: `web/app/globals.css`, exposed via
 `web/tailwind.config.ts`.
 
 ### Surfaces
+**Elevation moves *toward the ink color* in both themes** — surfaces lift off the page by
+getting *lighter* in dusk and *warmer/darker* in light. The near-white `--background` is the
+legible base, reused for plot wells and inputs; the warm tint lives in the cards (mirroring the
+dusk panels). `--surface-2` is the most-elevated surface in both modes (consistent semantics).
+
 | Token | Light | Dark (dusk) | Role |
 |---|---|---|---|
-| `--background` | `#faf7f3` | `#16131c` | page |
-| `--card` | `#ffffff` | `#1f1b27` | primary surface (cards pop off the paper) |
-| `--surface-2` | `#f6f1ea` | `#241f2e` | table header, footer, insets |
-| `--card-hover` | `#f4eee6` | `#2a2435` | row & control hover |
+| `--background` | `#fffefb` | `#16131c` | near-white page; legible base for plot data wells & inputs |
+| `--card` | `#fefcfa` | `#1f1b27` | primary surface — warm panels; also plot paper/edges |
+| `--surface-2` | `#f3ede5` | `#241f2e` | card/section headers, insets (most elevated) |
+| `--table-header` | `#f6f0ea` | `#221d2a` | table column headers — independent, sits between card & surface-2 |
+| `--card-hover` | `#f6f0ea` | `#2a2435` | row & control hover |
 
 ### Borders
 | Token | Light | Dark | Role |
 |---|---|---|---|
-| `--border` | `#ece4d9` | `#332c40` | hairlines, dividers |
-| `--border-strong` | `#ddd2c2` | `#423a52` | emphasized edges, inputs |
+| `--border` | `#e6ddce` | `#332c40` | hairlines, dividers |
+| `--border-strong` | `#d7cbb9` | `#423a52` | emphasized edges, inputs |
 
-### Text  *(AA verified on `--background`)*
+### Text  *(AA verified on `--surface-2`, the worst-case/darkest light chrome surface)*
 | Token | Light | Dark | Contrast L/D | Role |
 |---|---|---|---|---|
-| `--text-primary` | `#211c17` | `#f1ecf6` | 15.8 / 15.8 | body, headings |
-| `--text-secondary` | `#5c5346` | `#b8aec6` | 7.1 / 8.7 | labels, meta |
-| `--text-tertiary` | `#766a57` | `#8b8398` | 4.95 / 5.1 | muted, placeholder, icons |
+| `--text-primary` | `#211c17` | `#f1ecf6` | 14.5 / 15.8 | body, headings |
+| `--text-secondary` | `#5c5346` | `#b8aec6` | 6.5 / 8.7 | labels, meta |
+| `--text-tertiary` | `#6c6150` | `#8b8398` | 5.2 / 5.1 | muted, placeholder, icons |
 
 ### Accent — ember  *(all 8 user accents still selectable; ember is the default)*
 | Token | Light | Dark | Notes |
@@ -72,9 +78,11 @@ the manual `dark:` pairs. Source of truth: `web/app/globals.css`, exposed via
 
 > The Direction-2 mockup used `#d9480f`; the implemented `--primary` is nudged one
 > imperceptible step deeper to `#c63f0c` so white button labels and inline links clear AA.
-> **Accent system:** only `--primary*` swap per user choice; everything else is neutral, so
-> all 8 accents work. The 8 stay defined in `web/lib/types.ts`; default changes to ember
-> (add an `ember` entry or promote/retune `orange` — see migration plan §Accent).
+> **Accent system:** the user's accent choice swaps `--primary`/`--primary-hover` (see
+> `applyAccentColorCSS`); `--primary-text`/`--on-primary`/`--primary-soft` currently track the
+> ember default and are *not* yet recomputed per accent — a known follow-up for non-ember
+> picks. `ember` is now a dedicated entry in `web/lib/types.ts` and the default; the prior
+> 8 accents remain selectable.
 
 ### Status — semantic, both modes  *(meaning, not decoration)*
 | Token | Light | Dark | Use |
@@ -93,8 +101,9 @@ the manual `dark:` pairs. Source of truth: `web/app/globals.css`, exposed via
 ---
 
 ## 6. Typography
-- **UI / body:** **Inter** (400/500/600/700), `--font-inter`, `font-sans`.
-- **Data / code / all numbers:** **JetBrains Mono** (400/500), `font-mono`, tabular figures.
+- **UI / body:** **Inter** (variable), loaded via `next/font` as `--font-sans`, used through
+  `font-sans` (Tailwind). The CSS var name is font-agnostic so swaps don't touch components.
+- **Data / code / all numbers:** **JetBrains Mono**, `--font-mono` / `font-mono`, tabular figures.
   RA/Dec, redshift, S/N, wavelengths are **always** mono.
 - **Scale (rem @16):** `xs .75 · sm .875 · base 1 · lg 1.125 · xl 1.25 · 2xl 1.5 · 3xl 1.875`.
   Body line-height 1.55; dense table rows ~1.35. Heading letter-spacing ≈ −0.02em.

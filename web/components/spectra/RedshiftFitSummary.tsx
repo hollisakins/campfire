@@ -133,7 +133,7 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
         <h3 className="text-lg font-semibold text-text-primary">Redshift Fit Summary</h3>
         <div className="group relative">
           <Info className="w-4 h-4 text-text-secondary cursor-help" />
-          <div className="absolute left-0 top-6 w-64 p-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-10">
+          <div className="absolute left-0 top-6 w-64 p-2 bg-card border border-border text-text-primary text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-10">
             If multiple gratings are available, the automatic redshift is determined from a decision tree, generally preferring PRISM redshifts but using grating redshifts if they agree.
           </div>
         </div>
@@ -141,7 +141,7 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
 
       <div className="overflow-x-auto">
         <table className="w-full">
-          <thead>
+          <thead className="bg-table-header">
             <tr className="border-b border-border">
               <th className="text-left py-2 px-3 text-sm font-medium text-text-secondary">
                 Observation

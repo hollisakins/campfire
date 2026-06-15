@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Roboto, Roboto_Mono } from 'next/font/google';
+import { Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import { Navigation } from '@/components/layout/Navigation';
 import { AuthProvider } from '@/lib/contexts/AuthContext';
@@ -9,17 +9,16 @@ import { QueryProvider } from '@/lib/providers/QueryProvider';
 import { Footer } from '@/components/layout/Footer';
 import { Analytics } from '@vercel/analytics/next';
 
-const roboto = Roboto({
+// Direction 2 (Ember & Dusk): Inter for UI, JetBrains Mono for data/code.
+const inter = Inter({
   subsets: ['latin'],
-  weight: ['400', '500', '700'],
-  variable: '--font-roboto',
+  variable: '--font-sans',
   display: 'swap',
 });
 
-const robotoMono = Roboto_Mono({
+const jetbrainsMono = JetBrains_Mono({
   subsets: ['latin'],
-  weight: ['400', '500', '600'],
-  variable: '--font-roboto-mono',
+  variable: '--font-mono',
   display: 'swap',
 });
 
@@ -51,7 +50,7 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className={`${roboto.variable} ${robotoMono.variable} font-sans antialiased min-h-screen flex flex-col bg-background text-text-primary`}>
+      <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased min-h-screen flex flex-col bg-background text-text-primary`}>
         <QueryProvider>
           <AuthProvider>
             <ThemeProvider>

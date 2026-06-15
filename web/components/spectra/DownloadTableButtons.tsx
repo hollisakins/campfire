@@ -187,7 +187,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
       {isOpen && (
         <div className="absolute right-0 z-50 mt-1 w-[320px] bg-background dark:bg-card border border-border rounded-lg shadow-lg">
           {/* Header */}
-          <div className="px-4 py-3 border-b border-border">
+          <div className="px-4 py-3 border-b border-border bg-surface-2">
             <div className="text-sm font-medium text-text-primary">
               Download Results
             </div>

@@ -15,11 +15,17 @@ const config: Config = {
         'primary-text': 'var(--primary-text)',
         'on-primary': 'var(--on-primary)',
         'primary-soft': 'var(--primary-soft)',
-        header: '#475569',       // Dark slate header
+        header: 'var(--header)',
+        'header-elevated': 'var(--header-elevated)',
+        'header-foreground': 'var(--header-foreground)',
+        'header-muted': 'var(--header-muted)',
+        'header-border': 'var(--header-border)',
+        'header-hover': 'var(--header-hover)',
         background: 'var(--background)',
         card: 'var(--card)',
         'card-hover': 'var(--card-hover)',
         'surface-2': 'var(--surface-2)',
+        'table-header': 'var(--table-header)',
         border: 'var(--border)',
         'border-strong': 'var(--border-strong)',
         success: 'var(--success)',
@@ -33,8 +39,8 @@ const config: Config = {
         }
       },
       fontFamily: {
-        sans: ['var(--font-roboto)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-roboto-mono)', 'ui-monospace', 'monospace'],
+        sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
       },
       borderRadius: {
         'card': '0.75rem',

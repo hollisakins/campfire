@@ -347,7 +347,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                       onClick={() => setSelectedProgram(null)}
                       className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
                         selectedProgram === null
-                          ? 'bg-background dark:bg-slate-600 text-text-primary shadow-sm'
+                          ? 'bg-card text-text-primary shadow-sm'
                           : 'text-text-secondary hover:text-text-primary'
                       }`}
                     >
@@ -359,7 +359,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                         onClick={() => setSelectedProgram(selectedProgram === p ? null : p)}
                         className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
                           selectedProgram === p
-                            ? 'bg-background dark:bg-slate-600 text-text-primary shadow-sm'
+                            ? 'bg-card text-text-primary shadow-sm'
                             : 'text-text-secondary hover:text-text-primary'
                         }`}
                       >
@@ -376,7 +376,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                     onClick={() => setSelectedGrating(null)}
                     className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
                       selectedGrating === null
-                        ? 'bg-background dark:bg-slate-600 text-text-primary shadow-sm'
+                        ? 'bg-card text-text-primary shadow-sm'
                         : 'text-text-secondary hover:text-text-primary'
                     }`}
                   >
@@ -388,7 +388,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                       onClick={() => setSelectedGrating(selectedGrating === g ? null : g)}
                       className={`px-2.5 py-1 text-xs font-medium font-mono rounded transition-colors ${
                         g === selectedGrating
-                          ? 'bg-background dark:bg-slate-600 text-text-primary shadow-sm'
+                          ? 'bg-card text-text-primary shadow-sm'
                           : 'text-text-secondary hover:text-text-primary'
                       }`}
                     >

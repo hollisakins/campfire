@@ -35,14 +35,14 @@ function ReviewBadge({ status }: { status: string }) {
     excluded: 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-300',
   };
   return (
-    <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${colors[status] || 'bg-surface-2 dark:bg-slate-700 text-text-primary dark:text-slate-300'}`}>
+    <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${colors[status] || 'bg-surface-2 text-text-primary'}`}>
       {status}
     </span>
   );
 }
 
 function ActionBadge({ status, label }: { status: string; label: string }) {
-  if (status === 'none') return <span className="text-xs text-text-secondary dark:text-text-tertiary">&mdash;</span>;
+  if (status === 'none') return <span className="text-xs text-text-secondary">&mdash;</span>;
   const colors: Record<string, string> = {
     needed: 'bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-300',
     done: 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-300',
@@ -75,11 +75,11 @@ function StageDistributionBar({ progress }: { progress: ReductionProgress }) {
     .filter(s => s.count > 0);
 
   if (segments.length === 0) {
-    return <div className="h-3 bg-surface-2 dark:bg-slate-800 rounded" />;
+    return <div className="h-3 bg-surface-2 rounded" />;
   }
 
   return (
-    <div className="flex h-3 rounded overflow-hidden bg-surface-2 dark:bg-slate-800">
+    <div className="flex h-3 rounded overflow-hidden bg-surface-2">
       {segments.map(({ stage, count }) => (
         <div
           key={stage}
@@ -121,7 +121,7 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
         </thead>
         <tbody className="divide-y divide-border">
           {progress.map((row) => (
-            <tr key={`${row.field}-${row.filter}`} className="hover:bg-card/50 dark:hover:bg-slate-700/50">
+            <tr key={`${row.field}-${row.filter}`} className="hover:bg-card-hover">
               <td className="px-3 py-2 font-medium text-text-primary">{row.field}</td>
               <td className="px-3 py-2 text-text-primary">{row.filter}</td>
               <td className="px-3 py-2 text-right text-text-primary">{row.total}</td>
@@ -132,21 +132,21 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
                 {row.pending_review > 0 ? (
                   <span className="text-yellow-600 dark:text-yellow-400 font-medium">{row.pending_review}</span>
                 ) : (
-                  <span className="text-text-secondary dark:text-text-tertiary">0</span>
+                  <span className="text-text-secondary">0</span>
                 )}
               </td>
               <td className="px-3 py-2 text-right">
                 {row.needs_masking > 0 ? (
                   <span className="text-orange-600 dark:text-orange-400 font-medium">{row.needs_masking}</span>
                 ) : (
-                  <span className="text-text-secondary dark:text-text-tertiary">0</span>
+                  <span className="text-text-secondary">0</span>
                 )}
               </td>
               <td className="px-3 py-2 text-right">
                 {row.needs_correction > 0 ? (
                   <span className="text-orange-600 dark:text-orange-400 font-medium">{row.needs_correction}</span>
                 ) : (
-                  <span className="text-text-secondary dark:text-text-tertiary">0</span>
+                  <span className="text-text-secondary">0</span>
                 )}
               </td>
             </tr>
@@ -185,7 +185,7 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
 
   return (
     <Card className="mb-6 overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex items-baseline justify-between">
+      <div className="px-4 py-3 border-b border-border flex items-baseline justify-between bg-surface-2">
         <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
           Excluded — copy into <code className="font-mono text-xs">fields.toml</code> <code className="font-mono text-xs">skip = […]</code>
         </h2>
@@ -198,7 +198,7 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
             <div key={heading} className="p-4">
               <div className="flex items-baseline justify-between mb-2">
                 <h3 className="text-xs font-medium text-text-secondary">
-                  {heading} <span className="text-text-secondary dark:text-text-tertiary">({rows.length})</span>
+                  {heading} <span className="text-text-secondary">({rows.length})</span>
                 </h3>
                 <button
                   onClick={() => copy(heading, tomlBlock)}
@@ -211,7 +211,7 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
                   )}
                 </button>
               </div>
-              <pre className="text-xs font-mono bg-card dark:bg-slate-900 p-2 rounded overflow-x-auto text-text-primary dark:text-slate-300">{tomlBlock}</pre>
+              <pre className="text-xs font-mono bg-surface-2 p-2 rounded overflow-x-auto text-text-primary">{tomlBlock}</pre>
               {rows.some(r => r.notes) && (
                 <ul className="mt-2 text-xs text-text-secondary space-y-0.5">
                   {rows.filter(r => r.notes).map(r => (
@@ -353,7 +353,7 @@ export default function AdminNircamPage() {
 
       {/* Progress summary */}
       <Card className="mb-6 overflow-hidden">
-        <div className="px-4 py-3 border-b border-border">
+        <div className="px-4 py-3 border-b border-border bg-surface-2">
           <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
             Reduction Progress
           </h2>
@@ -369,7 +369,7 @@ export default function AdminNircamPage() {
         <select
           value={selectedField}
           onChange={(e) => setSelectedField(e.target.value)}
-          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
+          className="text-sm border border-border rounded-lg px-3 py-1.5 bg-card text-text-primary"
         >
           <option value="">All fields</option>
           {filterOptions.fields.map(f => <option key={f} value={f}>{f}</option>)}
@@ -377,7 +377,7 @@ export default function AdminNircamPage() {
         <select
           value={selectedFilter}
           onChange={(e) => setSelectedFilter(e.target.value)}
-          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
+          className="text-sm border border-border rounded-lg px-3 py-1.5 bg-card text-text-primary"
         >
           <option value="">All filters</option>
           {filterOptions.filters.map(f => <option key={f} value={f}>{f}</option>)}
@@ -385,7 +385,7 @@ export default function AdminNircamPage() {
         <select
           value={selectedDetector}
           onChange={(e) => setSelectedDetector(e.target.value)}
-          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
+          className="text-sm border border-border rounded-lg px-3 py-1.5 bg-card text-text-primary"
         >
           <option value="">All detectors</option>
           {filterOptions.detectors.map(d => <option key={d} value={d}>{d}</option>)}
@@ -393,7 +393,7 @@ export default function AdminNircamPage() {
         <select
           value={selectedStage}
           onChange={(e) => setSelectedStage(e.target.value)}
-          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
+          className="text-sm border border-border rounded-lg px-3 py-1.5 bg-card text-text-primary"
         >
           <option value="">All stages</option>
           {NIRCAM_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
@@ -401,7 +401,7 @@ export default function AdminNircamPage() {
         <select
           value={selectedReview}
           onChange={(e) => setSelectedReview(e.target.value)}
-          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
+          className="text-sm border border-border rounded-lg px-3 py-1.5 bg-card text-text-primary"
         >
           <option value="">All review statuses</option>
           <option value="pending">Pending</option>
@@ -421,7 +421,7 @@ export default function AdminNircamPage() {
       {/* Exposure table */}
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-table-header border-b border-border">
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Filename</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Filter</th>
@@ -449,7 +449,7 @@ export default function AdminNircamPage() {
                 // arrow-key navigation walks the entire match set.
                 const onRowEnter = () => setNircamNav(allFilteredIds);
                 return (
-                <tr key={exp.id} className="hover:bg-card/50 dark:hover:bg-slate-700/50">
+                <tr key={exp.id} className="hover:bg-card-hover">
                   <td className="px-4 py-3">
                     <Link
                       href={`/admin/nircam/${exp.id}`}

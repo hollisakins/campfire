@@ -149,7 +149,7 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
   }[slugStatus];
 
   return (
-    <form onSubmit={handleSubmit} className="border border-border rounded-lg p-4 bg-card dark:bg-slate-800/50">
+    <form onSubmit={handleSubmit} className="border border-border rounded-lg p-4 bg-card">
       <h3 className="text-sm font-semibold text-text-primary mb-3">
         {mode === 'create' ? 'Create New Tag' : 'Edit Tag'}
       </h3>
@@ -172,7 +172,7 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
             placeholder="e.g., AGN Candidates"
             maxLength={100}
             minLength={2}
-            className="w-full px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+            className="w-full px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
             autoFocus
             required
           />
@@ -183,19 +183,19 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
             Shortname
           </label>
           <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-text-secondary dark:text-text-tertiary">#</span>
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-text-tertiary">#</span>
             <input
               type="text"
               value={slug}
               onChange={(e) => handleSlugChange(e.target.value)}
               placeholder={username ? `${username}/my-tag` : 'my-tag'}
               maxLength={60}
-              className={`w-full pl-7 pr-8 py-2 text-sm font-mono border rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:border-transparent ${
+              className={`w-full pl-7 pr-8 py-2 text-sm font-mono border rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:border-transparent ${
                 slugStatus === 'taken' || slugStatus === 'invalid'
                   ? 'border-red-300 dark:border-red-700 focus:ring-red-500'
                   : slugStatus === 'available'
                   ? 'border-green-300 dark:border-green-700 focus:ring-green-500'
-                  : 'border-border dark:border-border-strong focus:ring-primary'
+                  : 'border-border-strong focus:ring-primary'
               }`}
             />
             {slugIcon && (
@@ -222,7 +222,7 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Optional description"
             rows={2}
-            className="w-full px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent resize-none"
+            className="w-full px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent resize-none"
           />
         </div>
 
@@ -247,7 +247,7 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
           <select
             value={visibility}
             onChange={(e) => setVisibility(e.target.value as typeof visibility)}
-            className="w-full px-3 py-2 text-sm border border-border dark:border-border-strong rounded-md bg-background dark:bg-slate-700 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+            className="w-full px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
           >
             <option value="private">Private — only you can see</option>
             <option value="public_read">Public — others can view</option>

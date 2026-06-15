@@ -76,14 +76,14 @@ export default function ListsPage() {
         </div>
       ) : lists.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <Tag className="w-12 h-12 text-text-secondary dark:text-text-tertiary mb-4" />
+          <Tag className="w-12 h-12 text-text-secondary mb-4" />
           <p className="text-text-secondary">No tags available yet.</p>
         </div>
       ) : (
         <Card className="overflow-hidden">
           <table className="w-full">
             <thead>
-              <tr className="bg-card dark:bg-slate-800/50 border-b border-border">
+              <tr className="bg-table-header border-b border-border">
                 <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary">Tag</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary hidden md:table-cell">Description</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary">Type</th>
@@ -93,7 +93,7 @@ export default function ListsPage() {
             </thead>
             <tbody>
               {lists.map(list => (
-                <tr key={list.id} className="border-b border-border dark:border-slate-700/50 last:border-0 hover:bg-card-hover dark:hover:bg-slate-800/30 transition-colors">
+                <tr key={list.id} className="border-b border-border last:border-0 hover:bg-card-hover transition-colors">
                   <td className="px-4 py-3">
                     <Link href={`/nirspec/tags/${list.slug}`} className="flex items-center gap-2.5">
                       {list.icon ? (
@@ -101,11 +101,11 @@ export default function ListsPage() {
                       ) : list.color ? (
                         <span className="w-4 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: list.color }} />
                       ) : (
-                        <Tag className="w-4 h-4 text-text-secondary dark:text-text-tertiary flex-shrink-0" />
+                        <Tag className="w-4 h-4 text-text-secondary flex-shrink-0" />
                       )}
                       <div className="min-w-0">
                         <span className="font-medium text-text-primary">{list.name}</span>
-                        <span className="ml-2 text-xs font-mono text-text-secondary dark:text-text-tertiary">#{list.slug}</span>
+                        <span className="ml-2 text-xs font-mono text-text-secondary">#{list.slug}</span>
                       </div>
                     </Link>
                   </td>
@@ -133,7 +133,7 @@ export default function ListsPage() {
                         {list.creator_name}
                       </span>
                     ) : (
-                      <span className="text-sm text-text-secondary dark:text-text-tertiary">—</span>
+                      <span className="text-sm text-text-secondary">—</span>
                     )}
                   </td>
                 </tr>
