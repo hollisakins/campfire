@@ -297,7 +297,7 @@ export default function TokenLabPage() {
 
           {/* Card + table */}
           <div className="overflow-hidden rounded-card border border-border bg-card shadow-sm">
-            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <div className="flex items-center justify-between border-b border-border bg-surface-2 px-4 py-3">
               <div>
                 <h2 className="text-sm font-semibold text-text-primary">Spectra</h2>
                 <p className="text-xs text-text-tertiary">5 of 1,284 targets</p>
@@ -329,11 +329,12 @@ export default function TokenLabPage() {
           </div>
 
           {/* Spectrum viewer */}
-          <div className="rounded-card border border-border bg-card p-4 shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
+          <div className="overflow-hidden rounded-card border border-border bg-card shadow-sm">
+            <div className="flex items-center justify-between border-b border-border bg-surface-2 px-4 py-3">
               <h2 className="text-sm font-semibold text-text-primary">Spectrum viewer</h2>
               <span className="font-mono text-xs text-text-tertiary">COS-184540 · z = 5.6671</span>
             </div>
+            <div className="p-4">
             <svg viewBox="0 0 600 240" className="w-full rounded-md" style={{ background: 'var(--plot-paper)' }}>
               {/* plot data well */}
               <rect x={48} y={12} width={540} height={196} fill="var(--plot-bg)" />
@@ -361,6 +362,7 @@ export default function TokenLabPage() {
               Data well uses <span className="font-mono">--plot-bg</span>; margins use{' '}
               <span className="font-mono">--plot-paper</span>. Trace colors are scientific encodings (not tokens).
             </p>
+            </div>
           </div>
 
           {/* Text specimen */}
