@@ -51,11 +51,11 @@ const GROUPS: { title: string; keys: string[] }[] = [
 
 // Seeded from globals.css on this branch.
 const LIGHT: Vals = {
-  background: '#fbf9f6', card: '#f8f4ef', cardHover: '#ede6db', surface2: '#f3ede5',
+  background: '#fffefb', card: '#fefcfa', cardHover: '#f6f0ea', surface2: '#f3ede5',
   tableHeader: '#f6f0ea', border: '#e6ddce', borderStrong: '#d7cbb9',
   textPrimary: '#211c17', textSecondary: '#5c5346', textTertiary: '#6c6150',
   primary: '#c63f0c', primaryHover: '#ad3408', primaryText: '#b8390a', onPrimary: '#ffffff',
-  plotBg: '#fbf9f6', plotPaper: '#f8f4ef', plotGrid: '#eee7e2',
+  plotBg: '#fbf9f6', plotPaper: '#fefcfa', plotGrid: '#eee7e2',
   plotText: '#211c17', plotTextSecondary: '#5c5346',
 };
 const DARK: Vals = {

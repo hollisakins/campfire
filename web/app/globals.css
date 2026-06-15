@@ -19,9 +19,9 @@
      Elevation mirrors dark mode: surfaces move *toward the ink color* as they
      lift off the near-white page (page → card → surface-2). The near-white
      base doubles as the legible surface for plot wells and inputs. */
-  --background: #fbf9f6;             /* near-white page + plot wells (legible base) */
-  --card: #f8f4ef;                  /* warm-paper panels — carries the tint/character */
-  --card-hover: #ede6db;
+  --background: #fffefb;             /* near-white page + plot wells (legible base) */
+  --card: #fefcfa;                  /* warm-paper panels — carries the tint/character */
+  --card-hover: #f6f0ea;
   --border: #e6ddce;
   --text-primary: #211c17;
   --text-secondary: #5c5346;
@@ -52,7 +52,7 @@
      maximally legible; the paper/edges (--plot-paper) sit a warm step darker
      so the plotting area reads as a lighter inset well. */
   --plot-bg: #fbf9f6;
-  --plot-paper: #f8f4ef;
+  --plot-paper: #fefcfa;
   --plot-grid: #eee7e2;
   --plot-text: #211c17;
   --plot-text-secondary: #5c5346;
