@@ -122,7 +122,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
 
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="bg-surface-2">
+            <thead className="bg-table-header">
               <tr className="border-b border-border">
                 <th className="text-left py-3 px-4 text-sm font-medium text-text-secondary">
                   Target ID

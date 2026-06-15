@@ -24,6 +24,7 @@ const CSS_VAR: Record<string, string> = {
   card: '--card',
   cardHover: '--card-hover',
   surface2: '--surface-2',
+  tableHeader: '--table-header',
   border: '--border',
   borderStrong: '--border-strong',
   textPrimary: '--text-primary',
@@ -41,7 +42,7 @@ const CSS_VAR: Record<string, string> = {
 };
 
 const GROUPS: { title: string; keys: string[] }[] = [
-  { title: 'Surfaces', keys: ['background', 'card', 'cardHover', 'surface2'] },
+  { title: 'Surfaces', keys: ['background', 'card', 'cardHover', 'surface2', 'tableHeader'] },
   { title: 'Borders', keys: ['border', 'borderStrong'] },
   { title: 'Text', keys: ['textPrimary', 'textSecondary', 'textTertiary'] },
   { title: 'Accent', keys: ['primary', 'primaryHover', 'primaryText', 'onPrimary'] },
@@ -51,18 +52,18 @@ const GROUPS: { title: string; keys: string[] }[] = [
 // Seeded from globals.css on this branch.
 const LIGHT: Vals = {
   background: '#fbf9f6', card: '#f8f4ef', cardHover: '#ede6db', surface2: '#f3ede5',
-  border: '#e6ddce', borderStrong: '#d7cbb9',
+  tableHeader: '#f6f0ea', border: '#e6ddce', borderStrong: '#d7cbb9',
   textPrimary: '#211c17', textSecondary: '#5c5346', textTertiary: '#6c6150',
   primary: '#c63f0c', primaryHover: '#ad3408', primaryText: '#b8390a', onPrimary: '#ffffff',
-  plotBg: '#fbf9f6', plotPaper: '#f3ede5', plotGrid: '#e6ddce',
+  plotBg: '#fbf9f6', plotPaper: '#f8f4ef', plotGrid: '#eee7e2',
   plotText: '#211c17', plotTextSecondary: '#5c5346',
 };
 const DARK: Vals = {
   background: '#16131c', card: '#1f1b27', cardHover: '#2a2435', surface2: '#241f2e',
-  border: '#332c40', borderStrong: '#423a52',
+  tableHeader: '#221d2a', border: '#332c40', borderStrong: '#423a52',
   textPrimary: '#f1ecf6', textSecondary: '#b8aec6', textTertiary: '#8b8398',
   primary: '#fb923c', primaryHover: '#fdba74', primaryText: '#fb923c', onPrimary: '#1a1206',
-  plotBg: '#16131c', plotPaper: '#1f1b27', plotGrid: '#332c40',
+  plotBg: '#16131c', plotPaper: '#1f1b27', plotGrid: '#221e2b',
   plotText: '#f1ecf6', plotTextSecondary: '#b8aec6',
 };
 
@@ -307,7 +308,7 @@ export default function TokenLabPage() {
               </label>
             </div>
             <table className="w-full text-sm">
-              <thead className="bg-surface-2">
+              <thead className="bg-table-header">
                 <tr className="text-left text-text-secondary">
                   <th className="px-4 py-2 font-medium">Object ID</th>
                   <th className="px-4 py-2 font-medium">z</th>

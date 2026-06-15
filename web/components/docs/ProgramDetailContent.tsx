@@ -172,7 +172,7 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="bg-surface-2 border-b border-border">
+                  <tr className="bg-table-header border-b border-border">
                     <th className="text-left px-4 py-3 font-medium text-text-secondary">Observation</th>
                     <th className="text-left px-4 py-3 font-medium text-text-secondary">Field</th>
                     <th className="text-right px-4 py-3 font-medium text-text-secondary">Targets</th>

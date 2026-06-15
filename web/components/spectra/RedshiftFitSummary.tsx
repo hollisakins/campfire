@@ -141,7 +141,7 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
 
       <div className="overflow-x-auto">
         <table className="w-full">
-          <thead className="bg-surface-2">
+          <thead className="bg-table-header">
             <tr className="border-b border-border">
               <th className="text-left py-2 px-3 text-sm font-medium text-text-secondary">
                 Observation

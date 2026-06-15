@@ -83,7 +83,7 @@ export default function ListsPage() {
         <Card className="overflow-hidden">
           <table className="w-full">
             <thead>
-              <tr className="bg-surface-2 border-b border-border">
+              <tr className="bg-table-header border-b border-border">
                 <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary">Tag</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary hidden md:table-cell">Description</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary">Type</th>

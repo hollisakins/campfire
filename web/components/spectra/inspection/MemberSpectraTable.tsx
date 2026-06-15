@@ -38,7 +38,7 @@ export const MemberSpectraTable: React.FC<MemberSpectraTableProps> = ({ object }
       </h3>
       <div className="overflow-x-auto">
         <table className="w-full text-[11px]">
-          <thead className="bg-surface-2">
+          <thead className="bg-table-header">
             <tr className="text-text-secondary">
               <th className="text-left font-medium pb-1 pr-2">Grating</th>
               <th className="text-left font-medium pb-1 pr-2">Obs</th>

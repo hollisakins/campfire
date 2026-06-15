@@ -300,7 +300,7 @@ export default function AdminRequestsPage() {
       {/* Requests Table */}
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-surface-2 border-b border-border">
+          <thead className="bg-table-header border-b border-border">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Requester

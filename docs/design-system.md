@@ -49,8 +49,9 @@ dusk panels). `--surface-2` is the most-elevated surface in both modes (consiste
 | Token | Light | Dark (dusk) | Role |
 |---|---|---|---|
 | `--background` | `#fbf9f6` | `#16131c` | near-white page; legible base for plot data wells & inputs |
-| `--card` | `#f8f4ef` | `#1f1b27` | primary surface — warm panels lift off the page |
-| `--surface-2` | `#f3ede5` | `#241f2e` | table header, footer, insets, plot edges (most elevated) |
+| `--card` | `#f8f4ef` | `#1f1b27` | primary surface — warm panels; also plot paper/edges |
+| `--surface-2` | `#f3ede5` | `#241f2e` | card/section headers, insets (most elevated) |
+| `--table-header` | `#f6f0ea` | `#221d2a` | table column headers — independent, sits between card & surface-2 |
 | `--card-hover` | `#ede6db` | `#2a2435` | row & control hover |
 
 ### Borders

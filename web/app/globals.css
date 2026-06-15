@@ -26,7 +26,8 @@
   --text-primary: #211c17;
   --text-secondary: #5c5346;
   /* Extended neutrals/text — warm scale */
-  --surface-2: #f3ede5;             /* table headers, insets — most elevated */
+  --surface-2: #f3ede5;             /* card/section headers, insets — most elevated */
+  --table-header: #f6f0ea;          /* table column headers — independent, between card & surface-2 */
   --border-strong: #d7cbb9;         /* emphasized edges, inputs */
   --text-tertiary: #6c6150;         /* muted, placeholder, icons (AA on card) */
 
@@ -51,8 +52,8 @@
      maximally legible; the paper/edges (--plot-paper) sit a warm step darker
      so the plotting area reads as a lighter inset well. */
   --plot-bg: #fbf9f6;
-  --plot-paper: #f3ede5;
-  --plot-grid: #e6ddce;
+  --plot-paper: #f8f4ef;
+  --plot-grid: #eee7e2;
   --plot-text: #211c17;
   --plot-text-secondary: #5c5346;
 
@@ -94,7 +95,8 @@
   --text-primary: #f1ecf6;
   --text-secondary: #b8aec6;
   /* Extended neutrals/text — dusk scale */
-  --surface-2: #241f2e;             /* table headers, insets */
+  --surface-2: #241f2e;             /* card/section headers, insets — most elevated */
+  --table-header: #221d2a;          /* table column headers — independent, between card & surface-2 */
   --border-strong: #423a52;         /* emphasized edges, inputs */
   --text-tertiary: #8b8398;         /* muted, placeholder, icons */
 
@@ -106,7 +108,7 @@
 
   --plot-bg: #16131c;
   --plot-paper: #1f1b27;
-  --plot-grid: #332c40;
+  --plot-grid: #221e2b;
   --plot-text: #f1ecf6;
   --plot-text-secondary: #b8aec6;
 

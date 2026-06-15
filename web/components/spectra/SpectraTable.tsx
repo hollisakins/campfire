@@ -987,7 +987,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
 
       <div className="overflow-x-auto">
         <table className="w-full">
-          <thead className="bg-surface-2 border-b border-border">
+          <thead className="bg-table-header border-b border-border">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (

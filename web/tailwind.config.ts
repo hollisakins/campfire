@@ -25,6 +25,7 @@ const config: Config = {
         card: 'var(--card)',
         'card-hover': 'var(--card-hover)',
         'surface-2': 'var(--surface-2)',
+        'table-header': 'var(--table-header)',
         border: 'var(--border)',
         'border-strong': 'var(--border-strong)',
         success: 'var(--success)',
