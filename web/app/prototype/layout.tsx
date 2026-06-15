@@ -30,6 +30,7 @@ export default function PrototypeLayout({
   const navItems = [
     { href: '/prototype', label: 'Overview' },
     { href: '/prototype/overflow-panel', label: 'Live Demo' },
+    { href: '/prototype/tokens', label: 'Token Lab' },
   ];
 
   return (
