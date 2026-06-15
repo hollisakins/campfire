@@ -34,7 +34,7 @@ export function UpdatesSection({ entries, total }: UpdatesSectionProps) {
         </Link>
       </div>
 
-      <div className="border-t border-border pt-4 space-y-4">
+      <div className="border-t border-border pt-4 space-y-3">
         {entries.map((entry, i) => {
           // When more updates exist beyond the visible set, fade older (lower)
           // rows to hint at additional history behind the "view all" link.

@@ -17,7 +17,7 @@ export interface VersionInfo {
 }
 
 export const CURRENT_VERSIONS: VersionInfo = {
-  pipeline: '0.1.0 (unreleased)',
+  pipeline: '0.5.1',
   client: '0.4.0',
-  dataRelease: 'Rolling — no frozen release yet',
+  dataRelease: '—',
 };

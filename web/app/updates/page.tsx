@@ -28,8 +28,8 @@ export default function UpdatesPage() {
           <h1 className="text-3xl font-bold text-text-primary">Updates</h1>
         </div>
         <p className="text-text-secondary mb-8">
-          New observations, pipeline re-reductions, and CLI / Python client
-          changes. Subscribe to this page for data-release announcements.
+          Announcements of new observations, pipeline improvements, and CLI /
+          Python client changes.
         </p>
 
         {/* Current versions */}
@@ -51,17 +51,6 @@ export default function UpdatesPage() {
               <dd className="text-text-primary">{CURRENT_VERSIONS.dataRelease}</dd>
             </div>
           </dl>
-          <p className="mt-4 text-xs text-text-tertiary">
-            See the{' '}
-            <Link href="/docs/reduction" className="text-primary hover:underline">
-              reduction docs
-            </Link>{' '}
-            for pipeline details and the{' '}
-            <Link href="/docs/api" className="text-primary hover:underline">
-              programmatic access guide
-            </Link>{' '}
-            for the client.
-          </p>
         </div>
 
         {/* Entries */}
@@ -92,7 +81,9 @@ export default function UpdatesPage() {
                   {entry.title}
                 </h2>
 
-                <MarkdownRenderer content={entry.body} />
+                <div className="[&_p]:leading-6 [&_li]:leading-6">
+                  <MarkdownRenderer content={entry.body} />
+                </div>
 
                 {entry.links.length > 0 && (
                   <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1">
