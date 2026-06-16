@@ -1,0 +1,10 @@
+{
+  "_note": "Sync-only tsconfig consumed by the design-sync bundle's tsconfig-paths plugin. baseUrl resolves to ../web so the at-sign alias maps to the web app root; next/link is aliased to a static-render shim. The plugin reads paths from THIS file directly (no extends resolution), so all needed mappings live here. Do not use a comment key here.",
+  "compilerOptions": {
+    "baseUrl": "../web",
+    "paths": {
+      "@/*": ["./*"],
+      "next/link": ["../.design-sync/shims/next-link.tsx"]
+    }
+  }
+}
