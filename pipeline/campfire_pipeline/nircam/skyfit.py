@@ -72,13 +72,20 @@ def fit_sky_tot(data, return_diagnostics=False):
     return popt[1]
 
 
-def fit_sky(data, use_bottleneck=True):
+def fit_sky(data, use_bottleneck=True, box_size=128, filter_size=5):
     """Measure a 2D background on unmasked pixels via ``photutils.Background2D``.
 
     Used by the 1/f striping step for chips with a large, low-surface-
     brightness residual after wisp subtraction. The caller passes data
     with masked pixels already set to zero; the function masks zero
     pixels before fitting.
+
+    ``box_size`` controls the background smoothing scale. In the striping
+    step this is a *fit-only* detrend (the model is never subtracted from the
+    output), so a smaller box removes the large-scale field structure (e.g.
+    cluster ICL) more completely from the 1/f fit — but it must stay well
+    above the per-amp-row 1/f variation scale, or the background model starts
+    absorbing the 1/f itself.
 
     Falls back through ``exclude_percentile`` 90 → 95 → 97.5 if
     ``Background2D`` raises (it raises when too many pixels are masked
@@ -87,17 +94,21 @@ def fit_sky(data, use_bottleneck=True):
     skystd = np.nanstd(data)
     data[data > (2 * skystd)] = 0
     mask = data == 0
-    if use_bottleneck:
-        # bottleneck wants native byte order
-        data.byteswap(inplace=True)
-        data = data.view(data.dtype.newbyteorder('='))
+    if use_bottleneck and data.dtype.byteorder not in ('=', '|'):
+        # bottleneck wants native byte order. Convert *value-preserving* via
+        # astype — the old ``byteswap(inplace=True) + view`` idiom only
+        # produced correct values from non-native (big-endian) input and
+        # silently corrupted an already-native array into garbage (and
+        # mutated the caller's array in place). Guarding on byteorder makes
+        # native input a no-op.
+        data = data.astype(data.dtype.newbyteorder('='))
 
     for exclude_percentile in (90, 95, 97.5):
         try:
             bkg = Background2D(
-                data, box_size=128,
+                data, box_size=box_size,
                 sigma_clip=SigmaClip(sigma=3),
-                filter_size=5,
+                filter_size=filter_size,
                 bkg_estimator=BiweightLocationBackground(),
                 exclude_percentile=exclude_percentile,
                 mask=mask,
@@ -108,9 +119,9 @@ def fit_sky(data, use_bottleneck=True):
             continue
     # Final attempt: let the exception propagate
     bkg = Background2D(
-        data, box_size=128,
+        data, box_size=box_size,
         sigma_clip=SigmaClip(sigma=3),
-        filter_size=5,
+        filter_size=filter_size,
         bkg_estimator=BiweightLocationBackground(),
         exclude_percentile=97.5,
         mask=mask,

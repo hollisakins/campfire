@@ -45,8 +45,8 @@ PROCESS_STEPS = [
     ('detector1',   'CFP_DET1'),
     ('persistence', 'CFP_PERS'),
     ('wisp',        'CFP_WISP'),
-    ('striping',    'CFP_1F'),
     ('image2',      'CFP_IMG2'),
+    ('striping',    'CFP_1F'),
     ('edge',        'CFP_EDGE'),
     ('sky',         'CFP_SKY'),
     ('diag_striping', 'CFP_DIAG'),
@@ -67,8 +67,10 @@ ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 STEP_NAMES = [name for name, _ in ALL_STEPS]
 
 # Steps that hit CRDS — used by run_step() to decide when to pre-fetch
-# reference files before parallel dispatch.
-_CRDS_STEPS = {'detector1', 'wisp', 'striping', 'image2'}
+# reference files before parallel dispatch. striping now runs *after* image2
+# (on flat-fielded, flux-calibrated cal-stage data) so it no longer resolves a
+# flat itself; wisp still runs in the rate frame and resolves its own flat.
+_CRDS_STEPS = {'detector1', 'wisp', 'image2'}
 
 
 def _detector_sorted(paths):

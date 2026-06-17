@@ -41,6 +41,10 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
     from jwst.pipeline import calwebb_detector1
 
     clean_flicker_noise = step_config.get('clean_flicker_noise', False)
+    # Optional passthrough to the JWST clean_flicker_noise step (e.g.
+    # fit_method = "fft" | "median", background_method, n_sigma). Only used
+    # when clean_flicker_noise is enabled; merged over the defaults below.
+    cfn_opts = step_config.get('clean_flicker_noise_opts', {})
 
     filtname = uncal_file.split('/')[-2]
     assert (filtname.lower() in SW_FILTERS) or (filtname.lower() in LW_FILTERS)
@@ -149,6 +153,7 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
             'clean_flicker_noise': {
                 'skip': not clean_flicker_noise,
                 'fit_by_channel': True,
+                **cfn_opts,
             },
             'ramp_fit': {
                 'skip': False,
