@@ -137,7 +137,9 @@ def _gp_predict_amp(rows, y_r, yerr, dc_level, kernel_sigma, rho, q,
     return mu, var
 
 
-def gp_amprow_offsets(data, mask, kernel_sigma, rho, q=1.0 / np.sqrt(2.0),
+def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
+                      kernel_sigma_factor=1.0, amplitude_data=None,
+                      q=1.0 / np.sqrt(2.0),
                       sigma_clip_sigma=2.0, maxiters=3,
                       ref_border=_REF_BORDER, weak_frac=0.5):
     """Per-amp, per-row 1/f offset via 1-D GP smoothing along the slow axis.
@@ -155,16 +157,48 @@ def gp_amprow_offsets(data, mask, kernel_sigma, rho, q=1.0 / np.sqrt(2.0),
     the output array is full-frame; those weakly-constrained edge rows are
     flagged in the diagnostics.
 
+    Hyperparameters
+    ---------------
+    Only ``rho`` (length scale, in rows) is a frozen hyperparameter — it is a
+    detector readout/clocking property, independent of filter and of flux
+    units. The kernel amplitude ``kernel_sigma`` is **self-adapting** by
+    default: it is set per-exposure to the marginal ``mad_std`` of the
+    per-amp-centered clean row medians times a frozen O(1)
+    ``kernel_sigma_factor``. That is a deterministic robust statistic computed
+    once per exposure — *not* an optimization, so it adds no per-exposure
+    fitting — and it removes the cal-stage flux-unit (filter / detector /
+    photometric-calibration) dependence that an absolute frozen amplitude
+    would carry. Pass an explicit ``kernel_sigma`` to override (escape hatch
+    / calibration reproduction). The amplitude is floored to the typical
+    per-row sampling error so the solve stays conditioned.
+
+    When the caller pre-subtracts a 2D background from ``data`` (the striping
+    step does, to keep large-scale structure out of the per-amp-row fit), pass
+    the **pre-subtraction** frame as ``amplitude_data`` so the amplitude is
+    measured there. The prior amplitude must reflect how far the offset can
+    vary *across a wide source gap* — i.e. the full pre-detrend 1/f marginal,
+    not the post-detrend residual. Measuring it on the post-detrend ``data``
+    underestimates the amplitude, over-regularizes the gap interpolation, and
+    loses to the plain per-row median (verified on rj0911 f444w). ``None`` →
+    measure on ``data`` itself (correct when no 2D-bg detrend was applied).
+
     Parameters
     ----------
     data : (H, W) ndarray
         Frame to measure (flat-fielded, pedestal/background pre-subtracted).
     mask : (H, W) bool ndarray
         True where masked (DQ flagged or source).
-    kernel_sigma : float
-        SHOTerm amplitude (frozen hyperparameter; data units).
     rho : float
         SHOTerm length scale in *rows* (frozen hyperparameter).
+    kernel_sigma : float, optional
+        SHOTerm amplitude (data units). ``None`` (default) → self-adapt from
+        the exposure (see above).
+    kernel_sigma_factor : float
+        Frozen O(1) multiplier on the self-adapted amplitude. Ignored when
+        ``kernel_sigma`` is given.
+    amplitude_data : (H, W) ndarray, optional
+        Frame to measure the self-adapted amplitude on (the pre-2D-bg-detrend
+        data). ``None`` → use ``data``. Ignored when ``kernel_sigma`` is given.
     q : float
         SHOTerm quality factor. ``1/sqrt(2)`` → smooth, non-oscillatory.
     sigma_clip_sigma, maxiters : float, int
@@ -183,6 +217,8 @@ def gp_amprow_offsets(data, mask, kernel_sigma, rho, q=1.0 / np.sqrt(2.0),
         Per-amp per-row offset broadcast across each amp's columns.
     diagnostics : list[str]
         One ``'A:anchors/weak/maxσ'`` string per amplifier for logging.
+    kernel_sigma_eff : float
+        The amplitude actually used (self-adapted or the override value).
     """
     n_rows = data.shape[0]
     rows_all = np.arange(n_rows)
@@ -192,15 +228,51 @@ def gp_amprow_offsets(data, mask, kernel_sigma, rho, q=1.0 / np.sqrt(2.0),
     horizontal = np.zeros(data.shape, dtype=np.float64)
     diagnostics = []
 
+    # ---- Pass 1: per-amp robust row statistics --------------------------
+    # Everything needed to (a) self-calibrate the kernel amplitude from this
+    # exposure and (b) fit each amp's GP in pass 2.
+    # Self-adapt the amplitude on the pre-detrend frame when supplied.
+    self_adapt = kernel_sigma is None
+    amp_ref = amplitude_data if (self_adapt and amplitude_data is not None) \
+        else data
+
+    amp_stats = []
+    centered = []   # per-amp-centered clean row medians, pooled over amps
+    yerr_pool = []  # per-row sampling errors, pooled (amplitude floor)
     for amp in ('A', 'B', 'C', 'D'):
         _, _, colstart, colstop = NIR_AMPS[amp]['data']
-        ampdata = data[sci, colstart:colstop]
-        ampmask = mask[sci, colstart:colstop]
-
         y_r, s_hat, n_r = _amprow_statistics(
-            ampdata, ampmask, sigma_clip_sigma, maxiters)
-
+            data[sci, colstart:colstop], mask[sci, colstart:colstop],
+            sigma_clip_sigma, maxiters)
         good = (n_r > 0) & np.isfinite(y_r) & np.isfinite(s_hat)
+        amp_stats.append((amp, colstart, colstop, y_r, s_hat, n_r, good))
+        if good.any():
+            sp = np.where(s_hat[good] > 0, s_hat[good], np.nan)
+            yerr_pool.append(_MEDIAN_SE_FACTOR * sp / np.sqrt(n_r[good]))
+        if self_adapt:
+            if amp_ref is data:
+                if good.any():
+                    centered.append(y_r[good] - np.median(y_r[good]))
+            else:
+                ar, _, an = _amprow_statistics(
+                    amp_ref[sci, colstart:colstop],
+                    mask[sci, colstart:colstop], sigma_clip_sigma, maxiters)
+                ag = (an > 0) & np.isfinite(ar)
+                if ag.any():
+                    centered.append(ar[ag] - np.median(ar[ag]))
+
+    # ---- Self-adapting kernel amplitude ---------------------------------
+    if kernel_sigma is None:
+        marg = (float(mad_std(np.concatenate(centered))) if centered else 0.0)
+        marg *= float(kernel_sigma_factor)
+        floor = (float(np.nanmedian(np.concatenate(yerr_pool)))
+                 if yerr_pool else 1.0)
+        kernel_sigma_eff = float(max(marg, floor))
+    else:
+        kernel_sigma_eff = float(kernel_sigma)
+
+    # ---- Pass 2: per-amp GP fit -----------------------------------------
+    for amp, colstart, colstop, y_r, s_hat, n_r, good in amp_stats:
         n_anchor = int(good.sum())
 
         if n_anchor < 2:
@@ -224,13 +296,13 @@ def gp_amprow_offsets(data, mask, kernel_sigma, rho, q=1.0 / np.sqrt(2.0),
 
         mu, var = _gp_predict_amp(
             rows_sci[good], y_r[good], yerr, dc,
-            kernel_sigma, rho, q, rows_all,
+            kernel_sigma_eff, rho, q, rows_all,
         )
         horizontal[:, colstart:colstop] = mu[:, None]
 
         post_sigma = np.sqrt(np.clip(var, 0.0, None))
-        n_weak = int(np.sum(post_sigma[sci] > weak_frac * kernel_sigma))
+        n_weak = int(np.sum(post_sigma[sci] > weak_frac * kernel_sigma_eff))
         diagnostics.append(
             f'{amp}:{n_anchor}/{n_weak}/{post_sigma.max():.2e}')
 
-    return horizontal, diagnostics
+    return horizontal, diagnostics, kernel_sigma_eff

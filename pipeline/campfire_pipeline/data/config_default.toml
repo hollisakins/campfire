@@ -199,29 +199,26 @@
     mask_extra_dilation = 4
 
     [nircam.striping.gp]
-        # Frozen SHOTerm hyperparameters (calibrate offline with
-        # scripts/calibrate_gp_striping.py; split by detector channel
-        # because the 1/f amplitude and correlation length differ).
-        # kernel_sigma = amplitude (data units); rho = length scale in rows.
-        # Q is fixed smooth/non-oscillatory; sigma_clip/weak_frac as in
-        # gp_striping.gp_amprow_offsets.
-        # Calibrated 2026-06-16 on rj0911 f444w (LW, 32 amp sequences) in the
-        # CAL frame (MJy/sr) — striping now runs after image2, so kernel_sigma
-        # is in cal-stage flux units (re-calibrate if that ordering changes).
-        # rho (~5 rows) is the detrended-MLE 1/f correlation length;
-        # kernel_sigma is the *raw marginal* amplitude (NOT the detrended
-        # amplitude) — it must stay >> the per-row sampling error so the GP
-        # trusts each clean row's median and only smooths/interpolates at the
-        # rho scale. A pipeline-faithful (kernel_sigma, rho) scan
-        # (experiments/oneoverf_gp/scan_fitframe.py) confirms this regime
-        # beats the median estimator on both clean and source-covered rows,
-        # whereas a too-small kernel_sigma over-regularizes and loses to it.
-        # SW not yet calibrated — seeded with the LW values; re-run the
-        # calibration on an SW field before estimator="gp" on SW data.
-        kernel_sigma_lw = 8.309341e-03
-        rho_lw = 5.0294
-        kernel_sigma_sw = 8.309341e-03
-        rho_sw = 5.0294
+        # rho is the ONLY frozen SHOTerm hyperparameter — the 1/f correlation
+        # length in *rows*. It is a detector readout/clocking property (the
+        # filter sits upstream in the optical path and does not enter the
+        # readout), so it is independent of filter and of flux units. Measured
+        # stable across 5 filters spanning both channels on rj0911 (detrended
+        # MLE; scripts/calibrate_gp_striping.py): LW f277w/f356w/f444w =
+        # 4.51/4.44/5.03, SW f200w/f150w = 4.10/4.11 — one tight cluster, all
+        # inside rho's broad flat optimum. So a single channel-agnostic rho is
+        # used (no SW/LW split). Set rho_lw / rho_sw to override per channel if
+        # a future detector/readout ever needs it.
+        rho = 5.0
+        # The kernel amplitude is NOT frozen: it self-adapts per exposure to
+        # the marginal mad_std of the clean per-amp-row medians (~ the true
+        # 1/f amplitude) — a deterministic robust statistic, not a fit — so it
+        # tracks each exposure's cal-stage flux units (filter / detector /
+        # photometric calibration) instead of a frozen absolute number.
+        # kernel_sigma_factor is a frozen O(1) multiplier on that; set an
+        # explicit kernel_sigma_lw/_sw only as an escape hatch (overrides the
+        # self-adaptation). See gp_striping.gp_amprow_offsets.
+        kernel_sigma_factor = 1.0
         q = 0.70710678
         sigma_clip = 2.0
         weak_frac = 0.5

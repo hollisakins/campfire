@@ -202,6 +202,7 @@ def fit_residual_striping(
     nmask_prefilter=0.20,
     estimator='median',
     gp_params=None,
+    amplitude_data=None,
 ):
     """Fit per-amp per-row horizontal + per-column vertical 1/f striping.
 
@@ -236,10 +237,16 @@ def fit_residual_striping(
         offset across masked source rows *within the same amplifier* rather
         than substituting the full-row median.
     gp_params : dict, optional
-        Required when ``estimator='gp'``. Keys: ``kernel_sigma`` and
-        ``rho`` (frozen SHOTerm hyperparameters; required), plus optional
-        ``q`` (default ``1/sqrt(2)``), ``sigma_clip`` (default 2.0), and
-        ``weak_frac`` (default 0.5).
+        Required when ``estimator='gp'``. Only ``rho`` (frozen SHOTerm
+        length scale, in rows) is required; ``kernel_sigma`` is optional and
+        **self-adapts per exposure** when absent (see ``gp_amprow_offsets``),
+        with an optional frozen O(1) ``kernel_sigma_factor`` (default 1.0).
+        Plus optional ``q`` (default ``1/sqrt(2)``), ``sigma_clip``
+        (default 2.0), and ``weak_frac`` (default 0.5).
+    amplitude_data : (H, W) ndarray, optional
+        ``estimator='gp'`` only. The pre-2D-bg-detrend frame on which to
+        measure the self-adapting kernel amplitude (see ``gp_amprow_offsets``).
+        ``None`` → measure on ``data``.
 
     Returns
     -------
@@ -251,23 +258,28 @@ def fit_residual_striping(
         Per-amp diagnostic strings. For ``'median'``: ``'A-N'`` ... where
         ``N`` is the number of rows that fell back to the full-image
         median. For ``'gp'``: ``'A:anchors/weak/maxσ'`` per amp.
+    diag : dict
+        Extra diagnostics. For ``'gp'``: ``{'kernel_sigma_eff': float}`` (the
+        self-adapted or overridden amplitude actually used). Empty otherwise.
     """
+    diag = {}
     if estimator == 'gp':
         from campfire_pipeline.nircam.gp_striping import gp_amprow_offsets
         params = gp_params or {}
-        if 'kernel_sigma' not in params or 'rho' not in params:
-            raise ValueError(
-                "estimator='gp' requires gp_params with 'kernel_sigma' "
-                "and 'rho'")
-        horizontal, ampcounts = gp_amprow_offsets(
+        if 'rho' not in params:
+            raise ValueError("estimator='gp' requires gp_params with 'rho'")
+        horizontal, ampcounts, kernel_sigma_eff = gp_amprow_offsets(
             data, mask,
-            kernel_sigma=params['kernel_sigma'],
             rho=params['rho'],
+            kernel_sigma=params.get('kernel_sigma'),  # None → self-adapt
+            kernel_sigma_factor=params.get('kernel_sigma_factor', 1.0),
+            amplitude_data=amplitude_data,  # pre-2D-bg frame for the amplitude
             q=params.get('q', 1.0 / np.sqrt(2.0)),
             sigma_clip_sigma=params.get('sigma_clip', 2.0),
             maxiters=maxiters,
             weak_frac=params.get('weak_frac', 0.5),
         )
+        diag['kernel_sigma_eff'] = kernel_sigma_eff
     elif estimator == 'median':
         horizontal, ampcounts = _median_amprow_offsets(
             data, mask, maxiters, asymmetry_threshold, nmask_prefilter)
@@ -280,36 +292,46 @@ def fit_residual_striping(
     )
     vertical = np.broadcast_to(vertical_1d, data.shape).copy()
 
-    return horizontal, vertical, ampcounts
+    return horizontal, vertical, ampcounts, diag
 
 
 def _resolve_gp_params(gp_cfg, model):
-    """Resolve frozen GP hyperparameters for this exposure's channel.
+    """Resolve GP hyperparameters for this exposure's channel.
 
-    Hyperparameters are calibrated offline (see
-    ``scripts/calibrate_gp_striping.py``) and split by detector channel
-    (SW vs LW) because the 1/f amplitude and correlation length differ.
-    Config keys: ``kernel_sigma_sw`` / ``rho_sw`` / ``kernel_sigma_lw`` /
-    ``rho_lw`` (per-channel), or channel-agnostic ``kernel_sigma`` / ``rho``
-    (used as a fallback for whichever channel-specific key is absent).
-    Shared optional keys: ``q`` (default ``1/sqrt(2)``), ``sigma_clip``
+    Only ``rho`` (SHOTerm length scale, in rows) is a frozen hyperparameter —
+    a readout/clocking property, independent of filter and flux units, and
+    (verified across both channels) effectively channel-independent, so a
+    single channel-agnostic ``rho`` is used by default. Calibrate offline with
+    ``scripts/calibrate_gp_striping.py``. The kernel amplitude self-adapts
+    per exposure (see ``gp_amprow_offsets``), so ``kernel_sigma`` is *not*
+    required; an explicit value (``kernel_sigma_sw``/``_lw`` or
+    channel-agnostic ``kernel_sigma``) overrides the self-adaptation as an
+    escape hatch.
+
+    Config keys: ``rho`` (channel-agnostic) — required; ``rho_sw`` / ``rho_lw``
+    override it per channel if ever needed. Optional: ``kernel_sigma_sw`` /
+    ``kernel_sigma_lw`` / ``kernel_sigma`` (override), ``kernel_sigma_factor``
+    (frozen O(1), default 1.0), ``q`` (default ``1/sqrt(2)``), ``sigma_clip``
     (default 2.0), ``weak_frac`` (default 0.5).
     """
     channel = (getattr(model.meta.instrument, 'channel', None) or '').upper()
     suffix = 'sw' if channel == 'SHORT' else 'lw'
 
-    def pick(name):
-        val = gp_cfg.get(f'{name}_{suffix}', gp_cfg.get(name))
-        if val is None:
-            raise ValueError(
-                f"estimator='gp' needs [nircam.striping.gp].{name}_{suffix} "
-                f"(or {name}); run scripts/calibrate_gp_striping.py and set "
-                f"the frozen value in config")
-        return float(val)
+    rho = gp_cfg.get(f'rho_{suffix}', gp_cfg.get('rho'))
+    if rho is None:
+        raise ValueError(
+            f"estimator='gp' needs [nircam.striping.gp].rho_{suffix} (or "
+            f"rho); run scripts/calibrate_gp_striping.py and set the frozen "
+            f"value in config")
+
+    # Optional explicit amplitude override (None → self-adapt per exposure).
+    kernel_sigma = gp_cfg.get(f'kernel_sigma_{suffix}',
+                              gp_cfg.get('kernel_sigma'))
 
     return {
-        'kernel_sigma': pick('kernel_sigma'),
-        'rho': pick('rho'),
+        'rho': float(rho),
+        'kernel_sigma': None if kernel_sigma is None else float(kernel_sigma),
+        'kernel_sigma_factor': float(gp_cfg.get('kernel_sigma_factor', 1.0)),
         'q': float(gp_cfg.get('q', 1.0 / np.sqrt(2.0))),
         'sigma_clip': float(gp_cfg.get('sigma_clip', 2.0)),
         'weak_frac': float(gp_cfg.get('weak_frac', 0.5)),
@@ -343,6 +365,12 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
     use_bottleneck = step_config.get('use_bottleneck', True)
     do_plot = step_config.get('plot', True)
     estimator = step_config.get('estimator', 'median')
+    _VALID_ESTIMATORS = ('median', 'gp', 'none')
+    if estimator not in _VALID_ESTIMATORS:
+        raise ValueError(
+            f"[nircam.striping].estimator = {estimator!r} is not valid "
+            f"(expected one of {_VALID_ESTIMATORS}). Note: the legacy "
+            f"'baseline' value was removed — use 'median'.")
     # Aggressive masking pairs with the GP estimator: grow the source mask
     # and fold in additional DQ classes so leaked source/CR flux cannot bias
     # the per-amp-row median that the GP then interpolates. Over-masking is
@@ -421,6 +449,12 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
         log(f"Pedestal: {pedestal:.5e}")
         fitdata -= pedestal
 
+        # Pre-2D-bg snapshot: the GP measures its self-adapting amplitude here
+        # (the full 1/f marginal that bounds the cross-source-gap variation),
+        # then fits the post-bg ``fitdata``. Equal to ``fitdata`` when bg-sub
+        # is off, so it is always safe to pass.
+        amplitude_data = fitdata.copy()
+
         if subtract_background:
             try:
                 log("Subtracting 2D background for fit")
@@ -437,20 +471,24 @@ def striping_step(exposure_file, field, step_config, overwrite=False,
         NMASK_PREFILTER = 0.20
         if estimator == 'gp':
             gp_params = _resolve_gp_params(gp_cfg, model)
-            horizontal, vertical, ampcounts = fit_residual_striping(
+            horizontal, vertical, ampcounts, gp_diag = fit_residual_striping(
                 fitdata, mask, maxiters,
                 estimator='gp', gp_params=gp_params,
+                amplitude_data=amplitude_data,
             )
-            log(f"{rootname}: GP striping (sigma={gp_params['kernel_sigma']:.3e}, "
+            ks_eff = gp_diag['kernel_sigma_eff']
+            ks_src = ('override' if gp_params['kernel_sigma'] is not None
+                      else 'self-adapt')
+            log(f"{rootname}: GP striping (sigma={ks_eff:.3e} [{ks_src}], "
                 f"rho={gp_params['rho']:.1f}) "
                 f"[amp:anchors/weak/maxσ] {', '.join(ampcounts)}")
             cfp_value = (
-                f'estimator=gp, kernel_sigma={gp_params["kernel_sigma"]:.4e}, '
+                f'estimator=gp, kernel_sigma={ks_eff:.4e} ({ks_src}), '
                 f'rho={gp_params["rho"]:.2f}, q={gp_params["q"]:.4f}, '
                 f'aggr_mask={int(mask_aggressive)}, maxiters={maxiters} (cal-frame)'
             )
         else:
-            horizontal, vertical, ampcounts = fit_residual_striping(
+            horizontal, vertical, ampcounts, _ = fit_residual_striping(
                 fitdata, mask, maxiters,
                 asymmetry_threshold=ASYMMETRY_THRESHOLD,
                 nmask_prefilter=NMASK_PREFILTER,

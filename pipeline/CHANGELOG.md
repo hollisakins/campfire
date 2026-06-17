@@ -81,9 +81,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   source-masked rows using clean rows of the *same* amplifier instead of
   substituting the cross-amp full-row median, removing the amp-boundary +
   slow-axis "box" of striping artifacts around bright/extended sources. The
-  per-column (vertical) step is untouched. Hyperparameters are frozen
-  (`[nircam.striping.gp]`, split by SW/LW channel; calibrate with
-  `scripts/calibrate_gp_striping.py`), never fit per exposure. An aggressive
+  per-column (vertical) step is untouched. Only the length scale `rho` (in
+  rows) is a frozen hyperparameter — a detector readout property, independent
+  of filter and flux units (calibrate with `scripts/calibrate_gp_striping.py`).
+  A single channel-agnostic `rho = 5.0` is used: it was measured stable across
+  five filters spanning both channels on rj0911 (LW f277w/f356w/f444w =
+  4.51/4.44/5.03, SW f200w/f150w = 4.10/4.11 rows — one cluster inside its
+  broad flat optimum), so no SW/LW split is needed. The kernel **amplitude
+  self-adapts per
+  exposure** (the marginal `mad_std` of the clean per-amp-row medians,
+  measured on the pre-2D-bg frame — a deterministic robust statistic, not a
+  per-exposure fit), so it tracks the cal-stage flux units that vary ~3× by
+  filter instead of carrying a frozen absolute number. Nothing is optimized
+  per exposure. An aggressive
   masking variant (`mask_aggressive`) dilates the source mask and folds in
   JUMP/SATURATED/PERSISTENCE DQ — over-masking only inflates `sigma_r` (the GP
   interpolates across), whereas under-masking biases the median and the GP
@@ -93,7 +103,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   Default config reproduces the current pipeline exactly; no change unless
   `estimator` is set away from `"median"`. A/B testbed in
   `experiments/oneoverf_gp/`, which also evaluates `clean_flicker_noise`: on a
-  cluster field the GP beats the median by ~16% on the amp-row 1/f residual
+  cluster field the GP beats the median by ~14% on the amp-row 1/f residual
   (clean *and* source rows, photometry conserved, slightly faster), while
   `clean_flicker_noise` is not adopted — its `fit_method="fft"` is NIRSpec-only
   (skipped for `NRC_IMAGE`) and its `"median"` mode underperforms our amp-row

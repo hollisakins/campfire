@@ -83,7 +83,8 @@ def test_gp_recovers_clean_offset_and_preserves_dc():
     rng = np.random.default_rng(1)
     data, truth = _planted_frame(rng)
     mask = np.zeros(SHAPE, bool)
-    horizontal, diag = gp_amprow_offsets(data, mask, kernel_sigma=0.02, rho=80.0)
+    horizontal, diag, ks_eff = gp_amprow_offsets(
+        data, mask, rho=80.0, kernel_sigma=0.02)
     clean = np.arange(200, 400)
     for amp, dc in AMP_DC.items():
         # Smoothing beats the per-row noise floor (0.02) substantially.
@@ -92,6 +93,31 @@ def test_gp_recovers_clean_offset_and_preserves_dc():
         _, _, c0, _ = NIR_AMPS[amp]['data']
         assert abs(np.median(horizontal[clean, c0]) - np.median(truth[clean, c0])) < 0.01
     assert len(diag) == 4
+    assert ks_eff == 0.02  # explicit override echoed back
+
+
+def test_gp_self_adapting_amplitude():
+    """With kernel_sigma=None the amplitude self-adapts to the exposure.
+
+    It should land near the marginal scatter of the per-amp-row offset
+    (~0.008 for the planted frame), sit well above the per-row sampling
+    error, and still recover the smooth offset on clean rows.
+    """
+    rng = np.random.default_rng(11)
+    data, truth = _planted_frame(rng)
+    mask = np.zeros(SHAPE, bool)
+    horizontal, _, ks_eff = gp_amprow_offsets(data, mask, rho=80.0)
+    # Self-adapted to the true 1/f marginal amplitude (not the 0.02 noise,
+    # not a frozen absolute) — within a factor of ~2 of the planted ~0.008.
+    assert 0.004 < ks_eff < 0.02
+    # Still recovers the offset on clean rows.
+    clean = np.arange(200, 400)
+    for amp in AMP_DC:
+        assert _amp_rms(horizontal, truth, amp, clean) < 0.012
+    # Frozen O(1) factor scales it linearly.
+    _, _, ks_2x = gp_amprow_offsets(data, mask, rho=80.0,
+                                    kernel_sigma_factor=2.0)
+    assert abs(ks_2x - 2.0 * ks_eff) < 1e-6 * max(ks_2x, 1.0)
 
 
 def test_gp_interpolates_across_source_gap_better_than_median():
@@ -104,7 +130,7 @@ def test_gp_interpolates_across_source_gap_better_than_median():
     data[900:1000, c0 + 80:c0 + 380] += 5.0
     mask[880:1020, c0 + 60:c0 + 400] = True
 
-    h_gp, _ = gp_amprow_offsets(data, mask, kernel_sigma=0.02, rho=80.0)
+    h_gp, _, _ = gp_amprow_offsets(data, mask, rho=80.0, kernel_sigma=0.02)
     h_med, _ = _median_amprow_offsets(data, mask, 3, 0.1, 0.20)
 
     gap = np.arange(900, 1000)
@@ -128,8 +154,8 @@ def test_gp_flags_wide_anchorless_gap():
     # no anchor within a length scale: the GP must revert toward DC with
     # inflated posterior variance and flag those rows weak.
     mask[400:1600, c0:c1] = True
-    _, diag = gp_amprow_offsets(data, mask, kernel_sigma=0.02, rho=60.0,
-                                weak_frac=0.5)
+    _, diag, _ = gp_amprow_offsets(data, mask, rho=60.0, kernel_sigma=0.02,
+                                   weak_frac=0.5)
     # diag format: 'C:anchors/weak/maxσ'
     c_entry = [d for d in diag if d.startswith('C:')][0]
     n_weak = int(c_entry.split(':')[1].split('/')[1])
@@ -140,7 +166,7 @@ def test_gp_full_frame_output_including_reference_rows():
     rng = np.random.default_rng(4)
     data, _ = _planted_frame(rng)
     mask = np.zeros(SHAPE, bool)
-    horizontal, _ = gp_amprow_offsets(data, mask, kernel_sigma=0.02, rho=80.0)
+    horizontal, _, _ = gp_amprow_offsets(data, mask, rho=80.0, kernel_sigma=0.02)
     assert horizontal.shape == SHAPE
     # Reference-border rows (0-3, 2044-2047) get an extrapolated, finite
     # offset even though they're excluded from the fit.
@@ -153,10 +179,11 @@ def test_median_estimator_path_unchanged():
     rng = np.random.default_rng(5)
     data, _ = _planted_frame(rng)
     mask = np.zeros(SHAPE, bool)
-    h1, v1, amp1 = fit_residual_striping(data, mask, 3)
+    h1, v1, amp1, diag1 = fit_residual_striping(data, mask, 3)
     h2, amp2 = _median_amprow_offsets(data, mask, 3, 0.1, 0.20)
     np.testing.assert_array_equal(h1, h2)
     assert amp1 == amp2
+    assert diag1 == {}  # median path carries no extra diagnostics
     # Default estimator is 'median', ampcounts in legacy 'A-N' format.
     assert all('-' in a for a in amp1)
 
@@ -165,15 +192,17 @@ def test_gp_params_contract():
     rng = np.random.default_rng(6)
     data, _ = _planted_frame(rng)
     mask = np.zeros(SHAPE, bool)
-    with pytest.raises(ValueError, match='gp_params'):
+    # rho is the only required gp_param now (kernel_sigma self-adapts).
+    with pytest.raises(ValueError, match='rho'):
         fit_residual_striping(data, mask, 3, estimator='gp')
-    with pytest.raises(ValueError, match='gp_params'):
+    with pytest.raises(ValueError, match='rho'):
         fit_residual_striping(data, mask, 3, estimator='gp',
                               gp_params={'kernel_sigma': 0.02})
     with pytest.raises(ValueError, match='unknown estimator'):
         fit_residual_striping(data, mask, 3, estimator='nope')
-    # Valid params produce a full triple.
-    h, v, diag = fit_residual_striping(
-        data, mask, 3, estimator='gp',
-        gp_params={'kernel_sigma': 0.02, 'rho': 80.0})
-    assert h.shape == SHAPE and v.shape == SHAPE and len(diag) == 4
+    # rho alone is sufficient — amplitude self-adapts; returns a 4-tuple with
+    # the effective amplitude in the diag dict.
+    h, v, amp, diag = fit_residual_striping(
+        data, mask, 3, estimator='gp', gp_params={'rho': 80.0})
+    assert h.shape == SHAPE and v.shape == SHAPE and len(amp) == 4
+    assert diag['kernel_sigma_eff'] > 0

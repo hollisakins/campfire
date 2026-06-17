@@ -1,25 +1,34 @@
 #!/usr/bin/env python
 """
-Calibrate frozen SHOTerm hyperparameters for the GP 1/f striping estimator.
+Calibrate the frozen ``rho`` hyperparameter for the GP 1/f striping estimator.
 
-The GP estimator (``[nircam.striping].estimator = "gp"``) must NOT optimize
-its hyperparameters per exposure — that turns a deterministic linear solve
-into an optimization loop and invites overfitting. Instead we calibrate
-``kernel_sigma`` (amplitude) and ``rho`` (length scale, in rows) ONCE on a
-representative set of clean exposures and freeze the result in
-``config_default.toml`` (split by detector channel, SW vs LW, because the
-1/f amplitude and correlation length differ).
+``rho`` (the SHOTerm length scale, in rows) is the ONLY frozen GP
+hyperparameter: it is a detector readout/clocking property — independent of
+filter and of flux units — so it is calibrated once per detector channel
+(SW vs LW) and frozen in ``config_default.toml``. The kernel amplitude is
+NOT frozen; it self-adapts per exposure inside ``gp_amprow_offsets`` (the
+marginal ``mad_std`` of the clean per-amp-row medians, a deterministic robust
+statistic — not a per-exposure fit). This script reports ``rho`` as the value
+to paste, and the marginal amplitude only as a sanity check (it should sit
+comfortably above the per-row sampling error).
+
+Neither value is optimized per exposure in the pipeline — that would turn a
+deterministic linear solve into an optimization loop and invite overfitting.
 
 Method
 ------
 For each exposure and each amplifier we form the per-amp-row sequence
 ``y_r`` (sigma-clipped background median) with sampling error ``sigma_r``
 on the *clean* rows only (source-masked rows are excluded — we want the
-true 1/f, not source flux). After removing the per-amp DC level, every
+true 1/f, not source flux). After removing the per-amp DC level and a wide
+running median (high-pass, to strip large-scale sky/ICL), every
 (exposure, amp) sequence is an independent realization of the same GP. We
 maximize the **pooled** Gaussian-process marginal likelihood (sum of the
 per-sequence celerite2 log-likelihoods with a shared kernel) over
-``(log kernel_sigma, log rho)`` with ``Q = 1/sqrt(2)`` fixed.
+``(log kernel_sigma, log rho)`` with ``Q = 1/sqrt(2)`` fixed, and read
+``rho`` off the result. (The MLE amplitude is the high-pass residual only and
+is NOT used by the pipeline; the self-adapting amplitude is the raw marginal
+``mad_std``, printed here for reference.)
 
 Usage
 -----
@@ -29,8 +38,8 @@ Usage
     # or point at explicit canonical exposure files
     conda run -n campfire python scripts/calibrate_gp_striping.py FILE [FILE ...]
 
-Prints the calibrated ``kernel_sigma`` / ``rho`` for the channel(s) found and
-the config block to paste into ``[nircam.striping.gp]``.
+Prints the calibrated ``rho`` per channel and the config block to paste into
+``[nircam.striping.gp]``, plus the self-adapting amplitude scale for sanity.
 """
 
 import argparse
@@ -181,23 +190,26 @@ def main(argv=None):
         # rho: detrended-MLE correlation length of the high-frequency 1/f.
         sigma0 = float(np.sqrt(np.mean(np.concatenate([y for _, y, _, _ in seqs]) ** 2)))
         _, rho, res = calibrate(seqs, max(sigma0, 1e-4), 8.0)
-        # kernel_sigma: the *raw* marginal amplitude (mad_std of the
-        # un-detrended, per-amp-centered row medians). It must be >> the
-        # per-row sampling error so the GP trusts each clean row's data
-        # (posterior ~ per-row median there) and only smooths/interpolates
-        # at the rho scale. The detrended-MLE amplitude is the high-pass
-        # residual only — far too small, and using it makes the GP
-        # over-regularize and lose to the plain per-row median (verified
-        # with experiments/oneoverf_gp/scan_fitframe.py).
+        # Sanity-check amplitudes (NOT frozen — the pipeline self-adapts the
+        # amplitude per exposure to this raw marginal mad_std). Report it
+        # alongside the median per-row sampling error so the operator can
+        # confirm the self-adapting amplitude will sit comfortably above the
+        # noise (the regime where the GP trusts clean rows and only
+        # interpolates at the rho scale).
         raw = np.concatenate([yr for _, _, _, yr in seqs])
         kernel_sigma = float(mad_std(raw))
+        yerr_med = float(np.nanmedian(np.concatenate(
+            [ye for _, _, ye, _ in seqs])))
         print(f'channel {channel.upper()}: {len(seqs)} sequences  ->  '
-              f'kernel_sigma={kernel_sigma:.5e} (raw marginal)  '
-              f'rho={rho:.3f} (detrended MLE, converged={res.success})')
-        block.append(f'        kernel_sigma_{channel} = {kernel_sigma:.6e}')
+              f'rho={rho:.3f} (detrended MLE, converged={res.success});  '
+              f'self-adapt amplitude ~{kernel_sigma:.3e} '
+              f'(>> median sigma_r {yerr_med:.3e}: '
+              f'{kernel_sigma / yerr_med:.0f}x)')
         block.append(f'        rho_{channel} = {rho:.4f}')
 
-    print('\nPaste into config_default.toml:')
+    block.append('        kernel_sigma_factor = 1.0')
+    print('\nPaste into config_default.toml (rho is the only frozen value; '
+          'the amplitude self-adapts per exposure):')
     print('\n'.join(block))
     return 0
 

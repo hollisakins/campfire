@@ -789,7 +789,7 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
         diag_model += diag_iter
         working = sci_before - diag_model - hv_model
 
-        h_iter, v_iter, ampcounts = fit_residual_striping(
+        h_iter, v_iter, ampcounts, _ = fit_residual_striping(
             working, mask, maxiters,
         )
         hv_model += h_iter + v_iter
