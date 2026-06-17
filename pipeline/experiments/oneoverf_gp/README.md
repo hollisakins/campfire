@@ -36,18 +36,31 @@ per-amp DC only where no nearby anchor exists. See
 
 ## Results (high-passed, ICL-insensitive 1/f residual)
 
-**GP vs median** — GP wins across the board, slightly faster:
+**GP vs median** — GP wins across the board, slightly faster (self-adapting
+amplitude; the frozen-8.3e-3 result was statistically identical at −16%):
 
 | metric | median | gp | Δ |
 |---|---|---|---|
-| stripe_std (amp-row 1/f) | 7.39e-4 | 6.24e-4 | **−16%** |
-| stripe_hf | 1.06e-3 | 8.74e-4 | **−18%** |
-| stripe_std, clean rows | 6.08e-4 | 5.14e-4 | −15% |
-| stripe_std, source rows | 8.73e-4 | 7.31e-4 | −16% |
+| stripe_std (amp-row 1/f) | 7.39e-4 | 6.38e-4 | **−14%** |
+| stripe_hf | 1.06e-3 | 8.97e-4 | **−16%** |
+| stripe_std, clean rows | 6.08e-4 | 5.26e-4 | −13% |
+| stripe_std, source rows | 8.73e-4 | 7.48e-4 | −14% |
 | runtime (uncal→mosaic) | 312 s | 283 s | faster |
 
 Background uniformity unchanged, photometry conserved (<0.05%), no negative
 wings. The GP gain holds on clean *and* source rows.
+
+**Hyperparameters: only `rho` is frozen.** The kernel amplitude self-adapts per
+exposure (marginal `mad_std` of the clean per-amp-row medians, measured on the
+pre-2D-bg frame — deterministic, not a fit), because the cal-stage 1/f
+amplitude varies ~3× by filter (PHOTMJSR): f277w/f356w/f444w give 2.99/4.00/
+8.31e-3. `rho` is a detector readout property and is stable across **five
+filters spanning both channels** — LW f277w/f356w/f444w = 4.51/4.44/5.03, SW
+f200w/f150w = 4.10/4.11 rows (one cluster, well inside its flat optimum) — so
+a **single channel-agnostic `rho = 5.0`** is frozen; no SW/LW split, no
+per-filter calibration. Measure amplitude on the *pre*-bg frame: the post-bg
+residual underestimates the cross-source-gap variation, over-regularizes, and
+loses to the median.
 
 **clean_flicker_noise** — `fit_method="fft"` is **NIRSpec-only** (jwst skips it
 for `NRC_IMAGE`; logged 8× per run), so only `"median"` is testable on NIRCam:
