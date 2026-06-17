@@ -26,6 +26,29 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Calibration
+- NIRCam `striping` now runs **after** `image2`, on flat-fielded, flux-
+  calibrated cal-stage data, and fits *and applies* the 1/f correction in that
+  same frame. Process order is now detector1 → persistence → wisp → image2 →
+  striping → edge → sky → … Previously striping fit on a flat-fielded *copy*
+  but subtracted the correction from the *un-flat* rate SCI, which image2 then
+  re-divided by the per-amp-structured flat — leaving a coherent per-amp DC
+  step at the amplifier boundaries (`≈ N/g·(1−1/g)`, a ~10–30σ residual
+  amp-to-amp offset in the column background, verified to reproduce at
+  r=0.9997). Fitting and subtracting in the cal frame removes that leak.
+  Consequences: striping measures its pedestal with the scale-free `fit_sky_tot`
+  Gaussian sky-peak fit rather than the rate-tuned `fit_pedestal`;
+  `[nircam.striping]` no longer takes `apply_flat` / `use_custom_flat` and no
+  longer resolves a flat (dropped from CRDS prefetch). `subtract_background` is
+  now a **fit-only** 2D detrend (default **on**, `box=32` / `filter=3`): it
+  removes the field's large-scale structure (e.g. cluster ICL / scattered
+  light) from the working copy so the per-amp-row/per-column medians estimate
+  the 1/f rather than the background, but the model is **never** subtracted from
+  the output SCI — so it cannot leave negative wings around sources (unlike the
+  fine-box mosaic bkgsub) and the ICL is retained for mosaic-level removal.
+  Without it, a smooth gradient that per-amp-row constants cannot represent gets
+  imprinted as amp-boundary steps. `wisp` is unchanged (still rate-frame); its
+  analogous flat round-trip is a separate, SW-only follow-up.
+
 - Opt-in extended-wavelength reduction for G140M/F100LP and G235M/F170LP
   (`[nirspec.stage2].extend_g140m_g235m`, default off). The F100LP/F170LP
   long-pass filters pass light redward of the nominal grating cutoffs; when
@@ -48,6 +71,33 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- NIRCam `striping`: new opt-in per-amp-row 1/f offset estimator selectable via
+  `[nircam.striping].estimator` (default **`"median"`** — the production
+  2σ-clipped median with full-row fallback, byte-for-byte unchanged). The new
+  `"gp"` estimator fits a 1-D Gaussian Process (celerite2 `SHOTerm`,
+  `Q = 1/sqrt(2)`, CPU O(n)) along the slow (row) axis *per amplifier*, with
+  each amp-row weighted by its sampling error `sigma_r ≈ 1.25·MAD/sqrt(N_r)`
+  and carrying its own DC mean term. It interpolates the offset across
+  source-masked rows using clean rows of the *same* amplifier instead of
+  substituting the cross-amp full-row median, removing the amp-boundary +
+  slow-axis "box" of striping artifacts around bright/extended sources. The
+  per-column (vertical) step is untouched. Hyperparameters are frozen
+  (`[nircam.striping.gp]`, split by SW/LW channel; calibrate with
+  `scripts/calibrate_gp_striping.py`), never fit per exposure. An aggressive
+  masking variant (`mask_aggressive`) dilates the source mask and folds in
+  JUMP/SATURATED/PERSISTENCE DQ — over-masking only inflates `sigma_r` (the GP
+  interpolates across), whereas under-masking biases the median and the GP
+  would oversubtract. A third value, `estimator = "none"`, builds/writes the
+  `SRCMASK` and runs the rest of the pipeline but applies no campfire 1/f
+  (for comparison runs against JWST's own ramp-stage `clean_flicker_noise`).
+  Default config reproduces the current pipeline exactly; no change unless
+  `estimator` is set away from `"median"`. A/B testbed in
+  `experiments/oneoverf_gp/`, which also evaluates `clean_flicker_noise`: on a
+  cluster field the GP beats the median by ~16% on the amp-row 1/f residual
+  (clean *and* source rows, photometry conserved, slightly faster), while
+  `clean_flicker_noise` is not adopted — its `fit_method="fft"` is NIRSpec-only
+  (skipped for `NRC_IMAGE`) and its `"median"` mode underperforms our amp-row
+  estimators and introduces per-amp DC steps.
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
   ERR map no longer fills with `inf`/`nan`. The variance pass summed the three
   variance components before drizzling, so a single input pixel with a
@@ -69,6 +119,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- NIRCam `skyfit.fit_sky` now takes `box_size` / `filter_size` (the striping
+  2D-background detrend exposes them via `subtract_background_box` /
+  `subtract_background_filter`), and a byte-order guard prevents a corruption
+  bug: the bottleneck-accelerated path used to `byteswap(inplace=True)` then
+  re-`view` the input, which corrupted native-byte-order arrays in place (the
+  cal-frame `fitdata` is native) and produced garbage background → ±100s in the
+  output SCI. It now casts a copy to native order only when needed. Regression
+  test in `tests/test_nircam_skyfit.py`.
+- NIRCam `detector1` exposes `clean_flicker_noise_opts` — a passthrough merged
+  over the JWST `clean_flicker_noise` step defaults (e.g. `fit_method`,
+  `background_method`), used only when `clean_flicker_noise = true`. Enables the
+  cfn comparison arms; no effect on the default config (cfn off).
 - NFS cache tier for the NIRCam pipeline (PR 1 of
   `docs/design-nircam-exposure-major.md`; findings H4/H5/M2/M9 of
   `docs/nfs_audit.md`). No change to pixel values or reference selection —
