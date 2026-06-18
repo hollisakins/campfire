@@ -65,6 +65,15 @@ AS $$
     SELECT slug
     FROM programs
     WHERE is_public = true
+    UNION
+    -- Admins (the operators) inherit access to every program. This is the
+    -- single point where admin access is granted to all program-gated data:
+    -- every RLS SELECT policy routes through accessible_program_slugs(), so
+    -- this lets admins read back rows they deploy for private programs
+    -- (otherwise an upsert's RETURNING fails the SELECT policy -> 42501).
+    SELECT slug
+    FROM programs
+    WHERE public.is_admin()
   ) sub;
 $$;
 
