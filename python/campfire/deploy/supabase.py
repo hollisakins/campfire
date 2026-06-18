@@ -6,6 +6,35 @@ slit geometry deployment and filter cache refresh.
 """
 
 from supabase import create_client, Client
+from supabase.client import ClientOptions
+
+from campfire.auth._jwt import get_sub
+
+
+def _make_user_client(url: str, anon_key: str, supabase_token: str) -> Client:
+    """Build a Supabase client authenticated as a user (JWT) for RLS writes.
+
+    The user JWT **must** be baked into the client options headers at
+    construction. Authenticating via ``client.postgrest.auth(token)`` *after*
+    construction is unreliable in supabase-py 2.x: ``Client.postgrest`` is a
+    lazily-built, cached client constructed from ``options.headers``, and the
+    GoTrue auth-state listener resets that cache (``self._postgrest = None``)
+    and rewrites ``Authorization`` back to the anon key. When that race is
+    lost the user JWT silently never reaches the wire — requests go out as
+    role ``anon`` -> ``auth.uid()`` is NULL -> ``is_admin()`` is false -> admin
+    writes (e.g. the ``observations`` upsert) fail intermittently with a 42501
+    RLS error. Passing the token through ``options.headers`` makes every
+    (re)build of the postgrest client carry the user JWT.
+    """
+    if not supabase_token:
+        # A falsy token yields "Bearer None" — i.e. an effectively anon request.
+        # Refuse rather than silently deploy as anon and fail later with 42501.
+        raise ValueError(
+            "Refusing to build a user Supabase client without a Supabase token "
+            "(would authenticate as anon). Run 'campfire login' again."
+        )
+    options = ClientOptions(headers={"Authorization": f"Bearer {supabase_token}"})
+    return create_client(url, anon_key, options=options)
 
 
 class AutoRefreshClient:
@@ -13,18 +42,26 @@ class AutoRefreshClient:
 
     Deployments can run for hours, but Supabase JWTs expire after ~1 hour.
     This wrapper checks token expiry before every ``table()`` or ``rpc()``
-    call and transparently refreshes via the stored ``TokenManager``.
+    call and, when a refresh is needed, **rebuilds** the underlying client
+    with the fresh token baked into its options headers (see
+    ``_make_user_client`` for why a fresh build rather than
+    ``postgrest.auth()``).
     """
 
-    def __init__(self, client: Client, token_manager):
-        self._client = client
+    def __init__(self, url: str, anon_key: str, supabase_token: str, token_manager):
+        self._url = url
+        self._anon_key = anon_key
         self._token_manager = token_manager
+        self._client = _make_user_client(url, anon_key, supabase_token)
 
     def _ensure_valid_token(self):
-        if self._token_manager and self._token_manager.needs_refresh():
-            new_token = self._token_manager.get_supabase_token(auto_refresh=True)
+        # Decide on the Supabase JWT's OWN expiry, not the access token's, then
+        # force a refresh and rebuild the client so the fresh token is actually
+        # carried on the wire (a plain refresh leaves the old client in place).
+        if self._token_manager and self._token_manager.supabase_token_needs_refresh():
+            new_token = self._token_manager.force_refresh_supabase_token()
             if new_token:
-                self._client.postgrest.auth(new_token)
+                self._client = _make_user_client(self._url, self._anon_key, new_token)
 
     def table(self, *args, **kwargs):
         self._ensure_valid_token()
@@ -38,34 +75,51 @@ class AutoRefreshClient:
 def get_supabase_client(config: dict):
     """Create a Supabase client from deploy config.
 
-    Two authentication paths:
+    Dispatches on the auth mode resolved by ``load_config`` and tagged on
+    ``config['supabase']['_auth_mode']`` (one of ``service_role``, ``local``,
+    ``login``). When the tag is absent (e.g. a hand-built config in a test),
+    the mode is inferred from which keys are present.
 
-    1. **Service role** (``config['supabase']['service_role_key']``) — used
-       for ``--local`` deploys and env-var-driven CI. Bypasses RLS; no
-       refresh needed.
-    2. **User JWT** (``config['supabase']['supabase_token']`` +
-       ``anon_key``) — used for remote deploys authenticated via
-       ``campfire login``. Operates through RLS policies. When a
-       ``_token_manager`` is present, wraps the client in
-       ``AutoRefreshClient`` so long-running deploys survive the ~1 hour
-       JWT expiry.
+    - **service_role / local** — ``create_client(url, service_role_key)``.
+      Bypasses RLS; no refresh needed.
+    - **login** — user JWT from ``campfire login``. Operates through RLS. With
+      a ``_token_manager`` present the client is wrapped in
+      ``AutoRefreshClient`` so long-running deploys survive JWT expiry; the
+      token is always baked into the client headers (never falls back to anon).
     """
-    url = config['supabase']['url']
-    service_role_key = config['supabase'].get('service_role_key')
-    supabase_token = config['supabase'].get('supabase_token')
-    anon_key = config['supabase'].get('anon_key')
+    sb = config['supabase']
+    url = sb['url']
+    mode = sb.get('_auth_mode')
 
-    if service_role_key:
+    # Infer the mode for configs that weren't tagged by load_config.
+    if mode is None:
+        if sb.get('service_role_key'):
+            mode = 'service_role'
+        elif sb.get('supabase_token') and sb.get('anon_key'):
+            mode = 'login'
+
+    if mode in ('service_role', 'local'):
+        service_role_key = sb.get('service_role_key')
+        if not service_role_key:
+            raise ValueError(
+                f"Auth mode '{mode}' requires a Supabase service_role_key."
+            )
         return create_client(url, service_role_key)
 
-    if supabase_token and anon_key:
-        client = create_client(url, anon_key)
-        client.postgrest.auth(supabase_token)
-
-        token_manager = config['supabase'].get('_token_manager')
+    if mode == 'login':
+        supabase_token = sb.get('supabase_token')
+        anon_key = sb.get('anon_key')
+        if not (supabase_token and anon_key):
+            raise ValueError(
+                "Incomplete login credentials (need supabase_token + anon_key). "
+                "Run 'campfire login' again."
+            )
+        token_manager = sb.get('_token_manager')
         if token_manager:
-            return AutoRefreshClient(client, token_manager)
-        return client
+            return AutoRefreshClient(url, anon_key, supabase_token, token_manager)
+        # No manager (no auto-refresh) but still authenticated as the user —
+        # _make_user_client bakes the JWT in, so this is never an anon client.
+        return _make_user_client(url, anon_key, supabase_token)
 
     raise ValueError(
         "No Supabase credentials available. "
@@ -75,21 +129,9 @@ def get_supabase_client(config: dict):
 
 
 def get_user_id_from_token(config: dict) -> str | None:
-    """Extract user_id (sub claim) from the stored Supabase token."""
+    """Extract user_id (``sub`` claim) from the stored Supabase token."""
     token = config.get('supabase', {}).get('supabase_token')
-    if not token:
-        return None
-    try:
-        import json
-        import base64
-        # Decode JWT payload (second segment) without verification
-        payload_b64 = token.split('.')[1]
-        # Add padding
-        payload_b64 += '=' * (4 - len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        return payload.get('sub')
-    except Exception:
-        return None
+    return get_sub(token) if token else None
 
 
 def insert_deployment(
