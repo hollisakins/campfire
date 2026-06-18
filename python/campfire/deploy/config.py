@@ -121,18 +121,22 @@ def load_config(config_path: str | None = None, *, local: bool = False) -> dict:
     """
     Load deployment credentials (Supabase + R2).
 
-    Resolution order:
-      1. Environment variables (CAMPFIRE_SUPABASE_*, CAMPFIRE_R2_*)
-      2. Explicit --config path
-      3. $CAMPFIRE_ROOT/config/deploy.toml
+    Resolves Supabase auth into exactly ONE coherent mode, tagged on
+    ``config['supabase']['_auth_mode']``:
 
-    If ``local=True``, Supabase credentials are overridden to point to the
-    local instance (127.0.0.1:54321) with the standard Supabase CLI
-    service-role key. Other sections (R2, r2_tiles) are still resolved
-    normally from env vars / TOML so non-Supabase uploads keep working.
+      - ``local`` (``--local``): local instance (127.0.0.1:54321) with the
+        standard Supabase CLI service-role key.
+      - ``service_role``: env vars (``CAMPFIRE_SUPABASE_URL`` +
+        ``CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY``) or a TOML ``[supabase]`` block
+        with ``service_role_key`` + ``url``. Bypasses RLS — the preferred path
+        for unattended / batch / CI deploys (no JWT expiry).
+      - ``login``: the logged-in user's Supabase credentials from
+        ``campfire login`` (url + anon_key + token + TokenManager, taken as a
+        matched set). Operates through RLS.
 
-    Environment variables take priority for core sections. Extra TOML
-    sections (e.g. r2_tiles) are merged in when not covered by env vars.
+    Precedence: ``--local`` > env service-role > TOML service-role > login.
+    When env or TOML supplies a service-role key, login credentials are NOT
+    injected. R2 / r2_tiles sections are always resolved from env vars / TOML.
     """
     if local:
         base = _config_from_env() or _find_toml(config_path) or {}
@@ -142,32 +146,36 @@ def load_config(config_path: str | None = None, *, local: bool = False) -> dict:
         base['supabase'].pop('supabase_token', None)
         base['supabase'].pop('anon_key', None)
         base['supabase'].pop('_token_manager', None)
+        base['supabase']['_auth_mode'] = 'local'
         print(f"  Using local Supabase at {_LOCAL_SUPABASE_URL}")
         return base
 
-    # Try env vars first
+    # 1. Environment service-role credentials. `_config_from_env` only returns a
+    #    config when both url and service_role_key are present, so this is always
+    #    service-role mode (used as-is, no login injection).
     env_config = _config_from_env()
     if env_config:
-        # Merge any extra sections from TOML that env vars don't cover
         toml_config = _find_toml(config_path)
         if toml_config:
             for key, val in toml_config.items():
                 if key not in env_config:
                     env_config[key] = val
-        return _inject_user_credentials(env_config)
+        env_config.setdefault('supabase', {})['_auth_mode'] = 'service_role'
+        return env_config
 
-    # Fall back to TOML file
+    # 2. TOML service-role credentials short-circuit (no login injection).
     toml_config = _find_toml(config_path)
     if toml_config:
-        return _inject_user_credentials(toml_config)
+        sb = toml_config.setdefault('supabase', {})
+        if sb.get('service_role_key') and sb.get('url'):
+            sb['_auth_mode'] = 'service_role'
+            return toml_config
 
-    # Try user credentials alone (no env vars or TOML needed if logged in)
-    # supabase_url and supabase_anon_key are stored at login time
-    user_config = _inject_user_credentials({})
-    if user_config.get('supabase', {}).get('supabase_token') and \
-       user_config.get('supabase', {}).get('url') and \
-       user_config.get('supabase', {}).get('anon_key'):
-        return user_config
+    # 3. Logged-in user credentials (matched set), merged onto any TOML (R2 etc.).
+    base = toml_config or {}
+    base = _inject_user_credentials(base)
+    if base.get('supabase', {}).get('_auth_mode') == 'login':
+        return base
 
     # Nothing found — show helpful error
     candidates = []
@@ -201,12 +209,19 @@ def load_config(config_path: str | None = None, *, local: bool = False) -> dict:
 
 def _inject_user_credentials(config: dict) -> dict:
     """
-    Enrich deploy config with the user's Supabase credentials from stored OAuth.
+    Inject the logged-in user's Supabase credentials as a coherent matched set.
 
-    If the user has logged in via ``campfire login``, their supabase_token,
-    supabase_url, and supabase_anon_key are injected into ``config['supabase']``.
-    This allows ``get_supabase_client()`` to use the user JWT path instead of
-    requiring a service_role_key — no env vars needed beyond ``campfire login``.
+    If the user has logged in via ``campfire login``, their ``supabase_url`` +
+    ``supabase_anon_key`` + ``supabase_token`` + ``TokenManager`` are injected
+    **together** (they are minted for the same project) and tagged
+    ``_auth_mode='login'``. The login URL/anon_key OVERWRITE any carried in from
+    TOML/env so a login token is never paired with a foreign URL — the exact
+    mismatch that lets an admin pass a gate yet be rejected on writes.
+
+    On no usable login session (not logged in, offline, or refresh failed) the
+    config is returned untouched and untagged; downstream resolution then
+    reports "no credentials". It can never degrade to an anon client because
+    ``get_supabase_client`` requires a complete login set.
     """
     try:
         from campfire.api.session import resolve_base_url
@@ -214,25 +229,31 @@ def _inject_user_credentials(config: dict) -> dict:
 
         base_url = resolve_base_url()
         tm = TokenManager(base_url=base_url)
-        if tm.is_oauth():
-            sb_token = tm.get_supabase_token(auto_refresh=True)
-            creds = tm._cached_creds
-            if sb_token and creds:
-                config.setdefault('supabase', {})
-                config['supabase']['supabase_token'] = sb_token
-                # Store TokenManager so the Supabase client can auto-refresh
-                config['supabase']['_token_manager'] = tm
-
-                # Use stored Supabase connection info from login
-                if creds.supabase_url:
-                    config['supabase'].setdefault('url', creds.supabase_url)
-                if creds.supabase_anon_key:
-                    config['supabase'].setdefault('anon_key', creds.supabase_anon_key)
+        if not tm.is_oauth():
+            return config
+        sb_token = tm.get_supabase_token(auto_refresh=True)
+        creds = tm._cached_creds
     except Exception:
-        # Auth not available or not configured — that's fine,
-        # fall back to service_role_key in get_supabase_client()
-        pass
+        # Auth layer unavailable / not logged in / refresh failed.
+        return config
 
+    if not (sb_token and creds and creds.supabase_url and creds.supabase_anon_key):
+        return config
+
+    sb = config.setdefault('supabase', {})
+    existing_url = sb.get('url')
+    if existing_url and existing_url != creds.supabase_url:
+        print(
+            f"  Note: ignoring configured Supabase url ({existing_url}); using "
+            f"the URL your login token was issued for ({creds.supabase_url})."
+        )
+    # Matched set from login — overwrite, never mix a login token with a
+    # foreign url/anon_key.
+    sb['url'] = creds.supabase_url
+    sb['anon_key'] = creds.supabase_anon_key
+    sb['supabase_token'] = sb_token
+    sb['_token_manager'] = tm
+    sb['_auth_mode'] = 'login'
     return config
 
 

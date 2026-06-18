@@ -33,7 +33,6 @@ Multiple observations are processed serially:
 import sys
 
 import click
-import requests
 
 from campfire.deploy.config import load_config, load_programs, resolve_imaging_config, resolve_photometry_config, resolve_tiles_dir
 
@@ -85,35 +84,46 @@ from campfire.deploy.deploy import (
 from campfire.deploy.supabase import get_supabase_client, upsert_programs, refresh_filter_options, refresh_programs_overview
 
 
-def _check_admin() -> None:
-    """Verify the logged-in user has admin privileges. Exits on failure."""
-    from campfire.api.session import resolve_base_url
-    from campfire.auth.tokens import TokenManager
+def _gate_admin(config: dict) -> None:
+    """Verify the deployer is an admin THROUGH the actual write client.
 
-    base_url = resolve_base_url()
+    Calls ``is_admin()`` via the same Supabase client the deploy will write
+    with, so the gate and the writes share one identity + target + token — a
+    gate pass therefore guarantees the writes pass. (The old gate hit
+    ``/auth/whoami`` with a separately-resolved token, which could pass while
+    the writes were rejected.)
+
+    Skipped for service-role / local clients: they bypass RLS (god-mode), and
+    ``is_admin()`` would falsely return false there because ``auth.uid()`` is
+    NULL under the service role.
+    """
+    from postgrest.exceptions import APIError
+    from campfire.deploy.supabase import get_supabase_client
+
+    mode = config.get('supabase', {}).get('_auth_mode')
+    if mode in ('service_role', 'local'):
+        return
+
+    client = get_supabase_client(config)
     try:
-        tm = TokenManager(base_url=base_url)
-        token = tm.get_valid_token(auto_refresh=True)
-    except Exception:
-        print("Error: Not logged in. Run: campfire login")
+        resp = client.rpc('is_admin').execute()
+    except APIError as e:
+        code = getattr(e, 'code', '') or ''
+        message = getattr(e, 'message', None) or str(e)
+        if code in ('PGRST301', 'PGRST303') or 'jwt' in message.lower():
+            print("Error: Your login session is invalid or expired. "
+                  "Run: campfire login")
+        else:
+            print(f"Error: Failed to verify admin status: {message}")
         sys.exit(1)
 
-    try:
-        resp = requests.get(
-            f"{base_url}/auth/whoami",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        print(f"Error: Failed to verify admin status: {e}")
-        sys.exit(1)
-
-    if not data.get("is_admin"):
-        print(f"Error: Deploy requires admin privileges.")
-        print(f"  Logged in as: {data.get('email', 'unknown')}")
-        print(f"  Contact an administrator to request access.")
+    if not resp.data:
+        tm = config.get('supabase', {}).get('_token_manager')
+        email = tm.get_user_email() if tm else None
+        print("Error: Deploy requires admin privileges.")
+        if email:
+            print(f"  Logged in as: {email}")
+        print("  Contact an administrator to request access.")
         sys.exit(1)
 
 
@@ -184,7 +194,9 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
     ctx.ensure_object(dict)
     ctx.obj['local'] = local
     if not local:
-        _check_admin()
+        # Gate once here (the group callback runs before every subcommand and
+        # subgroup), through the actual write client.
+        _gate_admin(load_config(config_path, local=local))
 
     # When invoked without a subcommand, --obs is required
     if ctx.invoked_subcommand is None:
@@ -195,6 +207,10 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
 
         config = load_config(config_path, local=local)
         multi = len(obs) > 1
+        if multi and config.get('supabase', {}).get('_auth_mode') == 'login':
+            print(f"  Note: deploying {len(obs)} observations on a user login "
+                  f"(token auto-refreshes). For large unattended batches, prefer "
+                  f"a service-role key (CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY).")
         fields_needing_rebuild: set[str] = set()
 
         for obs_name in obs:

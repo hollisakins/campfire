@@ -4,12 +4,14 @@ Token management for CAMPFIRE Python client.
 Handles token refresh and validation.
 """
 
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 import requests
 
 from ..exceptions import AuthenticationError
+from ._jwt import get_exp
 from .credentials import CredentialManager, StoredCredentials
 
 
@@ -208,8 +210,10 @@ class TokenManager:
         """
         Get a valid Supabase-compatible JWT.
 
-        The supabase_token shares the same expiry as the access token,
-        so refreshing one refreshes both.
+        When ``auto_refresh`` is set, this refreshes based on the *access*
+        token's expiry (:meth:`needs_refresh`). For refresh decisions keyed on
+        the Supabase JWT's own ``exp``, use :meth:`supabase_token_needs_refresh`
+        and :meth:`force_refresh_supabase_token` instead.
 
         Returns
         -------
@@ -223,6 +227,39 @@ class TokenManager:
             self.refresh_tokens()
 
         return self._cached_creds.supabase_token if self._cached_creds else None
+
+    def supabase_token_needs_refresh(self, buffer_minutes: int = 10) -> bool:
+        """
+        Whether the cached Supabase JWT is at or near expiry.
+
+        Unlike :meth:`needs_refresh` (which inspects the *access* token's
+        ``expires_at``), this decodes the Supabase JWT's own ``exp`` claim, so
+        refresh decisions don't depend on the access and Supabase tokens sharing
+        a lifetime. Falls back to :meth:`needs_refresh` when the token can't be
+        decoded (safe: both tokens are currently minted with the same 1 h TTL).
+        """
+        if not self.is_oauth():
+            return False
+        if not self._cached_creds or not self._cached_creds.supabase_token:
+            return True
+        exp = get_exp(self._cached_creds.supabase_token)
+        if exp is None:
+            return self.needs_refresh(buffer_minutes)
+        return time.time() + buffer_minutes * 60 >= exp
+
+    def force_refresh_supabase_token(self) -> Optional[str]:
+        """
+        Unconditionally refresh and return the new Supabase JWT.
+
+        ``get_supabase_token(auto_refresh=True)`` only refreshes when the
+        *access* token's :meth:`needs_refresh` fires — the wrong signal when the
+        Supabase JWT is the one near expiry. This forces a refresh via
+        :meth:`refresh_tokens` and returns the freshly-minted Supabase token.
+        """
+        if not self.is_oauth():
+            return None
+        self.refresh_tokens()
+        return self.get_supabase_token(auto_refresh=False)
 
     def get_user_email(self) -> Optional[str]:
         """Get the user's email if available."""
