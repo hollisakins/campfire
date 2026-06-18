@@ -2940,23 +2940,254 @@ GRANT ALL ON FUNCTION public.validate_refresh_token(text) TO service_role;
 -- Used by cfdeploy objects rebuild to set targets.object_id in bulk,
 -- avoiding per-object HTTP round-trips through PostgREST.
 
+-- A typed jsonb_to_recordset (not jsonb_array_elements + per-row ->>/cast)
+-- gives the planner real column types and a sane row estimate, so it
+-- hash-joins against targets_pkey instead of a misestimated nested loop.
+-- statement_timeout matches the other heavy reconcile RPCs: without it the
+-- function ran at the short role default, and large fields tripped 57014
+-- (canceling statement due to statement timeout) mid-apply — see #184.
 CREATE OR REPLACE FUNCTION public.bulk_set_target_object_fks(
   p_pairs JSONB,
   p_updated_at TIMESTAMPTZ DEFAULT now()
 )
 RETURNS void
 LANGUAGE plpgsql
+SET statement_timeout = '300s'
 AS $$
 BEGIN
   UPDATE targets t SET
-    object_id = (pair->>'object_id')::integer,
+    object_id = pair.object_id,
     updated_at = p_updated_at
-  FROM jsonb_array_elements(p_pairs) AS pair
-  WHERE t.id = (pair->>'target_id')::integer;
+  FROM jsonb_to_recordset(p_pairs) AS pair(target_id integer, object_id integer)
+  WHERE t.id = pair.target_id;
 END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.bulk_set_target_object_fks(JSONB, TIMESTAMPTZ) TO service_role;
+
+
+-- =============================================================================
+-- Atomic object-reconciliation apply (deploy path)
+-- =============================================================================
+-- Applies the deploy-path reconciliation proposal set — inserts, revivals,
+-- updates, orphan soft-deletes, and ALL target->object FK assignments — in a
+-- SINGLE transaction. Replaces the previous Python apply_proposals(), which
+-- issued each step as an independent, auto-committed PostgREST call: a failure
+-- (e.g. a statement timeout) anywhere between the object inserts (step 1) and
+-- the dead-last FK assignment (step 7) committed the new objects but never
+-- linked their targets, stranding "ghost" objects (active, valid object_id,
+-- ZERO member targets) that then collided with objects_object_id_key on every
+-- re-run. See GitHub #184.
+--
+-- One plpgsql function == one transaction, so any failure rolls the entire
+-- apply back: no partial state is ever possible. Inserts are additionally made
+-- idempotent (ON CONFLICT (object_id) DO UPDATE) so a re-run after any pre-
+-- existing ghost mess self-heals by re-adopting the stranded row instead of
+-- dying on the unique constraint.
+--
+-- Splits and merges are NOT handled here. They only occur on the interactive
+-- operator path (the deploy path aborts before apply when they are detected),
+-- and they carry photometry + list-membership migration that stays in Python.
+--
+-- Payload (all JSON-safe; member_target_db_ids travels INSIDE each element so
+-- FK assignment shares this transaction with the inserts):
+--   p_inserts:  [{object_id, ra, dec, n_targets, n_spectra, programs[],
+--                 gratings[], observations[], max_snr, max_exposure_time,
+--                 member_target_db_ids[]}]
+--   p_revivals: as p_inserts plus {object_db_id} (the inactive row to revive)
+--   p_updates:  as p_revivals plus {staleness_reason (nullable),
+--                 reactivate (bool)}
+--   p_orphan_ids: integer[] of object db ids to soft-delete.
+--
+-- Returns jsonb: {insert_id_map: {object_id: db_id}, revived_ids: [db_id],
+--   updated_ids: [db_id], inserted_count, revived_count, updated_count,
+--   reactivated_count, orphaned_count, target_fks_set}.
+CREATE OR REPLACE FUNCTION public.apply_object_reconciliation(
+  p_field       TEXT,
+  p_inserts     JSONB DEFAULT '[]'::jsonb,
+  p_revivals    JSONB DEFAULT '[]'::jsonb,
+  p_updates     JSONB DEFAULT '[]'::jsonb,
+  p_orphan_ids  INTEGER[] DEFAULT '{}',
+  p_updated_at  TIMESTAMPTZ DEFAULT now()
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SET statement_timeout = '300s'
+AS $$
+DECLARE
+  v_insert_id_map JSONB := '{}'::jsonb;
+  v_revived_ids   INTEGER[] := '{}';
+  v_updated_ids   INTEGER[] := '{}';
+  v_orphaned      INTEGER := 0;
+  v_reactivated   INTEGER := 0;
+  v_fk_count      INTEGER := 0;
+BEGIN
+  -- 1. Orphans FIRST: soft-delete active objects that lost all members, but
+  --    EXCLUDE any whose object_id an insert is about to re-adopt. Ghost
+  --    recovery: a stranded active ghost is classified as an orphan while the
+  --    real new cluster is an insert holding the same IAU name; the upsert in
+  --    step 2 adopts that row, so it must not be soft-deleted out from under it.
+  UPDATE objects o SET
+    is_active = false,
+    last_data_change_at = p_updated_at,
+    staleness_reason = 'membership_changed',
+    updated_at = p_updated_at
+  WHERE o.id = ANY(p_orphan_ids)
+    AND o.is_active
+    AND o.object_id NOT IN (
+      SELECT x.object_id FROM jsonb_to_recordset(p_inserts) AS x(object_id TEXT)
+    );
+  GET DIAGNOSTICS v_orphaned = ROW_COUNT;
+
+  -- 2. Inserts (idempotent). ON CONFLICT re-adopts a ghost / soft-deleted row
+  --    holding this object_id. We deliberately do NOT touch version /
+  --    redshift_* / last_inspected_* so inspection state — and the triggers
+  --    scoped to those columns — stay untouched; a collision is only ever a
+  --    freshly stranded ghost with no inspection history.
+  WITH ins AS (
+    INSERT INTO objects (
+      object_id, field, ra, dec, n_targets, n_spectra,
+      programs, gratings, observations, max_snr, max_exposure_time, updated_at
+    )
+    SELECT x.object_id, p_field, x.ra, x.dec, x.n_targets, x.n_spectra,
+           x.programs, x.gratings, x.observations, x.max_snr,
+           x.max_exposure_time, p_updated_at
+    FROM jsonb_to_recordset(p_inserts) AS x(
+      object_id TEXT, ra DOUBLE PRECISION, dec DOUBLE PRECISION,
+      n_targets INTEGER, n_spectra INTEGER,
+      programs TEXT[], gratings TEXT[], observations TEXT[],
+      max_snr DOUBLE PRECISION, max_exposure_time DOUBLE PRECISION
+    )
+    ON CONFLICT (object_id) DO UPDATE SET
+      field = EXCLUDED.field,
+      ra = EXCLUDED.ra,
+      dec = EXCLUDED.dec,
+      n_targets = EXCLUDED.n_targets,
+      n_spectra = EXCLUDED.n_spectra,
+      programs = EXCLUDED.programs,
+      gratings = EXCLUDED.gratings,
+      observations = EXCLUDED.observations,
+      max_snr = EXCLUDED.max_snr,
+      max_exposure_time = EXCLUDED.max_exposure_time,
+      is_active = true,
+      last_data_change_at = p_updated_at,
+      staleness_reason = 'membership_changed',
+      updated_at = p_updated_at
+    RETURNING id, object_id
+  )
+  SELECT coalesce(jsonb_object_agg(object_id, id), '{}'::jsonb)
+  INTO v_insert_id_map
+  FROM ins;
+
+  -- 3. Revivals: reactivate inactive objects matched by position; refresh
+  --    centroid + aggregates.
+  WITH rev AS (
+    UPDATE objects o SET
+      is_active = true,
+      object_id = r.object_id,
+      ra = r.ra,
+      dec = r.dec,
+      n_targets = r.n_targets,
+      n_spectra = r.n_spectra,
+      programs = r.programs,
+      gratings = r.gratings,
+      observations = r.observations,
+      max_snr = r.max_snr,
+      max_exposure_time = r.max_exposure_time,
+      last_data_change_at = p_updated_at,
+      staleness_reason = 'membership_changed',
+      updated_at = p_updated_at
+    FROM jsonb_to_recordset(p_revivals) AS r(
+      object_db_id INTEGER, object_id TEXT, ra DOUBLE PRECISION,
+      dec DOUBLE PRECISION, n_targets INTEGER, n_spectra INTEGER,
+      programs TEXT[], gratings TEXT[], observations TEXT[],
+      max_snr DOUBLE PRECISION, max_exposure_time DOUBLE PRECISION
+    )
+    WHERE o.id = r.object_db_id
+    RETURNING o.id
+  )
+  SELECT coalesce(array_agg(id), '{}') INTO v_revived_ids FROM rev;
+
+  -- 4. Updates: refresh aggregates; set staleness only when provided;
+  --    reactivate a membership-matched inactive object when reactivate=true.
+  WITH upd AS (
+    UPDATE objects o SET
+      object_id = u.object_id,
+      ra = u.ra,
+      dec = u.dec,
+      n_targets = u.n_targets,
+      n_spectra = u.n_spectra,
+      programs = u.programs,
+      gratings = u.gratings,
+      observations = u.observations,
+      max_snr = u.max_snr,
+      max_exposure_time = u.max_exposure_time,
+      is_active = CASE WHEN u.reactivate THEN true ELSE o.is_active END,
+      staleness_reason = CASE
+        WHEN u.reactivate THEN 'membership_changed'
+        WHEN u.staleness_reason IS NOT NULL THEN u.staleness_reason
+        ELSE o.staleness_reason
+      END,
+      last_data_change_at = CASE
+        WHEN u.reactivate OR u.staleness_reason IS NOT NULL THEN p_updated_at
+        ELSE o.last_data_change_at
+      END,
+      updated_at = p_updated_at
+    FROM jsonb_to_recordset(p_updates) AS u(
+      object_db_id INTEGER, object_id TEXT, ra DOUBLE PRECISION,
+      dec DOUBLE PRECISION, n_targets INTEGER, n_spectra INTEGER,
+      programs TEXT[], gratings TEXT[], observations TEXT[],
+      max_snr DOUBLE PRECISION, max_exposure_time DOUBLE PRECISION,
+      staleness_reason TEXT, reactivate BOOLEAN
+    )
+    WHERE o.id = u.object_db_id
+    RETURNING o.id AS id, u.reactivate AS reactivated
+  )
+  SELECT coalesce(array_agg(id), '{}'),
+         coalesce(count(*) FILTER (WHERE reactivated), 0)
+  INTO v_updated_ids, v_reactivated
+  FROM upd;
+
+  -- 5. Target FK assignment — the actual fix. Derive (target, object) pairs
+  --    from each operation's member_target_db_ids (resolving insert object ids
+  --    via the RETURNING map) and apply them in ONE typed, index-friendly
+  --    UPDATE, inside this same transaction as the inserts above.
+  WITH pairs AS (
+    SELECT unnest(x.member_target_db_ids) AS target_id,
+           (v_insert_id_map ->> x.object_id)::INTEGER AS object_id
+    FROM jsonb_to_recordset(p_inserts)
+      AS x(object_id TEXT, member_target_db_ids INTEGER[])
+    UNION ALL
+    SELECT unnest(r.member_target_db_ids), r.object_db_id
+    FROM jsonb_to_recordset(p_revivals)
+      AS r(object_db_id INTEGER, member_target_db_ids INTEGER[])
+    UNION ALL
+    SELECT unnest(u.member_target_db_ids), u.object_db_id
+    FROM jsonb_to_recordset(p_updates)
+      AS u(object_db_id INTEGER, member_target_db_ids INTEGER[])
+  )
+  UPDATE targets t SET
+    object_id = p.object_id,
+    updated_at = p_updated_at
+  FROM pairs p
+  WHERE t.id = p.target_id;
+  GET DIAGNOSTICS v_fk_count = ROW_COUNT;
+
+  RETURN jsonb_build_object(
+    'insert_id_map', v_insert_id_map,
+    'revived_ids', to_jsonb(v_revived_ids),
+    'updated_ids', to_jsonb(v_updated_ids),
+    'inserted_count', (SELECT count(*) FROM jsonb_object_keys(v_insert_id_map)),
+    'revived_count', coalesce(array_length(v_revived_ids, 1), 0),
+    'updated_count', coalesce(array_length(v_updated_ids, 1), 0),
+    'reactivated_count', v_reactivated,
+    'orphaned_count', v_orphaned,
+    'target_fks_set', v_fk_count
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.apply_object_reconciliation(TEXT, JSONB, JSONB, JSONB, INTEGER[], TIMESTAMPTZ) TO service_role;
 
 
 -- =============================================================================
@@ -3040,6 +3271,11 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 CREATE OR REPLACE FUNCTION public.compute_object_redshift_auto(p_field TEXT)
 RETURNS INTEGER
 LANGUAGE plpgsql
+-- Per-object correlated subquery over targets⋈spectra across the whole field
+-- (~7k objects on egs). Runs right after the reconcile apply; without an
+-- explicit guard it ran at the short role default and was a latent second
+-- timeout. Matches the other heavy reconcile RPCs. See #184.
+SET statement_timeout = '300s'
 AS $$
 DECLARE
   n INTEGER;

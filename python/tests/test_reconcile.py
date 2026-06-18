@@ -5,9 +5,19 @@ in batch_upsert_spectra."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from campfire.deploy.reconcile import classify
+from campfire.deploy import reconcile
+from campfire.deploy.reconcile import (
+    ClusterAggregates,
+    Insert,
+    Orphan,
+    Proposals,
+    Split,
+    Update,
+    apply_proposals,
+    classify,
+)
 from campfire.deploy.supabase import batch_upsert_spectra
 
 
@@ -261,6 +271,117 @@ def test_inactive_1to1_match_is_not_skipped():
 
     assert p.unchanged == 0
     assert len(p.updates) == 1
+
+
+def _agg(object_id='J1', ra=150.0, dec=2.0,
+         member_db_ids=(1,), member_ids=('t1',)):
+    return ClusterAggregates(
+        object_id=object_id, ra=ra, dec=dec,
+        n_targets=len(member_db_ids), n_spectra=0,
+        programs=['prog'], gratings=[], observations=['obs'],
+        max_snr=None, max_exposure_time=None,
+        member_target_db_ids=list(member_db_ids),
+        member_target_ids=set(member_ids),
+    )
+
+
+def test_apply_proposals_rpc_payload_and_parse():
+    # Deploy-path apply (no splits/merges) must go through the atomic RPC,
+    # send member_target_db_ids inside each element (so the FK assignment
+    # shares the transaction), drop the non-serializable member_target_ids
+    # set, and parse the returned id maps into (stats, changed_ids).
+    proposals = Proposals(
+        inserts=[Insert(cluster_idx=0,
+                        aggregates=_agg('JINS', member_db_ids=(10, 11),
+                                        member_ids=('t10', 't11')))],
+        updates=[Update(cluster_idx=1, object={'id': 500, 'is_active': True},
+                        aggregates=_agg('JUPD', member_db_ids=(20,),
+                                        member_ids=('t20',)),
+                        staleness_reason='new_target')],
+        orphans=[Orphan(object={'id': 900})],
+    )
+
+    client = MagicMock()
+    client.rpc.return_value.execute.return_value = MagicMock(data={
+        'insert_id_map': {'JINS': 1001},
+        'revived_ids': [],
+        'updated_ids': [500],
+        'inserted_count': 1,
+        'revived_count': 0,
+        'updated_count': 1,
+        'reactivated_count': 0,
+        'orphaned_count': 1,
+        'target_fks_set': 3,
+    })
+
+    stats, changed = apply_proposals(client, 'egs', proposals)
+
+    name, params = client.rpc.call_args[0]
+    assert name == 'apply_object_reconciliation'
+    assert params['p_field'] == 'egs'
+    assert params['p_orphan_ids'] == [900]
+    ins = params['p_inserts'][0]
+    assert ins['object_id'] == 'JINS'
+    assert ins['member_target_db_ids'] == [10, 11]
+    assert 'member_target_ids' not in ins
+    upd = params['p_updates'][0]
+    assert upd['object_db_id'] == 500
+    assert upd['staleness_reason'] == 'new_target'
+    assert upd['reactivate'] is False
+
+    assert stats['inserted'] == 1
+    assert stats['updated'] == 1
+    assert stats['soft_deleted'] == 1
+    assert stats['target_fks_set'] == 3
+    assert stats['staleness_new_target'] == 1
+    # changed_ids = inserted ∪ revived ∪ updated (orphans excluded).
+    assert changed == {1001, 500}
+
+
+def test_apply_proposals_rpc_reactivate_flag_for_inactive_update():
+    # An inactive 1:1 match carries reactivate=True so the RPC flips is_active.
+    proposals = Proposals(
+        updates=[Update(cluster_idx=0, object={'id': 7, 'is_active': False},
+                        aggregates=_agg('JX'), staleness_reason=None)],
+    )
+    client = MagicMock()
+    client.rpc.return_value.execute.return_value = MagicMock(data={
+        'insert_id_map': {}, 'revived_ids': [], 'updated_ids': [7],
+        'reactivated_count': 1, 'orphaned_count': 0, 'target_fks_set': 1,
+    })
+
+    _stats, changed = apply_proposals(client, 'egs', proposals)
+
+    assert client.rpc.call_args[0][1]['p_updates'][0]['reactivate'] is True
+    assert changed == {7}
+
+
+def test_apply_proposals_dispatches_to_legacy_when_splits_present():
+    # Splits/merges keep the legacy Python apply (photometry/list migration);
+    # they must NOT hit the atomic RPC path.
+    proposals = Proposals(
+        splits=[Split(object={'id': 1, 'ra': 150.0, 'dec': 2.0},
+                      daughters=[_agg('JD1'), _agg('JD2')],
+                      daughter_cluster_indices=[0, 1],
+                      inheritor_index=0)],
+    )
+    client = MagicMock()
+    with patch.object(reconcile, '_apply_proposals_legacy',
+                      return_value=({'split': 1}, {1})) as legacy, \
+            patch.object(reconcile, '_apply_proposals_rpc') as rpc:
+        stats, _changed = apply_proposals(client, 'egs', proposals)
+
+    legacy.assert_called_once()
+    rpc.assert_not_called()
+    assert stats == {'split': 1}
+
+
+def test_apply_proposals_empty_skips_rpc():
+    client = MagicMock()
+    stats, changed = apply_proposals(client, 'egs', Proposals())
+    client.rpc.assert_not_called()
+    assert stats == {}
+    assert changed == set()
 
 
 def test_independent_split_and_merge_both_apply():
