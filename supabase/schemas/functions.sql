@@ -81,6 +81,70 @@ GRANT EXECUTE ON FUNCTION public.accessible_program_slugs() TO authenticated;
 
 
 -- =============================================================================
+-- object_scoped_aggregates
+-- =============================================================================
+-- Viewer-scoped recompute of an object's aggregate columns.
+--
+-- The objects table stores aggregate columns (programs, gratings, observations,
+-- n_targets, n_spectra, max_snr, max_exposure_time) computed across ALL member
+-- targets at deploy time (see python/campfire/deploy/objects.py). Object row
+-- visibility is granted by array overlap (policies.sql: programs && accessible),
+-- so a viewer who can access only SOME member programs still sees the row — and
+-- the stored aggregates would leak the existence/metadata of proprietary members
+-- they cannot access (programs[] names them; counts/snr/exposure quantify them).
+--
+-- This helper recomputes those aggregates restricted to p_program_slugs, using
+-- the SAME semantics as the deploy-time builder so that a full-access viewer
+-- (p_program_slugs ⊇ the object's programs) gets values identical to the stored
+-- columns. Member-level payloads (member_targets, spectra) are already filtered
+-- in each read RPC; this covers the object's own columns.
+--
+-- Callers MUST pass an already-access-checked slug array (the caller's accessible
+-- set, optionally narrowed by an active program filter). Do not rely on RLS
+-- inside this function: it is SECURITY INVOKER, but when called from a
+-- SECURITY DEFINER context it would run as the owner with RLS bypassed — the
+-- explicit p_program_slugs filter is the access gate.
+CREATE OR REPLACE FUNCTION public.object_scoped_aggregates(
+  p_object_id INTEGER,
+  p_program_slugs TEXT[]
+)
+RETURNS TABLE(
+  programs          TEXT[],
+  gratings          TEXT[],
+  observations      TEXT[],
+  n_targets         INTEGER,
+  n_spectra         INTEGER,
+  max_snr           DOUBLE PRECISION,
+  max_exposure_time DOUBLE PRECISION
+)
+LANGUAGE sql STABLE
+AS $$
+  WITH m AS (
+    SELECT t.target_id, t.program_slug, t.observation
+    FROM targets t
+    WHERE t.object_id = p_object_id
+      AND t.program_slug = ANY(p_program_slugs)
+  ),
+  sp AS (
+    SELECT s.grating, s.signal_to_noise, s.exposure_time
+    FROM spectra s
+    WHERE s.target_id IN (SELECT target_id FROM m)
+  )
+  SELECT
+    COALESCE((SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) FROM m), '{}')::text[],
+    COALESCE((SELECT array_agg(DISTINCT sp.grating ORDER BY sp.grating) FROM sp WHERE sp.grating IS NOT NULL), '{}')::text[],
+    COALESCE((SELECT array_agg(DISTINCT m.observation ORDER BY m.observation) FROM m WHERE m.observation IS NOT NULL), '{}')::text[],
+    (SELECT COUNT(*) FROM m)::integer,
+    (SELECT COUNT(*) FROM sp)::integer,
+    (SELECT MAX(sp.signal_to_noise) FROM sp),
+    (SELECT MAX(sp.exposure_time) FROM sp);
+$$;
+
+GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[]) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[]) TO service_role;
+
+
+-- =============================================================================
 -- Device Code Auth
 -- =============================================================================
 
@@ -247,12 +311,15 @@ BEGIN
         'field', m.field,
         'ra', m.ra,
         'dec', m.dec,
-        'n_targets', m.n_targets,
-        'n_spectra', m.n_spectra,
-        'programs', m.programs,
-        'gratings', m.gratings,
-        'max_snr', m.max_snr,
-        'max_exposure_time', m.max_exposure_time,
+        -- Aggregates scoped to the caller's accessible programs so a sync that
+        -- pulls a mixed-program object doesn't leak proprietary member metadata
+        -- into the Python catalog. See object_scoped_aggregates().
+        'n_targets', sa.n_targets,
+        'n_spectra', sa.n_spectra,
+        'programs', sa.programs,
+        'gratings', sa.gratings,
+        'max_snr', sa.max_snr,
+        'max_exposure_time', sa.max_exposure_time,
         'redshift', m.redshift,
         'redshift_quality', m.redshift_quality,
         'redshift_inspected', m.redshift_inspected,
@@ -280,7 +347,8 @@ BEGIN
   FROM matched m
   LEFT JOIN member_targets_agg mt ON mt.object_id = m.id
   LEFT JOIN spectra_agg         sp ON sp.object_id = m.id
-  LEFT JOIN lists_agg           la ON la.object_id = m.id;
+  LEFT JOIN lists_agg           la ON la.object_id = m.id
+  LEFT JOIN LATERAL public.object_scoped_aggregates(m.id, p_program_slugs) sa ON true;
 END;
 $$;
 
@@ -1155,12 +1223,16 @@ BEGIN
         'field', fo.field,
         'ra', fo.ra,
         'dec', fo.dec,
-        'n_targets', fo.n_targets,
-        'n_spectra', fo.n_spectra,
-        'programs', fo.programs,
-        'gratings', fo.gratings,
-        'max_snr', fo.max_snr,
-        'max_exposure_time', fo.max_exposure_time,
+        -- Aggregates scoped to the viewer's accessible (+ filtered) programs so
+        -- mixed-program objects don't leak proprietary member metadata. Filter
+        -- and sort above still run on the global o.* columns (display-only
+        -- scoping); the substitution happens only on the paginated result set.
+        'n_targets', sa.n_targets,
+        'n_spectra', sa.n_spectra,
+        'programs', sa.programs,
+        'gratings', sa.gratings,
+        'max_snr', sa.max_snr,
+        'max_exposure_time', sa.max_exposure_time,
         'redshift', fo.redshift,
         'redshift_quality', fo.redshift_quality,
         'redshift_inspected', fo.redshift_inspected,
@@ -1211,6 +1283,7 @@ BEGIN
         )
       ) AS obj_json
     FROM filtered_objects fo
+    LEFT JOIN LATERAL public.object_scoped_aggregates(fo.id, v_filtered_program_slugs) sa ON true
   )
   SELECT
     COALESCE(jsonb_agg(wm.obj_json), '[]'::jsonb),
@@ -1939,10 +2012,13 @@ BEGIN
       o.redshift_inspected, o.redshift_auto,
       o.last_inspected_at, up.full_name AS last_inspected_by,
       o.last_data_change_at, o.staleness_reason, o.version,
-      o.n_targets, o.n_spectra,
-      array_to_string(o.programs, ';') AS programs,
-      array_to_string(o.gratings, ';') AS gratings,
-      o.max_snr, o.max_exposure_time,
+      -- Aggregates scoped to accessible (+ filtered) programs so mixed-program
+      -- objects don't export proprietary member metadata. See
+      -- object_scoped_aggregates().
+      sa.n_targets, sa.n_spectra,
+      array_to_string(sa.programs, ';') AS programs,
+      array_to_string(sa.gratings, ';') AS gratings,
+      sa.max_snr, sa.max_exposure_time,
       mt.member_target_ids,
       CASE WHEN v_coord_search_active THEN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) * POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2))))
@@ -1954,6 +2030,7 @@ BEGIN
     LEFT JOIN member_targets mt ON mt.object_id = o.id
     LEFT JOIN visible_lists vl ON vl.object_id = o.id
     LEFT JOIN user_profiles up ON up.user_id = o.last_inspected_by
+    LEFT JOIN LATERAL public.object_scoped_aggregates(o.id, v_filtered_program_slugs) sa ON true
     LEFT JOIN LATERAL (
       SELECT op.photometry FROM object_photometry op
       WHERE op.object_id = o.id ORDER BY op.updated_at DESC LIMIT 1
@@ -2404,6 +2481,37 @@ RETURNS TABLE (
 )
 LANGUAGE sql STABLE
 AS $$
+  -- programs, n_targets, n_spectra and member_target_ids are scoped to the
+  -- caller's accessible programs so mixed-program objects don't leak proprietary
+  -- member metadata on the map. redshift / redshift_quality stay visible (object
+  -- science, per the access policy). Object row visibility is enforced by RLS
+  -- (programs && accessible); this function is SECURITY INVOKER and additionally
+  -- gates the member CTEs by an explicit accessible_program_slugs() filter.
+  -- Set-based (not the per-row object_scoped_aggregates helper) because a field
+  -- can return up to ~5000 objects; the logic mirrors that helper.
+  WITH acc AS (
+    SELECT public.accessible_program_slugs() AS slugs
+  ),
+  mt AS (
+    SELECT t.object_id,
+           array_agg(t.target_id ORDER BY t.target_id)              AS member_target_ids,
+           array_agg(DISTINCT t.program_slug ORDER BY t.program_slug) AS programs,
+           COUNT(*)::int                                            AS n_targets
+    FROM public.targets t
+    CROSS JOIN acc
+    WHERE t.field = p_field
+      AND t.program_slug = ANY(acc.slugs)
+    GROUP BY t.object_id
+  ),
+  sp AS (
+    SELECT t.object_id, COUNT(*)::int AS n_spectra
+    FROM public.spectra s
+    JOIN public.targets t ON t.target_id = s.target_id
+    CROSS JOIN acc
+    WHERE t.field = p_field
+      AND t.program_slug = ANY(acc.slugs)
+    GROUP BY t.object_id
+  )
   SELECT
     o.object_id,
     o.ra,
@@ -2411,16 +2519,13 @@ AS $$
     o.redshift::double precision,
     o.redshift_quality,
     o.field,
-    o.n_targets,
-    o.n_spectra,
-    o.programs,
-    COALESCE(
-      (SELECT array_agg(t.target_id ORDER BY t.target_id)
-         FROM public.targets t
-        WHERE t.object_id = o.id),
-      ARRAY[]::TEXT[]
-    ) AS member_target_ids
+    COALESCE(mt.n_targets, 0)                      AS n_targets,
+    COALESCE(sp.n_spectra, 0)                      AS n_spectra,
+    COALESCE(mt.programs, ARRAY[]::TEXT[])         AS programs,
+    COALESCE(mt.member_target_ids, ARRAY[]::TEXT[]) AS member_target_ids
   FROM public.objects o
+  JOIN mt ON mt.object_id = o.id
+  LEFT JOIN sp ON sp.object_id = o.id
   WHERE o.field = p_field
     AND o.is_active
   ORDER BY o.object_id;
