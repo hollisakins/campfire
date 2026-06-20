@@ -692,9 +692,14 @@ BEGIN
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (
         NOT v_comment_search_active
-        OR EXISTS (
-          SELECT 1 FROM comments c
-          WHERE c.target_id = t.id
+        -- Uncorrelated semijoin: build the set of matching target_ids ONCE
+        -- (trgm/seq scan over the tiny comments table) instead of re-probing
+        -- comments per outer row. Correlated EXISTS-inside-OR can't be pulled
+        -- up and re-executes per spectrum -> timeouts on broad access. See the
+        -- objects path below for the object-level analogue.
+        OR t.id IN (
+          SELECT c.target_id FROM comments c
+          WHERE c.target_id IS NOT NULL
             AND c.is_deleted = false
             AND c.content ILIKE '%' || p_comment_search || '%'
             AND (
@@ -959,17 +964,30 @@ BEGIN
     AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
     AND (
       NOT v_comment_search_active
-      OR EXISTS (
-        SELECT 1 FROM comments c
-        WHERE c.is_deleted = false
+      -- Uncorrelated semijoin: collect the object_ids that have a matching
+      -- comment ONCE (object-level comments directly + target-level comments
+      -- mapped through their parent object), then probe o.id IN (...). The old
+      -- correlated EXISTS-inside-OR re-ran a per-object targets subquery for
+      -- every (object x matching-comment) pair -> 271k subplan executions /
+      -- ~870ms here, multi-second on broad terms or cold cache.
+      OR o.id IN (
+        SELECT c.object_id FROM comments c
+        WHERE c.object_id IS NOT NULL
+          AND c.is_deleted = false
           AND c.content ILIKE '%' || p_comment_search || '%'
           AND (
             p_comment_search_scope = 'everyone'
             OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
           )
+        UNION
+        SELECT t.object_id FROM comments c
+        JOIN targets t ON t.id = c.target_id
+        WHERE c.target_id IS NOT NULL
+          AND c.is_deleted = false
+          AND c.content ILIKE '%' || p_comment_search || '%'
           AND (
-            c.object_id = o.id
-            OR c.target_id IN (SELECT t.id FROM targets t WHERE t.object_id = o.id)
+            p_comment_search_scope = 'everyone'
+            OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
           )
       )
     );
@@ -1069,17 +1087,25 @@ BEGIN
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
       AND (
         NOT v_comment_search_active
-        OR EXISTS (
-          SELECT 1 FROM comments c
-          WHERE c.is_deleted = false
+        -- Uncorrelated semijoin; see the count query above for the rationale.
+        OR o.id IN (
+          SELECT c.object_id FROM comments c
+          WHERE c.object_id IS NOT NULL
+            AND c.is_deleted = false
             AND c.content ILIKE '%' || p_comment_search || '%'
             AND (
               p_comment_search_scope = 'everyone'
               OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
             )
+          UNION
+          SELECT t.object_id FROM comments c
+          JOIN targets t ON t.id = c.target_id
+          WHERE c.target_id IS NOT NULL
+            AND c.is_deleted = false
+            AND c.content ILIKE '%' || p_comment_search || '%'
             AND (
-              c.object_id = o.id
-              OR c.target_id IN (SELECT t.id FROM targets t WHERE t.object_id = o.id)
+              p_comment_search_scope = 'everyone'
+              OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
             )
         )
       )
@@ -1339,17 +1365,25 @@ BEGIN
     ))
     AND (
       NOT v_comment_search_active
-      OR EXISTS (
-        SELECT 1 FROM comments c
-        WHERE c.is_deleted = false
+      -- Uncorrelated semijoin; see get_filtered_objects_paginated for rationale.
+      OR o.id IN (
+        SELECT c.object_id FROM comments c
+        WHERE c.object_id IS NOT NULL
+          AND c.is_deleted = false
           AND c.content ILIKE '%' || p_comment_search || '%'
           AND (
             p_comment_search_scope = 'everyone'
             OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
           )
+        UNION
+        SELECT t.object_id FROM comments c
+        JOIN targets t ON t.id = c.target_id
+        WHERE c.target_id IS NOT NULL
+          AND c.is_deleted = false
+          AND c.content ILIKE '%' || p_comment_search || '%'
           AND (
-            c.object_id = o.id
-            OR c.target_id IN (SELECT t.id FROM targets t WHERE t.object_id = o.id)
+            p_comment_search_scope = 'everyone'
+            OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
           )
       )
     )
@@ -1535,17 +1569,25 @@ BEGIN
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
       AND (
         NOT v_comment_search_active
-        OR EXISTS (
-          SELECT 1 FROM comments c
-          WHERE c.is_deleted = false
+        -- Uncorrelated semijoin; see get_filtered_objects_paginated for rationale.
+        OR o.id IN (
+          SELECT c.object_id FROM comments c
+          WHERE c.object_id IS NOT NULL
+            AND c.is_deleted = false
             AND c.content ILIKE '%' || p_comment_search || '%'
             AND (
               p_comment_search_scope = 'everyone'
               OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
             )
+          UNION
+          SELECT t.object_id FROM comments c
+          JOIN targets t ON t.id = c.target_id
+          WHERE c.target_id IS NOT NULL
+            AND c.is_deleted = false
+            AND c.content ILIKE '%' || p_comment_search || '%'
             AND (
-              c.object_id = o.id
-              OR c.target_id IN (SELECT t.id FROM targets t WHERE t.object_id = o.id)
+              p_comment_search_scope = 'everyone'
+              OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
             )
         )
       )
@@ -1747,8 +1789,8 @@ BEGIN
                  OR o.last_inspected_at IS NULL
                  OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at))))
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
-      AND (NOT v_comment_search_active OR EXISTS (
-        SELECT 1 FROM comments c WHERE c.target_id = t.id AND c.is_deleted = false
+      AND (NOT v_comment_search_active OR t.id IN (
+        SELECT c.target_id FROM comments c WHERE c.target_id IS NOT NULL AND c.is_deleted = false
           AND c.content ILIKE '%' || p_comment_search || '%'
           AND (p_comment_search_scope = 'everyone' OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id))))
       AND (NOT v_coord_search_active OR (
@@ -1956,17 +1998,25 @@ BEGIN
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
       AND (
         NOT v_comment_search_active
-        OR EXISTS (
-          SELECT 1 FROM comments c
-          WHERE c.is_deleted = false
+        -- Uncorrelated semijoin; see get_filtered_objects_paginated for rationale.
+        OR o.id IN (
+          SELECT c.object_id FROM comments c
+          WHERE c.object_id IS NOT NULL
+            AND c.is_deleted = false
             AND c.content ILIKE '%' || p_comment_search || '%'
             AND (
               p_comment_search_scope = 'everyone'
               OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
             )
+          UNION
+          SELECT t.object_id FROM comments c
+          JOIN targets t ON t.id = c.target_id
+          WHERE c.target_id IS NOT NULL
+            AND c.is_deleted = false
+            AND c.content ILIKE '%' || p_comment_search || '%'
             AND (
-              c.object_id = o.id
-              OR c.target_id IN (SELECT t.id FROM targets t WHERE t.object_id = o.id)
+              p_comment_search_scope = 'everyone'
+              OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
             )
         )
       )
