@@ -672,7 +672,7 @@ BEGIN
       AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
           SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
-      AND (p_search IS NULL OR s.search_text ILIKE '%' || p_search || '%')
+      AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -921,7 +921,7 @@ BEGIN
     AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
     AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
     AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-    AND (p_search IS NULL OR o.search_text ILIKE '%' || p_search || '%')
+    AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
     AND (
       p_inspected_only IS NULL
       OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -1031,7 +1031,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-      AND (p_search IS NULL OR o.search_text ILIKE '%' || p_search || '%')
+      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -1304,7 +1304,7 @@ BEGIN
     AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
     AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
     AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-    AND (p_search IS NULL OR o.search_text ILIKE '%' || p_search || '%')
+    AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
     AND (
       p_inspected_only IS NULL
       OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -1509,7 +1509,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-      AND (p_search IS NULL OR o.search_text ILIKE '%' || p_search || '%')
+      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
@@ -1735,7 +1735,7 @@ BEGIN
       AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
           SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
-      AND (p_search IS NULL OR s.search_text ILIKE '%' || p_search || '%')
+      AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND COALESCE(o.redshift_quality, 0) = 0))
       AND (p_needs_review IS NULL
         OR (p_needs_review = TRUE
@@ -1932,7 +1932,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-      AND (p_search IS NULL OR o.search_text ILIKE '%' || p_search || '%')
+      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
       AND (p_needs_review IS NULL
         OR (p_needs_review = TRUE
