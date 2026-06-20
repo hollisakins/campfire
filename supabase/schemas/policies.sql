@@ -29,27 +29,27 @@ CREATE POLICY "authenticated_select_profiles"
 DROP POLICY IF EXISTS "self_update_profile" ON user_profiles;
 CREATE POLICY "self_update_profile"
   ON user_profiles FOR UPDATE TO authenticated
-  USING (user_id = auth.uid())
-  WITH CHECK (user_id = auth.uid());
+  USING (user_id = (SELECT auth.uid()))
+  WITH CHECK (user_id = (SELECT auth.uid()));
 
 -- Admins can update any profile (is_admin, can_comment toggles).
 DROP POLICY IF EXISTS "admin_update_profile" ON user_profiles;
 CREATE POLICY "admin_update_profile"
   ON user_profiles FOR UPDATE TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can delete profiles (user management).
 DROP POLICY IF EXISTS "admin_delete_profile" ON user_profiles;
 CREATE POLICY "admin_delete_profile"
   ON user_profiles FOR DELETE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Admins can insert profiles (manual user creation).
 DROP POLICY IF EXISTS "admin_insert_profile" ON user_profiles;
 CREATE POLICY "admin_insert_profile"
   ON user_profiles FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -62,25 +62,25 @@ ALTER TABLE user_program_access ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "self_select_access" ON user_program_access;
 CREATE POLICY "self_select_access"
   ON user_program_access FOR SELECT TO authenticated
-  USING (user_id = auth.uid());
+  USING (user_id = (SELECT auth.uid()));
 
 -- Admins can see all access grants (user management panel).
 DROP POLICY IF EXISTS "admin_select_access" ON user_program_access;
 CREATE POLICY "admin_select_access"
   ON user_program_access FOR SELECT TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Admins can grant program access.
 DROP POLICY IF EXISTS "admin_insert_access" ON user_program_access;
 CREATE POLICY "admin_insert_access"
   ON user_program_access FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can revoke program access.
 DROP POLICY IF EXISTS "admin_delete_access" ON user_program_access;
 CREATE POLICY "admin_delete_access"
   ON user_program_access FOR DELETE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -96,27 +96,27 @@ CREATE POLICY "accessible_programs_select"
   ON programs FOR SELECT TO authenticated
   USING (
     is_public = true
-    OR slug IN (SELECT program_slug FROM user_program_access WHERE user_id = auth.uid())
+    OR slug IN (SELECT program_slug FROM user_program_access WHERE user_id = (SELECT auth.uid()))
   );
 
 -- Admins can see all programs (including private ones without access).
 DROP POLICY IF EXISTS "admin_programs_select" ON programs;
 CREATE POLICY "admin_programs_select"
   ON programs FOR SELECT TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Admins can insert programs (deploy CLI: sync-programs).
 DROP POLICY IF EXISTS "admin_programs_insert" ON programs;
 CREATE POLICY "admin_programs_insert"
   ON programs FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can update programs (toggle is_public, edit metadata).
 DROP POLICY IF EXISTS "admin_programs_update" ON programs;
 CREATE POLICY "admin_programs_update"
   ON programs FOR UPDATE TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -130,21 +130,21 @@ DROP POLICY IF EXISTS "accessible_observations_select" ON observations;
 CREATE POLICY "accessible_observations_select"
   ON observations FOR SELECT TO authenticated
   USING (
-    program_slug = ANY(public.accessible_program_slugs())
+    program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
   );
 
 -- Admins can insert observations (deploy CLI).
 DROP POLICY IF EXISTS "admin_observations_insert" ON observations;
 CREATE POLICY "admin_observations_insert"
   ON observations FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can update observations (deploy CLI: last_deployed_at, counts).
 DROP POLICY IF EXISTS "admin_observations_update" ON observations;
 CREATE POLICY "admin_observations_update"
   ON observations FOR UPDATE TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -158,7 +158,7 @@ DROP POLICY IF EXISTS "select_targets_by_access" ON targets;
 CREATE POLICY "select_targets_by_access"
   ON targets FOR SELECT
   USING (
-    program_slug = ANY(public.accessible_program_slugs())
+    program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
   );
 
 -- Users with can_comment permission can update targets in accessible programs.
@@ -166,28 +166,28 @@ DROP POLICY IF EXISTS "update_targets_by_access" ON targets;
 CREATE POLICY "update_targets_by_access"
   ON targets FOR UPDATE
   USING (
-    program_slug = ANY(public.accessible_program_slugs())
-    AND public.can_comment()
+    program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+    AND (SELECT public.can_comment())
   );
 
 -- Admins can insert targets (deploy CLI).
 DROP POLICY IF EXISTS "admin_targets_insert" ON targets;
 CREATE POLICY "admin_targets_insert"
   ON targets FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can update all target fields (deploy CLI: pipeline fields, redshift drift reset).
 DROP POLICY IF EXISTS "admin_targets_update" ON targets;
 CREATE POLICY "admin_targets_update"
   ON targets FOR UPDATE TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can delete targets (deploy CLI: remove/un-deploy observation).
 DROP POLICY IF EXISTS "admin_targets_delete" ON targets;
 CREATE POLICY "admin_targets_delete"
   ON targets FOR DELETE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -203,21 +203,21 @@ DROP POLICY IF EXISTS "select_objects_by_access" ON objects;
 CREATE POLICY "select_objects_by_access"
   ON objects FOR SELECT
   USING (
-    programs && public.accessible_program_slugs()
+    programs && (SELECT public.accessible_program_slugs())
   );
 
 -- Admins can insert objects (deploy CLI: objects rebuild).
 DROP POLICY IF EXISTS "admin_objects_insert" ON objects;
 CREATE POLICY "admin_objects_insert"
   ON objects FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can update objects (deploy CLI: objects rebuild).
 DROP POLICY IF EXISTS "admin_objects_update" ON objects;
 CREATE POLICY "admin_objects_update"
   ON objects FOR UPDATE TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Phase A: users with can_comment permission can update objects whose
 -- programs[] overlaps their accessible programs. Mirrors the targets
@@ -231,19 +231,19 @@ DROP POLICY IF EXISTS "update_objects_by_access" ON objects;
 CREATE POLICY "update_objects_by_access"
   ON objects FOR UPDATE
   USING (
-    programs && public.accessible_program_slugs()
-    AND public.can_comment()
+    programs && (SELECT public.accessible_program_slugs())
+    AND (SELECT public.can_comment())
   )
   WITH CHECK (
-    programs && public.accessible_program_slugs()
-    AND public.can_comment()
+    programs && (SELECT public.accessible_program_slugs())
+    AND (SELECT public.can_comment())
   );
 
 -- Admins can delete objects (deploy CLI: objects rebuild wipes before re-insert).
 DROP POLICY IF EXISTS "admin_objects_delete" ON objects;
 CREATE POLICY "admin_objects_delete"
   ON objects FOR DELETE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -259,7 +259,7 @@ CREATE POLICY "select_object_photometry_by_access"
   USING (
     object_id IN (
       SELECT o.id FROM objects o
-      WHERE o.programs && public.accessible_program_slugs()
+      WHERE o.programs && (SELECT public.accessible_program_slugs())
     )
   );
 
@@ -267,20 +267,20 @@ CREATE POLICY "select_object_photometry_by_access"
 DROP POLICY IF EXISTS "admin_object_photometry_insert" ON object_photometry;
 CREATE POLICY "admin_object_photometry_insert"
   ON object_photometry FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can update photometry (deploy CLI).
 DROP POLICY IF EXISTS "admin_object_photometry_update" ON object_photometry;
 CREATE POLICY "admin_object_photometry_update"
   ON object_photometry FOR UPDATE TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can delete photometry (deploy CLI).
 DROP POLICY IF EXISTS "admin_object_photometry_delete" ON object_photometry;
 CREATE POLICY "admin_object_photometry_delete"
   ON object_photometry FOR DELETE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -294,7 +294,7 @@ DROP POLICY IF EXISTS "select_lists" ON object_lists;
 CREATE POLICY "select_lists"
   ON object_lists FOR SELECT TO authenticated
   USING (
-    created_by = auth.uid()
+    created_by = (SELECT auth.uid())
     OR visibility IN ('public_read', 'public_edit')
   );
 
@@ -303,30 +303,30 @@ DROP POLICY IF EXISTS "insert_lists" ON object_lists;
 CREATE POLICY "insert_lists"
   ON object_lists FOR INSERT TO authenticated
   WITH CHECK (
-    created_by = auth.uid()
+    created_by = (SELECT auth.uid())
     AND is_system = false
-    AND public.can_comment()
-    AND NOT public.is_group_account()
+    AND (SELECT public.can_comment())
+    AND NOT (SELECT public.is_group_account())
   );
 
 -- Owners can update their own lists (but not system lists).
 DROP POLICY IF EXISTS "update_own_lists" ON object_lists;
 CREATE POLICY "update_own_lists"
   ON object_lists FOR UPDATE TO authenticated
-  USING (created_by = auth.uid() AND is_system = false)
-  WITH CHECK (created_by = auth.uid() AND is_system = false);
+  USING (created_by = (SELECT auth.uid()) AND is_system = false)
+  WITH CHECK (created_by = (SELECT auth.uid()) AND is_system = false);
 
 -- Owners can delete their own lists (but not system lists).
 DROP POLICY IF EXISTS "delete_own_lists" ON object_lists;
 CREATE POLICY "delete_own_lists"
   ON object_lists FOR DELETE TO authenticated
-  USING (created_by = auth.uid() AND is_system = false);
+  USING (created_by = (SELECT auth.uid()) AND is_system = false);
 
 -- Admins can manage all lists including system lists.
 DROP POLICY IF EXISTS "admin_manage_lists" ON object_lists;
 CREATE POLICY "admin_manage_lists"
   ON object_lists
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -346,17 +346,17 @@ CREATE POLICY "select_list_members"
   USING (
     list_id IN (
       SELECT id FROM object_lists
-      WHERE created_by = auth.uid()
+      WHERE created_by = (SELECT auth.uid())
          OR visibility IN ('public_read', 'public_edit')
     )
     AND (
       (object_id IS NULL AND list_id IN (
         SELECT id FROM object_lists
-        WHERE created_by = auth.uid() OR visibility = 'public_edit'
+        WHERE created_by = (SELECT auth.uid()) OR visibility = 'public_edit'
       ))
       OR object_id IN (
         SELECT o.id FROM objects o
-        WHERE o.programs && public.accessible_program_slugs()
+        WHERE o.programs && (SELECT public.accessible_program_slugs())
       )
     )
   );
@@ -366,10 +366,10 @@ DROP POLICY IF EXISTS "insert_list_members" ON object_list_members;
 CREATE POLICY "insert_list_members"
   ON object_list_members FOR INSERT TO authenticated
   WITH CHECK (
-    public.can_comment()
+    (SELECT public.can_comment())
     AND list_id IN (
       SELECT id FROM object_lists
-      WHERE created_by = auth.uid()
+      WHERE created_by = (SELECT auth.uid())
          OR visibility = 'public_edit'
     )
   );
@@ -380,18 +380,18 @@ DROP POLICY IF EXISTS "update_list_members" ON object_list_members;
 CREATE POLICY "update_list_members"
   ON object_list_members FOR UPDATE TO authenticated
   USING (
-    public.can_comment()
+    (SELECT public.can_comment())
     AND list_id IN (
       SELECT id FROM object_lists
-      WHERE created_by = auth.uid()
+      WHERE created_by = (SELECT auth.uid())
          OR visibility = 'public_edit'
     )
   )
   WITH CHECK (
-    public.can_comment()
+    (SELECT public.can_comment())
     AND list_id IN (
       SELECT id FROM object_lists
-      WHERE created_by = auth.uid()
+      WHERE created_by = (SELECT auth.uid())
          OR visibility = 'public_edit'
     )
   );
@@ -401,10 +401,10 @@ DROP POLICY IF EXISTS "delete_list_members" ON object_list_members;
 CREATE POLICY "delete_list_members"
   ON object_list_members FOR DELETE TO authenticated
   USING (
-    public.can_comment()
+    (SELECT public.can_comment())
     AND list_id IN (
       SELECT id FROM object_lists
-      WHERE created_by = auth.uid()
+      WHERE created_by = (SELECT auth.uid())
          OR visibility = 'public_edit'
     )
   );
@@ -413,7 +413,7 @@ CREATE POLICY "delete_list_members"
 DROP POLICY IF EXISTS "admin_manage_list_members" ON object_list_members;
 CREATE POLICY "admin_manage_list_members"
   ON object_list_members
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -429,7 +429,7 @@ CREATE POLICY "select_list_audit"
   USING (
     list_id IN (
       SELECT id FROM object_lists
-      WHERE created_by = auth.uid()
+      WHERE created_by = (SELECT auth.uid())
          OR visibility IN ('public_read', 'public_edit')
     )
   );
@@ -438,7 +438,7 @@ CREATE POLICY "select_list_audit"
 DROP POLICY IF EXISTS "admin_select_list_audit" ON list_audit_log;
 CREATE POLICY "admin_select_list_audit"
   ON list_audit_log FOR SELECT TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -454,7 +454,7 @@ CREATE POLICY "select_spectra_by_access"
   USING (
     target_id IN (
       SELECT t.target_id FROM targets t
-      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     )
   );
 
@@ -462,20 +462,20 @@ CREATE POLICY "select_spectra_by_access"
 DROP POLICY IF EXISTS "admin_spectra_insert" ON spectra;
 CREATE POLICY "admin_spectra_insert"
   ON spectra FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can update spectra (deploy CLI: thumbnails, provenance).
 DROP POLICY IF EXISTS "admin_spectra_update" ON spectra;
 CREATE POLICY "admin_spectra_update"
   ON spectra FOR UPDATE TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can delete spectra (deploy CLI: remove/un-deploy observation).
 DROP POLICY IF EXISTS "admin_spectra_delete" ON spectra;
 CREATE POLICY "admin_spectra_delete"
   ON spectra FOR DELETE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Users with can_comment may update spectra whose parent target is in an
 -- accessible program. Column scope is restricted to dq_flags (and the
@@ -486,17 +486,17 @@ DROP POLICY IF EXISTS "update_spectra_dq_by_access" ON spectra;
 CREATE POLICY "update_spectra_dq_by_access"
   ON spectra FOR UPDATE TO authenticated
   USING (
-    public.can_comment()
+    (SELECT public.can_comment())
     AND target_id IN (
       SELECT t.target_id FROM targets t
-      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     )
   )
   WITH CHECK (
-    public.can_comment()
+    (SELECT public.can_comment())
     AND target_id IN (
       SELECT t.target_id FROM targets t
-      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     )
   );
 
@@ -515,13 +515,13 @@ CREATE POLICY "select_comments_by_access"
     -- Target-level comments
     (target_id IS NOT NULL AND target_id IN (
       SELECT t.id FROM targets t
-      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     ))
     OR
     -- Object-level comments
     (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
       SELECT o.id FROM objects o
-      WHERE o.programs && public.accessible_program_slugs()
+      WHERE o.programs && (SELECT public.accessible_program_slugs())
     ))
   );
 
@@ -534,16 +534,16 @@ CREATE POLICY "insert_comments_by_access"
       -- Target-level comments
       (target_id IS NOT NULL AND target_id IN (
         SELECT t.id FROM targets t
-        WHERE t.program_slug = ANY(public.accessible_program_slugs())
+        WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
       ))
       OR
       -- Object-level comments
       (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
         SELECT o.id FROM objects o
-        WHERE o.programs && public.accessible_program_slugs()
+        WHERE o.programs && (SELECT public.accessible_program_slugs())
       ))
     )
-    AND public.can_comment()
+    AND (SELECT public.can_comment())
   );
 
 
@@ -562,16 +562,16 @@ CREATE POLICY "select_audit_by_access"
   USING (
     (target_id IS NOT NULL AND target_id IN (
       SELECT t.id FROM targets t
-      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     ))
     OR (object_id IS NOT NULL AND object_id IN (
       SELECT o.id FROM objects o
-      WHERE o.programs && public.accessible_program_slugs()
+      WHERE o.programs && (SELECT public.accessible_program_slugs())
     ))
     OR (spectrum_id IS NOT NULL AND spectrum_id IN (
       SELECT s.id FROM spectra s
       JOIN targets t ON t.target_id = s.target_id
-      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     ))
   );
 
@@ -585,16 +585,16 @@ CREATE POLICY "insert_audit_by_access"
   WITH CHECK (
     (target_id IS NOT NULL AND target_id IN (
       SELECT t.id FROM targets t
-      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     ))
     OR (object_id IS NOT NULL AND object_id IN (
       SELECT o.id FROM objects o
-      WHERE o.programs && public.accessible_program_slugs()
+      WHERE o.programs && (SELECT public.accessible_program_slugs())
     ))
     OR (spectrum_id IS NOT NULL AND spectrum_id IN (
       SELECT s.id FROM spectra s
       JOIN targets t ON t.target_id = s.target_id
-      WHERE t.program_slug = ANY(public.accessible_program_slugs())
+      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     ))
   );
 
@@ -622,20 +622,20 @@ ALTER TABLE nircam_exposures ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "admin_select_exposures" ON nircam_exposures;
 CREATE POLICY "admin_select_exposures"
   ON nircam_exposures FOR SELECT TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Admins can insert exposures.
 DROP POLICY IF EXISTS "admin_insert_exposures" ON nircam_exposures;
 CREATE POLICY "admin_insert_exposures"
   ON nircam_exposures FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can update exposures.
 DROP POLICY IF EXISTS "admin_update_exposures" ON nircam_exposures;
 CREATE POLICY "admin_update_exposures"
   ON nircam_exposures FOR UPDATE TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -667,8 +667,8 @@ CREATE POLICY "Authenticated users can read map layers"
 DROP POLICY IF EXISTS "admin_map_layers_all" ON map_layers;
 CREATE POLICY "admin_map_layers_all"
   ON map_layers FOR ALL TO authenticated
-  USING (public.is_admin())
-  WITH CHECK (public.is_admin());
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Service role has full access to map layers (backward compat).
 DROP POLICY IF EXISTS "Service role has full access to map layers" ON map_layers;
@@ -694,13 +694,13 @@ CREATE POLICY "Authenticated users can view slit regions"
 DROP POLICY IF EXISTS "admin_slit_regions_insert" ON slit_regions;
 CREATE POLICY "admin_slit_regions_insert"
   ON slit_regions FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can delete slit regions (deploy CLI: delete-then-insert pattern).
 DROP POLICY IF EXISTS "admin_slit_regions_delete" ON slit_regions;
 CREATE POLICY "admin_slit_regions_delete"
   ON slit_regions FOR DELETE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -719,13 +719,13 @@ CREATE POLICY "Authenticated users can view shutters"
 DROP POLICY IF EXISTS "admin_shutters_insert" ON shutters;
 CREATE POLICY "admin_shutters_insert"
   ON shutters FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can delete shutters (deploy CLI: delete-then-insert pattern).
 DROP POLICY IF EXISTS "admin_shutters_delete" ON shutters;
 CREATE POLICY "admin_shutters_delete"
   ON shutters FOR DELETE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -744,7 +744,7 @@ CREATE POLICY "authenticated_select_deployments"
 DROP POLICY IF EXISTS "admin_deployments_insert" ON deployments;
 CREATE POLICY "admin_deployments_insert"
   ON deployments FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -757,31 +757,31 @@ ALTER TABLE pending_invites ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "admin_select_invites" ON pending_invites;
 CREATE POLICY "admin_select_invites"
   ON pending_invites FOR SELECT TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Users can read own invite by email.
 DROP POLICY IF EXISTS "Users can read own invite by email" ON pending_invites;
 CREATE POLICY "Users can read own invite by email"
   ON pending_invites FOR SELECT TO authenticated
-  USING (email = (SELECT users.email FROM auth.users WHERE users.id = auth.uid())::text);
+  USING (email = (SELECT users.email FROM auth.users WHERE users.id = (SELECT auth.uid()))::text);
 
 -- Admins can create invites.
 DROP POLICY IF EXISTS "admin_insert_invites" ON pending_invites;
 CREATE POLICY "admin_insert_invites"
   ON pending_invites FOR INSERT TO authenticated
-  WITH CHECK (public.is_admin());
+  WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can update invites.
 DROP POLICY IF EXISTS "admin_update_invites" ON pending_invites;
 CREATE POLICY "admin_update_invites"
   ON pending_invites FOR UPDATE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Admins can delete invites.
 DROP POLICY IF EXISTS "admin_delete_invites" ON pending_invites;
 CREATE POLICY "admin_delete_invites"
   ON pending_invites FOR DELETE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
@@ -794,7 +794,7 @@ ALTER TABLE access_codes ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "admin_manage_codes" ON access_codes;
 CREATE POLICY "admin_manage_codes"
   ON access_codes
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Anyone can read active codes (for code redemption flow).
 DROP POLICY IF EXISTS "Anyone can read active codes" ON access_codes;
@@ -813,19 +813,19 @@ ALTER TABLE code_redemptions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "admin_select_redemptions" ON code_redemptions;
 CREATE POLICY "admin_select_redemptions"
   ON code_redemptions FOR SELECT
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Users can see own redemptions.
 DROP POLICY IF EXISTS "Users can see own redemptions" ON code_redemptions;
 CREATE POLICY "Users can see own redemptions"
   ON code_redemptions FOR SELECT
-  USING (user_id = auth.uid());
+  USING (user_id = (SELECT auth.uid()));
 
 -- Users can redeem codes.
 DROP POLICY IF EXISTS "Users can redeem codes" ON code_redemptions;
 CREATE POLICY "Users can redeem codes"
   ON code_redemptions FOR INSERT
-  WITH CHECK (user_id = auth.uid());
+  WITH CHECK (user_id = (SELECT auth.uid()));
 
 
 -- =============================================================================
@@ -838,13 +838,13 @@ ALTER TABLE account_requests ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "admin_select_requests" ON account_requests;
 CREATE POLICY "admin_select_requests"
   ON account_requests FOR SELECT TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Admins can update requests.
 DROP POLICY IF EXISTS "admin_update_requests" ON account_requests;
 CREATE POLICY "admin_update_requests"
   ON account_requests FOR UPDATE TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Anyone can submit requests (including anonymous users).
 DROP POLICY IF EXISTS "Anyone can submit requests" ON account_requests;
@@ -869,13 +869,13 @@ ALTER TABLE download_log ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "admin_select_downloads" ON download_log;
 CREATE POLICY "admin_select_downloads"
   ON download_log FOR SELECT TO authenticated
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Users can view own downloads.
 DROP POLICY IF EXISTS "Users can view own downloads" ON download_log;
 CREATE POLICY "Users can view own downloads"
   ON download_log FOR SELECT TO authenticated
-  USING (auth.uid() = user_id);
+  USING ((SELECT auth.uid()) = user_id);
 
 
 -- =============================================================================
@@ -888,13 +888,13 @@ ALTER TABLE password_reset_log ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "admin_select_reset_logs" ON password_reset_log;
 CREATE POLICY "admin_select_reset_logs"
   ON password_reset_log FOR SELECT
-  USING (public.is_admin());
+  USING ((SELECT public.is_admin()));
 
 -- Users can view own reset logs.
 DROP POLICY IF EXISTS "Users can view own reset logs" ON password_reset_log;
 CREATE POLICY "Users can view own reset logs"
   ON password_reset_log FOR SELECT
-  USING (user_id = auth.uid());
+  USING (user_id = (SELECT auth.uid()));
 
 
 -- =============================================================================
@@ -928,14 +928,14 @@ CREATE POLICY "Service role full access"
 DROP POLICY IF EXISTS "Users can view own tokens" ON refresh_tokens;
 CREATE POLICY "Users can view own tokens"
   ON refresh_tokens FOR SELECT TO authenticated
-  USING (auth.uid() = user_id);
+  USING ((SELECT auth.uid()) = user_id);
 
 -- Users can update own tokens.
 DROP POLICY IF EXISTS "Users can update own tokens" ON refresh_tokens;
 CREATE POLICY "Users can update own tokens"
   ON refresh_tokens FOR UPDATE TO authenticated
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
+  USING ((SELECT auth.uid()) = user_id)
+  WITH CHECK ((SELECT auth.uid()) = user_id);
 
 
 -- =============================================================================
@@ -948,23 +948,23 @@ ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Users can view own API keys" ON api_keys;
 CREATE POLICY "Users can view own API keys"
   ON api_keys FOR SELECT TO authenticated
-  USING (auth.uid() = user_id);
+  USING ((SELECT auth.uid()) = user_id);
 
 -- Users can create own API keys.
 DROP POLICY IF EXISTS "Users can create own API keys" ON api_keys;
 CREATE POLICY "Users can create own API keys"
   ON api_keys FOR INSERT TO authenticated
-  WITH CHECK (auth.uid() = user_id);
+  WITH CHECK ((SELECT auth.uid()) = user_id);
 
 -- Users can update own API keys.
 DROP POLICY IF EXISTS "Users can update own API keys" ON api_keys;
 CREATE POLICY "Users can update own API keys"
   ON api_keys FOR UPDATE TO authenticated
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
+  USING ((SELECT auth.uid()) = user_id)
+  WITH CHECK ((SELECT auth.uid()) = user_id);
 
 -- Users can delete own API keys.
 DROP POLICY IF EXISTS "Users can delete own API keys" ON api_keys;
 CREATE POLICY "Users can delete own API keys"
   ON api_keys FOR DELETE TO authenticated
-  USING (auth.uid() = user_id);
+  USING ((SELECT auth.uid()) = user_id);
