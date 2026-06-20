@@ -2145,3 +2145,9 @@ SELECT setval('public.comments_id_seq', 198, false);
 SELECT setval('public.flag_audit_log_id_seq', 18028, false);
 SELECT setval('public.object_lists_id_seq', COALESCE((SELECT MAX(id) FROM public.object_lists), 0) + 1, false);
 SELECT setval('public.object_list_members_id_seq', COALESCE((SELECT MAX(id) FROM public.object_list_members), 0) + 1, false);
+
+-- objects.search_text is maintained by reconcile in prod; the seed is a static
+-- snapshot, so backfill it here (after targets are linked) for the trgm-indexed
+-- search path on preview branches and local resets. spectra.search_text is
+-- a generated column, already populated by the inserts above.
+SELECT public.recompute_object_search_text();

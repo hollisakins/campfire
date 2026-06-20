@@ -672,9 +672,7 @@ BEGIN
       AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
           SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
-      AND (p_search IS NULL
-           OR t.target_id ILIKE '%' || p_search || '%'
-           OR s.spectrum_id ILIKE '%' || p_search || '%')
+      AND (p_search IS NULL OR s.search_text ILIKE '%' || p_search || '%')
       AND (
         p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -923,8 +921,7 @@ BEGIN
     AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
     AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
     AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-    AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
-      OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
+    AND (p_search IS NULL OR o.search_text ILIKE '%' || p_search || '%')
     AND (
       p_inspected_only IS NULL
       OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -1034,8 +1031,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-      AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
-      OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
+      AND (p_search IS NULL OR o.search_text ILIKE '%' || p_search || '%')
       AND (
         p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -1308,8 +1304,7 @@ BEGIN
     AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
     AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
     AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-    AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
-      OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
+    AND (p_search IS NULL OR o.search_text ILIKE '%' || p_search || '%')
     AND (
       p_inspected_only IS NULL
       OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -1514,8 +1509,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-      AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
-        OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
+      AND (p_search IS NULL OR o.search_text ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
@@ -1741,9 +1735,7 @@ BEGIN
       AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
           SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
       ))
-      AND (p_search IS NULL
-           OR t.target_id ILIKE '%' || p_search || '%'
-           OR s.spectrum_id ILIKE '%' || p_search || '%')
+      AND (p_search IS NULL OR s.search_text ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND COALESCE(o.redshift_quality, 0) = 0))
       AND (p_needs_review IS NULL
         OR (p_needs_review = TRUE
@@ -1940,8 +1932,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-      AND (p_search IS NULL OR o.object_id ILIKE '%' || p_search || '%'
-      OR EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.target_id ILIKE '%' || p_search || '%'))
+      AND (p_search IS NULL OR o.search_text ILIKE '%' || p_search || '%')
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
       AND (p_needs_review IS NULL
         OR (p_needs_review = TRUE
@@ -3002,6 +2993,51 @@ GRANT EXECUTE ON FUNCTION public.bulk_set_target_object_fks(JSONB, TIMESTAMPTZ) 
 -- Returns jsonb: {insert_id_map: {object_id: db_id}, revived_ids: [db_id],
 --   updated_ids: [db_id], inserted_count, revived_count, updated_count,
 --   reactivated_count, orphaned_count, target_fks_set}.
+-- =============================================================================
+-- recompute_object_search_text
+--   Refresh the denormalized objects.search_text blob (object_id + member
+--   target_ids + program_slugs + observations) from currently-linked targets.
+--   Call with a list of object ids (the rows an apply touched) or NULL for all
+--   (one-time backfill). SECURITY DEFINER so deploy/service-role and migration
+--   callers write this aggregate column past enforce_object_user_update_scope
+--   (which lets auth.uid() IS NULL / admins through). The IS DISTINCT FROM guard
+--   avoids no-op writes (search_text has no updated_at trigger, but stay clean).
+-- =============================================================================
+CREATE OR REPLACE FUNCTION public.recompute_object_search_text(p_object_ids integer[] DEFAULT NULL)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_count integer;
+BEGIN
+  WITH new_vals AS (
+    SELECT o.id,
+           concat_ws(' ',
+             o.object_id,
+             string_agg(DISTINCT t.target_id, ' '),
+             string_agg(DISTINCT t.program_slug, ' '),
+             string_agg(DISTINCT t.observation, ' ')
+           ) AS st
+    FROM objects o
+    LEFT JOIN targets t ON t.object_id = o.id
+    WHERE (p_object_ids IS NULL OR o.id = ANY(p_object_ids))
+    GROUP BY o.id, o.object_id
+  )
+  UPDATE objects o
+  SET search_text = nv.st
+  FROM new_vals nv
+  WHERE o.id = nv.id
+    AND o.search_text IS DISTINCT FROM nv.st;
+  GET DIAGNOSTICS v_count = ROW_COUNT;
+  RETURN v_count;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.recompute_object_search_text(integer[]) TO service_role;
+
+
 CREATE OR REPLACE FUNCTION public.apply_object_reconciliation(
   p_field       TEXT,
   p_inserts     JSONB DEFAULT '[]'::jsonb,
@@ -3172,6 +3208,16 @@ BEGIN
   FROM pairs p
   WHERE t.id = p.target_id;
   GET DIAGNOSTICS v_fk_count = ROW_COUNT;
+
+  -- 6. Refresh denormalized search_text for every object touched above. Targets
+  --    are relinked (step 5), so member target_ids / programs / observations
+  --    resolve. Scoped to the affected ids so it stays cheap per apply.
+  PERFORM public.recompute_object_search_text(
+    (SELECT coalesce(array_agg(value::int), '{}'::integer[])
+       FROM jsonb_each_text(v_insert_id_map))
+    || v_revived_ids
+    || v_updated_ids
+  );
 
   RETURN jsonb_build_object(
     'insert_id_map', v_insert_id_map,
