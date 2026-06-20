@@ -131,6 +131,7 @@ BEGIN
        OR OLD.inspected_used_auto IS DISTINCT FROM NEW.inspected_used_auto
        OR OLD.is_active IS DISTINCT FROM NEW.is_active
        OR OLD.created_at IS DISTINCT FROM NEW.created_at
+       OR OLD.search_text IS DISTINCT FROM NEW.search_text
     THEN
         RAISE EXCEPTION 'Non-admin updates to objects may only change inspection fields (redshift_inspected, redshift_quality, last_inspected_at, last_inspected_by)'
             USING ERRCODE = '42501';  -- insufficient_privilege

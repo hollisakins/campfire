@@ -340,6 +340,17 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
         regexp_replace("fits_path", '^.*/', ''),
         '_spec\.fits$', '', 'i'
       )
+    ) STORED,
+    -- Denormalized search blob for the spectra-list p_search path: target_id plus
+    -- the spectrum_id derivation. A generated column may not reference another
+    -- generated column (spectrum_id), so the fits_path regexp is mirrored here —
+    -- keep in sync with the spectrum_id expression above. trgm-indexed.
+    "search_text" "text" GENERATED ALWAYS AS (
+      "target_id" || ' ' ||
+      regexp_replace(
+        regexp_replace(COALESCE("fits_path", ''), '^.*/', ''),
+        '_spec\.fits$', '', 'i'
+      )
     ) STORED
 );
 
@@ -477,7 +488,13 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "last_data_change_at" timestamp with time zone,
     "staleness_reason" "text",
     "version" integer NOT NULL DEFAULT 1,
-    "is_active" boolean NOT NULL DEFAULT true
+    "is_active" boolean NOT NULL DEFAULT true,
+    -- Denormalized search blob: object_id + member target_ids + program_slugs +
+    -- observations. Cross-table (member targets), so it cannot be a generated
+    -- column; maintained by recompute_object_search_text() at the end of
+    -- apply_object_reconciliation (and the legacy objects.py rebuild). Backs the
+    -- trgm-indexed p_search path in get_filtered_objects_paginated / _object_ids.
+    "search_text" "text"
 );
 
 

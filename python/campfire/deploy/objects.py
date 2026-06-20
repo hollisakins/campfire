@@ -626,6 +626,14 @@ def rebuild_field_objects(
     n_fks = _set_target_fks(client, objects, object_id_to_db_id)
     print(f"    Updated {n_fks} targets")
 
+    # Targets are now relinked, so search_text resolves member target_ids /
+    # programs / observations. The reconcile path does this in-RPC (step 6 of
+    # apply_object_reconciliation); the rebuild escape hatch calls it explicitly.
+    print(f"  Refreshing object search_text...")
+    client.rpc('recompute_object_search_text', {
+        'p_object_ids': list(object_id_to_db_id.values()),
+    }).execute()
+
     print(f"  Re-linking list member FKs...")
     relink_result = _relink_list_members(client, field)
     n_relinked = relink_result.get('relinked', 0)

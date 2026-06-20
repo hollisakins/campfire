@@ -63,6 +63,12 @@ CREATE INDEX IF NOT EXISTS idx_objects_gratings
 CREATE INDEX IF NOT EXISTS idx_objects_object_id_trgm
     ON public.objects USING gin (object_id public.gin_trgm_ops);
 
+-- Unified p_search blob (object_id + member target_ids + programs + observations).
+-- Replaces the cross-table object_id-ILIKE-OR-EXISTS(targets) predicate, which the
+-- planner could not index and which full-scanned the catalog under ORDER BY + LIMIT.
+CREATE INDEX IF NOT EXISTS idx_objects_search_text_trgm
+    ON public.objects USING gin (search_text public.gin_trgm_ops);
+
 -- Phase A: support filtering/sorting by the new object-level inspection fields.
 CREATE INDEX IF NOT EXISTS idx_objects_redshift_quality
     ON public.objects USING btree (redshift_quality);
@@ -158,6 +164,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_spectrum_id
 -- Trigram index for substring (ILIKE) search on the search bar.
 CREATE INDEX IF NOT EXISTS idx_spectra_spectrum_id_trgm
     ON public.spectra USING gin (spectrum_id public.gin_trgm_ops);
+
+-- Unified p_search blob (target_id + spectrum_id). Replaces the cross-table
+-- target_id-ILIKE-OR-spectrum_id-ILIKE predicate with a single indexable column.
+CREATE INDEX IF NOT EXISTS idx_spectra_search_text_trgm
+    ON public.spectra USING gin (search_text public.gin_trgm_ops);
 
 CREATE INDEX IF NOT EXISTS idx_spectra_grating
     ON public.spectra USING btree (grating);
