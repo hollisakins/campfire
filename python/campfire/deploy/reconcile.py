@@ -337,10 +337,19 @@ def classify(
         for tidx in indices:
             target_to_cluster[targets[tidx]['id']] = ci
 
-    # Existing object FK on each target row (may be None for new targets).
-    target_to_obj: dict[int, int | None] = {
-        t['id']: t.get('object_id') for t in targets
-    }
+    obj_by_id = {o['id']: o for o in existing_objects}
+
+    # Existing object FK on each target row (None for new targets). An
+    # object_id that isn't among this field's existing objects is a stale or
+    # cross-field membership — e.g. left behind when a prior deploy mis-placed
+    # targets onto an object in another field (the (0,0) coordinate collision
+    # incident, where every fixed-slit target collapsed onto one ghost object).
+    # Treat it as unassigned so the cluster is classified as an insert, instead
+    # of KeyError-ing on an obj_by_id lookup further down.
+    target_to_obj: dict[int, int | None] = {}
+    for t in targets:
+        oid = t.get('object_id')
+        target_to_obj[t['id']] = oid if oid in obj_by_id else None
 
     # For each existing object: the clusters its members went to.
     obj_clusters: dict[int, set[int]] = defaultdict(set)
@@ -358,8 +367,6 @@ def classify(
             oid = target_to_obj.get(tid)
             if oid is not None:
                 cluster_objects[ci].add(oid)
-
-    obj_by_id = {o['id']: o for o in existing_objects}
 
     # Pre-compute aggregates for every cluster.
     aggs: list[ClusterAggregates] = [

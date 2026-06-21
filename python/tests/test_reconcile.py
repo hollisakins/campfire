@@ -113,6 +113,28 @@ def test_pure_merge_classifies_as_merge():
     assert {o['id'] for o in [p.merges[0].survivor] + p.merges[0].losers} == {100, 101}
 
 
+def test_stale_cross_field_membership_classifies_as_insert():
+    # Regression: a target whose object_id FK points to an object that is NOT
+    # among the field's existing_objects (a stale / cross-field membership left
+    # by a prior bad deploy — e.g. the (0,0) ghost that collapsed every
+    # fixed-slit target onto one object in another field). Must be treated as
+    # unassigned and classified as an Insert, not KeyError on obj_by_id[oid].
+    targets = [_target(1, 't1', 150.0, 2.0, 999999)]  # 999999 lives elsewhere
+    groups = [[0]]
+    existing: list[dict] = []  # ghost object not fetched for this field
+    members: dict[int, set[str]] = {}
+
+    p = classify(
+        groups=groups, targets=targets, existing_objects=existing,
+        members_by_obj=members, spectra_map={},
+        changed_hashes=set(),
+    )
+
+    assert len(p.inserts) == 1
+    assert p.splits == [] and p.merges == [] and p.complex_overlaps == []
+    assert p.orphans == []
+
+
 def test_split_plus_merge_overlap_is_detected_not_silently_dropped():
     # A splits into clusters X={t1,t4} and Y={t2,t3}. X also absorbs B={t4}.
     # Regression test for the pre-fix bug where merge step skipped X
