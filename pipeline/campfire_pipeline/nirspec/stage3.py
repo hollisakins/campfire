@@ -464,6 +464,22 @@ def opt_ext_single_source(
         if keyword in s2d['SCI'].header:
             s2dh[keyword] = (s2d['SCI'].header[keyword], s2d['SCI'].header.comments[keyword])
 
+    # Fixed-slit products lack catalog SRCRA/SRCDEC; populate from the EXPOSURES
+    # table (target position) so the spec.fits is self-describing and the summary
+    # reader doesn't fall back to (0, 0).
+    if 'SRCRA' not in s2dh or 'SRCDEC' not in s2dh:
+        try:
+            ed = s2d['EXPOSURES'].data
+            if 'source_ra' in ed.columns.names:
+                sra = ed['source_ra'][ed['source_ra'] != 0]
+                sdec = ed['source_dec'][ed['source_dec'] != 0]
+                if len(sra) and 'SRCRA' not in s2dh:
+                    s2dh['SRCRA'] = (float(np.nanmedian(sra)), 'Source RA (target position)')
+                if len(sdec) and 'SRCDEC' not in s2dh:
+                    s2dh['SRCDEC'] = (float(np.nanmedian(sdec)), 'Source Dec (target position)')
+        except (KeyError, IndexError):
+            pass
+
     sci = fits.ImageHDU(data=s2d['SCI'].data, header=s2dh, name='SCI')
     err = fits.ImageHDU(data=s2d['ERR'].data, header=s2dh, name='ERR')
     wav = fits.ImageHDU(data=s2d['WAVELENGTH'].data, header=s2dh, name='WAVELENGTH')

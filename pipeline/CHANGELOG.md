@@ -71,6 +71,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- NIRSpec fixed-slit: fixed the summary/deploy source position. Fixed-slit
+  products carry no catalog `SRCRA`/`SRCDEC` in the SCI header (those are
+  MSA-only), so the summary reader recorded `(0, 0)` for every fixed-slit
+  target — which collapsed all of them into a single object at the origin during
+  friends-of-friends clustering at deploy. The reader now falls back to the
+  EXPOSURES-table `source_ra`/`source_dec` (the target position), and stage3
+  writes `SRCRA`/`SRCDEC` into the `_spec.fits` SCI header from that table so the
+  product is self-describing. Existing fixed-slit products only need a `summary`
+  re-run (no re-reduction); MSA products are unaffected.
 - NIRSpec standalone **fixed-slit** (`NRS_FIXEDSLIT`) reduction is now supported
   end-to-end (stage1→3). Previously only MSA exposures (`NRS_MSASPEC`) and the
   fixed-slit-in-MSA hybrid were handled, because both describe their slits in the
