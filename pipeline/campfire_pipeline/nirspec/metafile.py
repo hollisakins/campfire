@@ -201,6 +201,26 @@ class MetaFile:
             str(v).strip().upper() not in ('', 'NONE') for v in rows['fixed_slit']
         )
 
+    def fixed_slit_name(self, source_id):
+        """Return the fixed-slit aperture name (e.g. ``'S200A1'``) for *source_id*,
+        or ``''`` if it is not a fixed-slit source.
+
+        Reads the SHUTTER_INFO ``fixed_slit`` column — the same column
+        :meth:`is_fixed_slit` tests — so downstream stages can record *which*
+        slit a hybrid fixed-slit-in-MSA source was observed through.
+        """
+        if 'fixed_slit' not in self.shutter_table.colnames:
+            return ''
+        rows = self.shutter_table[
+            (self.shutter_table['source_id'] == source_id)
+            & (self.shutter_table['msa_metadata_id'] == self.msametid)
+        ]
+        for v in rows['fixed_slit']:
+            s = str(v).strip().upper()
+            if s not in ('', 'NONE'):
+                return s
+        return ''
+
     def filter_by_source_id(self,
             source_id,
             set_stellarity=False,

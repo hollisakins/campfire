@@ -728,6 +728,9 @@ def run_stage2a_single_rate(
             # metadata so downstream stages can branch on it.
             source_is_fixed_slit = main_metafile.is_fixed_slit(source_id)
             cards.append(('CFFXSLT', source_is_fixed_slit, 'NIRSpec fixed-slit source'))
+            if source_is_fixed_slit:
+                cards.append(('CFFSSLIT', main_metafile.fixed_slit_name(source_id),
+                              'NIRSpec fixed-slit aperture'))
             if len(stuck) > 0:
                 cards.append(('STKSHTRS', str(stuck['shutters'][0]), 'Stuck shutters masked'))
                 for stuck_shutter in np.sort(stuck['shutters'][0])[::-1]:

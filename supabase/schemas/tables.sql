@@ -855,6 +855,9 @@ CREATE TABLE IF NOT EXISTS "public"."shutters" (
     "shutter_idx" smallint NOT NULL,
     "dither_id" smallint DEFAULT 0 NOT NULL,
     "shutter_state" "text" DEFAULT 'open'::"text" NOT NULL,
+    "aperture_name" "text" DEFAULT 'MSA'::"text" NOT NULL,
+    "aperture_width_arcsec" double precision DEFAULT 0.22 NOT NULL,
+    "aperture_height_arcsec" double precision DEFAULT 0.46 NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"()
 );
 

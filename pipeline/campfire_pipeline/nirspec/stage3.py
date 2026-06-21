@@ -277,6 +277,13 @@ def run_stage3_single_source(
         exposures['source_xpos'] = [hdr.get('SRCXPOS', np.nan) for hdr in hdrs1]
         exposures['source_ypos'] = [hdr.get('SRCYPOS', np.nan) for hdr in hdrs1]
         exposures['v3pa'] = [hdr.get('PA_V3', np.nan) for hdr in hdrs1]
+        # Fixed-slit provenance (set by stage2a): whether the source was observed
+        # through a NIRSpec fixed slit and which one. Carried here so the shutters
+        # ECSV (which reads this HDU) can emit the correct aperture geometry, and
+        # so it lands in the final spec.fits. Applies to standalone NRS_FIXEDSLIT
+        # and to fixed-slit sources inside MSA exposures.
+        exposures['fixed_slit'] = [bool(hdr.get('CFFXSLT', False)) for hdr in hdrs0]
+        exposures['slit_name'] = [str(hdr.get('CFFSSLIT', '')) for hdr in hdrs0]
            
 
 
@@ -358,6 +365,18 @@ def opt_ext_single_source(
 
     ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
     ph['CMPFRVER'] = (version, 'campfire-pipeline version (PEP 440)')
+
+    # Carry fixed-slit provenance from the EXPOSURES table into the primary header
+    # (the curated keyword copy above reads from x1d, which no longer carries the
+    # campfire CFxxx cards after Spec3).
+    try:
+        _exp = s2d['EXPOSURES'].data
+        if 'fixed_slit' in _exp.columns.names:
+            ph['CFFXSLT'] = (bool(np.any(_exp['fixed_slit'])), 'NIRSpec fixed-slit source')
+            if 'slit_name' in _exp.columns.names and str(_exp['slit_name'][0]):
+                ph['CFFSSLIT'] = (str(_exp['slit_name'][0]), 'NIRSpec fixed-slit aperture')
+    except (KeyError, IndexError):
+        pass
 
     primary = fits.PrimaryHDU(header=ph)
 

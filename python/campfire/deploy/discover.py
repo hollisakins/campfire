@@ -112,6 +112,14 @@ def load_shutters_ecsv(ecsv_path: Path) -> list[dict]:
             'shutter_idx': int(row['shutter_idx']),
             'dither_id': int(row['dither_id']),
             'shutter_state': str(row['shutter_state']),
+            # Aperture geometry (per-row, so fixed-slit apertures and MSA shutters
+            # share one render path). Older ECSVs predate these columns — they are
+            # all MSA, so default to the MSA shutter dimensions.
+            'aperture_name': str(row['aperture_name']) if 'aperture_name' in row else 'MSA',
+            'aperture_width_arcsec': (float(row['aperture_width_arcsec'])
+                                      if 'aperture_width_arcsec' in row else 0.22),
+            'aperture_height_arcsec': (float(row['aperture_height_arcsec'])
+                                       if 'aperture_height_arcsec' in row else 0.46),
         })
     return records
 

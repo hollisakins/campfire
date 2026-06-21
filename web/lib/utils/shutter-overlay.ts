@@ -8,9 +8,9 @@
  * for the FOVs used in practice (1–30 arcsec).
  */
 
-/** NIRSpec shutter width in arcseconds */
+/** Fallback MSA shutter width in arcseconds (used when a row omits aperture dims) */
 export const SHUTTER_WIDTH_ARCSEC = 0.22;
-/** NIRSpec shutter height in arcseconds */
+/** Fallback MSA shutter height in arcseconds (used when a row omits aperture dims) */
 export const SHUTTER_HEIGHT_ARCSEC = 0.46;
 
 export interface ShutterGeometry {
@@ -19,6 +19,12 @@ export interface ShutterGeometry {
   center_dec: number;
   position_angle: number;
   shutter_state: 'source' | 'open' | 'stuck_closed';
+  /** Aperture name (e.g. 'MSA', 'S200A2'); informational */
+  aperture_name?: string;
+  /** Across-slit (dispersion) extent in arcsec. Falls back to the MSA shutter width. */
+  aperture_width_arcsec?: number;
+  /** Along-slit (spatial) extent in arcsec. Falls back to the MSA shutter height. */
+  aperture_height_arcsec?: number;
 }
 
 export interface ShutterRect {
@@ -67,13 +73,15 @@ export function computeShutterRects(
   const cosDecFactor = Math.cos(centerDec * Math.PI / 180);
   const halfSize = displaySize / 2;
 
-  // Shutter dimensions in pixels
-  const wPx = SHUTTER_WIDTH_ARCSEC * pxPerArcsec;
-  const hPx = SHUTTER_HEIGHT_ARCSEC * pxPerArcsec;
-
   const rects: ShutterRect[] = [];
 
   for (const shutter of shutters) {
+    // Per-aperture dimensions in pixels: fixed slits (e.g. S200A2 = 0.2"x3.2")
+    // and MSA shutters carry their own size; fall back to the MSA shutter
+    // dimensions for rows that predate the aperture columns.
+    const wPx = (shutter.aperture_width_arcsec ?? SHUTTER_WIDTH_ARCSEC) * pxPerArcsec;
+    const hPx = (shutter.aperture_height_arcsec ?? SHUTTER_HEIGHT_ARCSEC) * pxPerArcsec;
+
     // Offset from center in arcseconds
     // RA increases to the left in sky coords, but in our image E is left
     // so positive dRA = negative pixel X offset (standard astronomical convention)

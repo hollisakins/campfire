@@ -91,6 +91,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   the science region is already protected by the hardcoded fixed-slit detector
   band. MSA reductions are byte-for-byte unaffected. Validated on program 1967
   (z≈6 quasar census, S200A2/G395M-F290LP): full 2.85–5.29 µm spectra recovered.
+- NIRSpec fixed-slit provenance + slit-overlay geometry now propagate to the
+  deliverables. The stage-3 `EXPOSURES` HDU gains `fixed_slit` / `slit_name`
+  columns and the final `_spec.fits` primary header carries `CFFXSLT` /
+  `CFFSSLIT`, so a fixed-slit source is identifiable downstream (this also flags
+  fixed-slit sources observed *inside* MSA exposures, via the metafile
+  `fixed_slit` column). The shutters ECSV becomes self-describing: each row
+  carries `aperture_name`, `aperture_width_arcsec`, and `aperture_height_arcsec`,
+  and fixed-slit sources export a single aperture rectangle sized to the slit
+  (e.g. S200A2 = 0.2"x3.2") instead of MSA shutter geometry — which `slits.py`'s
+  `get_exposure_table` would have rejected outright. MSA rows keep their geometry
+  and now carry the existing 0.22"x0.46" dimensions explicitly. Aperture sizes
+  live in `nirspec/constants.py` (`FIXED_SLIT_SIZE_ARCSEC`,
+  `MSA_SHUTTER_SIZE_ARCSEC`). Consumed by the web/Python slit overlays (DB
+  column, `get_nearby_shutters`/`get_field_shutters` RPCs, deploy, and the
+  SVG/canvas/matplotlib renderers updated in lockstep).
 - NIRCam `striping`: new opt-in per-amp-row 1/f offset estimator selectable via
   `[nircam.striping].estimator` (default **`"median"`** — the production
   2σ-clipped median with full-row fallback, byte-for-byte unchanged). The new
