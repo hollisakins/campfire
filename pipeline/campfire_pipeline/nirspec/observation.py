@@ -20,6 +20,12 @@ from campfire_pipeline.common.io import log
 # "N-SHUTTER-SLITLET", so a 3-shutter slitlet is "3-SHUTTER-SLITLET".
 DEFAULT_NOD_TYPE = '3-SHUTTER-SLITLET'
 
+# NIRSpec spectroscopic exposure types the pipeline can reduce. MSA (MOS) is
+# the original mode; standalone fixed-slit (NRS_FIXEDSLIT) is handled via the
+# jwst native fixed-slit path (no MSA metadata file). Used to filter raw uncals
+# in glob(check_exp_type=True).
+SUPPORTED_EXP_TYPES = ('NRS_MSASPEC', 'NRS_FIXEDSLIT')
+
 
 def read_nod_type(hdr, filename):
     """Read NOD_TYPE from a primary header, defaulting if missing.
@@ -42,6 +48,12 @@ def read_nod_type(hdr, filename):
     """
     if 'NOD_TYPE' in hdr:
         return hdr['NOD_TYPE']
+    # Fixed-slit exposures don't use MSA shutter slitlets and routinely omit
+    # NOD_TYPE. Fall back to the dither pattern type (e.g. '3-POINT-NOD')
+    # instead of the MSA slitlet default — and don't warn, since absence is
+    # expected for this mode.
+    if str(hdr.get('EXP_TYPE', '')).upper() == 'NRS_FIXEDSLIT':
+        return hdr.get('PATTTYPE', 'FIXED-SLIT-NOD')
     log(f"WARNING: NOD_TYPE keyword missing from {os.path.basename(filename)}; "
         f"assuming {DEFAULT_NOD_TYPE}")
     return DEFAULT_NOD_TYPE
@@ -389,7 +401,7 @@ class Observation:
             resulti = glob.glob(pattern_path)
 
             if check_exp_type:
-                result += [r for r in resulti if fits.getheader(r)['EXP_TYPE'] == 'NRS_MSASPEC']
+                result += [r for r in resulti if fits.getheader(r)['EXP_TYPE'] in SUPPORTED_EXP_TYPES]
             else:
                 result += resulti
 
@@ -518,6 +530,15 @@ class Observation:
 
                     elif (files3['dither_pattern_type'][0] == '2-POINT-WITH-NIRCAM-SIZE2') and ('SHUTTER-SLITLET' in files3['nod_type'][0]) and (files3['subpixel_dither_points'][0] == 2):
                         subpx_dither = np.where(np.isin(files3['dither_position'], [1,3,5]), 1, 2)
+
+                    elif files3['dither_pattern_type'][0].endswith('-NOD') and files3['subpixel_dither_points'][0] == 1:
+                        # NIRSpec fixed-slit along-slit nodding (e.g. 2-POINT-NOD,
+                        # 3-POINT-NOD). Without sub-pixel dithering, every nod in
+                        # the config is mutually background for the others, so they
+                        # all share one bkg_group per detector (subpx_dither stays
+                        # 1). Leapfrog subtraction happens in stage2b, which
+                        # handles 2/3/5 exposures.
+                        pass
 
                     else:
                         raise NotImplementedError(f"File grouping for dither pattern {files3['dither_pattern_type'][0]} not implemented")

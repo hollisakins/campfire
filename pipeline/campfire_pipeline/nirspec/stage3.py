@@ -238,10 +238,20 @@ def run_stage3_single_source(
             # steps={'extract_1d':{'override_extract1d':('jwst_nirspec_extract1d_4px.json')}}
         )
 
-        if os.path.exists(f'{product_name}_s{source_id:09d}_s2d.fits'):
-            os.rename(f'{product_name}_s{source_id:09d}_s2d.fits', f'{product_name}_s2d.fits')
-        if os.path.exists(f'{product_name}_s{source_id:09d}_x1d.fits'):
-            os.rename(f'{product_name}_s{source_id:09d}_x1d.fits', f'{product_name}_x1d.fits')
+        # Normalize Spec3's per-source output name to {product_name}_{ext}.fits.
+        # The naming differs by mode: MSA emits {product_name}_s{source_id:09d}_{ext}.fits,
+        # whereas fixed slit inserts the slit name
+        # ({product_name}_{slit}_s{source_id:09d}_{ext}.fits). Prefer the exact MSA
+        # name, then fall back to the slit-prefixed fixed-slit name.
+        for ext in ('s2d', 'x1d'):
+            target = f'{product_name}_{ext}.fits'
+            msa_name = f'{product_name}_s{source_id:09d}_{ext}.fits'
+            if os.path.exists(msa_name):
+                os.rename(msa_name, target)
+                continue
+            fs_matches = sorted(glob.glob(f'{product_name}_*_s{source_id:09d}_{ext}.fits'))
+            if fs_matches:
+                os.rename(fs_matches[0], target)
 
 
         # Create "exposures" table
@@ -255,12 +265,18 @@ def run_stage3_single_source(
         exposures['exptime'] = [hdr['EFFEXPTM'] for hdr in hdrs0]
         exposures['stuck_shutter_list'] = [hdr['STKSHTRS'] if 'STKSHTRS' in hdr else 'N/A' for hdr in hdrs0]
         hdrs1 = [fits.getheader(cal_file,ext=1) for cal_file in cal_files]
-        exposures['shutter_state'] = [hdr['SHUTSTA'] for hdr in hdrs1]
-        exposures['source_ra'] = [hdr['SRCRA'] for hdr in hdrs1]
-        exposures['source_dec'] = [hdr['SRCDEC'] for hdr in hdrs1]
-        exposures['source_xpos'] = [hdr['SRCXPOS'] for hdr in hdrs1]
-        exposures['source_ypos'] = [hdr['SRCYPOS'] for hdr in hdrs1]
-        exposures['v3pa'] = [hdr['PA_V3'] for hdr in hdrs1]
+        # Fixed-slit cal products omit the MSA-only SHUTSTA shutter state and the
+        # slit-level SRCRA/SRCDEC (the latter come from the MSA source catalog);
+        # default the shutter state and fall back to the target position, which is
+        # the source position for a fixed-slit exposure.
+        exposures['shutter_state'] = [hdr.get('SHUTSTA', 'N/A') for hdr in hdrs1]
+        exposures['source_ra'] = [h1.get('SRCRA', h0.get('TARG_RA', np.nan))
+                                  for h0, h1 in zip(hdrs0, hdrs1)]
+        exposures['source_dec'] = [h1.get('SRCDEC', h0.get('TARG_DEC', np.nan))
+                                   for h0, h1 in zip(hdrs0, hdrs1)]
+        exposures['source_xpos'] = [hdr.get('SRCXPOS', np.nan) for hdr in hdrs1]
+        exposures['source_ypos'] = [hdr.get('SRCYPOS', np.nan) for hdr in hdrs1]
+        exposures['v3pa'] = [hdr.get('PA_V3', np.nan) for hdr in hdrs1]
            
 
 
