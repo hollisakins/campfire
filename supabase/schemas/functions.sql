@@ -2444,11 +2444,15 @@ RETURNS TABLE (
   shutter_idx smallint,
   dither_id smallint,
   shutter_state text,
-  observation text
+  observation text,
+  aperture_name text,
+  aperture_width_arcsec double precision,
+  aperture_height_arcsec double precision
 )
 LANGUAGE sql STABLE AS $$
   SELECT s.object_id, s.source_id, s.center_ra, s.center_dec,
-         s.position_angle, s.shutter_idx, s.dither_id, s.shutter_state, s.observation
+         s.position_angle, s.shutter_idx, s.dither_id, s.shutter_state, s.observation,
+         s.aperture_name, s.aperture_width_arcsec, s.aperture_height_arcsec
   FROM shutters s
   WHERE (p_field IS NULL OR s.field = p_field)
     AND s.center_ra BETWEEN p_ra - p_radius_arcsec / 3600.0 / COS(RADIANS(p_dec))
@@ -2550,12 +2554,16 @@ RETURNS TABLE (
   shutter_idx      SMALLINT,
   dither_id        SMALLINT,
   shutter_state    TEXT,
-  observation      TEXT
+  observation      TEXT,
+  aperture_name           TEXT,
+  aperture_width_arcsec    DOUBLE PRECISION,
+  aperture_height_arcsec   DOUBLE PRECISION
 )
 LANGUAGE sql STABLE
 AS $$
   SELECT s.object_id, s.source_id, s.center_ra, s.center_dec,
-         s.position_angle, s.shutter_idx, s.dither_id, s.shutter_state, s.observation
+         s.position_angle, s.shutter_idx, s.dither_id, s.shutter_state, s.observation,
+         s.aperture_name, s.aperture_width_arcsec, s.aperture_height_arcsec
   FROM public.shutters s
   WHERE s.field = p_field
   ORDER BY s.object_id;

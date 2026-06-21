@@ -474,6 +474,136 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
             )
 
 
+def _run_stage2a_fixedslit(
+        rate_file,
+        obs: Observation,
+        overwrite: bool = False,
+        wavecorr_override=None,
+        extended_refs=None,
+    ):
+    """Stage 2a for standalone NIRSpec fixed-slit (NRS_FIXEDSLIT) exposures.
+
+    Unlike MSA mode, fixed-slit exposures have no MSA metadata file: jwst's
+    ``assign_wcs`` builds the fixed-slit WCS from the instrument model and
+    ``extract_2d`` selects slits by name. We extract only the primary slit
+    (the ``FXD_SLIT`` header keyword), which jwst assigns ``source_id = 1``, and
+    emit a product keyed on ``source_id = 1`` so the mode-agnostic downstream
+    stages — nodded background subtraction (2b) and combination (3) — pick it up
+    unchanged. The product filename matches the MSA convention
+    ``{root}_{nod}_{detector}_{source_id}`` so :meth:`Observation.discover_files`
+    parses it identically.
+    """
+    from jwst.pipeline import Spec2Pipeline
+    from jwst.associations import asn_from_list
+    from jwst.assign_wcs.util import NoDataOnDetectorError
+
+    prev_cwd = os.getcwd()
+    os.chdir(obs.workspace_dir)
+
+    source_ids_processed = []
+    asn_file = None
+    try:
+        hdr = fits.getheader(rate_file)
+        primary_slit = str(hdr.get('FXD_SLIT', '')).strip()
+        if not primary_slit or primary_slit.upper() == 'NONE':
+            log(f'No FXD_SLIT primary slit defined for '
+                f'{os.path.basename(rate_file)}, skipping')
+            return []
+
+        # jwst hard-wires source_id=1 to the primary fixed slit; reuse that as
+        # the product key so the existing {..._source_id} naming carries through.
+        source_id = 1
+        prod_name = os.path.basename(rate_file).replace('_rate.fits', f'_{source_id}')
+
+        nodata_marker = f'{prod_name}_nodata'
+        if (os.path.exists(f'{prod_name}_cal.fits') or os.path.exists(nodata_marker)) and not overwrite:
+            log(f'Skipping stage2a for {prod_name}, overwrite=False')
+            return [source_id]
+        if os.path.exists(nodata_marker):
+            os.remove(nodata_marker)
+
+        # Extended-wavelength override for this config (grating-gated; typically
+        # None for fixed-slit gratings, but supported for consistency with MSA).
+        extended_override = None
+        if extended_refs:
+            extended_override = extended_refs.get((
+                str(hdr.get('DETECTOR', '')).strip(),
+                str(hdr.get('GRATING', '')).strip(),
+                str(hdr.get('FILTER', '')).strip(),
+            ))
+
+        cards = [
+            ('CFEXTWAV', extended_override is not None, 'Extended wavelength reduction applied'),
+            ('CFFXSLT', True, 'NIRSpec fixed-slit source'),
+            ('CFFSSLIT', primary_slit, 'NIRSpec fixed-slit aperture'),
+            ('STKSHTRS', 'N/A', 'Stuck shutters masked'),
+        ]
+
+        association = [(os.path.basename(rate_file), 'science')]
+        asn = asn_from_list.asn_from_list(association, with_exptype=True, product_name=prod_name)
+        suggested_name, serialization = asn.dump()
+        asn_file = f'{prod_name}.json'
+        with open(asn_file, 'w') as asn_out:
+            asn_out.write(serialization)
+
+        steps = {
+            # Extract only the primary fixed slit; the WCS exposes all open
+            # slits on a FULL-frame readout but only this one holds the target.
+            'extract_2d': {'slit_names': [primary_slit]},
+            'extract_1d': {'skip': True},
+            'barshadow': {'skip': True},
+            'bkg_subtract': {'skip': True},
+            'resample_spec': {'skip': True},
+        }
+        if wavecorr_override:
+            steps['wavecorr'] = {'override_wavecorr': wavecorr_override}
+        if extended_override:
+            from campfire_pipeline.config import get_extended_photom_path
+            steps['flat_field'] = {
+                'override_fflat': extended_override['fflat'],
+                'override_sflat': extended_override['sflat'],
+            }
+            steps['assign_wcs'] = {
+                'override_wavelengthrange': extended_override['wavelengthrange'],
+            }
+            steps['photom'] = {
+                'override_photom': get_extended_photom_path(fixed_slit=True),
+            }
+            log(f"Applying extended-wavelength overrides for {prod_name}")
+
+        log(f"Running Spec2Pipeline for {prod_name} (fixed slit {primary_slit})")
+        try:
+            Spec2Pipeline.call(asn_file, save_results=True, steps=steps)
+            log(f'Completed Spec2Pipeline for {prod_name}')
+            source_ids_processed.append(source_id)
+        except NoDataOnDetectorError:
+            log(f'No data on detector for {prod_name}')
+            with open(nodata_marker, 'w') as f:
+                f.write('NoDataOnDetectorError\n')
+
+        for ext in ['cal', 's2d']:
+            if os.path.exists(f'{prod_name}_{ext}.fits'):
+                with fits.open(f'{prod_name}_{ext}.fits', mode='update') as hdul:
+                    for card in cards:
+                        hdul['PRIMARY'].header[card[0]] = card[1:3]
+                    hdul.flush()
+
+    except KeyboardInterrupt:
+        return source_ids_processed
+
+    except Exception as e:
+        log(f"ERROR in fixed-slit stage2a for {os.path.basename(rate_file)}", e)
+        raise
+
+    finally:
+        # Clean up any ASN files for this rate file (matches the MSA path).
+        for stale in glob.glob(rate_file.replace('_rate.fits', '*.json')):
+            os.remove(stale)
+        os.chdir(prev_cwd)
+
+    return source_ids_processed
+
+
 def run_stage2a_single_rate(
         rate_file,
         obs: Observation,
@@ -486,6 +616,16 @@ def run_stage2a_single_rate(
     ):
 
     log(f'Starting stage2a for {os.path.basename(rate_file)}')
+
+    # Standalone fixed-slit exposures carry no MSA metadata file. jwst builds
+    # the fixed-slit WCS natively and extract_2d selects slits by name, so the
+    # whole MSAMETFL/per-source-metafile machinery below does not apply —
+    # dispatch to the dedicated fixed-slit path. The MSA branch is unchanged.
+    if str(fits.getheader(rate_file).get('EXP_TYPE', '')).upper() == 'NRS_FIXEDSLIT':
+        return _run_stage2a_fixedslit(
+            rate_file, obs, overwrite=overwrite,
+            wavecorr_override=wavecorr_override, extended_refs=extended_refs,
+        )
 
     from jwst.pipeline import Spec2Pipeline
     from jwst.associations import asn_from_list
@@ -588,6 +728,9 @@ def run_stage2a_single_rate(
             # metadata so downstream stages can branch on it.
             source_is_fixed_slit = main_metafile.is_fixed_slit(source_id)
             cards.append(('CFFXSLT', source_is_fixed_slit, 'NIRSpec fixed-slit source'))
+            if source_is_fixed_slit:
+                cards.append(('CFFSSLIT', main_metafile.fixed_slit_name(source_id),
+                              'NIRSpec fixed-slit aperture'))
             if len(stuck) > 0:
                 cards.append(('STKSHTRS', str(stuck['shutters'][0]), 'Stuck shutters masked'))
                 for stuck_shutter in np.sort(stuck['shutters'][0])[::-1]:

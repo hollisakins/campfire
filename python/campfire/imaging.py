@@ -23,7 +23,8 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
-# NIRSpec shutter dimensions
+# Fallback MSA shutter dimensions, used when a shutter dict omits the
+# per-aperture aperture_width_arcsec / aperture_height_arcsec fields.
 SHUTTER_WIDTH_ARCSEC = 0.22
 SHUTTER_HEIGHT_ARCSEC = 0.46
 
@@ -238,15 +239,17 @@ def plot_cutout(
             # so the sign flips to +PA
             angle = shutter["position_angle"]
 
+            # Per-aperture dimensions: fixed slits (e.g. S200A2 = 0.2"x3.2")
+            # carry their own size; MSA shutters (and responses predating the
+            # aperture columns) fall back to the MSA shutter dimensions.
+            w = shutter.get("aperture_width_arcsec", SHUTTER_WIDTH_ARCSEC)
+            h = shutter.get("aperture_height_arcsec", SHUTTER_HEIGHT_ARCSEC)
+
             marker = style.get("marker", "box")
             if marker == "corners":
-                _draw_shutter_corners(ax, cx, cy,
-                                      SHUTTER_WIDTH_ARCSEC, SHUTTER_HEIGHT_ARCSEC,
-                                      angle, style)
+                _draw_shutter_corners(ax, cx, cy, w, h, angle, style)
             else:
-                _draw_shutter_box(ax, cx, cy,
-                                  SHUTTER_WIDTH_ARCSEC, SHUTTER_HEIGHT_ARCSEC,
-                                  angle, style)
+                _draw_shutter_box(ax, cx, cy, w, h, angle, style)
 
     # Draw scalebar
     if scalebar:
