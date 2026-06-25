@@ -14,6 +14,7 @@ export interface UserProfile {
   created_at: string;
   is_group_account: boolean;
   can_comment: boolean;
+  can_inspect: boolean;
   is_admin?: boolean;
   preferences?: UserPreferences;
 }

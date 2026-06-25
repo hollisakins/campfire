@@ -2,15 +2,17 @@
 
 This guide will help you get set up with CAMPFIRE and start accessing spectroscopic data.
 
-## Requesting an Account
+## Creating an Account
 
-To access data on CAMPFIRE, you need to be logged in. If you were provided with login credentials for a "group account," you can use those, but you won't have the ability to visually inspect objects, add notes/comments. 
+Anyone can create an account on CAMPFIRE. Go to [/signup](https://campfire.hollisakins.com/signup), enter your name, email, and a password, then click the confirmation link we email you to activate your account. Once confirmed, you can sign in to browse public programs, comment on objects, and organize them with tags.
 
-To request an account, go to [/request-access](https://campfire.hollisakins.com/request-access) and enter your name and email (this will be the display name and login email associated with your account). You will recieve an email from `noreply@campfire.hollisakins.com` once your account has been created. 
+By default, new accounts cannot submit inspections (redshift sign-offs and quality flags). If you'd like to contribute inspections, open your Profile page and use **Request inspection access** under "Role & permissions" — an administrator will review the request and email you.
+
+If you were provided with login credentials for a "group account," you can use those, but group accounts cannot inspect objects, comment, or create tags.
 
 ### Access to Proprietary Data
 
-All users by default have access to any public data on CAMPFIRE. To access proprietary data (i.e., from programs still under the exclusive access period), you'll need to be given explicit access. This can be done at your account creation (i.e., by the admin approving your account request), or by entering an "access code" provided to you. Access codes grant you permission to access specific programs.
+All users by default have access to any public data on CAMPFIRE. To access proprietary data (i.e., from programs still under the exclusive access period), you'll need to be given explicit access. This is typically done by entering an "access code" provided to you (or granted directly by an administrator). Access codes grant you permission to access specific programs.
 
 To redeem an access code, 
 1. Navigate to your Profile page

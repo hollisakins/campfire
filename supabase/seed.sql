@@ -338,12 +338,12 @@ VALUES ('dq_flags', 8, 256, 'Grating Corrupted', 'G-BAD', '🔴❌', '#ffcdd2', 
 -- 4. User Profiles
 -- ============================================
 
-INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment)
-VALUES ('11111111-1111-1111-1111-111111111111', 'admin', 'Admin User', TRUE, TRUE);
-INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment)
-VALUES ('22222222-2222-2222-2222-222222222222', 'user', 'Regular User', FALSE, TRUE);
-INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment)
-VALUES ('33333333-3333-3333-3333-333333333333', 'viewer', 'Viewer User', FALSE, FALSE);
+INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment, can_inspect)
+VALUES ('11111111-1111-1111-1111-111111111111', 'admin', 'Admin User', TRUE, TRUE, TRUE);
+INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment, can_inspect)
+VALUES ('22222222-2222-2222-2222-222222222222', 'user', 'Regular User', FALSE, TRUE, TRUE);
+INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment, can_inspect)
+VALUES ('33333333-3333-3333-3333-333333333333', 'viewer', 'Viewer User', FALSE, FALSE, FALSE);
 
 -- ============================================
 -- 4b. Objects (cross-matched from targets)

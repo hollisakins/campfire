@@ -106,6 +106,7 @@ export async function POST(request: NextRequest) {
         full_name: fullName.trim(),
         is_group_account: false,
         can_comment: invite.can_comment,
+        can_inspect: invite.can_inspect ?? false,
         is_admin: invite.is_admin,
       });
 

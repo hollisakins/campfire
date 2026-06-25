@@ -27,6 +27,7 @@ import {
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ProfileStats as ProfileStatsCard } from '@/components/profile/ProfileStats';
 import { CommentHistory } from '@/components/profile/CommentHistory';
+import { RolePermissionsCard } from '@/components/profile/RolePermissionsCard';
 
 interface ProgramWithAccess extends Program {
   has_access: boolean;
@@ -356,6 +357,9 @@ export default function ProfilePage() {
             )}
           </div>
         </Card>
+
+        {/* Role & Permissions */}
+        <RolePermissionsCard />
 
         {/* Activity Stats */}
         <ProfileStatsCard stats={profileData.stats} />

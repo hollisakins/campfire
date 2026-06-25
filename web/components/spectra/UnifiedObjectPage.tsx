@@ -288,7 +288,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
                 lastDataChangeAt={object.last_data_change_at}
                 objectId={object.id}
                 version={inspection.version}
-                canMarkReviewed={!!userProfile?.can_comment}
+                canMarkReviewed={!!userProfile?.can_inspect}
                 onReviewed={({ last_inspected_at }) => setLastInspectedOverride(last_inspected_at)}
               />
               {!object.is_active && (

@@ -23,7 +23,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
   inspection,
 }) => {
   const { user, userProfile } = useAuth();
-  const canEdit = user && userProfile?.can_comment;
+  const canEdit = user && userProfile?.can_inspect;
 
   const setRedshiftQuality = inspection.setRedshiftQuality;
   const save = inspection.save;

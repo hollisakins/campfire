@@ -33,7 +33,7 @@ export async function PATCH(
 
   try {
     const body = await request.json();
-    const { is_admin, can_comment, program_access } = body;
+    const { is_admin, can_comment, can_inspect, program_access } = body;
 
     // Use service client for admin mutations on other users' data
     const serviceClient = createServiceClient();
@@ -42,6 +42,7 @@ export async function PATCH(
     const profileUpdates: Record<string, unknown> = {};
     if (typeof is_admin === 'boolean') profileUpdates.is_admin = is_admin;
     if (typeof can_comment === 'boolean') profileUpdates.can_comment = can_comment;
+    if (typeof can_inspect === 'boolean') profileUpdates.can_inspect = can_inspect;
 
     if (Object.keys(profileUpdates).length > 0) {
       const { error: updateError } = await serviceClient

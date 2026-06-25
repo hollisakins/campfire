@@ -74,41 +74,6 @@ CREATE TABLE IF NOT EXISTS "public"."access_codes" (
 ALTER TABLE "public"."access_codes" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."account_requests" (
-    "id" integer NOT NULL,
-    "email" "text" NOT NULL,
-    "full_name" "text" NOT NULL,
-    "status" "text" DEFAULT 'pending'::"text" NOT NULL,
-    "is_admin" boolean DEFAULT false,
-    "can_comment" boolean DEFAULT true,
-    "created_at" timestamp with time zone DEFAULT "now"(),
-    "reviewed_at" timestamp with time zone,
-    "reviewed_by" "uuid",
-    "rejection_reason" "text",
-    "program_slugs" "text"[],
-    CONSTRAINT "account_requests_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'rejected'::"text"])))
-);
-
-
-ALTER TABLE "public"."account_requests" OWNER TO "postgres";
-
-
-CREATE SEQUENCE IF NOT EXISTS "public"."account_requests_id_seq"
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE "public"."account_requests_id_seq" OWNER TO "postgres";
-
-
-ALTER SEQUENCE "public"."account_requests_id_seq" OWNED BY "public"."account_requests"."id";
-
-
-
 CREATE TABLE IF NOT EXISTS "public"."api_keys" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "user_id" "uuid" NOT NULL,
@@ -797,6 +762,7 @@ CREATE TABLE IF NOT EXISTS "public"."pending_invites" (
     "email" "text" NOT NULL,
     "is_admin" boolean DEFAULT false,
     "can_comment" boolean DEFAULT true,
+    "can_inspect" boolean DEFAULT false,
     "invited_by" "uuid",
     "created_at" timestamp with time zone DEFAULT "now"(),
     "accepted_at" timestamp with time zone,
@@ -821,6 +787,41 @@ ALTER SEQUENCE "public"."pending_invites_id_seq" OWNER TO "postgres";
 
 
 ALTER SEQUENCE "public"."pending_invites_id_seq" OWNED BY "public"."pending_invites"."id";
+
+
+
+-- Inspection-access requests. A signed-in user without can_inspect can ask an
+-- admin to grant inspection privileges. Admins review these in the admin UI;
+-- approving flips user_profiles.can_inspect. One open ('pending') row per user
+-- is enforced by a partial unique index (see indexes.sql).
+CREATE TABLE IF NOT EXISTS "public"."inspection_access_requests" (
+    "id" integer NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "status" "text" DEFAULT 'pending'::"text" NOT NULL,
+    "message" "text",
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "reviewed_at" timestamp with time zone,
+    "reviewed_by" "uuid",
+    CONSTRAINT "inspection_access_requests_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'rejected'::"text"])))
+);
+
+
+ALTER TABLE "public"."inspection_access_requests" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."inspection_access_requests_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."inspection_access_requests_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."inspection_access_requests_id_seq" OWNED BY "public"."inspection_access_requests"."id";
 
 
 
@@ -1031,6 +1032,7 @@ CREATE TABLE IF NOT EXISTS "public"."user_profiles" (
     "created_at" timestamp without time zone DEFAULT "now"(),
     "is_group_account" boolean DEFAULT false,
     "can_comment" boolean DEFAULT true,
+    "can_inspect" boolean DEFAULT false,
     "is_admin" boolean DEFAULT false,
     "preferences" "jsonb" DEFAULT '{}'::"jsonb",
     CONSTRAINT "user_profiles_username_check" CHECK (("username" ~ '^[a-z0-9][a-z0-9._-]{0,38}[a-z0-9]$'::"text"))
@@ -1059,10 +1061,6 @@ ALTER TABLE "public"."user_program_access" OWNER TO "postgres";
 -- Sequence defaults (SET DEFAULT for serial columns)
 -- ---------------------------------------------------------------------------
 
-ALTER TABLE ONLY "public"."account_requests" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."account_requests_id_seq"'::"regclass");
-
-
-
 ALTER TABLE ONLY "public"."comments" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."comments_id_seq"'::"regclass");
 
 
@@ -1084,6 +1082,10 @@ ALTER TABLE ONLY "public"."nircam_exposures" ALTER COLUMN "id" SET DEFAULT "next
 
 
 ALTER TABLE ONLY "public"."pending_invites" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."pending_invites_id_seq"'::"regclass");
+
+
+
+ALTER TABLE ONLY "public"."inspection_access_requests" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."inspection_access_requests_id_seq"'::"regclass");
 
 
 
@@ -1132,16 +1134,6 @@ ALTER TABLE ONLY "public"."access_codes"
 
 ALTER TABLE ONLY "public"."access_codes"
     ADD CONSTRAINT "access_codes_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."account_requests"
-    ADD CONSTRAINT "account_requests_email_key" UNIQUE ("email");
-
-
-
-ALTER TABLE ONLY "public"."account_requests"
-    ADD CONSTRAINT "account_requests_pkey" PRIMARY KEY ("id");
 
 
 
@@ -1249,6 +1241,11 @@ ALTER TABLE ONLY "public"."pending_invites"
 
 ALTER TABLE ONLY "public"."pending_invites"
     ADD CONSTRAINT "pending_invites_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."inspection_access_requests"
+    ADD CONSTRAINT "inspection_access_requests_pkey" PRIMARY KEY ("id");
 
 
 
@@ -1361,11 +1358,6 @@ ALTER TABLE ONLY "public"."user_program_access"
 
 ALTER TABLE ONLY "public"."access_codes"
     ADD CONSTRAINT "access_codes_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "auth"."users"("id");
-
-
-
-ALTER TABLE ONLY "public"."account_requests"
-    ADD CONSTRAINT "account_requests_reviewed_by_fkey" FOREIGN KEY ("reviewed_by") REFERENCES "auth"."users"("id");
 
 
 
@@ -1524,6 +1516,16 @@ ALTER TABLE ONLY "public"."pending_invites"
 
 
 
+ALTER TABLE ONLY "public"."inspection_access_requests"
+    ADD CONSTRAINT "inspection_access_requests_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."inspection_access_requests"
+    ADD CONSTRAINT "inspection_access_requests_reviewed_by_fkey" FOREIGN KEY ("reviewed_by") REFERENCES "auth"."users"("id");
+
+
+
 ALTER TABLE ONLY "public"."refresh_tokens"
     ADD CONSTRAINT "refresh_tokens_replaced_by_fkey" FOREIGN KEY ("replaced_by") REFERENCES "public"."refresh_tokens"("id");
 
@@ -1588,12 +1590,6 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 GRANT ALL ON TABLE "public"."access_codes" TO "anon";
 GRANT ALL ON TABLE "public"."access_codes" TO "authenticated";
 GRANT ALL ON TABLE "public"."access_codes" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."account_requests" TO "anon";
-GRANT ALL ON TABLE "public"."account_requests" TO "authenticated";
-GRANT ALL ON TABLE "public"."account_requests" TO "service_role";
 
 
 
@@ -1727,6 +1723,12 @@ GRANT ALL ON TABLE "public"."pending_invites" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."inspection_access_requests" TO "anon";
+GRANT ALL ON TABLE "public"."inspection_access_requests" TO "authenticated";
+GRANT ALL ON TABLE "public"."inspection_access_requests" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."refresh_tokens" TO "anon";
 GRANT ALL ON TABLE "public"."refresh_tokens" TO "authenticated";
 GRANT ALL ON TABLE "public"."refresh_tokens" TO "service_role";
@@ -1761,9 +1763,9 @@ GRANT ALL ON TABLE "public"."user_program_access" TO "service_role";
 -- Sequence grants
 -- ---------------------------------------------------------------------------
 
-GRANT ALL ON SEQUENCE "public"."account_requests_id_seq" TO "anon";
-GRANT ALL ON SEQUENCE "public"."account_requests_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."account_requests_id_seq" TO "service_role";
+GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "service_role";
 
 
 

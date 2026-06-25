@@ -142,6 +142,7 @@ TEST_USERS = [
         'full_name': 'Admin User',
         'is_admin': True,
         'can_comment': True,
+        'can_inspect': True,
     },
     {
         'id': USER_UUID,
@@ -150,6 +151,7 @@ TEST_USERS = [
         'full_name': 'Regular User',
         'is_admin': False,
         'can_comment': True,
+        'can_inspect': True,
     },
     {
         'id': VIEWER_UUID,
@@ -158,6 +160,7 @@ TEST_USERS = [
         'full_name': 'Viewer User',
         'is_admin': False,
         'can_comment': False,
+        'can_inspect': False,
     },
 ]
 
@@ -460,8 +463,8 @@ def generate_user_profiles_sql() -> str:
     lines.append('')
 
     for user in TEST_USERS:
-        lines.append(f"""INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment)
-VALUES ({sql_escape(user['id'])}, {sql_escape(user['username'])}, {sql_escape(user['full_name'])}, {sql_escape(user['is_admin'])}, {sql_escape(user['can_comment'])});""")
+        lines.append(f"""INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment, can_inspect)
+VALUES ({sql_escape(user['id'])}, {sql_escape(user['username'])}, {sql_escape(user['full_name'])}, {sql_escape(user['is_admin'])}, {sql_escape(user['can_comment'])}, {sql_escape(user['can_inspect'])});""")
 
     lines.append('')
     return '\n'.join(lines)

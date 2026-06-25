@@ -161,13 +161,13 @@ CREATE POLICY "select_targets_by_access"
     program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
   );
 
--- Users with can_comment permission can update targets in accessible programs.
+-- Users with can_inspect permission can update targets in accessible programs.
 DROP POLICY IF EXISTS "update_targets_by_access" ON targets;
 CREATE POLICY "update_targets_by_access"
   ON targets FOR UPDATE
   USING (
     program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
-    AND (SELECT public.can_comment())
+    AND (SELECT public.can_inspect())
   );
 
 -- Admins can insert targets (deploy CLI).
@@ -219,7 +219,7 @@ CREATE POLICY "admin_objects_update"
   USING ((SELECT public.is_admin()))
   WITH CHECK ((SELECT public.is_admin()));
 
--- Phase A: users with can_comment permission can update objects whose
+-- Phase A: users with can_inspect permission can update objects whose
 -- programs[] overlaps their accessible programs. Mirrors the targets
 -- update_targets_by_access policy. Field-level restriction (only allow
 -- writing redshift_inspected, redshift_quality, last_inspected_*) is
@@ -232,11 +232,11 @@ CREATE POLICY "update_objects_by_access"
   ON objects FOR UPDATE
   USING (
     programs && (SELECT public.accessible_program_slugs())
-    AND (SELECT public.can_comment())
+    AND (SELECT public.can_inspect())
   )
   WITH CHECK (
     programs && (SELECT public.accessible_program_slugs())
-    AND (SELECT public.can_comment())
+    AND (SELECT public.can_inspect())
   );
 
 -- Admins can delete objects (deploy CLI: objects rebuild wipes before re-insert).
@@ -477,7 +477,7 @@ CREATE POLICY "admin_spectra_delete"
   ON spectra FOR DELETE TO authenticated
   USING ((SELECT public.is_admin()));
 
--- Users with can_comment may update spectra whose parent target is in an
+-- Users with can_inspect may update spectra whose parent target is in an
 -- accessible program. Column scope is restricted to dq_flags (and the
 -- trigger-maintained updated_at) by enforce_spectra_dq_user_update_scope
 -- in triggers.sql — Postgres RLS does not support per-column UPDATE
@@ -486,14 +486,14 @@ DROP POLICY IF EXISTS "update_spectra_dq_by_access" ON spectra;
 CREATE POLICY "update_spectra_dq_by_access"
   ON spectra FOR UPDATE TO authenticated
   USING (
-    (SELECT public.can_comment())
+    (SELECT public.can_inspect())
     AND target_id IN (
       SELECT t.target_id FROM targets t
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     )
   )
   WITH CHECK (
-    (SELECT public.can_comment())
+    (SELECT public.can_inspect())
     AND target_id IN (
       SELECT t.target_id FROM targets t
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
@@ -829,34 +829,28 @@ CREATE POLICY "Users can redeem codes"
 
 
 -- =============================================================================
--- account_requests
+-- inspection_access_requests
 -- =============================================================================
 
-ALTER TABLE account_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inspection_access_requests ENABLE ROW LEVEL SECURITY;
 
--- Admins can view requests.
-DROP POLICY IF EXISTS "admin_select_requests" ON account_requests;
-CREATE POLICY "admin_select_requests"
-  ON account_requests FOR SELECT TO authenticated
+-- Users can see their own requests; admins can see all.
+DROP POLICY IF EXISTS "select_own_inspection_requests" ON inspection_access_requests;
+CREATE POLICY "select_own_inspection_requests"
+  ON inspection_access_requests FOR SELECT TO authenticated
+  USING (user_id = (SELECT auth.uid()) OR (SELECT public.is_admin()));
+
+-- Users can submit a request for themselves.
+DROP POLICY IF EXISTS "insert_own_inspection_request" ON inspection_access_requests;
+CREATE POLICY "insert_own_inspection_request"
+  ON inspection_access_requests FOR INSERT TO authenticated
+  WITH CHECK (user_id = (SELECT auth.uid()) AND status = 'pending');
+
+-- Admins can review (update) requests.
+DROP POLICY IF EXISTS "admin_update_inspection_requests" ON inspection_access_requests;
+CREATE POLICY "admin_update_inspection_requests"
+  ON inspection_access_requests FOR UPDATE TO authenticated
   USING ((SELECT public.is_admin()));
-
--- Admins can update requests.
-DROP POLICY IF EXISTS "admin_update_requests" ON account_requests;
-CREATE POLICY "admin_update_requests"
-  ON account_requests FOR UPDATE TO authenticated
-  USING ((SELECT public.is_admin()));
-
--- Anyone can submit requests (including anonymous users).
-DROP POLICY IF EXISTS "Anyone can submit requests" ON account_requests;
-CREATE POLICY "Anyone can submit requests"
-  ON account_requests FOR INSERT TO authenticated, anon
-  WITH CHECK (true);
-
--- Anyone can check own request status.
-DROP POLICY IF EXISTS "Users can check own request status" ON account_requests;
-CREATE POLICY "Users can check own request status"
-  ON account_requests FOR SELECT TO authenticated, anon
-  USING (true);
 
 
 -- =============================================================================

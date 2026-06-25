@@ -40,7 +40,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
   cardId,
 }) => {
   const { user, userProfile } = useAuth();
-  const canEdit = !!(user && userProfile?.can_comment);
+  const canEdit = !!(user && userProfile?.can_inspect);
 
   // Local DQ bitmask: optimistic state mirrors the server, snapped back on failure.
   const [dqBitmask, setDqBitmask] = useState<number>(spectrum.dq_flags ?? 0);

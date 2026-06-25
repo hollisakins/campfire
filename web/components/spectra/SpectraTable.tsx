@@ -250,7 +250,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   filters,
 }) => {
   const { user, userProfile } = useAuth();
-  const canInspect = !!(user && userProfile?.can_comment);
+  const canInspect = !!(user && userProfile?.can_inspect);
   const isSpectraMode = viewMode === 'spectra';
   const isObjectsMode = viewMode === 'objects';
 
