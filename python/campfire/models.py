@@ -700,7 +700,9 @@ class Object:
     redshift_inspected : float or None
         User-inspected redshift, if set.
     redshift_quality : int
-        Quality code (0=none, 1=tentative, … 4=secure).
+        Inspection quality code; see :class:`campfire.flags.RedshiftQuality`
+        (0=not inspected, 1=impossible, 2=tentative, 3=probable, 4=secure).
+        Note that 1 (impossible) forces :attr:`redshift` to ``None``.
     n_spectra : int
         Number of spectra associated with this object.
     programs : list of str

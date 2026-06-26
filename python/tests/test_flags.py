@@ -1,6 +1,9 @@
 """Tests for flag query operators."""
 
-from campfire.flags import DQFlags, FlagQuery
+import re
+
+from campfire.flags import DQFlags, FlagQuery, RedshiftQuality
+from campfire.models import Object
 
 
 class TestFlagOperators:
@@ -90,3 +93,34 @@ class TestFlagQueryCombination:
         assert params == {"dq_flags_include_any": 1}
         assert "dq_flags_include_all" not in params
         assert "dq_flags_exclude" not in params
+
+
+class TestRedshiftQualityDocstring:
+    """Guard against the Object docstring drifting from the canonical enum.
+
+    The integer semantics of ``redshift_quality`` are restated in prose in the
+    ``Object`` dataclass docstring. This previously inverted the codes
+    (claiming ``1=tentative`` when 1 is Impossible — see issue #198). Assert the
+    documented ``N=label`` pairs match :class:`RedshiftQuality` so any future
+    inversion fails CI.
+    """
+
+    def _documented_pairs(self):
+        # Extract "<int>=<label>" pairs from the Object docstring, e.g. "1=impossible".
+        return {
+            int(value): label.strip()
+            for value, label in re.findall(r"(\d+)=([a-z ]+)", Object.__doc__)
+        }
+
+    def test_docstring_documents_every_enum_member(self):
+        documented = self._documented_pairs()
+        assert set(documented) == {member.value for member in RedshiftQuality}
+
+    def test_docstring_labels_match_enum(self):
+        documented = self._documented_pairs()
+        for member in RedshiftQuality:
+            expected_label = member.name.lower().replace("_", " ")
+            assert documented[member.value] == expected_label, (
+                f"redshift_quality={member.value} documented as "
+                f"{documented[member.value]!r}, expected {expected_label!r}"
+            )
