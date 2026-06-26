@@ -19,7 +19,7 @@ contain any production credentials or sensitive data — just a small stratified
 sample of scientific data and synthetic test user accounts.
 
 Targets are cross-matched into `objects` table entries in-process (per-field
-friends-of-friends via `campfire.deploy.objects`), so no `cfdeploy objects`
+friends-of-friends via `campfire.deploy.objects`), so no `campfire deploy objects`
 follow-up is needed after `supabase db reset`.
 
 Usage:
@@ -510,7 +510,7 @@ def build_seed_objects(
 ) -> tuple[list[dict], dict[int, int]]:
     """Cluster seed targets into objects (per-field FoF) and assign synthetic ids.
 
-    Mirrors the production `cfdeploy objects` flow so that a fresh
+    Mirrors the production `campfire deploy objects` flow so that a fresh
     `supabase db reset` yields a fully-populated `objects` table with
     target FKs and list members linked.
 

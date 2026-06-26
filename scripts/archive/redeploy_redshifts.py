@@ -2,6 +2,13 @@
 """
 Recompute redshift consensus and redeploy to Supabase.
 
+ARCHIVED (2026-06): retired one-off batch tool. It imports the pre-merge
+``campfire_deploy`` package (removed with the deploy/ directory in #204) and
+relies on ``check_existing_targets`` / ``REDSHIFT_DRIFT_THRESHOLD``, which no
+longer exist — the quality-reset-on-redshift-drift logic now lives in the
+reconcile flow (``campfire.deploy.reconcile``). Kept for reference only; not
+runnable as-is.
+
 For each observation:
   1. Extract zfits from tar (if needed)
   2. Regenerate the summary ECSV with the new consensus

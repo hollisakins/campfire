@@ -36,14 +36,17 @@ Usage:
 """
 
 import argparse
+import os
 from collections import defaultdict
 import sys
 
 from astropy.coordinates import SkyCoord, search_around_sky
 import astropy.units as u
 
-from campfire_deploy.config import load_config as load_deploy_config
-from campfire_deploy.r2 import get_r2_client
+# Add the unified campfire package to path (also pip-installed via -e ./python)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
+from campfire.deploy.config import load_config as load_deploy_config
+from campfire.deploy.r2 import get_r2_client
 from supabase import create_client, Client
 
 

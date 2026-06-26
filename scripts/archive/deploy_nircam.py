@@ -2,6 +2,12 @@
 """
 CAMPFIRE NIRCam Deployment Script
 
+ARCHIVED (2026-06): superseded by ``campfire deploy`` NIRCam handling
+(campfire.deploy.nircam). This standalone script hardwires the legacy
+SUPABASE_URL / SUPABASE_SERVICE_KEY env convention instead of the unified
+CAMPFIRE_SUPABASE_* / deploy.toml credential flow — do not run it. Kept for
+reference only.
+
 Discovers NIRCam mosaic images and upserts metadata to Supabase.
 
 Usage:
