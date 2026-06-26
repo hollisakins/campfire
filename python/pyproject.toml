@@ -52,15 +52,19 @@ deploy = [
 plotting = [
     "plotly>=5.18.0",
 ]
+specutils = [
+    "specutils>=1.13",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "black>=23.0",
     "mypy>=1.0",
     "plotly>=5.18.0",
+    "specutils>=1.13",
 ]
 all = [
-    "campfire[deploy,plotting]",
+    "campfire[deploy,plotting,specutils]",
 ]
 
 [project.urls]
