@@ -19,8 +19,7 @@ This is a monorepo with several components:
 |-----------|-------------|-------|
 | [`pipeline/`](pipeline/) | JWST reduction pipeline | Python, `jwst`, `astropy` |
 | [`web/`](web/) | Interactive web portal | Next.js, Supabase, Tailwind |
-| [`deploy/`](deploy/) | Deployment CLI for uploading products | Python, Supabase, Cloudflare R2 |
-| [`python/`](python/) | Python API client *(under construction)* | Python, `httpx` |
+| [`python/`](python/) | Unified Python package: API client, CLI, and deploy tools | Python, `httpx`, Supabase, Cloudflare R2 |
 
 Supporting directories:
 
@@ -40,7 +39,7 @@ conda env create -f environment.yml
 conda activate campfire
 ```
 
-This installs the pipeline dependencies via conda and both Python packages (`campfire-pipeline`, `campfire-deploy`) in editable mode via pip.
+This installs the pipeline dependencies via conda and both Python packages — `campfire-pipeline` (`pipeline/`) and `campfire` (`python/`, the unified client + CLI + deploy tools) — in editable mode via pip.
 
 ### Pipeline
 

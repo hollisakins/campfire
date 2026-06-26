@@ -7,8 +7,7 @@ Guidance for Claude Code when working in this repository.
 Monorepo with several main components — see each directory's README for details:
 - **`pipeline/`** — JWST data reduction (NIRSpec + NIRCam). Local-only, no cloud dependencies.
 - **`web/`** — Next.js web portal. Deployed on Vercel.
-- **`python/`** — Unified Python package: API client, CLI, and deployment tools. Install with `pip install -e ".[deploy]"` for full functionality.
-- **`deploy/`** — (deprecated) Standalone deploy CLI, now merged into `python/campfire/deploy/`.
+- **`python/`** — Unified Python package: API client, CLI, and deployment tools (including the `campfire deploy` CLI). Install with `pip install -e ".[deploy]"` for full functionality.
 
 Supporting: `supabase/` (migrations), `scripts/` (one-off utilities)
 

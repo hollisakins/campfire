@@ -2,6 +2,11 @@
 """
 CAMPFIRE Deployment Script
 
+ARCHIVED (2026-06): superseded by the unified ``campfire deploy`` CLI
+(python/campfire/deploy). This standalone script predates the deploy guardrails
+(e.g. the warn-and-confirm on non-release cfpipe_version) — do not run it. Kept
+for reference only.
+
 Deploys reduced NIRSpec spectra, RGB images, and SED plots to Supabase (metadata) and Cloudflare R2 (files).
 
 Usage:
