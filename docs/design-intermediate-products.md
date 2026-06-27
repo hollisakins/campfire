@@ -180,39 +180,116 @@ tile/RGB serving + edge caching.
   a Cloudflare-ism OSN may reject, and SigV4 presigned URLs are bound to the
   exact host+region used at signing, so a configurable endpoint with a stale
   `'auto'` region will fail verification at OSN.
-- Add a **backend factory** in each language (one place builds the S3 client).
+- Add a **backend factory** in each language that resolves config **per logical
+  bucket / purpose**, not globally: `data → OSN` (private; presigned + the
+  streaming-zip proxy of §6) and `tiles → R2` (kept **deliberately** for the CDN
+  edge cache; public URL base). The two-bucket credential split already exists
+  (`CAMPFIRE_R2_*` vs `CAMPFIRE_R2_TILES_*`), so this generalizes it into a
+  per-purpose `{backend, endpoint, region, creds, public_url_base}` block. A
+  bonus: `storage_objects.backend` is then `osn` for data and stays `r2` for
+  tiles — the registry models the split for free, and the OSN copy (§6) simply
+  excludes the tiles bucket.
 - Replace the `web/lib/r2.ts` `'#download-placeholder'` soft-fail (which
   downgrades signing errors to a generic 503) with a hard, logged error so a
   cutover endpoint/region/CORS misconfig is diagnosable, not silently masked.
 - Neutral naming/aliases (`storage`/`s3`), keeping `r2`/`R2_*` as accepted
   aliases to avoid a breaking rename.
 
-> The download-Worker rework and public-tile rework are **not** here — they are
-> OSN-cutover-scoped (§6). But PR-1 must reach the **web download path**
-> (`generateDownloadUrl` in `web/lib/r2.ts`) before any object can be served from
-> OSN (§8 dependency).
+> The download-Worker replacement is OSN-cutover-scoped (§6). Tiles stay on R2,
+> so there is **no tile re-host** and no `tile_base_url` backfill. But PR-1 must
+> reach the **web download path** (`generateDownloadUrl` in `web/lib/r2.ts`)
+> before any **data** object can be served from OSN (§8 dependency).
 
-**Independently valuable:** config hygiene; removes 4-way endpoint duplication.
+**Independently valuable:** config hygiene; removes 4-way endpoint duplication;
+makes the data-on-OSN / tiles-on-R2 split a config fact, not an accident.
 
-### PR-2: Canonical object-key module (record, don't reconstruct)
+### PR-2: The layout & key contract (pipeline ↔ CLI ↔ cloud)
 
-**Why:** keys are built ad hoc in `deploy.py`, `summary.py`, `nircam.py`,
-`photometry.py`, `tiles.py` and *mirrored* in `web/lib/r2.ts`; SED/RGB keys are
-not stored anywhere (reconstructed from `obs_name + filename`). As product types
-multiply this drifts, and the registry needs one authority for keys.
+**Why — the directory layout is now a three-way contract, defined in N places.**
+The local `$CAMPFIRE_ROOT/` tree is the contract between (a) the **pipeline**
+(which creates it), (b) the **CLI** (which mirrors it on `download` and prunes it
+on `delete-local`), and (c) the **cloud** (whose keys must round-trip to it).
+Today that contract is implicit and scattered:
+- **Local paths are resolved in two independent codebases.** The pipeline package
+  builds them in `campfire_pipeline/config.py` (`resolve_paths`), `nircam/field.py`
+  (`setup_workspace`/`filter_dir`/`get_exposure_path`), and
+  `nirspec/observation.py` (`workspace_dir`); the `campfire` package re-derives
+  the same conventions in `deploy/config.py` (`products_dir`/`resolve_obs_dir`).
+  Nothing forces them to agree.
+- **Storage keys are a *third* vocabulary** that diverges from the local tree:
+  `spectra/<obs>/x.fits` in the bucket vs `products/<obs>/x.fits` on disk;
+  NIRCam previews under `nircam/exposures/…`; SED/RGB keys not stored at all
+  (reconstructed from `obs_name + filename`). The key↔path translation lives ad
+  hoc in `deploy.py`, `summary.py`, `nircam.py`, `photometry.py`, `tiles.py` and
+  is *mirrored again* in `web/lib/r2.ts`.
+- **No tree is classified by lifecycle.** Nothing says which top-level dirs are
+  cloud-backed vs local-only vs regenerable vs from-MAST — so `download
+  --intermediate`/`delete-local` have no principled way to know what to fetch or
+  what is safe to delete (e.g. `reference/` masks are user-state, `raw/` comes
+  from MAST, `cache/` is regenerable).
 
-**Change:** one module that builds **every** object key from typed inputs
-(`product_type`, scope, filename), shared in spirit across python and web (a
-Python module + a mirrored TS module with a single conformance test asserting
-they agree on fixed cases). Deploy **records** the key it used (into
-`storage_objects`) instead of relying on reconstruction.
+As product types multiply (intermediates) and the cloud becomes source-of-truth,
+this is the highest-footgun surface in the whole design. PR-2 codifies it.
 
-> **Ordering:** PR-2 must precede Phase 1's "deploy writes registry rows," or the
-> registry is seeded with non-canonical reconstructed keys — the exact drift it
-> exists to kill.
+**Change — one declarative contract, consumed everywhere.**
+- A single **layout module** that is the sole authority for: (i) the local path of
+  any `(instrument, scope, product_type, filename)`; (ii) its storage key; (iii)
+  the **bijection** key ↔ local-relative-path (total and reversible, so
+  `download` can place any fetched key correctly and `deploy` can derive any key);
+  (iv) a **lifecycle class** per top-level tree (see table). Deploy/download/web
+  all call it; nobody hand-builds a key or a path.
+- **Three consumers, kept honest by conformance tests.** The pipeline package and
+  the `campfire` package share a pure-python `campfire_layout` core (no heavy
+  deps; importable by both — pipeline is local-only but a tiny pure module is
+  safe to depend on); the web gets a mirrored TS module. A single golden
+  conformance test asserts all three agree on a fixed set of
+  `(scope) → (path, key, class)` cases — the same pattern already proposed for
+  python↔TS keys. (Alternative: a language-agnostic `layout.toml` spec with thin
+  per-language readers — maximal drift-resistance; heavier to author. Recommend
+  the shared-module + conformance-test route first.)
+- Deploy **records** the key it used into `storage_objects` rather than relying on
+  reconstruction (kills the SED/RGB reconstruction fragility).
 
-**Independently valuable:** kills the SED/RGB reconstruction fragility; one place
-to audit the key namespace.
+**Tree lifecycle classification** (drives `download --intermediate`/`delete-local`):
+
+| Tree | Class | In cloud? | `delete-local` safe? |
+|---|---|---|---|
+| `products/` | cloud-backed product | yes (data→OSN) | yes, after verified-in-cloud |
+| `reference/…/masks` | **user-state** | yes (via DB round-trip / registry) | only after round-tripped |
+| `reference/…/{flats,bad_pixels,wisps,astrom_cats}` | reduction input | **decide**: cloud-backed vs regenerable | no unless cloud-backed |
+| `raw/` | external (MAST) | no — `cfpipe download` refetches | yes (re-fetchable from MAST) |
+| `cache/` (crds, templates) | regenerable | no | yes |
+| `meta/`, `cutouts/` | CLI-local | no | n/a |
+
+This makes "recover a re-reducible workspace" precise: it's `products/` **plus**
+the cloud-backed `reference/` inputs — not just `products/`. Without the
+classification, `download --intermediate` would silently restore an
+un-re-reducible tree (missing flats/masks), and `delete-local` could nuke
+local-only reference data that exists nowhere else.
+
+**Canonicalize keys during the OSN copy (the free re-key window).** The OSN
+migration already copies + verifies every object (§6). That is the *one* moment
+to also re-key objects onto the canonical scheme so the key ↔ local-path map
+becomes (near-)identity — `products/<obs>/x_spec.fits` on disk ↔
+`data/products/<obs>/x_spec.fits` in the bucket — collapsing the third vocabulary.
+Doing it then is ~free (we copy anyway); doing it later would require a second
+full-bucket pass we'd never want. Safe because `spectra.spectrum_id` is GENERATED
+by stripping `^.*/` and `_spec\.fits$` from `fits_path`, which survives any key
+prefix change as long as the basename convention holds (it does).
+
+> **Scope boundary — keep the *local* dir layout as-is.** Renaming local
+> `products/` dirs would be a **pipeline MAJOR** (CLAUDE.md: file-naming is a
+> breaking output change) and touches the pipeline's globbing everywhere. PR-2
+> deliberately does **not** re-org local dirs; it centralizes + classifies the
+> existing layout and canonicalizes only the *bucket keys* (an infra change). A
+> local subdir tidy (e.g. splitting NIRCam `exposures/` vs `mosaics/`) is an
+> *optional* coordinated-MAJOR add-on, flagged in §13, not part of this PR.
+
+> **Ordering:** PR-2 must precede Phase 1's "deploy writes registry rows" (so the
+> registry records canonical keys) and informs PR-3's NIRSpec canonical naming.
+
+**Independently valuable:** turns the most footgun-prone, duplicated convention in
+the repo into one tested contract — useful even with no cloud changes at all.
 
 ### PR-3: NIRSpec canonical spectrum-exposure refactor
 
@@ -307,12 +384,12 @@ CRDS bump). Keep `_rate` as-is.
 
 | Layer | Today | Target |
 |---|---|---|
-| **Storage** | R2; endpoint hardcoded ×4; two buckets; CF Worker (R2 binding) for ZIP; public-URL tiles | OSN via configurable endpoint+region+CORS factory (PR-1); Worker **retired** (not ported) → presigned GET + off-Vercel zip; tiles via OSN public-read/CDN with `tile_base_url` backfill |
+| **Storage** | R2; endpoint hardcoded ×4; two buckets; CF Worker (R2 binding) for ZIP; public-URL tiles | **data → OSN** via per-purpose factory (PR-1); ZIP Worker **retired** → storage-agnostic streaming-zip proxy (OSN egress is free); **tiles stay on R2** for the CDN edge cache |
 | **Registry** | none (keys bare/reconstructed) | `storage_objects` indexes every object: key, hash, size, type, scope FKs, stage, status, deployment, backend, provenance |
 | **Database** | presence == published; lifecycle only on `nircam_exposures` | `deploy_status` on science + intermediate rows; status enforced in **RLS *and* service-role RPCs/routes**; `spectrum_exposures` mirrors `nircam_exposures`; audit log |
 | **Deploy CLI** | one-way push of finals; hard-delete `remove` | upload+register (`--in-prep`) decoupled from `publish`/`revoke`; writes registry; intermediates for both instruments; every product subcommand registry+lifecycle-aware (§5.4 table) |
 | **Web** | NIRCam triage UI; no publish concept | admin intermediate-products view (clone of NIRCam triage) + deploy control panel (stage/publish/revoke) + audit view |
-| **Sync/recover** | metadata-only sync; one FITS per spectrum | generalized artifact manifest; admin `sync --all-products` (reuses presign admin-gate pattern); delete-local + recover with verified-in-cloud interlock |
+| **Sync / download** | metadata-only `sync`; `download` = one final FITS per spectrum | `sync` unchanged (index only); `download` **widened** to intermediates via `--intermediate`/`--all` (admin), writing into the mirrored `products/` tree; `delete-local` is its verified-in-cloud inverse. No separate `recover` verb. |
 
 ---
 
@@ -464,40 +541,47 @@ view, mirroring the existing `download_log` + `get_download_stats` pattern
 
 ## 6. Storage migration (R2 → OSN)
 
-**Worker retirement, not porting.** The ZIP/batch download Worker
-(`web/workers/download-worker`) uses a Cloudflare `R2Bucket` binding
-(`env.R2_BUCKET.get`, egress-free R2→Worker) and an HMAC-JWT key allowlist. OSN
-has no such binding, so the Worker is **retired**. Per-download authorization +
-tracking move into the presign issuer; the auth model changes from
-"short-lived HMAC token listing allowed keys" to "S3 SigV4 presigned per object,"
-which must preserve the current allowlist/zip semantics. (Also: the Worker's JWT
-`exp` is in **milliseconds** vs `Date.now()` — consistent today, but do not
-inherit this if any verifier is reused; standard S3/JWT `exp` is seconds.)
+**Decision — what moves and what stays.** Only the **data** bucket moves to OSN.
+**Tiles stay on R2** (decided), specifically to keep the CDN edge cache for the
+map; this is codified as the per-purpose backend split in PR-1, so it is a config
+fact, not a migration step. Consequently there is **no `tile_base_url` backfill
+and no tile re-host** — the tile path is untouched by this migration.
 
-**Egress & cost (new constraint — R2's zero-egress advantage is being traded
-away).** Today single files use presigned GET (direct from R2, no egress fee) and
-ZIP streams through the Worker (egress-free). On OSN: (a) presigned GET pulls
-bytes OSN→user with no edge cache; (b) a naïve "server-side zip on Vercel" pulls
-every file OSN→Vercel→user, doubling traffic and hitting Vercel function
-size/time limits for multi-GB FITS bundles. **Decision:** keep ZIP generation
-**off Vercel** (a dedicated streaming service, or a presigned multi-file manifest
-the client zips), and validate presigned-GET throughput + OSN egress
-pricing/limits before cutover. Keep R2 as the download backend until OSN download
-economics are proven.
+**OSN egress is free** (it is an academic-use service, not commercial), which
+removes the cost concern I previously raised. So the only real constraints on the
+download path are (1) OSN has **no R2 binding**, and (2) Vercel function
+size/time limits make server-side zip on Vercel a non-starter for multi-GB
+bundles. Neither is a cost problem.
+
+**ZIP download — replace the R2-binding Worker with a storage-agnostic streaming
+proxy.** The ZIP/batch Worker (`web/workers/download-worker`) uses a Cloudflare
+`R2Bucket` binding (`env.R2_BUCKET.get`) and an HMAC-JWT key allowlist. OSN has no
+such binding, so the binding is retired — but the **pattern is kept**: a small
+streaming-zip proxy (it can still be a Cloudflare Worker, just `fetch()`-ing OSN
+over HTTP via presigned/public GET instead of the binding) that verifies the HMAC
+token, streams each object, and pipes through a streaming zip
+(`archiver`/zip-stream). Streaming ⇒ constant memory regardless of bundle size,
+so no Vercel ceiling; free egress ⇒ proxying bytes is fine. This preserves the
+current `zipFilename` + key-allowlist semantics. (Alternative: server returns
+presigned GETs and the browser zips client-side with `fflate`/`client-zip` —
+zero-infra but caps on browser memory and doesn't help the CLI; the streaming
+proxy is the primary recommendation.) Fix the JWT `exp` unit if reused — the
+Worker compares an `exp` documented in **milliseconds** to `Date.now()`;
+standard S3/JWT `exp` is seconds.
 
 **CORS & SigV4.** Browser direct PUT (`upload_files_presigned`) and direct GET
-require **OSN bucket CORS** for the portal origins — an explicit cutover task.
-SigV4 presigned URLs bind to the signing host+region; PR-1's configurable region
-+ `forcePathStyle` are prerequisites.
+against OSN require **OSN bucket CORS** for the portal origins — an explicit
+cutover task. SigV4 presigned URLs bind to the signing host+region; PR-1's
+configurable region + `forcePathStyle` are prerequisites.
 
-**Tiles.** `map_layers.tile_base_url` is `NOT NULL` (tables.sql:272-291); a single
-value per `(field,filter)` cannot dual-read. Cutover step (hand-authored data
-migration, migra won't generate it): copy tiles → `UPDATE` each row's
-`tile_base_url` to the OSN base → bump `tile_version` to bust client caches.
+**Re-key during copy.** Per PR-2, this same copy pass is the once-only window to
+canonicalize **data**-bucket keys to the products-relative scheme (the OSN copy
+writes to the new keys). Tiles, staying on R2, keep their existing keys.
 
-**Sequence:** registry-driven bulk copy + `content_hash` verify → dual-read
-shadow period (try OSN via `storage_objects.backend`, fall back to R2) → smoke
-tests (single GET, ZIP, tile, RGB) → flip default backend → retire R2 reads.
+**Sequence:** registry-driven bulk copy (to canonical keys) + `content_hash`
+verify → dual-read shadow (try OSN via `storage_objects.backend`, fall back to
+R2) → smoke tests (single GET, ZIP, RGB; tiles untouched) → flip default data
+backend → retire R2 data reads (R2 keeps serving tiles).
 
 ---
 
@@ -514,8 +598,9 @@ before committing):
 | NIRSpec rate + canonical spectrum-exposures | 10s of GB/obs | N_obs | _TBD_ |
 | Finals + RGB + SED + photometry + tiles (today) | — | current bucket | _measure_ |
 
-- **Egress** (new on OSN) is a *running* cost, not storage: estimate download +
-  tile-serving volume separately.
+- **Egress is free on OSN** (academic service), so the budget is purely storage,
+  not traffic. Tile-serving stays on R2's CDN and is unaffected. So this model
+  only has to track bytes-at-rest against the 20 TB cap.
 - **Trigger:** a budgeting RPC drives an alert at e.g. 80% of cap; the alert must
   have a remediation lever (§ GC below), or it fires with nothing to do.
 - **GC / retention (promote out of "later").** `superseded` tombstones retain
@@ -533,13 +618,16 @@ without the next; each has a rollback.
 
 ```
 FOUNDATION
-  F0  Prereqs        PR-1 (endpoint+region+CORS+factory), PR-2 (key module), PR-3 (NIRSpec canonical)
+  F0  Prereqs        PR-1 (per-purpose backend: data→OSN / tiles→R2, +region+CORS+factory),
+                     PR-2 (layout & key contract: paths+keys+bijection+tree classification),
+                     PR-3 (NIRSpec canonical)
   F1  Registry       storage_objects (SHADOW index): deploy writes canonical keys; backfill;
                      reconciliation report. NOT authoritative until coverage proven.
 
-TRACK A — OSN (after F1; needs PR-1 in the web download path)
-  A1  Copy+verify    registry-driven bulk copy, content_hash verify, dual-read shadow
-  A2  Cutover        Worker retirement (off-Vercel zip), CORS, tile_base_url backfill, flip backend
+TRACK A — OSN (data bucket only; after F1; needs PR-1 in the web download path)
+  A1  Copy+verify    registry-driven bulk copy → canonical keys, content_hash verify, dual-read
+  A2  Cutover        streaming-zip proxy (replaces R2-binding Worker), OSN CORS, flip data backend
+                     (tiles stay on R2 — no tile migration)
 
 TRACK B — Intermediates + lifecycle (after F1)
   B1  Enforcement    deploy_status columns + status predicates in ALL readers (RLS + the four
@@ -548,8 +636,9 @@ TRACK B — Intermediates + lifecycle (after F1)
   B2  Intermediate deploy + in_prep   NIRCam exposures first, then NIRSpec spectrum-exposures.
                      `deploy --in-prep` gated on a B1 capability marker (refuses otherwise).
   B3  Admin UI       intermediate-products view (clone NIRCam triage) + publish/revoke panel + audit
-  B4  Sync/recover   artifact manifest; admin sync --all-products; delete-local (verified-in-cloud
-                     interlock); recover; multi-reducer concurrency safety (§9)
+  B4  Download/local  widen `download` to intermediates (--intermediate/--all, admin) into the
+                     mirrored products tree; delete-local (verified-in-cloud interlock);
+                     multi-reducer concurrency safety (§9). No separate `recover` verb.
 
 LATER
   L1  Consolidation  GC/retention command, budgeting dashboards, finer roles
@@ -592,8 +681,16 @@ this step.
 ## 9. Multi-reducer concurrency & the headless-cluster workflow
 
 The user's primary use case (reduce → deploy in-prep on a cluster → inspect in
-web → mask → publish; and reduce → deploy → delete local → recover) is
-multi-actor, so core safety is in **B4**, not deferred to "later":
+web → mask → publish; and reduce → deploy → delete local → `download` again to
+restore) is multi-actor, so core safety is in **B4**, not deferred to "later".
+
+The restore step is **`download --intermediate` scoped to the reduction**, not a
+separate `recover` verb — because the CLI already mirrors the pipeline's
+`products/` tree and PR-2's key↔path bijection means a fetched key lands in the
+right place automatically. "Restore a re-reducible workspace" = `products/` plus
+the cloud-backed `reference/` inputs (PR-2's tree classification), content-
+addressed and idempotent. Raw `_uncal` files are *not* in this picture — they
+come from MAST via `cfpipe download`.
 
 - **Deploy ownership / optimistic lock.** Two reducers deploying the same
   exposure/observation must not clobber: reuse the `objects.version`
@@ -610,25 +707,33 @@ multi-actor, so core safety is in **B4**, not deferred to "later":
 - **delete-local interlock:** refuse to delete a local file unless its object is
   registered **and** `content_hash`-verified present in the (current backend)
   store.
-- **recover/supersede ordering:** recover restores the latest non-tombstoned
-  object; supersede during an in-flight recover is resolved by the optimistic
-  lock. Reconciliation `LIST` cost for million-key buckets is acknowledged and
-  budgeted (incremental, by prefix).
+- **download/supersede ordering:** a restoring `download` fetches the latest
+  non-tombstoned object; a supersede during an in-flight download is resolved by
+  the optimistic lock (the manifest is re-read). Reconciliation `LIST` cost for
+  million-key buckets is acknowledged and budgeted (incremental, by prefix).
 
 ---
 
 ## 10. CLI surface
 
-New verbs and where they live (preserve `--dry-run` parity — universal today):
-- `campfire deploy publish|revoke|recover` (admin) — lifecycle transitions, all
-  with `--dry-run`.
+The model stays the two existing file/metadata verbs (`sync` = index, `download`
+= files), widened — plus admin lifecycle verbs. Preserve `--dry-run` parity
+(universal today):
+- `campfire sync` — **unchanged** (metadata/index only).
+- `campfire download [scope] --intermediate` (admin) — widen the existing
+  `download` from finals to the products **needed to resume reduction** (NIRSpec
+  `_rate` + canonical spectrum-exposures at their CFP state, NIRCam canonical
+  exposures, + cloud-backed `reference/` inputs), placed into the mirrored
+  `products/` tree. `--all` pulls *every* registered object (QA PDFs, previews)
+  for the scope. Composes with existing `--obs/--program/--field/--grating/--stale`.
+  No separate `recover` verb.
+- `campfire delete-local [scope] [--verify|--verify-deep]` (client) — the inverse
+  of `download`, with the verified-in-cloud interlock (§9). Marks files
+  recoverable-but-absent in the local catalog.
+- `campfire deploy publish|revoke` (admin) — lifecycle transitions.
 - `campfire deploy gc` (admin) — reclaim GC-eligible superseded/revoked bytes.
-- `campfire sync --all-products` (admin) — generalized artifact pull
-  (admin-gated via the presign pattern).
-- `campfire delete-local` / `campfire recover` (client) — the
-  delete→recover loop, with the verified-in-cloud interlock (§9).
-- `campfire status` gains a cloud/registry view (what's published vs in_prep vs
-  locally materialized) alongside its existing local sync state (cli.py:326).
+- `campfire status` gains a cloud/registry view (published vs in_prep vs
+  locally-materialized) alongside its existing local sync state (cli.py:326).
 
 ---
 
@@ -642,8 +747,14 @@ New verbs and where they live (preserve `--dry-run` parity — universal today):
 - **PR-3 touches the scientific core.** Mitigated by the bit-identical
   golden-file gate + the spec3-ASN pre-impl gate + plot/stuck-shutter smoke
   tests; the `_rate` precedent is a model, not a template (pathloss/padding).
-- **OSN egress & no CDN.** Off-Vercel zip, throughput validation, R2 kept until
-  proven (§6).
+- **ZIP download path (not egress — OSN egress is free).** The risk is the R2
+  binding and Vercel function limits: replace the binding Worker with a
+  storage-agnostic streaming-zip proxy (constant memory); keep R2 for tiles/CDN
+  and dual-read data until OSN is proven (§6).
+- **Layout contract drift (PR-2).** The pipeline↔CLI↔cloud directory contract is
+  defined in multiple places; if the shared module + conformance tests aren't the
+  single source, `download`/`delete-local` can place or prune files wrongly.
+  Mitigated by PR-2's tested bijection + tree classification.
 - **`reconcile.py` aborts on split/merge** (human-in-the-loop). Intermediates
   stay off the clustering path.
 - **deployments append-only → updatable.** FK `ON DELETE SET NULL`, scoped
@@ -690,6 +801,18 @@ New verbs and where they live (preserve `--dry-run` parity — universal today):
   Recommend: `--in-prep` auto-confirms (not public); `publish` re-checks. Decide
   whether intermediate deploys ever need a CHANGELOG entry.
 - **Concurrency primitive:** per-row optimistic lock vs per-observation lock row.
+- **`reference/` classification (PR-2).** Are NIRCam `flats`/`bad_pixels`/`wisps`/
+  `astrom_cats` **cloud-backed** (so `delete-local` → `download --intermediate`
+  restores a truly re-reducible workspace) or **regenerable/shared** (excluded
+  from the cloud)? Masks are already user-state (DB round-trip); the rest is the
+  open call, and it directly determines whether a recovered workspace can actually
+  re-run.
+- **Optional local-layout tidy.** A one-time re-org of the *local* `products/`
+  dirs (e.g. NIRCam `exposures/` vs `mosaics/`; flatter NIRSpec) would be a
+  coordinated **pipeline MAJOR** (file-naming change) touching pipeline globbing.
+  Out of scope for PR-2 (which keeps local dirs as-is); worth deciding whether to
+  bundle it into the same window since the cloud keys are being canonicalized
+  anyway.
 
 ---
 
@@ -711,6 +834,18 @@ New verbs and where they live (preserve `--dry-run` parity — universal today):
   denormalized pointer, not a view/FK; intermediate keys live only in the
   registry.
 - **`deployment_id` FK `ON DELETE SET NULL`**; revoke is soft/recoverable.
+- **Data → OSN, tiles → R2 (kept for the CDN edge cache)**, codified as a
+  per-purpose backend block in PR-1. OSN egress is free, so the ZIP Worker is
+  replaced by a storage-agnostic streaming-zip proxy (not retired for cost).
+- **No `recover` verb** — `download --intermediate`/`--all` (admin) widens the
+  existing `download` into the mirrored `products/` tree; `delete-local` is its
+  inverse.
+- **Layout & key contract is a prerequisite (PR-2, expanded).** One tested module
+  owns local paths, storage keys, the key↔path bijection, and a per-tree
+  lifecycle classification — shared across pipeline/CLI/web. **Bucket keys are
+  canonicalized to the products-relative scheme during the OSN copy** (the free
+  re-key window); the **local dir layout is left unchanged** (renaming it would be
+  a pipeline MAJOR).
 
 ---
 
