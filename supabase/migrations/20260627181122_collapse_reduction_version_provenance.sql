@@ -991,4 +991,15 @@ create or replace view "public"."spectrum_flag_summary" as  SELECT s.id,
   GROUP BY s.id, s.target_id, s.grating;
 
 
+-- Restore the materialized-view unique indexes. migra recreates the MV bodies
+-- above (forced by the spectra/deployments column drop) but does not track MV
+-- indexes, so they must be re-added by hand or REFRESH ... CONCURRENTLY breaks
+-- and the deploy CLI's cache refresh soft-fails. Matches supabase/schemas/views.sql.
+CREATE UNIQUE INDEX IF NOT EXISTS mv_filter_options_id
+    ON public.mv_filter_options USING btree (id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_programs_overview_slug
+    ON public.mv_programs_overview USING btree (slug);
+
+
 
