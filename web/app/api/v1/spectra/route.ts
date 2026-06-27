@@ -87,13 +87,6 @@ export async function GET(request: NextRequest) {
     // Generate signed URL (expires in 1 hour)
     const signedUrl = await generateDownloadUrl(fitsPath, 3600);
 
-    // Check if it's a placeholder URL (R2 not configured)
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return NextResponse.json(
-        { error: 'Download service not configured' },
-        { status: 503 }
-      );
-    }
 
     // Either redirect or return JSON
     if (shouldRedirect) {

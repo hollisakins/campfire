@@ -3,10 +3,17 @@ Configuration loading, credential resolution, and path helpers.
 
 Credential resolution (env vars take priority over TOML):
   1. CAMPFIRE_SUPABASE_URL, CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY,
-     CAMPFIRE_R2_ACCOUNT_ID, CAMPFIRE_R2_ACCESS_KEY_ID,
-     CAMPFIRE_R2_SECRET_ACCESS_KEY, CAMPFIRE_R2_BUCKET_NAME
+     CAMPFIRE_S3_ACCESS_KEY_ID, CAMPFIRE_S3_SECRET_ACCESS_KEY,
+     CAMPFIRE_S3_BUCKET_NAME, and either CAMPFIRE_S3_ENDPOINT or
+     CAMPFIRE_S3_ACCOUNT_ID (R2 host derived from the account id).
+     The legacy CAMPFIRE_R2_* names are accepted as aliases.
   2. Explicit --config flag -> TOML file
   3. $CAMPFIRE_ROOT/config/deploy.toml
+
+Storage backend tuning (optional, per purpose — data / tiles): CAMPFIRE_S3_*
+and CAMPFIRE_S3_TILES_* accept ENDPOINT, REGION, FORCE_PATH_STYLE, BACKEND,
+and PUBLIC_URL_BASE so OSN (or any S3-compatible store) is a config change.
+See ``backend.py`` for how these resolve into an S3 client.
 
 Programs resolution:
   $CAMPFIRE_ROOT/config/programs.toml
@@ -19,30 +26,59 @@ from pathlib import Path
 import tomllib
 
 
-# Environment variable names for credentials
-_ENV_VARS = {
-    'supabase': {
-        'url': 'CAMPFIRE_SUPABASE_URL',
-        'service_role_key': 'CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY',
-    },
-    'r2': {
-        'account_id': 'CAMPFIRE_R2_ACCOUNT_ID',
-        'access_key_id': 'CAMPFIRE_R2_ACCESS_KEY_ID',
-        'secret_access_key': 'CAMPFIRE_R2_SECRET_ACCESS_KEY',
-        'bucket_name': 'CAMPFIRE_R2_BUCKET_NAME',
-    },
+# Environment-variable resolution for credentials + storage backend config.
+#
+# Each config key resolves from a list of env var names tried in order:
+# neutral ``CAMPFIRE_S3_*`` names are canonical; ``CAMPFIRE_R2_*`` names are
+# kept as backward-compatible aliases. Storage sections additionally accept
+# optional tuning keys (endpoint, region, force_path_style, backend,
+# public_url_base) so OSN — or any S3-compatible backend — is a config change,
+# not a code edit. See ``backend.py`` for how these are consumed.
+
+_SUPABASE_ENV = {
+    'url': ['CAMPFIRE_SUPABASE_URL'],
+    'service_role_key': ['CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY'],
 }
 
-# Optional environment variable sections (not required for core commands)
-_OPTIONAL_ENV_VARS = {
-    'r2_tiles': {
-        'account_id': 'CAMPFIRE_R2_TILES_ACCOUNT_ID',
-        'access_key_id': 'CAMPFIRE_R2_TILES_ACCESS_KEY_ID',
-        'secret_access_key': 'CAMPFIRE_R2_TILES_SECRET_ACCESS_KEY',
-        'bucket_name': 'CAMPFIRE_R2_TILES_BUCKET_NAME',
-        'public_url_base': 'CAMPFIRE_R2_TILES_PUBLIC_URL_BASE',
-    },
+# Data storage backend -> config['r2'] section.
+_DATA_ENV = {
+    'account_id': ['CAMPFIRE_S3_ACCOUNT_ID', 'CAMPFIRE_R2_ACCOUNT_ID'],
+    'access_key_id': ['CAMPFIRE_S3_ACCESS_KEY_ID', 'CAMPFIRE_R2_ACCESS_KEY_ID'],
+    'secret_access_key': ['CAMPFIRE_S3_SECRET_ACCESS_KEY', 'CAMPFIRE_R2_SECRET_ACCESS_KEY'],
+    'bucket_name': ['CAMPFIRE_S3_BUCKET_NAME', 'CAMPFIRE_R2_BUCKET_NAME'],
+    'endpoint': ['CAMPFIRE_S3_ENDPOINT', 'CAMPFIRE_R2_ENDPOINT'],
+    'region': ['CAMPFIRE_S3_REGION', 'CAMPFIRE_R2_REGION'],
+    'force_path_style': ['CAMPFIRE_S3_FORCE_PATH_STYLE', 'CAMPFIRE_R2_FORCE_PATH_STYLE'],
+    'backend': ['CAMPFIRE_S3_BACKEND', 'CAMPFIRE_R2_BACKEND'],
+    'public_url_base': [
+        'CAMPFIRE_S3_PUBLIC_URL_BASE', 'CAMPFIRE_R2_PUBLIC_URL_BASE',
+        'CAMPFIRE_R2_PUBLIC_URL',
+    ],
 }
+
+# Tiles storage backend -> config['r2_tiles'] section.
+_TILES_ENV = {
+    'account_id': ['CAMPFIRE_S3_TILES_ACCOUNT_ID', 'CAMPFIRE_R2_TILES_ACCOUNT_ID'],
+    'access_key_id': ['CAMPFIRE_S3_TILES_ACCESS_KEY_ID', 'CAMPFIRE_R2_TILES_ACCESS_KEY_ID'],
+    'secret_access_key': [
+        'CAMPFIRE_S3_TILES_SECRET_ACCESS_KEY', 'CAMPFIRE_R2_TILES_SECRET_ACCESS_KEY',
+    ],
+    'bucket_name': ['CAMPFIRE_S3_TILES_BUCKET_NAME', 'CAMPFIRE_R2_TILES_BUCKET_NAME'],
+    'endpoint': ['CAMPFIRE_S3_TILES_ENDPOINT', 'CAMPFIRE_R2_TILES_ENDPOINT'],
+    'region': ['CAMPFIRE_S3_TILES_REGION', 'CAMPFIRE_R2_TILES_REGION'],
+    'force_path_style': [
+        'CAMPFIRE_S3_TILES_FORCE_PATH_STYLE', 'CAMPFIRE_R2_TILES_FORCE_PATH_STYLE',
+    ],
+    'backend': ['CAMPFIRE_S3_TILES_BACKEND', 'CAMPFIRE_R2_TILES_BACKEND'],
+    'public_url_base': [
+        'CAMPFIRE_S3_TILES_PUBLIC_URL_BASE', 'CAMPFIRE_R2_TILES_PUBLIC_URL_BASE',
+        'CAMPFIRE_R2_TILES_PUBLIC_URL',
+    ],
+}
+
+# A storage section is "usable" with credentials + a bucket + a way to resolve
+# its endpoint (an explicit endpoint, or an account_id to derive the R2 host).
+_STORAGE_REQUIRED = ('access_key_id', 'secret_access_key', 'bucket_name')
 
 
 def _load_toml(path: Path) -> dict:
@@ -51,41 +87,46 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
+def _read_env_section(spec: dict[str, list[str]]) -> dict:
+    """Read each key whose env var (canonical-first, then aliases) is set."""
+    out: dict = {}
+    for key, names in spec.items():
+        for name in names:
+            val = os.environ.get(name)
+            if val:
+                out[key] = val
+                break
+    return out
+
+
+def _storage_section_complete(section: dict) -> bool:
+    """A storage section needs creds, a bucket, and a resolvable endpoint."""
+    if not all(section.get(k) for k in _STORAGE_REQUIRED):
+        return False
+    return bool(section.get('endpoint') or section.get('account_id'))
+
+
 def _config_from_env() -> dict | None:
     """
     Build a config dict from environment variables.
 
-    Returns a complete config dict if all required env vars are set,
-    or None if any are missing. Optional sections (e.g. r2_tiles) are
-    included when all their env vars are present, but never block loading.
+    Returns a config dict when Supabase service-role creds **and** a usable
+    ``data`` storage section are present, or None otherwise. The optional
+    ``tiles`` section is included when usable, but never blocks loading.
     """
-    config: dict = {}
-    all_present = True
-
-    for section, keys in _ENV_VARS.items():
-        config[section] = {}
-        for key, env_var in keys.items():
-            val = os.environ.get(env_var)
-            if val:
-                config[section][key] = val
-            else:
-                all_present = False
-
-    if not all_present:
+    supabase = _read_env_section(_SUPABASE_ENV)
+    if not all(supabase.get(k) for k in _SUPABASE_ENV):
         return None
 
-    # Populate optional sections if all their env vars are present
-    for section, keys in _OPTIONAL_ENV_VARS.items():
-        section_vals = {}
-        section_complete = True
-        for key, env_var in keys.items():
-            val = os.environ.get(env_var)
-            if val:
-                section_vals[key] = val
-            else:
-                section_complete = False
-        if section_complete:
-            config[section] = section_vals
+    data = _read_env_section(_DATA_ENV)
+    if not _storage_section_complete(data):
+        return None
+
+    config: dict = {'supabase': supabase, 'r2': data}
+
+    tiles = _read_env_section(_TILES_ENV)
+    if _storage_section_complete(tiles):
+        config['r2_tiles'] = tiles
 
     return config
 
@@ -160,6 +201,11 @@ def load_config(config_path: str | None = None, *, local: bool = False) -> dict:
             for key, val in toml_config.items():
                 if key not in env_config:
                     env_config[key] = val
+                elif isinstance(val, dict) and isinstance(env_config[key], dict):
+                    # env takes priority per-key; TOML fills any gaps (e.g. a
+                    # public_url_base configured in TOML alongside env creds).
+                    for subkey, subval in val.items():
+                        env_config[key].setdefault(subkey, subval)
         env_config.setdefault('supabase', {})['_auth_mode'] = 'service_role'
         return env_config
 
@@ -187,7 +233,11 @@ def load_config(config_path: str | None = None, *, local: bool = False) -> dict:
             candidates.append(str(Path(root) / 'config' / 'deploy.toml'))
 
     searched = ', '.join(candidates) if candidates else '(none)'
-    env_names = [v for keys in _ENV_VARS.values() for v in keys.values()]
+    # Show the canonical (neutral) env var names for the required sections.
+    env_names = (
+        [names[0] for names in _SUPABASE_ENV.values()]
+        + [_DATA_ENV[k][0] for k in _STORAGE_REQUIRED]
+    )
 
     print("Error: No deploy credentials found.")
     print()
@@ -197,6 +247,11 @@ def load_config(config_path: str | None = None, *, local: bool = False) -> dict:
     print("Option 2 — Set environment variables (service role):")
     for name in env_names:
         print(f"  export {name}=...")
+    # The endpoint can be given directly (OSN/MinIO/any S3) or derived from an
+    # R2 account id — one of the two is required, not both.
+    print(f"  export {_DATA_ENV['endpoint'][0]}=...        "
+          f"# e.g. https://<host>  (OSN / MinIO / S3)")
+    print(f"  # or, for Cloudflare R2:  export {_DATA_ENV['account_id'][0]}=...")
     print()
     print("Option 3 — Create a TOML config file:")
     if candidates:

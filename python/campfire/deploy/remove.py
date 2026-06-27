@@ -161,11 +161,12 @@ def _delete_db_rows(sb: Client, obs_name: str, target_ids: list[str]) -> None:
 
 
 def _delete_r2_prefixes(config: dict, obs_name: str) -> dict[str, int]:
+    from campfire.deploy.backend import resolve_backend
     from campfire.deploy.r2 import get_r2_client
     from campfire.deploy.tiles import delete_r2_prefix
 
     client = get_r2_client(config)
-    bucket = config['r2']['bucket_name']
+    bucket = resolve_backend(config, 'data').bucket
     counts: dict[str, int] = {}
     for prefix in R2_PREFIXES:
         full = f"{prefix}/{obs_name}/"

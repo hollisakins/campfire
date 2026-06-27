@@ -48,13 +48,24 @@ def load_config(scripts_dir: Path) -> dict:
 
 def get_r2_client(config: dict):
     r2_config = config['r2']
+    # Endpoint/region/path-style are configurable (mirrors the deploy backend
+    # factory); fall back to the Cloudflare R2 host derived from account_id.
+    endpoint = r2_config.get('endpoint') or (
+        f"https://{r2_config['account_id']}.r2.cloudflarestorage.com"
+    )
+    fps = r2_config.get('force_path_style', False)
+    if isinstance(fps, str):
+        fps = fps.strip().lower() in ('1', 'true', 'yes', 'on')
+    boto_kwargs = {'signature_version': 's3v4'}
+    if fps:
+        boto_kwargs['s3'] = {'addressing_style': 'path'}
     return boto3.client(
         's3',
-        endpoint_url=f"https://{r2_config['account_id']}.r2.cloudflarestorage.com",
+        endpoint_url=endpoint,
         aws_access_key_id=r2_config['access_key_id'],
         aws_secret_access_key=r2_config['secret_access_key'],
-        config=Config(signature_version='s3v4'),
-        region_name='auto',
+        config=Config(**boto_kwargs),
+        region_name=r2_config.get('region', 'auto'),
     )
 
 

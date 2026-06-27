@@ -21,22 +21,13 @@ from campfire.deploy.r2 import UploadTask, upload_files_parallel
 
 
 def get_r2_tiles_client(config: dict):
-    """Create boto3 S3 client for the tiles R2 bucket (for delete operations)."""
-    import boto3
-    from botocore.config import Config as BotoConfig
+    """Create a boto3 S3 client for the ``tiles`` storage backend (delete ops).
 
-    r2_config = config['r2_tiles']
-    return boto3.client(
-        's3',
-        endpoint_url=f"https://{r2_config['account_id']}.r2.cloudflarestorage.com",
-        aws_access_key_id=r2_config['access_key_id'],
-        aws_secret_access_key=r2_config['secret_access_key'],
-        config=BotoConfig(
-            signature_version='s3v4',
-            max_pool_connections=50,
-        ),
-        region_name='auto',
-    )
+    Endpoint/region/addressing-style come from config via the per-purpose
+    backend factory (defaults to Cloudflare R2 for tiles).
+    """
+    from campfire.deploy.backend import make_client_for
+    return make_client_for(config, 'tiles', max_pool_connections=50)
 
 
 def _require_r2_tiles(config: dict) -> None:
@@ -166,8 +157,9 @@ def clean_tiles(
 ) -> None:
     """Delete existing R2 tiles for field/filter."""
     _require_r2_tiles(config)
+    from campfire.deploy.backend import resolve_backend
     r2_client = get_r2_tiles_client(config)
-    bucket = config['r2_tiles']['bucket_name']
+    bucket = resolve_backend(config, 'tiles').bucket
 
     fields_to_clean = []
     if filter_name:
@@ -202,8 +194,13 @@ def register_layers(
 ) -> None:
     """Register tile layers in Supabase map_layers table."""
     _require_r2_tiles(config)
-    r2_config = config['r2_tiles']
-    public_url_base = r2_config['public_url_base'].rstrip('/')
+    from campfire.deploy.backend import resolve_backend
+    public_url_base = resolve_backend(config, 'tiles').public_url_base
+    if not public_url_base:
+        print("Error: no 'public_url_base' configured for tiles storage.")
+        print("Set CAMPFIRE_R2_TILES_PUBLIC_URL_BASE or add public_url_base to [r2_tiles].")
+        sys.exit(1)
+    public_url_base = public_url_base.rstrip('/')
     supabase = _get_supabase_client(config)
 
     # Find stats files
