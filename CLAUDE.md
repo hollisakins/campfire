@@ -171,7 +171,7 @@ campfire deploy tiles --field cosmos --filter f444w      # map tiles
 campfire deploy sync-programs                            # upsert from programs.toml
 ```
 
-Credentials via env vars (`CAMPFIRE_SUPABASE_URL`, `CAMPFIRE_R2_*`) or gitignored `$CAMPFIRE_ROOT/config/deploy.toml`.
+Credentials via env vars (`CAMPFIRE_SUPABASE_URL`, `CAMPFIRE_S3_*`; legacy `CAMPFIRE_R2_*` accepted as aliases) or gitignored `$CAMPFIRE_ROOT/config/deploy.toml`. Storage endpoint/region/path-style are configurable per purpose (`CAMPFIRE_S3_*` for data, `CAMPFIRE_S3_TILES_*` for tiles); see `python/campfire/deploy/backend.py`.
 
 ## General Notes
 
