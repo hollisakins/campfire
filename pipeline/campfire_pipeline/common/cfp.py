@@ -28,6 +28,8 @@ CFP_KEYS = [
     'CFP_DET1',  # detector1
     'CFP_PERS',  # snowblind persistence
     'CFP_WISP',  # wisp template subtraction
+    'CFP_BKG',   # per-exposure 2D background subtraction
+    'CFP_ART',   # intra-visit detector-fixed artifact removal
     'CFP_1F',    # 1/f striping
     'CFP_IMG2',  # image2
     'CFP_EDGE',  # edge flagging
@@ -46,6 +48,8 @@ CFP_COMMENTS = {
     'CFP_DET1': 'campfire: detector1 done',
     'CFP_PERS': 'campfire: persistence flagged',
     'CFP_WISP': 'campfire: wisp template, scale',
+    'CFP_BKG':  'campfire: per-exposure 2D background',
+    'CFP_ART':  'campfire: intra-visit artifact removal',
     'CFP_1F':   'campfire: 1/f striping params',
     'CFP_IMG2': 'campfire: image2 done',
     'CFP_EDGE': 'campfire: edges flagged',

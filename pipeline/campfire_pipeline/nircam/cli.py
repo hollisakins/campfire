@@ -39,7 +39,7 @@ from campfire_pipeline.nircam.refcat.cli import refcat as refcat_group
 # --from <step>` refuses these — the user must `--uncal` to redo them
 # correctly.
 _SCI_MUTATING_STEPS = {
-    'wisp', 'striping', 'image2', 'sky', 'variance',
+    'wisp', 'background', 'artifact', 'striping', 'image2', 'sky', 'variance',
 }
 
 # Short labels for the status command's column headers (max 4 chars).
@@ -49,6 +49,8 @@ _STEP_LABELS = {
     'wisp':        'wisp',
     'striping':    '1f',
     'image2':      'img2',
+    'background':  'bkg',
+    'artifact':    'art',
     'edge':        'edge',
     'sky':         'sky',
     'variance':    'var',

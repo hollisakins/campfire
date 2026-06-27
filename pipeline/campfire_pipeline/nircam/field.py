@@ -257,8 +257,8 @@ class Field:
         # to recognize per-field step overrides and to exclude them from the
         # tile-detection loop below.
         known_steps = {
-            'detector1', 'persistence', 'wisp', 'striping',
-            'image2', 'diag_striping', 'edge', 'sky', 'variance',
+            'detector1', 'persistence', 'wisp', 'background', 'artifact',
+            'striping', 'image2', 'diag_striping', 'edge', 'sky', 'variance',
             'wcs_shift', 'jhat',
             'apply_mask', 'bad_pixel', 'outlier', 'resample',
         }

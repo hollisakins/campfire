@@ -226,6 +226,152 @@
 [nircam.image2]
     use_custom_flat = false
 
+[nircam.background]
+    # Per-exposure 2D background subtraction. Runs after image2 and BEFORE
+    # artifact/striping so the smooth background — sky-fixed (ICL, zodi
+    # gradients) AND detector-fixed (smooth persistence / scattered light) — is
+    # gone before the 1/f amp-row offsets are measured. A per-exposure model
+    # (vs a sky-frame/drizzle one) is required: only it sees both the sky-fixed
+    # and detector-fixed smooth components as background. Reuses the nircamx
+    # SubtractBackground (tiered mask + clipped_ring_median + Background2D), the
+    # same algorithm the mosaic uses, tuned to preserve galaxy outskirts.
+    #
+    # Opt-in (a per-exposure 2D subtraction changes flux for every field, so
+    # the default reproduces current behaviour). Enable per field with
+    #     [<field>.background]
+    #         enabled = true
+    # Trade-off: a single exposure is shallower than the mosaic, so faint
+    # sources can leak into the model; bg_box_size and the clipped_ring_median
+    # ceiling bound it. Larger box = gentler on sources, less ICL removed.
+    enabled = false
+    # Background2D box / filter (px). 128/3 starts gentler than the mosaic's
+    # fine box (the per-exposure source mask is shallower); tune via the A/B
+    # photometry-conservation metric.
+    bg_box_size = 128
+    bg_filter_size = 3
+    bg_exclude_percentile = 90
+    bg_sigma = 3.0
+    bg_interpolator = "zoom"
+    # Clipped ring-median (large-scale source rejection for the mask).
+    ring_radius_in = 80
+    ring_width = 4
+    ring_clip_max_sigma = 5.0
+    ring_downsample = 4
+    # Tiered source masking (aggressive -> fine), as the mosaic bkgsub.
+    tier_kernel_size = [25, 15, 5, 2]
+    tier_npixels = [15, 10, 3, 1]
+    tier_nsigma = [1.5, 1.5, 1.5, 1.5]
+    tier_dilate_size = [33, 25, 21, 19]
+    plot = true
+
+[nircam.artifact]
+    # Intra-visit detector-fixed artifact removal (persistence, scattered
+    # light, unique LW wisps). Runs after image2 and BEFORE striping, so the
+    # artifacts are gone before the 1/f amp-row offsets are measured. Detector-
+    # frame self-calibration: median-stacks the dithers of a (visit, detector)
+    # group by pixel index, so sky-fixed signal (sources, ICL) rejects via the
+    # dither motion while detector-fixed artifacts survive; subtracts the
+    # structured residual. Opt-in (disabled by default), and additionally
+    # self-gated by the dither safeguards below — enable per field with
+    #     [<field>.artifact]
+    #         enabled = true
+    enabled = false
+    # Safeguards: the step no-ops + stamps CFP_ART = "skipped (...)" unless the
+    # group has >= min_dithers DISTINCT dither positions (co-located repeat
+    # exposures collapse to one) whose minimum pairwise throw is >=
+    # min_dither_spacing_pix. Below that, sources don't move far enough off a
+    # given detector pixel and would leak into the template (oversubtraction).
+    min_dithers = 4
+    min_dither_spacing_pix = 20
+    # Template pixels with fewer than this many unmasked dithers are left
+    # undefined (no correction applied there).
+    min_contributing = 2
+    # Source masking before the stack — belt-and-suspenders on top of dither
+    # rejection, for sources large enough to overlap across the dither throw.
+    # "standard" reuses striping's tiered source mask; "aggressive" grows the
+    # source mask further (it does NOT mask persistence/jump/sat DQ — those
+    # would erase the very artifacts we measure); "none" relies on dither
+    # rejection + the per-pixel sigma-clip only.
+    # Source-rejection strategy for the template stack:
+    #   "stationary" (default): per-exposure source mask + stationarity-aware
+    #       unmasking (below). Cheap, no WCS — but a sky source extended/bright
+    #       enough to overlap itself across the dither throw (cluster galaxies,
+    #       BCG) gets flagged in all dithers, read as detector-fixed, and leaks
+    #       into the template -> oversubtraction at those sources.
+    #   "skymodel": subtract a sky-aligned median (sky-fixed sources + ICL)
+    #       from each frame via the dither WCS, then build the template from the
+    #       source-free residuals. Robustly separates detector-fixed artifact
+    #       from sky-fixed sources (the only thing that can); needs each
+    #       exposure's WCS (the pre-jhat assign_wcs pointing is adequate for a
+    #       single dither sequence). The unmask_* / mask knobs are unused here.
+    source_rejection = "stationary"
+    mask = "standard"
+    # Stationarity-aware unmasking ("stationary" mode only). A real source MOVES
+    # between dithers (flagged at a given detector pixel in only one/few
+    # exposures); a detector-fixed artifact is flagged at the SAME pixel every
+    # exposure. Without this a bright artifact is detected as a "source" in all
+    # dithers and masked everywhere — erasing itself. Pixels flagged in >=
+    # unmask_min_frac * N_dithers are kept in the stack. 1.0 = require all.
+    unmask_stationary = true
+    unmask_min_frac = 1.0
+    sigma = 3.0
+    maxiters = 5
+    # Fill template gaps (pixels with < min_contributing dithers, e.g. under an
+    # extended source) by nearest-neighbour interpolation rather than zeroing.
+    # Zeroing leaves the artifact un-subtracted inside the gap while subtracted
+    # just outside, producing a hard step in the corrected background.
+    interpolate_gaps = true
+    # Optionally isolate the structured artifact from any smooth detector
+    # background by subtracting a large-box model of the stack. OFF by default:
+    # it also removes the broad artifact wings (the per-exposure scale fit then
+    # just multiplies the residual back up). Per-exposure pedestal removal +
+    # the downstream sky step already handle the smooth background.
+    isolate_background = false
+    isolate_box = 128
+    isolate_filter = 3
+    # Light Gaussian smoothing of the template (px); artifacts are smooth, so
+    # this suppresses the per-pixel stack noise that would otherwise be
+    # injected into every exposure. 0 disables.
+    template_smooth_sigma = 2.0
+    # Despike the median BEFORE smoothing: detector-fixed hot/warm pixels
+    # survive the cross-dither median (they're temporally constant, so the
+    # sigma-clip can't reject them) and would be smoothed into subtracted ~5px
+    # blobs. A size-despike_size median follows the smooth artifact and ignores
+    # point spikes, so positive outliers above despike_nsigma are replaced with
+    # the local median (the artifact level) — removing the hot pixel whether it
+    # sits on blank sky or on top of the artifact, while preserving the smooth
+    # artifact. despike_nsigma = 0 disables. The residual scale is measured by
+    # iteratively clipping the median-filter residual (so artifact edges / source
+    # cores don't inflate the threshold and hide marginal spikes), and each spike
+    # is grown by despike_dilate px before replacement to catch IPC charge-bleed
+    # wings (which the bare-peak replacement leaves and smoothing would spread).
+    despike_nsigma = 4.0
+    despike_size = 5
+    despike_dilate = 1
+    # Coverage-confidence gate: scale the APPLIED correction per pixel by how
+    # many dithers actually constrained it. The template shape is still built and
+    # gap-filled above (continuity + a well-posed scale fit), but this caps how
+    # much is subtracted, so a fabricated (inpainted) gap or a no-rejection
+    # 2-sample estimate — exactly where leaked source/ICL flux turns into
+    # over-subtraction — is never applied at full strength. Weight ramps 0->1
+    # over [coverage_n_lo, coverage_n_hi] contributing dithers (inpainted pixels
+    # below min_contributing forced to 0). Defaults: full trust at >=3 dithers,
+    # half at 2 (no cross-dither rejection), none for pure inpaint. Raise
+    # coverage_n_hi to 4 to be more aggressive (only full-coverage pixels fully
+    # corrected). coverage_smooth_sigma Gaussian-smooths the weight so the taper
+    # is gradual (no step at gap edges). coverage_weight = false disables.
+    coverage_weight = true
+    coverage_n_lo = 1
+    coverage_n_hi = 3
+    coverage_smooth_sigma = 3.0
+    # Per-exposure amplitude. "fit" scales the template per exposure by MAD
+    # minimization over its support (handles persistence decay across the
+    # dither sequence and zeros out exposures with no artifact); "fixed"
+    # subtracts the template unscaled.
+    scale = "fit"
+    c_max = 3.0
+    plot = true
+
 [nircam.diag_striping]
     # Opt-in scattered-light diagonal striping correction. Some exposures
     # show stripe-like artifacts from off-axis bright stars; the angle is

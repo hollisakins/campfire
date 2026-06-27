@@ -46,6 +46,8 @@ PROCESS_STEPS = [
     ('persistence', 'CFP_PERS'),
     ('wisp',        'CFP_WISP'),
     ('image2',      'CFP_IMG2'),
+    ('background',  'CFP_BKG'),
+    ('artifact',    'CFP_ART'),
     ('striping',    'CFP_1F'),
     ('edge',        'CFP_EDGE'),
     ('sky',         'CFP_SKY'),
@@ -131,6 +133,25 @@ def _group_by_visit(exposure_files):
         visit = os.path.basename(f).split('_')[0]
         visits.setdefault(visit, []).append(f)
     return visits
+
+
+def _group_by_dither_sequence(exposure_files):
+    """Return ``{key: [paths...]}`` for one dither sequence per detector.
+
+    Keyed on ``(visit, exposure-spec, detector)`` — the leading ``jw...``
+    token, the ``<visitgrp><seq><act>`` token, and the detector token — so
+    each group is exactly the exposures of a single dither pattern on a single
+    detector (they share both leading tokens and differ only in exposure
+    number). This is the self-calibration unit for the artifact step: the
+    detector-fixed artifact is constant across these and only these frames.
+    """
+    groups = {}
+    for f in exposure_files:
+        parts = os.path.basename(f).removesuffix('.fits').split('_')
+        # jw..._<spec>_<expnum>_<detector>; group on (visit, spec, detector).
+        key = f'{parts[0]}_{parts[1]}_{parts[3]}'
+        groups.setdefault(key, []).append(f)
+    return groups
 
 
 def _read_sregions(exposure_files):
@@ -309,6 +330,69 @@ def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
     status.mark_all(pending, 'CFP_DIAG')
+
+
+def _run_background(field, config, filtname, n_processes, overwrite, status):
+    """Per-exposure 2D background subtraction (opt-in). Disabled unless
+    ``[nircam.background].enabled = true`` (or a per-field override) — a 2D
+    subtraction changes flux for every field, so the default is off. Plain
+    per-exposure dispatch once enabled."""
+    cfg = get_nircam_step_config('background', config, field)
+    if not cfg.get('enabled', False):
+        log(f"background: disabled by config; skipping {filtname}")
+        return
+    exposures = field.get_exposure_files(filtname)
+    if not exposures:
+        log(f"background: no exposures for {filtname}")
+        return
+    pending, _ = _filter_pending('background', exposures, 'CFP_BKG', status,
+                                 overwrite)
+    if not pending:
+        return
+    from campfire_pipeline.nircam.steps.background import background_step
+    pending = _detector_sorted(pending)
+    log(f"background: dispatching {len(pending)} exposures for {filtname}")
+    dispatch(background_step, pending, n_processes=n_processes,
+             field=field, step_config=cfg, overwrite=overwrite, status=status)
+    status.mark_all(pending, 'CFP_BKG')
+
+
+def _run_artifact(field, config, filtname, n_processes, overwrite, status):
+    """Intra-visit detector-fixed artifact removal (opt-in, per-(visit,
+    detector) ensemble). Disabled unless ``[nircam.artifact].enabled = true``
+    (or a per-field override sets it). Each dither-sequence group is
+    independent — it reads only its own members and writes only its own
+    files — so groups are dispatched in parallel like the outlier step.
+    """
+    cfg = get_nircam_step_config('artifact', config, field)
+    if not cfg.get('enabled', False):
+        log(f"artifact: disabled by config; skipping {filtname}")
+        return
+    exposures = field.get_exposure_files(filtname)
+    if not exposures:
+        log(f"artifact: no exposures for {filtname}")
+        return
+    groups = _group_by_dither_sequence(exposures)
+
+    pending = {}
+    for key, files in groups.items():
+        if not overwrite and all(status.has(f, 'CFP_ART') for f in files):
+            continue
+        pending[key] = files
+    skipped = len(groups) - len(pending)
+    if skipped:
+        log(f"artifact: {skipped}/{len(groups)} groups already done for "
+            f"{filtname}; skipping those")
+    if not pending:
+        return
+
+    from campfire_pipeline.nircam.steps.artifact import artifact_step
+    tasks = [(key, files) for key, files in sorted(pending.items())]
+    log(f"artifact: dispatching {len(tasks)} dither groups for {filtname}")
+    dispatch(artifact_step, tasks, n_processes=n_processes, use_starmap=True,
+             field=field, step_config=cfg, overwrite=overwrite, status=status)
+    for _, files in pending.items():
+        status.mark_all(files, 'CFP_ART')
 
 
 def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
@@ -523,6 +607,8 @@ _RUNNERS = {
     'wisp':        functools.partial(_run_per_exposure, 'wisp'),
     'striping':    functools.partial(_run_per_exposure, 'striping'),
     'image2':      functools.partial(_run_per_exposure, 'image2'),
+    'background':  _run_background,
+    'artifact':    _run_artifact,
     'diag_striping': _run_diag_striping,
     'edge':        functools.partial(_run_per_exposure, 'edge'),
     'sky':         functools.partial(_run_per_exposure, 'sky'),
