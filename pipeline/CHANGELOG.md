@@ -71,6 +71,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- NIRCam: two new **opt-in** per-exposure steps that run after `image2` and
+  before `striping` (so smooth/structured artifacts are gone before the 1/f
+  amp-row offsets are measured), both **disabled by default** (no change to
+  default output). `background` (`CFP_BKG`): per-exposure 2D background
+  subtraction reusing the mosaic's tiered-mask + clipped-ring-median +
+  `Background2D` algorithm, tuned to preserve galaxy outskirts; sees both the
+  sky-fixed (ICL/zodi) and detector-fixed smooth components. `artifact`
+  (`CFP_ART`): intra-visit detector-fixed artifact removal by detector-frame
+  self-calibration — median-stacks the dithers of a `(visit, detector)` group
+  by pixel index so sky-fixed signal rejects via dither motion while
+  detector-fixed artifacts (persistence, scattered light, unique LW wisps)
+  survive, then subtracts the structured residual; self-gated by dither-count
+  safeguards (no-ops + stamps `CFP_ART="skipped (...)"` when unsafe). Enable
+  per field with `[<field>.background]`/`[<field>.artifact] enabled = true`.
 - NIRSpec fixed-slit: fixed the summary/deploy source position. Fixed-slit
   products carry no catalog `SRCRA`/`SRCDEC` in the SCI header (those are
   MSA-only), so the summary reader recorded `(0, 0)` for every fixed-slit
