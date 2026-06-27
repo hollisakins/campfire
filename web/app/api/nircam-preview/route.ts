@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
-import { r2Client } from '@/lib/r2';
+import { getS3Client, getBucketName } from '@/lib/storage';
 import { createClient } from '@/lib/supabase/server';
 
 /**
@@ -38,8 +38,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const obj = await r2Client.send(new GetObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME,
+    const obj = await getS3Client('data').send(new GetObjectCommand({
+      Bucket: getBucketName('data'),
       Key: key,
     }));
 

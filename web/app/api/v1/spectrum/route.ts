@@ -131,14 +131,6 @@ export async function GET(request: NextRequest) {
     // Generate signed URL for the JSON file
     const signedUrl = await generateDownloadUrl(jsonPath, 3600);
 
-    // Check if R2 is configured
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return NextResponse.json(
-        { error: 'Download service not configured' },
-        { status: 503 }
-      );
-    }
-
     // Fetch the JSON data from R2
     const response = await fetch(signedUrl);
 

@@ -189,19 +189,14 @@ def upload_files_presigned(
 # ---------------------------------------------------------------------------
 
 def get_r2_client(config: dict):
-    """Create boto3 S3 client configured for Cloudflare R2."""
-    import boto3
-    from botocore.config import Config
+    """Create a boto3 S3 client for the ``data`` storage backend.
 
-    r2 = config['r2']
-    return boto3.client(
-        's3',
-        endpoint_url=f"https://{r2['account_id']}.r2.cloudflarestorage.com",
-        aws_access_key_id=r2['access_key_id'],
-        aws_secret_access_key=r2['secret_access_key'],
-        config=Config(signature_version='s3v4'),
-        region_name='auto',
-    )
+    Endpoint/region/addressing-style come from config via the per-purpose
+    backend factory (defaults to Cloudflare R2). Name kept for backward
+    compatibility with existing importers.
+    """
+    from campfire.deploy.backend import make_client_for
+    return make_client_for(config, 'data')
 
 
 def upload_to_r2(
@@ -317,27 +312,24 @@ def upload_files_parallel(
     if urls:
         return upload_files_presigned(urls, tasks, max_workers=max_workers, desc=desc)
 
-    # Fall back to direct boto3 upload
-    r2_config_key = 'r2_tiles' if bucket_id == 'tiles' else 'r2'
-    if r2_config_key not in config:
+    # Fall back to direct boto3 upload via the per-purpose backend factory.
+    from campfire.deploy.backend import (
+        PURPOSE_SECTIONS, make_s3_client, resolve_backend,
+    )
+
+    purpose = 'tiles' if bucket_id == 'tiles' else 'data'
+    if PURPOSE_SECTIONS[purpose] not in config:
         raise ValueError(
-            f"No R2 credentials available for '{bucket_id}' bucket. "
-            "Run 'campfire login' to use presigned URLs, or provide R2 credentials in deploy config."
+            f"No storage credentials available for the '{bucket_id}' bucket. "
+            "Run 'campfire login' to use presigned URLs, or provide storage "
+            "credentials in deploy config."
         )
 
-    import boto3
-    from botocore.config import Config
-
-    r2 = config[r2_config_key]
-    client = boto3.client(
-        's3',
-        endpoint_url=f"https://{r2['account_id']}.r2.cloudflarestorage.com",
-        aws_access_key_id=r2['access_key_id'],
-        aws_secret_access_key=r2['secret_access_key'],
-        config=Config(signature_version='s3v4'),
-        region_name='auto',
-    )
-    bucket_name = r2['bucket_name']
+    # A present-but-incomplete section surfaces resolve_backend's specific
+    # diagnostic (which key/endpoint is missing), not the generic message above.
+    backend_cfg = resolve_backend(config, purpose)
+    client = make_s3_client(backend_cfg)
+    bucket_name = backend_cfg.bucket
 
     # For direct mode, apply cache_control per-file
     if cache_control:

@@ -1,47 +1,40 @@
-// Cloudflare R2 client setup
-// This is a placeholder for future integration with R2 storage
+// Storage client helpers for the `data` bucket (FITS, RGB, SED, …).
+//
+// Endpoint/region/addressing-style are resolved per-purpose by the storage
+// backend factory (`./storage`), so this layer is backend-agnostic
+// (R2 today, OSN later). The `data` client is built lazily on first use.
 
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { getS3Client, getBucketName } from './storage';
 
-// Placeholder credentials (will be replaced with environment variables)
-const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || 'placeholder';
-const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || 'placeholder';
-const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || 'placeholder';
-const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || 'campfire-fits';
-
-// Create R2 client (S3-compatible)
-export const r2Client = new S3Client({
-  region: 'auto',
-  endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-  credentials: {
-    accessKeyId: R2_ACCESS_KEY_ID,
-    secretAccessKey: R2_SECRET_ACCESS_KEY,
-  },
-});
+/** S3 client for the `data` storage backend (lazy, cached). */
+export function getDataClient() {
+  return getS3Client('data');
+}
 
 /**
- * Generate a signed URL for downloading a FITS file from R2
- * @param fitsPath - Path to the FITS file in R2 (e.g., "v1.0/object_id/PRISM.fits")
+ * Generate a signed URL for downloading a file from the data store.
+ * @param fitsPath - Object key (e.g., "spectra/obs_name/file.fits")
  * @param expiresIn - URL expiration time in seconds (default: 1 hour)
  * @returns Signed URL for downloading the file
+ * @throws if storage is misconfigured or signing fails — surfaced loudly so a
+ *   cutover misconfig is diagnosable rather than silently masked.
  */
 export async function generateDownloadUrl(
   fitsPath: string,
   expiresIn: number = 3600
 ): Promise<string> {
   const command = new GetObjectCommand({
-    Bucket: R2_BUCKET_NAME,
+    Bucket: getBucketName('data'),
     Key: fitsPath,
   });
 
   try {
-    const signedUrl = await getSignedUrl(r2Client, command, { expiresIn });
-    return signedUrl;
+    return await getSignedUrl(getDataClient(), command, { expiresIn });
   } catch (error) {
-    console.error('Error generating signed URL:', error);
-    // For now, return a placeholder URL
-    return `#download-placeholder-${fitsPath}`;
+    console.error(`Failed to sign download URL for "${fitsPath}":`, error);
+    throw new Error(`Failed to generate download URL for ${fitsPath}`);
   }
 }
 

@@ -223,15 +223,6 @@ export async function GET(request: NextRequest) {
     // Generate signed URL for the JSON file
     const signedUrl = await generateDownloadUrl(jsonPath, 3600);
 
-    // Check if R2 is configured
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return new Response(generateSVG([], color, false), {
-        headers: {
-          'Content-Type': 'image/svg+xml',
-          'Cache-Control': 'public, max-age=86400',
-        },
-      });
-    }
 
     // Fetch the JSON data from R2
     const response = await fetch(signedUrl);

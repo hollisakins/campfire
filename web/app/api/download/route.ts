@@ -58,14 +58,6 @@ export async function GET(request: NextRequest) {
     // Generate signed URL (expires in 1 hour)
     const signedUrl = await generateDownloadUrl(fitsPath, 3600);
 
-    // Check if it's a placeholder URL (R2 not configured)
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return NextResponse.json(
-        { error: 'Download service not configured. Please contact administrator.' },
-        { status: 503 }
-      );
-    }
-
     // Track download (fire-and-forget)
     const targetId = await extractTargetIdFromFitsPath(fitsPath);
     trackDownload({
@@ -152,15 +144,6 @@ export async function POST(request: NextRequest) {
     const urls: Record<string, string> = {};
     for (const path of paths) {
       const signedUrl = await generateDownloadUrl(path, 3600);
-
-      // Check if R2 is configured
-      if (signedUrl.startsWith('#download-placeholder')) {
-        return NextResponse.json(
-          { error: 'Download service not configured. Please contact administrator.' },
-          { status: 503 }
-        );
-      }
-
       urls[path] = signedUrl;
     }
 

@@ -19,12 +19,23 @@ Create a `.env.local` file with the following:
 NEXT_PUBLIC_SUPABASE_URL=       # Supabase project URL
 NEXT_PUBLIC_SUPABASE_ANON_KEY=  # Supabase anon/public key
 SUPABASE_SERVICE_ROLE_KEY=      # Supabase service role key (server-only)
-R2_ACCOUNT_ID=                  # Cloudflare R2 account
-R2_ACCESS_KEY_ID=               # R2 access key
-R2_SECRET_ACCESS_KEY=           # R2 secret key
-R2_BUCKET_NAME=                 # R2 bucket name
-R2_PUBLIC_URL=                  # Public URL for R2 assets
+
+# Object storage — "data" bucket (spectra, RGB, SED, photometry, …).
+# Neutral S3_* names are canonical; R2_* names are accepted as aliases.
+S3_ACCESS_KEY_ID=               # access key   (alias: R2_ACCESS_KEY_ID)
+S3_SECRET_ACCESS_KEY=           # secret key   (alias: R2_SECRET_ACCESS_KEY)
+S3_BUCKET_NAME=                 # bucket name  (alias: R2_BUCKET_NAME)
+S3_ACCOUNT_ID=                  # R2 account (derives the endpoint; alias: R2_ACCOUNT_ID)
+# S3_ENDPOINT=                  # explicit endpoint URL (set this for OSN/MinIO instead of S3_ACCOUNT_ID)
+# S3_REGION=                    # SigV4 region (default "auto"; set a real region for non-R2 backends)
+# S3_FORCE_PATH_STYLE=          # "true" for path-style addressing (some non-AWS S3 stores)
+# S3_PUBLIC_URL_BASE=           # public URL base for served assets (alias: R2_PUBLIC_URL)
 ```
+
+The map **tiles** bucket is configured independently with the same keys carrying
+a `TILES_` infix (`S3_TILES_*` / `R2_TILES_*`), e.g. `S3_TILES_BUCKET_NAME`,
+`S3_TILES_ACCOUNT_ID`. Tiles stay on R2 (for the CDN edge cache) even when the
+data bucket points elsewhere.
 
 ### Local Supabase (optional)
 

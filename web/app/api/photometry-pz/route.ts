@@ -54,13 +54,6 @@ export async function GET(request: NextRequest) {
     // Generate signed URL and fetch server-side (avoids CORS issues)
     const signedUrl = await generateDownloadUrl(pzPath, 3600);
 
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return NextResponse.json(
-        { error: 'Download service not configured.' },
-        { status: 503 }
-      );
-    }
-
     const r2Response = await fetch(signedUrl);
     if (!r2Response.ok) {
       return NextResponse.json(

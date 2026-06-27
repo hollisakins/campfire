@@ -1,59 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { validateAuth } from '@/lib/api-auth';
 import { createClient } from '@supabase/supabase-js';
+import { getS3Client, getBucketName, type StoragePurpose } from '@/lib/storage';
 
 const MAX_BATCH_SIZE = 500;
 const PRESIGN_EXPIRY_SECONDS = 3600; // 1 hour
-
-type BucketId = 'data' | 'tiles';
-
-interface BucketConfig {
-  client: S3Client;
-  bucket: string;
-}
-
-function getBucketConfig(bucketId: BucketId): BucketConfig {
-  if (bucketId === 'tiles') {
-    const accountId = process.env.R2_TILES_ACCOUNT_ID;
-    const accessKeyId = process.env.R2_TILES_ACCESS_KEY_ID;
-    const secretAccessKey = process.env.R2_TILES_SECRET_ACCESS_KEY;
-    const bucketName = process.env.R2_TILES_BUCKET_NAME;
-
-    if (!accountId || !accessKeyId || !secretAccessKey || !bucketName) {
-      throw new Error('R2 tiles credentials not configured');
-    }
-
-    return {
-      client: new S3Client({
-        region: 'auto',
-        endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-        credentials: { accessKeyId, secretAccessKey },
-      }),
-      bucket: bucketName,
-    };
-  }
-
-  // Default: data bucket (spectra, rgb, sed, etc.)
-  const accountId = process.env.R2_ACCOUNT_ID;
-  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
-  const bucketName = process.env.R2_BUCKET_NAME;
-
-  if (!accountId || !accessKeyId || !secretAccessKey || !bucketName) {
-    throw new Error('R2 data credentials not configured');
-  }
-
-  return {
-    client: new S3Client({
-      region: 'auto',
-      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-      credentials: { accessKeyId, secretAccessKey },
-    }),
-    bucket: bucketName,
-  };
-}
 
 /**
  * POST /api/v1/deploy/presign
@@ -133,8 +86,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get R2 client for the requested bucket
-    const { client, bucket } = getBucketConfig(bucketId);
+    // Resolve the storage client + bucket for the requested purpose.
+    const purpose = bucketId as StoragePurpose;
+    const client = getS3Client(purpose);
+    const bucket = getBucketName(purpose);
 
     // Generate presigned URLs in parallel
     const urlEntries = await Promise.all(
