@@ -2,6 +2,7 @@
 
 import { getSpectra } from './spectra';
 import type { SortColumn, SortDirection, ViewMode } from './spectra-types';
+import { FITS_DOWNLOAD_FILE_LIMIT } from './spectra-types';
 import type { FilterOptions } from './filter-params';
 import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
@@ -403,12 +404,13 @@ export async function generateFitsDownloadUrl(
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    // Fetch filtered results (limit to 200 items) via spectra mode — that RPC
-    // returns one row per (target, grating) with the FITS path attached.
+    // Fetch filtered results via spectra mode — that RPC returns one row per
+    // (target, grating) with the FITS path attached, and result.total is the
+    // count over spectra (the same unit this download acts on).
     const result = await getSpectra(
       filters,
       1, // page
-      200, // pageSize
+      FITS_DOWNLOAD_FILE_LIMIT, // pageSize
       sortColumn === 'object_id' ? 'target_id' : sortColumn,
       sortDirection,
       'spectra'
@@ -416,6 +418,20 @@ export async function generateFitsDownloadUrl(
 
     if (result.error) {
       return { files: null, token: null, workerUrl: null, zipFilename: null, error: result.error };
+    }
+
+    // Guard against silent truncation. The UI gate is computed from the current
+    // view's count — in the default objects view that is the OBJECT count, but
+    // one object commonly fans out to 2-3 spectra, so the gate can stay enabled
+    // while the spectra total exceeds the page we fetched. result.total is the
+    // authoritative spectra count from the same RPC; if it exceeds what we
+    // pulled, refuse with a clear, actionable error rather than handing back a
+    // biased first-N-of-M ZIP that looks complete (a reproducibility hazard).
+    if (result.total > result.spectra.length) {
+      return {
+        files: null, token: null, workerUrl: null, zipFilename: null,
+        error: `This filter set has ${result.total.toLocaleString()} spectra, which exceeds the ${FITS_DOWNLOAD_FILE_LIMIT.toLocaleString()}-file ZIP limit. Refine your filters, or use the CSV export (which includes every fits_path) to fetch the full set.`,
+      };
     }
 
     // Extract all FITS file paths from spectra on each target
