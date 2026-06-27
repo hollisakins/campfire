@@ -255,17 +255,27 @@ this is the highest-footgun surface in the whole design. PR-2 codifies it.
 | Tree | Class | In cloud? | `delete-local` safe? |
 |---|---|---|---|
 | `products/` | cloud-backed product | yes (data→OSN) | yes, after verified-in-cloud |
-| `reference/…/masks` | **user-state** | yes (via DB round-trip / registry) | only after round-tripped |
-| `reference/…/{flats,bad_pixels,wisps,astrom_cats}` | reduction input | **decide**: cloud-backed vs regenerable | no unless cloud-backed |
+| `reference/…` **reducer decisions** (masks, astrom_cats, bad_pixels, stuck_shutters, bkg_overrides) | **user-state**, per-scope | **yes** — registered for reproducibility (masks also DB round-trip) | only after verified/round-tripped |
+| `reference/…` **shared calibration** (flats, wisps) | reduction input, **instrument/detector-scoped, not per-field** | **yes**, deduped by content_hash | only after verified-in-cloud |
 | `raw/` | external (MAST) | no — `cfpipe download` refetches | yes (re-fetchable from MAST) |
 | `cache/` (crds, templates) | regenerable | no | yes |
 | `meta/`, `cutouts/` | CLI-local | no | n/a |
 
-This makes "recover a re-reducible workspace" precise: it's `products/` **plus**
-the cloud-backed `reference/` inputs — not just `products/`. Without the
-classification, `download --intermediate` would silently restore an
-un-re-reducible tree (missing flats/masks), and `delete-local` could nuke
-local-only reference data that exists nowhere else.
+**Decision: all of `reference/` is cloud-backed.** It splits into two tiers, both
+registered: (1) **reducer decisions** — masks, astrometric catalogs, bad-pixel
+masks, stuck-shutter lists, background overrides — are choices the reducer makes,
+and the cloud must document them so a reduction is *reproducible* (same rationale
+as the existing mask round-trip); these are per-scope and ideally round-trippable.
+(2) **shared calibration refs** — flats, wisps — are needed for re-reduction but
+are detector/filter-level, **not** field-specific, so they are stored once and
+deduped by `content_hash` (see §13: today they sit incorrectly under
+`reference/nircam/<field>/`; PR-4 hoists them out).
+
+This makes "restore a re-reducible workspace" precise: it's `products/` **plus**
+all of `reference/` — not just `products/`. Without the classification,
+`download --intermediate` would silently restore an un-re-reducible tree (missing
+flats/masks/catalogs), and `delete-local` could nuke local-only reference data
+that exists nowhere else.
 
 **Canonicalize keys during the OSN copy (the free re-key window).** The OSN
 migration already copies + verifies every object (§6). That is the *one* moment
@@ -277,16 +287,17 @@ full-bucket pass we'd never want. Safe because `spectra.spectrum_id` is GENERATE
 by stripping `^.*/` and `_spec\.fits$` from `fits_path`, which survives any key
 prefix change as long as the basename convention holds (it does).
 
-> **Scope boundary — keep the *local* dir layout as-is.** Renaming local
-> `products/` dirs would be a **pipeline MAJOR** (CLAUDE.md: file-naming is a
-> breaking output change) and touches the pipeline's globbing everywhere. PR-2
-> deliberately does **not** re-org local dirs; it centralizes + classifies the
-> existing layout and canonicalizes only the *bucket keys* (an infra change). A
-> local subdir tidy (e.g. splitting NIRCam `exposures/` vs `mosaics/`) is an
-> *optional* coordinated-MAJOR add-on, flagged in §13, not part of this PR.
+> **The canonical layout PR-2 encodes is the *new, re-organized* one (PR-4),
+> not today's.** The decision (below) is to do a one-time local layout re-org to
+> instrument parity; PR-2's contract module is authored against that target
+> layout, and the OSN re-key (above) writes the new scheme — so local dirs, bucket
+> keys, and the contract all adopt one canonical layout at once. The new local
+> dirs are a **pipeline MAJOR** (CLAUDE.md: file-naming is a breaking change); see
+> PR-4.
 
-> **Ordering:** PR-2 must precede Phase 1's "deploy writes registry rows" (so the
-> registry records canonical keys) and informs PR-3's NIRSpec canonical naming.
+> **Ordering:** PR-4 (new layout) and PR-3 (NIRSpec canonical) define the target;
+> PR-2 encodes it; all three precede Phase 1's "deploy writes registry rows" (so
+> the registry records canonical keys/paths from day one).
 
 **Independently valuable:** turns the most footgun-prone, duplicated convention in
 the repo into one tested contract — useful even with no cloud changes at all.
@@ -377,6 +388,54 @@ CRDS bump). Keep `_rate` as-is.
 
 > **Sequencing:** PR-3 must land before the registry schema is frozen (Phase 1),
 > or NIRSpec registry rows migrate twice.
+
+### PR-4: Local layout re-org to instrument parity (coordinated pipeline MAJOR)
+
+**Why (decided).** The NIRCam/NIRSpec product trees lack parity:
+`products/nircam/<field>/<filter>/…` has an instrument segment; NIRSpec is
+`products/<obs>/…` with none. The `reference/` and `raw/` trees are similarly
+lopsided, and `flats`/`wisps` are wrongly nested per-field. Since PR-2 must pick a
+*canonical* layout and the OSN copy re-keys everything once anyway, this is the
+moment to fix the structure rather than enshrine the asymmetry.
+
+**Target layout** (parity = consistent *shape* `…/<instrument>/<scope>/…`; the
+scope *unit* still differs by instrument — NIRCam by `field`, NIRSpec by `obs` —
+which is inherent and fine):
+
+```
+products/
+  nirspec/<obs>/…                 # was products/<obs>/  (add the nirspec/ segment)
+  nircam/<field>/<filter>/…       # unchanged shape
+reference/
+  nirspec/<obs>/{masks, stuck_shutters, bkg_overrides}      # reducer decisions, per-obs
+  nircam/<field>/{masks/<filter>, astrom_cats, bad_pixels}  # reducer decisions, per-field
+  nircam/shared/{flats, wisps}    # calibration refs — detector/filter-scoped, NOT per-field
+raw/
+  nirspec/<data_subdir>/…         # add nirspec/ segment for parity
+  nircam/<PID>/<filter>/…
+```
+
+**Scope & blast radius.** Touches pipeline path resolution + globbing
+(`config.py`, `nircam/field.py`, `nirspec/observation.py`, every `get_*_files`)
+and the deploy/download key mapping — but PR-2's contract module localizes the new
+conventions to one place, so the rest is mechanical. It is a **pipeline MAJOR**
+(file-naming/structure change) and is naturally coordinated with **PR-3** (also a
+NIRSpec structural change): land both in **one** MAJOR so downstream re-keys and
+re-deploys happen once, not twice.
+
+**flats/wisps de-fielding has a behavioral edge.** Relocating them to
+`nircam/shared/` is not just a move — the pipeline currently *looks them up*
+per-field; making them detector/filter-scoped changes lookup (and dedups storage
+by `content_hash`). Verify nothing actually relied on field-specific flats/wisps
+before hoisting; if some genuinely are field-specific, keep those per-field and
+share the rest. (This is the "separate issue" flagged in discussion, folded into
+this re-org since it is fundamentally a layout question.)
+
+**Independently valuable:** instrument parity + correct calibration-ref scoping is
+a real cleanup that stands on its own, MAJOR or not.
+
+> **Ordering:** PR-4 + PR-3 define the canonical layout → PR-2 encodes it → all
+> precede F1. The OSN re-key (§6) writes this same scheme.
 
 ---
 
@@ -619,8 +678,8 @@ without the next; each has a rollback.
 ```
 FOUNDATION
   F0  Prereqs        PR-1 (per-purpose backend: data→OSN / tiles→R2, +region+CORS+factory),
-                     PR-2 (layout & key contract: paths+keys+bijection+tree classification),
-                     PR-3 (NIRSpec canonical)
+                     PR-4 + PR-3 (one pipeline MAJOR: layout parity re-org + NIRSpec canonical),
+                     PR-2 (layout & key contract encoding the new layout: paths+keys+bijection+class)
   F1  Registry       storage_objects (SHADOW index): deploy writes canonical keys; backfill;
                      reconciliation report. NOT authoritative until coverage proven.
 
@@ -645,8 +704,8 @@ LATER
 ```
 
 **Dependency & safety gates (corrected):**
-- PR-2 ⟶ F1 (registry must record canonical keys).
-- PR-3 ⟶ F1 (NIRSpec schema frozen after consolidation).
+- PR-4 + PR-3 (one MAJOR) ⟶ PR-2 (encodes the new layout) ⟶ F1 (registry records
+  canonical keys/paths from the start; NIRSpec/layout schema frozen first).
 - PR-1(web download path) ⟶ any OSN-resident object (A-track + any B object on
   OSN).
 - **B1 (status predicates in *every* reader) ⟶ B2 in_prep.** Shipping in_prep
@@ -801,18 +860,15 @@ The model stays the two existing file/metadata verbs (`sync` = index, `download`
   Recommend: `--in-prep` auto-confirms (not public); `publish` re-checks. Decide
   whether intermediate deploys ever need a CHANGELOG entry.
 - **Concurrency primitive:** per-row optimistic lock vs per-observation lock row.
-- **`reference/` classification (PR-2).** Are NIRCam `flats`/`bad_pixels`/`wisps`/
-  `astrom_cats` **cloud-backed** (so `delete-local` → `download --intermediate`
-  restores a truly re-reducible workspace) or **regenerable/shared** (excluded
-  from the cloud)? Masks are already user-state (DB round-trip); the rest is the
-  open call, and it directly determines whether a recovered workspace can actually
-  re-run.
-- **Optional local-layout tidy.** A one-time re-org of the *local* `products/`
-  dirs (e.g. NIRCam `exposures/` vs `mosaics/`; flatter NIRSpec) would be a
-  coordinated **pipeline MAJOR** (file-naming change) touching pipeline globbing.
-  Out of scope for PR-2 (which keeps local dirs as-is); worth deciding whether to
-  bundle it into the same window since the cloud keys are being canonicalized
-  anyway.
+- **flats/wisps de-fielding (PR-4) — behavioral check.** Decided to hoist them to
+  `reference/nircam/shared/`, but confirm nothing in the pipeline genuinely relied
+  on *field-specific* flats/wisps before sharing them; keep any that legitimately
+  are field-specific per-field. (Layout placement decided; the per-field-vs-shared
+  *generation/lookup* logic is the open part.)
+- **Bundle granularity of the MAJOR.** PR-4 (layout parity) + PR-3 (NIRSpec
+  canonical) are recommended as one MAJOR; confirm whether to also fold any other
+  pending breaking pipeline changes into the same release to minimize re-key/
+  re-deploy churn.
 
 ---
 
@@ -842,10 +898,19 @@ The model stays the two existing file/metadata verbs (`sync` = index, `download`
   inverse.
 - **Layout & key contract is a prerequisite (PR-2, expanded).** One tested module
   owns local paths, storage keys, the key↔path bijection, and a per-tree
-  lifecycle classification — shared across pipeline/CLI/web. **Bucket keys are
-  canonicalized to the products-relative scheme during the OSN copy** (the free
-  re-key window); the **local dir layout is left unchanged** (renaming it would be
-  a pipeline MAJOR).
+  lifecycle classification — shared across pipeline/CLI/web. Bucket keys are
+  canonicalized to the products-relative scheme during the OSN copy (the free
+  re-key window).
+- **All of `reference/` is cloud-backed** for reproducibility, in two tiers:
+  reducer decisions (masks, astrom_cats, bad_pixels, stuck_shutters, bkg_overrides)
+  per-scope and registered; shared calibration refs (flats, wisps) detector/filter-
+  scoped (not per-field) and deduped by hash. "Restore a re-reducible workspace" =
+  `products/` + all of `reference/`.
+- **A local layout re-org to instrument parity IS in scope (PR-4), accepted as a
+  pipeline MAJOR**, coordinated with PR-3 in one release. New shape:
+  `products/<instrument>/<scope>/…` (adds the `nirspec/` segment), mirrored in
+  `raw/`/`reference/`, with `flats`/`wisps` hoisted to `reference/nircam/shared/`.
+  PR-2 encodes this new layout; the OSN re-key writes it.
 
 ---
 
