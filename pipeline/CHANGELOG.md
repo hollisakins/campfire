@@ -173,6 +173,27 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- Provenance is now carried verbatim from the FITS primary header through to the
+  catalog and Python client, fixing four ways it was dropped or distorted
+  (closes #202). (1) `cfpipe_version` is the single pipeline-version string,
+  read from `CMPFRVER` — it replaces the redundant `reduction_version` column
+  (collapsed in both `spectra` and `deployments`), so a `[pipeline].version`
+  override now reaches the catalog instead of being recomputed from a
+  config-less package `__version__`. (2) `CMPFRTIM` is stamped as UTC ISO-8601
+  (was naive local time) and read into a new per-spectrum `spectra.reduced_at`;
+  `deployments.reduced_at` is the **earliest** `CMPFRTIM` across an observation's
+  products, so re-running `summary` on unchanged pixels no longer advances it to
+  "now". (3) `get_spectra_for_sync`, the local SQLite store, and the `Spectrum`
+  model now carry `cfpipe_version` / `crds_context` / `jwst_version` / `date_obs`
+  / `reduced_at`, with new `query_spectra(crds_context=, cfpipe_version=,
+  reduced_after=)` filters and a `SpectrumCollection.provenance()` lens that
+  flags calibration-heterogeneous samples. (4) `deploy` warns when one
+  observation ships mixed CRDS contexts. **Output-format note for the release
+  manager:** the summary ECSV schema changed (`reduction_version` → `cfpipe_version`,
+  new `reduced_at` column; deploy reads old ECSVs via a fallback), and the local
+  client store `SCHEMA_VERSION` bumped 4→5 (forces a one-time delete + re-sync).
+  No pixel/flux values change. Tests: `pipeline/tests/test_provenance_reader.py`,
+  `python/tests/test_provenance.py`, plus store/deploy round-trip coverage.
 - NIRCam `skyfit.fit_sky` now takes `box_size` / `filter_size` (the striping
   2D-background detrend exposes them via `subtract_background_box` /
   `subtract_background_filter`), and a byte-order guard prevents a corruption

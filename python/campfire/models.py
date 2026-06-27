@@ -399,6 +399,78 @@ Band = namedtuple("Band", ["flux", "flux_err", "wavelength"])
 
 
 # ---------------------------------------------------------------------------
+# Provenance — per-spectrum reproducibility record
+# ---------------------------------------------------------------------------
+
+#: Per-spectrum provenance, carried verbatim from the FITS primary header
+#: through the catalog. Lets a flux value be traced to the exact pipeline
+#: version + CRDS context + reduction time it was produced with.
+Provenance = namedtuple(
+    "Provenance",
+    ["cfpipe_version", "crds_context", "jwst_version", "date_obs", "reduced_at"],
+)
+
+
+def _provenance_counts(values) -> "dict[str, int]":
+    """Count distinct non-null values, ordered by frequency (desc), then name."""
+    counts: dict = {}
+    for v in values:
+        if v is None:
+            continue
+        s = str(v)
+        if not s or s.lower() in ("none", "nan"):
+            continue
+        counts[s] = counts.get(s, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+class ProvenanceSummary:
+    """Distinct-provenance summary over a :class:`SpectrumCollection`.
+
+    Reports the distinct values of each provenance dimension (with counts) and
+    flags heterogeneity — the sentence a referee or a methods section needs
+    ("this 412-spectrum sample spans 2 CRDS contexts: jwst_1210.pmap ×318,
+    jwst_1322.pmap ×94"). Printable at the REPL; also exposes the per-dimension
+    count maps (``cfpipe_versions`` / ``crds_contexts`` / ``jwst_versions``,
+    each ``{value: count}``) and the ``reduced_at_range`` tuple for programmatic
+    checks.
+    """
+
+    def __init__(self, n, cfpipe_versions, crds_contexts, jwst_versions, reduced_at_range):
+        self.n = n
+        self.cfpipe_versions = cfpipe_versions
+        self.crds_contexts = crds_contexts
+        self.jwst_versions = jwst_versions
+        self.reduced_at_range = reduced_at_range
+
+    @property
+    def homogeneous(self) -> bool:
+        """True iff every provenance dimension has at most one distinct value."""
+        return all(
+            len(d) <= 1
+            for d in (self.cfpipe_versions, self.crds_contexts, self.jwst_versions)
+        )
+
+    @staticmethod
+    def _fmt(counts: dict) -> str:
+        if not counts:
+            return "—"
+        return ", ".join(f"{val} (×{cnt})" for val, cnt in counts.items())
+
+    def __repr__(self) -> str:
+        flag = "homogeneous" if self.homogeneous else "⚠ HETEROGENEOUS"
+        lo, hi = self.reduced_at_range
+        reduced = f"{lo} .. {hi}" if lo and hi and lo != hi else (lo or hi or "—")
+        return "\n".join([
+            f"ProvenanceSummary ({self.n} spectra) [{flag}]",
+            f"  cfpipe_version  {self._fmt(self.cfpipe_versions)}",
+            f"  crds_context    {self._fmt(self.crds_contexts)}",
+            f"  jwst_version    {self._fmt(self.jwst_versions)}",
+            f"  reduced_at      {reduced}",
+        ])
+
+
+# ---------------------------------------------------------------------------
 # Photometry — flat parallel-array structure for a single object
 # ---------------------------------------------------------------------------
 
@@ -565,8 +637,21 @@ class Spectrum:
         Peak signal-to-noise ratio.
     exposure_time : float or None
         Total exposure time in seconds.
-    reduction_version : str or None
-        Pipeline reduction version.
+    cfpipe_version : str or None
+        campfire-pipeline version that produced this spectrum (the FITS
+        ``CMPFRVER`` card, carried verbatim). The single pipeline-version
+        string — a ``[pipeline].version`` override flows through it.
+    crds_context : str or None
+        CRDS context (pmap) that pinned the JWST calibration, e.g.
+        ``'jwst_1210.pmap'``. The canonical handle for confirming a sample
+        shares one calibration.
+    jwst_version : str or None
+        ``jwst`` calibration-software version (FITS ``CAL_VER``).
+    date_obs : str or None
+        Observation date (FITS ``DATE-OBS``) — when JWST took the data.
+    reduced_at : str or None
+        When the pixels were reduced (FITS ``CMPFRTIM``), distinct from when
+        the catalog row was written.
     redshift_auto : float or None
         Automatic (zfit) redshift for this grating. May differ between
         gratings of the same object.
@@ -587,7 +672,11 @@ class Spectrum:
     target_id: Optional[str] = None
     signal_to_noise: Optional[float] = None
     exposure_time: Optional[float] = None
-    reduction_version: Optional[str] = None
+    cfpipe_version: Optional[str] = None
+    crds_context: Optional[str] = None
+    jwst_version: Optional[str] = None
+    date_obs: Optional[str] = None
+    reduced_at: Optional[str] = None
     redshift_auto: Optional[float] = None
     dq_flags: int = 0
     fits_path: Optional[str] = None
@@ -626,10 +715,27 @@ class Spectrum:
         """Whether the FITS file is available locally."""
         return self.local_path is not None
 
+    @property
+    def provenance(self) -> Provenance:
+        """Reproducibility record (:class:`Provenance`) for this spectrum.
+
+        Bundles the verbatim header provenance — pipeline version, CRDS
+        context, jwst version, observation date, and reduction time — so it
+        can be reported or compared as one value.
+        """
+        return Provenance(
+            cfpipe_version=self.cfpipe_version,
+            crds_context=self.crds_context,
+            jwst_version=self.jwst_version,
+            date_obs=self.date_obs,
+            reduced_at=self.reduced_at,
+        )
+
     def __repr__(self) -> str:
         snr = f", SNR={self.signal_to_noise:.1f}" if self.signal_to_noise else ""
+        cf = f", {self.cfpipe_version}" if self.cfpipe_version else ""
         dl = " ✓" if self.downloaded else ""
-        return f"Spectrum({self.spectrum_id}, {self.grating}{snr}{dl})"
+        return f"Spectrum({self.spectrum_id}, {self.grating}{snr}{cf}{dl})"
 
 
 # ---------------------------------------------------------------------------
@@ -699,8 +805,20 @@ class SpectrumCollection:
         return np.array([s.dq_flags for s in self._spectra], dtype=int)
 
     @property
-    def reduction_version(self) -> np.ndarray:
-        return np.array([s.reduction_version for s in self._spectra])
+    def cfpipe_version(self) -> np.ndarray:
+        return np.array([s.cfpipe_version for s in self._spectra])
+
+    @property
+    def crds_context(self) -> np.ndarray:
+        return np.array([s.crds_context for s in self._spectra])
+
+    @property
+    def jwst_version(self) -> np.ndarray:
+        return np.array([s.jwst_version for s in self._spectra])
+
+    @property
+    def reduced_at(self) -> np.ndarray:
+        return np.array([s.reduced_at for s in self._spectra])
 
     @property
     def downloaded(self) -> np.ndarray:
@@ -725,6 +843,28 @@ class SpectrumCollection:
     def fields(self) -> List[str]:
         """Unique fields available in this collection."""
         return sorted(set(s.field for s in self._spectra if s.field))
+
+    def provenance(self) -> ProvenanceSummary:
+        """Summarise provenance across the collection as a :class:`ProvenanceSummary`.
+
+        Reports the distinct ``(cfpipe_version, crds_context, jwst_version)``
+        values with counts and the ``reduced_at`` range, and flags whether the
+        sample is calibration-homogeneous — answering "does this whole sample
+        share one pipeline version and CRDS context?" without opening any FITS::
+
+            obj.spectra.provenance()           # printable summary
+            obj.spectra.provenance().homogeneous
+        """
+        reduced = _provenance_counts(s.reduced_at for s in self._spectra)
+        stamps = sorted(reduced.keys())
+        reduced_range = (stamps[0], stamps[-1]) if stamps else (None, None)
+        return ProvenanceSummary(
+            n=len(self._spectra),
+            cfpipe_versions=_provenance_counts(s.cfpipe_version for s in self._spectra),
+            crds_contexts=_provenance_counts(s.crds_context for s in self._spectra),
+            jwst_versions=_provenance_counts(s.jwst_version for s in self._spectra),
+            reduced_at_range=reduced_range,
+        )
 
     # --- Indexing ---
 
@@ -767,7 +907,11 @@ class SpectrumCollection:
                 "grating": s.grating,
                 "signal_to_noise": s.signal_to_noise,
                 "exposure_time": s.exposure_time,
-                "reduction_version": s.reduction_version,
+                "cfpipe_version": s.cfpipe_version,
+                "crds_context": s.crds_context,
+                "jwst_version": s.jwst_version,
+                "date_obs": s.date_obs,
+                "reduced_at": s.reduced_at,
                 "redshift_auto": s.redshift_auto,
                 "dq_flags": s.dq_flags,
                 "local_path": s.local_path,
@@ -927,7 +1071,11 @@ class Object:
                 target_id=s.get("target_id"),
                 signal_to_noise=s.get("signal_to_noise"),
                 exposure_time=s.get("exposure_time"),
-                reduction_version=s.get("reduction_version"),
+                cfpipe_version=s.get("cfpipe_version"),
+                crds_context=s.get("crds_context"),
+                jwst_version=s.get("jwst_version"),
+                date_obs=s.get("date_obs"),
+                reduced_at=s.get("reduced_at"),
                 redshift_auto=s.get("redshift_auto"),
                 dq_flags=s.get("dq_flags") or 0,
                 fits_path=s.get("fits_path"),

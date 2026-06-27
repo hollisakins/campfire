@@ -430,7 +430,7 @@ def _run_summary(cfg, obs_obj):
     consensus_config = cfg.get('nirspec', {}).get('redshift_consensus', {})
     obs_dir = Path(obs_obj.workspace_dir)
     summary_table = generate_observation_summary(obs_obj.name, obs_dir,
-                                                  reduction_version=version,
+                                                  cfpipe_version=version,
                                                   field=obs_obj.field,
                                                   program_slug=obs_obj.program,
                                                   consensus_config=consensus_config)

@@ -65,8 +65,8 @@ export const ScopeHeader: React.FC<ScopeHeaderProps> = ({ overview, loading }) =
     );
   }
 
-  const lastReductionLabel = overview.latest_reduction_version
-    ? `${overview.latest_reduction_version} · ${formatRelative(overview.latest_deployed_at)}`
+  const lastReductionLabel = overview.latest_cfpipe_version
+    ? `${overview.latest_cfpipe_version} · ${formatRelative(overview.latest_deployed_at)}`
     : formatRelative(overview.latest_deployed_at);
 
   return (

@@ -81,7 +81,11 @@ def sample_spectra():
             "file_size": 1024,
             "signal_to_noise": 15.5,
             "exposure_time": 3600.0,
-            "reduction_version": "v1.0",
+            "cfpipe_version": "v1.0",
+            "crds_context": "jwst_1210.pmap",
+            "jwst_version": "1.14.0",
+            "date_obs": "2024-01-01",
+            "reduced_at": "2026-06-01T00:00:00+00:00",
             "redshift_auto": 2.54,
             "dq_flags": 0,
             "program_slug": "ember-uds",
@@ -101,6 +105,11 @@ def sample_spectra():
             "file_size": 2048,
             "signal_to_noise": 8.2,
             "exposure_time": 7200.0,
+            "cfpipe_version": "v1.0",
+            "crds_context": "jwst_1322.pmap",
+            "jwst_version": "1.14.0",
+            "date_obs": "2024-01-02",
+            "reduced_at": "2026-06-10T00:00:00+00:00",
             "redshift_auto": 2.54,
             "dq_flags": 0,
             "program_slug": "ember-uds",
@@ -317,6 +326,46 @@ class TestQuerySpectra:
         row = store.get_spectrum("ember_uds_p4_prism_clear_100")
         assert row is not None
         assert row["grating"] == "PRISM"
+
+
+class TestProvenance:
+    """Provenance is carried verbatim through upsert -> query -> get and is
+    filterable, so a sample can be checked/carved by CRDS context, pipeline
+    version, and reduction time without opening any FITS."""
+
+    def test_provenance_round_trips(self, store, sample_objects, sample_spectra):
+        store.upsert_objects(sample_objects)
+        store.upsert_spectra(sample_spectra)
+        row = store.get_spectrum("ember_uds_p4_prism_clear_100")
+        assert row["cfpipe_version"] == "v1.0"
+        assert row["crds_context"] == "jwst_1210.pmap"
+        assert row["jwst_version"] == "1.14.0"
+        assert row["date_obs"] == "2024-01-01"
+        assert row["reduced_at"] == "2026-06-01T00:00:00+00:00"
+        # the collapsed column must be gone entirely
+        assert "reduction_version" not in row
+
+    def test_crds_context_filter(self, store, sample_objects, sample_spectra):
+        store.upsert_objects(sample_objects)
+        store.upsert_spectra(sample_spectra)
+        rows = store.query_spectra(crds_context=["jwst_1322.pmap"])
+        assert len(rows) == 1
+        assert rows[0]["spectrum_id"] == "ember_uds_p4_g395m_f290lp_100"
+
+    def test_cfpipe_version_filter(self, store, sample_objects, sample_spectra):
+        store.upsert_objects(sample_objects)
+        store.upsert_spectra(sample_spectra)
+        rows = store.query_spectra(cfpipe_version=["v1.0"])
+        # spectrum 20 has no cfpipe_version, so only the two v1.0 rows match
+        assert len(rows) == 2
+        assert all(r["cfpipe_version"] == "v1.0" for r in rows)
+
+    def test_reduced_after_filter(self, store, sample_objects, sample_spectra):
+        store.upsert_objects(sample_objects)
+        store.upsert_spectra(sample_spectra)
+        rows = store.query_spectra(reduced_after="2026-06-05T00:00:00+00:00")
+        assert len(rows) == 1
+        assert rows[0]["reduced_at"] == "2026-06-10T00:00:00+00:00"
 
 
 class TestDownloadTracking:

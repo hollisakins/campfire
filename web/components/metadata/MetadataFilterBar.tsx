@@ -85,9 +85,9 @@ export const MetadataFilterBar: React.FC<MetadataFilterBarProps> = ({
     [programs]
   );
 
-  const reductionVersionOptions: FilterOption[] = useMemo(
+  const cfpipeVersionOptions: FilterOption[] = useMemo(
     () =>
-      uniqueSorted(observations.map(o => o.reduction_version)).map(v => ({
+      uniqueSorted(observations.map(o => o.cfpipe_version)).map(v => ({
         value: v as string,
         label: v as string,
       })),
@@ -150,10 +150,10 @@ export const MetadataFilterBar: React.FC<MetadataFilterBarProps> = ({
             searchable
           />
           <FilterChip
-            label="Reduction"
-            options={reductionVersionOptions}
-            selected={filters.reduction_version}
-            onChange={(s) => update({ reduction_version: s.map(String) })}
+            label="cfpipe"
+            options={cfpipeVersionOptions}
+            selected={filters.cfpipe_version}
+            onChange={(s) => update({ cfpipe_version: s.map(String) })}
             searchable
           />
           <FilterChip

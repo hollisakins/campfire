@@ -7,7 +7,7 @@ import glob
 import warnings
 import numpy as np
 from typing import List
-from datetime import datetime
+from datetime import datetime, timezone
 from astropy.io import fits
 from astropy.table import Table, Column
 from astropy.io.fits import table_to_hdu
@@ -363,7 +363,7 @@ def opt_ext_single_source(
             log(f'Keyword {keyword} not found')
             continue
 
-    ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
+    ph['CMPFRTIM'] = (datetime.now(timezone.utc).isoformat(), 'UTC date/time of CAMPFIRE reduction (ISO 8601)')
     ph['CMPFRVER'] = (version, 'campfire-pipeline version (PEP 440)')
 
     # Carry fixed-slit provenance from the EXPOSURES table into the primary header
@@ -639,7 +639,7 @@ def combine_per_eg_spectra(
             ph[keyword] = (x1d['PRIMARY'].header[keyword], x1d['PRIMARY'].header.comments[keyword])
         except KeyError:
             continue
-    ph['CMPFRTIM'] = (str(datetime.now()), 'Date/time of CAMPFIRE reduction')
+    ph['CMPFRTIM'] = (datetime.now(timezone.utc).isoformat(), 'UTC date/time of CAMPFIRE reduction (ISO 8601)')
     ph['CMPFRVER'] = (version, 'campfire-pipeline version (PEP 440)')
     ph['CMPFRSTG'] = ('stage3-1d', 'CAMPFIRE stage that produced this file')
     ph['CMPFROPT'] = (optext_status, "Optimal extraction status ('optimal' or fallback)")

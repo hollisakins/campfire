@@ -81,8 +81,8 @@ function applyObservationFilters(
     }
     if (f.programs.length && !f.programs.includes(o.program_slug)) return false;
     if (
-      f.reduction_version.length &&
-      (!o.reduction_version || !f.reduction_version.includes(o.reduction_version))
+      f.cfpipe_version.length &&
+      (!o.cfpipe_version || !f.cfpipe_version.includes(o.cfpipe_version))
     ) {
       return false;
     }

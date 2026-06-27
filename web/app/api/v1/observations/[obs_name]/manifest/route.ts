@@ -94,7 +94,7 @@ export async function GET(
         file_hash: string | null;
         file_size: number | null;
         signal_to_noise: number | null;
-        reduction_version: string;
+        cfpipe_version: string | null;
       }, i: number) => ({
         spectra_id: s.spectra_id,
         spectrum_id: s.spectrum_id,
@@ -104,7 +104,7 @@ export async function GET(
         file_hash: s.file_hash,
         file_size: s.file_size,
         signal_to_noise: s.signal_to_noise,
-        reduction_version: s.reduction_version,
+        cfpipe_version: s.cfpipe_version,
         download_url: signedUrls[i],
       })
     );
