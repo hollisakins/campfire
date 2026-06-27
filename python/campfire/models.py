@@ -1,6 +1,7 @@
 """Data models for the CAMPFIRE Python client."""
 
 import re
+import warnings
 from collections import namedtuple
 from dataclasses import dataclass, field as dc_field
 from pathlib import Path
@@ -54,6 +55,22 @@ class SpectrumData:
         Unit string for flam (default ``'erg/s/cm2/A'``).
     wave_units : str
         Unit string for wavelength (default ``'um'``).
+
+    Notes
+    -----
+    CAMPFIRE 1D products do not carry a separate per-pixel data-quality
+    (DQ) array. Instead, **masked / no-coverage pixels are encoded as a
+    non-finite flux or a non-positive** ``fnu_err`` (zero or negative).
+    Always select usable pixels with the :attr:`valid` property rather
+    than a bare ``np.isfinite(fnu)`` check — the latter misses the
+    ``fnu_err <= 0`` half of the convention and a naive ``1 / fnu_err**2``
+    weighting will hit infinite weight / divide-by-zero at those pixels::
+
+        v = spec.valid
+        chi2 = np.sum(((model - spec.fnu)[v] / spec.fnu_err[v]) ** 2)
+
+    See :meth:`to_specutils` for an export that carries this mask (and the
+    uncertainty) into the astropy/specutils ecosystem.
     """
 
     wavelength: np.ndarray
@@ -77,6 +94,32 @@ class SpectrumData:
             self.flam = self.fnu * 2.998e-19 / self.wavelength**2
         if self.flam_err is None:
             self.flam_err = self.fnu_err * 2.998e-19 / self.wavelength**2
+
+    @property
+    def valid(self) -> np.ndarray:
+        """Boolean mask of scientifically usable pixels.
+
+        A pixel is valid when both ``fnu`` and ``fnu_err`` are finite and
+        ``fnu_err`` is strictly positive. This is the single canonical place
+        the CAMPFIRE masking convention (see the class :class:`Notes
+        <SpectrumData>`) is applied; use it before any flux-weighted
+        operation to avoid the ``1 / fnu_err**2`` infinite-weight trap.
+
+        Because ``flam``/``flam_err`` derive from ``fnu``/``fnu_err`` by a
+        strictly positive factor (``c / λ²``), the same mask applies to the
+        ``flam`` representation.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean array the same length as :attr:`wavelength`; ``True``
+            marks usable pixels.
+        """
+        return (
+            np.isfinite(self.fnu)
+            & np.isfinite(self.fnu_err)
+            & (self.fnu_err > 0)
+        )
 
     def __repr__(self) -> str:
         n = len(self.wavelength)
@@ -125,7 +168,7 @@ class SpectrumData:
             flux = self.fnu
             flux_err = self.fnu_err
 
-        valid = np.isfinite(flux)
+        valid = self.valid
         w = wave[valid]
         f = flux[valid]
 
@@ -144,6 +187,75 @@ class SpectrumData:
         ax.set_title(f"{self.spectrum_id}  {self.grating}")
 
         return ax
+
+    def to_specutils(self, flux_unit: str = "fnu"):
+        """Export as an astropy ``specutils`` spectrum.
+
+        Builds a ``specutils.Spectrum1D`` (or ``Spectrum`` on newer
+        specutils) with the spectral axis, flux, a
+        ``StdDevUncertainty``, and a boolean ``mask`` derived from
+        :attr:`valid`. specutils arithmetic, resampling, and continuum
+        fitting all respect the mask and uncertainty by construction, so a
+        downstream fit inherits correct weighting and masking instead of
+        re-deriving the CAMPFIRE sentinel convention by hand.
+
+        Parameters
+        ----------
+        flux_unit : str
+            ``'fnu'`` (default) exports f_ν in μJy; ``'flam'`` /
+            ``'flambda'`` exports f_λ in erg/s/cm²/Å.
+
+        Returns
+        -------
+        specutils.Spectrum1D
+            With ``spectral_axis``, ``flux``, ``uncertainty``, and ``mask``
+            populated. Following the astropy/specutils convention,
+            ``mask`` is ``True`` at *masked* (invalid) pixels — i.e.
+            ``~self.valid``.
+
+        Raises
+        ------
+        ImportError
+            If ``specutils`` is not installed
+            (``pip install specutils``).
+        """
+        try:
+            import astropy.units as u
+            from astropy.nddata import StdDevUncertainty
+            import specutils
+        except ImportError as exc:
+            raise ImportError(
+                "SpectrumData.to_specutils() requires the 'specutils' "
+                "package. Install it with `pip install specutils`."
+            ) from exc
+
+        # specutils renamed Spectrum1D -> Spectrum in v1.16 (Spectrum1D is now
+        # a deprecated alias). Prefer the new name; fall back for older
+        # specutils where only Spectrum1D exists.
+        spec_cls = getattr(specutils, "Spectrum", None) or getattr(
+            specutils, "Spectrum1D", None
+        )
+        if spec_cls is None:
+            raise ImportError(
+                "specutils is installed but exposes neither 'Spectrum1D' "
+                "nor 'Spectrum'."
+            )
+
+        if flux_unit in ("flam", "flambda"):
+            flux = self.flam
+            flux_err = self.flam_err
+            funit = u.erg / u.s / u.cm**2 / u.AA
+        else:
+            flux = self.fnu
+            flux_err = self.fnu_err
+            funit = u.uJy
+
+        return spec_cls(
+            spectral_axis=np.asarray(self.wavelength) * u.um,
+            flux=np.asarray(flux) * funit,
+            uncertainty=StdDevUncertainty(np.asarray(flux_err) * funit),
+            mask=~self.valid,  # specutils convention: True == masked
+        )
 
     @staticmethod
     def _parse_spectrum_id_from_filename(filename: str) -> str:
@@ -217,7 +329,13 @@ class SpectrumData:
                 elif "err" in col_names:
                     fnu_err = np.array(data["err"], dtype=float)
                 else:
-                    fnu_err = np.zeros_like(fnu)
+                    warnings.warn(
+                        f"No error column found in {fits_path}; filling "
+                        "fnu_err with NaN. These pixels will be treated as "
+                        "invalid (masked) by SpectrumData.valid.",
+                        stacklevel=2,
+                    )
+                    fnu_err = np.full_like(fnu, np.nan)
 
                 flam = None
                 if "flam" in col_names:
@@ -231,11 +349,26 @@ class SpectrumData:
                 if data.ndim == 2 and data.shape[0] >= 2:
                     wavelength = np.array(data[0], dtype=float)
                     fnu = np.array(data[1], dtype=float)
-                    fnu_err = np.array(data[2], dtype=float) if data.shape[0] > 2 else np.zeros_like(fnu)
+                    if data.shape[0] > 2:
+                        fnu_err = np.array(data[2], dtype=float)
+                    else:
+                        warnings.warn(
+                            f"No error row found in {fits_path}; filling "
+                            "fnu_err with NaN. These pixels will be treated "
+                            "as invalid (masked) by SpectrumData.valid.",
+                            stacklevel=2,
+                        )
+                        fnu_err = np.full_like(fnu, np.nan)
                 else:
+                    warnings.warn(
+                        f"No error data found in {fits_path}; filling fnu_err "
+                        "with NaN. These pixels will be treated as invalid "
+                        "(masked) by SpectrumData.valid.",
+                        stacklevel=2,
+                    )
                     wavelength = np.arange(len(data), dtype=float)
                     fnu = np.array(data, dtype=float)
-                    fnu_err = np.zeros_like(fnu)
+                    fnu_err = np.full_like(fnu, np.nan)
                 flam = None
                 flam_err = None
 

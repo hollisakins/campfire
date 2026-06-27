@@ -319,7 +319,7 @@ class CalibrationResult:
         ax_spec, ax_mult = axes
 
         wave = self.original.wavelength
-        valid = np.isfinite(self.original.fnu)
+        valid = self.original.valid
 
         ax_spec.plot(
             wave[valid], self.original.fnu[valid],
@@ -610,7 +610,14 @@ def _fit_chebyshev(
         degree = min(3, n - 1)
     degree = max(0, min(degree, n - 1))
 
-    weights = 1.0 / ratio_err
+    with np.errstate(divide="ignore", invalid="ignore"):
+        weights = np.where(
+            np.isfinite(ratio_err) & (ratio_err > 0), 1.0 / ratio_err, 0.0
+        )
+    if not np.any(weights > 0):
+        # Every band ratio has zero/invalid error — fall back to unit weights
+        # rather than feeding inf/nan into chebfit.
+        weights = np.ones_like(ratio_err)
     coeffs = np.polynomial.chebyshev.chebfit(cheb_band, ratio, degree, w=weights)
     multiplier = np.polynomial.chebyshev.chebval(cheb_wave, coeffs)
 
@@ -644,8 +651,16 @@ def _fit_flat(
     )
     ratio_err = ratio * frac_err
 
-    weights = 1.0 / ratio_err**2
-    flat_ratio = np.sum(weights * ratio) / np.sum(weights)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        weights = np.where(
+            np.isfinite(ratio_err) & (ratio_err > 0), 1.0 / ratio_err**2, 0.0
+        )
+    w_sum = np.sum(weights)
+    if w_sum > 0:
+        flat_ratio = np.sum(weights * ratio) / w_sum
+    else:
+        # Every band ratio has zero/invalid error — unweighted mean.
+        flat_ratio = float(np.mean(ratio))
 
     return np.full_like(wave, flat_ratio)
 
@@ -685,6 +700,54 @@ def _resample(
 # Spectrum stacking
 # ---------------------------------------------------------------------------
 
+def _check_stack_gratings(spectra, wavelength_grid, warn_on_override: bool = True) -> None:
+    """Guard against silently stacking spectra of different gratings.
+
+    Stacking resamples every input onto one wavelength grid. Mixing
+    gratings (e.g. PRISM + G395H) therefore smears/aliases spectra of
+    different resolutions onto a single grid, producing a scientifically
+    meaningless result. We refuse to do this unless the caller has made a
+    deliberate choice by supplying an explicit ``wavelength_grid``.
+
+    Parameters
+    ----------
+    spectra : iterable
+        Spectra (or spectrum handles) carrying a ``grating`` attribute.
+    wavelength_grid : np.ndarray or None
+        The explicit grid the caller passed, if any.
+    warn_on_override : bool
+        When *True* (default), emit a warning in the explicit-grid override
+        path. Pass *False* to suppress it (e.g. when a later call will
+        already warn), while still raising on the no-grid case.
+
+    Raises
+    ------
+    ValueError
+        If the spectra span more than one grating and no explicit
+        ``wavelength_grid`` was provided.
+    """
+    gratings = sorted({getattr(s, "grating", None) for s in spectra} - {None})
+    if len(gratings) <= 1:
+        return
+
+    base = (
+        f"Spectra span multiple gratings {gratings}. Stacking resamples them "
+        "onto a single wavelength grid, mixing spectral resolutions and "
+        "producing a scientifically meaningless result."
+    )
+    if wavelength_grid is None:
+        raise ValueError(
+            base + " Filter to a single grating before stacking (e.g. "
+            "obj.spectra[obj.spectra.grating == 'PRISM']), or pass an explicit "
+            "wavelength_grid to override this guard."
+        )
+    if warn_on_override:
+        warnings.warn(
+            base + " Proceeding because an explicit wavelength_grid was provided.",
+            stacklevel=2,
+        )
+
+
 def stack_spectra(
     spectra: List[SpectrumData],
     method: str = "weighted_mean",
@@ -699,7 +762,8 @@ def stack_spectra(
     Parameters
     ----------
     spectra : list of SpectrumData
-        Spectra to stack. Should generally share the same grating.
+        Spectra to stack. Must share a single grating unless an explicit
+        ``wavelength_grid`` is provided (see Raises).
     method : str
         ``'weighted_mean'`` (default): inverse-variance weighted mean.
         ``'median'``: pixel-wise median (errors from MAD).
@@ -721,10 +785,15 @@ def stack_spectra(
     Raises
     ------
     ValueError
-        If fewer than 2 spectra are provided.
+        If fewer than 2 spectra are provided, or if the spectra span more
+        than one grating and no explicit ``wavelength_grid`` is given. When
+        an explicit grid *is* given, a multi-grating stack warns instead of
+        raising (the caller has opted in).
     """
     if len(spectra) < 2:
         raise ValueError("Need at least 2 spectra to stack.")
+
+    _check_stack_gratings(spectra, wavelength_grid)
 
     if wavelength_grid is None:
         ref = max(spectra, key=lambda s: len(s.wavelength))
@@ -879,12 +948,12 @@ class StackResult:
         wave = self.spectrum.wavelength
 
         for i, s in enumerate(self.input_spectra):
-            valid = np.isfinite(s.fnu)
+            valid = s.valid
             ax_overlay.plot(
                 s.wavelength[valid], s.fnu[valid],
                 alpha=0.4, lw=0.7, label=f"Spec {i+1}" if i < 5 else None,
             )
-        valid = np.isfinite(self.spectrum.fnu)
+        valid = self.spectrum.valid
         ax_overlay.plot(
             wave[valid], self.spectrum.fnu[valid],
             color="black", lw=1.5, label="Stacked",
@@ -968,6 +1037,11 @@ def calibrate_and_stack(
 
     if not spec_list:
         raise ValueError("No spectra provided.")
+
+    # Fail fast before the (expensive) per-spectrum calibration loop. The
+    # final stack_spectra() call emits the override warning, so suppress it
+    # here to avoid a duplicate.
+    _check_stack_gratings(spec_list, wavelength_grid, warn_on_override=False)
 
     calibrations = []
     calibrated_data = []

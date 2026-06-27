@@ -1,9 +1,16 @@
 """Tests for calibration + stacking and new model dataclasses."""
 
+import warnings
+
 import numpy as np
 import pytest
 
-from campfire.calibration import stack_spectra
+from campfire.calibration import (
+    _fit_chebyshev,
+    _fit_flat,
+    calibrate_and_stack,
+    stack_spectra,
+)
 from campfire.models import (
     Band,
     Object,
@@ -250,3 +257,193 @@ class TestObjectFromDict:
         result = obj.spectra[0].open()
         assert result == "opened"
         assert called["id"] == "sid_1"
+
+
+# ---------------------------------------------------------------------------
+# SpectrumData.valid — the canonical pixel mask (issue #197, finding 4)
+# ---------------------------------------------------------------------------
+
+class TestSpectrumDataValid:
+    def _make(self, fnu, fnu_err):
+        n = len(fnu)
+        return SpectrumData(
+            wavelength=np.linspace(1.0, 5.0, n),
+            fnu=np.asarray(fnu, dtype=float),
+            fnu_err=np.asarray(fnu_err, dtype=float),
+            header={},
+            grating="PRISM",
+            spectrum_id="t_prism_1",
+        )
+
+    def test_valid_excludes_nonfinite_flux_and_nonpositive_error(self):
+        spec = self._make(
+            fnu=[1.0, np.nan, 2.0, 3.0, 4.0, 5.0],
+            fnu_err=[0.1, 0.1, 0.0, -0.5, np.nan, np.inf],
+        )
+        # idx 0 good; 1 (nan flux), 2 (zero err), 3 (neg err),
+        # 4 (nan err), 5 (inf err) all invalid.
+        np.testing.assert_array_equal(
+            spec.valid, [True, False, False, False, False, False]
+        )
+
+    def test_valid_matches_recipe_idiom(self):
+        rng = np.random.default_rng(0)
+        fnu = rng.normal(1.0, 0.2, 50)
+        fnu_err = np.abs(rng.normal(0.1, 0.02, 50))
+        fnu[5] = np.nan
+        fnu_err[10] = 0.0
+        spec = self._make(fnu, fnu_err)
+        expected = np.isfinite(fnu) & (fnu_err > 0)
+        np.testing.assert_array_equal(spec.valid, expected)
+
+    def test_plot_uses_valid_mask(self):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        spec = self._make(
+            fnu=[1.0, 2.0, 3.0, 4.0],
+            fnu_err=[0.1, 0.0, 0.1, 0.1],  # idx 1 has zero error -> invalid
+        )
+        _, ax = plt.subplots()
+        spec.plot(ax=ax)
+        # bare isfinite would plot 4 points; valid drops the zero-error pixel.
+        line = ax.lines[0]
+        assert len(line.get_xdata()) == 3
+        plt.close("all")
+
+
+# ---------------------------------------------------------------------------
+# from_fits — missing error column warns + fills NaN (not zeros) (finding 4)
+# ---------------------------------------------------------------------------
+
+class TestFromFitsMissingError:
+    def test_missing_error_column_fills_nan_and_warns(self, tmp_path):
+        from astropy.io import fits
+
+        wave = np.linspace(1.0, 5.0, 10)
+        fnu = np.ones(10)
+        hdu0 = fits.PrimaryHDU()
+        hdu0.header["GRATING"] = "PRISM"
+        cols = fits.ColDefs([
+            fits.Column(name="wave", format="D", array=wave),
+            fits.Column(name="fnu", format="D", array=fnu),
+        ])
+        hdu1 = fits.BinTableHDU.from_columns(cols)
+        path = tmp_path / "nocols_spec.fits"
+        fits.HDUList([hdu0, hdu1]).writeto(path)
+
+        with pytest.warns(UserWarning, match="No error column"):
+            spec = SpectrumData.from_fits(str(path))
+
+        # Filled with NaN (not zeros), so every pixel is masked-out as invalid.
+        assert np.all(np.isnan(spec.fnu_err))
+        assert not spec.valid.any()
+
+
+# ---------------------------------------------------------------------------
+# to_specutils — specutils export carries mask + uncertainty (finding 4)
+# ---------------------------------------------------------------------------
+
+class TestToSpecutils:
+    def test_export_carries_mask_and_uncertainty(self):
+        pytest.importorskip("specutils")
+        import astropy.units as u
+
+        fnu = np.array([1.0, 2.0, np.nan, 4.0])
+        fnu_err = np.array([0.1, 0.0, 0.1, 0.2])  # idx 1 zero err, idx 2 nan flux
+        spec = SpectrumData(
+            wavelength=np.linspace(1.0, 4.0, 4),
+            fnu=fnu,
+            fnu_err=fnu_err,
+            header={},
+            grating="PRISM",
+            spectrum_id="t_prism_1",
+        )
+        s1d = spec.to_specutils()
+
+        # mask True == masked (invalid); matches ~spec.valid
+        np.testing.assert_array_equal(s1d.mask, ~spec.valid)
+        assert s1d.uncertainty is not None
+        np.testing.assert_allclose(s1d.flux.to_value(u.uJy), fnu, equal_nan=True)
+        np.testing.assert_allclose(
+            s1d.spectral_axis.to_value(u.um), spec.wavelength
+        )
+
+
+# ---------------------------------------------------------------------------
+# Grating guard for stacking (issue #197, finding 7)
+# ---------------------------------------------------------------------------
+
+class TestGratingGuard:
+    def _make_spec(self, grating, n=20, fnu_value=1.0):
+        wave = np.linspace(1.0, 5.0, n)
+        return SpectrumData(
+            wavelength=wave,
+            fnu=np.full(n, fnu_value),
+            fnu_err=np.full(n, 0.1),
+            header={},
+            grating=grating,
+            spectrum_id=f"a_{grating.lower()}_1",
+        )
+
+    def test_stack_mixed_gratings_raises_without_grid(self):
+        a = self._make_spec("PRISM")
+        b = self._make_spec("G395H")
+        with pytest.raises(ValueError, match="multiple gratings"):
+            stack_spectra([a, b])
+
+    def test_stack_same_grating_ok(self):
+        a = self._make_spec("PRISM", fnu_value=2.0)
+        b = self._make_spec("PRISM", fnu_value=4.0)
+        stacked = stack_spectra([a, b])
+        assert stacked.grating == "PRISM"
+
+    def test_stack_mixed_gratings_warns_with_explicit_grid(self):
+        a = self._make_spec("PRISM")
+        b = self._make_spec("G395H")
+        grid = np.linspace(1.0, 5.0, 20)
+        with pytest.warns(UserWarning, match="multiple gratings"):
+            stacked = stack_spectra([a, b], wavelength_grid=grid)
+        assert stacked is not None
+
+    def test_calibrate_and_stack_mixed_gratings_raises_early(self):
+        # SpectrumData inputs => no calibration; should still fail fast.
+        a = self._make_spec("PRISM")
+        b = self._make_spec("G140M")
+        with pytest.raises(ValueError, match="multiple gratings"):
+            calibrate_and_stack([a, b])
+
+
+# ---------------------------------------------------------------------------
+# Zero-guard in calibration weight computation (issue #197, finding 4)
+# ---------------------------------------------------------------------------
+
+class TestFitWeightZeroGuard:
+    def test_fit_flat_handles_zero_ratio_err(self):
+        # obs_err and synth_err both zero -> ratio_err == 0 -> would div-by-zero
+        wave = np.linspace(1.0, 5.0, 20)
+        obs_flux = np.array([2.0, 4.0])
+        synth_flux = np.array([1.0, 2.0])
+        zero_err = np.zeros(2)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any RuntimeWarning becomes a failure
+            mult = _fit_flat(wave, obs_flux, zero_err, synth_flux, zero_err)
+        assert np.all(np.isfinite(mult))
+        # ratio is 2.0 for both bands -> unweighted mean fallback == 2.0
+        np.testing.assert_allclose(mult, 2.0)
+
+    def test_fit_chebyshev_handles_zero_ratio_err(self):
+        wave = np.linspace(1.0, 5.0, 20)
+        band_waves = np.array([1.5, 3.0, 4.5])
+        obs_flux = np.array([2.0, 2.0, 2.0])
+        synth_flux = np.array([1.0, 1.0, 1.0])
+        zero_err = np.zeros(3)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mult = _fit_chebyshev(
+                wave, band_waves, obs_flux, zero_err, synth_flux, zero_err, degree=1
+            )
+        assert np.all(np.isfinite(mult))
+        # constant ratio 2.0 everywhere -> multiplier ~2.0
+        np.testing.assert_allclose(mult, 2.0, rtol=1e-6)
