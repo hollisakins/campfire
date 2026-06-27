@@ -5,6 +5,20 @@ export type SortDirection = 'asc' | 'desc';
 
 export type ViewMode = 'spectra' | 'objects';
 
+/**
+ * Maximum number of FITS files (spectra) bundled into a single in-browser ZIP.
+ *
+ * Expressed in spectra/file units — the unit the download actually acts on — NOT
+ * objects. One sky-object commonly spans 2-3 gratings (e.g. the PRISM + G395M
+ * EMBER/ZENITH pairing), so an objects-mode result of N objects can fan out to
+ * far more than N spectra. The server action (generateFitsDownloadUrl) enforces
+ * this cap and refuses — rather than silently truncating — when a filter set
+ * exceeds it, so a user never walks away with a biased first-N-of-M sample. The
+ * client gate imports the same constant so the button and the action can't
+ * disagree on the limit.
+ */
+export const FITS_DOWNLOAD_FILE_LIMIT = 500;
+
 // Spectra-mode sort columns (must match get_filtered_spectra_paginated whitelist)
 export const SPECTRA_SORT_COLUMNS = ['spectrum_id', 'target_id', 'field', 'observation', 'program_slug', 'ra', 'dec', 'redshift', 'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating', 'distance'] as const;
 
