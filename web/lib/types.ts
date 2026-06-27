@@ -181,7 +181,7 @@ export interface Spectrum {
   target_id: string;  // FK to targets.target_id (text)
   grating: string;
   fits_path: string;
-  reduction_version: string;
+  cfpipe_version: string | null;
   signal_to_noise: number | null;
   exposure_time: number | null;
   created_at: string;

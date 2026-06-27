@@ -70,7 +70,7 @@ scale-invariant, so they ride along unchanged.
 
 import os
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 from astropy.io import fits
@@ -313,8 +313,8 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
 
     with fits.open(output_path, mode='update') as hdul:
         hdul[0].header['CMPFRTIM'] = (
-            str(datetime.now()),
-            'Date/time of CAMPFIRE reduction',
+            datetime.now(timezone.utc).isoformat(),
+            'UTC date/time of CAMPFIRE reduction (ISO 8601)',
         )
         hdul[0].header['CMPFRVER'] = (
             cmpfrver,

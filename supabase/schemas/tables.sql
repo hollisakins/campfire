@@ -315,7 +315,6 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "id" integer NOT NULL,
     "grating" "text" NOT NULL,
     "fits_path" "text" NOT NULL,
-    "reduction_version" "text" DEFAULT 'v1.0'::"text",
     "signal_to_noise" double precision,
     "created_at" timestamp without time zone DEFAULT "now"(),
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
@@ -325,10 +324,14 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "file_hash" "text",
     "file_size" bigint,
     "exposure_time" double precision,
+    -- Provenance, carried verbatim from the FITS primary header. cfpipe_version
+    -- (CMPFRVER) is the single pipeline-version string; reduced_at (CMPFRTIM)
+    -- is the actual reduction time, distinct from the row's created_at/updated_at.
     "crds_context" "text",
     "jwst_version" "text",
     "cfpipe_version" "text",
     "date_obs" "text",
+    "reduced_at" timestamp with time zone,
     -- Phase A: per-spectrum auto-fit and DQ (populated in Phase B by deploy pipeline; backfilled in Phase D)
     "redshift_auto" double precision,
     "dq_flags" integer NOT NULL DEFAULT 0,
@@ -639,7 +642,6 @@ CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "cfpipe_version" "text",
     "jwst_version" "text",
     "crds_context" "text",
-    "reduction_version" "text",
     "config_snapshot" "jsonb",
     "n_targets" integer,
     "n_spectra" integer,

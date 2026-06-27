@@ -7,7 +7,7 @@ re-scanning individual FITS files.
 """
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +25,24 @@ from campfire_pipeline.metadata.reader import (
 
 # Speed of light in km/s
 _C_KMS = 299792.458
+
+
+def _earliest_reduced_at(values) -> str | None:
+    """Earliest reduction time (CMPFRTIM) across an observation's products.
+
+    Values are the verbatim header strings carried by ``read_fits_metadata``.
+    New reductions stamp ``CMPFRTIM`` as UTC ISO-8601, for which a lexicographic
+    ``min`` is the true chronological earliest; legacy naive-local strings are
+    handled best-effort. Returns ``None`` when no product carries the stamp.
+    """
+    stamps = []
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s and s.lower() != 'none':
+            stamps.append(s)
+    return min(stamps) if stamps else None
 
 # Grating tiebreak priority: lower value = higher priority
 # PRISM ranks first (most reliable, least likely to lack detections)
@@ -283,7 +301,7 @@ def _consensus_redshift(chi2_by_grating, delta_chi2_peak, dv_tolerance):
 # ---------------------------------------------------------------------------
 
 def generate_observation_summary(obs_name: str, obs_dir: Path,
-                                  reduction_version: str = 'unknown',
+                                  cfpipe_version: str = 'unknown',
                                   field: str = '',
                                   program_slug: str = '',
                                   consensus_config: dict | None = None) -> Table:
@@ -297,8 +315,11 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
         Observation name (e.g. 'ember_uds_p4')
     obs_dir : Path
         Path to the observation products directory
-    reduction_version : str
-        Pipeline version string to embed
+    cfpipe_version : str
+        Fallback campfire-pipeline version for the observation-level metadata.
+        The authoritative per-row value is read from each product's CMPFRVER
+        header (config-aware, so a ``[pipeline].version`` override flows
+        through); this argument is only used when a product lacks the card.
     field : str
         Field name (e.g. 'uds') to store in table metadata
     program_slug : str
@@ -408,7 +429,7 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
         'n_pix', 'exposure_time', 'signal_to_noise',
         'program_id', 'pi_name', 'date_obs',
         'spec_file', 'zfit_file',
-        'reduction_version', 'jwst_version', 'crds_context',
+        'cfpipe_version', 'reduced_at', 'jwst_version', 'crds_context',
         'fits_filename', 'file_size', 'file_hash',
     ]
 
@@ -423,21 +444,27 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
     summary.meta['obs_name'] = obs_name
     summary.meta['field'] = field
     summary.meta['program_slug'] = program_slug
-    summary.meta['reduction_version'] = reduction_version
-    summary.meta['generated_at'] = datetime.utcnow().isoformat()
+    summary.meta['generated_at'] = datetime.now(timezone.utc).isoformat()
     summary.meta['n_sources'] = len(set(summary['source_id']))
     summary.meta['n_spectra'] = len(summary)
 
-    # Provenance: capture package versions for reproducibility
-    import campfire_pipeline
-    summary.meta['cfpipe_version'] = campfire_pipeline.__version__
-    # jwst_version and crds_context come from FITS headers (authoritative)
+    # Provenance is read ONCE from the FITS primary headers (authoritative) and
+    # carried verbatim into the observation-level metadata — never recomputed
+    # from package metadata. cfpipe_version is the single pipeline-version
+    # string (CMPFRVER, config-aware so a [pipeline].version override flows
+    # through); jwst_version/crds_context pin the calibration; reduced_at is the
+    # earliest real reduction time (CMPFRTIM) across this observation's
+    # products, not the summary-build wall-clock (which is generated_at).
     if len(summary) > 0:
+        summary.meta['cfpipe_version'] = summary['cfpipe_version'][0] or cfpipe_version
         summary.meta['jwst_version'] = summary['jwst_version'][0] or 'unknown'
         summary.meta['crds_context'] = summary['crds_context'][0] or 'unknown'
+        summary.meta['reduced_at'] = _earliest_reduced_at(summary['reduced_at'])
     else:
+        summary.meta['cfpipe_version'] = cfpipe_version
         summary.meta['jwst_version'] = 'unknown'
         summary.meta['crds_context'] = 'unknown'
+        summary.meta['reduced_at'] = None
 
     return summary
 
@@ -488,12 +515,13 @@ def write_effective_config(
         for stage_name, overrides in obs_stage_overrides.items():
             nirspec[stage_name] = deep_merge(nirspec.get(stage_name, {}), overrides)
 
-    # Add provenance header
-    import campfire_pipeline
+    # Add provenance header. Resolve the version config-aware so a
+    # [pipeline].version override is reflected here too (matches CMPFRVER).
+    from campfire_pipeline.common.version import get_reduction_version
     provenance = {
-        'generated_at': datetime.utcnow().isoformat(),
+        'generated_at': datetime.now(timezone.utc).isoformat(),
         'obs_name': obs_name,
-        'cfpipe_version': campfire_pipeline.__version__,
+        'cfpipe_version': get_reduction_version(config),
     }
 
     output = {**effective, '_provenance': provenance}

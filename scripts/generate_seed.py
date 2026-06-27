@@ -676,8 +676,8 @@ def generate_spectra_sql(spectra: list[dict]) -> str:
     lines.append('')
 
     for spec in spectra:
-        lines.append(f"""INSERT INTO public.spectra (id, target_id, grating, fits_path, reduction_version, signal_to_noise, exposure_time, thumbnail_svg_fnu, thumbnail_svg_flambda, redshift_auto, dq_flags)
-VALUES ({spec['id']}, {sql_escape(spec.get('target_id') or spec.get('object_id'))}, {sql_escape(spec['grating'])}, {sql_escape(spec['fits_path'])}, {sql_escape(spec.get('reduction_version', 'v0.1'))}, {sql_escape(spec.get('signal_to_noise'))}, {sql_escape(spec.get('exposure_time'))}, {sql_escape(spec.get('thumbnail_svg_fnu'))}, {sql_escape(spec.get('thumbnail_svg_flambda'))}, {sql_escape(spec.get('redshift_auto'))}, {spec.get('dq_flags') or 0});""")
+        lines.append(f"""INSERT INTO public.spectra (id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, thumbnail_svg_fnu, thumbnail_svg_flambda, redshift_auto, dq_flags)
+VALUES ({spec['id']}, {sql_escape(spec.get('target_id') or spec.get('object_id'))}, {sql_escape(spec['grating'])}, {sql_escape(spec['fits_path'])}, {sql_escape(spec.get('cfpipe_version') or spec.get('reduction_version') or 'v0.1')}, {sql_escape(spec.get('signal_to_noise'))}, {sql_escape(spec.get('exposure_time'))}, {sql_escape(spec.get('thumbnail_svg_fnu'))}, {sql_escape(spec.get('thumbnail_svg_flambda'))}, {sql_escape(spec.get('redshift_auto'))}, {spec.get('dq_flags') or 0});""")
 
     lines.append('')
     return '\n'.join(lines)

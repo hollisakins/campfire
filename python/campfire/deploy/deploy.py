@@ -108,7 +108,7 @@ def _is_release_version(version: str | None) -> bool:
 def _collect_non_release_versions(summary, spectra) -> list[str]:
     """Return the unique non-release version strings present in *summary* or
     *spectra*. Inspects both ``summary.meta['cfpipe_version']`` and each
-    spectrum's ``reduction_version`` (sourced from the FITS ``CMPFRVER``
+    spectrum's ``cfpipe_version`` (sourced verbatim from the FITS ``CMPFRVER``
     header), since heterogeneous reductions may carry different strings
     per row.
     """
@@ -117,10 +117,21 @@ def _collect_non_release_versions(summary, spectra) -> list[str]:
     if meta_v:
         versions.add(meta_v)
     for s in spectra:
-        v = s.get('reduction_version')
+        v = s.get('cfpipe_version')
         if v:
             versions.add(v)
     return sorted(v for v in versions if not _is_release_version(v))
+
+
+def _collect_crds_contexts(spectra) -> list[str]:
+    """Return the distinct CRDS contexts across *spectra* (deploy records).
+
+    More than one means this single observation mixes calibration contexts —
+    a silent intra-sample drift that can quietly corrupt a stacked measurement,
+    so deploy surfaces it for a conscious decision.
+    """
+    contexts = {s.get('crds_context') for s in spectra if s.get('crds_context')}
+    return sorted(contexts)
 
 
 def deploy_observation(
@@ -195,6 +206,23 @@ def deploy_observation(
             print(f"    - {v}")
         print("  These will be preserved verbatim in spectra.cfpipe_version.")
         print("  Prefer deploying from a tagged release (see /pipeline-release).")
+        if not dry_run and not auto_approve:
+            resp = input("  Continue? [y/N]: ")
+            if resp.lower() != 'y':
+                print("Aborted.")
+                return {'field': field, 'needs_reconcile': False}
+
+    # Warn if this observation mixes CRDS contexts. A single observation should
+    # share one calibration context; >1 means part of the sample was reduced
+    # against a different CRDS pmap, which can silently bias a stacked measurement.
+    crds_contexts = _collect_crds_contexts(spectra)
+    if len(crds_contexts) > 1:
+        print()
+        print("WARNING: this observation mixes CRDS contexts")
+        for c in crds_contexts:
+            print(f"    - {c}")
+        print("  Spectra reduced against different CRDS pmaps are not calibration-")
+        print("  homogeneous; prefer re-reducing the whole observation against one.")
         if not dry_run and not auto_approve:
             resp = input("  Continue? [y/N]: ")
             if resp.lower() != 'y':
@@ -493,10 +521,12 @@ def deploy_observation(
             cfpipe_version=summary.meta.get('cfpipe_version'),
             jwst_version=summary.meta.get('jwst_version'),
             crds_context=summary.meta.get('crds_context'),
-            reduction_version=spectra[0].get('reduction_version') if spectra else None,
             config_snapshot=config_snapshot,
             stuck_shutters=stuck_shutters,
-            reduced_at=summary.meta.get('generated_at'),
+            # Real reduction time (earliest CMPFRTIM across products), not the
+            # summary-build wall-clock — so re-running `summary` on unchanged
+            # pixels no longer advances reduced_at.
+            reduced_at=summary.meta.get('reduced_at'),
             n_targets=len(objects),
             n_spectra=len(spectra),
             n_new_targets=len(new_object_ids),

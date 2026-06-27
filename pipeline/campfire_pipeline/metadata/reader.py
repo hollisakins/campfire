@@ -228,7 +228,14 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
                     redshift_auto = float(val)
                     break
 
-        reduction_version = primary.get('CMPFRVER', 'v0.1')
+        # cfpipe_version is the single campfire-pipeline version string, read
+        # verbatim from the CMPFRVER card the reduction stamped (config-aware,
+        # so a [pipeline].version override flows through). reduced_at is the
+        # actual reduction time (CMPFRTIM), carried verbatim — new reductions
+        # stamp it as UTC ISO 8601; older products may carry a naive-local
+        # string, tolerated downstream as best-effort provenance.
+        cfpipe_version = primary.get('CMPFRVER', 'v0.1')
+        reduced_at = primary.get('CMPFRTIM') or None
 
         # Source position. MSA products carry SRCRA/SRCDEC in the SCI header, but
         # fixed-slit products do not (those are MSA-catalog-derived). Fall back to
@@ -260,7 +267,8 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
             'exposure_time': float(primary.get('EFFEXPTM', 0)),
             'jwst_version': primary.get('CAL_VER', ''),
             'crds_context': primary.get('CRDS_CTX', ''),
-            'reduction_version': reduction_version,
+            'cfpipe_version': cfpipe_version,
+            'reduced_at': reduced_at,
 
             'ra': ra,
             'dec': dec,

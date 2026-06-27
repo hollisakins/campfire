@@ -172,9 +172,9 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
             </div>
 
             <span className="flex items-center gap-1.5">
-              <span className="opacity-70 uppercase tracking-wide">Version:</span>
+              <span className="opacity-70 uppercase tracking-wide">cfpipe:</span>
               <span className="font-mono text-text-primary">
-                {spectrum.reduction_version || '—'}
+                {spectrum.cfpipe_version || '—'}
               </span>
             </span>
 

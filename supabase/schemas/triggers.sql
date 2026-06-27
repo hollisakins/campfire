@@ -240,7 +240,6 @@ BEGIN
     -- by bump_spectra_updated_at; allow it through.
     IF OLD.grating IS DISTINCT FROM NEW.grating
        OR OLD.fits_path IS DISTINCT FROM NEW.fits_path
-       OR OLD.reduction_version IS DISTINCT FROM NEW.reduction_version
        OR OLD.signal_to_noise IS DISTINCT FROM NEW.signal_to_noise
        OR OLD.target_id IS DISTINCT FROM NEW.target_id
        OR OLD.thumbnail_svg_fnu IS DISTINCT FROM NEW.thumbnail_svg_fnu
@@ -357,8 +356,10 @@ CREATE TRIGGER track_spectrum_dq_changes
 -- Keep spectra.updated_at fresh only when user-visible columns change, so
 -- incremental sync (get_spectra_for_sync p_updated_since) doesn't force a
 -- full re-sync on every pipeline provenance touch (crds_context bumps,
--- reduction_version bumps, etc.).  Scope matches what clients actually
+-- cfpipe_version bumps, etc.).  Scope matches what clients actually
 -- need to re-fetch for: flags, redshift, SNR, thumbnails, file identity.
+-- A real re-reduction also changes file_hash, so refreshed provenance rides
+-- along on the next incremental sync without a provenance-only bump.
 DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
 CREATE TRIGGER bump_spectra_updated_at_trigger
   BEFORE UPDATE OF

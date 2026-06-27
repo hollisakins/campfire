@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 # Schema version — bump when tables change. Existing DBs at a lower version
 # will raise SchemaMismatchError and must be deleted + re-synced.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 # Columns exposed on `objects` from `/sync/objects`.
@@ -43,11 +43,15 @@ OBJECT_EXPORT_COLUMNS = [
     "last_data_change_at", "staleness_reason",
 ]
 
-# Columns exposed on `spectra` — flat per-spectrum rows.
+# Columns exposed on `spectra` — flat per-spectrum rows. The provenance block
+# (cfpipe_version, crds_context, jwst_version, date_obs, reduced_at) is carried
+# verbatim from the FITS primary header through the catalog so a flux value can
+# be traced to its exact pipeline version + CRDS context without opening FITS.
 SPECTRA_COLUMNS = [
     "id", "spectrum_id", "target_id", "object_id", "grating", "fits_path",
     "file_hash", "file_size", "signal_to_noise", "exposure_time",
-    "reduction_version", "redshift_auto", "dq_flags",
+    "cfpipe_version", "crds_context", "jwst_version", "date_obs", "reduced_at",
+    "redshift_auto", "dq_flags",
     "program_slug", "observation", "field",
     "local_path", "local_file_hash", "local_file_mtime", "local_file_size",
     "synced_at", "created_at", "updated_at",
@@ -56,7 +60,8 @@ SPECTRA_COLUMNS = [
 SPECTRA_EXPORT_COLUMNS = [
     "spectrum_id", "target_id", "object_id", "grating", "fits_path",
     "file_hash", "file_size", "signal_to_noise", "exposure_time",
-    "reduction_version", "redshift_auto", "dq_flags",
+    "cfpipe_version", "crds_context", "jwst_version", "date_obs", "reduced_at",
+    "redshift_auto", "dq_flags",
     "program_slug", "observation", "field", "local_path",
 ]
 
@@ -131,7 +136,11 @@ CREATE TABLE IF NOT EXISTS spectra (
     file_size INTEGER,
     signal_to_noise REAL,
     exposure_time REAL,
-    reduction_version TEXT,
+    cfpipe_version TEXT,
+    crds_context TEXT,
+    jwst_version TEXT,
+    date_obs TEXT,
+    reduced_at TEXT,
     redshift_auto REAL,
     dq_flags INTEGER DEFAULT 0,
     program_slug TEXT,
@@ -153,6 +162,8 @@ CREATE INDEX IF NOT EXISTS idx_spectra_object_id ON spectra(object_id);
 CREATE INDEX IF NOT EXISTS idx_spectra_observation ON spectra(observation);
 CREATE INDEX IF NOT EXISTS idx_spectra_grating ON spectra(grating);
 CREATE INDEX IF NOT EXISTS idx_spectra_dq_flags ON spectra(dq_flags) WHERE dq_flags != 0;
+CREATE INDEX IF NOT EXISTS idx_spectra_crds_context ON spectra(crds_context);
+CREATE INDEX IF NOT EXISTS idx_spectra_cfpipe_version ON spectra(cfpipe_version);
 
 CREATE TABLE IF NOT EXISTS object_photometry (
     id INTEGER PRIMARY KEY,
@@ -636,10 +647,11 @@ class LocalStore:
                 INSERT INTO spectra
                     (id, spectrum_id, target_id, object_id, grating, fits_path,
                      file_hash, file_size, signal_to_noise, exposure_time,
-                     reduction_version, redshift_auto, dq_flags,
+                     cfpipe_version, crds_context, jwst_version, date_obs, reduced_at,
+                     redshift_auto, dq_flags,
                      program_slug, observation, field,
                      created_at, updated_at, _synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(spectrum_id) DO UPDATE SET
                     target_id=excluded.target_id,
                     object_id=excluded.object_id,
@@ -649,7 +661,11 @@ class LocalStore:
                     file_size=COALESCE(excluded.file_size, spectra.file_size),
                     signal_to_noise=excluded.signal_to_noise,
                     exposure_time=excluded.exposure_time,
-                    reduction_version=excluded.reduction_version,
+                    cfpipe_version=excluded.cfpipe_version,
+                    crds_context=excluded.crds_context,
+                    jwst_version=excluded.jwst_version,
+                    date_obs=excluded.date_obs,
+                    reduced_at=excluded.reduced_at,
                     redshift_auto=excluded.redshift_auto,
                     dq_flags=excluded.dq_flags,
                     program_slug=excluded.program_slug,
@@ -669,7 +685,11 @@ class LocalStore:
                     spec.get("file_size"),
                     spec.get("signal_to_noise"),
                     spec.get("exposure_time"),
-                    spec.get("reduction_version"),
+                    spec.get("cfpipe_version"),
+                    spec.get("crds_context"),
+                    spec.get("jwst_version"),
+                    spec.get("date_obs"),
+                    spec.get("reduced_at"),
                     spec.get("redshift_auto"),
                     spec.get("dq_flags", 0),
                     spec.get("program_slug"),
@@ -695,6 +715,9 @@ class LocalStore:
         redshift_quality: Optional[List[int]] = None,
         max_snr_range: Optional[Tuple[float, float]] = None,
         dq_flags: Optional[dict] = None,
+        crds_context: Optional[List[str]] = None,
+        cfpipe_version: Optional[List[str]] = None,
+        reduced_after: Optional[str] = None,
         tags: Optional[List[str]] = None,
         inspected_only: Optional[bool] = None,
         has_photometry: Optional[bool] = None,
@@ -711,6 +734,12 @@ class LocalStore:
         Inspection state (redshift, redshift_quality, inspected_only) is
         resolved through the parent object via ``spectra.object_id =
         objects.object_id``.
+
+        ``crds_context`` / ``cfpipe_version`` restrict to spectra reduced
+        against the given CRDS pmap(s) / pipeline version(s); ``reduced_after``
+        (an ISO-8601 string) keeps only spectra whose ``reduced_at`` is on or
+        after it — letting a user carve a calibration-homogeneous subsample
+        without opening any FITS.
         """
         where = ["(o.is_active IS NULL OR o.is_active = 1)"]
         params: list = []
@@ -747,6 +776,20 @@ class LocalStore:
         if max_snr_range:
             where.append("s.signal_to_noise >= ? AND s.signal_to_noise <= ?")
             params.extend(max_snr_range)
+
+        if crds_context:
+            placeholders = ",".join("?" * len(crds_context))
+            where.append(f"s.crds_context IN ({placeholders})")
+            params.extend(crds_context)
+
+        if cfpipe_version:
+            placeholders = ",".join("?" * len(cfpipe_version))
+            where.append(f"s.cfpipe_version IN ({placeholders})")
+            params.extend(cfpipe_version)
+
+        if reduced_after:
+            where.append("s.reduced_at >= ?")
+            params.append(reduced_after)
 
         if inspected_only is True:
             where.append("o.redshift_quality > 0")

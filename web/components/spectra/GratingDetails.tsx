@@ -83,10 +83,10 @@ export const GratingDetails: React.FC<GratingDetailsProps> = ({ spectrum }) => {
 
             <div>
               <div className="text-xs text-text-secondary uppercase tracking-wide mb-1">
-                Version
+                cfpipe
               </div>
               <div className="text-sm font-mono text-text-primary">
-                {spectrum.reduction_version || 'N/A'}
+                {spectrum.cfpipe_version || 'N/A'}
               </div>
             </div>
 

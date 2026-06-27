@@ -455,6 +455,9 @@ class Campfire:
         redshift_quality: Optional[List[Union[int, str]]] = None,
         max_snr_range: Optional[Tuple[float, float]] = None,
         dq_flags: Optional[Union[int, str, List[str], DQFlags, FlagQuery]] = None,
+        crds_context: Optional[Union[str, List[str]]] = None,
+        cfpipe_version: Optional[Union[str, List[str]]] = None,
+        reduced_after: Optional[str] = None,
         tags: Optional[List[str]] = None,
         inspected_only: Optional[bool] = None,
         has_photometry: Optional[bool] = None,
@@ -470,7 +473,19 @@ class Campfire:
 
         Inspection state (``redshift_range``, ``redshift_quality``,
         ``inspected_only``) is resolved through the parent object.
+
+        Provenance filters carve a calibration-homogeneous subsample without
+        opening any FITS: ``crds_context`` and ``cfpipe_version`` accept a
+        string or list of strings; ``reduced_after`` is an ISO-8601 string
+        keeping only spectra reduced on or after it. These are evaluated in SQL
+        against a synced local catalog (``cf.sync()``); on a remote query they
+        filter the returned page client-side, so sync locally to filter the
+        full catalog.
         """
+        if isinstance(crds_context, str):
+            crds_context = [crds_context]
+        if isinstance(cfpipe_version, str):
+            cfpipe_version = [cfpipe_version]
         if fields:
             fields = [f.lower() for f in fields]
         if gratings:
@@ -494,6 +509,9 @@ class Campfire:
                 redshift_quality=redshift_quality,
                 max_snr_range=max_snr_range,
                 dq_flags=dq_dict,
+                crds_context=crds_context,
+                cfpipe_version=cfpipe_version,
+                reduced_after=reduced_after,
                 tags=tags,
                 inspected_only=inspected_only,
                 has_photometry=has_photometry,
@@ -525,6 +543,15 @@ class Campfire:
                 sort=sort,
                 sort_dir=sort_dir,
             )
+            # Provenance filters aren't server-side on the remote feed; apply
+            # them to the returned page so the kwargs behave consistently.
+            if crds_context or cfpipe_version or reduced_after:
+                spectra = [
+                    s for s in spectra
+                    if (not crds_context or s.get("crds_context") in crds_context)
+                    and (not cfpipe_version or s.get("cfpipe_version") in cfpipe_version)
+                    and (not reduced_after or (s.get("reduced_at") or "") >= reduced_after)
+                ]
 
         if not use_local and pagination:
             total = pagination.get("total", 0)

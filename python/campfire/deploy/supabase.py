@@ -142,7 +142,6 @@ def insert_deployment(
     cfpipe_version: str | None = None,
     jwst_version: str | None = None,
     crds_context: str | None = None,
-    reduction_version: str | None = None,
     config_snapshot: dict | None = None,
     stuck_shutters: dict | None = None,
     reduced_at: str | None = None,
@@ -174,8 +173,6 @@ def insert_deployment(
         data['jwst_version'] = jwst_version
     if crds_context:
         data['crds_context'] = crds_context
-    if reduction_version:
-        data['reduction_version'] = reduction_version
     if config_snapshot is not None:
         data['config_snapshot'] = config_snapshot
     if stuck_shutters is not None:
@@ -574,7 +571,7 @@ def fetch_deployment_config(client: Client, obs_name: str) -> dict | None:
     # Query latest deployment
     dep_resp = client.table('deployments').select(
         'id, config_snapshot, stuck_shutters, deployed_at, reduced_at, '
-        'deployed_by, cfpipe_version, jwst_version, crds_context, reduction_version'
+        'deployed_by, cfpipe_version, jwst_version, crds_context'
     ).eq('id', dep_id).execute()
 
     if not dep_resp.data:

@@ -385,7 +385,8 @@ BEGIN
   WITH matched AS MATERIALIZED (
     SELECT s.id, s.spectrum_id, s.target_id, o.object_id AS object_id,
            s.grating, s.fits_path, s.file_hash, s.file_size,
-           s.signal_to_noise, s.exposure_time, s.reduction_version,
+           s.signal_to_noise, s.exposure_time,
+           s.cfpipe_version, s.crds_context, s.jwst_version, s.date_obs, s.reduced_at,
            s.redshift_auto, s.dq_flags,
            t.program_slug, t.observation, t.field,
            s.created_at, s.updated_at
@@ -432,7 +433,11 @@ BEGIN
         'file_size', m.file_size,
         'signal_to_noise', m.signal_to_noise,
         'exposure_time', m.exposure_time,
-        'reduction_version', m.reduction_version,
+        'cfpipe_version', m.cfpipe_version,
+        'crds_context', m.crds_context,
+        'jwst_version', m.jwst_version,
+        'date_obs', m.date_obs,
+        'reduced_at', m.reduced_at,
         'redshift_auto', m.redshift_auto,
         'dq_flags', m.dq_flags,
         'program_slug', m.program_slug,
@@ -2199,7 +2204,7 @@ RETURNS TABLE(
   observation text, program_slug text, program_name text, field text,
   target_count bigint, spectrum_count bigint, total_size_bytes bigint,
   pointings jsonb,
-  reduction_version text, crds_context text, cfpipe_version text, jwst_version text,
+  crds_context text, cfpipe_version text, jwst_version text,
   reduced_at timestamptz, deployed_at timestamptz,
   deployed_by_username text, deployed_by_full_name text,
   n_patches_since_full integer, last_patch_at timestamptz
@@ -2218,7 +2223,7 @@ RETURNS TABLE(
   SELECT s.observation, s.program_slug, s.program_name, s.field,
     s.target_count, s.spectrum_count, s.total_size_bytes,
     o.pointings,
-    full_dep.reduction_version, full_dep.crds_context,
+    full_dep.crds_context,
     full_dep.cfpipe_version, full_dep.jwst_version,
     full_dep.reduced_at, full_dep.deployed_at,
     full_dep.deployed_by_username, full_dep.deployed_by_full_name,
@@ -2227,7 +2232,7 @@ RETURNS TABLE(
   FROM stats s
   LEFT JOIN observations o ON o.name = s.observation
   LEFT JOIN LATERAL (
-    SELECT d.reduction_version, d.crds_context, d.cfpipe_version, d.jwst_version,
+    SELECT d.crds_context, d.cfpipe_version, d.jwst_version,
            d.reduced_at, d.deployed_at,
            up.username AS deployed_by_username,
            up.full_name AS deployed_by_full_name
@@ -2275,7 +2280,7 @@ RETURNS TABLE(
   observation text, program_slug text, program_name text, field text,
   cycle integer, gratings text[], pointing_count integer, pointings jsonb,
   target_count bigint, spectrum_count bigint, total_size_bytes bigint,
-  reduction_version text, crds_context text, cfpipe_version text, jwst_version text,
+  crds_context text, cfpipe_version text, jwst_version text,
   reduced_at timestamptz, deployed_at timestamptz,
   deployed_by_username text, deployed_by_full_name text,
   n_patches_since_full integer, last_patch_at timestamptz
@@ -2307,7 +2312,7 @@ RETURNS TABLE(
     COALESCE(s.target_count, 0)::bigint AS target_count,
     COALESCE(s.spectrum_count, 0)::bigint AS spectrum_count,
     COALESCE(s.total_size_bytes, 0)::bigint AS total_size_bytes,
-    full_dep.reduction_version, full_dep.crds_context,
+    full_dep.crds_context,
     full_dep.cfpipe_version, full_dep.jwst_version,
     full_dep.reduced_at, full_dep.deployed_at,
     full_dep.deployed_by_username, full_dep.deployed_by_full_name,
@@ -2317,7 +2322,7 @@ RETURNS TABLE(
   JOIN public.programs p ON p.slug = o.program_slug
   LEFT JOIN stats s ON s.observation = o.name AND s.program_slug = o.program_slug
   LEFT JOIN LATERAL (
-    SELECT d.reduction_version, d.crds_context, d.cfpipe_version, d.jwst_version,
+    SELECT d.crds_context, d.cfpipe_version, d.jwst_version,
            d.reduced_at, d.deployed_at,
            up.username AS deployed_by_username,
            up.full_name AS deployed_by_full_name
@@ -2349,10 +2354,10 @@ CREATE OR REPLACE FUNCTION public.get_database_overview()
 RETURNS TABLE(
   n_programs bigint, n_observations bigint, n_pointings bigint,
   n_targets bigint, n_spectra bigint, total_size_bytes bigint,
-  latest_deployed_at timestamptz, latest_reduction_version text
+  latest_deployed_at timestamptz, latest_cfpipe_version text
 ) LANGUAGE sql STABLE AS $$
   WITH latest AS (
-    SELECT d.deployed_at, d.reduction_version
+    SELECT d.deployed_at, d.cfpipe_version
     FROM public.deployments d
     WHERE d.source_ids_filter IS NULL
     ORDER BY d.deployed_at DESC
@@ -2368,7 +2373,7 @@ RETURNS TABLE(
     (SELECT COUNT(*)::bigint FROM public.spectra) AS n_spectra,
     (SELECT COALESCE(SUM(file_size), 0)::bigint FROM public.spectra) AS total_size_bytes,
     (SELECT deployed_at FROM latest) AS latest_deployed_at,
-    (SELECT reduction_version FROM latest) AS latest_reduction_version;
+    (SELECT cfpipe_version FROM latest) AS latest_cfpipe_version;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_database_overview TO authenticated;
@@ -2383,12 +2388,12 @@ DROP FUNCTION IF EXISTS public.get_observation_manifest(TEXT, TEXT[]);
 CREATE OR REPLACE FUNCTION public.get_observation_manifest(p_obs_name text, p_program_slugs text[])
 RETURNS TABLE(
   spectra_id integer, spectrum_id text, target_id text, grating text, fits_path text,
-  file_hash text, file_size bigint, signal_to_noise double precision, reduction_version text
+  file_hash text, file_size bigint, signal_to_noise double precision, cfpipe_version text
 ) LANGUAGE plpgsql STABLE AS $$
 BEGIN
   RETURN QUERY
   SELECT s.id, s.spectrum_id, s.target_id, s.grating, s.fits_path, s.file_hash, s.file_size,
-         s.signal_to_noise, s.reduction_version
+         s.signal_to_noise, s.cfpipe_version
   FROM spectra s
   JOIN targets t ON t.target_id = s.target_id
   WHERE t.observation = p_obs_name AND t.program_slug = ANY(p_program_slugs)

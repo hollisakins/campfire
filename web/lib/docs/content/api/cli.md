@@ -222,7 +222,9 @@ Tags are not denormalized into `objects.csv` — use `cf.query_objects(tags=[...
 | `fits_path` | str | Remote FITS file path |
 | `file_hash`, `file_size` | — | Remote file metadata |
 | `signal_to_noise`, `exposure_time` | float | Per-spectrum quality |
-| `reduction_version` | str | Pipeline version |
+| `cfpipe_version` | str | campfire-pipeline version (FITS `CMPFRVER`) |
+| `crds_context`, `jwst_version` | str | CRDS pmap + `jwst` version that pinned the calibration |
+| `date_obs`, `reduced_at` | str | Observation date + reduction time (FITS `CMPFRTIM`) |
 | `redshift_auto` | float | Per-spectrum automated redshift |
 | `dq_flags` | int | Per-spectrum DQ bitmask (see [Flags](/docs/inspection/flags)) |
 | `program_slug`, `observation`, `field` | str | Provenance |

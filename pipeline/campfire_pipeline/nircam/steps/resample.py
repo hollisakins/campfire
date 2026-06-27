@@ -20,7 +20,7 @@ extension splitting into ``_sci/_err/_wht/_srcmask`` files, and a
 
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 from astropy.io import fits
@@ -155,8 +155,8 @@ def _drizzle_tile_via_jwst(
 
     with fits.open(output_path, mode='update') as hdul:
         hdul[0].header['CMPFRTIM'] = (
-            str(datetime.now()),
-            'Date/time of CAMPFIRE reduction',
+            datetime.now(timezone.utc).isoformat(),
+            'UTC date/time of CAMPFIRE reduction (ISO 8601)',
         )
         hdul[0].header['CMPFRVER'] = (
             reduction_version,
