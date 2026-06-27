@@ -1,19 +1,20 @@
 # Design: Intermediate products & cloud-as-source-of-truth
 
-**Status:** draft for review
+**Status:** draft for review — adversarially reviewed 2026-06-27 (four-lens
+critique against the codebase; corrections folded in, see §16).
 **Date:** 2026-06-27
 **Context:** migration of CAMPFIRE object storage from Cloudflare R2 → NSF Open
 Storage Network (OSN, S3-compatible, 20 TB, upgradeable); related
 [NIRCam exposure-major design](design-nircam-exposure-major.md),
 [objects migration](design-objects-migration.md).
-**Driver:** Today `campfire deploy` is a one-way push of *final* products from
-a local `$CAMPFIRE_ROOT/products/` tree to R2 + Supabase. The filesystem is the
+**Driver:** Today `campfire deploy` is a one-way push of *final* products from a
+local `$CAMPFIRE_ROOT/products/` tree to R2 + Supabase. The filesystem is the
 source of truth; presence-on-disk == published; there is no in-prep tier, no
 publish/revoke lifecycle, and nothing in the DB knows what is actually in the
 bucket. This design shifts the architecture so that **the cloud object store is
 the system of record, the database is its index and lifecycle controller, and
-the web portal and `campfire` CLI are both clients of that index** — and it
-extends deployment to cover *all intermediate products*, not just finals.
+the web portal and `campfire` CLI are both clients of that index** — and extends
+deployment to cover *all intermediate products*, not just finals.
 
 ---
 
@@ -22,17 +23,15 @@ extends deployment to cover *all intermediate products*, not just finals.
 **Goals**
 
 - Deploy **all intermediate products**, not just finals: NIRCam canonical
-  exposures and NIRSpec canonical spectrum-exposures (see §3), at whatever
+  exposures and NIRSpec canonical spectrum-exposures (§2.2), at whatever
   reduction stage they have reached — including before a reduction is finished.
 - An **admin-only web view** of intermediate products and in-prep reductions,
   extending the existing NIRCam exposure triage UI.
-- **Cloud as source of truth**: the DB enumerates every object in storage
-  (key, hash, size, type, stage, status, provenance), enabling
-  `reduce → deploy → delete local → recover later` and multi-reducer
-  coordination.
+- **Cloud as source of truth**: the DB enumerates every object in storage,
+  enabling `reduce → deploy → delete local → recover later` and multi-reducer
+  coordination on headless clusters (the user's primary use case).
 - A **deployment lifecycle**: `in_prep → published`, plus soft `revoked` and
-  `superseded`, controllable from an admin panel and the CLI. Revocation is
-  recoverable, unlike today's hard-delete `remove`.
+  `superseded`; recoverable, unlike today's hard-delete `remove`.
 - **Migrate storage R2 → OSN** with checksum-verified copy and no user-visible
   downtime.
 - Do all of the above **incrementally**, each phase independently valuable and
@@ -41,13 +40,13 @@ extends deployment to cover *all intermediate products*, not just finals.
 **Non-goals (this design)**
 
 - No change to the *final* `_spec.fits` / mosaic science outputs. The NIRSpec
-  prerequisite refactor (§3) is explicitly **bit-identical** for finals.
-- No public access to intermediate products. Intermediates are admin-only for
-  now; the lifecycle gates *admin-vs-not*, not fine-grained external sharing.
+  prerequisite refactor (§3 PR-3) is explicitly **bit-identical** for finals.
+- No public access to intermediate products; intermediates are admin-only for
+  now. The lifecycle gates *admin-vs-not*, not fine-grained external sharing.
 - No new sub-admin role taxonomy (separate "reviewer" vs "publisher"
   authority). Single `is_admin` remains the lever; finer roles are a later add.
-- No change to the objects-clustering / inspection-state model
-  (`reconcile.py`); intermediate products are deliberately kept off that path.
+- No change to the objects-clustering / inspection-state model (`reconcile.py`);
+  intermediate products are deliberately kept off that path.
 
 ---
 
@@ -57,167 +56,250 @@ extends deployment to cover *all intermediate products*, not just finals.
 
 The keystone is a new **storage-object registry** table (`storage_objects`,
 §5.1). Today object keys are bare convention-built strings on domain rows
-(`spectra.fits_path`, `nircam_images.file_path`, `nircam_exposures.png_path`)
-or not stored at all (SED PDFs, RGB PNGs — the web reconstructs them from
+(`spectra.fits_path`, `nircam_images.file_path`, `nircam_exposures.png_path`) or
+not stored at all (SED PDFs, RGB PNGs — the web reconstructs them from
 `obs_name + filename`). You cannot treat the cloud as source of truth if the DB
 cannot enumerate what is in the cloud. The registry is the join point for
 sync/recover, the OSN copy-and-verify, storage budgeting, and lifecycle.
+
+> Note the registry indexes **object-storage** artifacts. Some deployed products
+> live in **Postgres**, not the bucket (inline SVG thumbnails; pointings JSONB);
+> §5.3 gives those a parallel lifecycle rather than forcing them into the
+> registry.
 
 ### 2.2 The unit of an "intermediate product"
 
 The 20 TB budget forces a deliberate answer. **NIRCam dominates** storage; a
 COSMOS-Web-scale field is ~5,000 exposures × ~150 MB ≈ 750 GB for a *single*
-state, so snapshotting after each of ~15 steps (~10 TB/field) is a non-starter.
+state, so snapshotting after each of ~15 steps (~10 TB/field) is a non-starter
+(§7 quantifies the budget).
 
 - **NIRCam:** the unit is **the canonical exposure file + its `CFP_*` state
   vector** — one object per exposure, re-uploaded only when its content hash
-  changes. This already exists on disk (one `<rootname>.fits` mutated in place;
-  `cfp.py`). Gives "every exposure at whatever stage it reached" with no
-  explosion, and enables queries like *"all exposures reduced through JHAT in
-  COSMOS."*
+  changes (`manifest.py` already hashes `sha256(SCI+DQ)`). This already exists on
+  disk (one `<rootname>.fits` mutated in place; `common/cfp.py`). Enables queries
+  like *"all exposures reduced through JHAT in COSMOS."*
 - **NIRSpec:** the unit is **the canonical spectrum-exposure file**, granularity
   `(exposure × detector × source)`, plus the separate per-`(exposure, detector)`
   `_rate` tier (shared across sources, cannot be folded in). This **does not
   exist yet** — today the same logical thing is split across four files
-  (`_cal`, `_cal_bkgsub`, `_s2d`, `_s2d_bkgsub`). It is created by the
-  prerequisite refactor **PR-3** (§3).
+  (`_cal`, `_cal_bkgsub`, `_s2d`, `_s2d_bkgsub`; `_s2d` at stage2.py:899,
+  `_cal_bkgsub` save at 1131, `_s2d_bkgsub` at 1139, names also built in the
+  empty-override deletion path at 1095–1102; the `_cal` product itself comes from
+  `Spec2Pipeline.call`, prod_name at ~700/516). It is created by the prerequisite
+  refactor **PR-3** (§3).
+
+**Other NIRSpec workspace artifacts** the registry/sync must consciously capture
+or exclude (not silently drop): `_x1d.fits` (register as a product or declare it
+a regenerable byproduct); the user-edited `*_stuck_closed_shutters.toml` and
+`*_nodded_background_overrides.toml` (observation.py:280–285 — these are
+state-bearing, like NIRSpec masks, §13); cached augmented wavecorr /
+extended-wavelength refs under `$CAMPFIRE_ROOT/cache` (stage2.py:57); and the
+intentionally-ephemeral per-source MSA metafiles / ASN / nodata markers
+(explicitly out of scope).
 
 **Symmetry principle:** after PR-3, both instruments use *canonical file +
 state-keyword chain*, each backed by an admin-only intermediate-products table
 (`nircam_exposures`, new `spectrum_exposures`) that hangs off the published
-science row. Every downstream layer (registry, deploy, web view, sync) then
-treats the two instruments uniformly.
+science row. Every downstream layer (registry, deploy, web view, sync) treats
+the two instruments uniformly.
 
 ### 2.3 Lifecycle: decouple "upload bytes" from "make visible"
 
 Deploy splits into **(a) upload + register** (write bytes to storage, record a
 `storage_objects` row, attach to a science/intermediate row with
-`status = in_prep`) and **(b) publish** (flip `in_prep → published`). In-prep
-rows are visible to admins only, enforced in **RLS** (the real boundary in this
-codebase — everything routes through `accessible_program_slugs()` + `is_admin()`).
-`revoked` hides a published row but keeps the bytes (recoverable);
-`superseded` marks an object replaced by a newer hash. This is a generalization
-of the `nircam_exposures.review_status` model that already exists.
+`deploy_status = in_prep`) and **(b) publish** (flip `in_prep → published`).
+`revoked` hides a published row but keeps the bytes (recoverable); `superseded`
+marks an object replaced by a newer hash.
+
+**Where visibility is actually enforced (corrected — this is the security core).**
+It is *not* a single boundary. There are two distinct read surfaces with
+different authorization:
+
+1. **Web portal reads** go through the user session client (anon key + cookies,
+   `web/lib/supabase/server.ts`) calling **`SECURITY INVOKER`** RPCs
+   (`get_filtered_object_ids`, `get_filtered_objects_paginated`,
+   `get_filtered_spectra_paginated`, `object_scoped_aggregates`,
+   `get_adjacent_objects`, map RPCs). Because they run as the invoker, **table
+   RLS applies** — so an RLS status predicate (`deploy_status='published' OR
+   public.is_admin()`) on `spectra`/`objects`/intermediate tables *does* gate the
+   portal, and the admin-sees-all case works via `is_admin()` in the policy.
+2. **CLI / download reads** go through the **service-role** client, which
+   **bypasses RLS entirely**: `/api/v1/sync/{spectra,objects,photometry,lists}`,
+   `/api/v1/observations/[obs]/manifest`, and the single-file signed-URL route
+   `/api/v1/spectra?path=` (all construct the client with
+   `SUPABASE_SERVICE_ROLE_KEY`). For these, RLS is irrelevant; the status filter
+   **must be added to the RPC/route bodies** (`get_spectra_for_sync`,
+   `get_objects_for_sync`, `get_photometry_for_sync`, `get_observation_manifest`,
+   and the inline access check in `/api/v1/spectra`).
+
+Two consequences that the schema must respect:
+
+- **Admin-ness cannot be derived from the program-slug array.**
+  `accessible_program_slugs()` already expands to *every* program for admins
+  (functions.sql:74-77), so inside an RPC an admin's `p_program_slugs` is
+  indistinguishable from a non-admin with broad access. The service-role readers
+  must take an explicit `p_include_in_prep BOOLEAN DEFAULT false`, computed by
+  the route from the API caller's `is_admin()` (the proven pattern in
+  `app/api/v1/deploy/presign/route.ts:93-107`). RLS policies use `is_admin()`
+  directly. The admin intermediate-products view uses **distinct admin-only
+  RPCs/endpoints**, not relaxed public ones.
+- **The sync RPCs build their payload from explicit column lists**, so *adding* a
+  `deploy_status` column changes their output by nothing — they keep emitting
+  in-prep rows with no error. The failure mode is a **silent** leak, so the
+  predicate must be added to the `WHERE` clause in the *same* migration as the
+  column (§5.5, §8).
+
+### 2.4 Symmetry principle
+
+(See §2.2.) The two intermediate-product tables (`nircam_exposures`,
+`spectrum_exposures`) and the two canonical-file state chains are mirror images,
+so registry/deploy/web/sync logic is written once per concern, not per
+instrument.
 
 ---
 
 ## 3. Prerequisite refactors
 
-These are independently valuable refactors that de-risk and simplify the main
-work. The litmus test for "prerequisite" is that each pays for itself even if
-the rest of this design never shipped.
+Independently valuable refactors that de-risk and simplify the main work. The
+litmus test is that each pays for itself even if the rest of this design never
+shipped.
 
-### PR-1: Storage backend abstraction (S3 endpoint/region config + factory)
+### PR-1: Storage backend abstraction (S3 endpoint **+ region + CORS** config + factory)
 
 **Why:** the storage layer is already 95% generic S3 (boto3 +
-`@aws-sdk/client-s3`, `region:'auto'`, `s3v4`). The only Cloudflare lock-ins are
-(1) the endpoint string `https://{account_id}.r2.cloudflarestorage.com`
-**hardcoded in 4 places** (`python/campfire/deploy/r2.py` ×2, web
-`app/api/v1/deploy/presign/route.ts`, `web/lib/r2.ts`); (2) the download Worker's
-`R2Bucket` binding; (3) public-URL tile/RGB serving + edge caching.
+`@aws-sdk/client-s3`, `region:'auto'`, `s3v4`). The Cloudflare lock-ins are
+(1) the endpoint `https://{account_id}.r2.cloudflarestorage.com` **hardcoded in
+4 places** (`python/campfire/deploy/r2.py` ×2, `app/api/v1/deploy/presign/route.ts`,
+`web/lib/r2.ts`); (2) the download Worker's `R2Bucket` binding; (3) public-URL
+tile/RGB serving + edge caching.
 
 **Change:**
-- Introduce explicit `CAMPFIRE_S3_ENDPOINT` / `S3_ENDPOINT` (+ region) config
-  keys in `python/campfire/deploy/config.py` `_ENV_VARS` and the web env
-  contract; replace the interpolated hostname with the configured endpoint.
-- Add a thin **backend factory** in each language (one place builds the S3
-  client) so a backend swap is a config change, not a code edit at N call sites.
-- Neutral naming/aliases (`storage`/`s3` rather than `r2`) — keep `r2`/`R2_*`
-  as accepted aliases to avoid a breaking rename.
-- Leave the download Worker and tile public-serving rework to Phase 2 (they are
-  the genuinely hard parts and are OSN-cutover-scoped).
+- Make **both endpoint and region** configurable (`CAMPFIRE_S3_ENDPOINT`/`_REGION`
+  and web equivalents) plus `forcePathStyle` as OSN requires — region `'auto'` is
+  a Cloudflare-ism OSN may reject, and SigV4 presigned URLs are bound to the
+  exact host+region used at signing, so a configurable endpoint with a stale
+  `'auto'` region will fail verification at OSN.
+- Add a **backend factory** in each language (one place builds the S3 client).
+- Replace the `web/lib/r2.ts` `'#download-placeholder'` soft-fail (which
+  downgrades signing errors to a generic 503) with a hard, logged error so a
+  cutover endpoint/region/CORS misconfig is diagnosable, not silently masked.
+- Neutral naming/aliases (`storage`/`s3`), keeping `r2`/`R2_*` as accepted
+  aliases to avoid a breaking rename.
+
+> The download-Worker rework and public-tile rework are **not** here — they are
+> OSN-cutover-scoped (§6). But PR-1 must reach the **web download path**
+> (`generateDownloadUrl` in `web/lib/r2.ts`) before any object can be served from
+> OSN (§8 dependency).
 
 **Independently valuable:** config hygiene; removes 4-way endpoint duplication.
 
 ### PR-2: Canonical object-key module (record, don't reconstruct)
 
-**Why:** object keys are built ad hoc in `deploy.py`, `summary.py`,
-`nircam.py`, `photometry.py`, `tiles.py` and *mirrored* in `web/lib/r2.ts`. SED
-PDF and RGB keys aren't stored anywhere — the web reconstructs them from
-`obs_name + filename`. As product types multiply (intermediates), this drift
-becomes untenable, and the registry (§5.1) needs a single authority for keys.
+**Why:** keys are built ad hoc in `deploy.py`, `summary.py`, `nircam.py`,
+`photometry.py`, `tiles.py` and *mirrored* in `web/lib/r2.ts`; SED/RGB keys are
+not stored anywhere (reconstructed from `obs_name + filename`). As product types
+multiply this drifts, and the registry needs one authority for keys.
 
-**Change:**
-- One module that builds **every** object key from typed inputs
-  (`product_type`, scope, filename), shared in spirit across python and web
-  (Python module + a mirrored TS module with a single conformance test that
-  asserts they agree on a fixed set of cases).
-- Deploy **records** the key it used (into `storage_objects`, Phase 1) instead
-  of relying on reconstruction.
+**Change:** one module that builds **every** object key from typed inputs
+(`product_type`, scope, filename), shared in spirit across python and web (a
+Python module + a mirrored TS module with a single conformance test asserting
+they agree on fixed cases). Deploy **records** the key it used (into
+`storage_objects`) instead of relying on reconstruction.
 
-**Independently valuable:** kills the "reconstruct from convention" fragility
-that already exists for SED/RGB; one place to audit the key namespace.
+> **Ordering:** PR-2 must precede Phase 1's "deploy writes registry rows," or the
+> registry is seeded with non-canonical reconstructed keys — the exact drift it
+> exists to kill.
+
+**Independently valuable:** kills the SED/RGB reconstruction fragility; one place
+to audit the key namespace.
 
 ### PR-3: NIRSpec canonical spectrum-exposure refactor
 
-**Why:** NIRSpec's intermediate products are split across four files at one
-granularity — `{root}_{nod}_{detector}_{source_id}_{cal|cal_bkgsub|s2d|s2d_bkgsub}.fits`
-(stage2.py:700, 899, 1131, 1139). Consolidating them into one **canonical
-spectrum-exposure file** (4→1) gives NIRSpec the same self-documenting
-canonical-file model NIRCam already has, drops object count 4×, and removes
-basename-collision handling from sync. Without it, the registry/web/sync layers
-bake the four-suffix mess in permanently.
+**Why:** NIRSpec intermediates are split across four files at one granularity.
+Consolidating to one **canonical spectrum-exposure file** (4→1) gives NIRSpec the
+self-documenting canonical-file model NIRCam already has, drops object count 4×,
+and removes basename-collision handling from sync. Without it the
+registry/web/sync layers bake the four-suffix mess in permanently.
 
-**Target file model:** anchor on the `_cal` **`MultiSlitModel`** (standard jwst).
-The other states become extensions/mutations of it:
+**Target file model:** anchor on the `_cal` **`MultiSlitModel`** (standard jwst);
+the other states become extensions/mutations of it:
 
-- **Background subtraction in place** (eliminates `_cal_bkgsub`): the live SCI
-  becomes the bkgsub'd data; the pre-bkgsub state is recoverable from extra
-  extensions. This mirrors the *existing* `_rate` pattern exactly —
-  `CFBKGSUB`/`CFBKGRMS`/`CFBKGDT` sentinels + `CFBKG`/`CFBKGMASK` extensions +
-  `restore_pre_bkgsub()` (stage1.py:789-793, masks.py:260-308).
+- **Background subtraction in place** (eliminates `_cal_bkgsub`): live SCI becomes
+  the bkgsub'd data; the pre-bkgsub state recoverable from extra extensions. The
+  `_rate` precedent (`CFBKGSUB` sentinel + `CFBKG`/`CFBKGMASK` extensions +
+  `restore_pre_bkgsub()`, stage1.py:768-793, masks.py:259-322) is the *model* but
+  **not a 1:1 template**: stage2b inverts pathloss before subtraction and
+  re-applies it after (stage2.py:1063-1069, 1126-1127) and pads/unpads to a
+  common detector region for unequal nod shapes (1073-1123), so the revert state
+  is not a simple additive background. **Decision:** stash the full pre-bkgsub
+  per-slit SCI/ERR/var arrays as extensions (robust to the pathloss arithmetic),
+  not a single `CFBKG`-style background, and regenerate the s2d-bkgsub view from
+  the reverted+resubtracted state. Revert is **per-slit** (a `MultiSlitModel` may
+  hold >1 slit), not the single frame `_rate` exercises.
 - **s2d as extensions** (eliminates standalone `_s2d`/`_s2d_bkgsub`): s2d is
-  visualization-only (created only when `plot`/stuck-shutter/`rectify`), and
-  every consumer already reads it via **astropy** (`s2d['SCI'].data`,
-  stage3.py:339-341; `stuck_shutters`), not as a jwst datamodel. So both
+  visualization-only (created only on `plot`/stuck-shutter/`rectify`). Both
   rectified states live as named HDUs (`S2D_SCI`, `S2D_BKGSUB_SCI`, …).
 
-**Hard invariant — jwst `DataModel.save()` drops non-schema HDUs.** This is the
-same constraint the NIRCam canonical model already lives with (design-nircam,
-audit M7). Every mutating step must: run the jwst step → `MultiSlitModel.save()`
-→ reopen with astropy → (re)append the revert + s2d extensions → stamp the state
-keyword. This is precisely the `_rate` pattern (Detector1Pipeline saves, then
-`subtract_background_from_rate_file` appends `CFBKG` via astropy).
+**Consumer inventory (must be ported — the golden-file gate alone will NOT catch
+these).** Consumers derive sibling filenames by string-replacement and read with
+astropy, so they break the moment the separate files vanish:
+- `plots.py` — `f['path'].replace('_cal','_s2d')` (300, reused for the bkgsub
+  plot mode), `.replace('_cal.fits','_s2d.fits')` (868), then
+  `fits.getdata(..., ext=1)` / `VAR_RNOISE` (377, 387, 937, 954, 1006).
+- `stuck_shutters.py` — `.replace('_cal.fits','_s2d.fits')` (89), reads
+  `ext=1`/`VAR_RNOISE` (302, 305).
+Each becomes "open canonical file, read `S2D_*` HDU + matching `VAR_RNOISE`."
+Add stuck-shutter-detection and plot-generation **smoke tests** to PR-3.
 
-**State chain (mirrors `cfp.py`, kept as a separate module — see §10 decision).**
-NIRSpec gains its own ordered keyword chain (e.g. `CFP_CAL → CFP_MASK →
-CFP_BKG → CFP_S2D`), because once the four files collapse to one, file-existence
-can no longer encode "how far has this been reduced." `CFBKGSUB` already proves
-keyword-driven skip works for NIRSpec; this extends it to the whole chain. The
-module is a *mirror* of `nircam/.../cfp.py` (same `has_step`/`should_skip`/
-`clear_from` shape, separate key definitions), per the alignment-not-coupling
-decision.
+**Stage3 selection (reproduce ALL current exclusions, not just no-nod).** Stage3
+discovers `ext='cal_bkgsub'` (stage3.py:64); consolidation removes the
+file-existence filter, so the canonical-glob + state filter must reproduce three
+exclusions:
+1. **No valid nod pair** (group ∉ {2,3,5}) → `CFP_BKG=skipped:nods=N` → exclude.
+2. **Empty bkg-override for a nod** (stage2.py:1095-1102 deletes that nod's
+   bkgsub output today) → a per-nod "excluded" marker (header card / per-slit
+   flag, since there is no file to delete) → exclude that nod from the ASN.
+3. **`SRCFLUX` absent** (stage3.py:74-79, 89; stage2b skip_sources 400-410) →
+   keep the existing `SRCFLUX` header filter.
+**Confirmed decision:** for the no-nod case the canonical SCI stays = cal
+(un-subtracted) and stage3 excludes any canonical not background-subtracted.
 
-**Behavior-preservation traps (must replicate exactly):**
+**Hard invariant — jwst `DataModel.save()` drops non-schema HDUs.** Same
+constraint the NIRCam canonical model lives with (design-nircam audit M7). Every
+mutating step: run jwst step → `MultiSlitModel.save()` → reopen with astropy →
+(re)append revert + `S2D_*` HDUs → stamp the state keyword.
 
-1. **Stage3 input selection.** Stage3 today discovers `ext='cal_bkgsub'`
-   (stage3.py:64), so sources *without* a valid nod pair (groups not in
-   `{2,3,5}`, stage2.py:1057) silently get no `_cal_bkgsub` and are excluded.
-   **Confirmed decision:** for the no-nod case the canonical SCI stays = cal
-   (un-subtracted), `CFP_BKG` records `skipped:nods=N`, and **stage3 must
-   exclude any canonical file whose `CFP_BKG` is not done.** `discover_files`
-   changes from suffix-glob to canonical-glob + state-keyword filter
-   (observation.py:434).
-2. **Spec3 ASN load.** Because live SCI == bkgsub'd, stage3's ASN can point at
-   canonical files directly and jwst reads the right science — *verify* jwst
-   ignores the extra HDUs on `MultiSlitModel` load with one real ASN. The
-   canonical file is read-only at stage3 (Spec3 emits new crf/spec), so there is
-   no save-drop problem there — only within stage2.
-3. **Per-slit revert extensions.** `_rate`'s revert is a single detector frame;
-   a `MultiSlitModel`'s is per-slit. Per-source cal is usually one slit, but the
-   append logic must handle multi-slit cleanly.
+**Pre-implementation gate (promote, don't defer).** The whole 4→1 rests on
+"Spec3Pipeline reads the canonical file's live (bkgsub'd) SCI and ignores the
+extra HDUs." Treat this like the NIRCam exposure-major Q1 gate: before the
+refactor lands, build one real spec3 ASN over a consolidated canonical file (with
+`S2D_*` + revert HDUs) on the pinned jwst/stdatamodels/crds stack and confirm
+byte-identical `_spec.fits`/`_x1d.fits` vs the four-file flow. Record the result
+here.
 
-**Validation:** a **golden-file test** — fixed inputs → byte-identical
-`_spec.fits` (and `_x1d.fits`) before/after. This is what earns the
-**Infrastructure / PATCH** classification (no CRDS bump). Keep `_rate` exactly
-as-is.
+**State chain — reuse the existing `common/cfp.py`, separate key set.**
+`cfp.py` already lives in `campfire_pipeline/common/` and is generic
+(key-table-driven: `CFP_KEYS`, `format`/`has_step`/`should_skip`/`clear_from`,
+`CFP_COMMENTS`), imported by ~15 NIRCam steps. So "keep the two instruments
+separate, aligned in spirit" resolves to: **add a NIRSpec key set / vocabulary
+(e.g. `CFP_CAL → CFP_MASK → CFP_BKG → CFP_S2D`) selected per instrument within
+the shared common module** — separate *namespaces*, shared *mechanics*. (This
+refines the earlier "separate mirror module" framing, which was wrong: the module
+is already common; duplicating its logic would be gratuitous.) `CFBKGSUB` already
+proves keyword-driven skip works for NIRSpec; this extends it to the chain, since
+once four files collapse to one, file-existence can no longer encode reduction
+depth.
 
-**Independently valuable:** fewer files, cleaner per-observation workspace,
-keyword-driven resumability, queryable reduction state — wins even absent the
-cloud work.
+**Validation:** golden-file test (byte-identical `_spec.fits`/`_x1d.fits`); the
+spec3-ASN gate above; a `restore_pre_bkgsub` round-trip test on the consolidated
+file exercising **(a)** a padded multi-nod group and **(b)** a `pathloss=COMPLETE`
+source; the plot/stuck-shutter smoke tests; stage3-selection tests for all three
+exclusion cases. Passing these earns the **Infrastructure / PATCH** label (no
+CRDS bump). Keep `_rate` as-is.
 
-> **Sequencing note:** PR-3 must land before the registry schema is frozen
-> (Phase 1), or you migrate the registry's NIRSpec rows twice.
+> **Sequencing:** PR-3 must land before the registry schema is frozen (Phase 1),
+> or NIRSpec registry rows migrate twice.
 
 ---
 
@@ -225,208 +307,463 @@ cloud work.
 
 | Layer | Today | Target |
 |---|---|---|
-| **Storage** | R2, endpoint hardcoded ×4, two buckets, CF Worker for ZIP, public-URL tiles | OSN via configurable S3 endpoint + factory (PR-1); Worker replaced by presigned GET / server zip route; tiles via OSN public-read or CDN |
-| **Registry** | none (keys are bare strings / reconstructed) | `storage_objects` indexes every object: key, hash, size, type, scope, stage, status, deployment, provenance |
-| **Database** | presence == published; lifecycle only on `nircam_exposures` | status/visibility on science + intermediate rows; RLS in-prep tier; `spectrum_exposures` mirrors `nircam_exposures` |
-| **Deploy CLI** | one-way push of finals; hard-delete `remove` | upload+register (`--in-prep`) decoupled from `publish`/`revoke`; writes registry; intermediates for both instruments |
-| **Web** | NIRCam triage UI; no publish concept | admin intermediate-products view (clone of NIRCam triage) + deploy control panel (stage/publish/revoke) |
-| **Sync/recover** | metadata-only sync; one FITS per spectrum | generalized artifact manifest; admin `sync --all-products`; delete-local + recover |
+| **Storage** | R2; endpoint hardcoded ×4; two buckets; CF Worker (R2 binding) for ZIP; public-URL tiles | OSN via configurable endpoint+region+CORS factory (PR-1); Worker **retired** (not ported) → presigned GET + off-Vercel zip; tiles via OSN public-read/CDN with `tile_base_url` backfill |
+| **Registry** | none (keys bare/reconstructed) | `storage_objects` indexes every object: key, hash, size, type, scope FKs, stage, status, deployment, backend, provenance |
+| **Database** | presence == published; lifecycle only on `nircam_exposures` | `deploy_status` on science + intermediate rows; status enforced in **RLS *and* service-role RPCs/routes**; `spectrum_exposures` mirrors `nircam_exposures`; audit log |
+| **Deploy CLI** | one-way push of finals; hard-delete `remove` | upload+register (`--in-prep`) decoupled from `publish`/`revoke`; writes registry; intermediates for both instruments; every product subcommand registry+lifecycle-aware (§5.4 table) |
+| **Web** | NIRCam triage UI; no publish concept | admin intermediate-products view (clone of NIRCam triage) + deploy control panel (stage/publish/revoke) + audit view |
+| **Sync/recover** | metadata-only sync; one FITS per spectrum | generalized artifact manifest; admin `sync --all-products` (reuses presign admin-gate pattern); delete-local + recover with verified-in-cloud interlock |
 
 ---
 
-## 5. How the database connects (schema detail)
+## 5. Database & storage schema
 
-> **Land changes on `objects` (user unit) / `spectra` / a new registry — never
+> **Land changes on `objects` (user unit) / `spectra` / the new registry — never
 > the deprecated `targets.*` columns. The catalog is mid-migration (Phase A–E);
 > the live list RPC is `get_filtered_object_ids`, not the doc-stale
 > `get_filtered_target_ids`.**
 
 ### 5.1 `storage_objects` (new — keystone)
 
-One row per object in storage. Indicative columns:
-
 ```
 id              bigint pk
-storage_key     text unique            -- the object key (== spectra.fits_path for finals)
-backend         text                   -- 'r2' | 'osn' (during/after migration)
-bucket          text                   -- 'data' | 'tiles'
-content_hash    text                   -- 'sha256:<hex>'  (already carried end-to-end)
-size_bytes      bigint
-content_type    text
-product_type    text                   -- nirspec_spec | nirspec_spectrum_exposure |
-                                       --   nirspec_rate | nircam_exposure | nircam_mosaic |
-                                       --   rgb | sed | preview | tile | photometry ...
-instrument      text                   -- 'nirspec' | 'nircam'
-scope           jsonb / fk columns     -- observation/field/exposure/spectrum/object linkage
-stage           text                   -- reduction stage (CFP state summary)
-status          text                   -- active | superseded | revoked
-deployment_id   bigint fk -> deployments
-cfpipe_version  text  ...              -- provenance mirror
+backend         text not null check (backend in ('r2','osn'))
+bucket          text not null check (bucket in ('data','tiles'))
+storage_key     text not null
+content_hash    text not null            -- 'sha256:<hex>'
+size_bytes      bigint not null
+content_type    text not null
+product_type    text not null check (...) -- nirspec_spec | nirspec_spectrum_exposure |
+                                           --   nirspec_rate | nirspec_x1d | nircam_exposure |
+                                           --   nircam_mosaic | rgb | sed | tile | photometry ...
+instrument      text check (instrument in ('nirspec','nircam'))
+status          text not null default 'active' check (status in ('active','superseded','revoked'))
+-- typed nullable scope FKs (NOT opaque jsonb — must be joinable/indexable):
+observation     text references observations(obs_name)
+field           text
+spectrum_id     text references spectra(spectrum_id)
+exposure_ref    text                     -- nircam rootname / nirspec (root,nod,detector,source)
+deployment_id   bigint references deployments(id) on delete set null
+cfpipe_version  text  ...                -- provenance mirror
 uploaded_by     uuid
-created_at / updated_at
+created_at / updated_at  timestamptz not null default now()
+
+-- uniqueness & indexes (required for the registry's stated jobs):
+unique (backend, bucket, storage_key)              -- dual-backend rows coexist during cutover
+unique (product_type, exposure_ref) where status='active'  -- one current object per product
+index on (backend, status)                         -- copy/verify + budget walks
+index on content_hash                              -- copy-verify is by hash
+index on deployment_id                             -- cascade a deployment to its products
 ```
 
-This makes storage enumerable (`SUM(size_bytes)` budgeting; OSN copy is a
-table walk), and is the manifest source for sync/recover. `spectra.fits_path`
-stays as the back-compat pointer (optionally a view/FK into this table).
+Notes driven by review:
+- **`storage_key` is NOT unique on its own** — during the dual-backend window the
+  same logical key exists with `backend='r2'` and `backend='osn'`. Uniqueness is
+  `(backend, bucket, storage_key)`.
+- **`fits_path` does not become a view/FK into this table.** `spectra.fits_path`
+  is `NOT NULL`, `UNIQUE`, and two `GENERATED STORED` columns (`spectrum_id`,
+  `search_text`) are derived from it by stripping `_spec.fits` (tables.sql:317,
+  338-354). Intermediate keys don't end in `_spec.fits` and have **no** place in
+  that derivation. Keep `fits_path` as a denormalized pointer maintained by
+  deploy; intermediate keys live **only** in `storage_objects`; `spectrum_id`
+  stays finals-only.
+- Budgeting is `SUM(size_bytes)` via a **`SECURITY DEFINER` RPC** (tracked by
+  `db diff`), *not* a materialized view (migra doesn't track matviews — CLAUDE.md).
 
 ### 5.2 `spectrum_exposures` (new — NIRSpec intermediate, mirrors `nircam_exposures`)
 
 One row per `(exposure, detector, source)` canonical file, **child of the final
 `spectra` row** (a published spectrum = the stage3 combination of N
 spectrum-exposures). Columns mirror `nircam_exposures`: `stage`/state,
-`storage_key`, `content_hash`, `review_status`, masking, `notes`. Admin-only
-RLS, mirroring `nircam_exposures` policies. This is what gives NIRSpec the
-"query by reduction stage" capability symmetric with NIRCam.
+`storage_key`, `content_hash`, `review_status`, `masking`, `notes`, with an
+explicit `UNIQUE` on the identity tuple (cf. `nircam_exposures_unique`,
+tables.sql:1230) and admin-only RLS mirroring `nircam_exposures`
+(policies.sql:619-638). Gives NIRSpec "query by reduction stage" symmetric with
+NIRCam.
 
-### 5.3 Status / lifecycle on existing rows
+### 5.3 Postgres-resident & non-object products
 
-- `spectra` (and intermediate tables): a visibility column
-  `deploy_status default 'published'` (existing rows backfilled to `published`)
-  with `in_prep | published | revoked`.
-- `deployments`: add `status` + `published_at`/`revoked_at`; add an **admin
-  UPDATE RLS policy** (it is append-only today) and a per-product
-  `deployment_id` FK so a deployment can cascade to its products (today
-  `source_ids_filter int[]` is a snapshot, not a link).
+Some deployed products never touch the bucket and need lifecycle **without** a
+`storage_objects` row:
+- **Inline SVG thumbnails** `spectra.thumbnail_svg_fnu/_flambda` (deploy.py:778).
+- **Pointings JSONB** on `observations` (`deploy pointings`).
+- **Photometry** pz JSON *is* an object (`photometry/...json`) but its DB-facing
+  rows are also queried directly.
 
-### 5.4 RLS + RPC changes
+**Decision:** lifecycle (`deploy_status`) attaches to the **logical row**
+regardless of where bytes live. Object-backed products additionally get a
+`storage_objects` row; Postgres-resident products get only the status column.
+State this boundary explicitly so nothing falls through the registry crack.
 
-- Extend the two visibility chokepoints (`accessible_program_slugs()`,
-  `is_admin()`) and add a status predicate to `select_*_by_access` policies so
-  **non-admins never see `in_prep`/`revoked`**; admins (who already inherit all
-  programs) see everything.
-- Add status/role params + predicates to `get_filtered_object_ids`,
-  `get_filtered_objects_paginated`, `get_filtered_spectra_paginated` — they
-  pre-filter and must not leak in-prep rows.
-- New admin-gated sync RPC/endpoint emitting the generalized artifact list
-  (mirrors `get_spectra_for_sync`).
+### 5.4 Lifecycle status on existing rows + deploy command coverage
 
-> **migra caveat (CLAUDE.md):** if budgeting uses materialized views or column
-> comments, those aren't tracked by `db diff` — hand-author those migrations.
+- `spectra`, `spectrum_exposures`, `nircam_exposures`, `nircam_images`: add
+  `deploy_status text not null default 'published' check (... in
+  ('in_prep','published','revoked'))`; existing rows backfill to `published`.
+- `deployments`: add `status`, `published_at`, `revoked_at` (all nullable for
+  existing rows); add an **admin `UPDATE` RLS policy** (today only select-all +
+  admin-insert, policies.sql:735-747) **with a `WITH CHECK`** so a revoke cannot
+  mutate unrelated columns; add a per-product `deployment_id` FK
+  **`ON DELETE SET NULL` (never CASCADE)** so revoke stays recoverable. Backfill
+  `deployment_id` on existing rows from `observations.latest_deployment_id` (the
+  only available hint; document the heuristic) or leave null.
+
+**Object visibility derives from member spectra (not free).**
+`get_filtered_object_ids` filters `objects` only by `o.programs && slugs AND
+o.is_active` (functions.sql:1385-1395) — never by member-spectrum status. So an
+object whose only spectrum is `in_prep`/`revoked` would still list/map. Fix:
+recompute an object-level `has_published_spectrum` flag in
+`reconcile_field_objects` at publish/revoke (cheap, mirrors `is_active`), and
+gate the object RPC on it. Add a "object whose only spectrum is revoked" test.
+
+**Every deploy subcommand maps to the new model** (none silently orphaned):
+
+| Subcommand | Writes registry? | Gets `deploy_status` / `--in-prep`/publish/revoke? |
+|---|---|---|
+| spectra (finals), nircam exposures, nirspec spectrum-exposures | yes | yes |
+| rgb, sed, json, zfit, photometry, tiles | yes (object-backed) | yes |
+| thumbnails, pointings | no (Postgres-resident, §5.3) | status on logical row only |
+| slits, shutters | no | follow parent spectrum status |
+| sync-programs, fetch-config | no | out of scope (config/metadata) |
+| import-masks, pull-masks | n/a (round-trip; §13) | n/a |
+| objects reconcile/split/merge/rebuild | no | **kept off the lifecycle path** |
+
+### 5.5 Enforcement (the security core — patch BOTH layers)
+
+1. **RLS policies** on `spectra`/`objects`/`spectrum_exposures`/`nircam_images`
+   get `deploy_status='published' OR public.is_admin()`. Covers the **web portal**
+   (SECURITY INVOKER RPCs under the user session) and any direct-select path.
+2. **Service-role RPCs/routes** bypass RLS, so add the status predicate to the
+   `WHERE` clause of `get_spectra_for_sync`, `get_objects_for_sync`,
+   `get_photometry_for_sync`, `get_observation_manifest`, and the inline check in
+   `/api/v1/spectra` — each taking `p_include_in_prep BOOLEAN DEFAULT false`
+   computed from the API caller's `is_admin()` (presign-route pattern). **Never**
+   derive admin-ness from `p_program_slugs`.
+3. The web-facing `SECURITY INVOKER` filter RPCs also get an explicit
+   `p_include_in_prep`/predicate for defense-in-depth and so the admin view can
+   request in-prep rows deliberately.
+4. **Exit criterion:** an automated test proves a non-admin caller gets **zero**
+   `in_prep`/`revoked` rows from *every* RPC and REST route (not "any"). Because
+   the sync RPCs use explicit column lists, adding the column is silently
+   non-protective — predicate and column ship in the **same** migration.
+
+### 5.6 Audit / observability
+
+Multi-admin + revoke demands an audit trail beyond a single `uploaded_by`.
+Add a `deploy_events` log (`actor`, `action ∈ {upload,publish,revoke,recover,
+supersede,delete}`, object/row ref, `cfpipe_version`, host, `at`) and an admin
+view, mirroring the existing `download_log` + `get_download_stats` pattern
+(functions.sql:2709-2771). `revoke`/`recover`/`publish` write audit rows.
+
+> **migra caveats (CLAUDE.md):** column **comments** (used pervasively in
+> tables.sql) and matviews are not tracked by `db diff` — every new
+> `COMMENT ON COLUMN` and any matview needs a **hand-authored** migration after
+> the schema-file edit. Prefer the budgeting RPC over a matview to stay tracked.
 
 ---
 
-## 6. Phased rollout (staggered, non-breaking)
+## 6. Storage migration (R2 → OSN)
 
-```
-Phase 0  Prerequisites      PR-1 (backend abstraction)  ─┐
-                            PR-2 (key module)            ├─ independent, parallel
-                            PR-3 (NIRSpec canonical)    ─┘  (PR-3 before Phase 1)
-Phase 1  Registry           storage_objects + backfill + deploy writes rows   (additive)
-Phase 2  OSN migration      registry-driven copy+verify; Worker re-arch; tile serving; cutover
-Phase 3  Intermediate deploy NIRCam exposures first, then NIRSpec spectrum-exposures
-Phase 4  Lifecycle          status cols + RLS; admin intermediate view; publish/revoke panel
-Phase 5  Sync/recover       artifact manifest; API admin gate; sync --all-products; delete-local
-Phase 6  Consolidation      multi-reducer coordination; retention/GC; control-panel polish
-```
+**Worker retirement, not porting.** The ZIP/batch download Worker
+(`web/workers/download-worker`) uses a Cloudflare `R2Bucket` binding
+(`env.R2_BUCKET.get`, egress-free R2→Worker) and an HMAC-JWT key allowlist. OSN
+has no such binding, so the Worker is **retired**. Per-download authorization +
+tracking move into the presign issuer; the auth model changes from
+"short-lived HMAC token listing allowed keys" to "S3 SigV4 presigned per object,"
+which must preserve the current allowlist/zip semantics. (Also: the Worker's JWT
+`exp` is in **milliseconds** vs `Date.now()` — consistent today, but do not
+inherit this if any verifier is reused; standard S3/JWT `exp` is seconds.)
 
-**Dependencies / parallelism:**
-- Phase 0 is the shared foundation. PR-1/PR-2 are non-breaking and can ship any
-  time; PR-3 must precede Phase 1.
-- Phase 1 (registry) unblocks both Phase 2 and Phase 3 — do it early.
-- **Phase 2 (OSN) and Phases 3–4 (intermediates/lifecycle) are independent** —
-  one touches the storage backend, the other the data/visibility model. They can
-  proceed in parallel after Phase 1.
-- Each phase is shippable to production without the next: Phase 1 changes
-  nothing user-visible; Phase 2 is a backend swap behind dual-read; Phase 3
-  uploads bytes that Phase 4 later makes visible.
+**Egress & cost (new constraint — R2's zero-egress advantage is being traded
+away).** Today single files use presigned GET (direct from R2, no egress fee) and
+ZIP streams through the Worker (egress-free). On OSN: (a) presigned GET pulls
+bytes OSN→user with no edge cache; (b) a naïve "server-side zip on Vercel" pulls
+every file OSN→Vercel→user, doubling traffic and hitting Vercel function
+size/time limits for multi-GB FITS bundles. **Decision:** keep ZIP generation
+**off Vercel** (a dedicated streaming service, or a presigned multi-file manifest
+the client zips), and validate presigned-GET throughput + OSN egress
+pricing/limits before cutover. Keep R2 as the download backend until OSN download
+economics are proven.
 
-**Per-phase exit criteria** are listed in §8.
+**CORS & SigV4.** Browser direct PUT (`upload_files_presigned`) and direct GET
+require **OSN bucket CORS** for the portal origins — an explicit cutover task.
+SigV4 presigned URLs bind to the signing host+region; PR-1's configurable region
++ `forcePathStyle` are prerequisites.
+
+**Tiles.** `map_layers.tile_base_url` is `NOT NULL` (tables.sql:272-291); a single
+value per `(field,filter)` cannot dual-read. Cutover step (hand-authored data
+migration, migra won't generate it): copy tiles → `UPDATE` each row's
+`tile_base_url` to the OSN base → bump `tile_version` to bust client caches.
+
+**Sequence:** registry-driven bulk copy + `content_hash` verify → dual-read
+shadow period (try OSN via `storage_objects.backend`, fall back to R2) → smoke
+tests (single GET, ZIP, tile, RGB) → flip default backend → retire R2 reads.
 
 ---
 
-## 7. Risks & mitigations
+## 7. Cost & budget model
 
-- **NIRCam in-place mutation / budget.** Commit to "canonical file + state
-  vector as the unit"; never per-step snapshots. Wire `SUM(size_bytes)`
-  budgeting and an alert before OSN fills.
-- **No R2↔DB transactionality.** Uploads and upserts are independent today; the
-  registry amplifies this. Design deploy as upload → verify hash → register,
-  with a reconciliation sweep that finds storage objects without a row (orphans)
-  and rows without an object (dangling), surfaced in the admin panel.
-- **RLS is the real boundary.** The in-prep tier must be enforced in
-  policies/RPCs, not just server actions, or admins' unpublished data leaks.
-- **`reconcile.py` aborts on split/merge** (human-in-the-loop). Keep
-  intermediate products off the object-clustering path entirely; they are not
-  user-state-bearing (except masks, which already round-trip).
-- **Download Worker re-architecture** is the single hardest OSN piece (CF
-  `R2Bucket` binding → presigned GET or server-side zip). Scope it explicitly in
-  Phase 2; keep R2 as fallback until verified.
-- **OSN specifics:** no CDN (caching plan for tiles/previews), may reject region
-  `'auto'`, different public-access model, check presign/multipart limits.
+The 20 TB cap is the central constraint, so quantify it (fill with real numbers
+before committing):
+
+| Item | Unit size | Count | Subtotal |
+|---|---|---|---|
+| NIRCam canonical exposures (single state) | ~150 MB | exposures/field × N_fields | _TBD_ |
+| NIRCam mosaics + split exts | few GB/tile | tiles × N_fields | _TBD_ |
+| NIRCam `superseded` tombstones | ~150 MB | churn × retention | _TBD_ |
+| NIRSpec rate + canonical spectrum-exposures | 10s of GB/obs | N_obs | _TBD_ |
+| Finals + RGB + SED + photometry + tiles (today) | — | current bucket | _measure_ |
+
+- **Egress** (new on OSN) is a *running* cost, not storage: estimate download +
+  tile-serving volume separately.
+- **Trigger:** a budgeting RPC drives an alert at e.g. 80% of cap; the alert must
+  have a remediation lever (§ GC below), or it fires with nothing to do.
+- **GC / retention (promote out of "later").** `superseded` tombstones retain
+  bytes by definition and NIRCam re-uploads on every hash change. Define when
+  `superseded`/`revoked` objects become GC-eligible, the bounded revoke→recover
+  window, and a `campfire deploy gc` command tied to the budget alert.
+
+---
+
+## 8. Phased rollout (staggered, non-breaking)
+
+A shared **Foundation**, then two largely-parallel tracks (**A: OSN**, **B:
+intermediates + lifecycle**) with explicit safety gates. Each phase is shippable
+without the next; each has a rollback.
+
+```
+FOUNDATION
+  F0  Prereqs        PR-1 (endpoint+region+CORS+factory), PR-2 (key module), PR-3 (NIRSpec canonical)
+  F1  Registry       storage_objects (SHADOW index): deploy writes canonical keys; backfill;
+                     reconciliation report. NOT authoritative until coverage proven.
+
+TRACK A — OSN (after F1; needs PR-1 in the web download path)
+  A1  Copy+verify    registry-driven bulk copy, content_hash verify, dual-read shadow
+  A2  Cutover        Worker retirement (off-Vercel zip), CORS, tile_base_url backfill, flip backend
+
+TRACK B — Intermediates + lifecycle (after F1)
+  B1  Enforcement    deploy_status columns + status predicates in ALL readers (RLS + the four
+                     service-role RPCs + manifest + /api/v1/spectra) + admin RPCs + admin gate.
+                     Ships with everything 'published' → no user-visible change. SAFETY PREREQ.
+  B2  Intermediate deploy + in_prep   NIRCam exposures first, then NIRSpec spectrum-exposures.
+                     `deploy --in-prep` gated on a B1 capability marker (refuses otherwise).
+  B3  Admin UI       intermediate-products view (clone NIRCam triage) + publish/revoke panel + audit
+  B4  Sync/recover   artifact manifest; admin sync --all-products; delete-local (verified-in-cloud
+                     interlock); recover; multi-reducer concurrency safety (§9)
+
+LATER
+  L1  Consolidation  GC/retention command, budgeting dashboards, finer roles
+```
+
+**Dependency & safety gates (corrected):**
+- PR-2 ⟶ F1 (registry must record canonical keys).
+- PR-3 ⟶ F1 (NIRSpec schema frozen after consolidation).
+- PR-1(web download path) ⟶ any OSN-resident object (A-track + any B object on
+  OSN).
+- **B1 (status predicates in *every* reader) ⟶ B2 in_prep.** Shipping in_prep
+  deploy before all readers filter status is a **live data leak**; `deploy
+  --in-prep` must refuse until a DB capability marker proves readers are
+  status-aware.
+- Tracks A and B are independent in the data model but **both consume
+  `storage_objects.backend`/keys**; running them concurrently needs F1's backend
+  column live and PR-1 in the web download path.
+
+**Rollback per phase:**
+- F1: `storage_objects` is additive → safe to drop.
+- A1/A2: dual-read means R2 stays authoritative until the flip; rollback = flip
+  back; do not delete R2 bytes until a bake period passes.
+- B1: status column defaults `published` and readers tolerate it → revertable;
+  feature-flag the predicate behind `p_include_in_prep`.
+- B2: requires the B3 soft-revoke to exist as the un-deploy path **or** a defined
+  pre-B3 un-deploy that preserves inspection state (do **not** fall back to
+  hard-delete `remove.py`, which destroys inspection state).
+
+**F1 partial-window guard:** during F1 the registry is a **shadow** index —
+written and reconciled but **not read as authoritative**. No consumer (OSN copy,
+budgeting, sync manifest) may treat it as source of truth until a coverage check
+proves 100% of live `fits_path`/`file_path`/`png_path` rows have matching
+registry rows *and* deploy has written registry rows for a full cycle. SED/RGB
+keys (no DB key to backfill from) are enumerated via bucket `LIST` or PR-2
+regeneration; orphan bucket objects (no domain row) are classified/adopted in
+this step.
+
+---
+
+## 9. Multi-reducer concurrency & the headless-cluster workflow
+
+The user's primary use case (reduce → deploy in-prep on a cluster → inspect in
+web → mask → publish; and reduce → deploy → delete local → recover) is
+multi-actor, so core safety is in **B4**, not deferred to "later":
+
+- **Deploy ownership / optimistic lock.** Two reducers deploying the same
+  exposure/observation must not clobber: reuse the `objects.version`
+  optimistic-lock pattern, or a coarser per-(observation|field) deploy lock row
+  in the DB. A deploy that loses the race re-reads and retries.
+- **Register protocol (closes the R2↔DB transactional gap).** Today
+  `upload_files_presigned` returns success counts only — no read-back, and the
+  presigned PUT signs no checksum (presign/route.ts:142-147). Define: CLI PUTs
+  with an `x-amz-checksum-sha256` (store rejects corrupt writes), then calls an
+  authenticated `/register` endpoint per object/batch with key+hash+size; the
+  server `HEAD`s/validates and writes the `storage_objects` row **only on match**.
+  Write-after-verify ⇒ at worst orphan bytes (swept by reconciliation), never
+  dangling rows.
+- **delete-local interlock:** refuse to delete a local file unless its object is
+  registered **and** `content_hash`-verified present in the (current backend)
+  store.
+- **recover/supersede ordering:** recover restores the latest non-tombstoned
+  object; supersede during an in-flight recover is resolved by the optimistic
+  lock. Reconciliation `LIST` cost for million-key buckets is acknowledged and
+  budgeted (incremental, by prefix).
+
+---
+
+## 10. CLI surface
+
+New verbs and where they live (preserve `--dry-run` parity — universal today):
+- `campfire deploy publish|revoke|recover` (admin) — lifecycle transitions, all
+  with `--dry-run`.
+- `campfire deploy gc` (admin) — reclaim GC-eligible superseded/revoked bytes.
+- `campfire sync --all-products` (admin) — generalized artifact pull
+  (admin-gated via the presign pattern).
+- `campfire delete-local` / `campfire recover` (client) — the
+  delete→recover loop, with the verified-in-cloud interlock (§9).
+- `campfire status` gains a cloud/registry view (what's published vs in_prep vs
+  locally materialized) alongside its existing local sync state (cli.py:326).
+
+---
+
+## 11. Risks & mitigations
+
+- **Enforcement spread across two surfaces (RLS + service-role RPCs).** The
+  in-prep tier is only as safe as the *last* unpatched reader; the §5.5 exit test
+  must cover every RPC/route, and B1 must precede B2.
+- **NIRCam in-place mutation / budget.** Canonical-file-as-unit only; never
+  per-step snapshots; budget RPC + alert + GC (§7).
 - **PR-3 touches the scientific core.** Mitigated by the bit-identical
-  golden-file gate; classify as Infrastructure/PATCH only if that passes.
+  golden-file gate + the spec3-ASN pre-impl gate + plot/stuck-shutter smoke
+  tests; the `_rate` precedent is a model, not a template (pathloss/padding).
+- **OSN egress & no CDN.** Off-Vercel zip, throughput validation, R2 kept until
+  proven (§6).
+- **`reconcile.py` aborts on split/merge** (human-in-the-loop). Intermediates
+  stay off the clustering path.
+- **deployments append-only → updatable.** FK `ON DELETE SET NULL`, scoped
+  UPDATE policy with `WITH CHECK`, RLS test that a revoke can't mutate a
+  published row's bytes/visibility.
 - **Mid-migration schema.** Land on `objects`/`spectra`/registry, not deprecated
-  `targets.*`.
+  `targets.*`. Seed regeneration is **mandatory** (not conditional) for any phase
+  adding columns/tables/FKs, or preview branches go red.
 
 ---
 
-## 8. Testing & validation strategy
+## 12. Testing & validation
 
-- **PR-3:** golden-file test (byte-identical `_spec.fits`/`_x1d.fits`); a
-  round-trip test for `restore_pre_bkgsub` on the consolidated file; an
-  stage3-selection test asserting no-nod canonicals are excluded.
-- **PR-1/PR-2:** key-conformance test (python ↔ TS agree); deploy against a
-  local MinIO/S3 stand-in to exercise the configurable endpoint.
-- **Phase 1:** backfill reconciliation report (every existing `fits_path` etc.
-  has a `storage_objects` row; no dangling rows).
-- **Phase 2:** copy-verify every object by `content_hash`; dual-read shadow
-  period; tile/RGB/ZIP-download smoke tests against OSN before cutover.
-- **Phase 4:** RLS tests that a non-admin session cannot see `in_prep`/`revoked`
-  rows via any RPC or direct select (this is the security-critical test).
-- **Seed/migrations:** regenerate `supabase/seed.sql` if columns change; preview
-  branch must stay green.
-
----
-
-## 9. Open questions
-
-- Status granularity: on `storage_objects` (object lifecycle) **and** on the
-  logical rows (visibility)? Current lean: both, with distinct vocabularies
-  (`active/superseded/revoked` vs `in_prep/published/revoked`).
-- Object versioning: keep one current object per product (delete-then-replace,
-  as today) or a version chain for rollback? Registry supports either;
-  v1 recommendation is single-current + `superseded` tombstones.
-- Multi-reducer concurrency control: reuse the `objects.version` optimistic-lock
-  pattern, or a coarser per-observation/field deploy lock in the DB?
-- Does `campfire sync --all-products` materialize the storage key tree locally
-  (subdirs per stage to avoid basename collisions), or a flat hashed cache?
-- NIRSpec mask cloud round-trip (currently `observations.toml`, local-only) —
-  in scope for this work or a follow-up? (NIRCam already round-trips masks.)
+- **PR-3:** golden-file (`_spec.fits`/`_x1d.fits` byte-identical); spec3-ASN gate;
+  `restore_pre_bkgsub` round-trip (padded multi-nod + `pathloss=COMPLETE`);
+  plot + stuck-shutter smoke tests; stage3-selection (no-nod, empty-override,
+  `SRCFLUX`-absent). New suite under `pipeline/tests/`.
+- **PR-1/PR-2:** python↔TS key-conformance test; deploy against a local
+  MinIO/S3 stand-in exercising configurable endpoint+region+path-style.
+- **F1:** backfill reconciliation report (every live key has a row; no dangling);
+  coverage gate before authoritative.
+- **B1 (security-critical):** a **new DB-backed RLS/RPC harness** (none exists in
+  `python/tests/` today; run against `supabase db reset`) asserting the three
+  seed users (`user@`, `viewer@`, `admin@`) and a non-admin API token get zero
+  in_prep/revoked rows from every RPC **and** every REST route, while admin sees
+  them. Extends `test_deploy_supabase_auth.py`/`test_local_first.py` patterns.
+- **A:** copy-verify by `content_hash`; dual-read shadow; ZIP/tile/RGB smoke vs
+  OSN before cutover; egress sanity.
+- **Seed:** regenerate `supabase/seed.sql` whenever columns/tables/FKs change;
+  add `spectrum_exposures`/`storage_objects` admin-RLS rows to the test matrix.
 
 ---
 
-## 10. Decisions recorded
+## 13. Open questions
 
-- **NIRSpec no-nod case:** canonical SCI stays = cal (un-subtracted); `CFP_BKG`
-  records `skipped`; **stage3 excludes any canonical not background-subtracted.**
-- **State chains kept separate per instrument, aligned in spirit:** NIRSpec gets
-  its own mirror of `cfp.py` (same mechanics, separate keys) rather than a
-  shared module — the two pipeline halves stay independent.
-- **PR-3 is bit-identical for finals** (Infrastructure/PATCH), gated by a
-  golden-file test.
+- **NIRSpec mask round-trip parity.** `import-masks`/`pull-masks` are NIRCam-only
+  (nircam_masks.py); NIRSpec masks + the stuck-shutter/bkg-override TOMLs are
+  local-only. If `spectrum_exposures` carries masking, true symmetry needs a
+  NIRSpec round-trip; otherwise record the asymmetry as accepted debt.
+- **Object versioning:** single-current + `superseded` tombstones (recommended)
+  vs a full version chain for rollback.
+- **Non-release version gate × in_prep.** Deploying intermediates implies
+  `.dev`/non-release `CMPFRVER` almost always (CLAUDE.md warn-and-confirm gate).
+  Recommend: `--in-prep` auto-confirms (not public); `publish` re-checks. Decide
+  whether intermediate deploys ever need a CHANGELOG entry.
+- **Concurrency primitive:** per-row optimistic lock vs per-observation lock row.
 
 ---
 
-## 11. Appendix: current-state reference
+## 14. Decisions recorded
 
-- **Deploy:** `deploy_observation()` (deploy.py) pushes finals only; provenance
-  in `deployments` + `observations.latest_deployment_id`; `remove.py` is a hard
-  delete; `reconcile.py` preserves inspection state across redeploys.
-- **Storage:** generic S3 (boto3 / aws-sdk); endpoint hardcoded ×4; buckets
-  `data` + `tiles`; ZIP downloads via CF Worker `R2Bucket` binding; presigned
-  GET for single files; public-URL tiles. `file_hash` (sha256) + `file_size`
-  carried end-to-end.
+- **Enforcement is in the reader bodies, not RLS alone.** Web portal (SECURITY
+  INVOKER) is covered by RLS; the service-role REST surface bypasses RLS and needs
+  explicit status predicates + an explicit admin/`p_include_in_prep` param. B1
+  (all readers status-aware) precedes B2 (in_prep deploy).
+- **NIRSpec no-nod:** canonical SCI stays = cal; `CFP_BKG=skipped`; stage3
+  excludes any canonical not background-subtracted (plus the empty-override and
+  `SRCFLUX` exclusions).
+- **`common/cfp.py` is reused with a separate NIRSpec key set** — separate
+  namespaces, shared mechanics (refines the earlier "separate module" framing;
+  the module is already common).
+- **PR-3 bit-identical for finals** (Infrastructure/PATCH), gated by golden-file +
+  spec3-ASN tests.
+- **Registry uniqueness `(backend,bucket,storage_key)`**; `fits_path` stays a
+  denormalized pointer, not a view/FK; intermediate keys live only in the
+  registry.
+- **`deployment_id` FK `ON DELETE SET NULL`**; revoke is soft/recoverable.
+
+---
+
+## 15. Appendix: current-state reference
+
+- **Deploy:** `deploy_observation()` pushes finals only; provenance in
+  `deployments` + `observations.latest_deployment_id`; `remove.py` hard-deletes;
+  `reconcile.py` preserves inspection state across redeploys.
+- **Storage:** generic S3 (boto3/aws-sdk); endpoint hardcoded ×4; buckets
+  `data`+`tiles`; ZIP via CF Worker `R2Bucket` binding; presigned GET for single
+  files; public-URL tiles. `file_hash` (sha256) + `file_size` end-to-end.
+- **Read auth:** web portal = user session (anon+cookies) + `SECURITY INVOKER`
+  filter RPCs (RLS applies); CLI/download = service-role routes (RLS bypassed,
+  hand-written `program_slug` predicates only). `accessible_program_slugs()`
+  expands all programs for admins.
 - **Pipeline:** NIRCam = one canonical FITS/exposure mutated in place, `CFP_*`
-  state chain (`cfp.py`); NIRSpec = four suffixed files per
-  `(exposure,detector,source)` + per-exposure `_rate`; aggressive cleanup of
-  some intermediates by default.
+  chain (`common/cfp.py`, generic/key-table-driven); NIRSpec = four suffixed
+  files per `(exposure,detector,source)` + per-exposure `_rate`; consumers derive
+  s2d paths by string-replace; aggressive cleanup of some intermediates.
 - **Sync:** `campfire sync` = metadata-only into SQLite; `campfire download` =
-  one FITS per spectrum via presigned URLs; content-addressed verify/diff
-  already implemented; no admin/role awareness client-side.
-- **Web:** server actions + RLS; R2 never browsed; `/admin/nircam` exposure
-  triage + `MaskEditor` is the template for the intermediate-products view;
-  roles = `is_admin`/`can_comment`/`is_group_account` only.
+  one FITS/spectrum via presigned URLs; content-addressed verify/diff exists; no
+  client-side role awareness.
+- **Web:** server actions + RLS for the portal; `/admin/nircam` exposure triage +
+  `MaskEditor` is the template for the intermediate view; roles =
+  `is_admin`/`can_comment`/`is_group_account`. `app/api/v1/deploy/presign` is the
+  working REST admin-gate pattern.
 - **DB:** `objects` (user unit) / `spectra` / `targets` (deprecated cols);
   `nircam_exposures` is the only existing lifecycle model; storage refs are bare
-  text columns; `deployments` append-only.
+  text columns; `deployments` append-only; `download_log` is the audit precedent.
+
+---
+
+## 16. Appendix: adversarial review notes (2026-06-27)
+
+A four-lens critique (pipeline-science, storage-db, sequencing, completeness) was
+run against this doc + the codebase. Material corrections folded in:
+- **Blocker — RLS is not the only boundary.** The service-role REST surface
+  (sync/manifest/signed-URL) bypasses RLS; enforcement must live in the RPC/route
+  bodies too, with an explicit admin param (admins can't be inferred from the
+  slug array). The filter RPCs are `SECURITY INVOKER` (not `DEFINER`), so RLS
+  *does* cover the web portal — both layers are patched (§2.3, §5.5).
+- **Blocker — phase order.** in_prep deploy (B2) must follow all-readers-status-aware
+  (B1); `deploy --in-prep` is capability-gated (§8).
+- **Major — `cfp.py` is already `common/`** and generic → reuse with a separate
+  key set, don't duplicate (§3 PR-3, §14).
+- **Major — broken `_s2d` consumers** (plots, stuck_shutters derive filenames by
+  string-replace) → consumer inventory + smoke tests (§3).
+- **Major — registry constraints** (uniqueness, indexes, typed scope FKs, CHECK,
+  NOT NULL) and the `fits_path` GENERATED/UNIQUE collision (§5.1).
+- **Major — OSN egress** (Worker is egress-free; presigned GET / Vercel zip are
+  not), CORS, region, Worker retirement (§6).
+- **Major — Postgres-resident products, audit log, cost quantification, deploy
+  subcommand coverage, object-visibility-from-member-spectra, multi-reducer
+  safety** all added (§5.3, §5.6, §7, §5.4, §9).
+- Plus nits: stage3 exclusion completeness, spec3-ASN pre-impl gate, tile
+  `tile_base_url` backfill, migra comment caveat, seed/RLS test harness.
