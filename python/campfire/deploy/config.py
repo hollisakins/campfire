@@ -432,6 +432,32 @@ def resolve_obs_dir(obs_name: str) -> Path:
     return obs_dir
 
 
+def resolve_reference_dir() -> Path:
+    """
+    Return the reference directory (reducer-decision state).
+
+    Uses $CAMPFIRE_ROOT/reference/ if CAMPFIRE_ROOT is set, otherwise falls
+    back to ./reference/ — the sibling of the products root, matching the
+    pipeline's ``Observation.setup_workspace_directory``.
+    """
+    root = os.environ.get('CAMPFIRE_ROOT')
+    if root:
+        return Path(root) / 'reference'
+    return Path('reference')
+
+
+def resolve_reference_obs_dir(obs_name: str) -> Path:
+    """
+    Return the NIRSpec observation reference directory (issue #212 PR-4).
+
+    Reducer-decision state (stuck-shutter / nodded-bkg-override TOMLs) lives
+    under ``reference/nirspec/<obs>/``, kept in lockstep with the pipeline's
+    ``Observation.setup_workspace_directory``. Unlike :func:`resolve_obs_dir`
+    this does not require the directory to exist — the TOMLs are optional.
+    """
+    return resolve_reference_dir() / 'nirspec' / obs_name
+
+
 def resolve_tiles_dir(tile_dir: str | None = None) -> Path:
     """
     Resolve the tiles output directory.

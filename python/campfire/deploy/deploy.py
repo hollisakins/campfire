@@ -15,7 +15,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from campfire.deploy.config import load_observations, load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir, validate_program_slug
+from campfire.deploy.config import load_observations, load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir, resolve_reference_obs_dir, validate_program_slug
 from campfire.deploy.discover import (
     discover_pointings_ecsv,
     discover_rgb_images,
@@ -78,9 +78,14 @@ def _load_config_snapshot(obs_dir: Path, obs_name: str) -> dict | None:
         return None
 
 
-def _load_stuck_shutters(obs_dir: Path, obs_name: str) -> dict | None:
-    """Load the stuck closed shutters TOML, if it exists."""
-    shutters_path = obs_dir / f"_{obs_name}_stuck_closed_shutters.toml"
+def _load_stuck_shutters(reference_obs_dir: Path) -> dict | None:
+    """Load the stuck closed shutters TOML, if it exists.
+
+    Issue #212 (PR-4): the reducer-decision TOML moved to
+    ``reference/nirspec/<obs>/stuck_closed_shutters.toml`` (was
+    ``products/<obs>/_<obs>_stuck_closed_shutters.toml``).
+    """
+    shutters_path = reference_obs_dir / "stuck_closed_shutters.toml"
     if not shutters_path.exists():
         return None
     try:
@@ -511,7 +516,7 @@ def deploy_observation(
 
         # Record deployment provenance
         config_snapshot = _load_config_snapshot(obs_dir, obs_name)
-        stuck_shutters = _load_stuck_shutters(obs_dir, obs_name)
+        stuck_shutters = _load_stuck_shutters(resolve_reference_obs_dir(obs_name))
         user_id = get_user_id_from_token(config)
 
         deployment_id = insert_deployment(
@@ -1002,7 +1007,8 @@ def fetch_config(
 
     Fetches the latest deployment for the observation and writes:
     - {obs}_config.toml from deployments.config_snapshot
-    - _{obs}_stuck_closed_shutters.toml from deployments.stuck_shutters
+    - {obs}_stuck_closed_shutters.toml from deployments.stuck_shutters
+      (place at reference/nirspec/<obs>/stuck_closed_shutters.toml to re-reduce)
     - observations.toml fragment from observations metadata
 
     Parameters
@@ -1037,9 +1043,11 @@ def fetch_config(
             toml.dump(dep_data['config_snapshot'], f)
         files_written.append(config_path)
 
-    # 2. Stuck shutters
+    # 2. Stuck shutters. Issue #212 (PR-4): the pipeline reads this from
+    # reference/nirspec/<obs>/stuck_closed_shutters.toml; reconstitute under that
+    # bare basename (obs-prefixed here so a flat output dir stays unambiguous).
     if dep_data.get('stuck_shutters'):
-        shutters_path = out / f"_{obs_name}_stuck_closed_shutters.toml"
+        shutters_path = out / f"{obs_name}_stuck_closed_shutters.toml"
         with open(shutters_path, 'w') as f:
             toml.dump(dep_data['stuck_shutters'], f)
         files_written.append(shutters_path)

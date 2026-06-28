@@ -171,7 +171,7 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
              exp_type, download_dir, dry_run, token, processes):
     """Download raw JWST data from MAST.
 
-    NIRSpec layout: $CAMPFIRE_ROOT/raw/{PID}/{filename}
+    NIRSpec layout: $CAMPFIRE_ROOT/raw/nirspec/{PID}/{filename}
     NIRCam layout:  $CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/{filename}
                     plus a manifest.ecsv per PID directory.
 

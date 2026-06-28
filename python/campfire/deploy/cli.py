@@ -755,7 +755,8 @@ def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
 
     Retrieves the latest deployment record for the observation and writes:
     - {obs}_config.toml (effective pipeline config)
-    - _{obs}_stuck_closed_shutters.toml (stuck shutter definitions)
+    - {obs}_stuck_closed_shutters.toml (stuck shutter definitions; place at
+      reference/nirspec/<obs>/stuck_closed_shutters.toml to re-reduce)
     - observations.toml (observation definition fragment)
     """
     from pathlib import Path

@@ -409,15 +409,19 @@ def _build_fileset_index(filesets):
 def _output_path_for(file_info, download_root, instrument):
     """Compute the on-disk path for a downloaded product.
 
-    NIRSpec: ``{download_root}/{PID}/{filename}``  (flat per-PID).
+    NIRSpec: ``{download_root}/nirspec/{PID}/{filename}``  (per-PID).
     NIRCam:  ``{download_root}/nircam/{PID}/{filter}/{filename}``.
+
+    Issue #212 (PR-4): the NIRSpec branch gained the ``nirspec/`` segment to
+    match the reader (``Observation.setup_workspace_directory`` globs
+    ``raw/nirspec/<data_subdir>/``); NIRCam already wrote under ``nircam/``.
     """
     filename = file_info["filename"]
     pid = file_info["program_id"]
     if instrument == "NIRCAM":
         filt = (file_info.get("filter") or "unknown").lower()
         return Path(download_root) / "nircam" / pid / filt / filename
-    return Path(download_root) / pid / filename
+    return Path(download_root) / "nirspec" / pid / filename
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +532,7 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     """Download JWST level 1b data for a program.
 
     Layout:
-      NIRSpec → ``{download_dir}/{PID}/{filename}``
+      NIRSpec → ``{download_dir}/nirspec/{PID}/{filename}``
       NIRCam  → ``{download_dir}/nircam/{PID}/{filter}/{filename}`` plus a
                 ``manifest.ecsv`` per PID directory.
 

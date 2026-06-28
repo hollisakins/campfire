@@ -20,21 +20,23 @@ def _obs():
 
 # --- NIRSpec: products/nirspec/<obs>, raw/nirspec/<subdir>, reference/nirspec/<obs> ---
 
-def test_nirspec_workspace_has_nirspec_segment(tmp_path):
+def test_nirspec_workspace_has_nirspec_segment(tmp_path, monkeypatch):
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
     obs = _obs()
     data_dir = str(tmp_path / 'raw')
     product_dir = str(tmp_path / 'products')
     obs.setup_workspace_directory(data_dir, product_dir)
     assert obs.workspace_dir == os.path.join(product_dir, 'nirspec', 'test_obs')
     assert obs.raw_dir == os.path.join(data_dir, 'nirspec', '7076')
-    # reference root is the sibling of the products root
+    # reference is anchored to $CAMPFIRE_ROOT (the single data root)
     assert obs.reference_dir == os.path.join(
         str(tmp_path), 'reference', 'nirspec', 'test_obs')
     assert os.path.isdir(obs.workspace_dir)
     assert os.path.isdir(obs.reference_dir)
 
 
-def test_nirspec_reducer_tomls_under_reference(tmp_path):
+def test_nirspec_reducer_tomls_under_reference(tmp_path, monkeypatch):
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
     obs = _obs()
     obs.setup_workspace_directory(str(tmp_path / 'raw'), str(tmp_path / 'products'))
     assert obs.stuck_closed_shutters_file == os.path.join(

@@ -202,12 +202,12 @@ class Observation:
         # Issue #212 (PR-4): instrument-parity layout —
         #   products/nirspec/<obs>/ , raw/nirspec/<subdir>/ ,
         #   reference/nirspec/<obs>/ (reducer-decision state: stuck shutters,
-        #   bkg overrides, masks). The reference root is the sibling of the
-        #   products root (the standard $CAMPFIRE_ROOT/{products,reference,raw}).
+        #   bkg overrides, masks). reference is anchored to $CAMPFIRE_ROOT
+        #   (the single data root), matching NIRCam's field.setup_workspace.
+        from campfire_pipeline.config import _get_campfire_root
         self.workspace_dir = os.path.join(product_dir, 'nirspec', self.name)
-        reference_root = os.path.join(os.path.dirname(os.path.normpath(product_dir)),
-                                      'reference')
-        self.reference_dir = os.path.join(reference_root, 'nirspec', self.name)
+        self.reference_dir = os.path.join(_get_campfire_root(), 'reference',
+                                          'nirspec', self.name)
 
         # Create workspace directory
         if os.path.exists(self.workspace_dir) and overwrite:

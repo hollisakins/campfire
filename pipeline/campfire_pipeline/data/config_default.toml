@@ -11,10 +11,9 @@
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
     CRDS_CONTEXT = "jwst_1481.pmap"
 
-[paths]
-    # Resolved from $CAMPFIRE_ROOT by default. Uncomment to override:
-    # data_dir = "/custom/path"
-    # products_dir = "/custom/path"
+# All pipeline data lives under a single $CAMPFIRE_ROOT (default ~/campfire):
+# raw/, products/, reference/, cache/. Relocate the whole tree by setting
+# $CAMPFIRE_ROOT; symlink an individual subdir if it must live elsewhere.
 
 [logging]
     level = "INFO"

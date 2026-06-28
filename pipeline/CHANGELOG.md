@@ -93,6 +93,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   flats / wisp templates hoist to the shared (de-fielded)
   `reference/nircam/shared/{flats,wisps}`. **Adopting requires a one-time data
   move** to the new tree (the pipeline reads/writes the new locations only).
+  Path config is collapsed to a single root: `[paths].data_dir` /
+  `products_dir` overrides are removed (they were unused, half-wired — deploy
+  ignored them — and the source of a NIRSpec/NIRCam `reference/` divergence);
+  `raw/`, `products/`, and `reference/` now derive uniformly from
+  `$CAMPFIRE_ROOT`. Relocate the whole tree via `$CAMPFIRE_ROOT`, or symlink an
+  individual subdir.
 - NIRSpec fixed-slit: fixed the summary/deploy source position. Fixed-slit
   products carry no catalog `SRCRA`/`SRCDEC` in the SCI header (those are
   MSA-only), so the summary reader recorded `(0, 0)` for every fixed-slit

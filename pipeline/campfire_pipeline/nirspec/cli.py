@@ -210,6 +210,7 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
     """
     import numpy as np
     import toml as _toml
+    from astropy.io import fits
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec.stage2 import resample_single_exposure
     from campfire_pipeline.nirspec.stuck_shutters import (
@@ -229,6 +230,25 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
         files = obs_obj.discover_files(ext='canonical', source_ids=sids)
         files = Observation.group_files(files)
         log(f'Found {len(files)} canonical files for {obs_name}')
+
+        # Guard: detect-stuck must run on calibrated (pre-stage2b) canonicals.
+        # resample_single_exposure caches the un-bkgsub S2D_SCI view from the
+        # canonical's *live* slit SCI, which stage2b overwrites in place with the
+        # background-subtracted frame. Running after stage2b would resample
+        # bkgsub'd data and mislabel it S2D_SCI, corrupting stuck-shutter
+        # detection. CFP_BKG carries a timestamp once a nod is actually
+        # subtracted; the skipped:/excluded: markers leave the live SCI calibrated.
+        def _is_subtracted(path):
+            v = fits.getheader(path).get('CFP_BKG')
+            return bool(v) and not str(v).startswith(('skipped', 'excluded'))
+        subtracted = [f['path'] for f in files if _is_subtracted(f['path'])]
+        if subtracted:
+            log(f'ERROR: {len(subtracted)} canonical(s) for {obs_name} are already '
+                f'background-subtracted (CFP_BKG set); detect-stuck must run BEFORE '
+                f'stage2b. Re-run stage2a to restore the calibrated frame '
+                f'(cfpipe nirspec run --obs {obs_name} --stage2a --overwrite), '
+                f'then re-run detect-stuck.')
+            continue
 
         # Ensure s2d files exist (skips if already present)
         dispatch(resample_single_exposure, list(files), n_processes=processes)
