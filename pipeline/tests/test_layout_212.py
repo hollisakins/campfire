@@ -76,3 +76,35 @@ def test_nircam_flats_wisps_shared(tmp_path):
     # Per-field reducer state stays per-field.
     assert 'rj0911' in f.mask_dir and 'rj0911' in f.bad_pixel_dir
     assert f.mask_dir != g.mask_dir
+
+
+# --- writer <-> reader round-trips (the coverage gap that let the raw-download
+#     writer/reader mismatch and the redshift default-workspace drift slip CI) ---
+
+def test_nirspec_download_writer_lands_where_reader_globs(tmp_path, monkeypatch):
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
+    from campfire_pipeline.common.query import _output_path_for
+    obs = _obs()  # data_subdir='7076'
+    data_dir = str(tmp_path / 'raw')
+    obs.setup_workspace_directory(data_dir, str(tmp_path / 'products'))
+    # The download writer must place a NIRSpec product in exactly the dir the
+    # reader (Observation.raw_dir) globs for uncal/msa files.
+    fi = {'filename': 'jw07076001001_03101_00001_nrs1_uncal.fits', 'program_id': '7076'}
+    written = _output_path_for(fi, data_dir, 'NIRSPEC')
+    assert str(written.parent) == obs.raw_dir
+    assert written.name == fi['filename']
+
+
+def test_fit_redshifts_default_workspace_under_nirspec(tmp_path, monkeypatch):
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
+    from campfire_pipeline.nirspec import redshift_fitting as rf
+    captured = {}
+
+    def _fake_discover(workspace_dir):
+        captured['workspace_dir'] = workspace_dir
+        return []  # no gratings -> fit_redshifts early-returns 0
+
+    monkeypatch.setattr(rf, '_discover_gratings', _fake_discover)
+    n = rf.fit_redshifts('ember_egs_p1', config={})
+    assert n == 0
+    assert captured['workspace_dir'] == str(tmp_path / 'products') + '/nirspec/ember_egs_p1/'

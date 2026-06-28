@@ -424,14 +424,14 @@ class Observation:
 
         return sorted(result)
 
-    def discover_files(self, ext='cal', source_ids='all'):
+    def discover_files(self, ext='canonical', source_ids='all'):
         """Discover pipeline product files in the workspace directory.
 
         Parameters
         ----------
         ext : str
-            File extension to search for. ``'canonical'`` (issue #212) discovers
-            the bare canonical spectrum-exposure files
+            File extension to search for (default ``'canonical'``, issue #212):
+            discovers the bare canonical spectrum-exposure files
             ``{root}_{config}_{nod}_{detector}_{source}.fits`` (one per
             exposure x detector x source, replacing the old
             ``_cal``/``_cal_bkgsub``/``_s2d``/``_s2d_bkgsub`` quartet). Legacy

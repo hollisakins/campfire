@@ -119,7 +119,7 @@ def detect_stuck_shutters(obs, files, stage_config, n_processes=1):
     obs : Observation
         The observation object.
     files : Table
-        Grouped file table from discover_files('cal') + group_files(),
+        Grouped file table from discover_files('canonical') + group_files(),
         with columns: path, source_id, root, grating, nod_type, detector, etc.
     stage_config : dict
         Stage2 config. Relevant keys:
