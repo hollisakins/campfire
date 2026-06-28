@@ -418,12 +418,16 @@ def resolve_products_dir() -> Path:
 
 def resolve_obs_dir(obs_name: str) -> Path:
     """
-    Return the observation products directory, raising if it doesn't exist.
+    Return the NIRSpec observation products directory, raising if it doesn't exist.
+
+    Issue #212 (PR-4): NIRSpec products live under ``products/nirspec/<obs>/``
+    (instrument-parity layout), kept in lockstep with the pipeline's
+    ``Observation.setup_workspace_directory``.
     """
-    obs_dir = resolve_products_dir() / obs_name
+    obs_dir = resolve_products_dir() / 'nirspec' / obs_name
     if not obs_dir.exists():
         print(f"Error: Observation directory not found: {obs_dir}")
-        print(f"Set $CAMPFIRE_ROOT or run from a directory containing products/{obs_name}/")
+        print(f"Set $CAMPFIRE_ROOT or run from a directory containing products/nirspec/{obs_name}/")
         sys.exit(1)
     return obs_dir
 

@@ -71,6 +71,28 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- **NIRSpec canonical spectrum-exposure + instrument-parity layout (issue #212).
+  BREAKING file-naming/structure change — a pipeline MAJOR.** The four NIRSpec
+  intermediate files per `(exposure, detector, source)` (`_cal` / `_cal_bkgsub` /
+  `_s2d` / `_s2d_bkgsub`) collapse into **one bare canonical `MultiSlitModel`
+  file** (`{root}_{config}_{nod}_{detector}_{source}.fits`, NIRCam-parity naming),
+  mutated in place across stage2→3: the live slit SCI/ERR/var hold the current
+  state (calibrated → background-subtracted), the pre-bkgsub arrays are stashed as
+  `PRE_BKGSUB_*` extensions (reversible via `restore_pre_bkgsub`), the rectified
+  views are cached as `S2D_*`/`S2D_BKGSUB_*` extensions, and a per-instrument
+  `CFP_CAL→CFP_BKG→CFP_S2D` provenance chain (`common/cfp.py` keysets) records
+  reduction depth. The three stage3 exclusions, previously realized by
+  file-absence, become explicit `CFP_BKG` state markers (`skipped:nods=N` /
+  `excluded:override`) plus the existing `SRCFLUX` filter. **Science is
+  bit-identical** — verified byte-for-byte on a real `ember_egs_p1` reduction
+  (PRISM MOS, 4 sources incl. a `NoDataOnDetector` slit): `_spec`/`_x1d`/`_s2d`
+  arrays `worst|d| = 0.000e+00` vs the four-file flow; the MAJOR is purely the
+  naming/structure break. Layout also moves to instrument parity:
+  `products/nirspec/<obs>/`, `raw/nirspec/<subdir>/`,
+  `reference/nirspec/<obs>/{stuck_shutters, bkg_overrides}`, and NIRCam custom
+  flats / wisp templates hoist to the shared (de-fielded)
+  `reference/nircam/shared/{flats,wisps}`. **Adopting requires a one-time data
+  move** to the new tree (the pipeline reads/writes the new locations only).
 - NIRSpec fixed-slit: fixed the summary/deploy source position. Fixed-slit
   products carry no catalog `SRCRA`/`SRCDEC` in the SCI header (those are
   MSA-only), so the summary reader recorded `(0, 0)` for every fixed-slit

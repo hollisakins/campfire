@@ -199,7 +199,15 @@ class Observation:
         --------
         str : Path to the workspace directory
         """
-        self.workspace_dir = os.path.join(product_dir, self.name)
+        # Issue #212 (PR-4): instrument-parity layout —
+        #   products/nirspec/<obs>/ , raw/nirspec/<subdir>/ ,
+        #   reference/nirspec/<obs>/ (reducer-decision state: stuck shutters,
+        #   bkg overrides, masks). The reference root is the sibling of the
+        #   products root (the standard $CAMPFIRE_ROOT/{products,reference,raw}).
+        self.workspace_dir = os.path.join(product_dir, 'nirspec', self.name)
+        reference_root = os.path.join(os.path.dirname(os.path.normpath(product_dir)),
+                                      'reference')
+        self.reference_dir = os.path.join(reference_root, 'nirspec', self.name)
 
         # Create workspace directory
         if os.path.exists(self.workspace_dir) and overwrite:
@@ -209,8 +217,9 @@ class Observation:
         if not os.path.exists(self.workspace_dir):
             os.makedirs(self.workspace_dir, exist_ok=True)
             log(f"Created workspace directory: {self.workspace_dir}")
+        os.makedirs(self.reference_dir, exist_ok=True)
 
-        self.raw_dir = os.path.join(data_dir, self.data_subdir)
+        self.raw_dir = os.path.join(data_dir, 'nirspec', self.data_subdir)
         self.rate_files = self.glob('_rate.fits')
 
         self.directories_setup = True
@@ -279,11 +288,12 @@ class Observation:
 
     @property
     def stuck_closed_shutters_file(self):
-        return os.path.join(self.workspace_dir, f'_{self.name}_stuck_closed_shutters.toml')
+        # reducer-decision state lives under reference/nirspec/<obs>/ (issue #212 PR-4)
+        return os.path.join(self.reference_dir, 'stuck_closed_shutters.toml')
 
     @property
     def bkg_override_file(self):
-        return os.path.join(self.workspace_dir, f'_{self.name}_nodded_background_overrides.toml')
+        return os.path.join(self.reference_dir, 'nodded_background_overrides.toml')
 
     @property
     def stuck_closed_shutters(self):

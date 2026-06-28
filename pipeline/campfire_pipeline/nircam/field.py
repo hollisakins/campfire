@@ -331,11 +331,27 @@ class Field:
         self.products_dir = os.path.join(campfire_root, 'products', 'nircam', self.name)
         self.reference_dir = os.path.join(campfire_root, 'reference', 'nircam', self.name)
 
+        # Reducer-decision reference state is per-field.
         self.bad_pixel_dir = os.path.join(self.reference_dir, 'bad_pixels')
         self.refcat_dir = os.path.join(self.reference_dir, 'astrom_cats')
-        self.wisp_dir = os.path.join(self.reference_dir, 'wisps')
         self.mask_dir = os.path.join(self.reference_dir, 'masks')
-        self.flats_dir = os.path.join(self.reference_dir, 'flats')
+
+        # Shared calibration references are detector/filter-scoped, NOT per-field
+        # (issue #212 PR-4): custom flats (flat_nircam_<FILT>_<DET>_CLEAR.fits) and
+        # wisp templates (WISP_<DET>_<FILT>_CLEAR_*.fits) key purely on
+        # (detector, filter), so two fields with the same (detector, filter)
+        # resolve byte-identical references. Hoisting them to a shared dir dedups
+        # storage. Lookups go through self.flats_dir / self.wisp_dir, so this move
+        # is transparent to resolve_flat / image2_step / wisp_step.
+        # NOTE (audit): a missing wisp template makes wisp_step skip the exposure
+        # without stamping CFP_WISP; with a shared dir, a field that previously
+        # had an empty wisp_dir (intentionally skipping wisp) would start running
+        # wisp on shared templates. Preserve that opt-out per-field if templates
+        # are ever populated in shared/.
+        self.shared_reference_dir = os.path.join(campfire_root, 'reference',
+                                                 'nircam', 'shared')
+        self.wisp_dir = os.path.join(self.shared_reference_dir, 'wisps')
+        self.flats_dir = os.path.join(self.shared_reference_dir, 'flats')
 
         # One flat directory per filter holds everything for that filter:
         # canonical exposures, drizzled mosaic tiles, split extensions,
