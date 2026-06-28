@@ -98,7 +98,9 @@ Release procedure: edit the `## Unreleased` section below, then run
   ignored them — and the source of a NIRSpec/NIRCam `reference/` divergence);
   `raw/`, `products/`, and `reference/` now derive uniformly from
   `$CAMPFIRE_ROOT`. Relocate the whole tree via `$CAMPFIRE_ROOT`, or symlink an
-  individual subdir.
+  individual subdir. The one-time adoption move is scripted:
+  `pipeline/scripts/migrate_layout_212.py` (dry-run by default; `--apply` to
+  execute; idempotent, never clobbers, writes a JSONL audit manifest).
 - NIRSpec fixed-slit: fixed the summary/deploy source position. Fixed-slit
   products carry no catalog `SRCRA`/`SRCDEC` in the SCI header (those are
   MSA-only), so the summary reader recorded `(0, 0)` for every fixed-slit
