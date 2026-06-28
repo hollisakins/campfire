@@ -334,12 +334,15 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         print("\nDry run — no changes made.")
         return
 
+    upload_task_list: list = []
+    uploaded_keys: set[str] = set()
     if png_tasks:
         print("\nUploading PNGs to R2...")
         upload_task_list = [t[0] for t in png_tasks]
         success, failed, failures = upload_files_parallel(
             config, upload_task_list,
             desc='Uploading PNGs',
+            succeeded_out=uploaded_keys,
         )
         print(f"  Uploaded: {success}, Failed: {failed}")
         for msg in failures:
@@ -349,6 +352,21 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
     client = get_supabase_client(config)
     _upsert_exposures(client, records)
     print(f"  Upserted {len(records)} exposures")
+
+    # Storage registry (#214): index the preview/full PNGs that landed.
+    if uploaded_keys:
+        from campfire.deploy.registry import (
+            build_registry_rows, resolve_backend_label, upsert_storage_objects,
+        )
+        from campfire.deploy.supabase import get_user_id_from_token
+        reg_rows = build_registry_rows(
+            upload_task_list,
+            backend=resolve_backend_label(config),
+            uploaded_by=get_user_id_from_token(config),
+            succeeded_keys=uploaded_keys,
+        )
+        n_reg = upsert_storage_objects(client, reg_rows)
+        print(f"  Registered {n_reg} storage objects")
 
 
 def _upsert_exposures(client, records, batch_size=500):

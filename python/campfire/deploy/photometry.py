@@ -717,13 +717,29 @@ def deploy_field_photometry(
     # Upload P(z) sidecars to R2
     if upload_tasks:
         print(f"  Uploading {len(upload_tasks)} P(z) sidecars to R2...")
+        uploaded_keys: set[str] = set()
         success, failed, errors = upload_files_parallel(
             deploy_config, upload_tasks, desc="P(z) sidecars",
+            succeeded_out=uploaded_keys,
         )
         if failed:
             print(f"    WARNING: {failed} sidecar uploads failed")
             for err in errors[:5]:
                 print(f"      {err}")
+
+        # Storage registry (#214): index the P(z) sidecars that landed.
+        if uploaded_keys:
+            from campfire.deploy.registry import (
+                build_registry_rows, resolve_backend_label, upsert_storage_objects,
+            )
+            from campfire.deploy.supabase import get_user_id_from_token
+            reg_rows = build_registry_rows(
+                upload_tasks,
+                backend=resolve_backend_label(deploy_config),
+                uploaded_by=get_user_id_from_token(deploy_config),
+                succeeded_keys=uploaded_keys,
+            )
+            upsert_storage_objects(client, reg_rows)
 
     # Build a (catalog_name, catalog_id) → (obj_db_id, ra, dec) map from the
     # *full* deduped match set. Used both for existing-row reconciliation
