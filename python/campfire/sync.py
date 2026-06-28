@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from tqdm import tqdm
 
+from campfire_layout import parse_key
+
 from .api.session import create_download_session
 from .exceptions import DownloadError
 
@@ -237,13 +239,20 @@ def compute_download_plan(
 
 def download_and_verify(
     spec: dict,
-    obs_dir: Path,
     products_dir: Path,
     download_session: requests.Session,
 ) -> dict:
-    """Download a single file, verify checksum, return result dict."""
-    filename = Path(spec["fits_path"]).name
-    local_path = obs_dir / filename
+    """Download a single file, verify checksum, return result dict.
+
+    The local destination is derived from the object's storage key via the shared
+    layout contract (``products_relpath``), so it always lands in the same tree
+    the pipeline writes and deploy reads (``products/nirspec/<obs>/…``).
+    """
+    from .config import products_relpath
+
+    rel = products_relpath(spec["fits_path"])
+    local_path = products_dir / rel
+    local_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = local_path.with_suffix(".tmp")
 
     try:
@@ -273,7 +282,7 @@ def download_and_verify(
             "id": spec.get("spectra_id"),
             "spectrum_id": spec.get("spectrum_id"),
             "target_id": spec.get("target_id"),
-            "observation": spec.get("observation", obs_dir.name),
+            "observation": spec.get("observation") or parse_key(spec["fits_path"]).scope.obs,
             "grating": spec["grating"],
             "fits_path": spec["fits_path"],
             "local_path": str(local_path.relative_to(products_dir)),
@@ -334,8 +343,10 @@ def download_observation(
     if dry_run or not to_download:
         return stats
 
-    obs_dir = products_dir / obs_name
-    obs_dir.mkdir(parents=True, exist_ok=True)
+    # Destinations are resolved per-file from each object's storage key (via the
+    # layout contract), so no obs_dir is precomputed here — download_and_verify
+    # creates parents under products/nirspec/<obs>/ as needed.
+    products_dir.mkdir(parents=True, exist_ok=True)
 
     dl_session = download_session or create_download_session(max_workers)
 
@@ -344,7 +355,7 @@ def download_observation(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_spec = {
-            executor.submit(download_and_verify, spec, obs_dir, products_dir, dl_session): spec
+            executor.submit(download_and_verify, spec, products_dir, dl_session): spec
             for spec in to_download
         }
 

@@ -17,6 +17,7 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 
+from campfire_layout import relpath_to_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 
 
@@ -113,7 +114,9 @@ def upload_tiles(
         tasks = []
         for png_path in png_files:
             rel_path = png_path.relative_to(tile_dir)
-            r2_key = str(rel_path)
+            # The tiles-bucket key is the path under the tiles tree; route through
+            # the layout bijection (scheme-invariant for tiles — they stay on R2).
+            r2_key = relpath_to_key(f"tiles/{rel_path.as_posix()}")
             tasks.append(UploadTask(png_path, r2_key, 'image/png'))
 
         if dry_run:

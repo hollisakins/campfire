@@ -4,6 +4,7 @@ description = "JWST data reduction pipeline"
 requires-python = ">=3.12"
 dynamic = ["version"]
 dependencies = [
+    "campfire-layout",  # shared directory/key contract (#213); install from ./layout (not on PyPI)
     "jwst>=1.20,<1.21",
     "astropy>=6.1",
     "numpy>=2.0",

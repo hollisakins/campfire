@@ -12,6 +12,8 @@ from pathlib import Path
 
 from astropy.table import Table
 
+from campfire_layout import Scope, storage_key
+
 
 def _finite_or_none(value) -> float | None:
     """Coerce a scalar to a JSON-safe float, mapping non-finite to None.
@@ -161,7 +163,7 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
 
     records = []
     for row in summary:
-        r2_key = f"spectra/{obs_name}/{row['fits_filename']}"
+        r2_key = storage_key('nirspec_spec', Scope(obs=obs_name), row['fits_filename'])
         rec = {
             'target_id': row['object_id'],
             'grating': row['grating'],

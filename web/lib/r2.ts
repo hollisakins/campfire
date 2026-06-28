@@ -7,6 +7,7 @@
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getS3Client, getBucketName } from './storage';
+import { storageKey } from './layout';
 
 /** S3 client for the `data` storage backend (lazy, cached). */
 export function getDataClient() {
@@ -80,7 +81,7 @@ export function extractObservationName(targetId: string): string {
  */
 export function generateRGBImagePath(targetId: string): string {
   const observation = extractObservationName(targetId);
-  return `rgb/${observation}/${targetId}_rgb.png`;
+  return storageKey('rgb', { obs: observation }, `${targetId}_rgb.png`);
 }
 
 /**
@@ -106,6 +107,6 @@ export async function generateRGBImageUrl(
  */
 export function generateSEDPlotPath(targetId: string): string {
   const observation = extractObservationName(targetId);
-  return `sed/${observation}/${targetId}_sed.pdf`;
+  return storageKey('sed', { obs: observation }, `${targetId}_sed.pdf`);
 }
 

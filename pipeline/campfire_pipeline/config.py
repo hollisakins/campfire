@@ -11,14 +11,20 @@ from pathlib import Path
 
 import toml
 
+from campfire_layout import cache_path, campfire_root as _layout_campfire_root, roots
+
 
 # ---------------------------------------------------------------------------
 # CAMPFIRE_ROOT resolution
 # ---------------------------------------------------------------------------
 
 def _get_campfire_root():
-    """Return $CAMPFIRE_ROOT, defaulting to ~/campfire if unset."""
-    return os.environ.get('CAMPFIRE_ROOT') or str(Path.home() / 'campfire')
+    """Return $CAMPFIRE_ROOT, defaulting to ~/campfire if unset.
+
+    Delegates to the shared layout contract (``campfire_layout``) so the pipeline,
+    the deploy/download client, and the contract all resolve one root identically.
+    """
+    return str(_layout_campfire_root())
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +140,7 @@ def setup_environment(config):
 
         # Only set CRDS_PATH fallback if not in config and not already in env
         if 'CRDS_PATH' not in env and 'CRDS_PATH' not in os.environ:
-            env['CRDS_PATH'] = os.path.join(_get_campfire_root(), 'cache', 'crds')
+            env['CRDS_PATH'] = str(cache_path('crds'))
 
         for key, value in env.items():
             if key == 'CRDS_PATH' and 'CRDS_PATH' in os.environ:
@@ -154,11 +160,11 @@ def resolve_paths(config=None):
     on a different filesystem. (``config`` is accepted and ignored for
     backward compatibility with existing call sites.)
     """
-    campfire_root = _get_campfire_root()
+    r = roots()
     result = {
-        'data_dir': os.path.join(campfire_root, 'raw'),
-        'products_dir': os.path.join(campfire_root, 'products'),
-        'reference_dir': os.path.join(campfire_root, 'reference'),
+        'data_dir': str(r.raw),
+        'products_dir': str(r.products),
+        'reference_dir': str(r.reference),
     }
     for d in result.values():
         os.makedirs(d, exist_ok=True)
@@ -382,14 +388,12 @@ def resolve_template_grid_paths(config):
     If a path in template_grids.*.file is relative, resolve it relative
     to $CAMPFIRE_ROOT/cache/templates/. Absolute paths are used as-is.
     """
-    campfire_root = _get_campfire_root()
     template_grids = config.get('nirspec', {}).get('template_grids', {})
 
     for name, grid_config in template_grids.items():
         filepath = grid_config.get('file', '')
         if filepath and not os.path.isabs(filepath):
-            grid_config['file'] = os.path.join(
-                campfire_root, 'cache', 'templates', filepath)
+            grid_config['file'] = str(cache_path('templates', filepath))
 
     return template_grids
 

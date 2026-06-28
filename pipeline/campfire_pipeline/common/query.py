@@ -23,6 +23,8 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
+from campfire_layout import Scope, raw_dir as layout_raw_dir, raw_path
+
 BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
 
 
@@ -412,16 +414,19 @@ def _output_path_for(file_info, download_root, instrument):
     NIRSpec: ``{download_root}/nirspec/{PID}/{filename}``  (per-PID).
     NIRCam:  ``{download_root}/nircam/{PID}/{filter}/{filename}``.
 
-    Issue #212 (PR-4): the NIRSpec branch gained the ``nirspec/`` segment to
-    match the reader (``Observation.setup_workspace_directory`` globs
-    ``raw/nirspec/<data_subdir>/``); NIRCam already wrote under ``nircam/``.
+    Issue #213 (PR-2): resolved through the shared layout contract, the single
+    authority shared with the reader (``Observation.raw_dir``). For NIRSpec, the
+    PID *is* the raw ``data_subdir`` partition — so the download writer and the
+    reader's glob are now one definition; an observation that sets a non-default
+    ``data_subdir`` must keep it equal to its PID for downloaded files to be found.
     """
     filename = file_info["filename"]
     pid = file_info["program_id"]
+    root = Path(download_root).parent  # download_root == $CAMPFIRE_ROOT/raw
     if instrument == "NIRCAM":
         filt = (file_info.get("filter") or "unknown").lower()
-        return Path(download_root) / "nircam" / pid / filt / filename
-    return Path(download_root) / "nirspec" / pid / filename
+        return raw_path("nircam", Scope(pid=pid, filt=filt), filename, root=root)
+    return raw_path("nirspec", Scope(data_subdir=pid), filename, root=root)
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +508,8 @@ def _write_nircam_manifest(download_root, program_id, rows):
     if not rows:
         return
     from astropy.table import Table, vstack
-    manifest_dir = Path(download_root) / "nircam" / program_id
+    manifest_dir = layout_raw_dir("nircam", Scope(pid=program_id),
+                                  root=Path(download_root).parent)
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / "manifest.ecsv"
 

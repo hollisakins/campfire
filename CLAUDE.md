@@ -5,11 +5,14 @@ Guidance for Claude Code when working in this repository.
 ## Project Overview
 
 Monorepo with several main components — see each directory's README for details:
+- **`layout/`** — `campfire-layout`: the single, zero-dependency authority for the directory/key contract (local paths, storage keys, key↔path bijection, tree lifecycle). Pure-python core depended on by both `pipeline/` and `python/`; mirrored in TypeScript at `web/lib/layout.ts`. **Install this first** (it's not on PyPI).
 - **`pipeline/`** — JWST data reduction (NIRSpec + NIRCam). Local-only, no cloud dependencies.
 - **`web/`** — Next.js web portal. Deployed on Vercel.
 - **`python/`** — Unified Python package: API client, CLI, and deployment tools (including the `campfire deploy` CLI). Install with `pip install -e ".[deploy]"` for full functionality.
 
 Supporting: `supabase/` (migrations), `scripts/` (one-off utilities)
+
+**Editable install order** (in the `campfire` conda env): `pip install -e ./layout && pip install -e ./pipeline && pip install -e ./python` — `campfire-layout` must precede the two packages that depend on it.
 
 ## Pipeline
 

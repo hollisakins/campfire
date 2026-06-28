@@ -1041,6 +1041,7 @@ class LocalStore:
         show_progress: bool = False,
     ) -> dict:
         """Reconcile DB sync state with the local filesystem."""
+        from ..config import products_relpath
         from ..sync import compute_file_hash
 
         now = datetime.now(timezone.utc).isoformat()
@@ -1111,11 +1112,12 @@ class LocalStore:
 
         discovered = 0
         for row in untracked_rows:
-            filename = Path(row["fits_path"]).name
-            obs_name = row["observation"]
-            local_path = products_dir / obs_name / filename
+            # Resolve the local destination via the layout contract (the same
+            # mapping the downloader uses), so rediscovery looks where files are
+            # actually written: products/nirspec/<obs>/… (PR-4), not products/<obs>/.
+            rel_path = products_relpath(row["fits_path"])
+            local_path = products_dir / rel_path
             if local_path.exists():
-                rel_path = f"{obs_name}/{filename}"
                 st = local_path.stat()
                 actual_hash = compute_file_hash(local_path)
                 self._conn.execute(

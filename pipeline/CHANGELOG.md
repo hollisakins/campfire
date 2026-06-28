@@ -203,6 +203,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **Layout & key contract (`campfire_layout`, #213, PR-2 of epic #210).** The
+  `$CAMPFIRE_ROOT/` directory tree — previously a three-way contract re-derived
+  independently in the pipeline, the deploy/download client, and the web portal —
+  is now owned by one tested, zero-dependency package (`layout/campfire_layout/`,
+  mirrored in TypeScript at `web/lib/layout.ts`). It is the single authority for
+  every product's local path, its storage key, the key↔path bijection, and a
+  per-tree lifecycle class; a shared golden fixture
+  (`layout/conformance/layout_golden.json`) keeps the python and TS arms in
+  lockstep. Pipeline workspace/raw/reference/cache path construction
+  (`config.resolve_paths`, `Observation.setup_workspace_directory`,
+  `Field.setup_workspace`, `common.query._output_path_for`) now routes through
+  the module. **No change to scientific output**; the local tree shape is
+  unchanged (it encodes the #212 PR-4 layout). Fixes two latent bugs the swaps
+  surfaced: the download/sync client wrote/read `products/<obs>/` without the
+  PR-4 `nirspec/` segment, and the raw-NIRSpec download writer and the
+  Observation reader are now single-sourced on one partition key. `campfire-layout`
+  is a new dependency — install it first (`pip install -e ./layout`).
 - Provenance is now carried verbatim from the FITS primary header through to the
   catalog and Python client, fixing four ways it was dropped or distorted
   (closes #202). (1) `cfpipe_version` is the single pipeline-version string,

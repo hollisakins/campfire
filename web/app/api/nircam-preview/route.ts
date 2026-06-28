@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getS3Client, getBucketName } from '@/lib/storage';
 import { createClient } from '@/lib/supabase/server';
+import { isKnownKey, parseKey } from '@/lib/layout';
 
 /**
  * GET /api/nircam-preview?key=<r2_key>
@@ -33,7 +34,13 @@ export async function GET(request: NextRequest) {
   }
 
   const key = request.nextUrl.searchParams.get('key');
-  if (!key || !key.startsWith('nircam/exposures/') || key.includes('..')) {
+  // Validate against the layout contract: a known data-bucket key (rejects
+  // traversal/unsafe), restricted to NIRCam exposure preview/full PNGs.
+  if (!key || !isKnownKey(key, { bucket: 'data' })) {
+    return new Response('Invalid key', { status: 400 });
+  }
+  const productType = parseKey(key).productType;
+  if (productType !== 'nircam_exposure_preview' && productType !== 'nircam_exposure_full') {
     return new Response('Invalid key', { status: 400 });
   }
 
