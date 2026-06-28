@@ -59,19 +59,32 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=False)
 
-    # Discover and group files
+    # Discover and group canonical spectrum-exposure files (issue #212).
     if bkg_subtraction_method == 'nodded':
-        files = obs.discover_files(ext='cal_bkgsub', source_ids=source_ids)
+        files = obs.discover_files(ext='canonical', source_ids=source_ids)
     else:
         raise NotImplementedError
 
     if len(files) == 0:
-        log(f"No cal_bkgsub files found for {obs.name}")
+        log(f"No canonical files found for {obs.name}")
         return
 
     files = Observation.group_files(files)
 
-    # Filter out files where source flux is not present
+    # Keep only canonicals whose live SCI is background-subtracted. CFP_BKG holds
+    # a timestamp for subtracted nods and a 'skipped:nods=N' / 'excluded:override'
+    # marker for the no-valid-nod-pair and empty-bkg-override exclusions — which
+    # were realized by file-absence before the 4->1 consolidation (the canonical
+    # always exists now, so the exclusions become an explicit state filter).
+    def _is_bkgsub(path):
+        v = fits.getheader(path).get('CFP_BKG')
+        return bool(v) and not str(v).startswith(('skipped', 'excluded'))
+    files = files[[_is_bkgsub(f['path']) for f in files]]
+    if len(files) == 0:
+        log(f"No background-subtracted canonical files for {obs.name}")
+        return
+
+    # Filter out files where source flux is not present (SRCFLUX-absent exclusion)
     files['srcflux'] = [
         fits.getheader(f['path'])['SRCFLUX'] == 'T'
         if 'SRCFLUX' in fits.getheader(f['path']) else True
@@ -95,7 +108,7 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
                 if len(target_files) == 0:
                     continue
 
-                if os.path.exists(obs.workspace_dir + product_name + "_spec.fits") and not overwrite:
+                if os.path.exists(os.path.join(obs.workspace_dir, product_name + "_spec.fits")) and not overwrite:
                     continue
 
                 tasks.append((list(target_files['name']), obs.workspace_dir, product_name, source_id))
@@ -307,14 +320,21 @@ def run_stage3_single_source(
 
         if cleanup_crfs:
             for cal_file in cal_files:
-                crf_file = cal_file.replace('.fits', '_a3001_crf.fits') # e.g. jw07076019001_03101_00003_nrs1_10059_cal_bkgsub_a3001_crf
+                crf_file = cal_file.replace('.fits', '_a3001_crf.fits')  # e.g. jw07076019001_03101_00003_nrs1_10059_a3001_crf
                 if os.path.exists(crf_file):
                     os.remove(crf_file)
 
-            more_crf_files = glob.glob(f'{product_name}_*_crf.fits') + glob.glob(f'{product_name}_*_cal.fits')
-            if len(more_crf_files) > 0:
-                for file in more_crf_files:
-                    os.remove(file)
+            # Spec3Pipeline also drops per-source intermediates that carry the
+            # product_name prefix: {product_name}_*_crf.fits and the calibrated
+            # {product_name}_s{source_id:09d}_cal.fits. Clean both. NOTE: NOT
+            # dead code — these are product_name-prefixed, distinct from the bare
+            # canonical jw..._nrs[12]_<src>.fits inputs, so it never deletes a
+            # canonical. (Removing the _cal glob left 4 stray Spec3 _cal.fits per
+            # obs — caught by the #225 end-to-end cfpipe golden run.)
+            stray = (glob.glob(f'{product_name}_*_crf.fits')
+                     + glob.glob(f'{product_name}_*_cal.fits'))
+            for file in stray:
+                os.remove(file)
 
         os.chdir(prev_cwd)
 
@@ -523,7 +543,7 @@ def combine_per_eg_spectra(
     per_eg_spec_files : list of str
         Basenames of per-exp_group _spec.fits files
     all_cal_files : list of str
-        All cal_bkgsub filenames for producing the stacked 2D
+        All canonical (background-subtracted) filenames for producing the stacked 2D
     workspace_dir : str
         Working directory
     product_name : str
@@ -557,7 +577,7 @@ def combine_per_eg_spectra(
                 per_eg_data[key]['fluxes'].append(spec1d[flux_col].copy())
                 per_eg_data[key]['errors'].append(spec1d[err_col].copy())
 
-    # --- Step 2: Stacked 2D via Spec3Pipeline on ALL cal_bkgsub files ---
+    # --- Step 2: Stacked 2D via Spec3Pipeline on ALL canonical files ---
     run_stage3_single_source(all_cal_files, workspace_dir, product_name, source_id)
 
     # --- Step 3: Get common wavelength grid from stacked x1d ---

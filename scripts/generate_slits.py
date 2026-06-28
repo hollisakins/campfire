@@ -11,7 +11,7 @@ Usage:
     python scripts/generate_slits.py --obs capers_cosmos_p1 --skip-shifts
 
 Output:
-    pipeline/products/{obs_name}/{obs_name}_slits.json
+    pipeline/products/nirspec/{obs_name}/{obs_name}_slits.json
 """
 
 import argparse
@@ -57,12 +57,12 @@ def main():
     # Discover source IDs
     srcids = sorted(list(set([
         int(f.split('_')[-2])
-        for f in glob.glob(f'products/{obs}/{obs}_*_spec.fits')
+        for f in glob.glob(f'products/nirspec/{obs}/{obs}_*_spec.fits')
     ])))
     object_ids = [f'{obs}_{i}' for i in srcids]
 
     if not srcids:
-        print(f"No spec files found in products/{obs}/")
+        print(f"No spec files found in products/nirspec/{obs}/")
         sys.exit(1)
 
     print(f"Observation: {obs}")
@@ -74,7 +74,7 @@ def main():
     ddec_interp = None
 
     if not args.skip_shifts:
-        msacat_file = f'products/{obs}/{obs}_msacat.csv'
+        msacat_file = f'products/nirspec/{obs}/{obs}_msacat.csv'
         if not os.path.exists(msacat_file):
             print(f"Error: No MSA catalog file found at {msacat_file}")
             print(f"Either provide one or use --skip-shifts")
@@ -105,7 +105,7 @@ def main():
         # Get observed positions
         obs_ra, obs_dec = [], []
         for srcid in srcids:
-            spec_files = glob.glob(f'products/{obs}/{obs}_*_{srcid}_spec.fits')
+            spec_files = glob.glob(f'products/nirspec/{obs}/{obs}_*_{srcid}_spec.fits')
             ra, dec = get_source_pos(spec_files[0])
             obs_ra.append(ra)
             obs_dec.append(dec)
@@ -135,7 +135,7 @@ def main():
         object_id = object_ids[i]
         srcid = srcids[i]
 
-        spec_files = glob.glob(f'products/{obs}/{obs}_*_{srcid}_spec.fits')
+        spec_files = glob.glob(f'products/nirspec/{obs}/{obs}_*_{srcid}_spec.fits')
         ra, dec = get_source_pos(spec_files[0])
 
         # Apply astrometric correction
@@ -168,7 +168,7 @@ def main():
             all_slits.append(slit)
 
     # Write output
-    output_path = f'products/{obs}/{obs}_slits.json'
+    output_path = f'products/nirspec/{obs}/{obs}_slits.json'
     with open(output_path, 'w') as f:
         json.dump(all_slits, f, indent=2)
 

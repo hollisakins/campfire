@@ -366,6 +366,23 @@ refactor lands, build one real spec3 ASN over a consolidated canonical file (wit
 byte-identical `_spec.fits`/`_x1d.fits` vs the four-file flow. Record the result
 here.
 
+> **GATE RESULT — PASS (2026-06-27, jwst 1.20.2 / stdatamodels 4.1.0 /
+> crds `jwst_1481.pmap`).** On a fresh isolated reduction of `ember_egs_p1`
+> (program 7076, PRISM MOS, 3-nod) over 4 sources (15182, 71208, 100079,
+> 117757), campfire's real `run_stage3_single_source` + optimal extraction were
+> run on two arms differing *only* by whether each input carried the consolidated
+> baggage — 8 appended non-schema HDUs per file: `PRE_BKGSUB_{SCI,ERR,VAR_RNOISE,
+> VAR_POISSON,DQ}` (slit-shaped revert arrays) + `S2D_SCI`/`S2D_BKGSUB_SCI`/
+> `S2D_BKGSUB_VAR` (differently-shaped rectified views) + `CFBKGSUB`/`CFP_*`
+> primary-header stamps. **All science arrays bitwise identical** (`_x1d` 18
+> cols, `_s2d` 5, final `_spec` 4; `worst|d| = 0.000e+00` every source). Edge
+> cases covered: 100079 (3 inputs — a `NoDataOnDetectorError` slit) and 71208/
+> 117757 (optimal-extraction corruption → 3px-boxcar fallback, identical both
+> arms). Spec3Pipeline reads the live bkgsub'd slit SCI and ignores the appended
+> HDUs; the save→reopen-with-astropy→re-append→stamp round-trip preserves the
+> MultiSlitModel slits. Harness: `pipeline/experiments/issue_212_canonical/
+> gate_spec3.py`. **The 4→1 refactor is cleared to proceed.**
+
 **State chain — reuse the existing `common/cfp.py`, separate key set.**
 `cfp.py` already lives in `campfire_pipeline/common/` and is generic
 (key-table-driven: `CFP_KEYS`, `format`/`has_step`/`should_skip`/`clear_from`,

@@ -119,15 +119,3 @@ class ReductionEngine:
         # Write effective config for provenance tracking
         write_effective_config(self.config, obs_dir, obs.name,
                                obs_stage_overrides=obs.stage_overrides)
-
-    # -- legacy methods kept for backwards compat ------------------------------
-
-    def discover_files(self, obs, ext='cal', source_ids='all'):
-        """Delegate to Observation.discover_files()."""
-        if not obs.directories_setup:
-            obs.setup_workspace_directory(self.data_dir, self.products_dir, overwrite=False)
-        return obs.discover_files(ext=ext, source_ids=source_ids)
-
-    def group_files(self, files):
-        """Delegate to Observation.group_files()."""
-        return Observation.group_files(files)

@@ -3,6 +3,7 @@ Observation dataclass: NIRSpec observation configuration and workspace managemen
 """
 
 import os
+import re
 import glob
 import shutil
 import toml
@@ -198,7 +199,15 @@ class Observation:
         --------
         str : Path to the workspace directory
         """
-        self.workspace_dir = os.path.join(product_dir, self.name)
+        # Issue #212 (PR-4): instrument-parity layout —
+        #   products/nirspec/<obs>/ , raw/nirspec/<subdir>/ ,
+        #   reference/nirspec/<obs>/ (reducer-decision state: stuck shutters,
+        #   bkg overrides, masks). reference is anchored to $CAMPFIRE_ROOT
+        #   (the single data root), matching NIRCam's field.setup_workspace.
+        from campfire_pipeline.config import _get_campfire_root
+        self.workspace_dir = os.path.join(product_dir, 'nirspec', self.name)
+        self.reference_dir = os.path.join(_get_campfire_root(), 'reference',
+                                          'nirspec', self.name)
 
         # Create workspace directory
         if os.path.exists(self.workspace_dir) and overwrite:
@@ -208,8 +217,9 @@ class Observation:
         if not os.path.exists(self.workspace_dir):
             os.makedirs(self.workspace_dir, exist_ok=True)
             log(f"Created workspace directory: {self.workspace_dir}")
+        os.makedirs(self.reference_dir, exist_ok=True)
 
-        self.raw_dir = os.path.join(data_dir, self.data_subdir)
+        self.raw_dir = os.path.join(data_dir, 'nirspec', self.data_subdir)
         self.rate_files = self.glob('_rate.fits')
 
         self.directories_setup = True
@@ -278,11 +288,12 @@ class Observation:
 
     @property
     def stuck_closed_shutters_file(self):
-        return os.path.join(self.workspace_dir, f'_{self.name}_stuck_closed_shutters.toml')
+        # reducer-decision state lives under reference/nirspec/<obs>/ (issue #212 PR-4)
+        return os.path.join(self.reference_dir, 'stuck_closed_shutters.toml')
 
     @property
     def bkg_override_file(self):
-        return os.path.join(self.workspace_dir, f'_{self.name}_nodded_background_overrides.toml')
+        return os.path.join(self.reference_dir, 'nodded_background_overrides.toml')
 
     @property
     def stuck_closed_shutters(self):
@@ -413,13 +424,18 @@ class Observation:
 
         return sorted(result)
 
-    def discover_files(self, ext='cal', source_ids='all'):
+    def discover_files(self, ext='canonical', source_ids='all'):
         """Discover pipeline product files in the workspace directory.
 
         Parameters
         ----------
         ext : str
-            File extension to search for (e.g., 'cal', 'cal_bkgsub').
+            File extension to search for (default ``'canonical'``, issue #212):
+            discovers the bare canonical spectrum-exposure files
+            ``{root}_{config}_{nod}_{detector}_{source}.fits`` (one per
+            exposure x detector x source, replacing the old
+            ``_cal``/``_cal_bkgsub``/``_s2d``/``_s2d_bkgsub`` quartet). Legacy
+            suffix modes (``'cal'``, ``'cal_bkgsub'``) still work for back-compat.
         source_ids : list or 'all'
             Source IDs to filter by, or 'all' for no filtering.
 
@@ -431,13 +447,27 @@ class Observation:
             subpixel_dither_points, total_dither_points, dither_position,
             nod_type, filter_grating, config, nod, root, shutter_id.
         """
-        paths = self.glob(ext=f'_{ext}.fits')
-
-        if source_ids != 'all':
-            new_paths = []
-            for source_id in source_ids:
-                new_paths += [p for p in paths if f'_{source_id}_' in p]
-            paths = new_paths
+        if ext == 'canonical':
+            # Bare canonical files end in ``_nrs[12]_<source>.fits``. Globbing
+            # every matching .fits and filtering on that suffix cleanly excludes
+            # _rate / _spec / _x1d / _msa metafiles and any legacy _cal/_s2d.
+            canon_re = re.compile(r'_nrs[12]_\d+\.fits$')
+            paths = [p for p in self.glob(ext='.fits')
+                     if canon_re.search(os.path.basename(p))]
+            if source_ids != 'all':
+                sids = {str(s) for s in source_ids}
+                paths = [p for p in paths
+                         if os.path.basename(p)[:-len('.fits')].split('_')[-1] in sids]
+            paths = sorted(paths)
+            _source_id = lambda name: int(name[:-len('.fits')].split('_')[-1])
+        else:
+            paths = self.glob(ext=f'_{ext}.fits')
+            if source_ids != 'all':
+                new_paths = []
+                for source_id in source_ids:
+                    new_paths += [p for p in paths if f'_{source_id}_' in p]
+                paths = new_paths
+            _source_id = lambda name: int(name.replace(f'_{ext}.fits', '').split('_')[-1])
 
         filt, grat = [], []
         PATTTYPE, PRIDTPTS, PATT_NUM, NUMDTHPT, NOD_TYPE, SUBPXPTS = [], [], [], [], [], []
@@ -459,7 +489,7 @@ class Observation:
         files = Table()
         files['path'] = paths
         files['name'] = [os.path.basename(f['path']) for f in files]
-        files['source_id'] = [int(os.path.basename(p).replace(f'_{ext}.fits', '').split('_')[-1]) for p in paths]
+        files['source_id'] = [_source_id(os.path.basename(p)) for p in paths]
         files['detector'] = ['nrs'+f['name'].split('nrs')[-1][0] for f in files]
         files['obs'] = [f['name'].split('_')[0] for f in files]
         files['filter'] = filt

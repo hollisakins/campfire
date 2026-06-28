@@ -96,28 +96,6 @@ def load_config(config_path=None):
 # Environment and path resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_path(config_value, campfire_root, default_subdir):
-    """Resolve a single path from config value or CAMPFIRE_ROOT.
-
-    Parameters
-    ----------
-    config_value : str or None
-        Explicit path from config (takes priority).
-    campfire_root : str
-        Resolved CAMPFIRE_ROOT (from ``_get_campfire_root()``).
-    default_subdir : str
-        Subdirectory under CAMPFIRE_ROOT (e.g. 'raw', 'products').
-
-    Returns
-    -------
-    str
-        Resolved absolute path.
-    """
-    if config_value:
-        return config_value
-    return os.path.join(campfire_root, default_subdir)
-
-
 _BLAS_THREAD_VARS = (
     'OPENBLAS_NUM_THREADS',
     'MKL_NUM_THREADS',
@@ -164,23 +142,26 @@ def setup_environment(config):
             os.environ[key] = str(value)
 
 
-def resolve_paths(config):
-    """Extract and create pipeline directories from config.
+def resolve_paths(config=None):
+    """Resolve and create the pipeline directory roots.
 
-    Returns dict with keys: data_dir, products_dir.
+    Returns dict with keys: ``data_dir``, ``products_dir``, ``reference_dir`` —
+    all derived from a single ``$CAMPFIRE_ROOT`` (default ``~/campfire``):
+    ``{root}/raw``, ``{root}/products``, ``{root}/reference``.
+
+    There is intentionally no per-path override: relocate the whole tree by
+    setting ``$CAMPFIRE_ROOT``, or symlink an individual subdir if it must live
+    on a different filesystem. (``config`` is accepted and ignored for
+    backward compatibility with existing call sites.)
     """
-    paths = config.get('paths', {})
     campfire_root = _get_campfire_root()
-
     result = {
-        'data_dir': _resolve_path(
-            paths.get('data_dir'), campfire_root, 'raw'),
-        'products_dir': _resolve_path(
-            paths.get('products_dir'), campfire_root, 'products'),
+        'data_dir': os.path.join(campfire_root, 'raw'),
+        'products_dir': os.path.join(campfire_root, 'products'),
+        'reference_dir': os.path.join(campfire_root, 'reference'),
     }
     for d in result.values():
-        if d:
-            os.makedirs(d, exist_ok=True)
+        os.makedirs(d, exist_ok=True)
     return result
 
 
