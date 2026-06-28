@@ -18,6 +18,7 @@ removed via the existing ``ON DELETE CASCADE`` foreign-key constraints.
 
 from supabase import Client
 
+from campfire_layout import Scope, key_prefix
 from campfire.deploy.supabase import (
     get_supabase_client,
     refresh_filter_options,
@@ -28,7 +29,9 @@ from campfire.deploy.supabase import (
 BATCH_SIZE = 500
 PAGE_SIZE = 1000
 
-R2_PREFIXES = ('spectra', 'rgb', 'sed')
+# (display label, product_type) — the per-observation key prefixes hard-delete
+# removes. The label keeps the report readable; the product_type drives the key.
+R2_REMOVE_PRODUCTS = (('spectra', 'nirspec_spec'), ('rgb', 'rgb'), ('sed', 'sed'))
 
 INSPECTION_FIELDS = (
     'target_id, id, redshift_quality, redshift_inspected, '
@@ -167,10 +170,11 @@ def _delete_r2_prefixes(config: dict, obs_name: str) -> dict[str, int]:
 
     client = get_r2_client(config)
     bucket = resolve_backend(config, 'data').bucket
+    scope = Scope(obs=obs_name)
     counts: dict[str, int] = {}
-    for prefix in R2_PREFIXES:
-        full = f"{prefix}/{obs_name}/"
-        counts[prefix] = delete_r2_prefix(client, bucket, full)
+    for label, product_type in R2_REMOVE_PRODUCTS:
+        full = f"{key_prefix(product_type, scope)}/"
+        counts[label] = delete_r2_prefix(client, bucket, full)
     return counts
 
 
@@ -252,10 +256,11 @@ def remove_observation(
             summary += f", {n_comments} comments"
         prompt = f"\nProceed with deleting {summary}"
         if not supabase_only:
-            prompt += (
-                f"\n  + R2 prefixes: "
-                f"spectra/{obs_name}/, rgb/{obs_name}/, sed/{obs_name}/"
+            scope = Scope(obs=obs_name)
+            prefixes = ', '.join(
+                f"{key_prefix(pt, scope)}/" for _label, pt in R2_REMOVE_PRODUCTS
             )
+            prompt += f"\n  + R2 prefixes: {prefixes}"
         prompt += "? [y/N] "
         response = input(prompt)
         if response.lower() != 'y':

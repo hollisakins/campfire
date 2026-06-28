@@ -680,10 +680,11 @@ class Campfire:
         filename = Path(fits_path).name
 
         if self._local and self._products_dir:
-            observation = spec_info.get("observation") or ""
-            obs_dir = self._products_dir / observation if observation else self._products_dir
-            obs_dir.mkdir(parents=True, exist_ok=True)
-            dest = obs_dir / filename
+            from .config import products_relpath
+            # Land the file where the pipeline writes and deploy reads it, via the
+            # shared layout contract (products/nirspec/<obs>/…), not products/<obs>/.
+            dest = self._products_dir / products_relpath(fits_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
         else:
             import tempfile
             dest = Path(tempfile.mkdtemp(prefix="campfire_")) / filename
@@ -707,8 +708,8 @@ class Campfire:
             raise DownloadError(f"Failed to download spectrum: {e}")
 
         if self._local and self._products_dir:
-            observation = spec_info.get("observation") or ""
-            local_rel_path = f"{observation}/{filename}" if observation else filename
+            from .config import products_relpath
+            local_rel_path = products_relpath(fits_path)
             st = dest.stat()
             self._local.mark_synced(
                 spectrum_id=spectrum_id,

@@ -26,6 +26,7 @@ from astropy.table import Table
 import astropy.units as u
 from supabase import Client
 
+from campfire_layout import Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 
 
@@ -689,7 +690,7 @@ def deploy_field_photometry(
                 if sidecar is not None:
                     has_pz = True
                     n_pz += 1
-                    r2_key = f"photometry/{field}/{obj['object_id']}_pz.json"
+                    r2_key = storage_key('photometry_pz', Scope(field=field, object_id=obj['object_id']))
                     local_path = Path(tmpdir) / f"{obj['object_id']}_pz.json"
                     local_path.write_text(
                         json.dumps(sidecar, separators=(',', ':')),

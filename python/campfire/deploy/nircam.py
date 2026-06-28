@@ -23,6 +23,7 @@ from pathlib import Path
 
 from astropy.io import fits
 
+from campfire_layout import Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import get_supabase_client
 
@@ -205,7 +206,7 @@ def build_upload_tasks(dirs, field, filters):
             continue
         for png_path in sorted(png_dir.glob('jw*_preview.png')):
             basename = png_path.name.removesuffix('_preview.png')
-            r2_key = f'nircam/exposures/{field}/{filtname}/{png_path.name}'
+            r2_key = storage_key('nircam_exposure_preview', Scope(field=field, filt=filtname), png_path.name)
             tasks.append((
                 UploadTask(local_path=png_path, r2_key=r2_key,
                            content_type='image/png'),
@@ -213,7 +214,7 @@ def build_upload_tasks(dirs, field, filters):
             ))
         for png_path in sorted(png_dir.glob('jw*_full.png')):
             basename = png_path.name.removesuffix('_full.png')
-            r2_key = f'nircam/exposures/{field}/{filtname}/{png_path.name}'
+            r2_key = storage_key('nircam_exposure_full', Scope(field=field, filt=filtname), png_path.name)
             tasks.append((
                 UploadTask(local_path=png_path, r2_key=r2_key,
                            content_type='image/png'),

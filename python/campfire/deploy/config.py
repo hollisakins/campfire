@@ -25,6 +25,8 @@ from pathlib import Path
 
 import tomllib
 
+from campfire_layout import Scope, dir_for, reference_dir, roots
+
 
 # Environment-variable resolution for credentials + storage backend config.
 #
@@ -405,15 +407,13 @@ def resolve_field(obs_name: str) -> str:
 
 def resolve_products_dir() -> Path:
     """
-    Return the products directory.
+    Return the products directory (``$CAMPFIRE_ROOT/products``).
 
-    Uses $CAMPFIRE_ROOT/products/ if CAMPFIRE_ROOT is set,
-    otherwise falls back to ./products/.
+    Delegates to the shared layout contract (``campfire_layout.roots``), which
+    resolves ``$CAMPFIRE_ROOT`` (default ``~/campfire``) identically to the
+    pipeline — collapsing the prior deploy-only ``./products`` fallback.
     """
-    root = os.environ.get('CAMPFIRE_ROOT')
-    if root:
-        return Path(root) / 'products'
-    return Path('products')
+    return roots().products
 
 
 def resolve_obs_dir(obs_name: str) -> Path:
@@ -421,10 +421,10 @@ def resolve_obs_dir(obs_name: str) -> Path:
     Return the NIRSpec observation products directory, raising if it doesn't exist.
 
     Issue #212 (PR-4): NIRSpec products live under ``products/nirspec/<obs>/``
-    (instrument-parity layout), kept in lockstep with the pipeline's
-    ``Observation.setup_workspace_directory``.
+    (instrument-parity layout). Resolved via the shared layout contract
+    (``campfire_layout.dir_for``), the single authority shared with the pipeline.
     """
-    obs_dir = resolve_products_dir() / 'nirspec' / obs_name
+    obs_dir = dir_for('nirspec_spec', Scope(obs=obs_name))
     if not obs_dir.exists():
         print(f"Error: Observation directory not found: {obs_dir}")
         print(f"Set $CAMPFIRE_ROOT or run from a directory containing products/nirspec/{obs_name}/")
@@ -436,14 +436,10 @@ def resolve_reference_dir() -> Path:
     """
     Return the reference directory (reducer-decision state).
 
-    Uses $CAMPFIRE_ROOT/reference/ if CAMPFIRE_ROOT is set, otherwise falls
-    back to ./reference/ — the sibling of the products root, matching the
-    pipeline's ``Observation.setup_workspace_directory``.
+    Delegates to the shared layout contract (``campfire_layout.roots``):
+    ``$CAMPFIRE_ROOT/reference`` (default ``~/campfire``), matching the pipeline.
     """
-    root = os.environ.get('CAMPFIRE_ROOT')
-    if root:
-        return Path(root) / 'reference'
-    return Path('reference')
+    return roots().reference
 
 
 def resolve_reference_obs_dir(obs_name: str) -> Path:
@@ -451,11 +447,12 @@ def resolve_reference_obs_dir(obs_name: str) -> Path:
     Return the NIRSpec observation reference directory (issue #212 PR-4).
 
     Reducer-decision state (stuck-shutter / nodded-bkg-override TOMLs) lives
-    under ``reference/nirspec/<obs>/``, kept in lockstep with the pipeline's
-    ``Observation.setup_workspace_directory``. Unlike :func:`resolve_obs_dir`
-    this does not require the directory to exist — the TOMLs are optional.
+    under ``reference/nirspec/<obs>/``. Resolved via the shared layout contract
+    (``campfire_layout.reference_dir``), the single authority shared with the
+    pipeline. Unlike :func:`resolve_obs_dir` this does not require the directory
+    to exist — the TOMLs are optional.
     """
-    return resolve_reference_dir() / 'nirspec' / obs_name
+    return reference_dir('nirspec', Scope(obs=obs_name))
 
 
 def resolve_tiles_dir(tile_dir: str | None = None) -> Path:

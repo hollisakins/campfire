@@ -33,6 +33,7 @@ from campfire.deploy.generate import (
     generate_thumbnails_from_fits,
     generate_zfit_json,
 )
+from campfire_layout import Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     batch_upsert_objects,
@@ -367,30 +368,30 @@ def deploy_observation(
 
     try:
         upload_tasks: list[UploadTask] = []
-        r2_prefix = f"spectra/{obs_name}"
+        scope = Scope(obs=obs_name)
 
         if not supabase_only:
             print("Generating content...")
             for spec_path in tqdm(spec_paths, desc="Processing", unit="file"):
                 # FITS file
-                upload_tasks.append(UploadTask(spec_path, f"{r2_prefix}/{spec_path.name}", 'application/fits'))
+                upload_tasks.append(UploadTask(spec_path, storage_key('nirspec_spec', scope, spec_path.name), 'application/fits'))
 
                 # Spectrum JSON
                 json_path = generate_spectrum_json(spec_path, temp_dir)
-                upload_tasks.append(UploadTask(json_path, f"{r2_prefix}/{json_path.name}", 'application/json'))
+                upload_tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name), 'application/json'))
 
             # Zfit JSONs
             for zfit_path in zfit_paths:
                 zfit_json = generate_zfit_json(zfit_path, temp_dir)
-                upload_tasks.append(UploadTask(zfit_json, f"{r2_prefix}/{zfit_json.name}", 'application/json'))
+                upload_tasks.append(UploadTask(zfit_json, storage_key('zfit', scope, zfit_json.name), 'application/json'))
 
             # RGB images
             for rgb_path in rgb_files:
-                upload_tasks.append(UploadTask(rgb_path, f"rgb/{obs_name}/{rgb_path.name}", 'image/png'))
+                upload_tasks.append(UploadTask(rgb_path, storage_key('rgb', scope, rgb_path.name), 'image/png'))
 
             # SED plots
             for sed_path in sed_files:
-                upload_tasks.append(UploadTask(sed_path, f"sed/{obs_name}/{sed_path.name}", 'application/pdf'))
+                upload_tasks.append(UploadTask(sed_path, storage_key('sed', scope, sed_path.name), 'application/pdf'))
 
             print(f"Uploading {len(upload_tasks)} files...")
             success, failed, failed_msgs = upload_files_parallel(config, upload_tasks, desc="R2 uploads")
@@ -603,12 +604,12 @@ def deploy_rgb(
     if dry_run:
         print("=== DRY RUN ===")
         for path in rgb_files[:5]:
-            print(f"  {path.name} -> rgb/{obs_name}/{path.name}")
+            print(f"  {path.name} -> {storage_key('rgb', Scope(obs=obs_name), path.name)}")
         if len(rgb_files) > 5:
             print(f"  ... and {len(rgb_files) - 5} more")
         return
 
-    tasks = [UploadTask(p, f"rgb/{obs_name}/{p.name}", 'image/png') for p in rgb_files]
+    tasks = [UploadTask(p, storage_key('rgb', Scope(obs=obs_name), p.name), 'image/png') for p in rgb_files]
     success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="RGB images")
 
     if failed_msgs:
@@ -655,13 +656,13 @@ def deploy_sed(
     if dry_run:
         print("=== DRY RUN ===")
         for path in sed_files[:5]:
-            print(f"  {path.name} -> sed/{obs_name}/{path.name}")
+            print(f"  {path.name} -> {storage_key('sed', Scope(obs=obs_name), path.name)}")
         if len(sed_files) > 5:
             print(f"  ... and {len(sed_files) - 5} more")
         print(f"Would set has_sed_plot=true for {len(objects_with_sed)} objects")
         return
 
-    tasks = [UploadTask(p, f"sed/{obs_name}/{p.name}", 'application/pdf') for p in sed_files]
+    tasks = [UploadTask(p, storage_key('sed', Scope(obs=obs_name), p.name), 'application/pdf') for p in sed_files]
     success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="SED plots")
 
     if failed_msgs:
@@ -702,7 +703,7 @@ def deploy_json(
     if dry_run:
         print("=== DRY RUN ===")
         for path in spec_paths[:5]:
-            print(f"  {path.name} -> spectra/{obs_name}/{path.stem}.json")
+            print(f"  {path.name} -> {storage_key('spectrum_json', Scope(obs=obs_name), f'{path.stem}.json')}")
         if len(spec_paths) > 5:
             print(f"  ... and {len(spec_paths) - 5} more")
         return
@@ -715,7 +716,7 @@ def deploy_json(
         tasks = []
         for path in tqdm(spec_paths, desc="Generating", unit="file"):
             json_path = generate_spectrum_json(path, temp_dir)
-            tasks.append(UploadTask(json_path, f"spectra/{obs_name}/{json_path.name}", 'application/json'))
+            tasks.append(UploadTask(json_path, storage_key('spectrum_json', Scope(obs=obs_name), json_path.name), 'application/json'))
 
         print("Uploading...")
         success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="JSON files")
@@ -774,7 +775,7 @@ def deploy_zfit(
         tasks = []
         for path in zfit_paths:
             json_path = generate_zfit_json(path, temp_dir)
-            tasks.append(UploadTask(json_path, f"spectra/{obs_name}/{json_path.name}", 'application/json'))
+            tasks.append(UploadTask(json_path, storage_key('zfit', Scope(obs=obs_name), json_path.name), 'application/json'))
 
         print("Uploading...")
         success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="Zfit JSON")
