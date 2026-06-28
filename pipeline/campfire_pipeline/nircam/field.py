@@ -18,6 +18,14 @@ from typing import List, Optional
 import toml
 import numpy as np
 
+from campfire_layout import (
+    Scope,
+    dir_for,
+    raw_dir as layout_raw_dir,
+    reference_dir as layout_reference_dir,
+    roots,
+    shared_reference_dir as layout_shared_reference_dir,
+)
 from campfire_pipeline.common.io import log
 from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
 
@@ -326,15 +334,18 @@ class Field:
             from campfire_pipeline.config import _get_campfire_root
             campfire_root = _get_campfire_root()
 
+        # Issue #213 (PR-2): resolve the workspace tree through the shared layout
+        # contract (campfire_layout), the single authority shared with deploy.
         self.campfire_root = campfire_root
-        self.raw_root = os.path.join(campfire_root, 'raw', 'nircam')
-        self.products_dir = os.path.join(campfire_root, 'products', 'nircam', self.name)
-        self.reference_dir = os.path.join(campfire_root, 'reference', 'nircam', self.name)
+        scope = Scope(field=self.name)
+        self.raw_root = str(layout_raw_dir('nircam', root=campfire_root))
+        self.products_dir = str(roots(campfire_root).products / 'nircam' / self.name)
+        self.reference_dir = str(layout_reference_dir('nircam', scope, root=campfire_root))
 
         # Reducer-decision reference state is per-field.
-        self.bad_pixel_dir = os.path.join(self.reference_dir, 'bad_pixels')
-        self.refcat_dir = os.path.join(self.reference_dir, 'astrom_cats')
-        self.mask_dir = os.path.join(self.reference_dir, 'masks')
+        self.bad_pixel_dir = str(dir_for('nircam_bad_pixel', scope, root=campfire_root))
+        self.refcat_dir = str(dir_for('nircam_astrom_cat', scope, root=campfire_root))
+        self.mask_dir = str(dir_for('nircam_mask', scope, root=campfire_root))
 
         # Shared calibration references are detector/filter-scoped, NOT per-field
         # (issue #212 PR-4): custom flats (flat_nircam_<FILT>_<DET>_CLEAR.fits) and
@@ -348,10 +359,9 @@ class Field:
         # had an empty wisp_dir (intentionally skipping wisp) would start running
         # wisp on shared templates. Preserve that opt-out per-field if templates
         # are ever populated in shared/.
-        self.shared_reference_dir = os.path.join(campfire_root, 'reference',
-                                                 'nircam', 'shared')
-        self.wisp_dir = os.path.join(self.shared_reference_dir, 'wisps')
-        self.flats_dir = os.path.join(self.shared_reference_dir, 'flats')
+        self.shared_reference_dir = str(layout_shared_reference_dir('nircam', root=campfire_root))
+        self.wisp_dir = str(dir_for('nircam_wisp', Scope(), root=campfire_root))
+        self.flats_dir = str(dir_for('nircam_flat', Scope(), root=campfire_root))
 
         # One flat directory per filter holds everything for that filter:
         # canonical exposures, drizzled mosaic tiles, split extensions,
@@ -374,7 +384,8 @@ class Field:
         """
         if self.products_dir is None:
             raise RuntimeError("setup_workspace() must be called first")
-        return os.path.join(self.products_dir, filter_name)
+        return str(dir_for('nircam_exposure', Scope(field=self.name, filt=filter_name),
+                           root=self.campfire_root))
 
     def get_uncal_files(self, filter_name, skip=None):
         """Get uncal files from PID-organized raw directories.

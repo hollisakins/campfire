@@ -14,6 +14,12 @@ from textwrap import dedent
 from astropy.io import fits
 from astropy.table import Table
 
+from campfire_layout import (
+    Scope,
+    dir_for,
+    raw_dir as layout_raw_dir,
+    reference_dir as layout_reference_dir,
+)
 from campfire_pipeline.common.io import log
 
 # Default slitlet assumed when a file is missing the NOD_TYPE keyword.
@@ -199,15 +205,15 @@ class Observation:
         --------
         str : Path to the workspace directory
         """
-        # Issue #212 (PR-4): instrument-parity layout —
-        #   products/nirspec/<obs>/ , raw/nirspec/<subdir>/ ,
-        #   reference/nirspec/<obs>/ (reducer-decision state: stuck shutters,
-        #   bkg overrides, masks). reference is anchored to $CAMPFIRE_ROOT
-        #   (the single data root), matching NIRCam's field.setup_workspace.
-        from campfire_pipeline.config import _get_campfire_root
-        self.workspace_dir = os.path.join(product_dir, 'nirspec', self.name)
-        self.reference_dir = os.path.join(_get_campfire_root(), 'reference',
-                                          'nirspec', self.name)
+        # Issue #213 (PR-2): the instrument-parity layout (#212 PR-4) is now
+        # resolved through the single shared layout contract (campfire_layout),
+        # the one authority shared with the deploy/download client. ``product_dir``
+        # and ``data_dir`` are ``$CAMPFIRE_ROOT/{products,raw}``; their parent is
+        # the data root the contract anchors on (reference/ shares that root).
+        scope = Scope(obs=self.name)
+        root = os.path.dirname(os.path.abspath(product_dir))
+        self.workspace_dir = str(dir_for('nirspec_spec', scope, root=root))
+        self.reference_dir = str(layout_reference_dir('nirspec', scope, root=root))
 
         # Create workspace directory
         if os.path.exists(self.workspace_dir) and overwrite:
@@ -219,7 +225,9 @@ class Observation:
             log(f"Created workspace directory: {self.workspace_dir}")
         os.makedirs(self.reference_dir, exist_ok=True)
 
-        self.raw_dir = os.path.join(data_dir, 'nirspec', self.data_subdir)
+        self.raw_dir = str(layout_raw_dir(
+            'nirspec', Scope(data_subdir=self.data_subdir),
+            root=os.path.dirname(os.path.abspath(data_dir))))
         self.rate_files = self.glob('_rate.fits')
 
         self.directories_setup = True
