@@ -77,6 +77,15 @@ def test_make_prefixed_hdus():
     assert all(h.ver == 1 for h in hdus)
 
 
+def test_make_prefixed_hdus_skips_empty_and_none():
+    # ResampleSpecStep leaves the slit DQ unallocated (shape (0,)); it must NOT
+    # become a real extension (it would desync from the data array and break
+    # consumers that mask with `dq == 0`). None is likewise skipped.
+    arrays = {'SCI': np.ones((3, 4)), 'DQ': np.array([], dtype='uint32'), 'ERR': None}
+    hdus = C.make_prefixed_hdus(arrays, C.S2D_BKGSUB_PREFIX)
+    assert [h.name for h in hdus] == ['S2D_BKGSUB_SCI']
+
+
 def test_is_custom_hdu(tmp_path):
     p = _slit_fits(tmp_path / 'c.fits',
                    extras=[fits.ImageHDU(np.zeros((2, 2)), name='S2D_SCI')])

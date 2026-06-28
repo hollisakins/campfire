@@ -270,16 +270,33 @@ def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list, stkshtrs='N/A'):
                 fontweight=fontweight)
 
 
+def _has_extension(path, name):
+    """True if FITS ``path`` carries an extension named ``name``."""
+    try:
+        with fits.open(path, memmap=False) as hdul:
+            return any((h.name or '').upper() == name.upper() for h in hdul)
+    except (FileNotFoundError, OSError):
+        return False
+
+
 def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
     """
-    Plot s2d cutouts for visual inspection of a single source.
+    Plot rectified s2d cutouts for visual inspection of a single source.
     Groups by root, combining multiple exp_groups (subpixel dither groups)
     into one plot with labeled rows.
+
+    Issue #212: the rectified views are cached as ``S2D_*`` (calibrated) and
+    ``S2D_BKGSUB_*`` (background-subtracted) HDUs on the bare canonical file,
+    selected by ``plot_suffix`` ('nods' vs 'bkgsub'); previously they were
+    standalone ``_s2d.fits`` / ``_s2d_bkgsub.fits`` files.
     """
 
     assert len(np.unique(files['source_id']))==1, "Can't plot multiple sources at the same time!"
     source_id = files['source_id'][0]
     workspace_dir = os.path.dirname(files['path'][0])
+
+    s2d_prefix = 'S2D_BKGSUB' if plot_suffix == 'bkgsub' else 'S2D'
+    sci_ext, dq_ext = f'{s2d_prefix}_SCI', f'{s2d_prefix}_DQ'
 
     for root in np.unique(files['root']):
         root_files = files[files['root'] == root]
@@ -288,8 +305,9 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
         exp_groups = sorted(np.unique(root_files['exp_group']))
         multi_eg = len(exp_groups) > 1
 
-        # Build ordered list of (label, nrs1_s2d, nrs2_s2d) rows,
-        # sorted by exp_group then nod
+        # Build ordered list of (label, nrs1_canon, nrs2_canon) rows, sorted by
+        # exp_group then nod. Each entry is the canonical path that carries the
+        # rectified view HDU (or None if it isn't cached).
         plot_rows = []
         for eg_idx, eg in enumerate(exp_groups):
             eg_files = root_files[root_files['exp_group'] == eg]
@@ -297,12 +315,12 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
                 nod_files = eg_files[eg_files['nod'] == nod]
                 nrs1_s2d = nrs2_s2d = None
                 for f in nod_files:
-                    s2d = f['path'].replace('_cal', '_s2d')
-                    if os.path.exists(s2d):
+                    cano = f['path']
+                    if _has_extension(cano, sci_ext):
                         if f['detector'] == 'nrs1':
-                            nrs1_s2d = s2d
+                            nrs1_s2d = cano
                         else:
-                            nrs2_s2d = s2d
+                            nrs2_s2d = cano
                 label = f"d{eg_idx+1}:{nod}" if multi_eg else nod
                 plot_rows.append((label, nrs1_s2d, nrs2_s2d))
 
@@ -320,7 +338,7 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
             for _, n1, n2 in plot_rows:
                 s2d = n1 or n2
                 if s2d:
-                    shutsta = fits.getheader(s2d, ext=1).get('SHUTSTA', '')
+                    shutsta = fits.getheader(s2d, extname='SCI').get('SHUTSTA', '')
                     stkshtrs = fits.getheader(s2d, ext=0).get('STKSHTRS', 'N/A')
                     break
 
@@ -330,9 +348,9 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
         for _, n1, n2 in plot_rows:
             for s2d_file in [n1, n2]:
                 if s2d_file:
-                    d = fits.getdata(s2d_file, ext=1)
+                    d = fits.getdata(s2d_file, extname=sci_ext)
                     try:
-                        dq = fits.getdata(s2d_file, extname='DQ')
+                        dq = fits.getdata(s2d_file, extname=dq_ext)
                         good = np.isfinite(d) & (dq == 0)
                     except KeyError:
                         good = np.isfinite(d)
@@ -354,9 +372,9 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
             nrs1_shape = nrs2_shape = None
             for _, n1, n2 in plot_rows:
                 if n1 and nrs1_shape is None:
-                    nrs1_shape = np.shape(fits.getdata(n1, ext=1))
+                    nrs1_shape = np.shape(fits.getdata(n1, extname=sci_ext))
                 if n2 and nrs2_shape is None:
-                    nrs2_shape = np.shape(fits.getdata(n2, ext=1))
+                    nrs2_shape = np.shape(fits.getdata(n2, extname=sci_ext))
                 if nrs1_shape and nrs2_shape:
                     break
 
@@ -374,7 +392,7 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
 
             for i, (label, nrs1_s2d, nrs2_s2d) in enumerate(plot_rows):
                 if nrs1_s2d:
-                    nrs1 = fits.getdata(nrs1_s2d, ext=1)
+                    nrs1 = fits.getdata(nrs1_s2d, extname=sci_ext)
                     ax[i,0].imshow(nrs1, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     if stuck_list and shutsta:
                         _annotate_stuck_shutters(ax[i,0], nrs1.shape[0], shutsta, stuck_list, stkshtrs)
@@ -384,7 +402,7 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
                     ax[i,1].step(prof, np.arange(nrs1.shape[0])-0.5, where='pre', linewidth=1, color='k')
 
                 if nrs2_s2d:
-                    nrs2 = fits.getdata(nrs2_s2d, ext=1)
+                    nrs2 = fits.getdata(nrs2_s2d, extname=sci_ext)
                     ax[i,2].imshow(nrs2, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     if stuck_list and shutsta:
                         _annotate_stuck_shutters(ax[i,2], nrs2.shape[0], shutsta, stuck_list, stkshtrs)
@@ -433,7 +451,7 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
             for i, (label, nrs1_s2d, nrs2_s2d) in enumerate(plot_rows):
                 s2d_file = nrs1_s2d if det == 'nrs1' else nrs2_s2d
                 if s2d_file:
-                    data = fits.getdata(s2d_file, ext=1)
+                    data = fits.getdata(s2d_file, extname=sci_ext)
                     ax[i,0].imshow(data, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     if stuck_list and shutsta:
                         _annotate_stuck_shutters(ax[i,0], data.shape[0], shutsta, stuck_list, stkshtrs)
@@ -858,6 +876,9 @@ def plot_stuck_shutter_diagnostics(files, source_id, root, workspace_dir,
     exp_groups = sorted(np.unique(root_files['exp_group']))
     multi_eg = len(exp_groups) > 1
 
+    # Un-bkgsub rectified view, cached as S2D_* HDUs on the canonical (issue #212).
+    sci_ext, dq_ext, vrn_ext = 'S2D_SCI', 'S2D_DQ', 'S2D_VAR_RNOISE'
+
     plot_rows = []
     for eg_idx, eg in enumerate(exp_groups):
         eg_files = root_files[root_files['exp_group'] == eg]
@@ -865,12 +886,12 @@ def plot_stuck_shutter_diagnostics(files, source_id, root, workspace_dir,
             nod_files = eg_files[eg_files['nod'] == nod]
             nrs1_s2d = nrs2_s2d = None
             for f in nod_files:
-                s2d = f['path'].replace('_cal.fits', '_s2d.fits')
-                if os.path.exists(s2d):
+                cano = f['path']
+                if _has_extension(cano, sci_ext):
                     if f['detector'] == 'nrs1':
-                        nrs1_s2d = s2d
+                        nrs1_s2d = cano
                     else:
-                        nrs2_s2d = s2d
+                        nrs2_s2d = cano
             label = f"d{eg_idx+1}:{nod}" if multi_eg else nod
             plot_rows.append((label, nrs1_s2d, nrs2_s2d))
 
@@ -884,9 +905,9 @@ def plot_stuck_shutter_diagnostics(files, source_id, root, workspace_dir,
     for _, n1, n2 in plot_rows:
         for s2d_file in [n1, n2]:
             if s2d_file:
-                d = fits.getdata(s2d_file, ext=1)
+                d = fits.getdata(s2d_file, extname=sci_ext)
                 try:
-                    dq = fits.getdata(s2d_file, extname='DQ')
+                    dq = fits.getdata(s2d_file, extname=dq_ext)
                     good = np.isfinite(d) & (dq == 0)
                 except KeyError:
                     good = np.isfinite(d)
@@ -913,9 +934,9 @@ def plot_stuck_shutter_diagnostics(files, source_id, root, workspace_dir,
         nrs1_shape = nrs2_shape = None
         for _, n1, n2 in plot_rows:
             if n1 and nrs1_shape is None:
-                nrs1_shape = np.shape(fits.getdata(n1, ext=1))
+                nrs1_shape = np.shape(fits.getdata(n1, extname=sci_ext))
             if n2 and nrs2_shape is None:
-                nrs2_shape = np.shape(fits.getdata(n2, ext=1))
+                nrs2_shape = np.shape(fits.getdata(n2, extname=sci_ext))
             if nrs1_shape and nrs2_shape:
                 break
 
@@ -934,9 +955,9 @@ def plot_stuck_shutter_diagnostics(files, source_id, root, workspace_dir,
 
         for i, (label, nrs1_s2d, nrs2_s2d) in enumerate(plot_rows):
             if nrs1_s2d:
-                nrs1 = fits.getdata(nrs1_s2d, ext=1)
+                nrs1 = fits.getdata(nrs1_s2d, extname=sci_ext)
                 try:
-                    nrs1_vrn = fits.getdata(nrs1_s2d, extname='VAR_RNOISE')
+                    nrs1_vrn = fits.getdata(nrs1_s2d, extname=vrn_ext)
                 except KeyError:
                     nrs1_vrn = None
                 ax[i, 0].imshow(nrs1, norm=norm, origin='lower', aspect='auto',
@@ -951,9 +972,9 @@ def plot_stuck_shutter_diagnostics(files, source_id, root, workspace_dir,
                                       var_rnoise=nrs1_vrn)
 
             if nrs2_s2d:
-                nrs2 = fits.getdata(nrs2_s2d, ext=1)
+                nrs2 = fits.getdata(nrs2_s2d, extname=sci_ext)
                 try:
-                    nrs2_vrn = fits.getdata(nrs2_s2d, extname='VAR_RNOISE')
+                    nrs2_vrn = fits.getdata(nrs2_s2d, extname=vrn_ext)
                 except KeyError:
                     nrs2_vrn = None
                 ax[i, 2].imshow(nrs2, norm=norm, origin='lower', aspect='auto',
@@ -1005,9 +1026,9 @@ def plot_stuck_shutter_diagnostics(files, source_id, root, workspace_dir,
         for i, (label, nrs1_s2d, nrs2_s2d) in enumerate(plot_rows):
             s2d_file = nrs1_s2d if det == 'nrs1' else nrs2_s2d
             if s2d_file:
-                data = fits.getdata(s2d_file, ext=1)
+                data = fits.getdata(s2d_file, extname=sci_ext)
                 try:
-                    vrn = fits.getdata(s2d_file, extname='VAR_RNOISE')
+                    vrn = fits.getdata(s2d_file, extname=vrn_ext)
                 except KeyError:
                     vrn = None
                 ax[i, 0].imshow(data, norm=norm, origin='lower', aspect='auto',

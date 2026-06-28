@@ -226,9 +226,9 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
         stage_config['detect_stuck_shutters'] = True
 
         sids = _resolve_source_ids(source_ids)
-        files = obs_obj.discover_files(ext='cal', source_ids=sids)
+        files = obs_obj.discover_files(ext='canonical', source_ids=sids)
         files = Observation.group_files(files)
-        log(f'Found {len(files)} cal files for {obs_name}')
+        log(f'Found {len(files)} canonical files for {obs_name}')
 
         # Ensure s2d files exist (skips if already present)
         dispatch(resample_single_exposure, list(files), n_processes=processes)

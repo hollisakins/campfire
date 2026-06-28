@@ -59,19 +59,32 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=False)
 
-    # Discover and group files
+    # Discover and group canonical spectrum-exposure files (issue #212).
     if bkg_subtraction_method == 'nodded':
-        files = obs.discover_files(ext='cal_bkgsub', source_ids=source_ids)
+        files = obs.discover_files(ext='canonical', source_ids=source_ids)
     else:
         raise NotImplementedError
 
     if len(files) == 0:
-        log(f"No cal_bkgsub files found for {obs.name}")
+        log(f"No canonical files found for {obs.name}")
         return
 
     files = Observation.group_files(files)
 
-    # Filter out files where source flux is not present
+    # Keep only canonicals whose live SCI is background-subtracted. CFP_BKG holds
+    # a timestamp for subtracted nods and a 'skipped:nods=N' / 'excluded:override'
+    # marker for the no-valid-nod-pair and empty-bkg-override exclusions — which
+    # were realized by file-absence before the 4->1 consolidation (the canonical
+    # always exists now, so the exclusions become an explicit state filter).
+    def _is_bkgsub(path):
+        v = fits.getheader(path).get('CFP_BKG')
+        return bool(v) and not str(v).startswith(('skipped', 'excluded'))
+    files = files[[_is_bkgsub(f['path']) for f in files]]
+    if len(files) == 0:
+        log(f"No background-subtracted canonical files for {obs.name}")
+        return
+
+    # Filter out files where source flux is not present (SRCFLUX-absent exclusion)
     files['srcflux'] = [
         fits.getheader(f['path'])['SRCFLUX'] == 'T'
         if 'SRCFLUX' in fits.getheader(f['path']) else True

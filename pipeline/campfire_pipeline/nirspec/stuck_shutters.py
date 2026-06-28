@@ -84,11 +84,14 @@ def _build_tasks(group_files, threshold):
         for source_id in np.unique(root_files['source_id']):
             source_files = root_files[root_files['source_id'] == source_id]
 
+            # Canonical files carry the un-bkgsub rectified view as S2D_* HDUs
+            # (issue #212; was a standalone _s2d.fits).
             s2d_paths = []
             for f in source_files:
-                s2d = f['path'].replace('_cal.fits', '_s2d.fits')
-                if os.path.exists(s2d):
-                    s2d_paths.append(s2d)
+                cano = f['path']
+                with fits.open(cano, memmap=False) as _h:
+                    if any((hh.name or '').upper() == 'S2D_SCI' for hh in _h):
+                        s2d_paths.append(cano)
 
             if not s2d_paths:
                 continue
@@ -299,10 +302,10 @@ def _analyze_source_shutters(s2d_paths, n_shutters, low_frac_threshold):
     shutter_low_fracs = [[] for _ in range(n_shutters)]
 
     for s2d_path in s2d_paths:
-        data = fits.getdata(s2d_path, ext=1)
+        data = fits.getdata(s2d_path, extname='S2D_SCI')
 
         try:
-            var_rnoise = fits.getdata(s2d_path, extname='VAR_RNOISE')
+            var_rnoise = fits.getdata(s2d_path, extname='S2D_VAR_RNOISE')
         except KeyError:
             continue
 

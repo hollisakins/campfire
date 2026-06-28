@@ -87,12 +87,21 @@ def read_slit_arrays(path, slit_extver=1, exts=SLIT_ARRAY_EXTS):
 
 
 def make_prefixed_hdus(arrays, prefix, slit_extver=1):
-    """Build ``ImageHDU``s named ``{prefix}_{ext}`` from an ``{ext: array}`` dict."""
+    """Build ``ImageHDU``s named ``{prefix}_{ext}`` from an ``{ext: array}`` dict.
+
+    Empty / None arrays are skipped — jwst's ResampleSpecStep leaves the slit
+    DQ unallocated (shape ``(0,)``), and writing it as a real extension would
+    desync it from the data array; absence matches the old ``DataModel.save()``
+    behaviour (no extension for an empty array) so consumers fall back cleanly.
+    """
     hdus = []
     for ext, data in arrays.items():
         if data is None:
             continue
-        hdu = fits.ImageHDU(np.asarray(data), name=f'{prefix}_{ext}')
+        arr = np.asarray(data)
+        if arr.size == 0:
+            continue
+        hdu = fits.ImageHDU(arr, name=f'{prefix}_{ext}')
         hdu.ver = int(slit_extver)
         hdus.append(hdu)
     return hdus
