@@ -88,7 +88,7 @@ $$;
 -- 4. enforce_object_user_update_scope
 --    Non-admin users (via `update_objects_by_access` RLS) can legitimately
 --    write inspection fields. The RLS policy has no WITH CHECK and no
---    column-level filter, so without this trigger a user with can_comment
+--    column-level filter, so without this trigger a user with can_inspect
 --    can hit PostgREST directly and rewrite anything on objects
 --    (programs, is_active, aggregates, etc.). This trigger enforces the
 --    column scope at the DB level: anything except the inspection set
@@ -263,6 +263,78 @@ END;
 $$;
 
 
+-- 5c. handle_new_user
+--     Auto-provisions a user_profiles row for OPEN self-registrations.
+--
+--     Only fires when the signup carried raw_user_meta_data.self_signup = 'true'
+--     (set by the /signup page). The admin-invite path (inviteUserByEmail) and
+--     seeded/test users do NOT set that flag, so their profiles are still
+--     created by the /welcome accept flow and seed.sql respectively — this
+--     trigger never clobbers them or interferes with the invite /welcome
+--     routing (which keys off profile absence).
+--
+--     New self-signups get the default role: can_comment = true (may comment
+--     and tag), can_inspect = false (must request inspection rights). A unique
+--     username is derived from metadata/email and de-duplicated with a numeric
+--     suffix. SECURITY DEFINER so it can write user_profiles regardless of the
+--     (as yet unconfirmed) caller.
+DROP FUNCTION IF EXISTS public.handle_new_user CASCADE;
+
+CREATE OR REPLACE FUNCTION public.handle_new_user() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_base text;
+    v_username text;
+    v_full_name text;
+    v_suffix integer := 0;
+BEGIN
+    -- Only handle genuine self-service signups.
+    IF NEW.raw_user_meta_data->>'self_signup' IS DISTINCT FROM 'true' THEN
+        RETURN NEW;
+    END IF;
+
+    -- Derive a username candidate from metadata or the email local-part, then
+    -- coerce it to satisfy user_profiles_username_check
+    -- (^[a-z0-9][a-z0-9._-]{0,38}[a-z0-9]$).
+    v_base := lower(coalesce(
+        nullif(NEW.raw_user_meta_data->>'username', ''),
+        split_part(NEW.email, '@', 1)
+    ));
+    v_base := regexp_replace(v_base, '[^a-z0-9._-]', '', 'g');
+    v_base := regexp_replace(v_base, '^[._-]+', '');
+    v_base := regexp_replace(v_base, '[._-]+$', '');
+    IF length(v_base) < 2 THEN
+        v_base := 'user' || v_base;
+    END IF;
+    v_base := left(v_base, 38);
+    v_base := regexp_replace(v_base, '[._-]+$', '');
+
+    v_full_name := coalesce(nullif(NEW.raw_user_meta_data->>'full_name', ''), v_base);
+
+    -- De-duplicate with a numeric suffix if needed.
+    v_username := v_base;
+    WHILE EXISTS (SELECT 1 FROM public.user_profiles WHERE username = v_username) LOOP
+        v_suffix := v_suffix + 1;
+        v_username := left(v_base, 39 - length(v_suffix::text)) || v_suffix::text;
+    END LOOP;
+
+    INSERT INTO public.user_profiles (
+        user_id, username, full_name,
+        is_group_account, can_comment, can_inspect, is_admin
+    )
+    VALUES (
+        NEW.id, v_username, v_full_name,
+        false, true, false, false
+    )
+    ON CONFLICT (user_id) DO NOTHING;
+
+    RETURN NEW;
+END;
+$$;
+
+
 -- 6. log_list_membership_change
 --    Logs additions and removals from object lists into list_audit_log.
 DROP FUNCTION IF EXISTS public.log_list_membership_change CASCADE;
@@ -391,3 +463,12 @@ DROP TRIGGER IF EXISTS track_list_member_delete ON public.object_list_members;
 CREATE TRIGGER track_list_member_delete
   AFTER DELETE ON public.object_list_members
   FOR EACH ROW EXECUTE FUNCTION public.log_list_membership_change();
+
+
+-- Open self-registration: provision a default-role profile on auth.users
+-- insert. Gated to self_signup signups inside the function so the admin-invite
+-- and seed flows are unaffected.
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();

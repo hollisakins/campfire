@@ -10,7 +10,7 @@ import { createClient } from '@/lib/supabase/server';
  * Body:
  *   { dq_flags: number }   // bitmask
  *
- * Auth: `update_spectra_dq_by_access` RLS policy allows can_comment users
+ * Auth: `update_spectra_dq_by_access` RLS policy allows can_inspect users
  * to update spectra whose parent target is in an accessible program.
  * `enforce_spectra_dq_user_update_scope` trigger restricts non-admins to
  * the dq_flags column. `track_spectrum_dq_changes` trigger records the

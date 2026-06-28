@@ -46,6 +46,7 @@ export async function GET() {
         program_slugs,
         is_admin,
         can_comment,
+        can_inspect,
         invited_by,
         created_at,
         accepted_at
@@ -128,7 +129,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { email, program_slugs = [], is_admin = false, can_comment = true } = body;
+    const { email, program_slugs = [], is_admin = false, can_comment = true, can_inspect = false } = body;
 
     // Validate email
     if (!email || typeof email !== 'string' || !email.includes('@')) {
@@ -177,6 +178,7 @@ export async function POST(request: NextRequest) {
         program_slugs,
         is_admin,
         can_comment,
+        can_inspect,
         invited_by: user.id,
       });
 

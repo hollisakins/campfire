@@ -212,10 +212,10 @@ export const LoginForm: React.FC = () => {
         <p className="text-sm text-text-secondary">
           Don&apos;t have an account?{' '}
           <Link
-            href="/request-access"
+            href="/signup"
             className="text-primary hover:underline font-medium"
           >
-            Request access
+            Sign up
           </Link>
         </p>
       </div>

@@ -38,6 +38,23 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.can_comment() TO authenticated;
 
+-- Gates write access to inspection state (object redshift/quality, target
+-- inspection fields, per-spectrum DQ flags). Distinct from can_comment, which
+-- gates comments and tag/list editing. Self-registered users default to
+-- can_inspect = false and request the privilege from an admin.
+CREATE OR REPLACE FUNCTION public.can_inspect()
+RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(
+    (SELECT can_inspect FROM user_profiles WHERE user_id = auth.uid()),
+    false
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.can_inspect() TO authenticated;
+
 CREATE OR REPLACE FUNCTION public.is_group_account()
 RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER

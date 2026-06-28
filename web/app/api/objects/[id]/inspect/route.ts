@@ -38,11 +38,11 @@ export async function PATCH(
 
   const { data: profile } = await supabase
     .from('user_profiles')
-    .select('can_comment')
+    .select('can_inspect')
     .eq('user_id', user.id)
     .single();
 
-  if (!profile?.can_comment) {
+  if (!profile?.can_inspect) {
     return NextResponse.json({ error: 'Permission denied' }, { status: 403 });
   }
 
@@ -150,7 +150,7 @@ export async function PATCH(
   // The bump_object_version trigger only increments when one of the two
   // user-editable fields actually changes, so re-checking the version on
   // pure no-op writes is harmless.
-  // RLS (`update_objects_by_access`) enforces program access + can_comment.
+  // RLS (`update_objects_by_access`) enforces program access + can_inspect.
   const { data: updated, error: updateError } = await supabase
     .from('objects')
     .update(updates)

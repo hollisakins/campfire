@@ -138,7 +138,7 @@ export default function Home() {
                       </h3>
                     </div>
                     <p className="text-text-secondary text-sm mb-4">
-                      CAMPFIRE contains proprietary JWST data. Log in with your credentials or request access to browse the archive.
+                      CAMPFIRE hosts JWST spectra and imaging. Log in or create an account to browse public programs; access codes unlock proprietary data.
                     </p>
                     <div className="flex gap-2">
                       <Link href="/login">
@@ -146,9 +146,9 @@ export default function Home() {
                           Log In
                         </Button>
                       </Link>
-                      <Link href="/request-access">
+                      <Link href="/signup">
                         <Button variant="ghost" size="sm">
-                          Request Access
+                          Sign Up
                         </Button>
                       </Link>
                     </div>

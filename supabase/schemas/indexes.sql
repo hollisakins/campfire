@@ -341,17 +341,16 @@ CREATE INDEX IF NOT EXISTS idx_access_codes_code
 
 
 -- =============================================================================
--- account_requests
+-- inspection_access_requests
 -- =============================================================================
 
-CREATE INDEX IF NOT EXISTS idx_account_requests_created_at
-    ON public.account_requests USING btree (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inspection_access_requests_status
+    ON public.inspection_access_requests USING btree (status);
 
-CREATE INDEX IF NOT EXISTS idx_account_requests_email
-    ON public.account_requests USING btree (email);
-
-CREATE INDEX IF NOT EXISTS idx_account_requests_status
-    ON public.account_requests USING btree (status);
+-- At most one open ('pending') request per user.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_inspection_access_requests_pending
+    ON public.inspection_access_requests USING btree (user_id)
+    WHERE (status = 'pending');
 
 
 -- =============================================================================
