@@ -188,3 +188,34 @@ def test_restore_pre_bkgsub_raises_without_revert(tmp_path):
     assert not C.has_pre_bkgsub(p)
     with pytest.raises(RuntimeError):
         C.restore_pre_bkgsub(p)
+
+
+# --- stage2b skip-check is rectify-aware (#225 review regression guard) -------
+
+def test_bkgsub_group_done_rectify_aware(tmp_path):
+    from campfire_pipeline.nirspec.stage2 import _bkgsub_group_done
+
+    def mk(name, **cards):
+        return _slit_fits(tmp_path / name, **cards)
+
+    # Not processed at all -> not done.
+    p_none = mk('none.fits')
+    assert _bkgsub_group_done(p_none, rectify=False) is False
+    assert _bkgsub_group_done(p_none, rectify=True) is False
+
+    # Subtracted (timestamp), but no rectified s2d view yet: done only when
+    # rectify is NOT requested. This is the bug the #225 review caught — gating
+    # on CFP_BKG alone would have skipped a rectify=False->True re-run.
+    p_bkg = mk('bkg.fits', CFP_BKG='2026-01-01T00:00:00')
+    assert _bkgsub_group_done(p_bkg, rectify=False) is True
+    assert _bkgsub_group_done(p_bkg, rectify=True) is False
+
+    # Subtracted + s2d view present: done either way.
+    p_both = mk('both.fits', CFP_BKG='2026-01-01T00:00:00', CFP_S2D='2026-01-01T00:00:00')
+    assert _bkgsub_group_done(p_both, rectify=True) is True
+
+    # Terminal markers never get a bkgsub s2d view -> done regardless of rectify.
+    for i, marker in enumerate(('skipped:nods=1', 'excluded:override')):
+        p = mk(f'term{i}.fits', CFP_BKG=marker)
+        assert _bkgsub_group_done(p, rectify=True) is True
+        assert _bkgsub_group_done(p, rectify=False) is True

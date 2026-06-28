@@ -420,12 +420,13 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
         if source_id in skip_sources:
             continue
 
-        # Skip check: has stage2b already run for every canonical in the group?
-        # After 2b each canonical carries CFP_BKG (a timestamp when subtracted, or
-        # a 'skipped:'/'excluded:' marker) — its presence means the group is done.
-        from campfire_pipeline.common import cfp
+        # Skip check: has stage2b fully processed every canonical in the group?
+        # Gating on CFP_BKG presence alone is wrong when rectify is requested:
+        # CFP_BKG is stamped unconditionally, but the rectified S2D_BKGSUB_* view
+        # (CFP_S2D) is only produced under rectify, so a rectify=False -> True
+        # re-run would skip and silently never produce the s2d views (#225 review).
         skip = (not overwrite) and all(
-            cfp.has_step(f['path'], 'CFP_BKG', keyset=cfp.NIRSPEC) for f in bg_files
+            _bkgsub_group_done(f['path'], rectify) for f in bg_files
         )
 
         if skip:
@@ -862,6 +863,24 @@ def _finalize_canonical(prod_name, cards):
             hdul['PRIMARY'].header[key] = (val, comment)
         hdul.flush()
     return canonical
+
+
+def _bkgsub_group_done(canonical_path, rectify):
+    """True if stage2b has fully processed this canonical (issue #212).
+
+    A canonical is done when ``CFP_BKG`` is set; for an actually-subtracted nod
+    (timestamp value) the rectified ``S2D_BKGSUB_*`` view (``CFP_S2D``) must also
+    be present when ``rectify`` is requested. The ``skipped:`` / ``excluded:``
+    ``CFP_BKG`` markers are terminal — those canonicals stay calibrated and never
+    receive a bkgsub s2d view — so they don't require ``CFP_S2D``.
+    """
+    hdr = fits.getheader(canonical_path)
+    cfp_bkg = hdr.get('CFP_BKG')
+    if not cfp_bkg:
+        return False
+    if str(cfp_bkg).startswith(('skipped', 'excluded')):
+        return True
+    return (not rectify) or ('CFP_S2D' in hdr)
 
 
 def fix_units(file):
