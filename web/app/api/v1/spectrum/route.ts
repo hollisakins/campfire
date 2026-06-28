@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms } from '@/lib/api-helpers';
 import { generateDownloadUrl } from '@/lib/r2';
+import { deriveSibling } from '@/lib/layout';
 
 export interface SpectrumData {
   wave: number[];
@@ -125,8 +126,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Convert FITS path to JSON path
-    const jsonPath = fitsPath.replace('.fits', '.json');
+    // Derive the spectrum-JSON sibling key via the shared layout contract
+    const jsonPath = deriveSibling(fitsPath, 'spectrum_json');
 
     // Generate signed URL for the JSON file
     const signedUrl = await generateDownloadUrl(jsonPath, 3600);

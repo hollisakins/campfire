@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { generateDownloadUrl } from '@/lib/r2';
+import { storageKey } from '@/lib/layout';
 
 /**
  * GET /api/photometry-pz?object_id=<object_id>
@@ -48,8 +49,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Construct P(z) sidecar path using DB-derived field
-    const pzPath = `photometry/${obj.field}/${objectId}_pz.json`;
+    // Construct P(z) sidecar key via the shared layout contract (DB-derived field)
+    const pzPath = storageKey('photometry_pz', { field: obj.field, object_id: objectId });
 
     // Generate signed URL and fetch server-side (avoids CORS issues)
     const signedUrl = await generateDownloadUrl(pzPath, 3600);

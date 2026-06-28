@@ -4,6 +4,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { validateAuth } from '@/lib/api-auth';
 import { createClient } from '@supabase/supabase-js';
 import { getS3Client, getBucketName, type StoragePurpose } from '@/lib/storage';
+import { isKnownKey } from '@/lib/layout';
 
 const MAX_BATCH_SIZE = 500;
 const PRESIGN_EXPIRY_SECONDS = 3600; // 1 hour
@@ -82,6 +83,19 @@ export async function POST(request: NextRequest) {
     if (bucketId !== 'data' && bucketId !== 'tiles') {
       return NextResponse.json(
         { error: 'invalid_request', error_description: 'bucket must be "data" or "tiles"' },
+        { status: 400 }
+      );
+    }
+
+    // Allowlist: every key must be a contract-valid key for the requested bucket.
+    // Rejects traversal/unsafe keys and anything outside the layout contract, so
+    // a presign can never sign an arbitrary or out-of-tree object.
+    const badUpload = uploads.find(
+      (u: { key?: string }) => !u.key || !isKnownKey(u.key, { bucket: bucketId })
+    );
+    if (badUpload) {
+      return NextResponse.json(
+        { error: 'invalid_request', error_description: `key not permitted by layout contract: ${badUpload.key}` },
         { status: 400 }
       );
     }
