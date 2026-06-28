@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "campfire-layout"
+version = "0.1.0"
+description = "The single authority for the CAMPFIRE directory/key contract (paths, storage keys, key↔path bijection, tree lifecycle)."
+requires-python = ">=3.11"
+authors = [{ name = "CAMPFIRE Team" }]
+# Intentionally zero runtime dependencies: stdlib only, so both the local-only
+# pipeline (campfire-pipeline) and the client (campfire) can depend on it without
+# dragging in heavy or cloud-specific packages.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["campfire_layout*"]
+
+[tool.setuptools.package-data]
+campfire_layout = ["py.typed"]
