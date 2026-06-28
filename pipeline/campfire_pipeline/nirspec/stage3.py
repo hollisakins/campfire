@@ -324,10 +324,17 @@ def run_stage3_single_source(
                 if os.path.exists(crf_file):
                     os.remove(crf_file)
 
-            more_crf_files = glob.glob(f'{product_name}_*_crf.fits')
-            if len(more_crf_files) > 0:
-                for file in more_crf_files:
-                    os.remove(file)
+            # Spec3Pipeline also drops per-source intermediates that carry the
+            # product_name prefix: {product_name}_*_crf.fits and the calibrated
+            # {product_name}_s{source_id:09d}_cal.fits. Clean both. NOTE: NOT
+            # dead code — these are product_name-prefixed, distinct from the bare
+            # canonical jw..._nrs[12]_<src>.fits inputs, so it never deletes a
+            # canonical. (Removing the _cal glob left 4 stray Spec3 _cal.fits per
+            # obs — caught by the #225 end-to-end cfpipe golden run.)
+            stray = (glob.glob(f'{product_name}_*_crf.fits')
+                     + glob.glob(f'{product_name}_*_cal.fits'))
+            for file in stray:
+                os.remove(file)
 
         os.chdir(prev_cwd)
 
