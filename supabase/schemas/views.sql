@@ -68,7 +68,7 @@ LEFT JOIN (
     -- Published-only (B1): restrict the grating aggregation to published
     -- spectra. Predicate lives in the LEFT JOIN ON clause so targets with no
     -- published spectrum are still counted (just contribute no gratings).
-    -- No-op in B1 (nothing is unpublished yet); guards B2 in_prep data.
+    -- No-op in B1 (nothing is unpublished yet); guards B2 draft data.
     LEFT JOIN spectra s ON s.target_id = t.target_id AND s.deploy_status = 'published'
     GROUP BY t.program_slug
 ) stats ON p.slug = stats.program_slug
@@ -107,7 +107,7 @@ DROP VIEW IF EXISTS public.target_flag_summary;
 -- security_invoker (B1): this was a plain (definer) view that bypassed the
 -- spectra RLS policy. Flip to invoker semantics so the caller's RLS applies, and
 -- add a published predicate so draft spectra are hidden from non-admins. In B1
--- every spectrum is published, so this is a no-op; it guards B2 in_prep data.
+-- every spectrum is published, so this is a no-op; it guards B2 draft data.
 CREATE VIEW public.spectrum_flag_summary
 WITH (security_invoker = true) AS
 SELECT

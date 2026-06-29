@@ -209,7 +209,7 @@ END $$;
 -- =========================================================================
 -- The path B3's admin UI uses. Recover (set_deployment_status -> 'published')
 -- MUST flip the deployment's *revoked* spectra back to published — the prior
--- version only matched 'in_prep', silently leaving them hidden ("0 updated").
+-- version only matched 'draft', silently leaving them hidden ("0 updated").
 RESET ROLE;
 SET LOCAL ROLE service_role;
 SELECT set_config('request.jwt.claims', json_build_object('role', 'service_role')::text, true);

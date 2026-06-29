@@ -188,8 +188,8 @@ def source_ids_option(f):
               help='Skip photometry upsert after objects reconcile.')
 @click.option('--skip-astrometry', is_flag=True,
               help='Skip astrometric correction for shutters (deploy raw MSA positions).')
-@click.option('--in-prep', 'in_prep', is_flag=True,
-              help='Deploy as an admin-only draft: spectra land deploy_status=in_prep '
+@click.option('--draft', 'draft', is_flag=True,
+              help='Deploy as an admin-only draft: spectra land deploy_status=draft '
                    '(invisible to users) until published via the admin UI. Requires the '
                    'B1 lifecycle to be applied to the target DB (checked up front).')
 @click.option('--local', is_flag=True,
@@ -197,7 +197,7 @@ def source_ids_option(f):
 @click.pass_context
 def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                  force_overwrite, auto_approve, rgb, no_sed, no_shutters,
-                 no_photometry, skip_astrometry, in_prep, local):
+                 no_photometry, skip_astrometry, draft, local):
     """Deploy CAMPFIRE pipeline products to Supabase + R2."""
     ctx.ensure_object(dict)
     ctx.obj['local'] = local
@@ -236,7 +236,7 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                 source_ids=list(source_ids) if source_ids else None,
                 auto_approve=auto_approve,
                 defer_rebuild=multi,
-                in_prep=in_prep,
+                draft=draft,
             )
             if result and result.get('needs_reconcile'):
                 fields_needing_rebuild.add(result['field'])
@@ -403,7 +403,7 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
 @shared_options
 @click.pass_context
 def publish(ctx, config_path, obs, dry_run, local):
-    """Publish in_prep draft observation(s): make their spectra visible to users."""
+    """Publish draft observation(s): make their spectra visible to users."""
     _lifecycle_transition(ctx, config_path, obs, dry_run, local,
                           to_status='published', verb='Publish')
 

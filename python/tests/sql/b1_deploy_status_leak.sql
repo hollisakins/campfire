@@ -3,7 +3,7 @@
 -- =============================================================================
 -- Proves, against a freshly `supabase db reset` local DB, that:
 --   1. A NON-ADMIN authenticated user (with full program access) gets ZERO
---      in_prep/revoked spectra/objects/targets through RLS, while a published
+--      draft/revoked spectra/objects/targets through RLS, while a published
 --      control row stays visible.
 --   2. An ADMIN sees the unpublished rows (the `OR is_admin()` branch).
 --   3. The service-role RPC predicate `p_include_unpublished` gates: false hides
@@ -25,7 +25,7 @@ BEGIN;
 
 -- ---- fixtures (run as the bootstrap superuser, bypasses RLS) ----------------
 CREATE TEMP TABLE _vobj (oid int, st text);
-INSERT INTO _vobj VALUES (1, 'in_prep'), (2, 'revoked');
+INSERT INTO _vobj VALUES (1, 'draft'), (2, 'revoked');
 
 CREATE TEMP TABLE _vtgt AS
   SELECT t.id, t.target_id, v.st
@@ -67,7 +67,7 @@ DO $$
 DECLARE n int;
 BEGIN
   SELECT count(*) INTO n FROM public.spectra WHERE id IN (SELECT id FROM _vspec);
-  IF n <> 0 THEN RAISE EXCEPTION 'RLS LEAK: non-admin sees % in_prep/revoked spectra (expected 0)', n; END IF;
+  IF n <> 0 THEN RAISE EXCEPTION 'RLS LEAK: non-admin sees % draft/revoked spectra (expected 0)', n; END IF;
 
   SELECT count(*) INTO n FROM public.objects WHERE id IN (SELECT oid FROM _vobj);
   IF n <> 0 THEN RAISE EXCEPTION 'RLS LEAK: non-admin sees % unpublished objects (expected 0)', n; END IF;

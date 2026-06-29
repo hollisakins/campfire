@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Service-role read bypasses RLS, so gate unpublished spectra here: a
-    // non-admin must never receive zfit JSON for an in_prep/revoked spectrum,
+    // non-admin must never receive zfit JSON for an draft/revoked spectrum,
     // whether resolved by (target_id, grating) or by fits_path. No-op in B1.
     const isAdmin = await isAdminUser(userId);
 

@@ -66,7 +66,7 @@ def test_count_published_spectra_counts_only_matching_pairs():
     existing = [
         {"target_id": "t1", "grating": "prism", "deploy_status": "published"},
         {"target_id": "t1", "grating": "g140m", "deploy_status": "published"},
-        {"target_id": "t2", "grating": "prism", "deploy_status": "in_prep"},  # not published
+        {"target_id": "t2", "grating": "prism", "deploy_status": "draft"},  # not published
     ]
     client = _FakeClient(existing)
     # Deploying t1/prism (live) + t2/prism (draft) + t3/prism (new) -> only t1/prism counts.
@@ -98,11 +98,11 @@ def test_insert_deployment_published_stamps_published_at():
     assert rec.get("published_at")  # stamped on a published deploy
 
 
-def test_insert_deployment_in_prep_leaves_published_at_null():
+def test_insert_deployment_draft_leaves_published_at_null():
     client = _FakeClient()
-    insert_deployment(client, observation="obs", deployed_by="u1", status="in_prep")
+    insert_deployment(client, observation="obs", deployed_by="u1", status="draft")
     rec = client.inserted[-1]
-    assert rec["status"] == "in_prep"
+    assert rec["status"] == "draft"
     assert "published_at" not in rec  # draft: no publish stamp until an admin publishes
 
 

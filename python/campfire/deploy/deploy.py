@@ -22,6 +22,7 @@ from campfire.deploy.discover import (
     discover_rgb_images,
     discover_sed_plots,
     discover_shutters_ecsv,
+    discover_spectrum_exposures,
     discover_slits_json,
     extract_object_ids_from_files,
     filter_files_by_source_ids,
@@ -168,6 +169,138 @@ def _count_published_spectra(sb, spectra: list[dict]) -> int:
     return published
 
 
+def _filter_exposures_by_source_ids(files: list, source_ids: list[int]) -> list:
+    """Keep only canonical exposures whose trailing ``_<source_id>.fits`` is selected."""
+    allowed = {str(s) for s in source_ids}
+    out = []
+    for p in files:
+        stem = p.name[:-len('.fits')] if p.name.endswith('.fits') else p.name
+        if stem.rsplit('_', 1)[-1] in allowed:
+            out.append(p)
+    return out
+
+
+def _jwst_pid_from_obs_cfg(obs_cfg: dict) -> int:
+    """Best-effort JWST program id for an intermediates-only deploy (no summary).
+
+    Prefer the numeric ``data_subdir``; else parse ``jw<5 digits>`` from the files
+    glob; else 0 (the observations upsert tolerates it; a later full deploy from the
+    summary corrects it)."""
+    ds = str(obs_cfg.get('data_subdir', '')).strip()
+    if ds.isdigit():
+        return int(ds)
+    files = obs_cfg.get('files', '')
+    files = files if isinstance(files, str) else (files[0] if files else '')
+    m = re.search(r'jw(\d{5})', str(files))
+    return int(m.group(1)) if m else 0
+
+
+def _deploy_intermediates_only(
+    obs_name: str, obs_dir, config: dict, *,
+    dry_run: bool = False, auto_approve: bool = False,
+) -> dict:
+    """Deploy canonical spectrum-exposure intermediates for an observation with no
+    stage3 finals yet (epic #210, B5) — the "reduced through stage2, review before
+    stage3" flow. Uploads + registers the intermediates and records an auto-DRAFT
+    deployment. There is no science to publish; finishing stage3 + a normal deploy
+    publishes it. Scope (field/program/pid) comes from observations.toml since there
+    is no summary to read it from.
+    """
+    exposure_files = discover_spectrum_exposures(obs_dir)
+    obs_cfg = load_observations().get(obs_name, {})
+    field = obs_cfg.get('field', '')
+    program_slug = obs_cfg.get('program', '')
+    programs_config = load_programs()
+    if program_slug:
+        validate_program_slug(program_slug, programs_config, obs_name)
+
+    print(f"Observation: {obs_name}  (intermediates-only — no stage3 finals yet)")
+    print(f"  Field: {field}")
+    print(f"  Program: {program_slug}")
+    print(f"  Canonical spectrum-exposures: {len(exposure_files)}")
+
+    if not exposure_files:
+        print("No canonical spectrum-exposures and no finals — nothing to deploy.")
+        return {'field': field, 'needs_reconcile': False}
+
+    if dry_run:
+        print("\n=== DRY RUN (intermediates-only → auto-draft) ===")
+        print(f"Would upload {len(exposure_files)} canonical spectrum-exposures "
+              f"and record a draft deployment for {obs_name}.")
+        return {'field': field, 'needs_reconcile': False}
+
+    sb = get_supabase_client(config)
+
+    # A draft deploy requires the B1 lifecycle on the target DB (same gate as --draft).
+    cap = get_lifecycle_status(sb)
+    if not cap.get('enabled'):
+        print("ERROR: deploying intermediates as a draft requires the B1 lifecycle "
+              "enforcement (#217) on the target database, but it is not enabled.")
+        if cap.get('error'):
+            print(f"  {cap['error']}")
+        sys.exit(1)
+
+    user_id = get_user_id_from_token(config)
+    jwst_program_id = _jwst_pid_from_obs_cfg(obs_cfg)
+
+    # The deployment row FKs observations(name); ensure program + observation exist.
+    if program_slug:
+        print("Upserting program + observation...")
+        upsert_programs(sb, [program_slug], programs_config)
+        file_globs_raw = obs_cfg.get('files', [])
+        file_globs = [file_globs_raw] if isinstance(file_globs_raw, str) else list(file_globs_raw)
+        upsert_observation(
+            sb, obs_name, program_slug, jwst_program_id, field,
+            file_globs=file_globs or None,
+            gratings=obs_cfg.get('gratings') or None,
+            data_subdir=obs_cfg.get('data_subdir'),
+        )
+
+    scope = Scope(obs=obs_name)
+    scope_version_at_start = get_deploy_scope_version(sb, 'observation', obs_name)
+    upload_tasks = [
+        UploadTask(p, storage_key('nirspec_spectrum_exposure', scope, p.name), 'application/fits')
+        for p in exposure_files
+    ]
+    uploaded_keys: set[str] = set()
+    print(f"Uploading {len(upload_tasks)} canonical spectrum-exposures...")
+    success, failed, failed_msgs = upload_files_parallel(
+        config, upload_tasks, desc="R2 uploads", succeeded_out=uploaded_keys)
+    print(f"Uploaded {success}/{len(upload_tasks)} files")
+
+    deployment_id = insert_deployment(
+        sb, observation=obs_name, deployed_by=user_id, status='draft',
+        cfpipe_version=None, n_targets=0, n_spectra=0,
+    )
+    if deployment_id:
+        update_latest_deployment(sb, obs_name, deployment_id)
+        print(f"\nDeployment #{deployment_id} recorded (draft — intermediates only)")
+        log_deploy_event(
+            sb, action='upload', actor=user_id, deployment_id=deployment_id,
+            observation=obs_name, affected_count=len(exposure_files),
+            metadata={'intermediates_only': True, 'draft': True})
+
+    if uploaded_keys:
+        from campfire.deploy.registry import (
+            build_registry_rows, resolve_backend_label, upsert_storage_objects,
+        )
+        reg_rows = build_registry_rows(
+            upload_tasks, backend=resolve_backend_label(config),
+            deployment_id=deployment_id, uploaded_by=user_id,
+            succeeded_keys=uploaded_keys)
+        n_reg = upsert_storage_objects(sb, reg_rows)
+        print(f"Registered {n_reg} storage objects")
+
+    claim = claim_deploy_scope(sb, 'observation', obs_name, scope_version_at_start, actor=user_id)
+    if claim.get('conflict'):
+        print(f"⚠  CONCURRENT DEPLOY DETECTED for {obs_name}: another deploy advanced "
+              f"this observation while this one was running.")
+
+    print(f"\nDeployed {len(exposure_files)} canonical spectrum-exposures "
+          f"(draft — no finals yet). Finish stage3 + re-deploy to publish.")
+    return {'field': field, 'needs_reconcile': False}
+
+
 def deploy_observation(
     obs_name: str,
     config: dict,
@@ -183,7 +316,7 @@ def deploy_observation(
     source_ids: list[int] | None = None,
     auto_approve: bool = False,
     defer_rebuild: bool = False,
-    in_prep: bool = False,
+    draft: bool = False,
 ) -> dict:
     """Full deployment: ECSV -> generate content -> R2 upload -> Supabase upsert.
 
@@ -191,9 +324,9 @@ def deploy_observation(
     (and materialized-view refresh) is skipped so the caller can batch
     them after processing multiple observations of the same field.
 
-    When *in_prep* is True (epic #210, B2), the deployed spectra land
-    ``deploy_status='in_prep'`` (admin-only, invisible to users) and the
-    deployment record is marked ``in_prep`` — a draft an admin reviews and
+    When *draft* is True (epic #210, B2), the deployed spectra land
+    ``deploy_status='draft'`` (admin-only, invisible to users) and the
+    deployment record is marked ``draft`` — a draft an admin reviews and
     publishes via the admin UI. Requires the B1 (#217) lifecycle to be applied
     to the target database; checked up front via ``get_lifecycle_status`` so the
     deploy aborts cleanly rather than silently shipping unguarded drafts.
@@ -203,7 +336,16 @@ def deploy_observation(
     to-do branch above sets it False).
     """
     obs_dir = resolve_obs_dir(obs_name)
-    summary = load_summary(obs_dir, obs_name)
+    summary = load_summary(obs_dir, obs_name, required=False)
+
+    # Intermediates-only deploy (epic #210, B5): reduced through stage2 (canonical
+    # spectrum-exposures exist) but no stage3 finals/summary yet. Upload + register
+    # the intermediates and record an auto-draft deployment for portal review, then
+    # return — the finals path below is summary-driven. An incomplete deployment is
+    # always a draft.
+    if summary is None or len(summary) == 0:
+        return _deploy_intermediates_only(
+            obs_name, obs_dir, config, dry_run=dry_run, auto_approve=auto_approve)
 
     if source_ids:
         total = len(summary)
@@ -363,18 +505,18 @@ def deploy_observation(
     # on the TARGET database, or the drafts would not actually be hidden. Check the
     # marker up front and abort cleanly if absent (or if the RPC itself is missing,
     # i.e. this deploy code is newer than the DB).
-    if in_prep:
+    if draft:
         cap = get_lifecycle_status(sb)
         if not cap.get('enabled'):
-            print("ERROR: --in-prep requires the B1 lifecycle enforcement (#217) on "
+            print("ERROR: --draft requires the B1 lifecycle enforcement (#217) on "
                   "the target database, but it is not enabled.")
             if cap.get('checks'):
                 print(f"  capability checks: {cap['checks']}")
             if cap.get('error'):
                 print(f"  {cap['error']}")
-            print("  Deploy the B1 migration first, or omit --in-prep to publish directly.")
+            print("  Deploy the B1 migration first, or omit --draft to publish directly.")
             sys.exit(1)
-        print("Deploying as in_prep draft (admin-only until published).")
+        print("Deploying as draft (admin-only until published).")
 
     # B4 multi-reducer safety: snapshot this observation's deploy-scope version
     # now; we compare-and-set it at finalize to detect a concurrent deploy of the
@@ -452,6 +594,20 @@ def deploy_observation(
             for sed_path in sed_files:
                 upload_tasks.append(UploadTask(sed_path, storage_key('sed', scope, sed_path.name), 'application/pdf'))
 
+            # Canonical spectrum-exposure intermediates (epic #210, B5): uploaded on
+            # EVERY deploy (cloud-as-source-of-truth + delete-local→restore), filtered
+            # to the deployed source_ids when --source-ids is set. Registered as
+            # product_type='nirspec_spectrum_exposure' with a per-exposure exposure_ref.
+            exposure_files = discover_spectrum_exposures(obs_dir)
+            if source_ids:
+                exposure_files = _filter_exposures_by_source_ids(exposure_files, source_ids)
+            for exp_path in exposure_files:
+                upload_tasks.append(UploadTask(
+                    exp_path, storage_key('nirspec_spectrum_exposure', scope, exp_path.name),
+                    'application/fits'))
+            if exposure_files:
+                print(f"  + {len(exposure_files)} canonical spectrum-exposure intermediates")
+
             print(f"Uploading {len(upload_tasks)} files...")
             success, failed, failed_msgs = upload_files_parallel(
                 config, upload_tasks, desc="R2 uploads", succeeded_out=uploaded_keys,
@@ -487,7 +643,7 @@ def deploy_observation(
         n_obj, new_object_ids, _n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
         print(f"  {n_obj} objects")
 
-        # B2: an in_prep deploy forces deploy_status='in_prep' on every spectrum it
+        # B2: an draft deploy forces deploy_status='draft' on every spectrum it
         # writes — the whole observation lands as an admin-only draft. Guard first
         # against silently hiding data that is already live: warn (and require
         # confirmation) if any of these (target_id, grating) rows are currently
@@ -495,18 +651,18 @@ def deploy_observation(
         # explicit publish. A single spectra row per (target,grating) can't hold a
         # live + draft version at once, so this is "take the observation back to
         # draft", not zero-downtime staging of a re-reduction.
-        if in_prep:
+        if draft:
             already_published = _count_published_spectra(sb, spectra)
             if already_published and not auto_approve:
                 print()
                 print(f"WARNING: --in-prep will hide {already_published} currently-PUBLISHED "
                       f"spectrum row(s) until you re-publish them.")
-                resp = input("  Take these back to draft (in_prep)? [y/N]: ")
+                resp = input("  Take these back to draft (draft)? [y/N]: ")
                 if resp.lower() != 'y':
                     print("Aborted.")
                     return {'field': field, 'needs_reconcile': False}
             for rec in spectra:
-                rec['deploy_status'] = 'in_prep'
+                rec['deploy_status'] = 'draft'
 
         print("Upserting spectra...")
         n_spec, changed_hashes = batch_upsert_spectra(sb, spectra)
@@ -621,12 +777,12 @@ def deploy_observation(
             force_overwrite=force_overwrite,
             source_ids_filter=source_ids,
             supabase_only=supabase_only,
-            status='in_prep' if in_prep else 'published',
+            status='draft' if draft else 'published',
         )
         if deployment_id:
             update_latest_deployment(sb, obs_name, deployment_id)
             print(f"\nDeployment #{deployment_id} recorded"
-                  f"{' (in_prep draft)' if in_prep else ''}")
+                  f"{' (draft)' if draft else ''}")
             # B2: record the deploy in the lifecycle audit log.
             log_deploy_event(
                 sb,
@@ -635,7 +791,7 @@ def deploy_observation(
                 deployment_id=deployment_id,
                 observation=obs_name,
                 affected_count=len(spectra),
-                metadata={'in_prep': in_prep, 'n_objects': len(objects)},
+                metadata={'draft': draft, 'n_objects': len(objects)},
             )
 
         # B4 multi-reducer safety: compare-and-set the scope version. A conflict

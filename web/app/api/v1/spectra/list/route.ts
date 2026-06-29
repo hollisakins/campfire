@@ -46,7 +46,7 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const supabase = createServiceClient();
 
-    // Unpublished (in_prep/revoked) spectra are admin-only and gated behind an
+    // Unpublished (draft/revoked) spectra are admin-only and gated behind an
     // explicit opt-in: admins must pass include_unpublished=true to see drafts.
     // Fail-closed for everyone else (no-op in B1 since all data is published).
     const includeUnpublished =

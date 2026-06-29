@@ -156,24 +156,23 @@ def insert_deployment(
     """
     Insert a deployment record and return its ID.
 
-    ``status`` is the deployment lifecycle (epic #210, B2): 'published' for a
-    normal deploy (stamps published_at=now), 'in_prep' for a `--in-prep` draft.
+    ``status`` is the deployment lifecycle (epic #210): 'published' for a normal
+    deploy (stamps published_at=now), 'draft' for a draft / incomplete deploy.
 
-    Returns None if the insert fails (e.g. deployed_by is not set).
+    The deployment record is ALWAYS written (it is the admin-review anchor for the
+    draft lifecycle). On a service-role / `--local` deploy there is no user JWT, so
+    ``deployed_by`` is NULL (the column is nullable as of B5); prod `login` deploys
+    still record the real user. Returns the new id, or None only on insert failure.
     """
-    if not deployed_by:
-        print("  Warning: No user_id available, skipping deployment record")
-        return None
-
     data = {
         'observation': observation,
-        'deployed_by': deployed_by,
+        'deployed_by': deployed_by,  # may be NULL on service-role / local deploys
         'force_overwrite': force_overwrite,
         'supabase_only': supabase_only,
         'status': status,
     }
     # A normal (published) deploy stamps published_at so the lifecycle timeline is
-    # complete without a separate publish step; in_prep drafts leave it NULL until
+    # complete without a separate publish step; drafts leave it NULL until
     # an admin publishes via set_deployment_status.
     if status == 'published':
         from datetime import datetime, timezone
@@ -313,7 +312,7 @@ def set_deployment_status(
     actor: str | None = None,
     host: str | None = None,
 ) -> dict | None:
-    """Transition a deployment's lifecycle (publish/revoke/in_prep) via the
+    """Transition a deployment's lifecycle (publish/revoke/draft) via the
     SECURITY DEFINER RPC: flips the deployment + its spectra + recomputes
     has_published_spectrum + writes audit rows, all server-side. Returns the RPC
     result json, or None on failure."""
