@@ -342,6 +342,33 @@ CREATE INDEX IF NOT EXISTS idx_nircam_exposures_review
 
 
 -- =============================================================================
+-- spectrum_exposures (epic #210, B2)
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_spectrum_id
+    ON public.spectrum_exposures USING btree (spectrum_id);
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_exposure_ref
+    ON public.spectrum_exposures USING btree (exposure_ref);
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_review
+    ON public.spectrum_exposures USING btree (review_status)
+    WHERE review_status != 'approved';
+
+
+-- =============================================================================
+-- deploy_events (epic #210, B2/B3)
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_deploy_events_occurred_at
+    ON public.deploy_events USING btree (occurred_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_deploy_events_deployment_id
+    ON public.deploy_events USING btree (deployment_id)
+    WHERE deployment_id IS NOT NULL;
+
+
+-- =============================================================================
 -- storage_objects (epic #210, F1)
 -- =============================================================================
 

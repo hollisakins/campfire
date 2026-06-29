@@ -81,7 +81,11 @@ from campfire.deploy.deploy import (
     deploy_thumbnails,
     deploy_zfit,
 )
-from campfire.deploy.supabase import get_supabase_client, upsert_programs, refresh_filter_options, refresh_programs_overview
+from campfire.deploy.supabase import (
+    get_supabase_client, upsert_programs, refresh_filter_options,
+    refresh_programs_overview, get_latest_deployment_id, set_deployment_status,
+    get_user_id_from_token,
+)
 
 
 def _gate_admin(config: dict) -> None:
@@ -184,12 +188,16 @@ def source_ids_option(f):
               help='Skip photometry upsert after objects reconcile.')
 @click.option('--skip-astrometry', is_flag=True,
               help='Skip astrometric correction for shutters (deploy raw MSA positions).')
+@click.option('--in-prep', 'in_prep', is_flag=True,
+              help='Deploy as an admin-only draft: spectra land deploy_status=in_prep '
+                   '(invisible to users) until published via the admin UI. Requires the '
+                   'B1 lifecycle to be applied to the target DB (checked up front).')
 @click.option('--local', is_flag=True,
               help='Use local Supabase (127.0.0.1:54321).')
 @click.pass_context
 def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                  force_overwrite, auto_approve, rgb, no_sed, no_shutters,
-                 no_photometry, skip_astrometry, local):
+                 no_photometry, skip_astrometry, in_prep, local):
     """Deploy CAMPFIRE pipeline products to Supabase + R2."""
     ctx.ensure_object(dict)
     ctx.obj['local'] = local
@@ -228,6 +236,7 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                 source_ids=list(source_ids) if source_ids else None,
                 auto_approve=auto_approve,
                 defer_rebuild=multi,
+                in_prep=in_prep,
             )
             if result and result.get('needs_reconcile'):
                 fields_needing_rebuild.add(result['field'])
@@ -361,6 +370,51 @@ def slits(ctx, config_path, obs, dry_run, local):
     config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
         deploy_slits(obs_name, config, dry_run=dry_run)
+
+
+def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, verb):
+    """Shared body for the publish/revoke subcommands (epic #210, B2).
+
+    Resolves each observation's latest deployment and calls set_deployment_status,
+    which flips the deployment + its spectra + recomputes has_published_spectrum +
+    writes audit rows server-side.
+    """
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    sb = get_supabase_client(config)
+    actor = get_user_id_from_token(config)
+    for obs_name in obs:
+        dep_id = get_latest_deployment_id(sb, obs_name)
+        if dep_id is None:
+            print(f"  {obs_name}: no deployment found, skipping")
+            continue
+        if dry_run:
+            print(f"  [dry-run] {verb} {obs_name} (deployment #{dep_id})")
+            continue
+        result = set_deployment_status(sb, dep_id, to_status, actor=actor)
+        if result is None:
+            print(f"  {obs_name}: {verb.lower()} failed")
+            continue
+        spectra = (result.get('spectra') or {})
+        print(f"  {verb}ed {obs_name} (deployment #{dep_id}): "
+              f"{spectra.get('updated', 0)} spectra -> {to_status}")
+
+
+@deploy_group.command()
+@shared_options
+@click.pass_context
+def publish(ctx, config_path, obs, dry_run, local):
+    """Publish in_prep draft observation(s): make their spectra visible to users."""
+    _lifecycle_transition(ctx, config_path, obs, dry_run, local,
+                          to_status='published', verb='Publish')
+
+
+@deploy_group.command()
+@shared_options
+@click.pass_context
+def revoke(ctx, config_path, obs, dry_run, local):
+    """Revoke published observation(s): hide their spectra from users (bytes retained)."""
+    _lifecycle_transition(ctx, config_path, obs, dry_run, local,
+                          to_status='revoked', verb='Revoke')
 
 
 @deploy_group.command()

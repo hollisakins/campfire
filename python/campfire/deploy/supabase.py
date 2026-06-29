@@ -151,9 +151,13 @@ def insert_deployment(
     force_overwrite: bool = False,
     source_ids_filter: list[int] | None = None,
     supabase_only: bool = False,
+    status: str = 'published',
 ) -> int | None:
     """
     Insert a deployment record and return its ID.
+
+    ``status`` is the deployment lifecycle (epic #210, B2): 'published' for a
+    normal deploy (stamps published_at=now), 'in_prep' for a `--in-prep` draft.
 
     Returns None if the insert fails (e.g. deployed_by is not set).
     """
@@ -166,7 +170,14 @@ def insert_deployment(
         'deployed_by': deployed_by,
         'force_overwrite': force_overwrite,
         'supabase_only': supabase_only,
+        'status': status,
     }
+    # A normal (published) deploy stamps published_at so the lifecycle timeline is
+    # complete without a separate publish step; in_prep drafts leave it NULL until
+    # an admin publishes via set_deployment_status.
+    if status == 'published':
+        from datetime import datetime, timezone
+        data['published_at'] = datetime.now(timezone.utc).isoformat()
     if cfpipe_version:
         data['cfpipe_version'] = cfpipe_version
     if jwst_version:
@@ -192,6 +203,95 @@ def insert_deployment(
     if resp.data and len(resp.data) > 0:
         return resp.data[0]['id']
     return None
+
+
+def get_lifecycle_status(client: Client) -> dict:
+    """Return the target DB's intermediate-lifecycle capability (epic #210, B2).
+
+    The marker the deploy CLI gates ``--in-prep`` on: it introspects the live
+    catalog and returns ``{'enabled': bool, 'checks': {...}, 'version': int}``,
+    enabled only when B1 (#217) is applied (deploy_status column + reader RPCs
+    threaded with p_include_unpublished). Returns ``{'enabled': False, ...}`` when
+    the RPC itself is missing (deploy code newer than the DB) so the caller can
+    abort cleanly instead of crashing.
+    """
+    try:
+        resp = client.rpc('get_lifecycle_status', {}).execute()
+    except Exception as e:
+        return {'enabled': False, 'error': f'get_lifecycle_status unavailable: {e}'}
+    data = resp.data if resp.data is not None else {}
+    if isinstance(data, dict):
+        return data
+    return {'enabled': False, 'error': 'unexpected get_lifecycle_status response'}
+
+
+def log_deploy_event(
+    client: Client,
+    *,
+    action: str,
+    actor: str | None = None,
+    deployment_id: int | None = None,
+    observation: str | None = None,
+    affected_count: int | None = None,
+    metadata: dict | None = None,
+    host: str | None = None,
+) -> str | None:
+    """Append one row to the deploy_events audit log via the SECURITY DEFINER RPC
+    (the only sanctioned write path — the table has no client INSERT policy).
+    Returns the event id, or None on failure (audit is best-effort; never blocks
+    the deploy)."""
+    try:
+        resp = client.rpc('log_deploy_event', {
+            'p_action': action,
+            'p_actor': actor,
+            'p_deployment_id': deployment_id,
+            'p_observation': observation,
+            'p_affected_count': affected_count,
+            'p_metadata': metadata,
+            'p_host': host,
+        }).execute()
+        return resp.data if resp.data else None
+    except Exception as e:
+        print(f"  Warning: could not write deploy_event ({action}): {e}")
+        return None
+
+
+def get_latest_deployment_id(client: Client, observation: str) -> int | None:
+    """The most recent deployment id for an observation (lifecycle anchor)."""
+    resp = (client.table('deployments')
+            .select('id')
+            .eq('observation', observation)
+            .order('id', desc=True)
+            .limit(1)
+            .execute())
+    if resp.data:
+        return resp.data[0]['id']
+    return None
+
+
+def set_deployment_status(
+    client: Client,
+    deployment_id: int,
+    to_status: str,
+    *,
+    actor: str | None = None,
+    host: str | None = None,
+) -> dict | None:
+    """Transition a deployment's lifecycle (publish/revoke/in_prep) via the
+    SECURITY DEFINER RPC: flips the deployment + its spectra + recomputes
+    has_published_spectrum + writes audit rows, all server-side. Returns the RPC
+    result json, or None on failure."""
+    try:
+        resp = client.rpc('set_deployment_status', {
+            'p_deployment_id': deployment_id,
+            'p_to': to_status,
+            'p_actor': actor,
+            'p_host': host,
+        }).execute()
+        return resp.data
+    except Exception as e:
+        print(f"  Warning: set_deployment_status({deployment_id} -> {to_status}) failed: {e}")
+        return None
 
 
 def update_latest_deployment(
