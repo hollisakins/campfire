@@ -42,7 +42,7 @@ export async function GET(
     );
 
     // Admins syncing an observation need its full manifest, including
-    // in_prep spectra; non-admins only ever see published rows. No-op in B1.
+    // draft spectra; non-admins only ever see published rows. No-op in B1.
     const includeUnpublished = await isAdminUser(userId);
 
     // Get all spectra for this observation (the main payload)

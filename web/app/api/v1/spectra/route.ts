@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Service-role read bypasses RLS, so gate unpublished spectra here: a
-    // non-admin must never resolve an in_prep/revoked FITS by path. No-op in B1.
+    // non-admin must never resolve an draft/revoked FITS by path. No-op in B1.
     const isAdmin = await isAdminUser(userId);
 
     let spectrumQuery = supabase

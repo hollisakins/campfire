@@ -50,14 +50,19 @@ def _clean_str(value) -> str | None:
     return s
 
 
-def load_summary(obs_dir: Path, obs_name: str) -> Table:
+def load_summary(obs_dir: Path, obs_name: str, required: bool = True) -> Table | None:
     """
-    Load the observation summary ECSV.
+    Load the observation summary ECSV (the stage3 finals manifest).
 
-    Raises SystemExit with a helpful message if the file is missing.
+    When ``required`` (default), a missing file is a hard error. When
+    ``required=False`` (epic #210, B5), a missing summary returns None instead —
+    the caller then treats the deploy as intermediates-only (no stage3 finals yet),
+    which is automatically a draft.
     """
     ecsv_path = obs_dir / f"{obs_name}_summary.ecsv"
     if not ecsv_path.exists():
+        if not required:
+            return None
         print(f"Error: Summary file not found: {ecsv_path}")
         print(f"Run `cfpipe nirspec summary --obs {obs_name}` first.")
         sys.exit(1)

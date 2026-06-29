@@ -2,7 +2,7 @@
 
 DB-backed integration test: runs ``sql/b1_deploy_status_leak.sql`` against the
 local Supabase Postgres via ``docker exec ... psql`` and asserts the harness
-reaches its PASS marker. The SQL marks seed rows in_prep/revoked inside a
+reaches its PASS marker. The SQL marks seed rows draft/revoked inside a
 transaction (rolled back) and asserts a non-admin sees ZERO of them through RLS
 and the service-role RPC predicate, while an admin does — the B1 exit criterion.
 
@@ -43,7 +43,7 @@ requires_local_db = pytest.mark.skipif(
 
 @requires_local_db
 def test_deploy_status_no_leak_to_non_admin():
-    """Non-admin gets zero in_prep/revoked rows (RLS + RPC); admin sees them."""
+    """Non-admin gets zero draft/revoked rows (RLS + RPC); admin sees them."""
     sql = SQL_FILE.read_text()
     result = subprocess.run(
         ["docker", "exec", "-i", CONTAINER,
@@ -54,7 +54,7 @@ def test_deploy_status_no_leak_to_non_admin():
     # A leak/regression RAISEs inside a DO block -> ON_ERROR_STOP -> non-zero exit.
     assert result.returncode == 0, (
         f"B1 leak harness FAILED (psql exit {result.returncode}).\n"
-        f"This means a reader exposed an in_prep/revoked row to a non-admin, or a "
+        f"This means a reader exposed an draft/revoked row to a non-admin, or a "
         f"published control row regressed. Output:\n{combined}"
     )
     assert PASS_MARKER in result.stdout, (

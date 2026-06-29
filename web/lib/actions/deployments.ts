@@ -26,7 +26,7 @@ async function requireAdmin() {
   return { supabase, userId: user.id };
 }
 
-export type DeployStatus = 'in_prep' | 'published' | 'revoked';
+export type DeployStatus = 'draft' | 'published' | 'revoked';
 
 export interface DeploymentRow {
   id: number;

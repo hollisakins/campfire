@@ -19,6 +19,22 @@ def discover_sed_plots(obs_dir: Path) -> list[Path]:
     return sorted(obs_dir.glob('*_sed.pdf'))
 
 
+def discover_spectrum_exposures(obs_dir: Path) -> list[Path]:
+    """Find the canonical NIRSpec spectrum-exposure intermediates (epic #210, B5).
+
+    These are the bare per-(exposure,detector,source) canonical files (issue #212),
+    named ``{root}_{nod}_nrs[12]_{source}.fits`` — e.g.
+    ``jw07076020001_04101_00001_nrs1_117757.fits``. They live in the same products
+    directory as the final ``*_spec.fits`` products; the ``_nrs[12]_`` segment is
+    what distinguishes a per-exposure intermediate from a final (whose name is
+    grating/filter-based and ends ``_spec.fits``). Excludes finals defensively.
+    """
+    return sorted(
+        p for p in obs_dir.glob('*_nrs[12]_*.fits')
+        if not p.name.endswith('_spec.fits')
+    )
+
+
 def discover_slits_json(obs_dir: Path, obs_name: str) -> Path | None:
     """Find the slit geometry JSON file, or None if absent."""
     slits_path = obs_dir / f'{obs_name}_slits.json'

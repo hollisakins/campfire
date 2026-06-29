@@ -301,13 +301,13 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "redshift_auto" double precision,
     "dq_flags" integer NOT NULL DEFAULT 0,
     -- B1 (#217): deploy lifecycle. 'published' is the only status visible to
-    -- non-admins; 'in_prep' (admin-only draft, written by B2) and 'revoked'
+    -- non-admins; 'draft' (admin-only draft, written by B2) and 'revoked'
     -- (soft-deleted, recoverable) are hidden by the status predicate threaded
     -- through every reader. Default 'published' so existing rows and any deploy
     -- path that omits the column stay visible (fail-closed: forgetting to mark a
     -- row keeps it published; forgetting to *filter* a reader is the hazard the
     -- predicate guards). Mirrors storage_objects.status.
-    "deploy_status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "spectra_deploy_status_check" CHECK (("deploy_status" = ANY (ARRAY['in_prep'::"text", 'published'::"text", 'revoked'::"text"]))),
+    "deploy_status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "spectra_deploy_status_check" CHECK (("deploy_status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
     -- Stable per-spectrum identifier derived from fits_path: strips the leading
     -- directory and the trailing "_spec.fits" suffix (e.g. ember_cosmos_p1_prism_clear_12345).
     -- Generated/stored so it stays in sync with fits_path with no application code path.
@@ -623,7 +623,7 @@ ALTER TABLE "public"."observations" OWNER TO "postgres";
 CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "id" integer NOT NULL,
     "observation" "text" NOT NULL,
-    "deployed_by" "uuid" NOT NULL,
+    "deployed_by" "uuid",
     "deployed_at" timestamp with time zone DEFAULT "now"(),
     "cfpipe_version" "text",
     "jwst_version" "text",
@@ -638,12 +638,12 @@ CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "stuck_shutters" "jsonb",
     "reduced_at" timestamp with time zone,
     -- B2 (#218): deployment lifecycle. A deployment is the batch anchor for the
-    -- in_prep -> published -> revoked flow. 'published' is the default so existing
+    -- draft -> published -> revoked flow. 'published' is the default so existing
     -- rows (and ordinary deploys) stay published; `deploy --in-prep` inserts with
-    -- 'in_prep'. published_at/revoked_at stamp the transitions (set by the
+    -- 'draft'. published_at/revoked_at stamp the transitions (set by the
     -- set_deployment_status RPC). The user-facing visibility gate lives on
     -- spectra.deploy_status; this column is the provenance/audit record.
-    "status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "deployments_status_check" CHECK (("status" = ANY (ARRAY['in_prep'::"text", 'published'::"text", 'revoked'::"text"]))),
+    "status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "deployments_status_check" CHECK (("status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
     "published_at" timestamp with time zone,
     "revoked_at" timestamp with time zone
 );

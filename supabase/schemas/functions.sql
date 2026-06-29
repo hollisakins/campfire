@@ -2963,7 +2963,7 @@ GRANT EXECUTE ON FUNCTION public.get_storage_budget TO authenticated, service_ro
 -- =============================================================================
 -- Intermediate-product lifecycle (epic #210, B2/B3)
 -- =============================================================================
--- The publish/revoke/recover flow for in_prep science. spectra.deploy_status is
+-- The publish/revoke/recover flow for draft science. spectra.deploy_status is
 -- the user-facing visibility gate (B1); these RPCs are the only sanctioned way
 -- to transition it, and they keep targets/objects.has_published_spectrum and the
 -- deploy_events audit log in lockstep. All are SECURITY DEFINER + admin/service_role
@@ -3155,7 +3155,7 @@ BEGIN
     RAISE EXCEPTION 'Access denied: Admin privileges required';
   END IF;
 
-  IF p_to NOT IN ('in_prep', 'published', 'revoked') THEN
+  IF p_to NOT IN ('draft', 'published', 'revoked') THEN
     RAISE EXCEPTION 'Invalid deploy_status: %', p_to;
   END IF;
 
@@ -3192,7 +3192,7 @@ GRANT EXECUTE ON FUNCTION public.set_spectra_deploy_status(integer[], text, text
 
 
 -- set_deployment_status: deployment-scoped publish/revoke. Resolves the
--- deployment's observation, transitions its spectra (in_prep->published on
+-- deployment's observation, transitions its spectra (draft->published on
 -- publish; published->revoked on revoke), stamps the deployment lifecycle, and
 -- delegates the per-spectrum work (+ audit + recompute) to set_spectra_deploy_status.
 CREATE OR REPLACE FUNCTION public.set_deployment_status(
@@ -3217,7 +3217,7 @@ BEGIN
     RAISE EXCEPTION 'Access denied: Admin privileges required';
   END IF;
 
-  IF p_to NOT IN ('in_prep', 'published', 'revoked') THEN
+  IF p_to NOT IN ('draft', 'published', 'revoked') THEN
     RAISE EXCEPTION 'Invalid status: %', p_to;
   END IF;
 
@@ -3227,17 +3227,17 @@ BEGIN
   END IF;
 
   -- Which current statuses transition to p_to:
-  --   p_to='published'  -> in_prep (first publish) OR revoked (recover) become visible
+  --   p_to='published'  -> draft (first publish) OR revoked (recover) become visible
   --   p_to='revoked'    -> published spectra are hidden
-  --   p_to='in_prep'    -> published spectra go back to draft
-  -- The prior version matched only 'in_prep' for the published case, so recovering
+  --   p_to='draft'    -> published spectra go back to draft
+  -- The prior version matched only 'draft' for the published case, so recovering
   -- a REVOKED deployment flipped the deployment row but left its spectra revoked
   -- and hidden ("0 updated", silently inconsistent) — #233 review.
   SELECT array_agg(s.id) INTO v_spectrum_ids
   FROM spectra s JOIN targets t ON s.target_id = t.target_id
   WHERE t.observation = v_obs
     AND s.deploy_status = ANY (
-      CASE p_to WHEN 'published' THEN ARRAY['in_prep', 'revoked']
+      CASE p_to WHEN 'published' THEN ARRAY['draft', 'revoked']
                 WHEN 'revoked'   THEN ARRAY['published']
                 ELSE                  ARRAY['published'] END);
 
@@ -3245,7 +3245,7 @@ BEGIN
   -- first 'publish'. Computed before the transition (spectra still hold old status).
   v_action := CASE
     WHEN p_to = 'revoked' THEN 'revoke'
-    WHEN p_to = 'in_prep' THEN 'upload'
+    WHEN p_to = 'draft' THEN 'upload'
     WHEN EXISTS (SELECT 1 FROM spectra s JOIN targets t ON s.target_id = t.target_id
                  WHERE t.observation = v_obs AND s.deploy_status = 'revoked')
       THEN 'recover'

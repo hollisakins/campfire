@@ -82,6 +82,21 @@ def normalize_etag(etag: str | None) -> str | None:
 # Key → row mapping
 # ---------------------------------------------------------------------------
 
+def _exposure_ref_for(product_type: str, filename: str) -> str | None:
+    """Stable per-exposure reference for exposure-level intermediates (epic #210).
+
+    For ``nirspec_spectrum_exposure`` the canonical filename
+    (``{root}_{nod}_nrs[12]_{source}.fits``) IS the natural unique exposure key, so
+    the ref is the filename stem (drop ``.fits``). Backs the partial-unique
+    ``(product_type, exposure_ref) WHERE status='active'`` registry contract
+    (one current object per product/exposure). None for non-exposure products
+    (their exposure_ref stays NULL; NULLs are distinct, so finals never collide).
+    """
+    if product_type == 'nirspec_spectrum_exposure' and filename.endswith('.fits'):
+        return filename[: -len('.fits')]
+    return None
+
+
 def _spectrum_id_for(filename: str) -> str | None:
     """Derive the owning spectrum_id from a spectrum-family filename.
 
@@ -145,10 +160,10 @@ def row_for_key(
         'observation': scope.obs,
         'field': scope.field,
         'spectrum_id': _spectrum_id_for(parsed.filename),
-        # exposure_ref is reserved for exposure-level intermediates (not deployed
-        # in F1). Left NULL so the partial UNIQUE (product_type, exposure_ref)
-        # WHERE active never collides for finals/previews (NULLs are distinct).
-        'exposure_ref': None,
+        # Exposure-level intermediates (nirspec_spectrum_exposure) carry a stable
+        # exposure_ref (filename stem) backing the partial-unique registry contract;
+        # finals/previews leave it NULL (NULLs are distinct, so they never collide).
+        'exposure_ref': _exposure_ref_for(product_type, parsed.filename),
         'deployment_id': deployment_id,
         'cfpipe_version': cfpipe_version,
         'uploaded_by': uploaded_by,

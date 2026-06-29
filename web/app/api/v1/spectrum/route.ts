@@ -57,7 +57,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Service-role read bypasses RLS, so gate unpublished spectra here: a
-    // non-admin must never receive flux/wave/2D JSON for an in_prep/revoked
+    // non-admin must never receive flux/wave/2D JSON for an draft/revoked
     // spectrum, whether resolved by spectrum_id or by fits_path. No-op in B1.
     const isAdmin = await isAdminUser(userId);
 

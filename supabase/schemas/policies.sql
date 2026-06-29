@@ -476,7 +476,7 @@ CREATE POLICY "select_spectra_by_access"
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     )
     -- B1 (#217): PRIMARY per-row gate. Only 'published' spectra reach non-admins;
-    -- 'in_prep' and 'revoked' are hidden. This is the sole gate for the user-client
+    -- 'draft' and 'revoked' are hidden. This is the sole gate for the user-client
     -- web routes that read spectra directly and never call an RPC (/api/spectrum,
     -- /api/download, /api/redshift-fit, /api/spectrum-thumbnail). Admins see all.
     AND (deploy_status = 'published' OR (SELECT public.is_admin()))
