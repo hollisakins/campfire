@@ -17,11 +17,16 @@
 --    Refresh after data deployments using refresh_filter_options().
 DROP MATERIALIZED VIEW IF EXISTS public.mv_filter_options;
 
+-- Published-only (B1): this is a GLOBAL matview with no per-viewer scope, so it
+-- is restricted to published data for everyone. fields/observations are derived
+-- from targets via has_published_spectrum; gratings from spectra via
+-- deploy_status. Admins get draft filter options through a live query elsewhere,
+-- not this matview. In B1 every predicate is a no-op (nothing is unpublished yet).
 CREATE MATERIALIZED VIEW public.mv_filter_options AS
 SELECT 1 AS id,
-    ARRAY(SELECT DISTINCT targets.field FROM public.targets ORDER BY targets.field) AS fields,
-    ARRAY(SELECT DISTINCT targets.observation FROM public.targets WHERE targets.observation IS NOT NULL ORDER BY targets.observation) AS observations,
-    ARRAY(SELECT DISTINCT spectra.grating FROM public.spectra ORDER BY spectra.grating) AS gratings
+    ARRAY(SELECT DISTINCT targets.field FROM public.targets WHERE targets.has_published_spectrum ORDER BY targets.field) AS fields,
+    ARRAY(SELECT DISTINCT targets.observation FROM public.targets WHERE targets.observation IS NOT NULL AND targets.has_published_spectrum ORDER BY targets.observation) AS observations,
+    ARRAY(SELECT DISTINCT spectra.grating FROM public.spectra WHERE spectra.deploy_status = 'published' ORDER BY spectra.grating) AS gratings
 WITH DATA;
 
 CREATE UNIQUE INDEX mv_filter_options_id ON public.mv_filter_options USING btree (id);
@@ -60,7 +65,11 @@ LEFT JOIN (
         ARRAY_AGG(DISTINCT t.field ORDER BY t.field) AS fields,
         ARRAY_AGG(DISTINCT t.observation ORDER BY t.observation) AS observations
     FROM targets t
-    LEFT JOIN spectra s ON s.target_id = t.target_id
+    -- Published-only (B1): restrict the grating aggregation to published
+    -- spectra. Predicate lives in the LEFT JOIN ON clause so targets with no
+    -- published spectrum are still counted (just contribute no gratings).
+    -- No-op in B1 (nothing is unpublished yet); guards B2 in_prep data.
+    LEFT JOIN spectra s ON s.target_id = t.target_id AND s.deploy_status = 'published'
     GROUP BY t.program_slug
 ) stats ON p.slug = stats.program_slug
 LEFT JOIN (
@@ -95,7 +104,12 @@ GRANT SELECT ON public.mv_programs_overview TO authenticated;
 --    (which also covered spectral_features — that flag category is dropped).
 DROP VIEW IF EXISTS public.spectrum_flag_summary;
 DROP VIEW IF EXISTS public.target_flag_summary;
-CREATE VIEW public.spectrum_flag_summary AS
+-- security_invoker (B1): this was a plain (definer) view that bypassed the
+-- spectra RLS policy. Flip to invoker semantics so the caller's RLS applies, and
+-- add a published predicate so draft spectra are hidden from non-admins. In B1
+-- every spectrum is published, so this is a no-op; it guards B2 in_prep data.
+CREATE VIEW public.spectrum_flag_summary
+WITH (security_invoker = true) AS
 SELECT
     s.id,
     s.target_id,
@@ -103,6 +117,7 @@ SELECT
     array_agg(DISTINCT fd.label) FILTER (WHERE fd.category = 'dq_flags' AND (s.dq_flags & fd.value) > 0) AS dq_flags_labels
 FROM public.spectra s
 CROSS JOIN public.flag_definitions fd
+WHERE (s.deploy_status = 'published' OR public.is_admin())
 GROUP BY s.id, s.target_id, s.grating;
 
 GRANT ALL ON TABLE public.spectrum_flag_summary TO anon;
@@ -122,7 +137,12 @@ DROP VIEW IF EXISTS public.targets_with_flags;
 --    chain). `uncal` means the raw exposure exists but no canonical file
 --    has been produced yet by `detector1`.
 DROP VIEW IF EXISTS public.nircam_reduction_progress;
-CREATE VIEW public.nircam_reduction_progress AS
+-- security_invoker (B1): this was a plain (definer) view that bypassed the
+-- admin-only RLS on nircam_exposures, leaking QA aggregates to all authenticated
+-- users. Flip to invoker semantics so the nircam_exposures RLS policy applies.
+-- (NIRCam deploy_status gating is deferred to B2; this is only the leak fix.)
+CREATE VIEW public.nircam_reduction_progress
+WITH (security_invoker = true) AS
 SELECT
     field,
     filter,

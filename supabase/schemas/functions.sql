@@ -121,9 +121,12 @@ GRANT EXECUTE ON FUNCTION public.accessible_program_slugs() TO authenticated;
 -- inside this function: it is SECURITY INVOKER, but when called from a
 -- SECURITY DEFINER context it would run as the owner with RLS bypassed — the
 -- explicit p_program_slugs filter is the access gate.
+DROP FUNCTION IF EXISTS public.object_scoped_aggregates(INTEGER, TEXT[]);
+
 CREATE OR REPLACE FUNCTION public.object_scoped_aggregates(
   p_object_id INTEGER,
-  p_program_slugs TEXT[]
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE(
   programs          TEXT[],
@@ -141,11 +144,15 @@ AS $$
     FROM targets t
     WHERE t.object_id = p_object_id
       AND t.program_slug = ANY(p_program_slugs)
+      -- B1: only count targets that contribute a published spectrum so
+      -- n_targets / programs / observations don't include draft-only members.
+      AND (p_include_unpublished OR t.has_published_spectrum)
   ),
   sp AS (
     SELECT s.grating, s.signal_to_noise, s.exposure_time
     FROM spectra s
     WHERE s.target_id IN (SELECT target_id FROM m)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
   )
   SELECT
     COALESCE((SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) FROM m), '{}')::text[],
@@ -157,8 +164,8 @@ AS $$
     (SELECT MAX(sp.exposure_time) FROM sp);
 $$;
 
-GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[]) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[]) TO service_role;
+GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[], BOOLEAN) TO service_role;
 
 
 -- =============================================================================
@@ -218,7 +225,7 @@ GRANT ALL ON FUNCTION public.check_device_code_status(text) TO service_role;
 -- (lightweight bulk fetch for Python client objects catalog sync)
 -- =============================================================================
 
-DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER);
+DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN);
 
 CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_program_slugs TEXT[],
@@ -226,7 +233,8 @@ CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
   p_offset INTEGER DEFAULT 0,
-  p_include_counts BOOLEAN DEFAULT TRUE
+  p_include_counts BOOLEAN DEFAULT TRUE,
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
@@ -261,6 +269,8 @@ BEGIN
       -- Phase D: hide soft-deleted objects from sync. Reactivation rewrites
       -- updated_at, so re-activated rows get re-synced naturally on next pull.
       AND o.is_active = true
+      -- B1: drop objects with no published spectrum (fail-closed).
+      AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_updated_since IS NULL OR o.updated_at > p_updated_since)
     ORDER BY o.object_id
     LIMIT p_limit OFFSET p_offset
@@ -291,6 +301,7 @@ BEGIN
     JOIN targets t ON t.target_id = s.target_id
     WHERE t.object_id IN (SELECT id FROM matched)
       AND t.program_slug = ANY(p_program_slugs)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
     GROUP BY t.object_id
   ),
   lists_agg AS (
@@ -311,6 +322,7 @@ BEGIN
     WHERE p_include_counts
       AND o.programs && p_program_slugs
       AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_updated_since IS NULL OR o.updated_at > p_updated_since)
   ),
   accessible AS (
@@ -319,6 +331,7 @@ BEGIN
     WHERE p_include_counts
       AND o.programs && p_program_slugs
       AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -365,12 +378,12 @@ BEGIN
   LEFT JOIN member_targets_agg mt ON mt.object_id = m.id
   LEFT JOIN spectra_agg         sp ON sp.object_id = m.id
   LEFT JOIN lists_agg           la ON la.object_id = m.id
-  LEFT JOIN LATERAL public.object_scoped_aggregates(m.id, p_program_slugs) sa ON true;
+  LEFT JOIN LATERAL public.object_scoped_aggregates(m.id, p_program_slugs, p_include_unpublished) sa ON true;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO service_role;
 
 
 -- =============================================================================
@@ -380,7 +393,7 @@ GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 -- spectra fields only)
 -- =============================================================================
 
-DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER);
+DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN);
 
 CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   p_program_slugs TEXT[],
@@ -388,7 +401,8 @@ CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
   p_offset INTEGER DEFAULT 0,
-  p_include_counts BOOLEAN DEFAULT TRUE
+  p_include_counts BOOLEAN DEFAULT TRUE,
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
@@ -412,6 +426,8 @@ BEGIN
     LEFT JOIN objects o ON o.id = t.object_id
     WHERE t.program_slug = ANY(p_program_slugs)
       AND (o.id IS NULL OR o.is_active = true)
+      -- B1: fail-closed publish gate (this RPC always bypasses RLS).
+      AND (p_include_unpublished OR s.deploy_status = 'published')
       AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
     ORDER BY s.spectrum_id
     LIMIT p_limit OFFSET p_offset
@@ -426,6 +442,7 @@ BEGIN
     WHERE p_include_counts
       AND t.program_slug = ANY(p_program_slugs)
       AND (o.id IS NULL OR o.is_active = true)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
       AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
   ),
   accessible AS (
@@ -436,6 +453,7 @@ BEGIN
     WHERE p_include_counts
       AND t.program_slug = ANY(p_program_slugs)
       AND (o.id IS NULL OR o.is_active = true)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -470,8 +488,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO service_role;
 
 
 -- =============================================================================
@@ -479,11 +497,14 @@ GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 -- (bulk fetch for Python client photometry sync)
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER);
+
 CREATE OR REPLACE FUNCTION public.get_photometry_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
-  p_offset INTEGER DEFAULT 0
+  p_offset INTEGER DEFAULT 0,
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE(photometry_records JSONB, total_count BIGINT)
 LANGUAGE plpgsql STABLE
@@ -502,6 +523,8 @@ BEGIN
     FROM object_photometry op
     JOIN objects o ON o.id = op.object_id
     WHERE o.programs && p_program_slugs
+      -- B1: fail-closed publish gate (this RPC always bypasses RLS).
+      AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_updated_since IS NULL OR op.updated_at > p_updated_since)
     ORDER BY op.id
     LIMIT p_limit OFFSET p_offset
@@ -511,6 +534,7 @@ BEGIN
     FROM object_photometry op
     JOIN objects o ON o.id = op.object_id
     WHERE o.programs && p_program_slugs
+      AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_updated_since IS NULL OR op.updated_at > p_updated_since)
   )
   SELECT
@@ -536,8 +560,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO service_role;
 
 
 -- =============================================================================
@@ -545,8 +569,11 @@ GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, IN
 -- (returns all list metadata for Python client sync)
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_lists_for_sync(UUID);
+
 CREATE OR REPLACE FUNCTION public.get_lists_for_sync(
-  p_user_id UUID DEFAULT NULL
+  p_user_id UUID DEFAULT NULL,
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS JSONB
 LANGUAGE plpgsql STABLE
@@ -563,7 +590,14 @@ BEGIN
       'created_by', ol.created_by,
       'created_at', ol.created_at,
       'updated_at', ol.updated_at,
-      'member_count', (SELECT COUNT(*) FROM object_list_members olm WHERE olm.list_id = ol.id)
+      -- B1: count only members whose object has a published spectrum (unlinked
+      -- coordinate-keyed members, object_id IS NULL, still count). Fail-closed.
+      'member_count', (
+        SELECT COUNT(*) FROM object_list_members olm
+        LEFT JOIN objects o ON o.id = olm.object_id
+        WHERE olm.list_id = ol.id
+          AND (p_include_unpublished OR olm.object_id IS NULL OR o.has_published_spectrum)
+      )
     ) ORDER BY ol.is_system DESC, ol.name)
     FROM object_lists ol
     WHERE ol.created_by = p_user_id
@@ -573,8 +607,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_lists_for_sync(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_lists_for_sync(UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_lists_for_sync(UUID, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_lists_for_sync(UUID, BOOLEAN) TO service_role;
 
 
 -- =============================================================================
@@ -630,7 +664,8 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_sort_direction TEXT DEFAULT 'asc',
   p_page INTEGER DEFAULT 1,
   p_page_size INTEGER DEFAULT 50,
-  p_include_thumbnails BOOLEAN DEFAULT false
+  p_include_thumbnails BOOLEAN DEFAULT false,
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE(targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER)
 LANGUAGE plpgsql STABLE
@@ -747,6 +782,8 @@ BEGIN
       -- Hide spectra whose parent object was soft-deleted.
       AND (o.id IS NULL OR o.is_active = true)
       AND (NOT v_grating_filter_active OR s.grating = ANY(p_gratings))
+      -- B1: hide unpublished spectra (fail-closed; admin opt-in only).
+      AND (p_include_unpublished OR s.deploy_status = 'published')
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR t.field = ANY(p_fields))
       AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR t.observation = ANY(p_observations))
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
@@ -934,7 +971,8 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_sort_column TEXT DEFAULT 'object_id',
   p_sort_direction TEXT DEFAULT 'asc',
   p_page INTEGER DEFAULT 1,
-  p_page_size INTEGER DEFAULT 50
+  p_page_size INTEGER DEFAULT 50,
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE(targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER)
 LANGUAGE plpgsql STABLE
@@ -1001,6 +1039,8 @@ BEGIN
     -- Access control: object must have at least one accessible program
     o.programs && v_filtered_program_slugs
     AND o.is_active = true
+    -- B1: hide objects with no published spectrum (fail-closed).
+    AND (p_include_unpublished OR o.has_published_spectrum)
     AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
     AND (
       NOT v_grating_filter_active
@@ -1124,6 +1164,7 @@ BEGIN
     WHERE
       o.programs && v_filtered_program_slugs
       AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
         NOT v_grating_filter_active
@@ -1305,7 +1346,7 @@ BEGIN
         )
       ) AS obj_json
     FROM filtered_objects fo
-    LEFT JOIN LATERAL public.object_scoped_aggregates(fo.id, v_filtered_program_slugs) sa ON true
+    LEFT JOIN LATERAL public.object_scoped_aggregates(fo.id, v_filtered_program_slugs, p_include_unpublished) sa ON true
   )
   SELECT
     COALESCE(jsonb_agg(wm.obj_json), '[]'::jsonb),
@@ -1353,7 +1394,8 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
   p_sort_column TEXT DEFAULT 'object_id',
-  p_sort_direction TEXT DEFAULT 'asc'
+  p_sort_direction TEXT DEFAULT 'asc',
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE(object_id TEXT)
 LANGUAGE plpgsql STABLE
@@ -1410,6 +1452,7 @@ BEGIN
   WHERE
     o.programs && v_filtered_program_slugs
     AND o.is_active = true
+    AND (p_include_unpublished OR o.has_published_spectrum)
     AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
     AND (
       NOT v_grating_filter_active
@@ -1559,7 +1602,8 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
-  p_comment_user_id UUID DEFAULT NULL
+  p_comment_user_id UUID DEFAULT NULL,
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE(prev_object_id TEXT, next_object_id TEXT, current_index BIGINT, total_count BIGINT)
 LANGUAGE plpgsql STABLE
@@ -1623,6 +1667,7 @@ BEGIN
     WHERE
       o.programs && v_filtered_program_slugs
       AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
         NOT v_grating_filter_active
@@ -1802,7 +1847,8 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_comment_user_id UUID DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
-  p_sort_column TEXT DEFAULT 'target_id', p_sort_direction TEXT DEFAULT 'asc'
+  p_sort_column TEXT DEFAULT 'target_id', p_sort_direction TEXT DEFAULT 'asc',
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE(
   spectrum_id TEXT, target_id TEXT, grating TEXT, field TEXT, ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
@@ -1860,6 +1906,8 @@ BEGIN
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (o.id IS NULL OR o.is_active = true)
       AND (NOT v_grating_filter_active OR s.grating = ANY(p_gratings))
+      -- B1: hide unpublished spectra (fail-closed; admin opt-in only).
+      AND (p_include_unpublished OR s.deploy_status = 'published')
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR t.field = ANY(p_fields))
       AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR t.observation = ANY(p_observations))
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
@@ -1966,7 +2014,8 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_photo_z_min DOUBLE PRECISION DEFAULT NULL, p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
-  p_sort_column TEXT DEFAULT 'object_id', p_sort_direction TEXT DEFAULT 'asc'
+  p_sort_column TEXT DEFAULT 'object_id', p_sort_direction TEXT DEFAULT 'asc',
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE(
   object_id TEXT, field TEXT, ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
@@ -2052,13 +2101,14 @@ BEGIN
     LEFT JOIN member_targets mt ON mt.object_id = o.id
     LEFT JOIN visible_lists vl ON vl.object_id = o.id
     LEFT JOIN user_profiles up ON up.user_id = o.last_inspected_by
-    LEFT JOIN LATERAL public.object_scoped_aggregates(o.id, v_filtered_program_slugs) sa ON true
+    LEFT JOIN LATERAL public.object_scoped_aggregates(o.id, v_filtered_program_slugs, p_include_unpublished) sa ON true
     LEFT JOIN LATERAL (
       SELECT op.photometry FROM object_photometry op
       WHERE op.object_id = o.id ORDER BY op.updated_at DESC LIMIT 1
     ) phot ON true
     WHERE o.programs && v_filtered_program_slugs
       AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
         NOT v_grating_filter_active
@@ -2216,7 +2266,7 @@ GRANT EXECUTE ON FUNCTION public.refresh_programs_overview TO authenticated;
 -- masquerade as observation-level reductions.
 DROP FUNCTION IF EXISTS public.get_observation_stats(text[]);
 
-CREATE OR REPLACE FUNCTION public.get_observation_stats(p_program_slugs text[])
+CREATE OR REPLACE FUNCTION public.get_observation_stats(p_program_slugs text[], p_include_unpublished boolean DEFAULT false)
 RETURNS TABLE(
   observation text, program_slug text, program_name text, field text,
   target_count bigint, spectrum_count bigint, total_size_bytes bigint,
@@ -2234,6 +2284,8 @@ RETURNS TABLE(
     FROM targets t
     JOIN programs p ON p.slug = t.program_slug
     LEFT JOIN spectra s ON s.target_id = t.target_id
+      -- B1: unpublished spectra don't contribute to counts/size (targets still appear).
+      AND (p_include_unpublished OR s.deploy_status = 'published')
     WHERE t.program_slug = ANY(p_program_slugs)
     GROUP BY t.observation, t.program_slug, p.program_name, t.field
   )
@@ -2292,7 +2344,7 @@ GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
 DROP FUNCTION IF EXISTS public.get_observations_overview();
 DROP FUNCTION IF EXISTS public.get_observations_overview(text[]);
 
-CREATE OR REPLACE FUNCTION public.get_observations_overview(p_program_slugs text[])
+CREATE OR REPLACE FUNCTION public.get_observations_overview(p_program_slugs text[], p_include_unpublished boolean DEFAULT false)
 RETURNS TABLE(
   observation text, program_slug text, program_name text, field text,
   cycle integer, gratings text[], pointing_count integer, pointings jsonb,
@@ -2311,6 +2363,8 @@ RETURNS TABLE(
         FILTER (WHERE s.grating IS NOT NULL) AS gratings
     FROM public.targets t
     LEFT JOIN public.spectra s ON s.target_id = t.target_id
+      -- B1: unpublished spectra don't contribute to counts/size/gratings.
+      AND (p_include_unpublished OR s.deploy_status = 'published')
     WHERE t.program_slug = ANY(p_program_slugs)
     GROUP BY t.observation, t.program_slug
   )
@@ -2367,7 +2421,7 @@ GRANT EXECUTE ON FUNCTION public.get_observations_overview TO authenticated;
 -- get_database_overview
 -- =============================================================================
 -- Single-row scope summary for the metadata page header.
-CREATE OR REPLACE FUNCTION public.get_database_overview()
+CREATE OR REPLACE FUNCTION public.get_database_overview(p_include_unpublished boolean DEFAULT false)
 RETURNS TABLE(
   n_programs bigint, n_observations bigint, n_pointings bigint,
   n_targets bigint, n_spectra bigint, total_size_bytes bigint,
@@ -2387,8 +2441,11 @@ RETURNS TABLE(
        FROM public.observations
        WHERE pointings IS NOT NULL) AS n_pointings,
     (SELECT COUNT(*)::bigint FROM public.targets) AS n_targets,
-    (SELECT COUNT(*)::bigint FROM public.spectra) AS n_spectra,
-    (SELECT COALESCE(SUM(file_size), 0)::bigint FROM public.spectra) AS total_size_bytes,
+    -- B1: gate spectra count/size on publish status (no alias param available).
+    (SELECT COUNT(*)::bigint FROM public.spectra
+       WHERE p_include_unpublished OR deploy_status = 'published') AS n_spectra,
+    (SELECT COALESCE(SUM(file_size), 0)::bigint FROM public.spectra
+       WHERE p_include_unpublished OR deploy_status = 'published') AS total_size_bytes,
     (SELECT deployed_at FROM latest) AS latest_deployed_at,
     (SELECT cfpipe_version FROM latest) AS latest_cfpipe_version;
 $$;
@@ -2402,7 +2459,7 @@ GRANT EXECUTE ON FUNCTION public.get_database_overview TO authenticated;
 
 DROP FUNCTION IF EXISTS public.get_observation_manifest(TEXT, TEXT[]);
 
-CREATE OR REPLACE FUNCTION public.get_observation_manifest(p_obs_name text, p_program_slugs text[])
+CREATE OR REPLACE FUNCTION public.get_observation_manifest(p_obs_name text, p_program_slugs text[], p_include_unpublished boolean DEFAULT false)
 RETURNS TABLE(
   spectra_id integer, spectrum_id text, target_id text, grating text, fits_path text,
   file_hash text, file_size bigint, signal_to_noise double precision, cfpipe_version text
@@ -2414,6 +2471,8 @@ BEGIN
   FROM spectra s
   JOIN targets t ON t.target_id = s.target_id
   WHERE t.observation = p_obs_name AND t.program_slug = ANY(p_program_slugs)
+    -- B1: fail-closed; admin sync passes p_include_unpublished => true.
+    AND (p_include_unpublished OR s.deploy_status = 'published')
   ORDER BY s.spectrum_id;
 END;
 $$;
@@ -2428,7 +2487,8 @@ GRANT EXECUTE ON FUNCTION public.get_observation_manifest TO authenticated;
 CREATE OR REPLACE FUNCTION public.get_targets_in_viewport(
   p_ra_min double precision, p_ra_max double precision,
   p_dec_min double precision, p_dec_max double precision,
-  p_field text DEFAULT NULL, p_limit integer DEFAULT 5000
+  p_field text DEFAULT NULL, p_limit integer DEFAULT 5000,
+  p_include_unpublished boolean DEFAULT false
 )
 RETURNS TABLE(
   "target_id" text, "ra" double precision, "dec" double precision,
@@ -2440,6 +2500,8 @@ BEGIN
   FROM public.targets t
   WHERE t.ra BETWEEN p_ra_min AND p_ra_max AND t.dec BETWEEN p_dec_min AND p_dec_max
     AND (p_field IS NULL OR t.field = p_field)
+    -- B1: hide targets with no published spectrum (fail-closed).
+    AND (p_include_unpublished OR t.has_published_spectrum)
   ORDER BY t.ra LIMIT p_limit;
 END;
 $$;
@@ -2492,7 +2554,7 @@ $$;
 -- targets(target_id) for the slit-filter bridge — both very expensive on
 -- COSMOS-sized fields. RLS on objects still applies (SECURITY INVOKER).
 
-CREATE OR REPLACE FUNCTION public.get_field_object_markers(p_field TEXT)
+CREATE OR REPLACE FUNCTION public.get_field_object_markers(p_field TEXT, p_include_unpublished BOOLEAN DEFAULT false)
 RETURNS TABLE (
   object_id           TEXT,
   ra                  DOUBLE PRECISION,
@@ -2527,6 +2589,10 @@ AS $$
     CROSS JOIN acc
     WHERE t.field = p_field
       AND t.program_slug = ANY(acc.slugs)
+      -- B1: mirror object_scoped_aggregates -- only count targets that
+      -- contribute a published spectrum so draft-only members vanish (the
+      -- final JOIN mt is inner, so objects with zero published members drop out).
+      AND (p_include_unpublished OR t.has_published_spectrum)
     GROUP BY t.object_id
   ),
   sp AS (
@@ -2536,6 +2602,7 @@ AS $$
     CROSS JOIN acc
     WHERE t.field = p_field
       AND t.program_slug = ANY(acc.slugs)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
     GROUP BY t.object_id
   )
   SELECT

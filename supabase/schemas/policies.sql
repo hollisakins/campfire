@@ -159,6 +159,10 @@ CREATE POLICY "select_targets_by_access"
   ON targets FOR SELECT
   USING (
     program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+    -- B1 (#217): hide targets whose only spectra are unpublished. Covers the
+    -- target-derived readers that never join spectra (map markers, sed-plot,
+    -- /api/targets/[id], tile-thumbnail). Admins see all.
+    AND (has_published_spectrum OR (SELECT public.is_admin()))
   );
 
 -- Users with can_inspect permission can update targets in accessible programs.
@@ -168,6 +172,9 @@ CREATE POLICY "update_targets_by_access"
   USING (
     program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     AND (SELECT public.can_inspect())
+    -- B1 (#217): a non-admin inspector cannot mutate a target with no published
+    -- spectrum (defense-in-depth; can't see it anyway via select policy).
+    AND (has_published_spectrum OR (SELECT public.is_admin()))
   );
 
 -- Admins can insert targets (deploy CLI).
@@ -204,6 +211,9 @@ CREATE POLICY "select_objects_by_access"
   ON objects FOR SELECT
   USING (
     programs && (SELECT public.accessible_program_slugs())
+    -- B1 (#217): hide objects whose only member spectra are unpublished. Admins
+    -- see all. has_published_spectrum is recomputed by reconcile from members.
+    AND (has_published_spectrum OR (SELECT public.is_admin()))
   );
 
 -- Admins can insert objects (deploy CLI: objects rebuild).
@@ -233,10 +243,14 @@ CREATE POLICY "update_objects_by_access"
   USING (
     programs && (SELECT public.accessible_program_slugs())
     AND (SELECT public.can_inspect())
+    -- B1 (#217): non-admin inspectors cannot mutate an object with no published
+    -- spectrum (defense-in-depth; not visible via select policy either).
+    AND (has_published_spectrum OR (SELECT public.is_admin()))
   )
   WITH CHECK (
     programs && (SELECT public.accessible_program_slugs())
     AND (SELECT public.can_inspect())
+    AND (has_published_spectrum OR (SELECT public.is_admin()))
   );
 
 -- Admins can delete objects (deploy CLI: objects rebuild wipes before re-insert).
@@ -260,6 +274,8 @@ CREATE POLICY "select_object_photometry_by_access"
     object_id IN (
       SELECT o.id FROM objects o
       WHERE o.programs && (SELECT public.accessible_program_slugs())
+        -- B1 (#217): no photometry for objects with no published spectrum.
+        AND (o.has_published_spectrum OR (SELECT public.is_admin()))
     )
   );
 
@@ -357,6 +373,9 @@ CREATE POLICY "select_list_members"
       OR object_id IN (
         SELECT o.id FROM objects o
         WHERE o.programs && (SELECT public.accessible_program_slugs())
+          -- B1 (#217): list members matched to an unpublished-only object are
+          -- hidden from non-admins (the object itself is invisible).
+          AND (o.has_published_spectrum OR (SELECT public.is_admin()))
       )
     )
   );
@@ -456,6 +475,11 @@ CREATE POLICY "select_spectra_by_access"
       SELECT t.target_id FROM targets t
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     )
+    -- B1 (#217): PRIMARY per-row gate. Only 'published' spectra reach non-admins;
+    -- 'in_prep' and 'revoked' are hidden. This is the sole gate for the user-client
+    -- web routes that read spectra directly and never call an RPC (/api/spectrum,
+    -- /api/download, /api/redshift-fit, /api/spectrum-thumbnail). Admins see all.
+    AND (deploy_status = 'published' OR (SELECT public.is_admin()))
   );
 
 -- Admins can insert spectra (deploy CLI).
@@ -491,6 +515,9 @@ CREATE POLICY "update_spectra_dq_by_access"
       SELECT t.target_id FROM targets t
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     )
+    -- B1 (#217): a non-admin inspector cannot set DQ flags on an unpublished
+    -- spectrum (can't see it via the select policy either).
+    AND (deploy_status = 'published' OR (SELECT public.is_admin()))
   )
   WITH CHECK (
     (SELECT public.can_inspect())
@@ -498,6 +525,7 @@ CREATE POLICY "update_spectra_dq_by_access"
       SELECT t.target_id FROM targets t
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     )
+    AND (deploy_status = 'published' OR (SELECT public.is_admin()))
   );
 
 
@@ -516,12 +544,14 @@ CREATE POLICY "select_comments_by_access"
     (target_id IS NOT NULL AND target_id IN (
       SELECT t.id FROM targets t
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+        AND (t.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
     ))
     OR
     -- Object-level comments
     (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
       SELECT o.id FROM objects o
       WHERE o.programs && (SELECT public.accessible_program_slugs())
+        AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
     ))
   );
 
@@ -563,15 +593,18 @@ CREATE POLICY "select_audit_by_access"
     (target_id IS NOT NULL AND target_id IN (
       SELECT t.id FROM targets t
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+        AND (t.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
     ))
     OR (object_id IS NOT NULL AND object_id IN (
       SELECT o.id FROM objects o
       WHERE o.programs && (SELECT public.accessible_program_slugs())
+        AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
     ))
     OR (spectrum_id IS NOT NULL AND spectrum_id IN (
       SELECT s.id FROM spectra s
       JOIN targets t ON t.target_id = s.target_id
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+        AND (s.deploy_status = 'published' OR (SELECT public.is_admin()))  -- B1 (#217)
     ))
   );
 
@@ -586,15 +619,18 @@ CREATE POLICY "insert_audit_by_access"
     (target_id IS NOT NULL AND target_id IN (
       SELECT t.id FROM targets t
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+        AND (t.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
     ))
     OR (object_id IS NOT NULL AND object_id IN (
       SELECT o.id FROM objects o
       WHERE o.programs && (SELECT public.accessible_program_slugs())
+        AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
     ))
     OR (spectrum_id IS NOT NULL AND spectrum_id IN (
       SELECT s.id FROM spectra s
       JOIN targets t ON t.target_id = s.target_id
       WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+        AND (s.deploy_status = 'published' OR (SELECT public.is_admin()))  -- B1 (#217)
     ))
   );
 
@@ -713,11 +749,21 @@ CREATE POLICY "Service role has full access to map layers"
 
 ALTER TABLE slit_regions ENABLE ROW LEVEL SECURITY;
 
--- All authenticated users can read slit regions.
+-- All authenticated users can read slit regions, EXCEPT those belonging to an
+-- object whose spectra are all unpublished (B1 #217). NOT EXISTS form: a slit is
+-- hidden only when a matching objects row exists AND is unpublished — orphan
+-- slits (no objects row) stay visible, so there is zero change while everything
+-- is published. Program-scoping of this table is tracked in #229.
 DROP POLICY IF EXISTS "Authenticated users can view slit regions" ON slit_regions;
 CREATE POLICY "Authenticated users can view slit regions"
   ON slit_regions FOR SELECT TO authenticated
-  USING (true);
+  USING (
+    (SELECT public.is_admin())
+    OR NOT EXISTS (
+      SELECT 1 FROM objects o
+      WHERE o.object_id = slit_regions.object_id AND o.has_published_spectrum = false
+    )
+  );
 
 -- Admins can insert slit regions (deploy CLI).
 DROP POLICY IF EXISTS "admin_slit_regions_insert" ON slit_regions;
@@ -738,11 +784,22 @@ CREATE POLICY "admin_slit_regions_delete"
 
 ALTER TABLE shutters ENABLE ROW LEVEL SECURITY;
 
--- All authenticated users can read shutters.
+-- All authenticated users can read shutters, EXCEPT those belonging to an object
+-- whose spectra are all unpublished (B1 #217). NOT EXISTS form: hidden only when a
+-- matching objects row exists AND is unpublished — orphan shutters stay visible,
+-- zero change while everything is published. NOTE: the /api/v1/shutters route and
+-- the get_*_shutters RPCs run under the service role (RLS bypassed) and gate
+-- separately. Program-scoping of this table is tracked in #229.
 DROP POLICY IF EXISTS "Authenticated users can view shutters" ON shutters;
 CREATE POLICY "Authenticated users can view shutters"
   ON shutters FOR SELECT TO authenticated
-  USING (true);
+  USING (
+    (SELECT public.is_admin())
+    OR NOT EXISTS (
+      SELECT 1 FROM objects o
+      WHERE o.object_id = shutters.object_id AND o.has_published_spectrum = false
+    )
+  );
 
 -- Admins can insert shutters (deploy CLI).
 DROP POLICY IF EXISTS "admin_shutters_insert" ON shutters;
