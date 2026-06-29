@@ -96,6 +96,27 @@ def local_store(tmp_path):
         },
     ])
 
+    # File/availability layer: the spectra above resolve their fits_path via the
+    # storage_objects mirror join, so seed matching rows.
+    store.upsert_storage_objects([
+        {
+            "storage_key": "spectra/test_obs/test_obs_prism_100_spec.fits",
+            "content_hash": "sha256:abc", "size_bytes": 1024,
+            "content_type": "application/fits", "product_type": "nirspec_spec",
+            "instrument": "nirspec", "status": "active", "observation": "test_obs",
+            "field": "cosmos", "spectrum_id": "test_obs_prism_100", "backend": "r2",
+            "bucket": "data", "deployment_id": 1,
+        },
+        {
+            "storage_key": "spectra/test_obs/test_obs_prism_200_spec.fits",
+            "content_hash": "sha256:def", "size_bytes": 1024,
+            "content_type": "application/fits", "product_type": "nirspec_spec",
+            "instrument": "nirspec", "status": "active", "observation": "test_obs",
+            "field": "cosmos", "spectrum_id": "test_obs_prism_200", "backend": "r2",
+            "bucket": "data", "deployment_id": 1,
+        },
+    ])
+
     yield store, tmp_path
     store.close()
 
@@ -229,11 +250,11 @@ class TestOpenSpectrum:
         fits_file = obs_dir / "test_obs_prism_100_spec.fits"
         fits_file.write_bytes(self._make_fits_bytes(50))
 
-        store.mark_synced(
-            spectrum_id="test_obs_prism_100",
+        store.mark_object_synced(
+            storage_key="spectra/test_obs/test_obs_prism_100_spec.fits",
             local_path="nirspec/test_obs/test_obs_prism_100_spec.fits",
-            file_hash="sha256:abc",
-            file_size=fits_file.stat().st_size,
+            local_file_hash="sha256:abc",
+            local_file_size=fits_file.stat().st_size,
         )
 
         spec = client.open_spectrum("test_obs_prism_100")

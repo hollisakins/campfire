@@ -729,11 +729,14 @@ CREATE POLICY "admin_select_deploy_scope_state"
 
 
 -- =============================================================================
--- storage_objects (admin-only — internal storage registry, epic #210 F1)
+-- storage_objects (program-scoped reads, epic #210 — the client download layer)
 -- =============================================================================
--- The registry is admin/internal: the web portal never reads it in F1, and
--- deploy backfill/reconcile run under the service role (RLS bypassed). RLS here
--- is defense-in-depth so no non-admin session can read or mutate it.
+-- The registry is the single file-availability authority. Reads are program-
+-- scoped (like targets/observations) so the Python client can mirror it as its
+-- one download/availability layer. Writes stay admin-only; deploy backfill/
+-- reconcile run under the service role (RLS bypassed). RLS is also the
+-- belt-and-suspenders companion to get_storage_objects_for_sync /
+-- filter_accessible_storage_keys, which restate this scope for the API path.
 
 ALTER TABLE storage_objects ENABLE ROW LEVEL SECURITY;
 
@@ -742,6 +745,36 @@ DROP POLICY IF EXISTS "admin_select_storage_objects" ON storage_objects;
 CREATE POLICY "admin_select_storage_objects"
   ON storage_objects FOR SELECT TO authenticated
   USING ((SELECT public.is_admin()));
+
+-- Program members can read PUBLISHED, active storage objects in programs they can
+-- access. Mirrors the spectra/targets B1 (#217) publish gate without depending on
+-- the (often-NULL) observation column: spectrum-family rows simply inherit their
+-- parent spectrum's visibility (program access + published); exposure/object-level
+-- rows are gated by their deployment (program via its observation + published
+-- status). Drafts/revoked and out-of-program rows stay hidden (admins see them via
+-- admin_select_storage_objects above). Rows with neither a spectrum_id nor a
+-- deployment_id (e.g. backfilled NIRCam) are admin-only until those land.
+DROP POLICY IF EXISTS "select_storage_objects_by_access" ON storage_objects;
+CREATE POLICY "select_storage_objects_by_access"
+  ON storage_objects FOR SELECT TO authenticated
+  USING (
+    status = 'active'
+    AND (
+      (storage_objects.spectrum_id IS NOT NULL AND EXISTS (
+         SELECT 1 FROM spectra s
+         JOIN targets t ON t.target_id = s.target_id
+         WHERE s.spectrum_id = storage_objects.spectrum_id
+           AND s.deploy_status = 'published'
+           AND t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])))
+      OR
+      (storage_objects.spectrum_id IS NULL AND storage_objects.deployment_id IS NOT NULL AND EXISTS (
+         SELECT 1 FROM deployments d
+         JOIN observations o ON o.name = d.observation
+         WHERE d.id = storage_objects.deployment_id
+           AND d.status = 'published'
+           AND o.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])))
+    )
+  );
 
 -- Admins can insert storage objects.
 DROP POLICY IF EXISTS "admin_insert_storage_objects" ON storage_objects;

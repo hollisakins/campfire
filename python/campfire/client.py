@@ -218,9 +218,10 @@ class Campfire:
         max_workers: int = 4,
         show_progress: bool = True,
     ) -> dict:
-        """Download FITS files for matching spectra."""
+        """Download FITS files for matching spectra (final products)."""
         from .api.session import create_download_session
-        from .sync import download_observation
+        from .sync import download_objects
+        from .db.store import FINAL_PRODUCT_TYPES
 
         if self._local is None:
             raise ValidationError("No local catalog. Run cf.sync() first.")
@@ -228,8 +229,8 @@ class Campfire:
         target_obs = set()
 
         if stale_only:
-            stale_files = self._local.get_stale_files()
-            target_obs = set(f["observation"] for f in stale_files)
+            stale_files = self._local.get_stale_objects()
+            target_obs = set(f["observation"] for f in stale_files if f.get("observation"))
             if not target_obs:
                 return {"downloaded": 0, "failed": 0, "bytes": 0, "message": "All files up to date"}
         else:
@@ -250,26 +251,21 @@ class Campfire:
                 )
 
         dl_session = create_download_session(max_workers)
-        total_downloaded = 0
-        total_failed = 0
-        total_bytes = 0
-
-        for obs in sorted(target_obs):
-            self._api_session._ensure_valid_token()
-            stats = download_observation(
-                self._api, obs, self._products_dir, self._local,
-                max_workers=max_workers,
-                download_session=dl_session,
-                grating_filter=gratings,
-            )
-            total_downloaded += stats.get("downloaded", 0)
-            total_failed += stats.get("failed", 0)
-            total_bytes += stats.get("download_bytes", 0)
-
+        self._api_session._ensure_valid_token()
+        stats = download_objects(
+            self._api,
+            sorted(target_obs),
+            list(FINAL_PRODUCT_TYPES),
+            self._local,
+            self._products_dir,
+            max_workers=max_workers,
+            download_session=dl_session,
+            gratings=gratings,
+        )
         return {
-            "downloaded": total_downloaded,
-            "failed": total_failed,
-            "bytes": total_bytes,
+            "downloaded": stats.get("downloaded", 0),
+            "failed": stats.get("failed", 0),
+            "bytes": stats.get("download_bytes", 0),
         }
 
     # -------------------------------------------------------------------------
@@ -711,13 +707,14 @@ class Campfire:
             from .config import products_relpath
             local_rel_path = products_relpath(fits_path)
             st = dest.stat()
-            self._local.mark_synced(
-                spectrum_id=spectrum_id,
+            # fits_path is the storage key for the final product, so record local
+            # state directly on its storage_objects mirror row.
+            self._local.mark_object_synced(
+                storage_key=fits_path,
                 local_path=local_rel_path,
-                file_hash=f"sha256:{sha256.hexdigest()}",
-                file_size=file_size,
-                local_file_mtime=st.st_mtime,
+                local_file_hash=f"sha256:{sha256.hexdigest()}",
                 local_file_size=st.st_size,
+                local_file_mtime=st.st_mtime,
             )
 
         return SpectrumData.from_fits(

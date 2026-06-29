@@ -391,27 +391,40 @@ def status(base_url: Optional[str]):
     else:
         click.echo(f"Catalog: {len(obs_list)} observations")
 
-    # Download stats per observation
-    if obs_list:
+    # Per-observation cloud-vs-local view, from the storage_objects mirror. Each
+    # cell is local/available; intermediates only appear where the cloud has them
+    # (admins reviewing a draft, or after --intermediate). No network call.
+    summary = store.get_object_summary()
+    materialized = [r for r in summary if r["finals_local"] or r["intermediates_local"]]
+    if materialized:
         click.echo()
-        click.echo(f"  {'OBSERVATION':<25} {'DOWNLOADED':<14} {'SIZE':<12}")
+        click.echo(f"  {'OBSERVATION':<25} {'FINALS':<12} {'INTERMEDIATES':<15} {'SIZE':<12}")
+        for r in materialized:
+            finals = f"{r['finals_local']}/{r['finals_available']}"
+            if r["intermediates_available"]:
+                inter = f"{r['intermediates_local']}/{r['intermediates_available']}"
+            else:
+                inter = "—"
+            size = format_size(r["local_bytes"])
+            click.echo(f"  {r['observation']:<25} {finals:<12} {inter:<15} {size:<12}")
+    else:
+        click.echo()
+        click.echo("  No files downloaded yet. Run: campfire download --obs <name>")
 
-        total_downloaded = 0
-        total_bytes = 0
-        for obs in obs_list:
-            stats = store.get_observation_stats(obs)
-            downloaded = stats["synced_count"]
-            size = format_size(stats["total_bytes"])
-            total_downloaded += downloaded
-            total_bytes += stats["total_bytes"]
-            if downloaded > 0:
-                click.echo(f"  {obs:<25} {downloaded:<14} {size:<12}")
+    # Global cloud storage budget (admin-only; best-effort, skipped otherwise).
+    try:
+        api = APIClient(APISession(base_url=base_url))
+        budget = api.get_storage_budget()
+        if budget:
+            used = format_size(int(budget.get("total_bytes", 0)))
+            cap = format_size(int(budget.get("cap_bytes", 0)))
+            pct = budget.get("pct_used", 0)
+            click.echo(f"\nCloud storage: {used} of {cap} ({pct}%)")
+    except Exception:
+        pass
 
-        if total_downloaded == 0:
-            click.echo("  No FITS files downloaded yet. Run: campfire download --obs <name>")
-
-    # Stale files
-    stale = store.get_stale_files()
+    # Stale files (server hash != local hash, via the mirror)
+    stale = store.get_stale_objects()
     if stale:
         click.echo(f"\n⚠ {len(stale)} local file(s) updated on server. Run: campfire download --stale")
 
@@ -485,7 +498,7 @@ def sync_cmd(full: bool, base_url: Optional[str]):
         # Verify local files so status reports correct counts immediately
         pd = _products_dir()
         if pd.exists():
-            verify = store.verify_local_files(pd, show_progress=True)
+            verify = store.verify_local_objects(pd, show_progress=True)
             if verify["cleared"]:
                 click.echo(f"  Detected {verify['cleared']} missing local file(s).")
             if verify["rehashed"]:
@@ -540,34 +553,45 @@ class _VariadicOption(click.Option):
 @click.option("--field", "field_filter", multiple=True, cls=_VariadicOption, help="Download by field name")
 @click.option("--grating", "grating_filter", multiple=True, cls=_VariadicOption, help="Filter by grating type")
 @click.option("--stale", is_flag=True, help="Re-download files updated on the server")
+@click.option("--intermediate", "include_intermediate", is_flag=True,
+              help="Also fetch canonical spectrum-exposure intermediates (the resume set)")
 @click.option("--all", "download_all", is_flag=True, help="Download everything accessible")
 @click.option("--workers", default=4, help="Parallel download workers")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
 @click.option("--dry-run", is_flag=True, help="Show plan without downloading")
 @click.option("--base-url", default=None, help="API base URL")
 def download(obs_filter, program_filter, field_filter, grating_filter,
-             stale, download_all, workers, yes, dry_run, base_url):
-    """Download FITS spectrum files.
+             stale, include_intermediate, download_all, workers, yes, dry_run, base_url):
+    """Download data products.
 
-    Requires a prior 'campfire sync' to populate the local catalog.
-    Use filters to select which observations to download.
+    Requires a prior 'campfire sync' to populate the local catalog. Use filters
+    to select which observations to download. By default only final spectra are
+    fetched; --intermediate also pulls the canonical spectrum-exposures (so you
+    can restore a deleted-local observation or inspect a stage-1/2 draft).
+    --grating narrows finals only.
 
     \b
     Examples:
       campfire download --obs ember_uds_p4
       campfire download --obs ember_uds_p4 ember_uds_p5
       campfire download --program EMBER-UDS --grating PRISM
+      campfire download --obs ember_egs_p1 --intermediate
       campfire download --field COSMOS
       campfire download --stale
       campfire download --all
     """
     from .config import products_dir as _products_dir, meta_dir as _meta_dir
     from .sync import (
-        download_observation,
+        download_objects,
         sync_metadata,
         format_size,
     )
+    from .db.store import FINAL_PRODUCT_TYPES, INTERMEDIATE_PRODUCT_TYPES
     from .api.session import create_download_session
+
+    product_types = list(FINAL_PRODUCT_TYPES)
+    if include_intermediate:
+        product_types += list(INTERMEDIATE_PRODUCT_TYPES)
 
     base_url = base_url or resolve_base_url()
 
@@ -656,13 +680,13 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
 
     # Determine which observations to download
     if stale:
-        stale_files = store.get_stale_files()
+        stale_files = store.get_stale_objects()
         if not stale_files:
             click.echo("All local files are up to date.")
             store.close()
             return
         # Group stale files by observation
-        stale_obs = set(f["observation"] for f in stale_files)
+        stale_obs = set(f["observation"] for f in stale_files if f.get("observation"))
         target_obs = sorted(stale_obs)
         click.echo(f"Found {len(stale_files)} stale file(s) across {len(target_obs)} observation(s)")
     else:
@@ -707,7 +731,9 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         return
 
     # Reconcile DB with filesystem before planning
-    verify = store.verify_local_files(_products_dir(), show_progress=True)
+    verify = store.verify_local_objects(
+        _products_dir(), product_types=product_types, show_progress=True
+    )
     if verify["cleared"]:
         click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
     if verify.get("rehashed"):
@@ -719,8 +745,9 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
     grating_list = list(grating_filter) if grating_filter else None
     click.echo("Checking files...")
 
-    pending = store.get_pending_downloads(
+    pending = store.get_pending_objects(
         observations=list(target_obs),
+        product_types=product_types,
         gratings=grating_list,
     )
 
@@ -737,7 +764,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
 
         new_count = sum(1 for s in obs_pending if s["status"] == "new")
         updated_count = sum(1 for s in obs_pending if s["status"] == "updated")
-        download_bytes = sum(s.get("file_size") or 0 for s in obs_pending)
+        download_bytes = sum(s.get("size_bytes") or 0 for s in obs_pending)
 
         parts = []
         if new_count:
@@ -766,33 +793,30 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             store.close()
             return
 
-    # Execute downloads — only fetch manifests for observations that need them
+    # Execute downloads — one product-type-agnostic pass over the planned set.
+    # Plan + URLs are computed locally then presigned; the generic engine fetches,
+    # verifies content_hash, and records local state in the storage_objects mirror.
     click.echo()
     dl_session = create_download_session(max_workers=workers)
-    all_stats = []
+    api_session._ensure_valid_token()
 
-    for obs in obs_with_downloads:
-        api_session._ensure_valid_token()
+    stats = download_objects(
+        api,
+        obs_with_downloads,
+        product_types,
+        store,
+        _products_dir(),
+        max_workers=workers,
+        download_session=dl_session,
+        gratings=grating_list,
+    )
 
-        try:
-            stats = download_observation(
-                api, obs,
-                _products_dir(), store,
-                max_workers=workers,
-                download_session=dl_session,
-                grating_filter=grating_list,
-            )
-            all_stats.append(stats)
-        except Exception as e:
-            click.echo(f"✗ Failed to download {obs}: {e}")
-
-    # Summary
-    total_downloaded = sum(s.get("downloaded", 0) for s in all_stats)
-    total_failed = sum(s.get("failed", 0) for s in all_stats)
     click.echo(f"\n✓ Download complete")
-    click.echo(f"  Files downloaded: {total_downloaded}")
-    if total_failed:
-        click.echo(f"  Files failed: {total_failed}")
+    click.echo(f"  Files downloaded: {stats.get('downloaded', 0)}")
+    if stats.get("failed"):
+        click.echo(f"  Files failed: {stats['failed']}")
+    if stats.get("unauthorized"):
+        click.echo(f"  Files skipped (no access): {stats['unauthorized']}")
     click.echo(f"  Total size: {format_size(total_download)}")
 
     store.close()
