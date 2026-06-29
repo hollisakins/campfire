@@ -318,6 +318,24 @@ export function deriveSibling(key: string, targetProductType: string, opts?: { b
   return `${prefix}/${base}${tgt.suffix}`;
 }
 
+/** Rewrite *key* into the CANONICAL scheme (`data/` + relpath), regardless of the
+ * input scheme. Used by dual-read (#215) to look an object up in the registry,
+ * whose rows hold canonical keys after the R2->OSN re-key. `parseKey` accepts
+ * either scheme, so passing an already-canonical key is idempotent. Throws
+ * `LayoutError` for unknown/unsafe keys. */
+export function toCanonicalKey(key: string, opts?: { bucket?: Bucket }): string {
+  const pk = parseKey(key, opts);
+  return storageKey(pk.productType, pk.scope, pk.filename, 'canonical');
+}
+
+/** Rewrite *key* into the LEGACY scheme (today's bare key on R2). The dual-read
+ * R2 fallback signs against this. Idempotent on an already-legacy key. Throws
+ * `LayoutError` for unknown/unsafe keys. */
+export function toLegacyKey(key: string, opts?: { bucket?: Bucket }): string {
+  const pk = parseKey(key, opts);
+  return storageKey(pk.productType, pk.scope, pk.filename, 'legacy');
+}
+
 /** True iff *key* parses to a cloud-backed product — the presign/proxy allowlist.
  * Rejects traversal/unsafe keys and keys resolving to non-cloud products. */
 export function isKnownKey(key: string, opts?: { bucket?: Bucket }): boolean {

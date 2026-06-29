@@ -128,3 +128,68 @@ export function getBucketName(purpose: StoragePurpose = 'data'): string {
 export function getPublicUrlBase(purpose: StoragePurpose = 'data'): string | undefined {
   return resolveBackend(purpose).publicUrlBase;
 }
+
+// ---------------------------------------------------------------------------
+// By-backend resolution for the data bucket (dual-read, epic #210 / #215).
+//
+// During the R2->OSN migration both backends are live: each object's home is
+// recorded in storage_objects.backend, and the web reads from whichever the
+// registry says (R2 fallback). `'r2'` reuses the existing `data` purpose (R2
+// today); `'osn'` reads the parallel S3_OSN_* env block (region us-east-1,
+// path-style). Inert until S3_OSN_* is set + OSN_READ_ENABLED is flipped on.
+// ---------------------------------------------------------------------------
+
+export type DataBackend = 'r2' | 'osn';
+
+/** Resolve the OSN data backend from S3_OSN_* env (no R2 alias; this is new). */
+function resolveOsnBackend(): BackendConfig {
+  const accessKeyId = env('S3_OSN_ACCESS_KEY_ID');
+  const secretAccessKey = env('S3_OSN_SECRET_ACCESS_KEY');
+  const bucket = env('S3_OSN_BUCKET_NAME');
+  const endpointRaw = env('S3_OSN_ENDPOINT');
+  const region = env('S3_OSN_REGION') || 'auto';
+  const forcePathStyle = coerceBool(env('S3_OSN_FORCE_PATH_STYLE'));
+
+  if (!accessKeyId || !secretAccessKey || !bucket || !endpointRaw) {
+    throw new Error('Storage "osn" credentials not configured (set S3_OSN_*)');
+  }
+
+  const endpoint = endpointRaw.replace(/\/+$/, '');
+  const backend =
+    (env('S3_OSN_BACKEND') as 'r2' | 'osn' | undefined) ||
+    (endpoint.includes('r2.cloudflarestorage.com') ? 'r2' : 'osn');
+
+  return {
+    purpose: 'data',
+    backend,
+    endpoint,
+    region,
+    bucket,
+    accessKeyId,
+    secretAccessKey,
+    forcePathStyle,
+  };
+}
+
+const _osnClient = new Map<'osn', S3Client>();
+
+/** S3 client for a data-bucket backend label ('r2' => the `data` purpose). */
+export function getS3ClientForBackend(b: DataBackend): S3Client {
+  if (b === 'r2') return getS3Client('data');
+  const cached = _osnClient.get('osn');
+  if (cached) return cached;
+  const cfg = resolveOsnBackend();
+  const client = new S3Client({
+    region: cfg.region,
+    endpoint: cfg.endpoint,
+    forcePathStyle: cfg.forcePathStyle,
+    credentials: { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey },
+  });
+  _osnClient.set('osn', client);
+  return client;
+}
+
+/** Bucket name for a data-bucket backend label. */
+export function getBucketNameForBackend(b: DataBackend): string {
+  return b === 'r2' ? getBucketName('data') : resolveOsnBackend().bucket;
+}

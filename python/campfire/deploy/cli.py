@@ -928,6 +928,110 @@ def registry_budget(ctx, config_path, local):
             print(f"    {pt:28} {_fmt_bytes(n)}")
 
 
+@registry.command('copy')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--obs', 'observations', default=None, multiple=True, type=str,
+              cls=_VariadicOption, help='Limit to these observation(s).')
+@click.option('--field', 'fields', default=None, multiple=True, type=str,
+              cls=_VariadicOption, help='Limit to these field(s).')
+@click.option('--product-type', 'product_types', default=None, multiple=True, type=str,
+              cls=_VariadicOption,
+              help='Override the migrated product types (default excludes dead rgb/sed).')
+@click.option('--limit', type=int, default=None,
+              help='Migrate at most N objects (piloting).')
+@click.option('--execute', is_flag=True,
+              help='Actually copy + relocate. Without this, only a dry-run plan is printed.')
+@click.option('--verify-readback/--no-verify-readback', default=True,
+              help='Re-download from OSN and re-hash to verify (default on). '
+                   '--no-verify-readback only checks the uploaded size.')
+@click.option('--tmp-dir', default=None,
+              help='Scratch dir for streamed copies (default: system temp).')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def registry_copy(ctx, config_path, observations, fields, product_types, limit,
+                  execute, verify_readback, tmp_dir, local):
+    """Copy data objects R2->OSN, re-key legacy->canonical, verify, relocate (#215).
+
+    Reads each active backend='r2' registry row, GETs it from R2, PUTs it to OSN
+    under its canonical key, verifies by sha256 (upgrading provisional 'etag:'
+    hashes), then flips the registry row in place to osn+canonical+sha256. R2 bytes
+    are retained (rollback = read R2). Idempotent/resumable: already-migrated rows
+    are skipped. Dry-run by default; pass --execute to transfer.
+    """
+    from campfire.deploy import registry as reg
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+
+    obs = list(observations) or None
+    flds = list(fields) or None
+    types = list(product_types) or None
+
+    # Resolve the OSN destination client up front so a missing [r2_osn] section
+    # fails fast with a clear message (not mid-transfer).
+    try:
+        dst_client, dst_bucket, dst_backend = reg._osn_client_and_bucket(config)
+    except Exception as e:
+        raise click.UsageError(
+            f"OSN destination not configured: {e}\n"
+            f"Set CAMPFIRE_S3_OSN_* env vars (or a [r2_osn] block in deploy.toml)."
+        )
+    src_client, src_bucket, _ = reg._data_client_and_bucket(config)
+
+    # G1 freeze guard: warn if any selected obs already has osn-canonical rows that
+    # collide with fresh r2-legacy rows (a re-deploy during the shadow window).
+    conflicts = reg.find_migration_conflicts(sb, observations=obs)
+    if conflicts:
+        print(f"  WARNING: {len(conflicts)} object(s) already have an active OSN copy "
+              f"but a fresh R2-legacy row exists (re-deploy during shadow?).")
+        for k in conflicts[:5]:
+            print(f"    conflict: {k}")
+        print("    These would create duplicate active rows — resolve before --execute.\n")
+
+    if not execute:
+        report = reg.copy_objects(
+            sb, src_client=src_client, src_bucket=src_bucket,
+            dst_client=dst_client, dst_bucket=dst_bucket, dst_backend=dst_backend,
+            observations=obs, fields=flds, product_types=types, limit=limit,
+            dry_run=True,
+        )
+        print(f"DRY RUN — {report.summary()}")
+        for legacy, canonical, _sz in report.planned[:10]:
+            print(f"    {legacy}  ->  {canonical}")
+        if len(report.planned) > 10:
+            print(f"    ... and {len(report.planned) - 10} more")
+        if report.skipped:
+            print(f"  {len(report.skipped)} unmappable key(s) would be skipped:")
+            for legacy, reason in report.skipped[:5]:
+                print(f"    skip: {legacy} ({reason})")
+        print(f"\n  Plan: {len(report.planned)} object(s), {_fmt_bytes(report.bytes_planned)}. "
+              f"Re-run with --execute to copy.")
+        return
+
+    print(f"Copying R2 -> OSN ({dst_backend}, bucket {dst_bucket})"
+          + (f", readback verify" if verify_readback else ", size-check only") + " ...")
+    report = reg.copy_objects(
+        sb, src_client=src_client, src_bucket=src_bucket,
+        dst_client=dst_client, dst_bucket=dst_bucket, dst_backend=dst_backend,
+        observations=obs, fields=flds, product_types=types, limit=limit,
+        dry_run=False, verify_readback=verify_readback, tmp_dir=tmp_dir, progress=True,
+    )
+    print(f"\n{report.summary()}  ({_fmt_bytes(report.bytes_copied)} copied)")
+    if report.skipped:
+        print(f"  {len(report.skipped)} skipped (unmappable key):")
+        for legacy, reason in report.skipped[:5]:
+            print(f"    skip: {legacy} ({reason})")
+    if report.failed:
+        print(f"  {len(report.failed)} FAILED (left on R2, not relocated):")
+        for legacy, reason in report.failed[:10]:
+            print(f"    fail: {legacy} ({reason})")
+        ctx.exit(1)
+    print("Copy complete.")
+
+
 # ---------------------------------------------------------------------------
 # photometry subcommand
 # ---------------------------------------------------------------------------

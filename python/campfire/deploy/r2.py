@@ -206,6 +206,17 @@ def get_r2_client(config: dict):
     return make_client_for(config, 'data')
 
 
+def download_to_path(client, bucket: str, key: str, dest_path: Path) -> None:
+    """Download a single object to a local path via boto3 (managed, multipart).
+
+    The backend-agnostic GET counterpart to :func:`upload_to_r2` — used by the
+    R2->OSN copy (epic #210 / #215) to stream a source object to a temp file
+    before hashing and re-uploading. ``client``/``bucket`` are whatever the
+    caller resolved (R2 'data' source for the copy).
+    """
+    client.download_file(bucket, key, str(dest_path))
+
+
 def upload_to_r2(
     client,
     bucket: str,

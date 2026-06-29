@@ -40,6 +40,16 @@ from typing import Optional
 PURPOSE_SECTIONS = {
     'data': 'r2',
     'tiles': 'r2_tiles',
+    # OSN data-bucket destination for the R2->OSN migration (epic #210 / #215).
+    # Resolved alongside 'data' so the copy tool can hold both clients at once.
+    'osn': 'r2_osn',
+}
+
+# Per-purpose env-var prefix used only to build a helpful "missing section" hint.
+_PURPOSE_ENV_HINT = {
+    'data': 'CAMPFIRE_S3',
+    'tiles': 'CAMPFIRE_S3_TILES',
+    'osn': 'CAMPFIRE_S3_OSN',
 }
 
 # Default endpoint host for Cloudflare R2 when only an account id is supplied.
@@ -119,10 +129,10 @@ def resolve_backend(config: dict, purpose: str = 'data') -> BackendConfig:
 
     section = config.get(section_key)
     if not section:
+        env_hint = _PURPOSE_ENV_HINT.get(purpose, 'CAMPFIRE_S3')
         raise ValueError(
             f"No [{section_key}] storage config found for '{purpose}'. "
-            f"Set CAMPFIRE_{'S3' if purpose == 'data' else 'S3_TILES'}_* env "
-            f"vars or add a [{section_key}] block to deploy.toml."
+            f"Set {env_hint}_* env vars or add a [{section_key}] block to deploy.toml."
         )
 
     endpoint = _resolve_endpoint(section, purpose)

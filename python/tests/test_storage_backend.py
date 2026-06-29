@@ -156,6 +156,11 @@ _ALL_STORAGE_ENV = [
     'CAMPFIRE_S3_TILES_PUBLIC_URL_BASE',
     'CAMPFIRE_R2_TILES_ACCOUNT_ID', 'CAMPFIRE_R2_TILES_ACCESS_KEY_ID',
     'CAMPFIRE_R2_TILES_SECRET_ACCESS_KEY', 'CAMPFIRE_R2_TILES_BUCKET_NAME',
+    # osn (data-bucket migration destination, #215)
+    'CAMPFIRE_S3_OSN_ACCESS_KEY_ID', 'CAMPFIRE_S3_OSN_SECRET_ACCESS_KEY',
+    'CAMPFIRE_S3_OSN_BUCKET_NAME', 'CAMPFIRE_S3_OSN_ENDPOINT',
+    'CAMPFIRE_S3_OSN_REGION', 'CAMPFIRE_S3_OSN_FORCE_PATH_STYLE',
+    'CAMPFIRE_S3_OSN_BACKEND',
 ]
 
 
@@ -251,3 +256,55 @@ def test_tiles_section_omitted_when_incomplete(clean_env):
 
     config = load_config()
     assert 'r2_tiles' not in config
+
+
+# ---------------------------------------------------------------------------
+# OSN purpose (data-bucket migration destination, epic #210 / #215)
+# ---------------------------------------------------------------------------
+
+def test_osn_section_included_and_resolves(clean_env):
+    mp = clean_env
+    _set_supabase(mp)
+    mp.setenv('CAMPFIRE_S3_ACCOUNT_ID', 'acct')
+    mp.setenv('CAMPFIRE_S3_ACCESS_KEY_ID', 'ak')
+    mp.setenv('CAMPFIRE_S3_SECRET_ACCESS_KEY', 'sk')
+    mp.setenv('CAMPFIRE_S3_BUCKET_NAME', 'data')
+    # OSN destination
+    mp.setenv('CAMPFIRE_S3_OSN_ACCESS_KEY_ID', 'oak')
+    mp.setenv('CAMPFIRE_S3_OSN_SECRET_ACCESS_KEY', 'osk')
+    mp.setenv('CAMPFIRE_S3_OSN_BUCKET_NAME', 'campfire-jwst')
+    mp.setenv('CAMPFIRE_S3_OSN_ENDPOINT', 'https://uaz1.osn.mghpcc.org')
+    mp.setenv('CAMPFIRE_S3_OSN_REGION', 'us-east-1')
+    mp.setenv('CAMPFIRE_S3_OSN_FORCE_PATH_STYLE', 'true')
+
+    config = load_config()
+    assert 'r2_osn' in config
+
+    # data (R2) and osn (OSN) resolve independently and simultaneously.
+    data = backend.resolve_backend(config, 'data')
+    assert data.endpoint == 'https://acct.r2.cloudflarestorage.com'
+    osn = backend.resolve_backend(config, 'osn')
+    assert osn.endpoint == 'https://uaz1.osn.mghpcc.org'
+    assert osn.region == 'us-east-1'
+    assert osn.force_path_style is True
+    assert osn.backend == 'osn'           # inferred from non-R2 host
+    assert osn.bucket == 'campfire-jwst'
+
+
+def test_osn_section_omitted_when_incomplete(clean_env):
+    mp = clean_env
+    _set_supabase(mp)
+    mp.setenv('CAMPFIRE_S3_ACCESS_KEY_ID', 'ak')
+    mp.setenv('CAMPFIRE_S3_SECRET_ACCESS_KEY', 'sk')
+    mp.setenv('CAMPFIRE_S3_BUCKET_NAME', 'data')
+    mp.setenv('CAMPFIRE_S3_ENDPOINT', 'https://acct.r2.cloudflarestorage.com')
+    # partial OSN (no bucket / endpoint) -> dropped, never blocks loading
+    mp.setenv('CAMPFIRE_S3_OSN_ACCESS_KEY_ID', 'oak')
+
+    config = load_config()
+    assert 'r2_osn' not in config
+
+
+def test_osn_missing_section_raises_with_hint():
+    with pytest.raises(ValueError, match='CAMPFIRE_S3_OSN'):
+        backend.resolve_backend(_data(account_id='a'), 'osn')

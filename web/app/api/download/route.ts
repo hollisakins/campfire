@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { generateDownloadUrl } from '@/lib/r2';
+import { generateDownloadUrl, generateDownloadUrls } from '@/lib/r2';
 import { trackDownload, extractTargetIdFromFitsPath } from '@/lib/actions/download-tracking';
 
 /**
@@ -140,12 +140,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Generate signed URLs for all files
+    // Generate signed URLs for all files. Batched so dual-read resolves every
+    // backend in a single registry query (not one per file).
     const urls: Record<string, string> = {};
-    for (const path of paths) {
-      const signedUrl = await generateDownloadUrl(path, 3600);
-      urls[path] = signedUrl;
-    }
+    const signedUrls = await generateDownloadUrls(paths, 3600);
+    paths.forEach((path: string, i: number) => {
+      urls[path] = signedUrls[i];
+    });
 
     // Track batch download (fire-and-forget)
     const targetIdPromises = paths.map(extractTargetIdFromFitsPath);
