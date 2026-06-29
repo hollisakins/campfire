@@ -639,6 +639,35 @@ CREATE POLICY "admin_update_exposures"
 
 
 -- =============================================================================
+-- storage_objects (admin-only — internal storage registry, epic #210 F1)
+-- =============================================================================
+-- The registry is admin/internal: the web portal never reads it in F1, and
+-- deploy backfill/reconcile run under the service role (RLS bypassed). RLS here
+-- is defense-in-depth so no non-admin session can read or mutate it.
+
+ALTER TABLE storage_objects ENABLE ROW LEVEL SECURITY;
+
+-- Admins can read all storage objects.
+DROP POLICY IF EXISTS "admin_select_storage_objects" ON storage_objects;
+CREATE POLICY "admin_select_storage_objects"
+  ON storage_objects FOR SELECT TO authenticated
+  USING ((SELECT public.is_admin()));
+
+-- Admins can insert storage objects.
+DROP POLICY IF EXISTS "admin_insert_storage_objects" ON storage_objects;
+CREATE POLICY "admin_insert_storage_objects"
+  ON storage_objects FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+-- Admins can update storage objects.
+DROP POLICY IF EXISTS "admin_update_storage_objects" ON storage_objects;
+CREATE POLICY "admin_update_storage_objects"
+  ON storage_objects FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
+
+-- =============================================================================
 -- flag_definitions
 -- =============================================================================
 

@@ -333,6 +333,39 @@ CREATE INDEX IF NOT EXISTS idx_nircam_exposures_review
 
 
 -- =============================================================================
+-- storage_objects (epic #210, F1)
+-- =============================================================================
+
+-- One current object per (product_type, exposure_ref). Partial so superseded /
+-- revoked tombstones don't collide with the live object — must be an index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_storage_objects_product_exposure_active
+    ON public.storage_objects USING btree (product_type, exposure_ref)
+    WHERE status = 'active';
+
+-- Copy/verify + budget walks scope by backend and status.
+CREATE INDEX IF NOT EXISTS idx_storage_objects_backend_status
+    ON public.storage_objects USING btree (backend, status);
+
+-- Copy-verify and dedup are by content hash.
+CREATE INDEX IF NOT EXISTS idx_storage_objects_content_hash
+    ON public.storage_objects USING btree (content_hash);
+
+-- Cascade a deployment to its objects (revoke/recover).
+CREATE INDEX IF NOT EXISTS idx_storage_objects_deployment_id
+    ON public.storage_objects USING btree (deployment_id);
+
+-- Reconcile looks objects up by key; scope joins by observation / spectrum_id.
+CREATE INDEX IF NOT EXISTS idx_storage_objects_storage_key
+    ON public.storage_objects USING btree (storage_key);
+
+CREATE INDEX IF NOT EXISTS idx_storage_objects_observation
+    ON public.storage_objects USING btree (observation);
+
+CREATE INDEX IF NOT EXISTS idx_storage_objects_spectrum_id
+    ON public.storage_objects USING btree (spectrum_id);
+
+
+-- =============================================================================
 -- access_codes
 -- =============================================================================
 

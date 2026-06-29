@@ -645,6 +645,176 @@ def objects_rebuild(ctx, config_path, field, all_fields, dry_run, radius, force,
 
 
 # ---------------------------------------------------------------------------
+# registry subgroup (storage_objects shadow index, #214)
+# ---------------------------------------------------------------------------
+
+@deploy_group.group(invoke_without_command=True)
+@click.pass_context
+def registry(ctx):
+    """Manage the storage_objects registry (backfill / reconcile / budget).
+
+    Bare `campfire deploy registry` defaults to `reconcile`.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(registry_reconcile)
+
+
+def _fmt_bytes(n: int | float) -> str:
+    """Human-readable byte count."""
+    n = float(n)
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB', 'PB'):
+        if abs(n) < 1024 or unit == 'PB':
+            return f"{n:.2f} {unit}" if unit != 'B' else f"{int(n)} B"
+        n /= 1024
+    return f"{n:.2f} PB"
+
+
+@registry.command('backfill')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--dry-run', is_flag=True,
+              help='Compute rows without writing them.')
+@click.option('--orphans/--no-orphans', default=True,
+              help='Adopt data-bucket objects with no DB pointer via LIST (needs storage creds).')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def registry_backfill(ctx, config_path, dry_run, orphans, local):
+    """Backfill storage_objects from existing pointers + bucket orphans.
+
+    spectra rows reuse the stored sha256 (file_hash) + size — no bucket access.
+    NIRCam pointers and orphans are HEAD'd for size + a provisional 'etag:' hash.
+    Idempotent (upsert by key); safe to re-run.
+    """
+    from campfire_layout import is_known_key
+    from campfire.deploy import registry as reg
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+    backend = reg.resolve_backend_label(config)
+
+    # 1. spectra finals — authoritative sha256 from the DB.
+    n_spec, skipped = reg.backfill_spectra(sb, backend=backend, dry_run=dry_run)
+    print(f"spectra: {n_spec} rows{' (dry-run)' if dry_run else ''}"
+          + (f", {skipped} skipped (no stored hash/size)" if skipped else ""))
+
+    # 2. NIRCam pointers — no stored hash; HEAD for size + etag.
+    try:
+        pointers = reg.live_pointers(sb)
+        nircam = pointers['nircam_images'] + pointers['nircam_exposures']
+        if nircam:
+            n_nc, failed_nc = reg.backfill_via_head(
+                sb, config, nircam, backend=backend,
+                content_type='image/png', dry_run=dry_run,
+            )
+            print(f"nircam: {n_nc} rows"
+                  + (f", {failed_nc} failed (HEAD error / unknown key)" if failed_nc else ""))
+    except Exception as e:
+        print(f"nircam backfill skipped (no storage credentials for HEAD?): {e}")
+
+    # 3. Orphans — bucket objects with no registry row, adopted via LIST.
+    if orphans:
+        try:
+            existing = set(reg.registry_keys(sb))
+            orphan_keys = [k for k in reg.list_bucket_keys(config) if k not in existing]
+            adoptable = [k for k in orphan_keys if is_known_key(k)]
+            unadoptable = len(orphan_keys) - len(adoptable)
+            if adoptable:
+                n_orph, failed_orph = reg.backfill_via_head(
+                    sb, config, adoptable, backend=backend, dry_run=dry_run,
+                )
+                print(f"orphans: {n_orph} adopted"
+                      + (f", {failed_orph} failed" if failed_orph else "")
+                      + (f", {unadoptable} unadoptable (unknown key)" if unadoptable else ""))
+            else:
+                print(f"orphans: none adoptable"
+                      + (f" ({unadoptable} unadoptable)" if unadoptable else ""))
+        except Exception as e:
+            print(f"orphan adoption skipped (no storage credentials for LIST?): {e}")
+
+    print("Backfill complete.")
+
+
+@registry.command('reconcile')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--no-bucket', is_flag=True,
+              help='Skip the bucket LIST (coverage only; no dangling/orphan detection).')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def registry_reconcile(ctx, config_path, no_bucket, local):
+    """Report coverage: live pointers vs registry vs bucket (read-only).
+
+    The F1 gate: every live fits_path/file_path/png_path must have a registry
+    row (missing == 0) before any consumer may treat the registry as
+    authoritative. Also reports dangling rows and unadopted bucket orphans.
+    """
+    from campfire.deploy import registry as reg
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+
+    pointers = reg.live_pointers(sb)
+    live = pointers['spectra'] + pointers['nircam_images'] + pointers['nircam_exposures']
+    reg_keys = reg.registry_keys(sb)
+
+    bucket_keys = None
+    if not no_bucket:
+        try:
+            bucket_keys = list(reg.list_bucket_keys(config))
+        except Exception as e:
+            print(f"(bucket LIST unavailable — coverage only: {e})")
+
+    report = reg.compute_reconcile(live, reg_keys, bucket_keys)
+    print(f"live pointers: {len(set(live))}  registry rows: {len(set(reg_keys))}")
+    print(report.summary())
+    if report.missing:
+        print(f"\n  COVERAGE GAP — {len(report.missing)} live pointer(s) have no registry row.")
+        for k in sorted(report.missing)[:10]:
+            print(f"    missing: {k}")
+        if len(report.missing) > 10:
+            print(f"    ... and {len(report.missing) - 10} more")
+    if report.dangling:
+        for k in sorted(report.dangling)[:10]:
+            print(f"    dangling: {k}")
+    if report.orphans:
+        print(f"  {len(report.orphans)} orphan bucket object(s) "
+              f"({len(report.adoptable)} adoptable) — run `registry backfill`.")
+    if report.covered and not report.dangling:
+        print("\n  Coverage gate: PASS (registry covers all live pointers).")
+
+
+@registry.command('budget')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def registry_budget(ctx, config_path, local):
+    """Show bytes-at-rest against the 20 TB cap (via get_storage_budget RPC)."""
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+
+    resp = sb.rpc('get_storage_budget').execute()
+    b = resp.data or {}
+    total = b.get('total_bytes', 0)
+    cap = b.get('cap_bytes', 0)
+    print(f"Storage budget: {_fmt_bytes(total)} / {_fmt_bytes(cap)} "
+          f"({b.get('pct_used', 0)}%)")
+    print(f"  registry (data): {_fmt_bytes(b.get('registry_bytes', 0))}")
+    print(f"  tiles (map_layers): {_fmt_bytes(b.get('tile_bytes', 0))}")
+    by_pt = b.get('by_product_type') or {}
+    if by_pt:
+        print("  by product_type:")
+        for pt, n in sorted(by_pt.items(), key=lambda kv: -kv[1]):
+            print(f"    {pt:28} {_fmt_bytes(n)}")
+
+
+# ---------------------------------------------------------------------------
 # photometry subcommand
 # ---------------------------------------------------------------------------
 

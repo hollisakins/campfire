@@ -368,6 +368,7 @@ def deploy_observation(
 
     try:
         upload_tasks: list[UploadTask] = []
+        uploaded_keys: set[str] = set()  # r2_keys that actually landed (for the registry)
         scope = Scope(obs=obs_name)
 
         if not supabase_only:
@@ -394,7 +395,9 @@ def deploy_observation(
                 upload_tasks.append(UploadTask(sed_path, storage_key('sed', scope, sed_path.name), 'application/pdf'))
 
             print(f"Uploading {len(upload_tasks)} files...")
-            success, failed, failed_msgs = upload_files_parallel(config, upload_tasks, desc="R2 uploads")
+            success, failed, failed_msgs = upload_files_parallel(
+                config, upload_tasks, desc="R2 uploads", succeeded_out=uploaded_keys,
+            )
 
             if failed_msgs:
                 print(f"\n  {failed} uploads failed:")
@@ -543,6 +546,23 @@ def deploy_observation(
         if deployment_id:
             update_latest_deployment(sb, obs_name, deployment_id)
             print(f"\nDeployment #{deployment_id} recorded")
+
+        # Storage registry (#214): index the objects that actually landed in this
+        # deploy. Shadow index — additive, nothing reads it as authoritative yet.
+        if uploaded_keys:
+            from campfire.deploy.registry import (
+                build_registry_rows, resolve_backend_label, upsert_storage_objects,
+            )
+            reg_rows = build_registry_rows(
+                upload_tasks,
+                backend=resolve_backend_label(config),
+                deployment_id=deployment_id,
+                uploaded_by=user_id,
+                cfpipe_version=summary.meta.get('cfpipe_version'),
+                succeeded_keys=uploaded_keys,
+            )
+            n_reg = upsert_storage_objects(sb, reg_rows)
+            print(f"Registered {n_reg} storage objects")
 
         print()
         msg = f"Deployed {len(spectra)} spectra from {len(objects)} objects"

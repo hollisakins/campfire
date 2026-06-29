@@ -727,6 +727,84 @@ ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNED BY "public"."nircam_expo
 
 
 
+-- storage_objects: the keystone shadow index of every object in cloud storage
+-- (epic #210, F1). Deploy writes one row per uploaded object using canonical keys
+-- from the campfire_layout contract; a backfill/reconcile pass covers historical
+-- pointers and adopts bucket orphans. Additive + inert: nothing reads it as
+-- authoritative until a coverage gate proves 100% of live pointers have rows.
+CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
+    "id" bigint NOT NULL,
+    "backend" "text" NOT NULL,
+    "bucket" "text" NOT NULL,
+    "storage_key" "text" NOT NULL,
+    "content_hash" "text" NOT NULL,
+    "size_bytes" bigint NOT NULL,
+    "content_type" "text" NOT NULL,
+    "product_type" "text" NOT NULL,
+    "instrument" "text",
+    "status" "text" NOT NULL DEFAULT 'active'::"text",
+    "observation" "text",
+    "field" "text",
+    "spectrum_id" "text",
+    "exposure_ref" "text",
+    "deployment_id" integer,
+    "cfpipe_version" "text",
+    "uploaded_by" "uuid",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "storage_objects_backend_check" CHECK (("backend" = ANY (ARRAY['r2'::"text", 'osn'::"text"]))),
+    CONSTRAINT "storage_objects_bucket_check" CHECK (("bucket" = ANY (ARRAY['data'::"text", 'tiles'::"text"]))),
+    CONSTRAINT "storage_objects_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'superseded'::"text", 'revoked'::"text"]))),
+    CONSTRAINT "storage_objects_instrument_check" CHECK (("instrument" IS NULL OR "instrument" = ANY (ARRAY['nirspec'::"text", 'nircam'::"text"]))),
+    -- content_hash is scheme-prefixed: 'sha256:<hex>' is authoritative (deploy hashes
+    -- the local file; spectra backfill reuses spectra.file_hash); 'etag:<hex>' is
+    -- provisional from an S3 LIST/HEAD (no GET) for backfilled objects with no stored
+    -- sha256, upgraded to sha256 by the A1 copy+verify pass (#215). No raw/bare hex.
+    CONSTRAINT "storage_objects_content_hash_check" CHECK (("content_hash" ~ '^(sha256|etag):'::"text")),
+    -- product_type tracks the campfire_layout PRODUCTS registry (every entry with a
+    -- non-null bucket). A new cloud-backed product type requires a migration here.
+    CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
+        'nirspec_spec'::"text", 'spectrum_json'::"text", 'zfit'::"text",
+        'nirspec_spectrum_exposure'::"text", 'rgb'::"text", 'sed'::"text",
+        'nircam_exposure'::"text", 'nircam_exposure_preview'::"text",
+        'nircam_exposure_full'::"text", 'nircam_mosaic'::"text", 'nircam_rgb'::"text",
+        'nircam_expmap'::"text", 'tile'::"text", 'photometry_pz'::"text",
+        'nirspec_manual_mask'::"text", 'nirspec_stuck_shutters'::"text",
+        'nirspec_bkg_override'::"text", 'nircam_mask'::"text", 'nircam_astrom_cat'::"text",
+        'nircam_bad_pixel'::"text", 'nircam_flat'::"text", 'nircam_wisp'::"text"
+    ])))
+);
+
+
+ALTER TABLE "public"."storage_objects" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."storage_objects_id_seq"
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."storage_objects_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."storage_objects_id_seq" OWNED BY "public"."storage_objects"."id";
+
+
+COMMENT ON TABLE "public"."storage_objects" IS 'Shadow index of every object in cloud storage (epic #210, F1). One row per data-bucket object; written by deploy and a backfill/reconcile pass. Tiles are intentionally NOT indexed per-object (kept on R2, aggregated in map_layers.total_size_bytes); the budget RPC unions both. Additive and inert until a coverage gate proves it complete.';
+
+COMMENT ON COLUMN "public"."storage_objects"."content_hash" IS 'Scheme-prefixed integrity token. ''sha256:<hex>'' is authoritative (deploy hashes the local file; spectra backfill reuses spectra.file_hash). ''etag:<hex>'' is provisional from an S3 LIST/HEAD (no GET) for backfilled objects with no stored sha256; the A1 copy+verify pass (#215) upgrades it to sha256.';
+
+COMMENT ON COLUMN "public"."storage_objects"."spectrum_id" IS 'Typed, indexed scope column (not an FK). spectra.spectrum_id is GENERATED from fits_path and not uniquely constrained, so an FK would over-constrain; an index provides the joinability the registry needs.';
+
+COMMENT ON COLUMN "public"."storage_objects"."exposure_ref" IS 'Stable per-exposure reference for intermediate products (nircam rootname; nirspec (root,nod,detector,source) tuple). Backs the partial unique (product_type, exposure_ref) WHERE status=''active'' — one current object per product/exposure.';
+
+COMMENT ON COLUMN "public"."storage_objects"."status" IS 'active = current object; superseded = replaced by a newer hash (tombstone, GC-eligible later); revoked = un-published. Only active rows count toward the budget and the partial-unique constraint.';
+
+
 CREATE TABLE IF NOT EXISTS "public"."password_reset_log" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "user_id" "uuid" NOT NULL,
@@ -1083,6 +1161,10 @@ ALTER TABLE ONLY "public"."nircam_exposures" ALTER COLUMN "id" SET DEFAULT "next
 
 
 
+ALTER TABLE ONLY "public"."storage_objects" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."storage_objects_id_seq"'::"regclass");
+
+
+
 ALTER TABLE ONLY "public"."pending_invites" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."pending_invites_id_seq"'::"regclass");
 
 
@@ -1223,6 +1305,15 @@ ALTER TABLE ONLY "public"."nircam_exposures"
 
 ALTER TABLE ONLY "public"."nircam_exposures"
     ADD CONSTRAINT "nircam_exposures_unique" UNIQUE ("field", "filter", "filename");
+
+
+ALTER TABLE ONLY "public"."storage_objects"
+    ADD CONSTRAINT "storage_objects_pkey" PRIMARY KEY ("id");
+
+-- A logical key can coexist across backends during the OSN cutover window, so
+-- uniqueness is (backend, bucket, storage_key) — not storage_key alone.
+ALTER TABLE ONLY "public"."storage_objects"
+    ADD CONSTRAINT "storage_objects_backend_bucket_key_unique" UNIQUE ("backend", "bucket", "storage_key");
 
 
 
@@ -1403,6 +1494,18 @@ ALTER TABLE ONLY "public"."deployments"
 
 ALTER TABLE ONLY "public"."deployments"
     ADD CONSTRAINT "deployments_deployed_by_fkey" FOREIGN KEY ("deployed_by") REFERENCES "public"."user_profiles"("user_id");
+
+
+-- observation and deployment_id reference PK columns, so they are real FKs.
+-- spectrum_id / field / exposure_ref are typed, indexed scope columns (not FKs):
+-- spectra.spectrum_id is GENERATED from fits_path and not uniquely constrained,
+-- so an FK would over-constrain and force tight insert ordering — an index gives
+-- the joinability without those hazards.
+ALTER TABLE ONLY "public"."storage_objects"
+    ADD CONSTRAINT "storage_objects_observation_fkey" FOREIGN KEY ("observation") REFERENCES "public"."observations"("name");
+
+ALTER TABLE ONLY "public"."storage_objects"
+    ADD CONSTRAINT "storage_objects_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
 
 
 
@@ -1712,6 +1815,11 @@ GRANT ALL ON TABLE "public"."nircam_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."nircam_exposures" TO "service_role";
 
 
+-- storage_objects is an admin/internal registry (RLS admin-only); not granted to anon.
+GRANT ALL ON TABLE "public"."storage_objects" TO "authenticated";
+GRANT ALL ON TABLE "public"."storage_objects" TO "service_role";
+
+
 
 GRANT ALL ON TABLE "public"."password_reset_log" TO "anon";
 GRANT ALL ON TABLE "public"."password_reset_log" TO "authenticated";
@@ -1802,6 +1910,10 @@ GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "service_role";
 
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "service_role";
+
+
+GRANT ALL ON SEQUENCE "public"."storage_objects_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."storage_objects_id_seq" TO "service_role";
 
 
 

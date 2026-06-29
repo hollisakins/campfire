@@ -2805,6 +2805,95 @@ GRANT EXECUTE ON FUNCTION public.get_download_stats TO authenticated;
 
 
 -- =============================================================================
+-- get_storage_budget (epic #210, F1)
+-- =============================================================================
+-- Bytes-at-rest budget against the 20 TB cap. Egress is free (OSN academic
+-- service), so the budget tracks storage only. Sums active storage_objects rows
+-- (data bucket) plus aggregated tile bytes from map_layers (tiles are kept on R2
+-- and intentionally not indexed per-object). SECURITY DEFINER + admin gate so a
+-- non-admin cannot enumerate the registry. Used by `campfire deploy registry budget`.
+
+CREATE OR REPLACE FUNCTION public.get_storage_budget()
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  result JSON;
+  is_admin BOOLEAN;
+  cap_bytes BIGINT := 20::BIGINT * 1024 * 1024 * 1024 * 1024;  -- 20 TB
+  registry_bytes BIGINT;
+  tile_bytes BIGINT;
+  total_bytes BIGINT;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO is_admin
+  FROM user_profiles up
+  WHERE up.user_id = auth.uid();
+
+  -- Admin (web/CLI login) OR service_role (CLI --local / headless deploy). Both are
+  -- trusted callers of the registry; everyone else is denied. NULL is_admin (no uid /
+  -- no profile) coalesces to false so the gate is fail-closed — stronger than the
+  -- get_download_stats pattern, which relies on authenticated-only EXECUTE to mask it.
+  IF NOT (COALESCE(is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  SELECT COALESCE(SUM(size_bytes), 0) INTO registry_bytes
+  FROM storage_objects
+  WHERE status = 'active';
+
+  SELECT COALESCE(SUM(total_size_bytes), 0) INTO tile_bytes
+  FROM map_layers;
+
+  total_bytes := registry_bytes + tile_bytes;
+
+  SELECT json_build_object(
+    'cap_bytes', cap_bytes,
+    'total_bytes', total_bytes,
+    'pct_used', ROUND((total_bytes::NUMERIC / NULLIF(cap_bytes, 0)) * 100, 2),
+    'registry_bytes', registry_bytes,
+    'tile_bytes', tile_bytes,
+    'by_backend', (
+      SELECT COALESCE(json_object_agg(backend, bytes), '{}'::json)
+      FROM (
+        SELECT backend, SUM(size_bytes) AS bytes
+        FROM storage_objects WHERE status = 'active'
+        GROUP BY backend
+      ) t
+    ),
+    'by_bucket', (
+      SELECT COALESCE(json_object_agg(bucket, bytes), '{}'::json)
+      FROM (
+        SELECT bucket, SUM(size_bytes) AS bytes
+        FROM storage_objects WHERE status = 'active'
+        GROUP BY bucket
+      ) t
+    ),
+    'by_product_type', (
+      SELECT COALESCE(json_object_agg(product_type, bytes), '{}'::json)
+      FROM (
+        SELECT product_type, SUM(size_bytes) AS bytes
+        FROM storage_objects WHERE status = 'active'
+        GROUP BY product_type
+      ) t
+    ),
+    'by_status', (
+      SELECT COALESCE(json_object_agg(status, json_build_object('count', cnt, 'bytes', bytes)), '{}'::json)
+      FROM (
+        SELECT status, COUNT(*) AS cnt, SUM(size_bytes) AS bytes
+        FROM storage_objects
+        GROUP BY status
+      ) t
+    )
+  ) INTO result;
+
+  RETURN result;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_storage_budget TO authenticated, service_role;
+
+
+-- =============================================================================
 -- Device Auth, API Keys, and Refresh Tokens
 -- =============================================================================
 

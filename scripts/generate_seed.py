@@ -686,6 +686,43 @@ VALUES ({spec['id']}, {sql_escape(spec.get('target_id') or spec.get('object_id')
     return '\n'.join(lines)
 
 
+def generate_storage_objects_sql(spectra: list[dict]) -> str:
+    """Generate INSERT statements for the storage_objects registry (#214).
+
+    One row per sampled spectrum (a NIRSpec final). Seed spectra carry no real
+    ``file_hash``, so a deterministic synthetic ``sha256:`` token (from the key)
+    + a synthetic size stand in — enough to exercise the admin RLS, the
+    get_storage_budget RPC, and reconcile coverage locally and on preview
+    branches. ``observation`` is left NULL to avoid an FK to a possibly
+    unsampled observations row; ``id`` is omitted so the sequence assigns it.
+    """
+    import hashlib
+
+    lines = ['-- ============================================']
+    lines.append('-- Storage objects registry (synthetic; #214)')
+    lines.append('-- ============================================')
+    lines.append('')
+
+    for spec in spectra:
+        key = spec.get('fits_path')
+        if not key:
+            continue
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        base = key.rsplit('/', 1)[-1]
+        spectrum_id = base[:-len('_spec.fits')] if base.endswith('_spec.fits') else base
+        lines.append(
+            "INSERT INTO public.storage_objects "
+            "(backend, bucket, storage_key, content_hash, size_bytes, content_type, "
+            "product_type, instrument, spectrum_id, status) VALUES "
+            f"('r2', 'data', {sql_escape(key)}, {sql_escape('sha256:' + digest)}, "
+            f"1048576, 'application/fits', 'nirspec_spec', 'nirspec', "
+            f"{sql_escape(spectrum_id)}, 'active');"
+        )
+
+    lines.append('')
+    return '\n'.join(lines)
+
+
 def generate_user_program_access_sql(programs: list[dict]) -> str:
     """Generate INSERT statements for user_program_access."""
     lines = ['-- ============================================']
@@ -1079,6 +1116,7 @@ SET search_path TO public, auth, extensions;
     sql_parts.append(generate_objects_table_sql(cross_matched_objects))
     sql_parts.append(generate_objects_sql(targets, target_to_object_db_id))
     sql_parts.append(generate_spectra_sql(spectra))
+    sql_parts.append(generate_storage_objects_sql(spectra))
     sql_parts.append(generate_user_program_access_sql(programs))
     sql_parts.append(generate_comments_sql(comments, target_id_map))
     sql_parts.append(generate_flag_audit_log_sql(flag_entries, target_id_map))

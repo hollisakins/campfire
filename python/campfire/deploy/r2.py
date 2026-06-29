@@ -134,6 +134,7 @@ def upload_files_presigned(
     tasks: list[UploadTask],
     max_workers: int = 12,
     desc: str = 'Uploading',
+    succeeded_out: Optional[set[str]] = None,
 ) -> tuple[int, int, list[str]]:
     """
     Upload files using presigned URLs.
@@ -148,6 +149,10 @@ def upload_files_presigned(
         Parallel upload threads.
     desc : str
         Progress bar description.
+    succeeded_out : set[str], optional
+        If given, the ``r2_key`` of each successfully-uploaded object is added to
+        this set. Lets the caller register only objects that actually landed
+        (write-after-success) without changing the return arity.
 
     Returns
     -------
@@ -176,6 +181,8 @@ def upload_files_presigned(
                 try:
                     future.result()
                     success += 1
+                    if succeeded_out is not None:
+                        succeeded_out.add(task.r2_key)
                 except Exception as e:
                     failed += 1
                     failed_files.append(f"{task.local_path.name}: {e}")
@@ -228,9 +235,12 @@ def upload_files_direct(
     tasks: list[UploadTask],
     max_workers: int = 12,
     desc: str = 'Uploading',
+    succeeded_out: Optional[set[str]] = None,
 ) -> tuple[int, int, list[str]]:
     """
     Upload multiple files to R2 via boto3 in parallel with progress bar.
+
+    ``succeeded_out``, if given, collects the ``r2_key`` of each landed object.
 
     Returns
     -------
@@ -258,6 +268,8 @@ def upload_files_direct(
                 try:
                     future.result()
                     success += 1
+                    if succeeded_out is not None:
+                        succeeded_out.add(task.r2_key)
                 except Exception as e:
                     failed += 1
                     failed_files.append(f"{task.local_path.name}: {e}")
@@ -277,6 +289,7 @@ def upload_files_parallel(
     max_workers: int = 12,
     desc: str = 'Uploading',
     cache_control: Optional[str] = None,
+    succeeded_out: Optional[set[str]] = None,
 ) -> tuple[int, int, list[str]]:
     """
     Upload files to R2, using presigned URLs if available, else direct boto3.
@@ -298,6 +311,9 @@ def upload_files_parallel(
         Progress bar description.
     cache_control : str, optional
         Cache-Control header for uploaded objects.
+    succeeded_out : set[str], optional
+        If given, collects the ``r2_key`` of each successfully-uploaded object so
+        the caller can register exactly what landed (used for storage_objects).
 
     Returns
     -------
@@ -310,7 +326,9 @@ def upload_files_parallel(
     # Try presigned URL mode first
     urls = request_presigned_urls(config, tasks, bucket=bucket_id, cache_control=cache_control)
     if urls:
-        return upload_files_presigned(urls, tasks, max_workers=max_workers, desc=desc)
+        return upload_files_presigned(
+            urls, tasks, max_workers=max_workers, desc=desc, succeeded_out=succeeded_out,
+        )
 
     # Fall back to direct boto3 upload via the per-purpose backend factory.
     from campfire.deploy.backend import (
@@ -356,6 +374,8 @@ def upload_files_parallel(
                     try:
                         future.result()
                         success += 1
+                        if succeeded_out is not None:
+                            succeeded_out.add(task.r2_key)
                     except Exception as e:
                         failed += 1
                         failed_files.append(f"{task.local_path.name}: {e}")
@@ -363,4 +383,7 @@ def upload_files_parallel(
 
         return success, failed, failed_files
 
-    return upload_files_direct(client, bucket_name, tasks, max_workers=max_workers, desc=desc)
+    return upload_files_direct(
+        client, bucket_name, tasks, max_workers=max_workers, desc=desc,
+        succeeded_out=succeeded_out,
+    )
