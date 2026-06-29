@@ -13,8 +13,6 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from tqdm import tqdm
 
-from campfire_layout import parse_key
-
 from .api.session import create_download_session
 from .exceptions import DownloadError
 
@@ -147,6 +145,36 @@ def _sync_tags(api, store, show_progress):
         return 0
 
 
+def _sync_storage_objects(api, store, full, show_progress):
+    """Sync the storage_objects mirror (the download/availability layer).
+
+    Program-scoped server-side: admins mirror everything, others get published
+    rows in their accessible programs. Returns (row_count, purged, orphaned).
+    """
+    updated_since = None if full else store.get_max_storage_updated_at()
+    incremental = updated_since is not None
+    sync_timestamp = datetime.now(timezone.utc).isoformat()
+
+    pbar, callback = _make_progress(show_progress, "obj", "Storage")
+    all_rows, _server_total = api.fetch_all_storage(
+        updated_since=updated_since,
+        on_page_complete=callback,
+    )
+    if pbar:
+        pbar.close()
+
+    n = store.upsert_storage_objects(all_rows)
+
+    purged = 0
+    orphaned: List[str] = []
+    if not incremental:
+        res = store.purge_stale_storage_objects(sync_timestamp)
+        purged = res["purged"]
+        orphaned = res["orphaned_files"]
+
+    return n, purged, orphaned
+
+
 def sync_metadata(
     api, store, meta_dir: Path,
     show_progress: bool = False,
@@ -175,17 +203,22 @@ def sync_metadata(
         api, store, full, show_progress
     )
 
-    # 3. Sync photometry
+    # 3. Sync the storage_objects mirror (download/availability layer)
+    storage_count, storage_purged, storage_orphaned = _sync_storage_objects(
+        api, store, full, show_progress
+    )
+
+    # 4. Sync photometry
     phot_count, phot_purged = _sync_photometry(api, store, full, show_progress)
 
-    # 4. Sync tag metadata
+    # 5. Sync tag metadata
     tags_count = _sync_tags(api, store, show_progress)
 
-    # 5. Export CSVs
+    # 6. Export CSVs
     export_catalogs(store, meta_dir)
 
-    # 6. Detect stale local files
-    stale = store.get_stale_files()
+    # 7. Detect stale local files (server hash != local hash, via the mirror)
+    stale = store.get_stale_objects()
 
     obs_set = set(store.get_synced_observations())
 
@@ -194,6 +227,8 @@ def sync_metadata(
         "objects": obj_count,
         "objects_purged": obj_purged,
         "spectra": spec_count,
+        "storage_objects": storage_count,
+        "storage_purged": storage_purged,
         "photometry": phot_count,
         "photometry_purged": phot_purged,
         "tags": tags_count,
@@ -204,63 +239,38 @@ def sync_metadata(
     }
     if spec_purge:
         result["purged_spectra"] = spec_purge["purged_spectra"]
-        result["orphaned_files"] = spec_purge["orphaned_files"]
+    if storage_orphaned:
+        result["orphaned_files"] = storage_orphaned
 
     return result
 
 
-def compute_download_plan(
-    manifest: dict,
-    synced_files: Dict[int, dict],
-) -> Tuple[List[dict], List[dict], List[dict]]:
-    """Compare manifest against local state to determine what needs downloading.
-
-    The ``synced_files`` dict is keyed by the integer PK (``spectra_id``);
-    ``synced_files[id]["file_hash"]`` is the locally hashed value (the server
-    hash lives in the manifest entry).
-    """
-    new_files = []
-    updated_files = []
-    up_to_date = []
-
-    for spec in manifest.get("spectra", []):
-        spectra_id = spec["spectra_id"]
-        local = synced_files.get(spectra_id)
-
-        if local is None:
-            new_files.append(spec)
-        elif spec.get("file_hash") and local.get("file_hash") != spec["file_hash"]:
-            updated_files.append(spec)
-        else:
-            up_to_date.append(spec)
-
-    return new_files, updated_files, up_to_date
-
-
-def download_and_verify(
-    spec: dict,
+def _download_and_verify_key(
+    obj: dict,
+    download_url: str,
     products_dir: Path,
     download_session: requests.Session,
 ) -> dict:
-    """Download a single file, verify checksum, return result dict.
+    """Download one storage object, verify its hash, return local-state dict.
 
-    The local destination is derived from the object's storage key via the shared
-    layout contract (``products_relpath``), so it always lands in the same tree
-    the pipeline writes and deploy reads (``products/nirspec/<obs>/…``).
+    The destination is derived from the object's storage key via the shared
+    layout contract (``products_relpath``), so every product type lands in the
+    same tree the pipeline writes and deploy reads (``products/nirspec/<obs>/…``).
     """
     from .config import products_relpath
 
-    rel = products_relpath(spec["fits_path"])
+    key = obj["storage_key"]
+    rel = products_relpath(key)
     local_path = products_dir / rel
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = local_path.with_suffix(".tmp")
+    tmp_path = local_path.with_name(local_path.name + ".tmp")
 
+    expected = obj.get("content_hash")
     try:
-        response = download_session.get(spec["download_url"], stream=True, timeout=300)
+        response = download_session.get(download_url, stream=True, timeout=300)
         response.raise_for_status()
 
         hasher = hashlib.sha256()
-
         with open(tmp_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=65536):
                 f.write(chunk)
@@ -268,118 +278,101 @@ def download_and_verify(
 
         computed_hash = f"sha256:{hasher.hexdigest()}"
 
-        if spec.get("file_hash") and computed_hash != spec["file_hash"]:
+        # Only verify against authoritative sha256: hashes (etag: rows are
+        # provisional bucket metadata, not a content digest).
+        if expected and expected.startswith("sha256:") and computed_hash != expected:
             tmp_path.unlink()
             raise DownloadError(
-                f"Hash mismatch for {spec['fits_path']}: "
-                f"expected {spec['file_hash']}, got {computed_hash}"
+                f"Hash mismatch for {key}: expected {expected}, got {computed_hash}"
             )
 
         tmp_path.rename(local_path)
-
         st = local_path.stat()
         return {
-            "id": spec.get("spectra_id"),
-            "spectrum_id": spec.get("spectrum_id"),
-            "target_id": spec.get("target_id"),
-            "observation": spec.get("observation") or parse_key(spec["fits_path"]).scope.obs,
-            "grating": spec["grating"],
-            "fits_path": spec["fits_path"],
+            "storage_key": key,
             "local_path": str(local_path.relative_to(products_dir)),
-            "file_hash": computed_hash,
-            "file_size": st.st_size,
-            "local_file_mtime": st.st_mtime,
+            "local_file_hash": computed_hash,
             "local_file_size": st.st_size,
+            "local_file_mtime": st.st_mtime,
         }
-
     except DownloadError:
         raise
     except requests.RequestException as e:
         if tmp_path.exists():
             tmp_path.unlink()
-        raise DownloadError(f"Failed to download {spec['fits_path']}: {e}")
+        raise DownloadError(f"Failed to download {key}: {e}")
 
 
-def download_observation(
+def download_objects(
     api_client,
-    obs_name: str,
-    products_dir: Path,
+    observations: List[str],
+    product_types: List[str],
     store,
+    products_dir: Path,
     max_workers: int = 4,
     dry_run: bool = False,
     download_session: Optional[requests.Session] = None,
-    manifest: Optional[dict] = None,
-    grating_filter: Optional[List[str]] = None,
+    gratings: Optional[List[str]] = None,
 ) -> dict:
-    """Download FITS files for a single observation."""
-    if manifest is None:
-        manifest = api_client.fetch_manifest(obs_name)
+    """Download storage objects for the given observations + product types.
 
-    if grating_filter:
-        grating_set = set(g.upper() for g in grating_filter)
-        manifest = dict(manifest)
-        manifest["spectra"] = [
-            s for s in manifest.get("spectra", [])
-            if s.get("grating", "").upper() in grating_set
-        ]
-
-    synced = store.get_synced_files(obs_name)
-    new_files, updated_files, up_to_date = compute_download_plan(manifest, synced)
-
-    to_download = new_files + updated_files
-    total_bytes = sum(s.get("file_size") or 0 for s in to_download)
+    The single, product-type-agnostic download engine: plan locally from the
+    storage_objects mirror, presign the to-download set, fetch in parallel,
+    verify ``content_hash``, and record local state. Used for finals,
+    intermediates, and (later) NIRCam alike.
+    """
+    pending = store.get_pending_objects(
+        observations=list(observations),
+        product_types=list(product_types),
+        gratings=gratings,
+    )
+    to_download = [row for rows in pending.values() for row in rows]
 
     stats = {
-        "observation": obs_name,
-        "new_count": len(new_files),
-        "updated_count": len(updated_files),
-        "up_to_date_count": len(up_to_date),
-        "download_bytes": total_bytes,
+        "to_download": len(to_download),
+        "download_bytes": sum(r.get("size_bytes") or 0 for r in to_download),
         "downloaded": 0,
         "failed": 0,
-        "skipped": len(up_to_date),
+        "unauthorized": 0,
+        "by_observation": {obs: len(rows) for obs, rows in pending.items()},
     }
 
     if dry_run or not to_download:
         return stats
 
-    # Destinations are resolved per-file from each object's storage key (via the
-    # layout contract), so no obs_dir is precomputed here — download_and_verify
-    # creates parents under products/nirspec/<obs>/ as needed.
     products_dir.mkdir(parents=True, exist_ok=True)
+
+    urls = api_client.presign_keys([r["storage_key"] for r in to_download])
+    fetchable = [r for r in to_download if r["storage_key"] in urls]
+    stats["unauthorized"] = len(to_download) - len(fetchable)
 
     dl_session = download_session or create_download_session(max_workers)
 
-    log_id = store.log_sync_start(obs_name)
-    bytes_downloaded = 0
-
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_spec = {
-            executor.submit(download_and_verify, spec, products_dir, dl_session): spec
-            for spec in to_download
+        future_to_obj = {
+            executor.submit(
+                _download_and_verify_key, r, urls[r["storage_key"]], products_dir, dl_session
+            ): r
+            for r in fetchable
         }
-
-        with tqdm(total=len(to_download), desc=obs_name, unit="file") as pbar:
-            for future in as_completed(future_to_spec):
-                spec = future_to_spec[future]
+        with tqdm(total=len(fetchable), desc="Downloading", unit="file") as pbar:
+            for future in as_completed(future_to_obj):
+                obj = future_to_obj[future]
                 try:
                     result = future.result()
-                    store.mark_synced(
-                        spectrum_id=result["spectrum_id"],
+                    store.mark_object_synced(
+                        storage_key=result["storage_key"],
                         local_path=result["local_path"],
-                        file_hash=result["file_hash"],
-                        file_size=result["file_size"],
-                        local_file_mtime=result.get("local_file_mtime"),
-                        local_file_size=result.get("local_file_size"),
+                        local_file_hash=result["local_file_hash"],
+                        local_file_size=result["local_file_size"],
+                        local_file_mtime=result["local_file_mtime"],
                     )
                     stats["downloaded"] += 1
-                    bytes_downloaded += result.get("file_size") or 0
                 except Exception as e:
                     stats["failed"] += 1
-                    tqdm.write(f"  Failed: {spec['fits_path']}: {e}")
+                    tqdm.write(f"  Failed: {obj['storage_key']}: {e}")
                 pbar.update(1)
 
-    store.log_sync_complete(log_id, stats["downloaded"], stats["skipped"], bytes_downloaded)
     return stats
 
 

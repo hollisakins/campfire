@@ -136,6 +136,28 @@ def sample_spectra():
     ]
 
 
+@pytest.fixture
+def sample_storage_objects():
+    """Mirror rows for the three sample finals (the file/availability layer)."""
+    def _row(key, h, size, spectrum_id, obs, field):
+        return {
+            "storage_key": key, "id": None, "backend": "r2", "bucket": "data",
+            "content_hash": h, "size_bytes": size, "content_type": "application/fits",
+            "product_type": "nirspec_spec", "instrument": "nirspec", "status": "active",
+            "observation": obs, "field": field, "spectrum_id": spectrum_id,
+            "exposure_ref": None, "deployment_id": 1, "cfpipe_version": "v1.0",
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+        }
+    return [
+        _row("spectra/ember_uds_p4/ember_uds_p4_PRISM_CLEAR_100_spec.fits",
+             "sha256:aaa", 1024, "ember_uds_p4_prism_clear_100", "ember_uds_p4", "uds"),
+        _row("spectra/ember_uds_p4/ember_uds_p4_G395M_F290LP_100_spec.fits",
+             "sha256:bbb", 2048, "ember_uds_p4_g395m_f290lp_100", "ember_uds_p4", "uds"),
+        _row("spectra/ember_cosmos_p1/ember_cosmos_p1_PRISM_CLEAR_200_spec.fits",
+             "sha256:ccc", 512, "ember_cosmos_p1_prism_clear_200", "ember_cosmos_p1", "cosmos"),
+    ]
+
+
 class TestSchema:
     def test_schema_version(self, store):
         assert store._get_schema_version() == SCHEMA_VERSION
@@ -272,20 +294,25 @@ class TestUpsertSpectra:
         count = store.upsert_spectra(sample_spectra)
         assert count == 3
 
-    def test_preserves_local_fields(self, store, sample_objects, sample_spectra):
+    def test_preserves_local_fields(self, store, sample_objects, sample_spectra, sample_storage_objects):
+        # Local download state lives on the storage_objects mirror now and must
+        # survive a metadata refresh of both spectra and the mirror.
         store.upsert_objects(sample_objects)
         store.upsert_spectra(sample_spectra)
-        store.mark_synced(
-            spectrum_id="ember_uds_p4_prism_clear_100",
-            local_path="ember_uds_p4/test.fits",
-            file_hash="sha256:local",
-            file_size=1024,
+        store.upsert_storage_objects(sample_storage_objects)
+        key = "spectra/ember_uds_p4/ember_uds_p4_PRISM_CLEAR_100_spec.fits"
+        store.mark_object_synced(
+            storage_key=key,
+            local_path="nirspec/ember_uds_p4/test.fits",
+            local_file_hash="sha256:local",
+            local_file_size=1024,
         )
-        # Re-upsert should not clobber local_path
+        # Re-upsert (metadata refresh) must not clobber local state.
         store.upsert_spectra(sample_spectra)
+        store.upsert_storage_objects(sample_storage_objects)
         row = store.get_spectrum("ember_uds_p4_prism_clear_100")
-        assert row["local_path"] == "ember_uds_p4/test.fits"
-        assert row["local_file_hash"] == "sha256:local"
+        assert row["local_path"] == "nirspec/ember_uds_p4/test.fits"
+        assert row["file_hash"] == "sha256:aaa"  # server hash, surfaced via the join
 
 
 class TestQuerySpectra:
@@ -369,63 +396,112 @@ class TestProvenance:
 
 
 class TestDownloadTracking:
-    def test_mark_synced(self, store, sample_objects, sample_spectra):
-        store.upsert_objects(sample_objects)
-        store.upsert_spectra(sample_spectra)
-        store.mark_synced(
-            spectrum_id="ember_uds_p4_prism_clear_100",
-            local_path="ember_uds_p4/test.fits",
-            file_hash="sha256:local",
-            file_size=1024,
-        )
-        row = store.get_spectrum("ember_uds_p4_prism_clear_100")
-        assert row["local_path"] == "ember_uds_p4/test.fits"
+    """Download/availability bookkeeping lives on the storage_objects mirror."""
 
-    def test_find_local_path(self, store, sample_objects, sample_spectra):
-        store.upsert_objects(sample_objects)
-        store.upsert_spectra(sample_spectra)
-        store.mark_synced(
-            spectrum_id="ember_uds_p4_prism_clear_100",
-            local_path="ember_uds_p4/test.fits",
-            file_hash="sha256:local",
-            file_size=1024,
+    KEY_100 = "spectra/ember_uds_p4/ember_uds_p4_PRISM_CLEAR_100_spec.fits"
+
+    def test_mark_object_synced(self, store, sample_storage_objects):
+        store.upsert_storage_objects(sample_storage_objects)
+        store.mark_object_synced(
+            storage_key=self.KEY_100,
+            local_path="nirspec/ember_uds_p4/test.fits",
+            local_file_hash="sha256:local",
+            local_file_size=1024,
         )
         path = store.find_local_path("ember_uds_p4_prism_clear_100")
-        assert path == "ember_uds_p4/test.fits"
+        assert path == "nirspec/ember_uds_p4/test.fits"
+
+    def test_find_local_path(self, store, sample_storage_objects):
+        store.upsert_storage_objects(sample_storage_objects)
+        store.mark_object_synced(
+            storage_key=self.KEY_100,
+            local_path="nirspec/ember_uds_p4/test.fits",
+            local_file_hash="sha256:local",
+            local_file_size=1024,
+        )
+        assert store.find_local_path("ember_uds_p4_prism_clear_100") == "nirspec/ember_uds_p4/test.fits"
         assert store.find_local_path("ember_uds_p4_g395m_f290lp_100") is None
 
-    def test_get_stale_files(self, store, sample_objects, sample_spectra):
-        store.upsert_objects(sample_objects)
-        store.upsert_spectra(sample_spectra)
-        store.mark_synced(
-            spectrum_id="ember_uds_p4_prism_clear_100",
-            local_path="ember_uds_p4/test.fits",
-            file_hash="sha256:OUTDATED",
-            file_size=1024,
+    def test_get_stale_objects(self, store, sample_storage_objects):
+        store.upsert_storage_objects(sample_storage_objects)
+        store.mark_object_synced(
+            storage_key=self.KEY_100,
+            local_path="nirspec/ember_uds_p4/test.fits",
+            local_file_hash="sha256:OUTDATED",  # differs from server sha256:aaa
+            local_file_size=1024,
         )
-        stale = store.get_stale_files()
+        stale = store.get_stale_objects()
         assert len(stale) == 1
         assert stale[0]["spectrum_id"] == "ember_uds_p4_prism_clear_100"
 
-    def test_get_pending_downloads(self, store, sample_objects, sample_spectra):
-        store.upsert_objects(sample_objects)
-        store.upsert_spectra(sample_spectra)
-        pending = store.get_pending_downloads()
+    def test_get_pending_objects(self, store, sample_storage_objects):
+        store.upsert_storage_objects(sample_storage_objects)
+        pending = store.get_pending_objects()
         total = sum(len(v) for v in pending.values())
         assert total == 3
 
-    def test_get_pending_after_sync(self, store, sample_objects, sample_spectra):
-        store.upsert_objects(sample_objects)
-        store.upsert_spectra(sample_spectra)
-        store.mark_synced(
-            spectrum_id="ember_uds_p4_prism_clear_100",
-            local_path="ember_uds_p4/test.fits",
-            file_hash="sha256:aaa",  # matches server
-            file_size=1024,
+    def test_get_pending_after_sync(self, store, sample_storage_objects):
+        store.upsert_storage_objects(sample_storage_objects)
+        store.mark_object_synced(
+            storage_key=self.KEY_100,
+            local_path="nirspec/ember_uds_p4/test.fits",
+            local_file_hash="sha256:aaa",  # matches server
+            local_file_size=1024,
         )
-        pending = store.get_pending_downloads()
+        pending = store.get_pending_objects()
         total = sum(len(v) for v in pending.values())
         assert total == 2
+
+    def test_get_pending_by_product_type(self, store, sample_storage_objects):
+        store.upsert_storage_objects(sample_storage_objects)
+        # All sample rows are finals; intermediates-only filter yields nothing.
+        pending = store.get_pending_objects(product_types=["nirspec_spectrum_exposure"])
+        assert sum(len(v) for v in pending.values()) == 0
+        pending = store.get_pending_objects(product_types=["nirspec_spec"])
+        assert sum(len(v) for v in pending.values()) == 3
+
+
+class TestStatusView:
+    """get_object_summary / get_object_stats drive `campfire status`."""
+
+    def test_object_summary_counts(self, store, sample_storage_objects):
+        store.upsert_storage_objects(sample_storage_objects)
+        # Add a draft-only obs with just an intermediate (no finals).
+        store.upsert_storage_objects([{
+            "storage_key": "data/products/nirspec/ember_draft/jw_00001_nrs1_9.fits",
+            "content_hash": "sha256:exp", "size_bytes": 4096,
+            "content_type": "application/fits", "product_type": "nirspec_spectrum_exposure",
+            "instrument": "nirspec", "status": "active", "observation": "ember_draft",
+            "field": "egs", "spectrum_id": None, "exposure_ref": "jw_00001_nrs1_9",
+            "backend": "r2", "bucket": "data", "deployment_id": 2,
+        }])
+        store.mark_object_synced(
+            storage_key="spectra/ember_uds_p4/ember_uds_p4_PRISM_CLEAR_100_spec.fits",
+            local_path="nirspec/ember_uds_p4/x.fits", local_file_hash="sha256:aaa",
+            local_file_size=1024,
+        )
+        summary = {r["observation"]: r for r in store.get_object_summary()}
+
+        uds = summary["ember_uds_p4"]
+        assert uds["finals_available"] == 2
+        assert uds["finals_local"] == 1
+        assert uds["intermediates_available"] == 0
+
+        draft = summary["ember_draft"]
+        assert draft["finals_available"] == 0
+        assert draft["intermediates_available"] == 1
+        assert draft["intermediates_local"] == 0
+
+    def test_object_stats(self, store, sample_storage_objects):
+        store.upsert_storage_objects(sample_storage_objects)
+        store.mark_object_synced(
+            storage_key="spectra/ember_uds_p4/ember_uds_p4_PRISM_CLEAR_100_spec.fits",
+            local_path="nirspec/ember_uds_p4/x.fits", local_file_hash="sha256:aaa",
+            local_file_size=1024,
+        )
+        stats = store.get_object_stats("ember_uds_p4")
+        assert stats["synced_count"] == 1
+        assert stats["total_bytes"] == 1024
 
 
 class TestPurge:

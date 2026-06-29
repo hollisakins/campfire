@@ -224,6 +224,43 @@ class APIClient:
         _handle_response_error(response)
         return response.json()
 
+    # ------------------------------------------------------------------
+    # Storage registry (the client download/availability layer)
+    # ------------------------------------------------------------------
+    def fetch_all_storage(
+        self,
+        updated_since: Optional[str] = None,
+        on_page_complete: Optional[Callable[[int, int], None]] = None,
+    ) -> Tuple[List[dict], int]:
+        """Fetch the storage_objects mirror via /sync/storage (program-scoped)."""
+        return self._paginate_sync_endpoint(
+            "/sync/storage", updated_since, on_page_complete,
+        )
+
+    def presign_keys(self, keys: List[str]) -> Dict[str, str]:
+        """Get signed download URLs for storage keys the caller may access.
+
+        Returns ``{key: url}``; keys the server declines to authorize are simply
+        absent from the result. Batches of up to 200 keys per request.
+        """
+        urls: Dict[str, str] = {}
+        for start in range(0, len(keys), 200):
+            batch = keys[start:start + 200]
+            response = self._session.post(
+                "/storage/presign", json={"keys": batch}, timeout=60
+            )
+            _handle_response_error(response, "presigning storage keys")
+            urls.update(response.json().get("urls", {}))
+        return urls
+
+    def get_storage_budget(self) -> Optional[dict]:
+        """Fetch the global storage budget (admin-only). Returns None if forbidden."""
+        response = self._session.get("/storage/budget", timeout=30)
+        if response.status_code == 403:
+            return None
+        _handle_response_error(response, "fetching storage budget")
+        return response.json()
+
     def _paginate_sync_endpoint(
         self,
         path: str,
