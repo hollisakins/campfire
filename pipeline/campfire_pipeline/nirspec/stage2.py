@@ -850,16 +850,24 @@ def _finalize_canonical(prod_name, cards):
     workspace (relative paths). Returns the canonical path, or None if the cal
     product is absent (NoDataOnDetectorError)."""
     from campfire_pipeline.common import cfp
+    from campfire_pipeline.nirspec import canonical as C
     cal_out = f'{prod_name}_cal.fits'
     canonical = f'{prod_name}.fits'
     if not os.path.exists(cal_out):
         return None
     os.replace(cal_out, canonical)
     cfp_cards = cfp.format(keyset=cfp.NIRSPEC, CFP_CAL=None)
+    # Stamp the canonical format version at birth. It rides through stage2b's
+    # MultiSlitModel re-save via the jwst datamodel's extra_fits round-trip (same
+    # path the CFP_* / provenance cards rely on), and is intentionally not a CFP_*
+    # card so `nirspec reset` never strips it (a reset doesn't change the format).
+    schema_card = C.schema_version_card()
     with fits.open(canonical, mode='update') as hdul:
         for card in cards:
             hdul['PRIMARY'].header[card[0]] = card[1:3]
         for key, (val, comment) in cfp_cards.items():
+            hdul['PRIMARY'].header[key] = (val, comment)
+        for key, (val, comment) in schema_card.items():
             hdul['PRIMARY'].header[key] = (val, comment)
         hdul.flush()
     return canonical

@@ -190,6 +190,51 @@ def test_restore_pre_bkgsub_raises_without_revert(tmp_path):
         C.restore_pre_bkgsub(p)
 
 
+# --- CFSCHEMA canonical format-version keyword ------------------------------
+
+def test_schema_version_card_shape():
+    card = C.schema_version_card()
+    assert set(card) == {C.SCHEMA_VERSION_KEYWORD}
+    val, comment = card[C.SCHEMA_VERSION_KEYWORD]
+    assert val == C.CANONICAL_SCHEMA_VERSION and isinstance(val, int)
+    assert isinstance(comment, str) and comment
+
+
+def test_read_schema_version_missing_is_one(tmp_path):
+    # A canonical with no CFSCHEMA predates the keyword but is byte-format
+    # identical to a v1 file, so it reads back as 1 (not 0/None).
+    p = _slit_fits(tmp_path / 'c.fits')
+    assert C.read_schema_version(p) == 1
+
+
+def test_read_schema_version_explicit(tmp_path):
+    p = _slit_fits(tmp_path / 'c.fits', CFSCHEMA=2)
+    assert C.read_schema_version(p) == 2
+    # also accepts an already-open header
+    with fits.open(p) as hdul:
+        assert C.read_schema_version(hdul[0].header) == 2
+
+
+def test_finalize_canonical_stamps_schema_version(tmp_path, monkeypatch):
+    # _finalize_canonical promotes Spec2's `_cal.fits` to the bare canonical and
+    # is the single birth chokepoint where CFSCHEMA must be stamped (alongside
+    # CFP_CAL + provenance cards). Operates on cwd-relative paths.
+    from campfire_pipeline.nirspec.stage2 import _finalize_canonical
+    monkeypatch.chdir(tmp_path)
+    _slit_fits(tmp_path / 'foo_1_123_cal.fits')          # the Spec2 cal product
+    cards = [('STKSHFIL', 'stuck.fits', 'Stuck shutter file name')]
+    out = _finalize_canonical('foo_1_123', cards)
+    assert out == 'foo_1_123.fits'
+    assert not (tmp_path / 'foo_1_123_cal.fits').exists()  # renamed in place
+    with fits.open(tmp_path / 'foo_1_123.fits') as hdul:
+        hdr = hdul[0].header
+        assert hdr['CFSCHEMA'] == C.CANONICAL_SCHEMA_VERSION   # birth stamp
+        assert hdr.comments['CFSCHEMA'] == C.SCHEMA_VERSION_COMMENT
+        assert 'CFP_CAL' in hdr                                # state anchor
+        assert hdr['STKSHFIL'] == 'stuck.fits'                 # provenance card
+    assert C.read_schema_version(tmp_path / 'foo_1_123.fits') == C.CANONICAL_SCHEMA_VERSION
+
+
 # --- stage2b skip-check is rectify-aware (#225 review regression guard) -------
 
 def test_bkgsub_group_done_rectify_aware(tmp_path):
