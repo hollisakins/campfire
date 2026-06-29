@@ -46,7 +46,24 @@ END $$;
 INSERT INTO public.spectrum_exposures (spectrum_id, exposure_ref, stage)
   SELECT (SELECT id FROM _o3spec ORDER BY id LIMIT 1), 'harness_root_1_nrs1_999', 'cal';
 
-GRANT SELECT ON _o3tgt, _o3spec TO authenticated, service_role;
+-- A deployment for object 3's observation, to exercise the DEPLOYMENT-level
+-- lifecycle (set_deployment_status) — the path B3's admin UI uses (section H).
+CREATE TEMP TABLE _o3dep AS
+  SELECT (SELECT observation FROM public.targets
+          WHERE object_id = 3 AND observation IS NOT NULL LIMIT 1) AS obs,
+         NULL::integer AS dep_id;
+DO $$ BEGIN
+  IF (SELECT obs FROM _o3dep) IS NULL THEN
+    RAISE EXCEPTION 'FIXTURE: object 3 targets carry no observation — seed shape changed';
+  END IF;
+END $$;
+INSERT INTO public.deployments (observation, deployed_by, status)
+  SELECT obs, '11111111-1111-1111-1111-111111111111'::uuid, 'published' FROM _o3dep;
+UPDATE _o3dep SET dep_id = (
+  SELECT id FROM public.deployments
+  WHERE observation = (SELECT obs FROM _o3dep) ORDER BY id DESC LIMIT 1);
+
+GRANT SELECT ON _o3tgt, _o3spec, _o3dep TO authenticated, service_role;
 
 -- =========================================================================
 -- A. capability marker enabled (B1 applied), checked as ADMIN
@@ -184,6 +201,51 @@ BEGIN
   END;
   IF NOT denied THEN
     RAISE EXCEPTION 'GATE: non-admin was allowed to call set_spectra_deploy_status';
+  END IF;
+END $$;
+
+-- =========================================================================
+-- H. DEPLOYMENT-level revoke -> recover restores visibility (#233 regression)
+-- =========================================================================
+-- The path B3's admin UI uses. Recover (set_deployment_status -> 'published')
+-- MUST flip the deployment's *revoked* spectra back to published — the prior
+-- version only matched 'in_prep', silently leaving them hidden ("0 updated").
+RESET ROLE;
+SET LOCAL ROLE service_role;
+SELECT set_config('request.jwt.claims', json_build_object('role', 'service_role')::text, true);
+
+DO $$
+DECLARE v_dep int; v_obs text; r json; v_status text;
+BEGIN
+  SELECT dep_id, obs INTO v_dep, v_obs FROM _o3dep;
+
+  -- Revoke the whole deployment: every published spectrum of the obs -> revoked.
+  r := public.set_deployment_status(v_dep, 'revoked');
+  IF EXISTS (SELECT 1 FROM public.spectra s JOIN public.targets t ON s.target_id = t.target_id
+             WHERE t.observation = v_obs AND s.deploy_status = 'published') THEN
+    RAISE EXCEPTION 'DEPLOY REVOKE: a published spectrum survived the deployment revoke';
+  END IF;
+
+  -- Recover the whole deployment: the revoked spectra MUST become published again.
+  r := public.set_deployment_status(v_dep, 'published');
+  IF EXISTS (SELECT 1 FROM public.spectra s JOIN public.targets t ON s.target_id = t.target_id
+             WHERE t.observation = v_obs AND s.deploy_status = 'revoked') THEN
+    RAISE EXCEPTION 'DEPLOY RECOVER BUG (#233): spectra still revoked after deployment recover';
+  END IF;
+  IF (r->'spectra'->>'updated')::int = 0 THEN
+    RAISE EXCEPTION 'DEPLOY RECOVER BUG (#233): 0 spectra updated (the silent failure)';
+  END IF;
+
+  -- Recover is audited as 'recover' (not a first 'publish').
+  IF NOT EXISTS (SELECT 1 FROM public.deploy_events
+                 WHERE action = 'recover' AND deployment_id = v_dep) THEN
+    RAISE EXCEPTION 'AUDIT: deployment recover not labelled recover';
+  END IF;
+
+  -- Deployment row reflects published with a stamped published_at.
+  SELECT status INTO v_status FROM public.deployments WHERE id = v_dep;
+  IF v_status <> 'published' THEN
+    RAISE EXCEPTION 'DEPLOY: deployment row is % after recover, expected published', v_status;
   END IF;
 END $$;
 
