@@ -43,6 +43,20 @@ PRE_BKGSUB_PREFIX = 'PRE_BKGSUB'
 S2D_PREFIX = 'S2D'
 S2D_BKGSUB_PREFIX = 'S2D_BKGSUB'
 
+# Canonical-file *format* version. Bumped only when the on-disk layout changes
+# (an HDU is added/removed/renamed, or the primary-header contract shifts) — NOT
+# when the science changes. Deliberately a standalone primary-header keyword
+# (``CFSCHEMA``), *not* a ``CFP_*`` provenance card: it identifies the file
+# format, so it must survive ``cfpipe nirspec reset`` (which clears the CFP_*
+# state chain) and a stage2b re-save. A future format migrator reads it to find
+# old-layout files. Absent ⇒ treated as version 1 (the format that shipped with
+# issue #212): adding the keyword is itself not a layout change, so "missing" and
+# "=1" denote the same physical format. The keyword only discriminates once it
+# increments — every v2 file carries ``CFSCHEMA = 2`` and everything else is v1.
+SCHEMA_VERSION_KEYWORD = 'CFSCHEMA'
+SCHEMA_VERSION_COMMENT = 'campfire: canonical file format version'
+CANONICAL_SCHEMA_VERSION = 1
+
 # EXTNAME prefixes for the non-schema HDUs this module manages. These are the
 # HDUs that must be preserved across a ``DataModel.save()`` (which drops them).
 CUSTOM_HDU_PREFIXES = (PRE_BKGSUB_PREFIX, S2D_PREFIX)
@@ -52,6 +66,31 @@ def is_custom_hdu(hdu):
     """True if ``hdu`` is one of the canonical file's managed non-schema HDUs."""
     name = (hdu.name or '').upper()
     return any(name.startswith(p) for p in CUSTOM_HDU_PREFIXES)
+
+
+def schema_version_card(version=CANONICAL_SCHEMA_VERSION):
+    """The ``(value, comment)`` tuple for the ``CFSCHEMA`` format keyword.
+
+    Stamped at canonical-file birth (``stage2._finalize_canonical``). Returned as
+    a dict so it composes with the other ``header_updates`` passed to the canonical
+    writers (``save_canonical`` / ``append_extras``).
+    """
+    return {SCHEMA_VERSION_KEYWORD: (int(version), SCHEMA_VERSION_COMMENT)}
+
+
+def read_schema_version(path_or_header):
+    """Return a canonical file's format version (int).
+
+    Accepts a path or an already-open ``fits.Header``. A file with no
+    ``CFSCHEMA`` keyword predates the keyword but is byte-format-identical to a
+    ``CFSCHEMA = 1`` file, so it reads back as :data:`CANONICAL_SCHEMA_VERSION`'s
+    baseline ``1`` (see the module constant for the rationale).
+    """
+    if isinstance(path_or_header, fits.Header):
+        header = path_or_header
+    else:
+        header = fits.getheader(path_or_header)
+    return int(header.get(SCHEMA_VERSION_KEYWORD, 1))
 
 
 def _tmp_path(path):

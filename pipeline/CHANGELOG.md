@@ -203,6 +203,17 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **Canonical format-version keyword (`CFSCHEMA`, epic #210 B-track prereq).**
+  Every NIRSpec canonical spectrum-exposure now carries an integer `CFSCHEMA`
+  card (value `1`) stamped at birth in `_finalize_canonical`, self-identifying
+  the on-disk layout so a future format migrator can locate old-layout files. It
+  is deliberately *not* a `CFP_*` provenance card — it tags the file format, not a
+  processing step, so `cfpipe nirspec reset` never strips it, and it rides through
+  stage2b's `MultiSlitModel` re-save via the jwst `extra_fits` round-trip. A file
+  with no `CFSCHEMA` is byte-format identical to a `v1` file, so
+  `canonical.read_schema_version` reads "absent" back as `1`; the keyword only
+  discriminates once it increments. **No change to scientific output** (a header
+  keyword only). Bumped only when the canonical layout itself changes.
 - **Layout & key contract (`campfire_layout`, #213, PR-2 of epic #210).** The
   `$CAMPFIRE_ROOT/` directory tree — previously a three-way contract re-derived
   independently in the pipeline, the deploy/download client, and the web portal —
