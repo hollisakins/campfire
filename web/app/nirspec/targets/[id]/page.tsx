@@ -51,10 +51,14 @@ export default async function TargetRedirectPage({ params, searchParams }: Targe
   // Look up the target's parent object using service role (no auth needed for redirect)
   const supabase = createServiceClient();
 
+  // Service-role read with no auth. Gate on has_published_spectrum so a target
+  // with no published spectrum is treated as nonexistent (notFound) rather than
+  // leaking its target_id → object_id mapping. No-op in B1.
   const { data, error } = await supabase
     .from('targets')
     .select('object_id, objects!inner(object_id)')
     .eq('target_id', targetId)
+    .eq('has_published_spectrum', true)
     .single();
 
   if (error || !data) {

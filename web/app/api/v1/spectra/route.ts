@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import { generateDownloadUrl } from '@/lib/r2';
 
 /**
@@ -55,7 +55,11 @@ export async function GET(request: NextRequest) {
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data: spectrum, error: spectrumError } = await supabase
+    // Service-role read bypasses RLS, so gate unpublished spectra here: a
+    // non-admin must never resolve an in_prep/revoked FITS by path. No-op in B1.
+    const isAdmin = await isAdminUser(userId);
+
+    let spectrumQuery = supabase
       .from('spectra')
       .select(`
         id,
@@ -64,8 +68,11 @@ export async function GET(request: NextRequest) {
           program_slug
         )
       `)
-      .eq('fits_path', fitsPath)
-      .single();
+      .eq('fits_path', fitsPath);
+    if (!isAdmin) {
+      spectrumQuery = spectrumQuery.eq('deploy_status', 'published');
+    }
+    const { data: spectrum, error: spectrumError } = await spectrumQuery.single();
 
     if (spectrumError || !spectrum) {
       return NextResponse.json(

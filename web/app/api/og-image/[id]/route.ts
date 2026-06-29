@@ -26,10 +26,15 @@ export async function GET(
     // Look up coordinates — try targets first, fall back to objects
     let obj: { ra: number; dec: number; field: string } | null = null;
 
+    // This endpoint is PUBLIC (no auth) and uses the service-role client, so it
+    // must surface nothing about unpublished data: require >=1 published
+    // spectrum (has_published_spectrum) on the target/object, else 404 below.
+    // No-op in B1. (Program-level gating is out of scope — pre-existing #229.)
     const { data: target } = await supabase
       .from('targets')
       .select('ra, dec, field')
       .eq('target_id', targetId)
+      .eq('has_published_spectrum', true)
       .single();
 
     if (target) {
@@ -39,6 +44,7 @@ export async function GET(
         .from('objects')
         .select('ra, dec, field')
         .eq('object_id', targetId)
+        .eq('has_published_spectrum', true)
         .single();
       obj = object;
     }

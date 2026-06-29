@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
 import { createServiceClient } from '@/lib/supabase/server';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 
@@ -45,6 +45,12 @@ export async function GET(request: NextRequest) {
 
     const searchParams = request.nextUrl.searchParams;
     const supabase = createServiceClient();
+
+    // Unpublished (in_prep/revoked) spectra are admin-only and gated behind an
+    // explicit opt-in: admins must pass include_unpublished=true to see drafts.
+    // Fail-closed for everyone else (no-op in B1 since all data is published).
+    const includeUnpublished =
+      searchParams.get('include_unpublished') === 'true' && (await isAdminUser(userId));
 
     const programsParam = parseCSV(searchParams.get('programs'));
     const filterPrograms = programsParam
@@ -128,6 +134,7 @@ export async function GET(request: NextRequest) {
       p_page: page,
       p_page_size: limit,
       p_include_thumbnails: false,
+      p_include_unpublished: includeUnpublished,
     };
 
     const { data, error } = await supabase.rpc('get_filtered_spectra_paginated', rpcParams);

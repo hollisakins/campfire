@@ -391,6 +391,8 @@ export async function getTargetMetadata(targetId: string): Promise<{
     // Use service role client to bypass RLS for social media crawlers
     const supabase = createServiceClient();
 
+    // Service-role read with no auth (serves OG/social metadata). Gate on
+    // has_published_spectrum so draft targets return null. No-op in B1.
     const { data, error } = await supabase
       .from('targets')
       .select(`
@@ -400,6 +402,7 @@ export async function getTargetMetadata(targetId: string): Promise<{
         programs:program_slug (program_name)
       `)
       .eq('target_id', targetId)
+      .eq('has_published_spectrum', true)
       .single();
 
     if (error || !data) {
@@ -601,10 +604,13 @@ export async function getObjectMetadata(objectId: string): Promise<{
   try {
     const supabase = createServiceClient();
 
+    // Service-role read with no auth (serves OG/social metadata). Gate on
+    // has_published_spectrum so draft objects return null. No-op in B1.
     const { data, error } = await supabase
       .from('objects')
       .select('object_id, redshift, field')
       .eq('object_id', objectId)
+      .eq('has_published_spectrum', true)
       .single();
 
     if (error || !data) {

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import { generateDownloadUrl } from '@/lib/r2';
 
 /**
@@ -41,10 +41,15 @@ export async function GET(
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     );
 
+    // Admins syncing an observation need its full manifest, including
+    // in_prep spectra; non-admins only ever see published rows. No-op in B1.
+    const includeUnpublished = await isAdminUser(userId);
+
     // Get all spectra for this observation (the main payload)
     const { data: spectra, error: spectraError } = await supabase.rpc('get_observation_manifest', {
       p_obs_name: obs_name,
       p_program_slugs: accessibleProgramSlugs,
+      p_include_unpublished: includeUnpublished,
     });
 
     if (spectraError) {
