@@ -232,7 +232,6 @@ AS $function$
 DECLARE
   v_is_admin boolean;
   v_obs text;
-  v_from text;
   v_action text;
   v_spectrum_ids integer[];
   v_result json;
@@ -252,13 +251,31 @@ BEGIN
     RAISE EXCEPTION 'Deployment % not found', p_deployment_id;
   END IF;
 
-  -- publish: in_prep->published; revoke: published->revoked; in_prep: published->in_prep.
-  v_from := CASE p_to WHEN 'published' THEN 'in_prep' WHEN 'revoked' THEN 'published' ELSE 'published' END;
-  v_action := CASE p_to WHEN 'published' THEN 'publish' WHEN 'revoked' THEN 'revoke' ELSE 'upload' END;
-
+  -- Which current statuses transition to p_to:
+  --   p_to='published'  -> in_prep (first publish) OR revoked (recover) become visible
+  --   p_to='revoked'    -> published spectra are hidden
+  --   p_to='in_prep'    -> published spectra go back to draft
+  -- The prior version matched only 'in_prep' for the published case, so recovering
+  -- a REVOKED deployment flipped the deployment row but left its spectra revoked
+  -- and hidden ("0 updated", silently inconsistent) — #233 review.
   SELECT array_agg(s.id) INTO v_spectrum_ids
   FROM spectra s JOIN targets t ON s.target_id = t.target_id
-  WHERE t.observation = v_obs AND s.deploy_status = v_from;
+  WHERE t.observation = v_obs
+    AND s.deploy_status = ANY (
+      CASE p_to WHEN 'published' THEN ARRAY['in_prep', 'revoked']
+                WHEN 'revoked'   THEN ARRAY['published']
+                ELSE                  ARRAY['published'] END);
+
+  -- Audit label: publishing previously-revoked spectra is a 'recover', not a
+  -- first 'publish'. Computed before the transition (spectra still hold old status).
+  v_action := CASE
+    WHEN p_to = 'revoked' THEN 'revoke'
+    WHEN p_to = 'in_prep' THEN 'upload'
+    WHEN EXISTS (SELECT 1 FROM spectra s JOIN targets t ON s.target_id = t.target_id
+                 WHERE t.observation = v_obs AND s.deploy_status = 'revoked')
+      THEN 'recover'
+    ELSE 'publish'
+  END;
 
   UPDATE deployments SET
     status = p_to,
