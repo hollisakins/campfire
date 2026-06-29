@@ -914,6 +914,30 @@ ALTER TABLE "public"."deploy_events" OWNER TO "postgres";
 COMMENT ON TABLE "public"."deploy_events" IS 'Append-only audit log for the intermediate-product lifecycle (epic #210, B2/B3). One row per action (upload/publish/revoke/recover/supersede/delete), written only by the lifecycle RPCs (SECURITY DEFINER). deployment_id is nullable (some events are not tied to a deployment). Admin-readable; never client-inserted.';
 
 
+-- deploy_scope_state: optimistic concurrency for multi-reducer safety (epic #210,
+-- B4). One row per deploy scope ((observation|field), key). A deploy reads the
+-- scope version when it starts and compare-and-sets it at finalize via
+-- claim_deploy_scope; a mismatch means another reducer deployed the same scope
+-- concurrently, so the clobber is DETECTED (and surfaced) rather than silent.
+-- Deliberately the simplest mechanism that satisfies the gate: no leases, no
+-- heartbeats — concurrent same-scope deploys are rare.
+CREATE TABLE IF NOT EXISTS "public"."deploy_scope_state" (
+    "scope_type" "text" NOT NULL,
+    "scope_key" "text" NOT NULL,
+    "version" integer NOT NULL DEFAULT 0,
+    "last_actor" "uuid",
+    "last_deploy_at" timestamp with time zone,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "deploy_scope_state_scope_type_check" CHECK (("scope_type" = ANY (ARRAY['observation'::"text", 'field'::"text"])))
+);
+
+
+ALTER TABLE "public"."deploy_scope_state" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."deploy_scope_state" IS 'Optimistic-concurrency version per deploy scope (epic #210, B4). claim_deploy_scope does the compare-and-set so concurrent same-scope deploys are detected, not silently clobbered. Admin/internal.';
+
+
 CREATE TABLE IF NOT EXISTS "public"."password_reset_log" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "user_id" "uuid" NOT NULL,
@@ -1427,6 +1451,9 @@ ALTER TABLE ONLY "public"."spectrum_exposures"
 
 ALTER TABLE ONLY "public"."deploy_events"
     ADD CONSTRAINT "deploy_events_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."deploy_scope_state"
+    ADD CONSTRAINT "deploy_scope_state_pkey" PRIMARY KEY ("scope_type", "scope_key");
 -- (FK constraints for spectrum_exposures/deploy_events are added below, after
 -- their referenced PKs (spectra_pkey, deployments_pkey) exist in the build order.)
 
@@ -1959,6 +1986,11 @@ GRANT ALL ON TABLE "public"."spectrum_exposures" TO "service_role";
 -- deploy_events is an admin/internal audit log (RLS admin-only); not granted to anon.
 GRANT ALL ON TABLE "public"."deploy_events" TO "authenticated";
 GRANT ALL ON TABLE "public"."deploy_events" TO "service_role";
+
+
+-- deploy_scope_state is admin/internal concurrency state (RLS admin-only); not anon.
+GRANT ALL ON TABLE "public"."deploy_scope_state" TO "authenticated";
+GRANT ALL ON TABLE "public"."deploy_scope_state" TO "service_role";
 
 
 -- storage_objects is an admin/internal registry (RLS admin-only); not granted to anon.

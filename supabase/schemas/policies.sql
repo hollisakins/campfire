@@ -715,6 +715,20 @@ CREATE POLICY "admin_select_deploy_events"
 
 
 -- =============================================================================
+-- deploy_scope_state (admin-only — multi-reducer concurrency, epic #210 B4)
+-- =============================================================================
+-- Mutated only by the claim_deploy_scope RPC (SECURITY DEFINER, service_role/
+-- admin). Admin-readable for inspection; defense-in-depth RLS.
+
+ALTER TABLE deploy_scope_state ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "admin_select_deploy_scope_state" ON deploy_scope_state;
+CREATE POLICY "admin_select_deploy_scope_state"
+  ON deploy_scope_state FOR SELECT TO authenticated
+  USING ((SELECT public.is_admin()));
+
+
+-- =============================================================================
 -- storage_objects (admin-only — internal storage registry, epic #210 F1)
 -- =============================================================================
 -- The registry is admin/internal: the web portal never reads it in F1, and

@@ -3276,6 +3276,94 @@ GRANT EXECUTE ON FUNCTION public.set_deployment_status(integer, text, uuid, text
 
 
 -- =============================================================================
+-- Multi-reducer safety (epic #210, B4)
+-- =============================================================================
+-- Optimistic concurrency over deploy scopes. A deploy reads the scope version
+-- when it starts (get_deploy_scope_version) and compare-and-sets at finalize
+-- (claim_deploy_scope). A version mismatch means another reducer deployed the
+-- same scope concurrently — the clobber is detected and surfaced, not silent.
+
+-- get_deploy_scope_version: the scope's current version (0 if it has never been
+-- deployed). SECURITY DEFINER so it reads uniformly under admin and service_role.
+CREATE OR REPLACE FUNCTION public.get_deploy_scope_version(
+  p_scope_type text,
+  p_scope_key text
+)
+RETURNS integer
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_version integer;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  SELECT version INTO v_version FROM deploy_scope_state
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key;
+  RETURN COALESCE(v_version, 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_deploy_scope_version(text, text) TO authenticated, service_role;
+
+
+-- claim_deploy_scope: atomic compare-and-set. Bumps the scope version iff it
+-- still equals p_expected_version (the value the deploy read at start). Returns
+-- {claimed, version, current, conflict}: claimed=false + conflict=true means a
+-- concurrent deploy advanced the scope (the caller should surface the clobber).
+CREATE OR REPLACE FUNCTION public.claim_deploy_scope(
+  p_scope_type text,
+  p_scope_key text,
+  p_expected_version integer,
+  p_actor uuid DEFAULT NULL
+)
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_new_version integer;
+  v_current integer;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  IF p_scope_type NOT IN ('observation', 'field') THEN
+    RAISE EXCEPTION 'Invalid scope_type: %', p_scope_type;
+  END IF;
+
+  -- CAS: insert at version 1 if the scope is new (expected 0); otherwise bump
+  -- only when the stored version still matches what the caller read at start.
+  INSERT INTO deploy_scope_state AS d (scope_type, scope_key, version, last_actor, last_deploy_at, updated_at)
+  VALUES (p_scope_type, p_scope_key, 1, p_actor, now(), now())
+  ON CONFLICT (scope_type, scope_key) DO UPDATE
+    SET version = d.version + 1, last_actor = p_actor, last_deploy_at = now(), updated_at = now()
+    WHERE d.version = p_expected_version
+  RETURNING d.version INTO v_new_version;
+
+  IF v_new_version IS NOT NULL THEN
+    RETURN json_build_object('claimed', true, 'version', v_new_version, 'conflict', false);
+  END IF;
+
+  -- No row returned: an existing row's version != expected (concurrent deploy).
+  SELECT version INTO v_current FROM deploy_scope_state
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key;
+  RETURN json_build_object('claimed', false, 'conflict', true,
+                           'current', COALESCE(v_current, 0), 'expected', p_expected_version);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) TO authenticated, service_role;
+
+
+-- =============================================================================
 -- Device Auth, API Keys, and Refresh Tokens
 -- =============================================================================
 

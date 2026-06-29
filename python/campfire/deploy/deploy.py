@@ -43,6 +43,8 @@ from campfire.deploy.supabase import (
     deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
     fetch_deployment_config,
+    claim_deploy_scope,
+    get_deploy_scope_version,
     get_lifecycle_status,
     get_supabase_client,
     get_user_id_from_token,
@@ -374,6 +376,11 @@ def deploy_observation(
             sys.exit(1)
         print("Deploying as in_prep draft (admin-only until published).")
 
+    # B4 multi-reducer safety: snapshot this observation's deploy-scope version
+    # now; we compare-and-set it at finalize to detect a concurrent deploy of the
+    # same observation (advisory — never blocks).
+    scope_version_at_start = get_deploy_scope_version(sb, 'observation', obs_name)
+
     # Check for existing targets and confirm
     target_ids = [o['object_id'] for o in objects]
     existing = check_existing_objects(sb, target_ids)
@@ -630,6 +637,20 @@ def deploy_observation(
                 affected_count=len(spectra),
                 metadata={'in_prep': in_prep, 'n_objects': len(objects)},
             )
+
+        # B4 multi-reducer safety: compare-and-set the scope version. A conflict
+        # means another reducer deployed this same observation while we were
+        # running — surface it so the operator can re-check (the writes are
+        # idempotent by key, but a concurrent re-reduction may have interleaved).
+        claim = claim_deploy_scope(sb, 'observation', obs_name,
+                                   scope_version_at_start, actor=user_id)
+        if claim.get('conflict'):
+            print()
+            print(f"⚠  CONCURRENT DEPLOY DETECTED for {obs_name}: another deploy "
+                  f"advanced this observation (version {scope_version_at_start} -> "
+                  f"{claim.get('current')}) while this one was running.")
+            print("   Both deploys' writes are present; re-check the result and "
+                  "re-deploy if a re-reduction was clobbered.")
 
         # Storage registry (#214): index the objects that actually landed in this
         # deploy. Shadow index — additive, nothing reads it as authoritative yet.
