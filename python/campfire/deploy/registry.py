@@ -307,6 +307,76 @@ def registry_keys(client, bucket: str = 'data') -> list[str]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# delete-local interlock (epic #210, B4)
+# ---------------------------------------------------------------------------
+
+class DeleteLocalPlan:
+    """What ``delete-local`` would do, after the verified-in-cloud interlock.
+
+    Only files that have an *active registry row with a sha256 hash* are ever
+    candidates — so a file is never deleted unless a verified cloud copy exists.
+    ``--verify`` additionally hashes the local file and requires it to match the
+    registry hash (the cloud copy is byte-identical to what we're about to drop).
+    """
+
+    def __init__(self):
+        self.deletable: list[tuple] = []   # (local_path: Path, key, size_bytes)
+        self.skipped: list[tuple] = []     # (local_path: Path, key, reason)
+        self.absent: list[str] = []        # registered keys with no local file
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(sz for _, _, sz in self.deletable)
+
+
+def plan_delete_local(
+    client, observation: str, products_root: Path, *,
+    verify: bool = False, bucket: str = 'data',
+) -> DeleteLocalPlan:
+    """Build a safe delete plan for an observation's local product files.
+
+    Enumerates the observation's *active registry rows* (objects known to be in
+    the cloud), maps each to its local path via the layout contract, and clears
+    only those that pass the interlock. Files with no registry row are never
+    touched — they are not in the candidate set.
+    """
+    from campfire.config import products_relpath
+
+    resp = (
+        client.table('storage_objects')
+        .select('storage_key, content_hash, size_bytes')
+        .eq('observation', observation)
+        .eq('bucket', bucket)
+        .eq('status', 'active')
+        .execute()
+    )
+    rows = resp.data or []
+    plan = DeleteLocalPlan()
+    for r in rows:
+        key = r.get('storage_key')
+        if not key:
+            continue
+        chash = r.get('content_hash') or ''
+        local = Path(products_root) / products_relpath(key)
+        if not local.exists():
+            plan.absent.append(key)
+            continue
+        # Interlock: the cloud copy must carry an authoritative sha256 (an etag is
+        # provisional — never delete a local file against an unverified cloud hash).
+        if not chash.startswith('sha256:'):
+            plan.skipped.append((local, key, 'registry hash is provisional (etag), not sha256'))
+            continue
+        if verify:
+            local_hash, _ = hash_file(local)
+            if local_hash != chash:
+                plan.skipped.append((local, key, 'local hash != cloud hash'))
+                continue
+        size = r.get('size_bytes') or local.stat().st_size
+        plan.deletable.append((local, key, int(size)))
+    return plan
+
+
 def _data_client_and_bucket(config: dict):
     """Resolve a boto3 client + bucket name for the data backend (LIST/HEAD).
 

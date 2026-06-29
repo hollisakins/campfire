@@ -256,6 +256,42 @@ def log_deploy_event(
         return None
 
 
+def get_deploy_scope_version(client: Client, scope_type: str, scope_key: str) -> int:
+    """The current optimistic-concurrency version of a deploy scope (0 if new).
+
+    Read at the START of a deploy; passed back to claim_deploy_scope at finalize
+    to detect a concurrent deploy of the same scope (epic #210, B4).
+    """
+    try:
+        resp = client.rpc('get_deploy_scope_version', {
+            'p_scope_type': scope_type, 'p_scope_key': scope_key,
+        }).execute()
+        return int(resp.data) if resp.data is not None else 0
+    except Exception:
+        # Multi-reducer detection is advisory; never block a deploy on it.
+        return 0
+
+
+def claim_deploy_scope(
+    client: Client, scope_type: str, scope_key: str, expected_version: int,
+    *, actor: str | None = None,
+) -> dict:
+    """Compare-and-set a deploy scope's version at finalize (epic #210, B4).
+
+    Returns the RPC json: ``{'claimed': bool, 'conflict': bool, ...}``. A
+    conflict (claimed=False) means another reducer deployed the same scope
+    concurrently. Advisory — never raises into the deploy path.
+    """
+    try:
+        resp = client.rpc('claim_deploy_scope', {
+            'p_scope_type': scope_type, 'p_scope_key': scope_key,
+            'p_expected_version': expected_version, 'p_actor': actor,
+        }).execute()
+        return resp.data if isinstance(resp.data, dict) else {'claimed': True, 'conflict': False}
+    except Exception as e:
+        return {'claimed': True, 'conflict': False, 'error': str(e)}
+
+
 def get_latest_deployment_id(client: Client, observation: str) -> int | None:
     """The most recent deployment id for an observation (lifecycle anchor)."""
     resp = (client.table('deployments')
