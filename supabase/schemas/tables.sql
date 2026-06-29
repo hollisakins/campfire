@@ -636,7 +636,16 @@ CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "source_ids_filter" integer[],
     "supabase_only" boolean DEFAULT false,
     "stuck_shutters" "jsonb",
-    "reduced_at" timestamp with time zone
+    "reduced_at" timestamp with time zone,
+    -- B2 (#218): deployment lifecycle. A deployment is the batch anchor for the
+    -- in_prep -> published -> revoked flow. 'published' is the default so existing
+    -- rows (and ordinary deploys) stay published; `deploy --in-prep` inserts with
+    -- 'in_prep'. published_at/revoked_at stamp the transitions (set by the
+    -- set_deployment_status RPC). The user-facing visibility gate lives on
+    -- spectra.deploy_status; this column is the provenance/audit record.
+    "status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "deployments_status_check" CHECK (("status" = ANY (ARRAY['in_prep'::"text", 'published'::"text", 'revoked'::"text"]))),
+    "published_at" timestamp with time zone,
+    "revoked_at" timestamp with time zone
 );
 
 
@@ -747,6 +756,56 @@ ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNED BY "public"."nircam_exposures"."id";
 
 
+-- spectrum_exposures: NIRSpec canonical spectrum-exposure intermediates (epic
+-- #210, B2). One logical row per (exposure, detector, source) that combines into
+-- a final spectrum — the NIRSpec analogue of nircam_exposures. Child of spectra
+-- (FK to the stable integer PK, not the GENERATED spectrum_id). Admin-only: these
+-- are reduction intermediates, never user-facing science. The physical object
+-- (key/hash/size/backend) lives in storage_objects (product_type
+-- 'nirspec_spectrum_exposure'); this table owns the reviewer-facing lifecycle
+-- state (stage, review_status, masking, notes) and the join key (exposure_ref).
+CREATE TABLE IF NOT EXISTS "public"."spectrum_exposures" (
+    "id" integer NOT NULL,
+    "spectrum_id" integer NOT NULL,
+    "exposure_ref" "text" NOT NULL,
+    "root" "text",
+    "nod" integer,
+    "detector" "text",
+    "source_id" integer,
+    "grating" "text",
+    "stage" "text" NOT NULL DEFAULT 'cal'::"text",
+    "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
+    "masking" "text" NOT NULL DEFAULT 'none'::"text",
+    "notes" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."spectrum_exposures" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."spectrum_exposures_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."spectrum_exposures_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."spectrum_exposures_id_seq" OWNED BY "public"."spectrum_exposures"."id";
+
+
+COMMENT ON TABLE "public"."spectrum_exposures" IS 'NIRSpec canonical spectrum-exposure intermediates (epic #210, B2). One logical row per (exposure,detector,source); child of spectra (FK to integer PK). Registered to storage_objects with product_type=''nirspec_spectrum_exposure''. Admin-only lifecycle (intermediates are never user-facing science).';
+
+COMMENT ON COLUMN "public"."spectrum_exposures"."spectrum_id" IS 'FK to spectra.id (the stable integer PK, NOT the GENERATED spectra.spectrum_id text column which is not uniquely constrained). ON DELETE CASCADE: intermediates die with their parent spectrum and are rebuilt on the next deploy.';
+
+COMMENT ON COLUMN "public"."spectrum_exposures"."exposure_ref" IS 'Stable (root,nod,detector,source) tuple identifying the input NIRSpec exposure. Matches storage_objects.exposure_ref for the registry join; backs the partial unique (product_type, exposure_ref) WHERE status=''active'' on storage_objects.';
+
 
 -- storage_objects: the keystone shadow index of every object in cloud storage
 -- (epic #210, F1). Deploy writes one row per uploaded object using canonical keys
@@ -824,6 +883,35 @@ COMMENT ON COLUMN "public"."storage_objects"."spectrum_id" IS 'Typed, indexed sc
 COMMENT ON COLUMN "public"."storage_objects"."exposure_ref" IS 'Stable per-exposure reference for intermediate products (nircam rootname; nirspec (root,nod,detector,source) tuple). Backs the partial unique (product_type, exposure_ref) WHERE status=''active'' — one current object per product/exposure.';
 
 COMMENT ON COLUMN "public"."storage_objects"."status" IS 'active = current object; superseded = replaced by a newer hash (tombstone, GC-eligible later); revoked = un-published. Only active rows count toward the budget and the partial-unique constraint.';
+
+
+-- deploy_events: append-only audit log for the intermediate-product lifecycle
+-- (epic #210, B2/B3). One row per lifecycle action (upload/publish/revoke/
+-- recover/supersede/delete). Mirrors download_log's shape. Written only by the
+-- lifecycle RPCs (SECURITY DEFINER, service_role/admin) — never by a direct
+-- client insert — so the action record is trustworthy. Admin-readable.
+CREATE TABLE IF NOT EXISTS "public"."deploy_events" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "actor" "uuid",
+    "action" "text" NOT NULL,
+    "deployment_id" integer,
+    "observation" "text",
+    "spectrum_id" "text",
+    "object_id" integer,
+    "status_from" "text",
+    "status_to" "text",
+    "affected_count" integer,
+    "host" "text",
+    "metadata" "jsonb",
+    "occurred_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text"])))
+);
+
+
+ALTER TABLE "public"."deploy_events" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."deploy_events" IS 'Append-only audit log for the intermediate-product lifecycle (epic #210, B2/B3). One row per action (upload/publish/revoke/recover/supersede/delete), written only by the lifecycle RPCs (SECURITY DEFINER). deployment_id is nullable (some events are not tied to a deployment). Admin-readable; never client-inserted.';
 
 
 CREATE TABLE IF NOT EXISTS "public"."password_reset_log" (
@@ -1182,6 +1270,10 @@ ALTER TABLE ONLY "public"."nircam_exposures" ALTER COLUMN "id" SET DEFAULT "next
 
 
 
+ALTER TABLE ONLY "public"."spectrum_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."spectrum_exposures_id_seq"'::"regclass");
+
+
+
 ALTER TABLE ONLY "public"."storage_objects" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."storage_objects_id_seq"'::"regclass");
 
 
@@ -1327,6 +1419,17 @@ ALTER TABLE ONLY "public"."nircam_exposures"
 ALTER TABLE ONLY "public"."nircam_exposures"
     ADD CONSTRAINT "nircam_exposures_unique" UNIQUE ("field", "filter", "filename");
 
+ALTER TABLE ONLY "public"."spectrum_exposures"
+    ADD CONSTRAINT "spectrum_exposures_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."spectrum_exposures"
+    ADD CONSTRAINT "spectrum_exposures_unique" UNIQUE ("spectrum_id", "exposure_ref");
+
+ALTER TABLE ONLY "public"."deploy_events"
+    ADD CONSTRAINT "deploy_events_pkey" PRIMARY KEY ("id");
+-- (FK constraints for spectrum_exposures/deploy_events are added below, after
+-- their referenced PKs (spectra_pkey, deployments_pkey) exist in the build order.)
+
 
 ALTER TABLE ONLY "public"."storage_objects"
     ADD CONSTRAINT "storage_objects_pkey" PRIMARY KEY ("id");
@@ -1395,6 +1498,18 @@ ALTER TABLE ONLY "public"."deployments"
 
 ALTER TABLE ONLY "public"."spectra"
     ADD CONSTRAINT "spectra_pkey" PRIMARY KEY ("id");
+
+-- B2 (#218) cross-table FKs, placed after the referenced PKs (spectra_pkey above,
+-- deployments_pkey earlier) so the declarative build order resolves them.
+-- spectrum_exposures -> spectra.id, CASCADE: intermediates die with their parent
+-- spectrum and are rebuilt on the next deploy.
+ALTER TABLE ONLY "public"."spectrum_exposures"
+    ADD CONSTRAINT "spectrum_exposures_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectra"("id") ON DELETE CASCADE;
+
+-- deploy_events -> deployments.id, SET NULL: audit rows outlive the deployment
+-- they reference (don't cascade-delete history), matching storage_objects.deployment_id.
+ALTER TABLE ONLY "public"."deploy_events"
+    ADD CONSTRAINT "deploy_events_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
 
 
 
@@ -1836,6 +1951,16 @@ GRANT ALL ON TABLE "public"."nircam_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."nircam_exposures" TO "service_role";
 
 
+-- spectrum_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
+GRANT ALL ON TABLE "public"."spectrum_exposures" TO "authenticated";
+GRANT ALL ON TABLE "public"."spectrum_exposures" TO "service_role";
+
+
+-- deploy_events is an admin/internal audit log (RLS admin-only); not granted to anon.
+GRANT ALL ON TABLE "public"."deploy_events" TO "authenticated";
+GRANT ALL ON TABLE "public"."deploy_events" TO "service_role";
+
+
 -- storage_objects is an admin/internal registry (RLS admin-only); not granted to anon.
 GRANT ALL ON TABLE "public"."storage_objects" TO "authenticated";
 GRANT ALL ON TABLE "public"."storage_objects" TO "service_role";
@@ -1931,6 +2056,10 @@ GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "service_role";
 
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "service_role";
+
+
+GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "service_role";
 
 
 GRANT ALL ON SEQUENCE "public"."storage_objects_id_seq" TO "authenticated";

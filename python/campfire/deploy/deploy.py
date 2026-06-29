@@ -11,6 +11,7 @@ Each public function follows the same pattern:
 
 import re
 import shutil
+import sys
 from pathlib import Path
 
 from tqdm import tqdm
@@ -42,9 +43,11 @@ from campfire.deploy.supabase import (
     deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
     fetch_deployment_config,
+    get_lifecycle_status,
     get_supabase_client,
     get_user_id_from_token,
     insert_deployment,
+    log_deploy_event,
     recompute_target_aggregates,
     refresh_filter_options,
     refresh_programs_overview,
@@ -140,6 +143,29 @@ def _collect_crds_contexts(spectra) -> list[str]:
     return sorted(contexts)
 
 
+def _count_published_spectra(sb, spectra: list[dict]) -> int:
+    """How many of these (target_id, grating) spectra are currently 'published'.
+
+    Used by the `--in-prep` guard so a re-draft never silently hides live data.
+    PostgREST can't filter on tuples, so over-fetch by target_id and filter the
+    (target_id, grating) pairs Python-side (gratings per target are few).
+    """
+    wanted = {(s['target_id'], s['grating']) for s in spectra}
+    target_ids = sorted({tid for (tid, _) in wanted})
+    published = 0
+    for i in range(0, len(target_ids), 200):
+        batch = target_ids[i:i + 200]
+        resp = (sb.table('spectra')
+                .select('target_id, grating, deploy_status')
+                .in_('target_id', batch)
+                .eq('deploy_status', 'published')
+                .execute())
+        for row in resp.data or []:
+            if (row['target_id'], row['grating']) in wanted:
+                published += 1
+    return published
+
+
 def deploy_observation(
     obs_name: str,
     config: dict,
@@ -155,12 +181,20 @@ def deploy_observation(
     source_ids: list[int] | None = None,
     auto_approve: bool = False,
     defer_rebuild: bool = False,
+    in_prep: bool = False,
 ) -> dict:
     """Full deployment: ECSV -> generate content -> R2 upload -> Supabase upsert.
 
     When *defer_rebuild* is True, the per-field objects reconciliation
     (and materialized-view refresh) is skipped so the caller can batch
     them after processing multiple observations of the same field.
+
+    When *in_prep* is True (epic #210, B2), the deployed spectra land
+    ``deploy_status='in_prep'`` (admin-only, invisible to users) and the
+    deployment record is marked ``in_prep`` — a draft an admin reviews and
+    publishes via the admin UI. Requires the B1 (#217) lifecycle to be applied
+    to the target database; checked up front via ``get_lifecycle_status`` so the
+    deploy aborts cleanly rather than silently shipping unguarded drafts.
 
     Returns a dict with ``field`` and ``needs_reconcile`` (always True
     for completed deploys; the no-op return at the dry-run / nothing-
@@ -323,6 +357,23 @@ def deploy_observation(
     # --- Live deployment ---
     sb = get_supabase_client(config)
 
+    # B2 capability gate: `--in-prep` requires the B1 (#217) lifecycle to be live
+    # on the TARGET database, or the drafts would not actually be hidden. Check the
+    # marker up front and abort cleanly if absent (or if the RPC itself is missing,
+    # i.e. this deploy code is newer than the DB).
+    if in_prep:
+        cap = get_lifecycle_status(sb)
+        if not cap.get('enabled'):
+            print("ERROR: --in-prep requires the B1 lifecycle enforcement (#217) on "
+                  "the target database, but it is not enabled.")
+            if cap.get('checks'):
+                print(f"  capability checks: {cap['checks']}")
+            if cap.get('error'):
+                print(f"  {cap['error']}")
+            print("  Deploy the B1 migration first, or omit --in-prep to publish directly.")
+            sys.exit(1)
+        print("Deploying as in_prep draft (admin-only until published).")
+
     # Check for existing targets and confirm
     target_ids = [o['object_id'] for o in objects]
     existing = check_existing_objects(sb, target_ids)
@@ -428,6 +479,27 @@ def deploy_observation(
         print("Upserting objects...")
         n_obj, new_object_ids, _n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
         print(f"  {n_obj} objects")
+
+        # B2: an in_prep deploy forces deploy_status='in_prep' on every spectrum it
+        # writes — the whole observation lands as an admin-only draft. Guard first
+        # against silently hiding data that is already live: warn (and require
+        # confirmation) if any of these (target_id, grating) rows are currently
+        # 'published', since re-drafting them would pull them from users until an
+        # explicit publish. A single spectra row per (target,grating) can't hold a
+        # live + draft version at once, so this is "take the observation back to
+        # draft", not zero-downtime staging of a re-reduction.
+        if in_prep:
+            already_published = _count_published_spectra(sb, spectra)
+            if already_published and not auto_approve:
+                print()
+                print(f"WARNING: --in-prep will hide {already_published} currently-PUBLISHED "
+                      f"spectrum row(s) until you re-publish them.")
+                resp = input("  Take these back to draft (in_prep)? [y/N]: ")
+                if resp.lower() != 'y':
+                    print("Aborted.")
+                    return {'field': field, 'needs_reconcile': False}
+            for rec in spectra:
+                rec['deploy_status'] = 'in_prep'
 
         print("Upserting spectra...")
         n_spec, changed_hashes = batch_upsert_spectra(sb, spectra)
@@ -542,10 +614,22 @@ def deploy_observation(
             force_overwrite=force_overwrite,
             source_ids_filter=source_ids,
             supabase_only=supabase_only,
+            status='in_prep' if in_prep else 'published',
         )
         if deployment_id:
             update_latest_deployment(sb, obs_name, deployment_id)
-            print(f"\nDeployment #{deployment_id} recorded")
+            print(f"\nDeployment #{deployment_id} recorded"
+                  f"{' (in_prep draft)' if in_prep else ''}")
+            # B2: record the deploy in the lifecycle audit log.
+            log_deploy_event(
+                sb,
+                action='upload',
+                actor=user_id,
+                deployment_id=deployment_id,
+                observation=obs_name,
+                affected_count=len(spectra),
+                metadata={'in_prep': in_prep, 'n_objects': len(objects)},
+            )
 
         # Storage registry (#214): index the objects that actually landed in this
         # deploy. Shadow index — additive, nothing reads it as authoritative yet.

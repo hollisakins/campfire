@@ -2961,6 +2961,321 @@ GRANT EXECUTE ON FUNCTION public.get_storage_budget TO authenticated, service_ro
 
 
 -- =============================================================================
+-- Intermediate-product lifecycle (epic #210, B2/B3)
+-- =============================================================================
+-- The publish/revoke/recover flow for in_prep science. spectra.deploy_status is
+-- the user-facing visibility gate (B1); these RPCs are the only sanctioned way
+-- to transition it, and they keep targets/objects.has_published_spectrum and the
+-- deploy_events audit log in lockstep. All are SECURITY DEFINER + admin/service_role
+-- gated (the same gate as get_storage_budget): callers are the deploy CLI
+-- (service_role / admin token) and the B3 admin web actions (admin session).
+
+-- get_lifecycle_status: the capability marker the deploy CLI checks before any
+-- `--in-prep` upload. It introspects the LIVE catalog to confirm B1 (#217) is
+-- applied to *this* database: the deploy_status column exists AND the reader RPCs
+-- actually carry the p_include_unpublished predicate. Returns enabled=false (not
+-- an error) when B1 is absent, so `deploy --in-prep` can abort cleanly; if even
+-- this function is missing, the client catches the RPC-not-found and aborts too.
+CREATE OR REPLACE FUNCTION public.get_lifecycle_status()
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_has_status_col boolean;
+  v_has_target_flag boolean;
+  v_reader_threaded boolean;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'spectra' AND column_name = 'deploy_status'
+  ) INTO v_has_status_col;
+
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'targets' AND column_name = 'has_published_spectrum'
+  ) INTO v_has_target_flag;
+
+  -- A representative reader RPC must carry the predicate parameter — proof that
+  -- B1's reader-threading (not just the column) is deployed.
+  SELECT EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = 'get_filtered_object_ids'
+      AND pg_get_function_arguments(p.oid) LIKE '%p_include_unpublished%'
+  ) INTO v_reader_threaded;
+
+  RETURN json_build_object(
+    'enabled', (v_has_status_col AND v_has_target_flag AND v_reader_threaded),
+    'version', 1,
+    'checks', json_build_object(
+      'spectra_deploy_status', v_has_status_col,
+      'targets_has_published_spectrum', v_has_target_flag,
+      'reader_p_include_unpublished', v_reader_threaded
+    )
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_lifecycle_status() TO authenticated, service_role;
+
+
+-- recompute_has_published_spectrum: refresh targets/objects.has_published_spectrum
+-- (the B1 object/target visibility gate) from the current spectra.deploy_status.
+-- Scope by p_target_ids (publish/revoke) or p_field (reconcile, after membership
+-- changes). A target is published iff a member spectrum is; an object is published
+-- iff a member target is. Fail-closed default is TRUE, so this MUST run after any
+-- status change or membership relink — forgetting it leaves rows over-visible.
+CREATE OR REPLACE FUNCTION public.recompute_has_published_spectrum(
+  p_target_ids text[] DEFAULT NULL,
+  p_field text DEFAULT NULL
+)
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_targets text[];
+  v_n_targets int := 0;
+  v_n_objects int := 0;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  IF p_target_ids IS NOT NULL THEN
+    v_targets := p_target_ids;
+  ELSIF p_field IS NOT NULL THEN
+    SELECT array_agg(t.target_id) INTO v_targets FROM targets t WHERE t.field = p_field;
+  ELSE
+    RAISE EXCEPTION 'recompute_has_published_spectrum requires p_target_ids or p_field';
+  END IF;
+
+  IF v_targets IS NULL OR array_length(v_targets, 1) IS NULL THEN
+    RETURN json_build_object('targets_updated', 0, 'objects_updated', 0);
+  END IF;
+
+  UPDATE targets t
+  SET has_published_spectrum = EXISTS (
+        SELECT 1 FROM spectra s
+        WHERE s.target_id = t.target_id AND s.deploy_status = 'published'
+      )
+  WHERE t.target_id = ANY(v_targets);
+  GET DIAGNOSTICS v_n_targets = ROW_COUNT;
+
+  UPDATE objects o
+  SET has_published_spectrum = EXISTS (
+        SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.has_published_spectrum
+      )
+  WHERE o.id IN (
+    SELECT DISTINCT t2.object_id FROM targets t2
+    WHERE t2.target_id = ANY(v_targets) AND t2.object_id IS NOT NULL
+  );
+  GET DIAGNOSTICS v_n_objects = ROW_COUNT;
+
+  RETURN json_build_object('targets_updated', v_n_targets, 'objects_updated', v_n_objects);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.recompute_has_published_spectrum(text[], text) TO authenticated, service_role;
+
+
+-- log_deploy_event: append one row to the deploy_events audit log. The only
+-- sanctioned write path (deploy_events has no INSERT policy, so direct client
+-- inserts are denied). Used by the deploy CLI for 'upload' events; the set_*
+-- RPCs write their own rows inline.
+CREATE OR REPLACE FUNCTION public.log_deploy_event(
+  p_action text,
+  p_actor uuid DEFAULT NULL,
+  p_deployment_id integer DEFAULT NULL,
+  p_observation text DEFAULT NULL,
+  p_affected_count integer DEFAULT NULL,
+  p_metadata jsonb DEFAULT NULL,
+  p_host text DEFAULT NULL
+)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_id uuid;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  IF p_action NOT IN ('upload', 'publish', 'revoke', 'recover', 'supersede', 'delete') THEN
+    RAISE EXCEPTION 'Invalid deploy_event action: %', p_action;
+  END IF;
+
+  INSERT INTO deploy_events(actor, action, deployment_id, observation, affected_count, metadata, host)
+  VALUES (p_actor, p_action, p_deployment_id, p_observation, p_affected_count, p_metadata, p_host)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.log_deploy_event(text, uuid, integer, text, integer, jsonb, text) TO authenticated, service_role;
+
+
+-- set_spectra_deploy_status: the publish/revoke/recover primitive. Transitions a
+-- set of spectra (by PK) to p_to, recomputes has_published_spectrum for their
+-- targets/objects, and writes one audit row. p_action labels intent (publish vs
+-- recover both land 'published'); defaulted from p_to when omitted.
+CREATE OR REPLACE FUNCTION public.set_spectra_deploy_status(
+  p_spectrum_db_ids integer[],
+  p_to text,
+  p_action text DEFAULT NULL,
+  p_actor uuid DEFAULT NULL,
+  p_deployment_id integer DEFAULT NULL,
+  p_host text DEFAULT NULL
+)
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_action text;
+  v_updated int := 0;
+  v_target_ids text[];
+  v_recompute json;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  IF p_to NOT IN ('in_prep', 'published', 'revoked') THEN
+    RAISE EXCEPTION 'Invalid deploy_status: %', p_to;
+  END IF;
+
+  v_action := COALESCE(p_action,
+    CASE p_to WHEN 'published' THEN 'publish' WHEN 'revoked' THEN 'revoke' ELSE 'upload' END);
+  IF v_action NOT IN ('upload', 'publish', 'revoke', 'recover', 'supersede', 'delete') THEN
+    RAISE EXCEPTION 'Invalid action: %', v_action;
+  END IF;
+
+  IF p_spectrum_db_ids IS NULL OR array_length(p_spectrum_db_ids, 1) IS NULL THEN
+    RETURN json_build_object('updated', 0, 'action', v_action);
+  END IF;
+
+  SELECT array_agg(DISTINCT s.target_id) INTO v_target_ids
+  FROM spectra s WHERE s.id = ANY(p_spectrum_db_ids);
+
+  UPDATE spectra s SET deploy_status = p_to
+  WHERE s.id = ANY(p_spectrum_db_ids) AND s.deploy_status <> p_to;
+  GET DIAGNOSTICS v_updated = ROW_COUNT;
+
+  IF v_target_ids IS NOT NULL THEN
+    v_recompute := public.recompute_has_published_spectrum(p_target_ids := v_target_ids);
+  END IF;
+
+  INSERT INTO deploy_events(actor, action, deployment_id, status_to, affected_count, host, metadata)
+  VALUES (p_actor, v_action, p_deployment_id, p_to, v_updated, p_host,
+          jsonb_build_object('n_targets', COALESCE(array_length(v_target_ids, 1), 0)));
+
+  RETURN json_build_object('updated', v_updated, 'action', v_action, 'recompute', v_recompute);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.set_spectra_deploy_status(integer[], text, text, uuid, integer, text) TO authenticated, service_role;
+
+
+-- set_deployment_status: deployment-scoped publish/revoke. Resolves the
+-- deployment's observation, transitions its spectra (in_prep->published on
+-- publish; published->revoked on revoke), stamps the deployment lifecycle, and
+-- delegates the per-spectrum work (+ audit + recompute) to set_spectra_deploy_status.
+CREATE OR REPLACE FUNCTION public.set_deployment_status(
+  p_deployment_id integer,
+  p_to text,
+  p_actor uuid DEFAULT NULL,
+  p_host text DEFAULT NULL
+)
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_obs text;
+  v_action text;
+  v_spectrum_ids integer[];
+  v_result json;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  IF p_to NOT IN ('in_prep', 'published', 'revoked') THEN
+    RAISE EXCEPTION 'Invalid status: %', p_to;
+  END IF;
+
+  SELECT observation INTO v_obs FROM deployments WHERE id = p_deployment_id;
+  IF v_obs IS NULL THEN
+    RAISE EXCEPTION 'Deployment % not found', p_deployment_id;
+  END IF;
+
+  -- Which current statuses transition to p_to:
+  --   p_to='published'  -> in_prep (first publish) OR revoked (recover) become visible
+  --   p_to='revoked'    -> published spectra are hidden
+  --   p_to='in_prep'    -> published spectra go back to draft
+  -- The prior version matched only 'in_prep' for the published case, so recovering
+  -- a REVOKED deployment flipped the deployment row but left its spectra revoked
+  -- and hidden ("0 updated", silently inconsistent) — #233 review.
+  SELECT array_agg(s.id) INTO v_spectrum_ids
+  FROM spectra s JOIN targets t ON s.target_id = t.target_id
+  WHERE t.observation = v_obs
+    AND s.deploy_status = ANY (
+      CASE p_to WHEN 'published' THEN ARRAY['in_prep', 'revoked']
+                WHEN 'revoked'   THEN ARRAY['published']
+                ELSE                  ARRAY['published'] END);
+
+  -- Audit label: publishing previously-revoked spectra is a 'recover', not a
+  -- first 'publish'. Computed before the transition (spectra still hold old status).
+  v_action := CASE
+    WHEN p_to = 'revoked' THEN 'revoke'
+    WHEN p_to = 'in_prep' THEN 'upload'
+    WHEN EXISTS (SELECT 1 FROM spectra s JOIN targets t ON s.target_id = t.target_id
+                 WHERE t.observation = v_obs AND s.deploy_status = 'revoked')
+      THEN 'recover'
+    ELSE 'publish'
+  END;
+
+  UPDATE deployments SET
+    status = p_to,
+    published_at = CASE WHEN p_to = 'published' THEN now() ELSE published_at END,
+    revoked_at = CASE WHEN p_to = 'revoked' THEN now() ELSE revoked_at END
+  WHERE id = p_deployment_id;
+
+  IF v_spectrum_ids IS NOT NULL THEN
+    v_result := public.set_spectra_deploy_status(
+      p_spectrum_db_ids := v_spectrum_ids, p_to := p_to, p_action := v_action,
+      p_actor := p_actor, p_deployment_id := p_deployment_id, p_host := p_host);
+  ELSE
+    v_result := json_build_object('updated', 0, 'action', v_action);
+  END IF;
+
+  RETURN json_build_object(
+    'deployment_id', p_deployment_id, 'observation', v_obs,
+    'status', p_to, 'spectra', v_result);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.set_deployment_status(integer, text, uuid, text) TO authenticated, service_role;
+
+
+-- =============================================================================
 -- Device Auth, API Keys, and Refresh Tokens
 -- =============================================================================
 

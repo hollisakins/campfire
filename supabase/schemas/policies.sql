@@ -675,6 +675,46 @@ CREATE POLICY "admin_update_exposures"
 
 
 -- =============================================================================
+-- spectrum_exposures (admin-only — NIRSpec intermediates, epic #210 B2)
+-- =============================================================================
+-- Reduction intermediates, never user-facing science. Admin-only, mirroring
+-- nircam_exposures. Deploy writes them under service_role (RLS bypassed).
+
+ALTER TABLE spectrum_exposures ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "admin_select_spectrum_exposures" ON spectrum_exposures;
+CREATE POLICY "admin_select_spectrum_exposures"
+  ON spectrum_exposures FOR SELECT TO authenticated
+  USING ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_insert_spectrum_exposures" ON spectrum_exposures;
+CREATE POLICY "admin_insert_spectrum_exposures"
+  ON spectrum_exposures FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_update_spectrum_exposures" ON spectrum_exposures;
+CREATE POLICY "admin_update_spectrum_exposures"
+  ON spectrum_exposures FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
+
+-- =============================================================================
+-- deploy_events (admin-only — lifecycle audit log, epic #210 B2/B3)
+-- =============================================================================
+-- Append-only audit log, written only by the lifecycle RPCs (SECURITY DEFINER,
+-- service_role) — never a direct client INSERT. Admins read it; no INSERT/UPDATE
+-- policy for authenticated, so a non-RPC write attempt is denied (RLS fail-closed).
+
+ALTER TABLE deploy_events ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "admin_select_deploy_events" ON deploy_events;
+CREATE POLICY "admin_select_deploy_events"
+  ON deploy_events FOR SELECT TO authenticated
+  USING ((SELECT public.is_admin()));
+
+
+-- =============================================================================
 -- storage_objects (admin-only — internal storage registry, epic #210 F1)
 -- =============================================================================
 -- The registry is admin/internal: the web portal never reads it in F1, and
@@ -830,6 +870,16 @@ CREATE POLICY "authenticated_select_deployments"
 DROP POLICY IF EXISTS "admin_deployments_insert" ON deployments;
 CREATE POLICY "admin_deployments_insert"
   ON deployments FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+-- Admins can update a deployment's lifecycle (status/published_at/revoked_at).
+-- B2 (#218): the publish/revoke flow flips these via the set_deployment_status
+-- RPC (SECURITY DEFINER) under service_role, but the policy lets an admin web
+-- session do it too. Defense-in-depth — the RPC is the intended path.
+DROP POLICY IF EXISTS "admin_deployments_update" ON deployments;
+CREATE POLICY "admin_deployments_update"
+  ON deployments FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
   WITH CHECK ((SELECT public.is_admin()));
 
 
