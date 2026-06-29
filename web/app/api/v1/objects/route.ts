@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
 import { createServiceClient } from '@/lib/supabase/server';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 
@@ -33,6 +33,12 @@ export async function GET(request: NextRequest) {
 
     const searchParams = request.nextUrl.searchParams;
     const supabase = createServiceClient();
+
+    // Objects with no published spectrum are admin-only, gated behind an
+    // explicit opt-in (include_unpublished=true). Fail-closed otherwise
+    // (no-op in B1 since every object has a published spectrum).
+    const includeUnpublished =
+      searchParams.get('include_unpublished') === 'true' && (await isAdminUser(userId));
 
     // Programs filter (intersect with accessible)
     const programsParam = parseCSV(searchParams.get('programs'));
@@ -112,6 +118,7 @@ export async function GET(request: NextRequest) {
       p_sort_direction: sortDirection,
       p_page: page,
       p_page_size: limit,
+      p_include_unpublished: includeUnpublished,
     };
 
     const { data, error } = await supabase.rpc('get_filtered_objects_paginated', rpcParams);

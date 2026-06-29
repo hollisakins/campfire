@@ -31,6 +31,29 @@ export async function resolveListIds(
 }
 
 /**
+ * Check whether a user is a CAMPFIRE admin.
+ *
+ * Admin-ness is derived ONLY from user_profiles.is_admin via the service-role
+ * client (mirrors the check in /api/v1/deploy/presign) — it is NEVER inferred
+ * from program slugs. Used to gate visibility of unpublished spectra
+ * (deploy_status != 'published') and their parent objects/targets
+ * (has_published_spectrum = false). Fail-closed: any lookup failure → false.
+ */
+export async function isAdminUser(userId: string): Promise<boolean> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('is_admin')
+    .eq('user_id', userId)
+    .single();
+
+  return profile?.is_admin === true;
+}
+
+/**
  * Get all program slugs accessible to a user (public + explicit access)
  */
 export async function getAccessiblePrograms(userId: string): Promise<string[]> {

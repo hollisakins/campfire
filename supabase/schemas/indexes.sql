@@ -177,6 +177,15 @@ CREATE INDEX IF NOT EXISTS idx_spectra_grating
 CREATE INDEX IF NOT EXISTS idx_spectra_dq_flags
     ON public.spectra USING btree (dq_flags) WHERE (dq_flags != 0);
 
+-- B1 (#217): non-published spectra are the rare case (zero in B1, a minority in
+-- B2); a partial index on the exclusion keeps the admin "show in_prep/revoked"
+-- triage cheap, mirroring idx_objects_is_active / idx_spectra_dq_flags. The
+-- common published-only path is served as a residual filter while all rows are
+-- published; B2 should add an EXPLAIN-driven partial/covering index on the hot
+-- filter+sort key once real in_prep volume exists (do NOT guess it here).
+CREATE INDEX IF NOT EXISTS idx_spectra_deploy_status
+    ON public.spectra USING btree (deploy_status) WHERE (deploy_status <> 'published');
+
 -- Phase E: incremental spectra sync keys on updated_at.
 CREATE INDEX IF NOT EXISTS idx_spectra_updated_at
     ON public.spectra USING btree (updated_at);

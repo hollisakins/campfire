@@ -300,6 +300,14 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     -- Phase A: per-spectrum auto-fit and DQ (populated in Phase B by deploy pipeline; backfilled in Phase D)
     "redshift_auto" double precision,
     "dq_flags" integer NOT NULL DEFAULT 0,
+    -- B1 (#217): deploy lifecycle. 'published' is the only status visible to
+    -- non-admins; 'in_prep' (admin-only draft, written by B2) and 'revoked'
+    -- (soft-deleted, recoverable) are hidden by the status predicate threaded
+    -- through every reader. Default 'published' so existing rows and any deploy
+    -- path that omits the column stay visible (fail-closed: forgetting to mark a
+    -- row keeps it published; forgetting to *filter* a reader is the hazard the
+    -- predicate guards). Mirrors storage_objects.status.
+    "deploy_status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "spectra_deploy_status_check" CHECK (("deploy_status" = ANY (ARRAY['in_prep'::"text", 'published'::"text", 'revoked'::"text"]))),
     -- Stable per-spectrum identifier derived from fits_path: strips the leading
     -- directory and the trailing "_spec.fits" suffix (e.g. ember_cosmos_p1_prism_clear_12345).
     -- Generated/stored so it stays in sync with fits_path with no application code path.
@@ -379,7 +387,14 @@ END) STORED,
     "max_exposure_time" double precision,
     "program_slug" "text" NOT NULL,
     "observation" "text" NOT NULL,
-    "object_id" integer
+    "object_id" integer,
+    -- B1 (#217): true iff this target has >= 1 published member spectrum.
+    -- Object/target-derived readers (map markers, sed-plot, /api/targets/[id],
+    -- tile-thumbnail) gate on this rather than on per-spectrum deploy_status,
+    -- since they never join spectra. Recomputed from member spectra by
+    -- recompute_target_aggregates / deploy; always true in B1 (all published),
+    -- the wiring is what B2 needs. Default true = fail-closed visible.
+    "has_published_spectrum" boolean NOT NULL DEFAULT true
 );
 
 
@@ -457,6 +472,12 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "staleness_reason" "text",
     "version" integer NOT NULL DEFAULT 1,
     "is_active" boolean NOT NULL DEFAULT true,
+    -- B1 (#217): true iff this object has >= 1 published member spectrum.
+    -- Object-derived readers (filter/markers/lists/photometry) gate on this
+    -- rather than per-spectrum deploy_status. Recomputed by reconcile alongside
+    -- is_active; always true in B1, the wiring is what B2 needs. Default true =
+    -- fail-closed visible. Distinct from is_active (reconciliation soft-delete).
+    "has_published_spectrum" boolean NOT NULL DEFAULT true,
     -- Denormalized search blob: object_id + member target_ids + program_slugs +
     -- observations. Cross-table (member targets), so it cannot be a generated
     -- column; maintained by recompute_object_search_text() at the end of
