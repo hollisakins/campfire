@@ -73,6 +73,22 @@ def hash_file(path: Path) -> tuple[str, int]:
     return f"sha256:{h.hexdigest()}", size
 
 
+def normalize_sha256(file_hash: str | None) -> str | None:
+    """Coerce a stored file hash to a single ``'sha256:<hex>'`` content_hash token.
+
+    Deploy stores ``spectra.file_hash`` **already scheme-prefixed** (``sha256:<hex>``,
+    from :func:`hash_file`), so a naive ``f"sha256:{file_hash}"`` would DOUBLE the
+    prefix (``sha256:sha256:<hex>``) — which slips past the ``^(sha256|etag):``
+    CHECK but then never matches a freshly-computed hash, breaking copy-verify and
+    download-verify. Idempotent: returns the value unchanged if already prefixed,
+    prepends ``sha256:`` to a bare hex digest, and returns None for an empty value.
+    """
+    if not file_hash:
+        return None
+    h = file_hash.strip()
+    return h if h.startswith('sha256:') else f"sha256:{h}"
+
+
 def normalize_etag(etag: str | None) -> str | None:
     """Coerce an S3 ETag to a ``'etag:<hex>'`` content_hash token.
 
@@ -511,8 +527,8 @@ def backfill_spectra(client, *, backend: str, dry_run: bool = False) -> tuple[in
         key = r.get('fits_path')
         if not key:
             continue
-        file_hash = r.get('file_hash')
-        if not file_hash:
+        content_hash = normalize_sha256(r.get('file_hash'))
+        if not content_hash:
             skipped += 1
             continue
         size = r.get('file_size')
@@ -522,7 +538,7 @@ def backfill_spectra(client, *, backend: str, dry_run: bool = False) -> tuple[in
         row = row_for_key(
             key,
             backend=backend,
-            content_hash=f"sha256:{file_hash}",
+            content_hash=content_hash,
             size_bytes=int(size),
             content_type='application/fits',
         )

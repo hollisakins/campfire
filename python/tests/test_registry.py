@@ -33,6 +33,17 @@ def test_normalize_etag_strips_quotes_and_prefixes():
     assert reg.normalize_etag('""') is None
 
 
+def test_normalize_sha256_does_not_double_prefix():
+    hexd = "a" * 64
+    # spectra.file_hash is stored already-prefixed -> must NOT be doubled.
+    assert reg.normalize_sha256(f"sha256:{hexd}") == f"sha256:{hexd}"
+    # bare hex -> prefixed once.
+    assert reg.normalize_sha256(hexd) == f"sha256:{hexd}"
+    assert reg.normalize_sha256("  sha256:" + hexd + "  ") == f"sha256:{hexd}"
+    assert reg.normalize_sha256(None) is None
+    assert reg.normalize_sha256("") is None
+
+
 # ---------------------------------------------------------------------------
 # row_for_key — key → row mapping via the campfire_layout contract
 # ---------------------------------------------------------------------------
