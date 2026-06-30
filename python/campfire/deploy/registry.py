@@ -54,6 +54,11 @@ _HASH_CHUNK = 1 << 20
 # Supabase upsert batch size — matches batch_upsert_spectra.
 UPSERT_BATCH = 500
 
+# Dead products that must NOT be registered: rgb/sed static cutouts are superseded
+# by the on-the-fly /api/v1/cutout API and aren't served anywhere. row_for_key skips
+# them, so neither deploy nor backfill ever indexes them.
+UNREGISTERED_PRODUCT_TYPES = frozenset({'rgb', 'sed'})
+
 
 # ---------------------------------------------------------------------------
 # Hashing
@@ -158,7 +163,8 @@ def row_for_key(
 
     Resolves ``product_type``/scope from the key via the ``campfire_layout``
     contract — no ad-hoc parsing. Returns None for keys that should not be
-    registered (tiles, or non-cloud products), so callers can ``filter(None)``.
+    registered (tiles, dead rgb/sed products, or non-cloud products), so callers
+    can ``filter(None)``.
     """
     parsed = parse_key(storage_key, bucket=bucket)
     product_type = parsed.product_type
@@ -166,6 +172,11 @@ def row_for_key(
 
     # Decision F1-B: tiles are not indexed per-object.
     if obj_bucket == 'tiles':
+        return None
+
+    # Dead products (rgb/sed) are never registered — single source of truth, so both
+    # deploy hooks and backfill/orphan adoption skip them.
+    if product_type in UNREGISTERED_PRODUCT_TYPES:
         return None
 
     spec = get_product(product_type)
@@ -556,19 +567,58 @@ def resolve_backend_label(config: dict) -> str:
 # Backfill orchestrators (used by `campfire deploy registry backfill`)
 # ---------------------------------------------------------------------------
 
-def backfill_spectra(client, *, backend: str, dry_run: bool = False) -> tuple[int, int]:
+def active_osn_canonical_keys(client, bucket: str = 'data') -> set[str]:
+    """All active OSN storage keys (canonical) — the set of already-migrated objects.
+
+    Backfill consults this to stay **migration-aware**: after the R2->OSN re-key the
+    registry tracks an object by its canonical key while R2 *retains* the legacy
+    bytes, so a naive backfill (reading spectra.fits_path, or listing R2) re-discovers
+    the legacy key as "missing" and resurrects a duplicate r2-legacy row. Skipping any
+    key whose canonical form is already here prevents that.
+    """
+    keys: set[str] = set()
+    start = 0
+    page = 1000
+    while True:
+        rows = (
+            client.table('storage_objects').select('storage_key')
+            .eq('backend', 'osn').eq('bucket', bucket).eq('status', 'active')
+            .order('id').range(start, start + page - 1).execute().data or []
+        )
+        for r in rows:
+            if r.get('storage_key'):
+                keys.add(r['storage_key'])
+        if len(rows) < page:
+            break
+        start += page
+    return keys
+
+
+def backfill_spectra(
+    client, *, backend: str, dry_run: bool = False,
+    migrated_keys: Optional[set] = None,
+) -> tuple[int, int, int]:
     """Backfill registry rows from ``spectra`` (authoritative sha256 + size).
 
     Reuses the stored ``file_hash`` (sha256) and ``file_size``; no bucket access
-    needed. Returns ``(n_rows, n_skipped)`` where skipped rows lack a stored
-    ``file_hash`` (rare legacy rows — pick those up via the HEAD/orphan pass).
+    needed. Migration-aware: an object whose canonical key is already an active OSN
+    row (``migrated_keys``) is skipped rather than re-registered as an r2 duplicate.
+    Returns ``(n_rows, n_no_hash, n_already_migrated)``.
     """
+    migrated = migrated_keys if migrated_keys is not None else set()
     rows: list[dict] = []
     skipped = 0
+    already = 0
     for r in _iter_rows(client, 'spectra', 'fits_path, file_hash, file_size'):
         key = r.get('fits_path')
         if not key:
             continue
+        try:
+            if canonical_key_for(key) in migrated:
+                already += 1
+                continue
+        except LayoutError:
+            pass  # unmappable key — row_for_key will reject it below
         content_hash = normalize_sha256(r.get('file_hash'))
         if not content_hash:
             skipped += 1
@@ -588,7 +638,7 @@ def backfill_spectra(client, *, backend: str, dry_run: bool = False) -> tuple[in
             rows.append(row)
     if not dry_run:
         upsert_storage_objects(client, rows)
-    return len(rows), skipped
+    return len(rows), skipped, already
 
 
 def backfill_via_head(
@@ -1033,3 +1083,69 @@ def find_migration_conflicts(
             break
         start += page
     return [legacy for legacy, canon in canon_by_legacy.items() if canon in present]
+
+
+# ---------------------------------------------------------------------------
+# Registry cleanup (`campfire deploy registry prune`)
+# ---------------------------------------------------------------------------
+
+def find_r2_duplicate_ids(client, bucket: str = 'data') -> list[int]:
+    """IDs of active ``r2`` rows whose canonical key is already an active ``osn`` row.
+
+    These are duplicates left by a migration-unaware backfill (it resurrected the
+    retained R2 legacy key for an object already on OSN). The OSN row is
+    authoritative; these r2 rows are stale and safe to delete.
+    """
+    osn = active_osn_canonical_keys(client, bucket)
+    if not osn:
+        return []
+    dup_ids: list[int] = []
+    start = 0
+    page = 1000
+    while True:
+        rows = (
+            client.table('storage_objects').select('id, storage_key')
+            .eq('backend', 'r2').eq('bucket', bucket).eq('status', 'active')
+            .order('id').range(start, start + page - 1).execute().data or []
+        )
+        for r in rows:
+            k = r.get('storage_key')
+            if not k:
+                continue
+            try:
+                if canonical_key_for(k) in osn:
+                    dup_ids.append(r['id'])
+            except LayoutError:
+                continue
+        if len(rows) < page:
+            break
+        start += page
+    return dup_ids
+
+
+def find_dead_product_ids(client, bucket: str = 'data') -> list[int]:
+    """IDs of rows for dead product types (rgb/sed) that should never be registered."""
+    ids: list[int] = []
+    for pt in sorted(UNREGISTERED_PRODUCT_TYPES):
+        start = 0
+        page = 1000
+        while True:
+            rows = (
+                client.table('storage_objects').select('id')
+                .eq('product_type', pt).eq('bucket', bucket)
+                .order('id').range(start, start + page - 1).execute().data or []
+            )
+            ids.extend(r['id'] for r in rows if r.get('id') is not None)
+            if len(rows) < page:
+                break
+            start += page
+    return ids
+
+
+def delete_objects(client, ids: list[int], batch_size: int = UPSERT_BATCH) -> int:
+    """Hard-delete registry rows by primary key, batched. Returns count deleted."""
+    if not ids:
+        return 0
+    for i in range(0, len(ids), batch_size):
+        client.table('storage_objects').delete().in_('id', ids[i:i + batch_size]).execute()
+    return len(ids)

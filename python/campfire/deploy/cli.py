@@ -800,7 +800,7 @@ def registry_backfill(ctx, config_path, dry_run, orphans, local):
     NIRCam pointers and orphans are HEAD'd for size + a provisional 'etag:' hash.
     Idempotent (upsert by key); safe to re-run.
     """
-    from campfire_layout import is_known_key
+    from campfire_layout import is_known_key, parse_key, LayoutError
     from campfire.deploy import registry as reg
 
     config = load_config(config_path, local=_resolve_local(ctx, local))
@@ -808,10 +808,33 @@ def registry_backfill(ctx, config_path, dry_run, orphans, local):
     sb = get_supabase_client(config)
     backend = reg.resolve_backend_label(config)
 
-    # 1. spectra finals — authoritative sha256 from the DB.
-    n_spec, skipped = reg.backfill_spectra(sb, backend=backend, dry_run=dry_run)
+    # Already-migrated objects (canonical keys on OSN). Backfill must NOT re-register
+    # their retained R2 legacy keys as duplicate r2 rows.
+    migrated = reg.active_osn_canonical_keys(sb)
+
+    def _registerable_orphan(k: str) -> bool:
+        """A bucket orphan worth adopting: known, not a dead product, not migrated."""
+        if not is_known_key(k):
+            return False
+        try:
+            pk = parse_key(k)
+        except LayoutError:
+            return False
+        if pk.product_type in reg.UNREGISTERED_PRODUCT_TYPES:
+            return False  # dead rgb/sed — never registered
+        try:
+            if reg.canonical_key_for(k) in migrated:
+                return False  # already on OSN — don't resurrect a legacy duplicate
+        except LayoutError:
+            return False
+        return True
+
+    # 1. spectra finals — authoritative sha256 from the DB (skips already-migrated).
+    n_spec, skipped, already = reg.backfill_spectra(
+        sb, backend=backend, dry_run=dry_run, migrated_keys=migrated)
     print(f"spectra: {n_spec} rows{' (dry-run)' if dry_run else ''}"
-          + (f", {skipped} skipped (no stored hash/size)" if skipped else ""))
+          + (f", {skipped} skipped (no stored hash/size)" if skipped else "")
+          + (f", {already} already on OSN" if already else ""))
 
     # 2. NIRCam pointers — no stored hash; HEAD for size + etag.
     try:
@@ -827,12 +850,13 @@ def registry_backfill(ctx, config_path, dry_run, orphans, local):
     except Exception as e:
         print(f"nircam backfill skipped (no storage credentials for HEAD?): {e}")
 
-    # 3. Orphans — bucket objects with no registry row, adopted via LIST.
+    # 3. Orphans — bucket objects with no registry row, adopted via LIST. Excludes
+    #    dead products (rgb/sed) and objects already migrated to OSN.
     if orphans:
         try:
             existing = set(reg.registry_keys(sb))
             orphan_keys = [k for k in reg.list_bucket_keys(config) if k not in existing]
-            adoptable = [k for k in orphan_keys if is_known_key(k)]
+            adoptable = [k for k in orphan_keys if _registerable_orphan(k)]
             unadoptable = len(orphan_keys) - len(adoptable)
             if adoptable:
                 n_orph, failed_orph = reg.backfill_via_head(
@@ -840,10 +864,10 @@ def registry_backfill(ctx, config_path, dry_run, orphans, local):
                 )
                 print(f"orphans: {n_orph} adopted"
                       + (f", {failed_orph} failed" if failed_orph else "")
-                      + (f", {unadoptable} unadoptable (unknown key)" if unadoptable else ""))
+                      + (f", {unadoptable} skipped (unknown/dead/already-migrated)" if unadoptable else ""))
             else:
                 print(f"orphans: none adoptable"
-                      + (f" ({unadoptable} unadoptable)" if unadoptable else ""))
+                      + (f" ({unadoptable} skipped)" if unadoptable else ""))
         except Exception as e:
             print(f"orphan adoption skipped (no storage credentials for LIST?): {e}")
 
@@ -1040,6 +1064,53 @@ def registry_copy(ctx, config_path, observations, fields, product_types, limit,
             print(f"    fail: {legacy} ({reason})")
         ctx.exit(1)
     print("Copy complete.")
+
+
+@registry.command('prune')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--duplicates/--no-duplicates', default=True,
+              help='Delete active r2 rows whose canonical key is already on OSN '
+                   '(duplicates left by a migration-unaware backfill). Default on.')
+@click.option('--dead-products/--no-dead-products', default=True,
+              help='Delete rgb/sed rows (dead products, never served). Default on.')
+@click.option('--execute', is_flag=True,
+              help='Actually delete. Without this, only a dry-run count is printed.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def registry_prune(ctx, config_path, duplicates, dead_products, execute, local):
+    """Delete registry rows that should never exist (#215 cleanup).
+
+    Two categories: (1) r2 duplicates of already-migrated objects — the OSN row is
+    authoritative and R2 retains the bytes, so these stale legacy rows are safe to
+    delete; (2) dead rgb/sed products that are no longer served. Hard delete.
+    Dry-run by default; pass --execute to delete.
+    """
+    from campfire.deploy import registry as reg
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+
+    ids: set[int] = set()
+    if duplicates:
+        dup = reg.find_r2_duplicate_ids(sb)
+        print(f"r2 duplicates of migrated objects: {len(dup)}")
+        ids.update(dup)
+    if dead_products:
+        dead = reg.find_dead_product_ids(sb)
+        print(f"dead-product rows (rgb/sed):       {len(dead)}")
+        ids.update(dead)
+
+    if not ids:
+        print("Nothing to prune.")
+        return
+    if not execute:
+        print(f"\nDRY RUN — would delete {len(ids)} row(s). Re-run with --execute.")
+        return
+    n = reg.delete_objects(sb, list(ids))
+    print(f"\nDeleted {n} row(s).")
 
 
 # ---------------------------------------------------------------------------

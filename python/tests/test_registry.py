@@ -33,6 +33,19 @@ def test_normalize_etag_strips_quotes_and_prefixes():
     assert reg.normalize_etag('""') is None
 
 
+def test_row_for_key_skips_dead_products():
+    # rgb/sed are dead (superseded by the cutout API) -> never registered.
+    sha = "sha256:" + "a" * 64
+    assert reg.row_for_key("rgb/ember_egs_p1/ember_egs_p1_100_rgb.png", backend="r2",
+                           content_hash=sha, size_bytes=1, content_type="image/png") is None
+    assert reg.row_for_key("sed/ember_egs_p1/ember_egs_p1_100_sed.pdf", backend="r2",
+                           content_hash=sha, size_bytes=1, content_type="application/pdf") is None
+    # a real product still registers.
+    assert reg.row_for_key("spectra/ember_egs_p1/ember_egs_p1_prism_clear_100_spec.fits",
+                           backend="r2", content_hash=sha, size_bytes=1,
+                           content_type="application/fits") is not None
+
+
 def test_normalize_sha256_collapses_to_single_prefix():
     hexd = "a" * 64
     # already-prefixed (the common case) -> unchanged.
@@ -82,11 +95,13 @@ def test_row_for_nirspec_spec():
     assert row["exposure_ref"] is None  # reserved for intermediates
 
 
-def test_row_spectrum_id_for_json_but_not_zfit_rgb():
+def test_row_spectrum_id_for_json_but_not_zfit():
     assert _row(JSON_KEY)["spectrum_id"] == f"{OBS}_prism_clear_12345"
     assert _row(ZFIT_KEY)["spectrum_id"] is None
-    assert _row(RGB_KEY)["spectrum_id"] is None
-    assert _row(SED_KEY)["spectrum_id"] is None
+    # rgb/sed are dead products and no longer registered at all (see
+    # test_row_for_key_skips_dead_products).
+    assert _row(RGB_KEY) is None
+    assert _row(SED_KEY) is None
 
 
 def test_row_for_nircam_preview_has_field_not_obs():
