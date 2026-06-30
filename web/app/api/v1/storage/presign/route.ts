@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
-import { generateDownloadUrl } from '@/lib/r2';
+import { generateDownloadUrls } from '@/lib/r2';
 import { isKnownKey } from '@/lib/layout';
 
 const MAX_KEYS = 200;
@@ -84,12 +84,12 @@ export async function POST(request: NextRequest) {
       (r: { storage_key: string }) => r.storage_key
     );
 
+    // Batched dual-read presign: one registry lookup resolves every key's backend.
     const urls: Record<string, string> = {};
-    await Promise.all(
-      allowed.map(async (key) => {
-        urls[key] = await generateDownloadUrl(key, URL_TTL_SECONDS);
-      })
-    );
+    const signedUrls = await generateDownloadUrls(allowed, URL_TTL_SECONDS);
+    allowed.forEach((key, i) => {
+      urls[key] = signedUrls[i];
+    });
 
     return NextResponse.json({ urls });
   } catch (error) {

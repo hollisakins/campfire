@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
-import { generateDownloadUrl } from '@/lib/r2';
+import { generateDownloadUrls } from '@/lib/r2';
 
 /**
  * GET /api/v1/observations/{obs_name}/manifest
@@ -82,10 +82,12 @@ export async function GET(
       .limit(1)
       .single();
 
-    // Generate signed URLs (6-hour expiry = 21600 seconds)
+    // Generate signed URLs (6-hour expiry = 21600 seconds). Batched so dual-read
+    // resolves every backend in a single registry query (not one per spectrum).
     const urlExpiresAt = new Date(Date.now() + 21600 * 1000).toISOString();
-    const signedUrls = await Promise.all(
-      spectraList.map((s: { fits_path: string }) => generateDownloadUrl(s.fits_path, 21600))
+    const signedUrls = await generateDownloadUrls(
+      spectraList.map((s: { fits_path: string }) => s.fits_path),
+      21600
     );
 
     // Build response with download URLs

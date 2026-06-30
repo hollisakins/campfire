@@ -33,6 +33,20 @@ def test_normalize_etag_strips_quotes_and_prefixes():
     assert reg.normalize_etag('""') is None
 
 
+def test_normalize_sha256_collapses_to_single_prefix():
+    hexd = "a" * 64
+    # already-prefixed (the common case) -> unchanged.
+    assert reg.normalize_sha256(f"sha256:{hexd}") == f"sha256:{hexd}"
+    # bare hex -> prefixed once.
+    assert reg.normalize_sha256(hexd) == f"sha256:{hexd}"
+    assert reg.normalize_sha256("  sha256:" + hexd + "  ") == f"sha256:{hexd}"
+    # pre-doubled value -> repaired to a single prefix, not propagated.
+    assert reg.normalize_sha256(f"sha256:sha256:{hexd}") == f"sha256:{hexd}"
+    assert reg.normalize_sha256(None) is None
+    assert reg.normalize_sha256("") is None
+    assert reg.normalize_sha256("sha256:") is None
+
+
 # ---------------------------------------------------------------------------
 # row_for_key — key → row mapping via the campfire_layout contract
 # ---------------------------------------------------------------------------

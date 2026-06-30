@@ -10,10 +10,12 @@ Credential resolution (env vars take priority over TOML):
   2. Explicit --config flag -> TOML file
   3. $CAMPFIRE_ROOT/config/deploy.toml
 
-Storage backend tuning (optional, per purpose — data / tiles): CAMPFIRE_S3_*
-and CAMPFIRE_S3_TILES_* accept ENDPOINT, REGION, FORCE_PATH_STYLE, BACKEND,
-and PUBLIC_URL_BASE so OSN (or any S3-compatible store) is a config change.
-See ``backend.py`` for how these resolve into an S3 client.
+Storage backend tuning (optional, per purpose — data / tiles / osn): CAMPFIRE_S3_*,
+CAMPFIRE_S3_TILES_*, and CAMPFIRE_S3_OSN_* accept ENDPOINT, REGION,
+FORCE_PATH_STYLE, BACKEND, and PUBLIC_URL_BASE so OSN (or any S3-compatible store)
+is a config change. The ``osn`` section (-> config['r2_osn']) is the data-bucket
+migration destination for epic #210 / #215. See ``backend.py`` for how these
+resolve into an S3 client.
 
 Programs resolution:
   $CAMPFIRE_ROOT/config/programs.toml
@@ -78,6 +80,23 @@ _TILES_ENV = {
     ],
 }
 
+# OSN (Open Storage Network) data backend -> config['r2_osn'] section. This is
+# the migration *destination* for the data bucket (epic #210 Track A / #215):
+# the copy tool holds the R2 'data' client (source) and this 'osn' client (dest)
+# simultaneously. OSN is S3-compatible Ceph — endpoint-driven, dummy region,
+# path-style — so it reuses the same backend factory. Only CAMPFIRE_S3_OSN_*
+# names (no legacy alias; this backend is new).
+_OSN_ENV = {
+    'access_key_id': ['CAMPFIRE_S3_OSN_ACCESS_KEY_ID'],
+    'secret_access_key': ['CAMPFIRE_S3_OSN_SECRET_ACCESS_KEY'],
+    'bucket_name': ['CAMPFIRE_S3_OSN_BUCKET_NAME'],
+    'endpoint': ['CAMPFIRE_S3_OSN_ENDPOINT'],
+    'region': ['CAMPFIRE_S3_OSN_REGION'],
+    'force_path_style': ['CAMPFIRE_S3_OSN_FORCE_PATH_STYLE'],
+    'backend': ['CAMPFIRE_S3_OSN_BACKEND'],
+    'public_url_base': ['CAMPFIRE_S3_OSN_PUBLIC_URL_BASE'],
+}
+
 # A storage section is "usable" with credentials + a bucket + a way to resolve
 # its endpoint (an explicit endpoint, or an account_id to derive the R2 host).
 _STORAGE_REQUIRED = ('access_key_id', 'secret_access_key', 'bucket_name')
@@ -114,7 +133,8 @@ def _config_from_env() -> dict | None:
 
     Returns a config dict when Supabase service-role creds **and** a usable
     ``data`` storage section are present, or None otherwise. The optional
-    ``tiles`` section is included when usable, but never blocks loading.
+    ``tiles`` and ``osn`` sections are included when usable, but never block
+    loading.
     """
     supabase = _read_env_section(_SUPABASE_ENV)
     if not all(supabase.get(k) for k in _SUPABASE_ENV):
@@ -129,6 +149,10 @@ def _config_from_env() -> dict | None:
     tiles = _read_env_section(_TILES_ENV)
     if _storage_section_complete(tiles):
         config['r2_tiles'] = tiles
+
+    osn = _read_env_section(_OSN_ENV)
+    if _storage_section_complete(osn):
+        config['r2_osn'] = osn
 
     return config
 
