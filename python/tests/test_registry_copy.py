@@ -348,6 +348,20 @@ def test_continues_past_failure_to_later_object():
     assert (DST_BUCKET, CANON_SPEC) not in dst.objects
 
 
+def test_relocate_objects_batch_full_row_in_place_partial_rejected():
+    sb = _FakeSupabase([_row(LEGACY_SPEC, "nirspec_spec", CONTENT_SHA, spectrum_id="test_obs_prism_100")])
+    rid = sb.tables["storage_objects"][0]["id"]
+    # Full row (all NOT NULL columns) -> in-place relocate, no duplicate.
+    full = {**sb.tables["storage_objects"][0], "backend": "osn",
+            "storage_key": CANON_SPEC, "content_hash": CONTENT_SHA}
+    reg.relocate_objects_batch(sb, [full])
+    rows = sb.tables["storage_objects"]
+    assert len(rows) == 1 and rows[0]["backend"] == "osn" and rows[0]["storage_key"] == CANON_SPEC
+    # Partial payload (missing NOT NULL cols) must be rejected (mirrors Postgres).
+    with pytest.raises(ValueError):
+        reg.relocate_objects_batch(sb, [{"id": rid, "backend": "osn", "storage_key": CANON_SPEC}])
+
+
 def test_find_migration_conflicts_detects_duplicate():
     # An osn-canonical row AND a fresh r2-legacy row whose canonical form collides.
     sb = _FakeSupabase([

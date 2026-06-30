@@ -287,6 +287,28 @@ def relocate_objects(client, rows: list[dict]) -> int:
     return len(rows)
 
 
+def relocate_objects_batch(client, rows: list[dict], batch_size: int = UPSERT_BATCH) -> int:
+    """Batched in-place relocate via full-row ``upsert(on_conflict='id')``.
+
+    Each row must be **complete** — carry every NOT NULL column — because Postgres
+    validates the candidate INSERT tuple before the ON CONFLICT arbiter; a partial
+    payload would raise a not-null violation (the same trap that rules out a partial
+    id-upsert in :func:`relocate_objects`). Verified against real Postgres: a full-row
+    id-upsert updates in place with no duplicate rows.
+
+    This is the throughput path for the parallel copy: S3 workers (boto3, thread-safe)
+    hand complete rows to the **single** calling thread, which batches the DB writes
+    here. The supabase client must never be used from multiple threads at once — its
+    HTTP/2 connection segfaults under concurrent access — so all relocation funnels
+    through this one-thread batched call. Returns rows written.
+    """
+    if not rows:
+        return 0
+    for i in range(0, len(rows), batch_size):
+        client.table('storage_objects').upsert(rows[i:i + batch_size], on_conflict='id').execute()
+    return len(rows)
+
+
 # ---------------------------------------------------------------------------
 # Reconciliation (the coverage gate) — pure set logic, unit-testable
 # ---------------------------------------------------------------------------
@@ -717,8 +739,11 @@ def copy_candidates(
     def _page(start: int, end: int):
         q = (
             client.table('storage_objects')
-            .select('id, storage_key, content_hash, content_type, product_type, '
-                    'size_bytes, observation, field, exposure_ref, backend, status')
+            # Full column set: the parallel copy upserts these rows back in place
+            # (on_conflict='id'), so every NOT NULL column must be present.
+            .select('id, backend, bucket, storage_key, content_hash, size_bytes, '
+                    'content_type, product_type, status, observation, field, '
+                    'exposure_ref, spectrum_id')
             .eq('backend', 'r2')
             .eq('bucket', bucket)
             .eq('status', 'active')
@@ -832,12 +857,16 @@ def copy_objects(
     unverified/missing OSN object; until the flip, dual-read serves the retained R2
     bytes. Per-object failures are recorded and skipped — the run continues.
 
-    Each object is independent (its own temp files, its own one-row relocate), so the
-    GET/PUT/verify/relocate pipeline runs across a thread pool of ``max_workers``;
-    results are aggregated on the calling thread as they complete. The boto3 clients
-    must be built with a connection pool >= ``max_workers`` (the CLI sizes them).
-    Per-object flip stays resume-safe: a crash leaves already-migrated rows
-    ``backend='osn'`` and the candidate query only re-selects ``backend='r2'`` rows.
+    Concurrency split (load-bearing): the **S3** work (GET/hash/PUT/readback) runs
+    across a thread pool of ``max_workers`` because boto3 clients are thread-safe;
+    the boto3 clients must be built with a connection pool >= ``max_workers`` (the
+    CLI sizes them). The **DB** writes do NOT run in the workers — the supabase
+    client's HTTP/2 connection is not thread-safe and segfaults under concurrent use
+    — so every worker hands its verified, complete row back to this single calling
+    thread, which flips them in batches via :func:`relocate_objects_batch`.
+    Resume-safe: a crash flips at most the last unflushed batch late, and the
+    candidate query only re-selects ``backend='r2'`` rows, so a re-run re-copies just
+    the remainder idempotently.
 
     ``dry_run`` (the default) only derives + plans (no transfer, no DB write).
     """
@@ -874,7 +903,14 @@ def copy_objects(
         work.append(row)
 
     def _copy_one(row: dict) -> tuple:
-        """Worker: migrate + relocate one object. Returns ('copied'|'failed', ...)."""
+        """Worker (S3 ONLY — never touches Supabase): GET+hash+PUT+verify one object.
+
+        The Supabase client is NOT thread-safe (its HTTP/2 connection segfaults under
+        concurrent multi-thread use), so workers do only boto3 work (which IS thread-
+        safe) and hand the verified, fully-formed registry row back to the single
+        calling thread for the DB write. Returns ('copied', legacy, canonical, size,
+        upsert_row) or ('failed', legacy, error).
+        """
         legacy = row['storage_key']
         try:
             canonical, sha, size = _migrate_one(
@@ -884,17 +920,20 @@ def copy_objects(
             )
         except Exception as e:  # CopyError or any boto3/IO error — skip this object
             return ('failed', legacy, str(e))
-        # Flip the registry row in place — backend/storage_key/content_hash switch
-        # together in one UPDATE, ONLY now that the bytes are verified on OSN.
-        relocate_objects(client, [{
-            'id': row['id'],
+        # A COMPLETE row for the in-place upsert(on_conflict='id'): the candidate row
+        # carries every NOT NULL column (so the candidate INSERT tuple is valid before
+        # the ON CONFLICT arbiter), and we override only the migrated fields. The bytes
+        # are verified on OSN at this point; the row is not flipped until the main
+        # thread flushes the batch.
+        upsert_row = {
+            **row,
             'backend': dst_backend,
             'storage_key': canonical,
             'content_hash': sha,
             'size_bytes': int(size),
             'updated_at': datetime.now(timezone.utc).isoformat(),
-        }])
-        return ('copied', legacy, canonical, int(size))
+        }
+        return ('copied', legacy, canonical, int(size), upsert_row)
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -903,6 +942,16 @@ def copy_objects(
         from tqdm import tqdm
         bar = tqdm(total=len(work), desc='Copying R2->OSN', unit='obj')
 
+    # All DB writes happen HERE, on the single calling thread, batched. Workers only
+    # do (thread-safe) S3; a crash flips at most the last unflushed batch's worth of
+    # rows late, which a resume re-copies idempotently.
+    relocate_batch: list[dict] = []
+
+    def _flush():
+        if relocate_batch:
+            relocate_objects_batch(client, relocate_batch)
+            relocate_batch.clear()
+
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = [ex.submit(_copy_one, row) for row in work]
         for fut in as_completed(futures):
@@ -910,9 +959,14 @@ def copy_objects(
             if result[0] == 'failed':
                 report.failed.append((result[1], result[2]))
             else:
-                report.copied.append((result[1], result[2], result[3]))
+                _, legacy, canonical, size, upsert_row = result
+                report.copied.append((legacy, canonical, size))
+                relocate_batch.append(upsert_row)
+                if len(relocate_batch) >= UPSERT_BATCH:
+                    _flush()
             if bar is not None:
                 bar.update(1)
+        _flush()
     if bar is not None:
         bar.close()
 
