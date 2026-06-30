@@ -575,34 +575,54 @@ def backfill_via_head(
     backend: str,
     content_type: str = 'application/octet-stream',
     dry_run: bool = False,
+    max_workers: int = 16,
 ) -> tuple[int, int]:
     """Backfill rows for keys with no stored hash (nircam, orphans) via S3 HEAD.
 
     HEAD yields size + ETag (no GET), recorded as a provisional ``etag:`` hash.
     Returns ``(n_rows, n_failed)`` where failed = HEAD error or unparseable key.
+
+    The HEADs run in a thread pool against a **single reused** S3 client. The old
+    serial path rebuilt a boto3 client per key and blocked on each round-trip — for
+    a few thousand nircam pointers that was ~15 min, and the orphan pass (tens of
+    thousands of objects) was effectively unusable. Pooling cuts it to minutes.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from campfire.deploy.backend import make_s3_client, resolve_backend
+
+    keys = [k for k in pointers if k]
+    if not keys:
+        return 0, 0
+
+    bcfg = resolve_backend(config, 'data')
+    s3 = make_s3_client(bcfg, max_pool_connections=max_workers)
+    bucket = bcfg.bucket
+
+    def _head_row(key: str) -> dict | None:
+        """HEAD one key and build its row, or raise/return None on failure."""
+        resp = s3.head_object(Bucket=bucket, Key=key)
+        content_hash = normalize_etag(resp.get('ETag'))
+        size = resp.get('ContentLength')
+        if not content_hash or size is None:
+            return None
+        return row_for_key(
+            key, backend=backend, content_hash=content_hash,
+            size_bytes=int(size), content_type=content_type,
+        )
+
     rows: list[dict] = []
     failed = 0
-    for key in pointers:
-        if not key:
-            continue
-        try:
-            content_hash, size = head_object(config, key)
-        except Exception:
-            failed += 1
-            continue
-        if not content_hash or size is None:
-            failed += 1
-            continue
-        try:
-            row = row_for_key(
-                key, backend=backend, content_hash=content_hash,
-                size_bytes=int(size), content_type=content_type,
-            )
-        except Exception:
-            failed += 1
-            continue
-        if row is not None:
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_head_row, key): key for key in keys}
+        for fut in as_completed(futures):
+            try:
+                row = fut.result()
+            except Exception:
+                failed += 1          # HEAD error (missing object, etc.)
+                continue
+            if row is None:
+                failed += 1          # no ETag/size, or unparseable/unknown key
+                continue
             rows.append(row)
     if not dry_run:
         upsert_storage_objects(client, rows)
