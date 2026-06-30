@@ -213,6 +213,15 @@ the low-glamour rot the user wants cleaned up:
   - Dead code, commented-out blocks left behind, unused files/scripts (note scripts/ has
     a deploy_old.py etc. — check what's genuinely orphaned vs intentionally kept).
   - Stale, missing, or wrong docstrings; README/docs that no longer match the code.
+  - Comments that describe a previously-fixed bug or a PAST behavior instead of the CURRENT
+    state of the code. These get written in the moment of a fix and lose all context once
+    the PR that explains them is merged — to the next reader they're confusing at best and
+    actively misleading at worst. Examples: "# don't call X here, it double-counts" sitting
+    next to code that no longer double-counts; "// returns None on failure" above a function
+    that now raises; "# temporary workaround for the off-by-one" after the off-by-one was
+    fixed for good. Flag any comment whose claim contradicts what the adjacent code actually
+    does now, or that narrates a change/fix rather than explaining present behavior. Cite the
+    comment and the code it disagrees with.
   - TODO/FIXME/HACK markers and what they imply.
   - Obvious inconsistencies in naming/conventions across the codebase.
 Be concrete and cite file:line. Do NOT flag the deprecated deploy/ dir as dead — it is
