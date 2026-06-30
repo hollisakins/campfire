@@ -87,6 +87,10 @@ class _FakeQuery:
         self._update_payload = dict(payload)
         return self
 
+    def delete(self):
+        self._mode = "delete"
+        return self
+
     def eq(self, col, val):
         self._filters.append((col, "eq", val))
         return self
@@ -133,6 +137,11 @@ class _FakeQuery:
                     r.update(self._update_payload)
                     n += 1
             return SimpleNamespace(data=[], count=n)
+        if self._mode == "delete":
+            keep = [r for r in rows if not self._matches(r)]
+            removed = len(rows) - len(keep)
+            self._store.tables[self._table] = keep
+            return SimpleNamespace(data=[], count=removed)
         out = [dict(r) for r in rows if self._matches(r)]
         if self._order is not None:
             col, desc = self._order
@@ -346,6 +355,60 @@ def test_continues_past_failure_to_later_object():
     assert rows[CANON2]["backend"] == "osn"
     assert (DST_BUCKET, CANON2) in dst.objects
     assert (DST_BUCKET, CANON_SPEC) not in dst.objects
+
+
+def test_relocate_objects_batch_full_row_in_place_partial_rejected():
+    sb = _FakeSupabase([_row(LEGACY_SPEC, "nirspec_spec", CONTENT_SHA, spectrum_id="test_obs_prism_100")])
+    rid = sb.tables["storage_objects"][0]["id"]
+    # Full row (all NOT NULL columns) -> in-place relocate, no duplicate.
+    full = {**sb.tables["storage_objects"][0], "backend": "osn",
+            "storage_key": CANON_SPEC, "content_hash": CONTENT_SHA}
+    reg.relocate_objects_batch(sb, [full])
+    rows = sb.tables["storage_objects"]
+    assert len(rows) == 1 and rows[0]["backend"] == "osn" and rows[0]["storage_key"] == CANON_SPEC
+    # Partial payload (missing NOT NULL cols) must be rejected (mirrors Postgres).
+    with pytest.raises(ValueError):
+        reg.relocate_objects_batch(sb, [{"id": rid, "backend": "osn", "storage_key": CANON_SPEC}])
+
+
+LEGACY_JSON = "spectra/test_obs/test_obs_prism_999_spec.json"
+LEGACY_SED = "sed/test_obs/test_obs_100_sed.pdf"
+
+
+def test_prune_finds_duplicates_and_dead_then_deletes():
+    sb = _FakeSupabase([
+        _row(CANON_SPEC, "nirspec_spec", CONTENT_SHA, backend="osn", spectrum_id="test_obs_prism_100"),  # migrated truth
+        _row(LEGACY_SPEC, "nirspec_spec", CONTENT_SHA, spectrum_id="test_obs_prism_100"),  # r2 dup (canonical already on osn)
+        _row(LEGACY_JSON, "spectrum_json", CONTENT_SHA, spectrum_id="test_obs_prism_999"),  # legit companion (not on osn)
+        _row(LEGACY_RGB, "rgb", CONTENT_SHA),   # dead
+        _row(LEGACY_SED, "sed", CONTENT_SHA),   # dead
+    ])
+    by_id = {r["id"]: r["storage_key"] for r in sb.tables["storage_objects"]}
+
+    dup = reg.find_r2_duplicate_ids(sb)
+    assert {by_id[i] for i in dup} == {LEGACY_SPEC}            # only the r2 dup of the osn object
+
+    dead = reg.find_dead_product_ids(sb)
+    assert {by_id[i] for i in dead} == {LEGACY_RGB, LEGACY_SED}
+
+    reg.delete_objects(sb, list(set(dup) | set(dead)))
+    remaining = {r["storage_key"] for r in sb.tables["storage_objects"]}
+    assert remaining == {CANON_SPEC, LEGACY_JSON}             # osn truth + legit companion survive
+
+
+def test_backfill_spectra_skips_already_migrated():
+    sb = _FakeSupabase([])  # empty registry
+    sb.tables["spectra"] = [
+        {"id": 1, "fits_path": LEGACY_SPEC, "file_hash": CONTENT_SHA, "file_size": len(CONTENT)},
+        {"id": 2, "fits_path": "spectra/test_obs/test_obs_prism_200_spec.fits",
+         "file_hash": CONTENT_SHA, "file_size": len(CONTENT)},
+    ]
+    # LEGACY_SPEC's canonical (CANON_SPEC) is already on OSN -> must be skipped.
+    n_rows, skipped, already = reg.backfill_spectra(sb, backend="r2", migrated_keys={CANON_SPEC})
+    assert already == 1 and skipped == 0 and n_rows == 1
+    registered = {r["storage_key"] for r in sb.tables["storage_objects"]}
+    assert LEGACY_SPEC not in registered                      # not resurrected as a duplicate
+    assert "spectra/test_obs/test_obs_prism_200_spec.fits" in registered
 
 
 def test_find_migration_conflicts_detects_duplicate():
