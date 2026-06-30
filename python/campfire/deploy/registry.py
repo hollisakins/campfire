@@ -80,13 +80,17 @@ def normalize_sha256(file_hash: str | None) -> str | None:
     from :func:`hash_file`), so a naive ``f"sha256:{file_hash}"`` would DOUBLE the
     prefix (``sha256:sha256:<hex>``) — which slips past the ``^(sha256|etag):``
     CHECK but then never matches a freshly-computed hash, breaking copy-verify and
-    download-verify. Idempotent: returns the value unchanged if already prefixed,
-    prepends ``sha256:`` to a bare hex digest, and returns None for an empty value.
+    download-verify. Idempotent and defensive: collapses any number of leading
+    ``sha256:`` prefixes to exactly one (so a pre-doubled value is repaired rather
+    than propagated), prepends ``sha256:`` to a bare hex digest, and returns None
+    for an empty value.
     """
     if not file_hash:
         return None
     h = file_hash.strip()
-    return h if h.startswith('sha256:') else f"sha256:{h}"
+    while h.startswith('sha256:'):
+        h = h[len('sha256:'):]
+    return f"sha256:{h}" if h else None
 
 
 def normalize_etag(etag: str | None) -> str | None:
@@ -341,11 +345,25 @@ def compute_reconcile(
 # DB / bucket helpers for the CLI commands
 # ---------------------------------------------------------------------------
 
-def _iter_rows(client, table: str, columns: str, page: int = 1000) -> Iterator[dict]:
-    """Page through a Supabase table, yielding row dicts."""
+def _iter_rows(client, table: str, columns: str, *, order_by: str = 'id',
+               page: int = 1000) -> Iterator[dict]:
+    """Page through a Supabase table in a STABLE order, yielding row dicts.
+
+    Range/offset pagination WITHOUT an ``ORDER BY`` is non-deterministic in
+    Postgres: across pages rows silently repeat and others are skipped, so a full
+    scan under-covers a large table (and the gap varies run-to-run). That under-
+    coverage is why a backfill over ~50k spectra registered only a partial, shifting
+    subset. Ordering by a unique key (the PK ``id`` on every table this is used on:
+    spectra / nircam_images / nircam_exposures / storage_objects) makes the scan
+    complete and repeatable.
+    """
     start = 0
     while True:
-        resp = client.table(table).select(columns).range(start, start + page - 1).execute()
+        resp = (
+            client.table(table).select(columns)
+            .order(order_by)
+            .range(start, start + page - 1).execute()
+        )
         data = resp.data or []
         for row in data:
             yield row
