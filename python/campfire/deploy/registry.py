@@ -468,7 +468,7 @@ def plan_delete_local(
     return plan
 
 
-def _data_client_and_bucket(config: dict):
+def _data_client_and_bucket(config: dict, *, max_pool_connections: Optional[int] = None):
     """Resolve a boto3 client + bucket name for the data backend (LIST/HEAD).
 
     Backfill/reconcile need to read object metadata, which the presigned-URL
@@ -476,10 +476,11 @@ def _data_client_and_bucket(config: dict):
     """
     from campfire.deploy.backend import make_s3_client, resolve_backend
     bcfg = resolve_backend(config, 'data')
-    return make_s3_client(bcfg), bcfg.bucket, bcfg.backend
+    return (make_s3_client(bcfg, max_pool_connections=max_pool_connections),
+            bcfg.bucket, bcfg.backend)
 
 
-def _osn_client_and_bucket(config: dict):
+def _osn_client_and_bucket(config: dict, *, max_pool_connections: Optional[int] = None):
     """Resolve a boto3 client + bucket + label for the OSN data destination.
 
     The R2->OSN copy (#215) holds this dest client alongside the R2 'data' source
@@ -489,7 +490,8 @@ def _osn_client_and_bucket(config: dict):
     """
     from campfire.deploy.backend import make_s3_client, resolve_backend
     bcfg = resolve_backend(config, 'osn')
-    return make_s3_client(bcfg), bcfg.bucket, bcfg.backend
+    return (make_s3_client(bcfg, max_pool_connections=max_pool_connections),
+            bcfg.bucket, bcfg.backend)
 
 
 def list_bucket_keys(config: dict, prefix: str = '') -> Iterator[str]:
@@ -801,6 +803,7 @@ def copy_objects(
     verify_readback: bool = True,
     tmp_dir: Optional[str] = None,
     progress: bool = False,
+    max_workers: int = 8,
 ) -> CopyReport:
     """Migrate active data objects R2->OSN, re-key to canonical, verify, relocate.
 
@@ -812,12 +815,14 @@ def copy_objects(
     unverified/missing OSN object; until the flip, dual-read serves the retained R2
     bytes. Per-object failures are recorded and skipped — the run continues.
 
+    Each object is independent (its own temp files, its own one-row relocate), so the
+    GET/PUT/verify/relocate pipeline runs across a thread pool of ``max_workers``;
+    results are aggregated on the calling thread as they complete. The boto3 clients
+    must be built with a connection pool >= ``max_workers`` (the CLI sizes them).
+    Per-object flip stays resume-safe: a crash leaves already-migrated rows
+    ``backend='osn'`` and the candidate query only re-selects ``backend='r2'`` rows.
+
     ``dry_run`` (the default) only derives + plans (no transfer, no DB write).
-    The flip is **per-object** — each row is relocated immediately after its bytes
-    are verified on OSN. (Relocation is a per-row UPDATE regardless, so there is no
-    round-trip win from batching; flipping per object keeps a crash resume-safe with
-    minimal redo, since already-migrated rows are ``backend='osn'`` and the candidate
-    query only selects ``backend='r2'`` rows.)
     """
     candidates = copy_candidates(
         client, observations=observations, fields=fields,
@@ -825,25 +830,35 @@ def copy_objects(
     )
     report = CopyReport()
 
-    iterator = candidates
-    if progress and not dry_run:
-        from tqdm import tqdm
-        iterator = tqdm(candidates, desc='Copying R2->OSN', unit='obj')
+    if dry_run:
+        for row in candidates:
+            legacy = row.get('storage_key')
+            if not legacy:
+                continue
+            try:
+                canonical = canonical_key_for(legacy)
+            except LayoutError as e:
+                report.skipped.append((legacy, f'unknown/unsafe key: {e}'))
+                continue
+            report.planned.append((legacy, canonical, int(row.get('size_bytes') or 0)))
+        return report
 
-    for row in iterator:
+    # Pre-filter unmappable keys (cheap, no I/O) so the pool only does real work.
+    work: list[dict] = []
+    for row in candidates:
         legacy = row.get('storage_key')
         if not legacy:
             continue
         try:
-            canonical = canonical_key_for(legacy)
+            canonical_key_for(legacy)
         except LayoutError as e:
             report.skipped.append((legacy, f'unknown/unsafe key: {e}'))
             continue
+        work.append(row)
 
-        if dry_run:
-            report.planned.append((legacy, canonical, int(row.get('size_bytes') or 0)))
-            continue
-
+    def _copy_one(row: dict) -> tuple:
+        """Worker: migrate + relocate one object. Returns ('copied'|'failed', ...)."""
+        legacy = row['storage_key']
         try:
             canonical, sha, size = _migrate_one(
                 row, src_client=src_client, src_bucket=src_bucket,
@@ -851,11 +866,9 @@ def copy_objects(
                 verify_readback=verify_readback, tmp_dir=tmp_dir,
             )
         except Exception as e:  # CopyError or any boto3/IO error — skip this object
-            report.failed.append((legacy, str(e)))
-            continue
-
-        # Flip the registry row in place — backend, storage_key and content_hash
-        # switch together in one UPDATE, ONLY now that the bytes are verified on OSN.
+            return ('failed', legacy, str(e))
+        # Flip the registry row in place — backend/storage_key/content_hash switch
+        # together in one UPDATE, ONLY now that the bytes are verified on OSN.
         relocate_objects(client, [{
             'id': row['id'],
             'backend': dst_backend,
@@ -864,7 +877,27 @@ def copy_objects(
             'size_bytes': int(size),
             'updated_at': datetime.now(timezone.utc).isoformat(),
         }])
-        report.copied.append((legacy, canonical, int(size)))
+        return ('copied', legacy, canonical, int(size))
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    bar = None
+    if progress:
+        from tqdm import tqdm
+        bar = tqdm(total=len(work), desc='Copying R2->OSN', unit='obj')
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(_copy_one, row) for row in work]
+        for fut in as_completed(futures):
+            result = fut.result()
+            if result[0] == 'failed':
+                report.failed.append((result[1], result[2]))
+            else:
+                report.copied.append((result[1], result[2], result[3]))
+            if bar is not None:
+                bar.update(1)
+    if bar is not None:
+        bar.close()
 
     return report
 

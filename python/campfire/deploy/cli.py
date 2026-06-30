@@ -947,11 +947,13 @@ def registry_budget(ctx, config_path, local):
                    '--no-verify-readback only checks the uploaded size.')
 @click.option('--tmp-dir', default=None,
               help='Scratch dir for streamed copies (default: system temp).')
+@click.option('--max-workers', type=int, default=8,
+              help='Parallel copy workers (default 8). Each does GET+PUT+readback.')
 @click.option('--local', is_flag=True,
               help='Use local Supabase (127.0.0.1:54321).')
 @click.pass_context
 def registry_copy(ctx, config_path, observations, fields, product_types, limit,
-                  execute, verify_readback, tmp_dir, local):
+                  execute, verify_readback, tmp_dir, max_workers, local):
     """Copy data objects R2->OSN, re-key legacy->canonical, verify, relocate (#215).
 
     Reads each active backend='r2' registry row, GETs it from R2, PUTs it to OSN
@@ -970,16 +972,22 @@ def registry_copy(ctx, config_path, observations, fields, product_types, limit,
     flds = list(fields) or None
     types = list(product_types) or None
 
+    # Size the S3 connection pools for the worker fan-out (each worker does a GET
+    # from R2 + a PUT and a readback GET to OSN concurrently).
+    pool = max(max_workers * 2, 8)
+
     # Resolve the OSN destination client up front so a missing [r2_osn] section
     # fails fast with a clear message (not mid-transfer).
     try:
-        dst_client, dst_bucket, dst_backend = reg._osn_client_and_bucket(config)
+        dst_client, dst_bucket, dst_backend = reg._osn_client_and_bucket(
+            config, max_pool_connections=pool)
     except Exception as e:
         raise click.UsageError(
             f"OSN destination not configured: {e}\n"
             f"Set CAMPFIRE_S3_OSN_* env vars (or a [r2_osn] block in deploy.toml)."
         )
-    src_client, src_bucket, _ = reg._data_client_and_bucket(config)
+    src_client, src_bucket, _ = reg._data_client_and_bucket(
+        config, max_pool_connections=pool)
 
     # G1 freeze guard: warn if any selected obs already has osn-canonical rows that
     # collide with fresh r2-legacy rows (a re-deploy during the shadow window).
@@ -1012,12 +1020,14 @@ def registry_copy(ctx, config_path, observations, fields, product_types, limit,
         return
 
     print(f"Copying R2 -> OSN ({dst_backend}, bucket {dst_bucket})"
-          + (f", readback verify" if verify_readback else ", size-check only") + " ...")
+          + (f", readback verify" if verify_readback else ", size-check only")
+          + f", {max_workers} workers ...")
     report = reg.copy_objects(
         sb, src_client=src_client, src_bucket=src_bucket,
         dst_client=dst_client, dst_bucket=dst_bucket, dst_backend=dst_backend,
         observations=obs, fields=flds, product_types=types, limit=limit,
-        dry_run=False, verify_readback=verify_readback, tmp_dir=tmp_dir, progress=True,
+        dry_run=False, verify_readback=verify_readback, tmp_dir=tmp_dir,
+        progress=True, max_workers=max_workers,
     )
     print(f"\n{report.summary()}  ({_fmt_bytes(report.bytes_copied)} copied)")
     if report.skipped:
