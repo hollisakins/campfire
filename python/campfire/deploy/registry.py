@@ -706,26 +706,43 @@ def copy_candidates(
     so re-running the copy is idempotent/resumable for free. Optional scope filters
     narrow to specific observations/fields/product types. ``product_types`` defaults
     to :data:`DEFAULT_COPY_PRODUCT_TYPES` (excludes dead rgb/sed).
+
+    Paginates with a stable id order: a single ``.execute()`` is silently capped at
+    PostgREST's max-rows (so a >cap candidate set would be truncated and the copy
+    would migrate only a prefix). ``limit``, when given, caps the total returned
+    (for piloting); otherwise every matching row is returned.
     """
     types = list(product_types) if product_types is not None else list(DEFAULT_COPY_PRODUCT_TYPES)
-    q = (
-        client.table('storage_objects')
-        .select('id, storage_key, content_hash, content_type, product_type, '
-                'size_bytes, observation, field, exposure_ref, backend, status')
-        .eq('backend', 'r2')
-        .eq('bucket', bucket)
-        .eq('status', 'active')
-    )
-    if types:
-        q = q.in_('product_type', types)
-    if observations:
-        q = q.in_('observation', list(observations))
-    if fields:
-        q = q.in_('field', list(fields))
-    if limit:
-        q = q.limit(limit)
-    resp = q.execute()
-    return resp.data or []
+
+    def _page(start: int, end: int):
+        q = (
+            client.table('storage_objects')
+            .select('id, storage_key, content_hash, content_type, product_type, '
+                    'size_bytes, observation, field, exposure_ref, backend, status')
+            .eq('backend', 'r2')
+            .eq('bucket', bucket)
+            .eq('status', 'active')
+        )
+        if types:
+            q = q.in_('product_type', types)
+        if observations:
+            q = q.in_('observation', list(observations))
+        if fields:
+            q = q.in_('field', list(fields))
+        return q.order('id').range(start, end).execute().data or []
+
+    out: list[dict] = []
+    start = 0
+    page = 1000
+    while True:
+        rows = _page(start, start + page - 1)
+        out.extend(rows)
+        if limit and len(out) >= limit:
+            return out[:limit]
+        if len(rows) < page:
+            break
+        start += page
+    return out
 
 
 def _migrate_one(
