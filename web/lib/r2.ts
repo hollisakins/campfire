@@ -22,11 +22,11 @@ import {
 import { storageKey, toCanonicalKey, toLegacyKey } from './layout';
 import { createServiceClient } from './supabase/server';
 
-// Max keys per storage_objects lookup. Chunked so a large observation manifest
-// (hundreds–thousands of spectra) can't overflow the PostgREST/Kong URL length
-// (the `.in()` list rides in the query string) — mirrors the chunked lookup in
-// the Python registry.find_migration_conflicts.
-const LOOKUP_CHUNK = 100;
+// Max keys per storage_objects lookup. The `.in()` list rides in the request URL,
+// and canonical keys are ~70+ chars (URL-encoded ~110), so this is kept small to
+// stay well under the PostgREST/Kong URI limit — overflowing it yields a bare
+// 400 'Bad Request'. A large observation manifest is split across several queries.
+const LOOKUP_CHUNK = 50;
 
 /** Legacy form of a key for R2 reads; identity on unrecognized keys (fail-safe).
  * R2 retains objects under their LEGACY key, so every R2-bound presign must sign

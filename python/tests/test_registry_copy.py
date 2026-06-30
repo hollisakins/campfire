@@ -68,8 +68,18 @@ class _FakeQuery:
         self._limit = None
         self._mode = "select"
         self._update_payload = None
+        self._order = None
+        self._range = None
 
     def select(self, _cols):
+        return self
+
+    def order(self, col, desc=False):
+        self._order = (col, desc)
+        return self
+
+    def range(self, start, end):
+        self._range = (start, end)
         return self
 
     def update(self, payload):
@@ -124,7 +134,13 @@ class _FakeQuery:
                     n += 1
             return SimpleNamespace(data=[], count=n)
         out = [dict(r) for r in rows if self._matches(r)]
-        if self._limit is not None:
+        if self._order is not None:
+            col, desc = self._order
+            out.sort(key=lambda r: r.get(col), reverse=desc)
+        if self._range is not None:
+            s, e = self._range
+            out = out[s:e + 1]
+        elif self._limit is not None:
             out = out[: self._limit]
         return SimpleNamespace(data=out)
 

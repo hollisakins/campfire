@@ -886,8 +886,7 @@ def find_migration_conflicts(
     candidates = copy_candidates(client, observations=observations, bucket=bucket)
     if not candidates:
         return []
-    # Map each candidate (r2-legacy) to its canonical form, then check whether that
-    # canonical key already exists as an active osn row.
+    # Map each candidate (r2-legacy) to its canonical form.
     canon_by_legacy: dict[str, str] = {}
     for row in candidates:
         legacy = row.get('storage_key')
@@ -897,22 +896,36 @@ def find_migration_conflicts(
             canon_by_legacy[legacy] = canonical_key_for(legacy)
         except LayoutError:
             continue
-    canon_keys = list(set(canon_by_legacy.values()))
-    if not canon_keys:
+    if not canon_by_legacy:
         return []
-    existing_osn: set[str] = set()
-    for i in range(0, len(canon_keys), UPSERT_BATCH):
-        chunk = canon_keys[i:i + UPSERT_BATCH]
-        resp = (
+    wanted = set(canon_by_legacy.values())
+
+    # Collect the active osn storage_keys and intersect LOCALLY. We deliberately do
+    # NOT filter by `storage_key IN (...)`: that list is hundreds of ~70-char keys
+    # and overflows the PostgREST request URI (Kong returns a bare 400 'Bad Request').
+    # Scope by observation when given (a short list) so the scan stays small; an osn
+    # row's observation is preserved by relocate, so a collision shares the obs.
+    present: set[str] = set()
+    start = 0
+    page = 1000
+    while True:
+        q = (
             client.table('storage_objects')
             .select('storage_key')
             .eq('backend', 'osn')
             .eq('bucket', bucket)
             .eq('status', 'active')
-            .in_('storage_key', chunk)
-            .execute()
+            .order('id')
+            .range(start, start + page - 1)
         )
-        for r in (resp.data or []):
-            if r.get('storage_key'):
-                existing_osn.add(r['storage_key'])
-    return [legacy for legacy, canon in canon_by_legacy.items() if canon in existing_osn]
+        if observations:
+            q = q.in_('observation', list(observations))
+        rows = q.execute().data or []
+        for r in rows:
+            k = r.get('storage_key')
+            if k and k in wanted:
+                present.add(k)
+        if len(rows) < page:
+            break
+        start += page
+    return [legacy for legacy, canon in canon_by_legacy.items() if canon in present]
