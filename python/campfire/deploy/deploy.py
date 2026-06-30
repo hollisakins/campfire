@@ -198,6 +198,7 @@ def _jwst_pid_from_obs_cfg(obs_cfg: dict) -> int:
 def _deploy_intermediates_only(
     obs_name: str, obs_dir, config: dict, *,
     dry_run: bool = False, auto_approve: bool = False,
+    source_ids: list[int] | None = None,
 ) -> dict:
     """Deploy canonical spectrum-exposure intermediates for an observation with no
     stage3 finals yet (epic #210, B5) — the "reduced through stage2, review before
@@ -207,12 +208,29 @@ def _deploy_intermediates_only(
     is no summary to read it from.
     """
     exposure_files = discover_spectrum_exposures(obs_dir)
+    if source_ids:
+        total = len(exposure_files)
+        exposure_files = _filter_exposures_by_source_ids(exposure_files, source_ids)
+        print(f"Filtered {total} spectrum-exposures to {len(exposure_files)} "
+              f"matching {len(source_ids)} source IDs")
     obs_cfg = load_observations().get(obs_name, {})
     field = obs_cfg.get('field', '')
     program_slug = obs_cfg.get('program', '')
     programs_config = load_programs()
     if program_slug:
         validate_program_slug(program_slug, programs_config, obs_name)
+
+    # The intermediates deployment row FKs observations(name), whose own
+    # program_slug is NOT NULL with an FK to programs(slug). Without a program we
+    # cannot create that FK target, so insert_deployment would crash *after* the R2
+    # uploads and registry writes have already happened — orphaning cloud objects
+    # with no deployment record. Fail fast before doing any work (#237).
+    if not program_slug:
+        print(f"ERROR: observation '{obs_name}' has no program defined in "
+              f"observations.toml. A program is required to record the deployment "
+              f"(observations.program_slug → programs.slug). Add a 'program' entry "
+              f"for this observation and retry.")
+        sys.exit(1)
 
     print(f"Observation: {obs_name}  (intermediates-only — no stage3 finals yet)")
     print(f"  Field: {field}")
@@ -244,17 +262,17 @@ def _deploy_intermediates_only(
     jwst_program_id = _jwst_pid_from_obs_cfg(obs_cfg)
 
     # The deployment row FKs observations(name); ensure program + observation exist.
-    if program_slug:
-        print("Upserting program + observation...")
-        upsert_programs(sb, [program_slug], programs_config)
-        file_globs_raw = obs_cfg.get('files', [])
-        file_globs = [file_globs_raw] if isinstance(file_globs_raw, str) else list(file_globs_raw)
-        upsert_observation(
-            sb, obs_name, program_slug, jwst_program_id, field,
-            file_globs=file_globs or None,
-            gratings=obs_cfg.get('gratings') or None,
-            data_subdir=obs_cfg.get('data_subdir'),
-        )
+    # program_slug is guaranteed non-empty by the fail-fast guard above (#237).
+    print("Upserting program + observation...")
+    upsert_programs(sb, [program_slug], programs_config)
+    file_globs_raw = obs_cfg.get('files', [])
+    file_globs = [file_globs_raw] if isinstance(file_globs_raw, str) else list(file_globs_raw)
+    upsert_observation(
+        sb, obs_name, program_slug, jwst_program_id, field,
+        file_globs=file_globs or None,
+        gratings=obs_cfg.get('gratings') or None,
+        data_subdir=obs_cfg.get('data_subdir'),
+    )
 
     scope = Scope(obs=obs_name)
     scope_version_at_start = get_deploy_scope_version(sb, 'observation', obs_name)
@@ -345,7 +363,8 @@ def deploy_observation(
     # always a draft.
     if summary is None or len(summary) == 0:
         return _deploy_intermediates_only(
-            obs_name, obs_dir, config, dry_run=dry_run, auto_approve=auto_approve)
+            obs_name, obs_dir, config, dry_run=dry_run, auto_approve=auto_approve,
+            source_ids=source_ids)
 
     if source_ids:
         total = len(summary)
