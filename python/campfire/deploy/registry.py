@@ -775,25 +775,22 @@ def copy_objects(
     bytes. Per-object failures are recorded and skipped — the run continues.
 
     ``dry_run`` (the default) only derives + plans (no transfer, no DB write).
-    Relocation is batched (``UPSERT_BATCH``); a crash mid-run is resume-safe because
-    the candidate query only selects ``backend='r2'`` rows.
+    The flip is **per-object** — each row is relocated immediately after its bytes
+    are verified on OSN. (Relocation is a per-row UPDATE regardless, so there is no
+    round-trip win from batching; flipping per object keeps a crash resume-safe with
+    minimal redo, since already-migrated rows are ``backend='osn'`` and the candidate
+    query only selects ``backend='r2'`` rows.)
     """
     candidates = copy_candidates(
         client, observations=observations, fields=fields,
         product_types=product_types, limit=limit,
     )
     report = CopyReport()
-    relocate_batch: list[dict] = []
 
     iterator = candidates
     if progress and not dry_run:
         from tqdm import tqdm
         iterator = tqdm(candidates, desc='Copying R2->OSN', unit='obj')
-
-    def _flush():
-        if relocate_batch:
-            relocate_objects(client, relocate_batch)
-            relocate_batch.clear()
 
     for row in iterator:
         legacy = row.get('storage_key')
@@ -819,19 +816,18 @@ def copy_objects(
             report.failed.append((legacy, str(e)))
             continue
 
-        relocate_batch.append({
+        # Flip the registry row in place — backend, storage_key and content_hash
+        # switch together in one UPDATE, ONLY now that the bytes are verified on OSN.
+        relocate_objects(client, [{
             'id': row['id'],
             'backend': dst_backend,
             'storage_key': canonical,
             'content_hash': sha,
             'size_bytes': int(size),
             'updated_at': datetime.now(timezone.utc).isoformat(),
-        })
+        }])
         report.copied.append((legacy, canonical, int(size)))
-        if len(relocate_batch) >= UPSERT_BATCH:
-            _flush()
 
-    _flush()
     return report
 
 
