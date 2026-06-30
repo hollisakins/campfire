@@ -22,6 +22,17 @@ function setR2Env() {
   vi.stubEnv('S3_ENDPOINT', 'https://acct.r2.cloudflarestorage.com');
 }
 
+// OSN *write* creds (deploy presign) reuse the shared S3_OSN_* endpoint/bucket
+// but carry their own RW keys (S3_OSN_RW_*), distinct from the RO read creds.
+function setOsnWriteEnv() {
+  vi.stubEnv('S3_OSN_RW_ACCESS_KEY_ID', 'rwak');
+  vi.stubEnv('S3_OSN_RW_SECRET_ACCESS_KEY', 'rwsk');
+  vi.stubEnv('S3_OSN_BUCKET_NAME', 'campfire-jwst');
+  vi.stubEnv('S3_OSN_ENDPOINT', 'https://uaz1.osn.mghpcc.org/');
+  vi.stubEnv('S3_OSN_REGION', 'us-east-1');
+  vi.stubEnv('S3_OSN_FORCE_PATH_STYLE', 'true');
+}
+
 beforeEach(() => vi.resetModules());
 afterEach(() => vi.unstubAllEnvs());
 
@@ -52,5 +63,29 @@ describe('dual-read storage resolution (storage.ts)', () => {
     setR2Env();
     const { getBucketNameForBackend } = await import('./storage');
     expect(getBucketNameForBackend('r2')).toBe('campfire');
+  });
+});
+
+describe('OSN write client for deploy presign (storage.ts)', () => {
+  it('resolves the OSN write bucket from S3_OSN_RW_* + shared S3_OSN_*', async () => {
+    setOsnWriteEnv();
+    const { getOsnWriteBucket } = await import('./storage');
+    expect(getOsnWriteBucket()).toBe('campfire-jwst');
+  });
+
+  it('throws when write creds are missing even if read creds are present', async () => {
+    setOsnEnv(); // RO creds only (S3_OSN_ACCESS_KEY_ID, no S3_OSN_RW_*)
+    const { getOsnWriteClient } = await import('./storage');
+    expect(() => getOsnWriteClient()).toThrow(/write credentials/i);
+  });
+
+  it('caches the OSN write client and keeps it distinct from the RO client', async () => {
+    setOsnEnv();
+    setOsnWriteEnv();
+    const { getOsnWriteClient, getS3ClientForBackend } = await import('./storage');
+    const w1 = getOsnWriteClient();
+    const w2 = getOsnWriteClient();
+    expect(w1).toBe(w2); // cached
+    expect(getS3ClientForBackend('osn')).not.toBe(w1); // RO read client is separate
   });
 });

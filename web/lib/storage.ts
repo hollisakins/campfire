@@ -193,3 +193,63 @@ export function getS3ClientForBackend(b: DataBackend): S3Client {
 export function getBucketNameForBackend(b: DataBackend): string {
   return b === 'r2' ? getBucketName('data') : resolveOsnBackend().bucket;
 }
+
+// ---------------------------------------------------------------------------
+// OSN *write* client (deploy upload presigning, epic #210 / #216).
+//
+// The dual-read above uses read-only OSN creds (S3_OSN_*). Minting presigned
+// PutObject URLs for the deploy path requires write creds, kept distinct and
+// least-privilege: S3_OSN_RW_* (endpoint/bucket/region/path-style reuse the
+// shared S3_OSN_* block). Used ONLY by the admin-gated /api/v1/deploy/presign
+// route handler — never shipped to the browser, never used for reads.
+// ---------------------------------------------------------------------------
+
+/** Resolve the OSN write backend from S3_OSN_RW_* (+ shared S3_OSN_* config). */
+function resolveOsnWriteBackend(): BackendConfig {
+  const accessKeyId = env('S3_OSN_RW_ACCESS_KEY_ID');
+  const secretAccessKey = env('S3_OSN_RW_SECRET_ACCESS_KEY');
+  const bucket = env('S3_OSN_BUCKET_NAME');
+  const endpointRaw = env('S3_OSN_ENDPOINT');
+  const region = env('S3_OSN_REGION') || 'auto';
+  const forcePathStyle = coerceBool(env('S3_OSN_FORCE_PATH_STYLE'));
+
+  if (!accessKeyId || !secretAccessKey || !bucket || !endpointRaw) {
+    throw new Error(
+      'OSN write credentials not configured (set S3_OSN_RW_ACCESS_KEY_ID / ' +
+        'S3_OSN_RW_SECRET_ACCESS_KEY plus the shared S3_OSN_ENDPOINT / S3_OSN_BUCKET_NAME)',
+    );
+  }
+
+  return {
+    purpose: 'data',
+    backend: 'osn',
+    endpoint: endpointRaw.replace(/\/+$/, ''),
+    region,
+    bucket,
+    accessKeyId,
+    secretAccessKey,
+    forcePathStyle,
+  };
+}
+
+const _osnWriteClient = new Map<'osn', S3Client>();
+
+/** S3 client with OSN *write* creds, for presigning deploy PutObject URLs. */
+export function getOsnWriteClient(): S3Client {
+  const cached = _osnWriteClient.get('osn');
+  if (cached) return cached;
+  const cfg = resolveOsnWriteBackend();
+  const client = new S3Client({
+    region: cfg.region,
+    endpoint: cfg.endpoint,
+    forcePathStyle: cfg.forcePathStyle,
+    credentials: { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey },
+  });
+  _osnWriteClient.set('osn', client);
+  return client;
+}
+
+/** OSN bucket name for deploy writes. */
+export function getOsnWriteBucket(): string {
+  return resolveOsnWriteBackend().bucket;
+}

@@ -14,9 +14,13 @@ Supports two upload modes:
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import NamedTuple, Optional
+from urllib.parse import urlparse
 
 import requests as http_requests
 from tqdm import tqdm
+
+# A returned presigned URL on this host means the web route signed R2, not OSN.
+_R2_PRESIGN_HOST_FRAGMENT = 'r2.cloudflarestorage.com'
 
 
 class UploadTask(NamedTuple):
@@ -62,6 +66,7 @@ def request_presigned_urls(
     tasks: list[UploadTask],
     bucket: str = 'data',
     cache_control: Optional[str] = None,
+    backend: str = 'r2',
 ) -> Optional[dict[str, str]]:
     """
     Request presigned PutObject URLs from the web API in batches.
@@ -76,6 +81,11 @@ def request_presigned_urls(
         Bucket identifier: 'data' or 'tiles'.
     cache_control : str, optional
         Cache-Control header to set on uploaded objects.
+    backend : str
+        Storage backend to sign against: 'r2' (default) or 'osn'. 'osn' signs
+        canonical data keys against the OSN bucket (epic #210 / #216 — deploy →
+        OSN); the web route requires ``backend='osn'`` to be implemented for this
+        to land in OSN rather than R2 (see the host guard in upload_files_parallel).
 
     Returns
     -------
@@ -97,6 +107,7 @@ def request_presigned_urls(
         batch = tasks[i:i + PRESIGN_BATCH_SIZE]
         payload = {
             'bucket': bucket,
+            'backend': backend,
             'uploads': [
                 {'key': t.r2_key, 'content_type': t.content_type}
                 for t in batch
@@ -115,6 +126,28 @@ def request_presigned_urls(
             return None
 
     return all_urls
+
+
+def _assert_presigned_backend_osn(urls: dict[str, str]) -> None:
+    """Fail loudly if OSN was requested but the web route returned R2-host URLs.
+
+    A web deployment that predates OSN upload support ignores the ``backend``
+    field and signs the R2 'data' bucket. Uploading there would land bytes in R2
+    under canonical keys while the deploy registers ``backend='osn'`` — a silent
+    divergence between what the registry points at (OSN) and where bytes live
+    (R2). Refuse before any upload so the operator updates/redeploys the web app.
+    """
+    r2_signed = [
+        key for key, url in urls.items()
+        if _R2_PRESIGN_HOST_FRAGMENT in urlparse(url).netloc
+    ]
+    if r2_signed:
+        raise RuntimeError(
+            "Requested OSN presigned uploads but the deploy API returned R2 URLs "
+            f"(e.g. {r2_signed[0]}). The web deployment predates OSN upload support "
+            "(the /api/v1/deploy/presign route must accept backend='osn'). Update and "
+            "redeploy the web app before deploying NIRSpec products to OSN."
+        )
 
 
 def _upload_to_presigned_url(url: str, local_path: Path, content_type: str) -> None:
@@ -301,12 +334,13 @@ def upload_files_parallel(
     desc: str = 'Uploading',
     cache_control: Optional[str] = None,
     succeeded_out: Optional[set[str]] = None,
+    backend: str = 'r2',
 ) -> tuple[int, int, list[str]]:
     """
-    Upload files to R2, using presigned URLs if available, else direct boto3.
+    Upload files to the data store, using presigned URLs if available, else boto3.
 
-    This is the main entry point for all R2 uploads. It tries presigned URLs
-    first (no R2 credentials needed), falling back to direct boto3 upload.
+    This is the main entry point for all uploads. It tries presigned URLs first
+    (no local object-store credentials needed), falling back to direct boto3.
 
     Parameters
     ----------
@@ -325,6 +359,11 @@ def upload_files_parallel(
     succeeded_out : set[str], optional
         If given, collects the ``r2_key`` of each successfully-uploaded object so
         the caller can register exactly what landed (used for storage_objects).
+    backend : str
+        Destination backend: 'r2' (default) or 'osn'. 'osn' routes NIRSpec
+        canonical products to OSN (epic #210 / #216). The presigned path signs
+        against OSN via the web route; the direct-boto3 fallback resolves the
+        'osn' purpose (CAMPFIRE_S3_OSN_*).
 
     Returns
     -------
@@ -335,8 +374,16 @@ def upload_files_parallel(
         return 0, 0, []
 
     # Try presigned URL mode first
-    urls = request_presigned_urls(config, tasks, bucket=bucket_id, cache_control=cache_control)
+    urls = request_presigned_urls(
+        config, tasks, bucket=bucket_id, cache_control=cache_control, backend=backend,
+    )
     if urls:
+        # Guard against a web deployment that predates OSN upload support: an old
+        # /deploy/presign ignores `backend` and signs R2, which would land bytes in
+        # R2 under canonical keys while the registry records backend='osn' — silent
+        # divergence. Refuse if we asked for OSN but got R2-host URLs.
+        if backend == 'osn':
+            _assert_presigned_backend_osn(urls)
         return upload_files_presigned(
             urls, tasks, max_workers=max_workers, desc=desc, succeeded_out=succeeded_out,
         )
@@ -346,10 +393,13 @@ def upload_files_parallel(
         PURPOSE_SECTIONS, make_s3_client, resolve_backend,
     )
 
-    purpose = 'tiles' if bucket_id == 'tiles' else 'data'
+    if backend == 'osn':
+        purpose = 'osn'
+    else:
+        purpose = 'tiles' if bucket_id == 'tiles' else 'data'
     if PURPOSE_SECTIONS[purpose] not in config:
         raise ValueError(
-            f"No storage credentials available for the '{bucket_id}' bucket. "
+            f"No storage credentials available for the '{purpose}' backend. "
             "Run 'campfire login' to use presigned URLs, or provide storage "
             "credentials in deploy config."
         )
