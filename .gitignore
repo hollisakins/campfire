@@ -30,6 +30,9 @@ Thumbs.db
 # CAMPFIRE Secrets - DO NOT COMMIT
 campfire/config.toml
 scripts/config.toml
+.env
+.env.*
+!.env.example
 
 # Data directories (large files)
 data/raw/

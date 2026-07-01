@@ -177,6 +177,11 @@ def read_spectrum_data(fits_path: Path) -> dict:
             collapsed_norm = collapsed / np.nanmax(np.abs(collapsed[valid_opt])) if np.any(valid_opt) else collapsed
             collapsed_norm = np.where(np.isfinite(collapsed_norm), collapsed_norm, 0)
             opt_norm = opt_weight / np.nanmax(opt_weight) if np.nanmax(opt_weight) > 0 else opt_weight
+            # opt weights can be non-finite at masked/edge pixels; a NaN here would
+            # be serialized as the bare token `NaN` (invalid JSON) and make the
+            # browser's JSON.parse reject the whole spectrum payload. Guard it the
+            # same way as snr_2d / collapsed_norm above.
+            opt_norm = np.where(np.isfinite(opt_norm), opt_norm, 0)
 
         return {
             'wave': wave,
@@ -196,7 +201,13 @@ def generate_spectrum_json(fits_path: Path, output_dir: Path) -> Path:
     data = read_spectrum_data(fits_path)
     json_path = output_dir / (fits_path.stem + '.json')
     with open(json_path, 'w') as f:
-        json.dump(data, f)
+        # allow_nan=False: a non-finite value would otherwise be written as the
+        # bare token `NaN`/`Infinity`, which is invalid JSON. The web render path
+        # (/api/spectrum -> response.json(); browser JSON.parse) rejects such a
+        # payload and the spectrum silently fails to render. Fail loudly here at
+        # deploy time instead; arrays that can legitimately be non-finite are
+        # sanitized in read_spectrum_data().
+        json.dump(data, f, allow_nan=False)
     return json_path
 
 
