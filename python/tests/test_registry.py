@@ -204,3 +204,34 @@ def test_reconcile_no_bucket_skips_dangling_orphan():
     assert rep.dangling == set()
     assert rep.orphans == set()
     assert rep.covered
+
+
+def test_reconcile_matches_legacy_pointer_to_canonical_registry_key():
+    # #249: A1 re-keyed migrated objects legacy->canonical, but the live pointer
+    # (spectra.fits_path) stays legacy. Reconcile must match them by canonical
+    # identity, else the coverage gate falsely flags every migrated final 'missing'.
+    from campfire_layout import KeyScheme, Scope, storage_key
+    legacy = storage_key('nirspec_spec', Scope(obs='ember_egs_p1'),
+                         'ember_egs_p1_prism_clear_1_spec.fits', scheme=KeyScheme.LEGACY)
+    canonical = storage_key('nirspec_spec', Scope(obs='ember_egs_p1'),
+                            'ember_egs_p1_prism_clear_1_spec.fits', scheme=KeyScheme.CANONICAL)
+    assert legacy != canonical  # the two schemes really differ
+
+    # live pointer legacy, registry row canonical (osn) -> covered, not missing.
+    rep = reg.compute_reconcile([legacy], [canonical])
+    assert rep.missing == set()
+    assert rep.covered
+
+    # R2 retains the legacy copy in the bucket LIST -> no dangling/orphan.
+    rep2 = reg.compute_reconcile([legacy], [canonical], [legacy])
+    assert rep2.covered
+    assert rep2.dangling == set()
+    assert rep2.orphans == set()
+
+    # a genuinely unregistered pointer is still missing, reported as its ORIGINAL
+    # legacy key (not the canonical form).
+    other = storage_key('nirspec_spec', Scope(obs='ember_egs_p1'),
+                        'ember_egs_p1_prism_clear_2_spec.fits', scheme=KeyScheme.LEGACY)
+    rep3 = reg.compute_reconcile([legacy, other], [canonical])
+    assert rep3.missing == {other}
+    assert not rep3.covered
