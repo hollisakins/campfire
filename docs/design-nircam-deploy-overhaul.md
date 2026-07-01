@@ -108,6 +108,9 @@ mostly *wiring NIRCam into them* + one genuinely new capability (FITS-in-browser
 These are the decisions the four bullets don't yet answer. Each should be resolved in the design
 sub-issue (§7, N0) before its consumer is built.
 
+> **Resolved 2026-07-01 — see [Decisions recorded (N0)](#decisions-recorded-n0) below**, which is
+> authoritative. The subsections here are retained as the rationale that led to each decision.
+
 ### 4.1 The deploy *unit* and storage budget (biggest lever)
 NIRCam dominates the 20 TB OSN budget: a COSMOS-Web-scale field is ~5,000 exposures × ~150 MB
 ≈ **750 GB for a single state**. Epic #210's design already decided the unit = **the canonical
@@ -192,13 +195,85 @@ asynchronous and multi-machine. Undefined in the vision:
 
 ---
 
+## Decisions recorded (N0)
+
+Made 2026-07-01. These are authoritative; §4 is the rationale.
+
+- **D1 — Deploy unit.** One canonical exposure FITS at its latest `CFP_*` state (SCI+DQ+ERR+VAR_*
+  as-is), re-uploaded only when `sha256(SCI+DQ)` changes. No per-state snapshots. Latest-only
+  retention (tombstone + GC superseded).
+- **D2 — Budget.** OSN is not a constraint — expandable to ~50 TB. **All fields deploy exposures by
+  default** (no opt-in gating). One stored version per exposure.
+- **D3 — Mosaic model: no version axis.** One logical mosaic per
+  `(field, filter, tile, pixel_scale, extension)`. `version` is retired **entirely** — dropped from
+  `nircam_images_unique` (migration), from the pipeline mosaic filename (`drizzle.py`/`manifest.py`),
+  and from the `campfire-layout` bijection → a coordinated **pipeline MAJOR**. Physical storage uses
+  the same model as exposures: stable path-derived `storage_key` + `content_hash` change-detection +
+  registry `supersede`; re-combine overwrites the OSN object in place (atomic `PUT`); only the active
+  object is retained. Epoch/program subsets are served by the intermediate-exposure system
+  (query → bulk download → drizzle fresh), never by stored variants.
+- **D4 — Mosaics have no draft tier.** Deploy straight to `published`; the draft/review gate lives at
+  the *exposure* level. (Stable-key overwrite can't hold draft + published bytes for one slot; that's
+  fine because quality is gated upstream at inspection.)
+- **D5 — `nircam_images` gets the full #217 enforcement.** `deploy_status` + RLS + reader predicates
+  + the non-admin security test. Public page filters `published`.
+- **D6 — CANDIDE: retire, don't migrate.** No migration/verify/dual-serve of the existing corpus —
+  mosaics are re-reduced fresh. **Accepted consequence:** the dead CANDIDE-pointing `nircam_images`
+  rows are cleared/hidden, so **portal NIRCam mosaics go dark per `(field, filter)` until re-reduced.**
+- **D7 — FITS-in-browser: exposures only, SCI-only.** Range-fetch the 2048² **SCI** extension
+  (canonical files are **uncompressed float32** — walk the HDU header chain, range-GET the SCI data
+  block; no decompression). **No DQ overlay.** Renderer = integrate the owner's public
+  **[`fitsgl`](https://github.com/hollisakins/fitsgl)** WebGL library, so N4 is an *integration* task,
+  not a research spike. Mosaics stay served via the interactive map + file download (not rendered
+  in-browser).
+- **D8 — Masks are a DB-resident product.** `nircam_exposures.mask_regions` JSONB is authoritative;
+  lifecycle on the row; **not** a registered `storage_objects` object. `reference/masks/*.reg` is a
+  derived materialization. Masks drawn *outside* the portal (hand-drawn `.reg` on the cluster) are
+  ingested via the existing `import-masks` (local → DB). **`pull` is non-destructive:** it
+  materializes DB → `.reg` and **never deletes**; it emits a **drift report** warning about local
+  `.reg` files not present in the DB and offering the `import-masks` command to reconcile. (Known,
+  accepted footgun: a mask deleted in the portal leaves a stale local `.reg` until the reducer removes
+  it; the drift report surfaces the mismatch either direction.)
+- **D9 — Other `reference/` inputs stay registered.** `astrom_cats`, `bad_pixels`, `flats`, `wisps`
+  have no DB home → registered `storage_objects` (`nircam_astrom_cat`, `nircam_bad_pixel`,
+  `nircam_flat`, `nircam_wisp`), cloud-backed for reproducibility + restore. Masks (D8) are the one
+  exception to "register all of `reference/`."
+- **D10 — Exclusions ("skip") = DB flag → generated list.** A per-exposure exclude flag in the portal
+  (reuse/extend `review_status`); `pull` emits a **DB-derived exclusion list** that `combine` reads
+  (a new per-exposure exclusion source alongside the existing field-wide `skip` globs). Materialized
+  as a list (not "silently don't download") so it stays **reversible** (flip the flag → re-pull) and
+  auditable. Pipeline contract change → rides a pipeline tag.
+- **D11 — No combine gate; coverage is surfaced.** The reducer pulls + combines against current
+  inspection status — no explicit "ready to combine" barrier. Per-`(field, filter)` **inspection
+  coverage %** is surfaced in `campfire status` and the admin dashboard, and **stamped into mosaic
+  provenance** at combine time (e.g. "combined at 92% inspected").
+- **D12 — Concurrency.** No concurrent same-field reductions (≤2 reducers). N6 uses a lightweight
+  optimistic-version guard (warn on a stale deploy); **no distributed locking**.
+- **D13 — PNGs.** Retire `*_full.png` (pipeline `preview` step + deploy + `full_png_path` schema);
+  keep only the small `*_preview.png` thumbnail for the grid.
+- **D14 — Out of scope.** MIRI, NIRCam photometry, DR/version retention, mosaic in-browser rendering,
+  CANDIDE-corpus migration.
+
+**Decision → sub-issue gating:**
+
+| Decisions | Gate |
+|---|---|
+| D1, D2 | N1 (exposures on OSN + draft) |
+| D3, D4 | N2 (mosaic deploy — carries the pipeline MAJOR) |
+| D5, D6 | N3 (public serving) |
+| D7 (`fitsgl`, SCI-only, uncompressed) | N4 (renderer integration) |
+| D7, D13 | N5 (UI migration + retire `_full.png`) |
+| D8–D12 | N6 (headless loop) |
+
+---
+
 ## 5. Challenges & risks
 
-1. **FITS-in-browser is the one genuinely new capability** and the largest unknown: transport
-   (byte-range on possibly-compressed FITS), rendering large arrays performantly (WebGL), stretch,
-   memory, DQ overlay, and correct pixel/coordinate handling. There's no precedent in the repo.
-   *Mitigation:* a bounded renderer spike (N4) with a go/no-go before committing the UI migration
-   (N5); keep the PNG path behind a flag until FITS render is proven.
+1. **FITS-in-browser is the one genuinely new capability**, but de-risked by reusing the owner's
+   existing `fitsgl` WebGL renderer (D7) and by the canonical SCI being **uncompressed float32**
+   (~16 MB, one range-GET, no decompression). Residual unknowns: correct pixel/coordinate handling
+   vs the current mask convention, and interactive perf on full-frame arrays. *Mitigation:* keep the
+   PNG path behind a flag until the FITS render + mask round-trip is proven (N4 → N5).
 2. **The "render FITS directly" vs "don't ship GB to the browser" tension**, especially for mosaics.
    May force a server-side cutout/downsample service — i.e., you don't fully escape a
    derived representation. *Mitigation:* scope FITS render to per-exposure first; treat mosaic
@@ -206,20 +281,24 @@ asynchronous and multi-machine. Undefined in the vision:
 3. **Storage budget.** Even one-state-per-exposure NIRCam is ~0.75 TB/field; mosaics add multi-GB ×
    versions. *Mitigation:* content-hash dedup (already in `manifest.py`), latest-state-only policy,
    budget RPC + alerts + `deploy gc`, explicit retention.
-4. **Silent public leak of draft mosaics** if `nircam_images` visibility isn't enforced in *every*
-   reader (RLS + the public list action + any REST route). *Mitigation:* reuse #217's exact
-   two-surface enforcement + security test, extended to `nircam_images`.
+4. **Silent public leak of unpublished/revoked mosaics** if `nircam_images` visibility isn't enforced
+   in *every* reader (RLS + the public list action + any REST route) — mosaics have no draft tier
+   (D4), but a `revoked` or not-yet-`published` slot must still be hidden. *Mitigation:* reuse #217's
+   exact two-surface enforcement + security test, extended to `nircam_images` (D5).
 5. **Coordinate-frame correctness** across the PNG→FITS UI change. Masks are 1-indexed DS9 image,
    `origin='lower'`, y-flipped relative to the PNG; `apply_masks` depends on this exactly.
    *Mitigation:* golden round-trip test (draw in UI → JSONB → `.reg`/skip → `DQ`) that must be
    byte-stable across the migration; the FITS renderer must reproduce the current pixel convention.
 6. **Dependency on the still-open #216.** Mosaic serving + bulk download need the streaming-zip
    proxy and the OSN data-backend flip. *Mitigation:* sequence N3 after #216; N1/N2/N4 don't need it.
-7. **Async multi-machine loop coordination** (barrier + locking) is workflow, not just CLI, and is
-   easy to get subtly wrong (races, clobbered deploys). *Mitigation:* explicit field-level gate +
-   #220's optimistic-version lock; make every step idempotent.
-8. **CANDIDE migration correctness** (hash-verify the existing corpus; no gap in availability).
-   *Mitigation:* dual-serve + verify-before-flip, reusing #215's copy/verify pattern.
+7. **Async multi-machine loop coordination** (D11/D12 shrink this): no barrier, no distributed lock —
+   the reducer combines against current inspection status. *Residual risk:* two reducers double-deploy
+   a field. *Mitigation:* a lightweight optimistic-version guard warns on a stale deploy; every step
+   is idempotent. Acceptable at ≤2 reducers with no concurrent same-field work.
+8. **Portal coverage gap during the re-reduction ramp** (D6): retiring CANDIDE without migrating means
+   NIRCam mosaics are absent from the portal until each `(field, filter)` is re-reduced fresh.
+   *Mitigation:* none needed — this is an accepted, temporary consequence of reducing everything anew;
+   the gap closes as re-reductions land.
 9. **Re-deploy/version churn** creating registry drift or a public page pointing at a stale/mixed
    version. *Mitigation:* manifest-driven staleness + `superseded` tombstones + "latest published"
    resolution, tested.
@@ -253,19 +332,22 @@ are largely parallel; the loop track integrates them.
 N0 Design + budget + unit decisions ──┬──────────────────────────────────────────────┐
                                        │                                              │
 Track D (deploy → OSN, main-inert):    │  Track U (inspection UI, parallel):          │
-  N1 exposures+expmaps on OSN + draft ──┤    N4 FITS-in-browser renderer (spike→build) │
-  N2 mosaic deploy + versioning ────────┤    N5 migrate masking UI PNG→FITS + reject   │
+  N1 exposures+expmaps on OSN + draft ──┤    N4 integrate fitsgl (SCI-only render)     │
+  N2 mosaic deploy, retire version ─────┤    N5 migrate masking UI PNG→FITS + exclude  │
+     (pipeline MAJOR) ──────────────────┤       + retire _full.png                     │
   N3 public serving from OSN (needs #216)│                                             │
         + nircam_images lifecycle/RLS    │                                             │
-        + CANDIDE migration/retire       │                                             │
-                                       Track L (loop): N6 pull masks+exclusions,        │
-                                       ready-to-combine gate, multi-reducer, restore ───┘
+        + retire CANDIDE (no migration)  │                                             │
+                                       Track L (loop): N6 pull masks (non-destructive)  │
+                                       + exclusions list, coverage %, restore ─────────┘
 ```
 
-### N0 — Design spec: deploy unit, budget/retention, and open decisions
-Resolve §4 (unit & budget, mosaic registry key, PNG fate, exclusion mechanism, ready-to-combine
-signal, CANDIDE plan). Add any missing `campfire-layout` `PRODUCTS` entries / paths. **No code beyond
-the layout contract + a budget estimate.** Blocks the rest. *(mirrors #210's PR-2 "contract first".)*
+### N0 — Design spec + layout contract  *(design resolved; one code deliverable)*
+The design decisions are **resolved** — see [Decisions recorded (N0)](#decisions-recorded-n0). The
+remaining N0 deliverable is the **`campfire-layout` contract change**: add/adjust `PRODUCTS`
+entries + path/key rules for the new NIRCam objects (canonical exposure, expmap, mosaic **without a
+`version` segment**, registered `reference/` inputs), with the python↔TS conformance test updated.
+Everything else references these decisions. *(mirrors #210's PR-2 "contract first".)*
 
 ### N1 — NIRCam exposures on OSN, registered, draft-aware  *(deps: N0)*
 - Deploy the **canonical exposure FITS** (+ expmap) to OSN under `campfire-layout` canonical keys,
@@ -277,53 +359,61 @@ the layout contract + a budget estimate.** Blocks the rest. *(mirrors #210's PR-
 - *Accept:* a processed field deploys canonical exposures as `draft`, registered, hash-dedup on
   re-deploy; security test shows non-admins see zero draft exposures.
 
-### N2 — Mosaic deploy + versioning  *(deps: N1)*
-- `campfire deploy nircam mosaics` (or fold into field deploy): upload i2d per
-  (filter × tile × scale × version × extension) to OSN, register (`nircam_mosaic`, `nircam_rgb`),
-  upsert `nircam_images` with the OSN key + `deployment_id`; replace the archived
-  `scripts/archive/deploy_nircam.py` path.
-- Version/supersede on re-combine (manifest staleness → new `version` → tombstone old registry row).
-- *Accept:* a combined field deploys mosaics to OSN, registered + indexed, re-deploy supersedes
-  cleanly; `download` fetches a mosaic by registry key.
+### N2 — Mosaic deploy + retire the `version` axis  *(deps: N1; carries a pipeline MAJOR)*
+- **Retire `version`** (D3): drop it from the pipeline mosaic filename (`drizzle.py`/`manifest.py`),
+  the `campfire-layout` bijection, and `nircam_images_unique` → one slot per
+  `(field, filter, tile, pixel_scale, extension)`. This is a **pipeline MAJOR** (naming change) +
+  migration + seed regen, coordinated with the layout contract.
+- `campfire deploy nircam mosaics` (or fold into field deploy): upload i2d per slot to OSN, register
+  (`nircam_mosaic`, `nircam_rgb`), upsert `nircam_images` with the OSN key + `deployment_id`; replace
+  the archived `scripts/archive/deploy_nircam.py` path.
+- Re-combine overwrites in place under the stable key (atomic `PUT`) + registry supersede; **straight
+  to `published`, no draft tier** (D4). Only the active object is retained (tombstone + GC old).
+- *Accept:* a combined field deploys mosaics to OSN, registered + indexed one-per-slot; re-combine
+  supersedes cleanly with no version sprawl; `download` fetches a mosaic by registry key.
 
 ### N3 — Serve mosaics from OSN on the public NIRCam page  *(deps: N2, #216)*
 - Add `deploy_status` + **RLS + reader predicates + security test** to `nircam_images` (the #217
   enforcement pass it never got); public page filters `published`.
 - Swap CANDIDE URLs (`NircamTable.tsx`, `CurlScriptGenerator.tsx`) for OSN presigned / streaming-zip
   (via #216); public downloads run through the storage-agnostic proxy.
-- **One-time migration** of existing CANDIDE mosaics → OSN + registry backfill + hash-verify;
-  dual-serve window; retire CANDIDE.
-- *Accept:* public users download published mosaics from OSN; draft mosaics are invisible; curl
-  scripts point at OSN; CANDIDE decommissioned after bake.
+- **No corpus migration** (D6): clear/hide the dead CANDIDE-pointing `nircam_images` rows and retire
+  CANDIDE. NIRCam mosaics go dark per `(field, filter)` until re-reduced fresh — accepted.
+- *Accept:* public users download published mosaics from OSN; unpublished slots are simply absent;
+  curl scripts point at OSN; CANDIDE decommissioned.
 
-### N4 — FITS-in-browser renderer  *(deps: N1; parallel to N2/N3)*
-- Spike → build: fetch canonical exposure FITS (byte-range, handling on-disk compression) via an
-  admin proxy; render SCI with in-browser stretch (zscale/asinh) + DQ overlay; pan/zoom (WebGL).
+### N4 — FITS-in-browser renderer (integrate `fitsgl`)  *(deps: N1; parallel to N2/N3)*
+- Integrate the owner's public **[`fitsgl`](https://github.com/hollisakins/fitsgl)** WebGL renderer:
+  range-fetch the 2048² **SCI** extension via an admin proxy (canonical files are uncompressed
+  float32 — walk the HDU header chain, range-GET the SCI data block; no decompression, **SCI-only,
+  no DQ overlay**); render with in-browser stretch; pan/zoom.
 - Reproduce the exact current pixel convention (1-indexed, `origin='lower'`) so masks stay valid.
-- Go/no-go gate on perf/memory before N5.
-- *Accept:* an admin opens an exposure and sees the live FITS SCI (not a PNG) with stretch + DQ
-  overlay, at interactive framerate on a full-frame detector.
+  Optionally emit a tiny HDU byte-offset sidecar so the client skips the header walk.
+- *Accept:* an admin opens an exposure and sees the live FITS SCI (not a PNG) with stretch, at
+  interactive framerate on a full-frame detector.
 
-### N5 — Migrate masking/inspection UI to FITS + first-class reject  *(deps: N4)*
+### N5 — Migrate masking/inspection UI to FITS + first-class exclude  *(deps: N4)*
 - Port `MaskEditor` from `<img>` PNG to the N4 FITS canvas; preserve the mask JSONB coordinate
-  contract; keep the golden round-trip test green.
-- Add **"flag corrupted / reject exposure"** as a first-class action (schema flag + UI), distinct
-  from per-pixel masks.
-- Retire `*_full.png` from the pipeline `preview` step + deploy + schema (keep the thumbnail);
-  feature-flag the transition.
-- *Accept:* masking works entirely on FITS render; a rejected exposure is recorded distinctly;
-  `_full.png` is no longer produced/needed.
+  contract (1-indexed DS9, `origin='lower'`); keep the golden round-trip test green.
+- Add the per-exposure **exclude ("flag corrupted")** flag as a first-class, reversible action
+  (D10) — distinct from per-pixel masks; it becomes the source for the combine exclusion list in N6.
+- Retire `*_full.png` from the pipeline `preview` step + deploy + `full_png_path` schema (keep the
+  thumbnail); feature-flag the transition (D13).
+- *Accept:* masking works entirely on FITS render; an excluded exposure is recorded distinctly and is
+  reversible; `_full.png` is no longer produced/needed.
 
 ### N6 — Close the headless loop  *(deps: N1, N2, N5)*
-- Extend the pull path: `pull` materializes **masks and exclusions** into what `combine` honors
-  (exclusions → generated skip-list / DQ; masks → `.reg` as today); register masks as cloud-backed
-  `reference/` products.
-- Add a **field-level "ready to combine"** gate and per-`(field)` multi-reducer lock (#220 pattern).
+- Extend `pull`: materialize **masks** (DB → `.reg`, **non-destructive** + a **drift report** for
+  local-only `.reg`, offering `import-masks`; D8) **and exclusions** (DB flag → a generated
+  per-exposure exclusion list that `combine` reads; D10). Masks stay **DB-resident** (not registered);
+  register the other `reference/` inputs (D9).
+- Surface per-`(field, filter)` **inspection coverage %** in `campfire status` + the admin dashboard,
+  and stamp it into mosaic provenance at combine time (D11). **No combine gate; no distributed lock**
+  — a lightweight optimistic-version guard warns on a stale deploy (D12).
 - Validate `download --intermediate` / `delete-local` **for NIRCam** (restore a re-reducible field =
   `products/` canonical exposures + cloud-backed `reference/` inputs).
-- *Accept:* end-to-end on a cluster: `process → deploy(draft) → inspect/mask/flag → pull → combine
-  → deploy(publish)`, with a clean-local-then-restore round-trip and no clobbering under two
-  reducers.
+- *Accept:* end-to-end on a cluster: `process → deploy(draft) → inspect/mask/exclude → pull → combine
+  → deploy mosaics (published)`, with a clean-local-then-restore round-trip.
 
 ### Sequencing & merge safety
 - **N0 first.** Then Track D (N1→N2→N3) and Track U (N4→N5) run in parallel; N6 integrates.
@@ -332,17 +422,19 @@ the layout contract + a budget estimate.** Blocks the rest. *(mirrors #210's PR-
 - **One schema-changing PR to `main` at a time** (sequential migrations off the squashed baseline);
   **regenerate `seed.sql`** on any `nircam_exposures` / `nircam_images` column add or preview
   branches go red.
-- Pipeline-side changes (retiring `*_full.png`; any exclusion-honoring in `combine`) ride the
-  **`pipeline-vX.Y.Z`** tag cadence with a CHANGELOG entry, decoupled from the web deploys.
+- Pipeline-side changes ride the **`pipeline-vX.Y.Z`** tag cadence with a CHANGELOG entry, decoupled
+  from the web deploys: retiring the mosaic `version` filename segment (D3) is a **MAJOR** (carried by
+  N2); retiring `*_full.png` (D13) and the `combine` exclusion-list consumer (D10) are PATCH/MINOR.
 
 ---
 
 ## 8. Definition of done
-- `campfire deploy` pushes NIRCam **canonical exposures + mosaics** to OSN, registered, with the
-  `draft/published/revoked` lifecycle — parity with NIRSpec.
-- The public NIRCam page serves **published mosaics from OSN**; CANDIDE is retired; draft mosaics are
-  provably invisible to non-admins.
-- The admin inspection UI renders **canonical exposure FITS in-browser** (SCI + DQ + stretch);
-  masking + reject are first-class and honored by `combine`; `*_full.png` retired.
-- The headless `process → deploy → inspect → pull → combine → deploy` loop runs end-to-end,
-  multi-reducer-safe, with clean-local + restore.
+- `campfire deploy` pushes NIRCam **canonical exposures** (draft-aware) **+ mosaics** (straight to
+  published, one per slot, no `version`) to OSN, registered — parity with NIRSpec.
+- The public NIRCam page serves **published mosaics from OSN**; CANDIDE is retired; a non-admin
+  provably cannot see draft *exposures* (mosaics carry no draft tier).
+- The admin inspection UI renders **canonical exposure FITS in-browser** (`fitsgl`, SCI + stretch);
+  masking + per-exposure exclude are first-class and reversible; exclusions are honored by `combine`;
+  `*_full.png` retired.
+- The headless `process → deploy → inspect → pull → combine → deploy` loop runs end-to-end, with a
+  non-destructive mask pull + drift report and a clean-local + restore round-trip.
