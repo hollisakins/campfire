@@ -25,6 +25,7 @@ from .bijection import (
 )
 from .keys import bucket_for, key_prefix, storage_key
 from .lifecycle import tree_class
+from .migrate import LayoutMigrator, apply_migration, plan_migration
 from .paths import (
     Roots,
     cache_path,
@@ -64,6 +65,8 @@ __all__ = [
     "derive_sibling", "is_known_key",
     # lifecycle
     "tree_class",
+    # migration (#212 one-time layout re-org)
+    "LayoutMigrator", "plan_migration", "apply_migration",
 ]
 
 __version__ = "0.1.0"

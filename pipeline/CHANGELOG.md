@@ -203,6 +203,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **`migrate_layout_212.py` now delegates to a shared migrator (#244).** The
+  one-time `$CAMPFIRE_ROOT` re-org logic moved verbatim into the zero-dependency
+  `campfire_layout.migrate` core, so the operator script and `campfire sync` run
+  the exact same code (no drift between the two migration paths). The script is
+  now a thin wrapper that keeps its pipeline-specific parts — root resolution,
+  `observations.toml` loading, and the stale-`[paths]` warning — and its CLI
+  (`--apply` / `--clean-intermediates` / `--root`), dry-run default, crash-safe
+  JSONL manifest, and idempotent no-clobber behavior are unchanged. Enables
+  `campfire sync` to detect the old layout and offer to migrate it in place.
+  **No change to scientific output** (a filesystem/CLI refactor only).
 - **Canonical format-version keyword (`CFSCHEMA`, epic #210 B-track prereq).**
   Every NIRSpec canonical spectrum-exposure now carries an integer `CFSCHEMA`
   card (value `1`) stamped at birth in `_finalize_canonical`, self-identifying

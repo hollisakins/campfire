@@ -321,6 +321,20 @@ class LocalStore:
         except Exception:
             return 0
 
+    def get_meta(self, key: str) -> Optional[str]:
+        """Read a value from the ``_meta`` key/value table (None if absent)."""
+        row = self._conn.execute(
+            "SELECT value FROM _meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Upsert a value into the ``_meta`` key/value table."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)", (key, str(value))
+        )
+        self._conn.commit()
+
     # -------------------------------------------------------------------------
     # Objects
     # -------------------------------------------------------------------------

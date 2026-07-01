@@ -65,6 +65,61 @@ def _open_store():
             sys.exit(1)
 
 
+def _maybe_migrate_layout(store, migrate_layout: Optional[bool]) -> None:
+    """Detect a pre-#212 local layout and (optionally) migrate it in place.
+
+    Runs before the metadata sync so the relocated files are at their canonical
+    ``products/nirspec/<obs>/`` paths when ``verify_local_objects`` discovers
+    them — turning "nothing downloaded" back into recognized local files without
+    re-downloading. A ``_meta`` marker short-circuits the scan once migrated.
+    """
+    from .config import resolve_data_dir
+    from . import migrate as _mig
+
+    if store.get_meta(_mig.LAYOUT_MARKER_KEY) == _mig.LAYOUT_MARKER_VALUE:
+        return  # already migrated, or born on the new layout
+
+    root = resolve_data_dir()
+    plan_result = _mig.plan(root)
+    if not plan_result["pending"]:
+        # Fresh or already-migrated tree — stamp so we never scan again.
+        store.set_meta(_mig.LAYOUT_MARKER_KEY, _mig.LAYOUT_MARKER_VALUE)
+        return
+
+    counts = plan_result["counts"]
+    click.echo("\n⚠  Local data uses the old layout (products/<obs>/ instead of "
+               "products/nirspec/<obs>/).")
+    click.echo("   Files there won't be recognized as downloaded until the tree is migrated.")
+    summary = ", ".join(f"{k}:{v}" for k, v in sorted(counts.items()))
+    click.echo(f"   Planned actions (dry-run): {summary}")
+    if plan_result["warnings"]:
+        click.echo(f"   ({len(plan_result['warnings'])} item(s) will need manual review.)")
+
+    if migrate_layout is False:
+        click.echo("   Skipping (--no-migrate-layout). Run it yourself with:")
+        click.echo("     python pipeline/scripts/migrate_layout_212.py --apply")
+        return
+    if migrate_layout is None:
+        if not sys.stdin.isatty():
+            click.echo("   Non-interactive session — not migrating automatically. Re-run with "
+                       "--migrate-layout, or use pipeline/scripts/migrate_layout_212.py --apply.")
+            return
+        if not click.confirm("   Migrate the local layout now?", default=False):
+            click.echo("   Skipped — will be offered again on the next sync.")
+            return
+
+    click.echo("   Migrating…")
+    _mig.apply(root, echo=click.echo)
+    # Only stamp the marker if nothing material remains (an unresolved
+    # "BOTH exist" case needs a human; re-offering next sync is safe + idempotent).
+    if not _mig.plan(root)["pending"]:
+        store.set_meta(_mig.LAYOUT_MARKER_KEY, _mig.LAYOUT_MARKER_VALUE)
+        click.echo("   ✓ Local layout migrated.")
+    else:
+        click.echo("   ⚠ Migration applied; some items still need manual review "
+                   "(see warnings/manifest above).")
+
+
 def _check_client_version(base_url: str) -> None:
     """Check if a newer client version is available. Never raises."""
     from . import __version__
@@ -449,12 +504,19 @@ def status(base_url: Optional[str]):
 @cli.command(name="sync")
 @click.option("--full", is_flag=True, help="Force full sync (skip incremental)")
 @click.option("--base-url", default=None, help="API base URL")
-def sync_cmd(full: bool, base_url: Optional[str]):
+@click.option("--migrate-layout/--no-migrate-layout", "migrate_layout", default=None,
+              help="Migrate a pre-#212 local layout without prompting (or skip it). "
+                   "Default: prompt when an old layout is detected on a TTY.")
+def sync_cmd(full: bool, base_url: Optional[str], migrate_layout: Optional[bool]):
     """Sync the object catalog from the server (metadata only).
 
     On first run, pulls the full catalog. On subsequent runs, only
     fetches objects modified since the last sync (incremental).
     Use --full to force a complete re-sync.
+
+    If the local data directory still uses the pre-#212 layout, sync detects it
+    and offers to migrate it in place (products/<obs>/ -> products/nirspec/<obs>/,
+    plus raw/ and reference/ when observations.toml is present).
     """
     base_url = base_url or resolve_base_url()
 
@@ -471,6 +533,10 @@ def sync_cmd(full: bool, base_url: Optional[str]):
     store = _open_store()
 
     try:
+        # Migrate a pre-#212 local layout before anything reads the tree, so the
+        # verify step below discovers the relocated files instead of missing them.
+        _maybe_migrate_layout(store, migrate_layout)
+
         is_incremental = not full and store.get_max_objects_updated_at() is not None
         if is_incremental:
             click.echo("Syncing catalog (updating existing)...")
