@@ -4,6 +4,7 @@ Centralizes all URL construction and response parsing. Used by both the
 ``Campfire`` client class and the CLI.
 """
 
+import os
 from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 from ..exceptions import (
@@ -17,6 +18,27 @@ from ..flags import (
     parse_flag_input,
 )
 from .session import APISession
+
+#: Default page size for the /sync/* paginators. Overridable per run via the
+#: ``CAMPFIRE_SYNC_PAGE_SIZE`` env var — larger pages cut the per-page fixed cost
+#: (HTTP round-trip + server auth preamble + count-gating) at the price of wider
+#: responses and higher peak memory. Clamped to a sane range.
+DEFAULT_SYNC_PAGE_SIZE = 1000
+_MAX_SYNC_PAGE_SIZE = 50000
+
+
+def _resolve_sync_page_size() -> int:
+    """Resolve the sync page size from ``CAMPFIRE_SYNC_PAGE_SIZE`` (or the default)."""
+    raw = os.environ.get("CAMPFIRE_SYNC_PAGE_SIZE")
+    if not raw:
+        return DEFAULT_SYNC_PAGE_SIZE
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_SYNC_PAGE_SIZE
+    if val < 1:
+        return DEFAULT_SYNC_PAGE_SIZE
+    return min(val, _MAX_SYNC_PAGE_SIZE)
 
 
 def _build_query_params(
@@ -110,6 +132,7 @@ class APIClient:
 
     def __init__(self, session: APISession):
         self._session = session
+        self._page_size = _resolve_sync_page_size()
 
     # ------------------------------------------------------------------
     # Objects
@@ -282,7 +305,7 @@ class APIClient:
             # count CTEs when include_counts=false, saving a full scan per
             # subsequent page.
             params: dict = {
-                "limit": 1000,
+                "limit": self._page_size,
                 "offset": offset,
                 "include_counts": "true" if first_page else "false",
             }
@@ -377,7 +400,7 @@ class APIClient:
         total_count = 0
         while True:
             self._session._ensure_valid_token()
-            params: dict = {"limit": 1000, "offset": offset}
+            params: dict = {"limit": self._page_size, "offset": offset}
             if updated_since:
                 params["updated_since"] = updated_since
             response = self._session.get("/sync/photometry", params=params, timeout=60)

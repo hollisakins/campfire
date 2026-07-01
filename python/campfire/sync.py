@@ -5,6 +5,7 @@ Session creation and manifest fetching are delegated to the ``api`` subpackage.
 """
 
 import hashlib
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,41 +27,36 @@ def compute_file_hash(path: Path) -> str:
     return f"sha256:{hasher.hexdigest()}"
 
 
-def _make_progress(show, unit, desc):
-    """Create a tqdm progress bar and page-complete callback."""
+def _make_progress(show, unit, desc, position=None):
+    """Create a tqdm progress bar and page-complete callback.
+
+    ``position`` pins the bar to a fixed terminal row so the four sync streams
+    render as a stable stacked group while they fetch concurrently. When
+    ``show`` is False, returns ``(None, None)`` and the paginator skips progress
+    reporting entirely.
+    """
     if not show:
         return None, None
-    pbar = tqdm(unit=unit, desc=desc)
+    pbar = tqdm(unit=unit, desc=desc, position=position, leave=True)
 
     def callback(fetched, total):
-        pbar.total = total
+        # total is only known once the first page returns (include_counts); until
+        # then the bar renders indeterminate, then snaps to a percentage.
+        if total:
+            pbar.total = total
         pbar.n = fetched
         pbar.refresh()
 
     return pbar, callback
 
 
-def _sync_objects(api, store, full, show_progress):
-    """Sync objects from the server.
+def _apply_objects(store, fetched, updated_since, sync_ts):
+    """Apply fetched objects to the local store (main-thread write phase).
 
-    Returns (object_count, purged_count, incremental, needs_full_sync,
-    server_total, sync_timestamp).
+    Returns (object_count, purged_count, incremental, needs_full_sync).
     """
-    updated_since = None
-    if not full:
-        updated_since = store.get_max_objects_updated_at()
+    all_objects, server_total = fetched
     incremental = updated_since is not None
-
-    sync_timestamp = datetime.now(timezone.utc).isoformat()
-
-    pbar, callback = _make_progress(show_progress, "obj", "Objects")
-
-    all_objects, server_total = api.fetch_all_objects(
-        updated_since=updated_since,
-        on_page_complete=callback,
-    )
-    if pbar:
-        pbar.close()
 
     obj_count = store.upsert_objects(all_objects)
 
@@ -72,66 +68,40 @@ def _sync_objects(api, store, full, show_progress):
 
     purged = 0
     if not incremental:
-        purged = store.purge_stale_objects(sync_timestamp)
+        purged = store.purge_stale_objects(sync_ts)
 
-    return obj_count, purged, incremental, needs_full_sync, server_total, sync_timestamp
+    return obj_count, purged, incremental, needs_full_sync
 
 
-def _sync_spectra(api, store, full, show_progress):
-    """Sync spectra from the server.
+def _apply_spectra(store, fetched, updated_since, sync_ts):
+    """Apply fetched spectra to the local store.
 
-    Returns (spectra_count, purge_result, incremental, sync_timestamp).
+    Returns (spectra_count, purge_result, incremental).
     """
-    updated_since = None
-    if not full:
-        updated_since = store.get_max_spectra_updated_at()
+    all_spectra, _server_total = fetched
     incremental = updated_since is not None
-
-    sync_timestamp = datetime.now(timezone.utc).isoformat()
-
-    pbar, callback = _make_progress(show_progress, "spec", "Spectra")
-
-    all_spectra, _server_total = api.fetch_all_spectra(
-        updated_since=updated_since,
-        on_page_complete=callback,
-    )
-    if pbar:
-        pbar.close()
 
     spec_count = store.upsert_spectra(all_spectra)
 
     purge_result = None
     if not incremental:
-        purge_result = store.purge_stale_spectra(sync_timestamp)
+        purge_result = store.purge_stale_spectra(sync_ts)
 
-    return spec_count, purge_result, incremental, sync_timestamp
+    return spec_count, purge_result, incremental
 
 
-def _sync_photometry(api, store, full, show_progress):
-    """Sync object photometry from the server.
+def _apply_photometry(store, fetched, updated_since, sync_ts):
+    """Apply fetched photometry to the local store.
 
     Returns (record_count, purged_count).
     """
-    updated_since = None
-    if not full:
-        updated_since = store.get_max_photometry_updated_at()
-
-    sync_timestamp = datetime.now(timezone.utc).isoformat()
-
-    pbar, callback = _make_progress(show_progress, "rec", "Photometry")
-
-    all_records, _total_count = api.fetch_all_photometry(
-        updated_since=updated_since,
-        on_page_complete=callback,
-    )
-    if pbar:
-        pbar.close()
+    all_records, _total_count = fetched
 
     rec_count = store.upsert_photometry(all_records)
 
     purged = 0
     if updated_since is None:
-        purged = store.purge_stale_photometry(sync_timestamp)
+        purged = store.purge_stale_photometry(sync_ts)
 
     return rec_count, purged
 
@@ -145,34 +115,80 @@ def _sync_tags(api, store, show_progress):
         return 0
 
 
-def _sync_storage_objects(api, store, full, show_progress):
-    """Sync the storage_objects mirror (the download/availability layer).
+def _apply_storage(store, fetched, updated_since, sync_ts):
+    """Apply the fetched storage_objects mirror to the local store.
 
-    Program-scoped server-side: admins mirror everything, others get published
-    rows in their accessible programs. Returns (row_count, purged, orphaned).
+    Returns (row_count, purged, orphaned).
     """
-    updated_since = None if full else store.get_max_storage_updated_at()
+    all_rows, _server_total = fetched
     incremental = updated_since is not None
-    sync_timestamp = datetime.now(timezone.utc).isoformat()
-
-    pbar, callback = _make_progress(show_progress, "obj", "Storage")
-    all_rows, _server_total = api.fetch_all_storage(
-        updated_since=updated_since,
-        on_page_complete=callback,
-    )
-    if pbar:
-        pbar.close()
 
     n = store.upsert_storage_objects(all_rows)
 
     purged = 0
     orphaned: List[str] = []
     if not incremental:
-        res = store.purge_stale_storage_objects(sync_timestamp)
+        res = store.purge_stale_storage_objects(sync_ts)
         purged = res["purged"]
         orphaned = res["orphaned_files"]
 
     return n, purged, orphaned
+
+
+# The four independent /sync/* catalogs, each pinned to a fixed progress row
+# (option A): a stable stacked group so every count stays anchored to a real
+# per-entity total instead of a meaningless catalog-wide sum. Fields:
+# (result key, APIClient method name, tqdm unit, padded bar label).
+_FETCH_STREAMS = (
+    ("objects", "fetch_all_objects", "obj", "Objects   "),
+    ("spectra", "fetch_all_spectra", "spec", "Spectra   "),
+    ("storage", "fetch_all_storage", "obj", "Storage   "),
+    ("photometry", "fetch_all_photometry", "rec", "Photometry"),
+)
+
+
+def _fetch_all_concurrent(api, cursors, use_bars, show_progress):
+    """Fetch the four independent /sync/* catalogs concurrently.
+
+    Each stream is network-bound and independent, so wall time collapses from the
+    sum of the four fetches toward the slowest single one. The SQLite store is
+    single-threaded, so workers only touch the network here; every write happens
+    on the caller's thread afterwards. Returns ``{key: (rows, server_total)}``.
+    """
+    bars = []
+    results: Dict[str, Tuple[List[dict], int]] = {}
+    try:
+        with ThreadPoolExecutor(max_workers=len(_FETCH_STREAMS)) as executor:
+            future_to_key = {}
+            for position, (key, method_name, unit, desc) in enumerate(_FETCH_STREAMS):
+                pbar, callback = _make_progress(use_bars, unit, desc, position=position)
+                bars.append(pbar)
+                method = getattr(api, method_name)
+                future = executor.submit(
+                    method, updated_since=cursors[key], on_page_complete=callback
+                )
+                future_to_key[future] = key
+            # Surfaces the first failing stream's exception once the pool drains.
+            for future in as_completed(future_to_key):
+                results[future_to_key[future]] = future.result()
+    finally:
+        for pbar in bars:
+            if pbar is not None:
+                pbar.close()
+        if use_bars:
+            # Drop the cursor below the (leave=True) stacked bars so whatever the
+            # caller prints next doesn't overwrite them.
+            sys.stderr.write("\n" * len(_FETCH_STREAMS))
+            sys.stderr.flush()
+
+    if show_progress and not use_bars:
+        # Non-TTY (CI, redirected logs): no live bars, so emit one completion
+        # line per stream instead.
+        for key, _method_name, _unit, desc in _FETCH_STREAMS:
+            rows = results.get(key, ([], 0))[0]
+            print(f"  {desc.strip()}: {len(rows):,}", file=sys.stderr)
+
+    return results
 
 
 def sync_metadata(
@@ -194,30 +210,46 @@ def sync_metadata(
     """
     from .db.export import export_catalogs
 
-    # 1. Sync objects
-    (obj_count, obj_purged, incremental, needs_full_sync,
-     server_total, _obj_ts) = _sync_objects(api, store, full, show_progress)
+    use_bars = show_progress and sys.stderr.isatty()
 
-    # 2. Sync spectra
-    spec_count, spec_purge, spec_incremental, _spec_ts = _sync_spectra(
-        api, store, full, show_progress
+    # One timestamp captured before any fetch. Purge removes rows whose
+    # _synced_at predates it; every upsert below stamps a strictly later time, so
+    # only rows the server no longer returns get purged.
+    sync_ts = datetime.now(timezone.utc).isoformat()
+
+    # Incremental cursors are store reads, so resolve them here on the main thread
+    # before the workers start (workers must not touch the single-threaded
+    # SQLite connection).
+    cursors = {
+        "objects": None if full else store.get_max_objects_updated_at(),
+        "spectra": None if full else store.get_max_spectra_updated_at(),
+        "storage": None if full else store.get_max_storage_updated_at(),
+        "photometry": None if full else store.get_max_photometry_updated_at(),
+    }
+
+    # 1. Fetch all four catalogs concurrently (network only).
+    fetched = _fetch_all_concurrent(api, cursors, use_bars, show_progress)
+
+    # 2. Apply to the local store serially (single-threaded SQLite connection).
+    obj_count, obj_purged, incremental, needs_full_sync = _apply_objects(
+        store, fetched["objects"], cursors["objects"], sync_ts
+    )
+    spec_count, spec_purge, spec_incremental = _apply_spectra(
+        store, fetched["spectra"], cursors["spectra"], sync_ts
+    )
+    storage_count, storage_purged, storage_orphaned = _apply_storage(
+        store, fetched["storage"], cursors["storage"], sync_ts
+    )
+    phot_count, phot_purged = _apply_photometry(
+        store, fetched["photometry"], cursors["photometry"], sync_ts
     )
 
-    # 3. Sync the storage_objects mirror (download/availability layer)
-    storage_count, storage_purged, storage_orphaned = _sync_storage_objects(
-        api, store, full, show_progress
-    )
-
-    # 4. Sync photometry
-    phot_count, phot_purged = _sync_photometry(api, store, full, show_progress)
-
-    # 5. Sync tag metadata
+    # 3. Sync tag metadata (single request), then export CSVs.
     tags_count = _sync_tags(api, store, show_progress)
 
-    # 6. Export CSVs
     export_catalogs(store, meta_dir)
 
-    # 7. Detect stale local files (server hash != local hash, via the mirror)
+    # 4. Detect stale local files (server hash != local hash, via the mirror)
     stale = store.get_stale_objects()
 
     obs_set = set(store.get_synced_observations())

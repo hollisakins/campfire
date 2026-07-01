@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { isAdminUser } from '@/lib/api-helpers';
+import { isAdminUserCached } from '@/lib/api-helpers';
 
 /**
  * GET /api/v1/sync/lists
@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
     // List member counts may reference unpublished-backed objects; admins can
     // opt in to include them, everyone else is fail-closed. No-op in B1.
     const includeUnpublished =
-      request.nextUrl.searchParams.get('include_unpublished') === 'true' && (await isAdminUser(userId));
+      request.nextUrl.searchParams.get('include_unpublished') === 'true' && (await isAdminUserCached(userId));
 
     const { data, error } = await supabase.rpc('get_lists_for_sync', {
       p_user_id: userId,
