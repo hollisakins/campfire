@@ -35,7 +35,7 @@ from campfire.deploy.generate import (
     generate_thumbnails_from_fits,
     generate_zfit_json,
 )
-from campfire_layout import Scope, storage_key
+from campfire_layout import KeyScheme, Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     batch_upsert_objects,
@@ -277,13 +277,15 @@ def _deploy_intermediates_only(
     scope = Scope(obs=obs_name)
     scope_version_at_start = get_deploy_scope_version(sb, 'observation', obs_name)
     upload_tasks = [
-        UploadTask(p, storage_key('nirspec_spectrum_exposure', scope, p.name), 'application/fits')
+        UploadTask(p, storage_key('nirspec_spectrum_exposure', scope, p.name,
+                                  scheme=KeyScheme.CANONICAL), 'application/fits')
         for p in exposure_files
     ]
     uploaded_keys: set[str] = set()
-    print(f"Uploading {len(upload_tasks)} canonical spectrum-exposures...")
+    print(f"Uploading {len(upload_tasks)} canonical spectrum-exposures to OSN...")
     success, failed, failed_msgs = upload_files_parallel(
-        config, upload_tasks, desc="R2 uploads", succeeded_out=uploaded_keys)
+        config, upload_tasks, desc="OSN uploads", succeeded_out=uploaded_keys,
+        backend='osn')
     print(f"Uploaded {success}/{len(upload_tasks)} files")
 
     deployment_id = insert_deployment(
@@ -300,10 +302,11 @@ def _deploy_intermediates_only(
 
     if uploaded_keys:
         from campfire.deploy.registry import (
-            build_registry_rows, resolve_backend_label, upsert_storage_objects,
+            build_registry_rows, upsert_storage_objects,
         )
+        # NIRSpec products are homed on OSN under canonical keys (epic #210 / #216).
         reg_rows = build_registry_rows(
-            upload_tasks, backend=resolve_backend_label(config),
+            upload_tasks, backend='osn',
             deployment_id=deployment_id, uploaded_by=user_id,
             succeeded_keys=uploaded_keys)
         n_reg = upsert_storage_objects(sb, reg_rows)
@@ -590,28 +593,30 @@ def deploy_observation(
         uploaded_keys: set[str] = set()  # r2_keys that actually landed (for the registry)
         scope = Scope(obs=obs_name)
 
+        # NIRSpec science products are homed on OSN under CANONICAL keys (epic #210 /
+        # #216 — deploy → OSN); rgb/sed are dead products that stay on R2 under legacy
+        # keys (unregistered, 404, not migrated). They upload in separate batches.
+        legacy_tasks: list[UploadTask] = []
         if not supabase_only:
             print("Generating content...")
             for spec_path in tqdm(spec_paths, desc="Processing", unit="file"):
                 # FITS file
-                upload_tasks.append(UploadTask(spec_path, storage_key('nirspec_spec', scope, spec_path.name), 'application/fits'))
+                upload_tasks.append(UploadTask(spec_path, storage_key('nirspec_spec', scope, spec_path.name, scheme=KeyScheme.CANONICAL), 'application/fits'))
 
                 # Spectrum JSON
                 json_path = generate_spectrum_json(spec_path, temp_dir)
-                upload_tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name), 'application/json'))
+                upload_tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
             # Zfit JSONs
             for zfit_path in zfit_paths:
                 zfit_json = generate_zfit_json(zfit_path, temp_dir)
-                upload_tasks.append(UploadTask(zfit_json, storage_key('zfit', scope, zfit_json.name), 'application/json'))
+                upload_tasks.append(UploadTask(zfit_json, storage_key('zfit', scope, zfit_json.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
-            # RGB images
+            # RGB images / SED plots — dead products (kept on R2/legacy, unchanged).
             for rgb_path in rgb_files:
-                upload_tasks.append(UploadTask(rgb_path, storage_key('rgb', scope, rgb_path.name), 'image/png'))
-
-            # SED plots
+                legacy_tasks.append(UploadTask(rgb_path, storage_key('rgb', scope, rgb_path.name), 'image/png'))
             for sed_path in sed_files:
-                upload_tasks.append(UploadTask(sed_path, storage_key('sed', scope, sed_path.name), 'application/pdf'))
+                legacy_tasks.append(UploadTask(sed_path, storage_key('sed', scope, sed_path.name), 'application/pdf'))
 
             # Canonical spectrum-exposure intermediates (epic #210, B5): uploaded on
             # EVERY deploy (cloud-as-source-of-truth + delete-local→restore), filtered
@@ -622,15 +627,25 @@ def deploy_observation(
                 exposure_files = _filter_exposures_by_source_ids(exposure_files, source_ids)
             for exp_path in exposure_files:
                 upload_tasks.append(UploadTask(
-                    exp_path, storage_key('nirspec_spectrum_exposure', scope, exp_path.name),
+                    exp_path, storage_key('nirspec_spectrum_exposure', scope, exp_path.name, scheme=KeyScheme.CANONICAL),
                     'application/fits'))
             if exposure_files:
                 print(f"  + {len(exposure_files)} canonical spectrum-exposure intermediates")
 
-            print(f"Uploading {len(upload_tasks)} files...")
+            total_tasks = len(upload_tasks) + len(legacy_tasks)
+            print(f"Uploading {total_tasks} files ({len(upload_tasks)} NIRSpec → OSN)...")
             success, failed, failed_msgs = upload_files_parallel(
-                config, upload_tasks, desc="R2 uploads", succeeded_out=uploaded_keys,
+                config, upload_tasks, desc="OSN uploads", succeeded_out=uploaded_keys,
+                backend='osn',
             )
+            if legacy_tasks:
+                s2, f2, m2 = upload_files_parallel(
+                    config, legacy_tasks, desc="R2 uploads (rgb/sed)",
+                    succeeded_out=uploaded_keys, backend='r2',
+                )
+                success += s2
+                failed += f2
+                failed_msgs = failed_msgs + m2
 
             if failed_msgs:
                 print(f"\n  {failed} uploads failed:")
@@ -638,7 +653,7 @@ def deploy_observation(
                     print(f"    - {msg}")
                 if len(failed_msgs) > 10:
                     print(f"    ... and {len(failed_msgs) - 10} more")
-            print(f"Uploaded {success}/{len(upload_tasks)} files")
+            print(f"Uploaded {success}/{total_tasks} files")
             print()
 
         # Generate thumbnails and enrich spectra records
@@ -831,11 +846,13 @@ def deploy_observation(
         # deploy. Shadow index — additive, nothing reads it as authoritative yet.
         if uploaded_keys:
             from campfire.deploy.registry import (
-                build_registry_rows, resolve_backend_label, upsert_storage_objects,
+                build_registry_rows, upsert_storage_objects,
             )
+            # upload_tasks are the NIRSpec products, homed on OSN under canonical
+            # keys (rgb/sed are in legacy_tasks and never register). backend='osn'.
             reg_rows = build_registry_rows(
                 upload_tasks,
-                backend=resolve_backend_label(config),
+                backend='osn',
                 deployment_id=deployment_id,
                 uploaded_by=user_id,
                 cfpipe_version=summary.meta.get('cfpipe_version'),
@@ -1003,7 +1020,7 @@ def deploy_json(
     if dry_run:
         print("=== DRY RUN ===")
         for path in spec_paths[:5]:
-            print(f"  {path.name} -> {storage_key('spectrum_json', Scope(obs=obs_name), f'{path.stem}.json')}")
+            print(f"  {path.name} -> {storage_key('spectrum_json', Scope(obs=obs_name), f'{path.stem}.json', scheme=KeyScheme.CANONICAL)}")
         if len(spec_paths) > 5:
             print(f"  ... and {len(spec_paths) - 5} more")
         return
@@ -1013,13 +1030,16 @@ def deploy_json(
 
     try:
         print("Generating JSON files...")
+        scope = Scope(obs=obs_name)
         tasks = []
         for path in tqdm(spec_paths, desc="Generating", unit="file"):
             json_path = generate_spectrum_json(path, temp_dir)
-            tasks.append(UploadTask(json_path, storage_key('spectrum_json', Scope(obs=obs_name), json_path.name), 'application/json'))
+            tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
-        print("Uploading...")
-        success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="JSON files")
+        print("Uploading to OSN...")
+        uploaded_keys: set[str] = set()
+        success, failed, failed_msgs = upload_files_parallel(
+            config, tasks, desc="JSON files", succeeded_out=uploaded_keys, backend='osn')
 
         if failed_msgs:
             print(f"\n  {failed} failed:")
@@ -1027,6 +1047,17 @@ def deploy_json(
                 print(f"    - {msg}")
 
         print(f"Uploaded {success}/{len(spec_paths)} JSON files")
+
+        # Refresh registry rows for the re-uploaded canonical objects so the served
+        # OSN bytes and the recorded sha256 stay consistent (epic #210 / #216).
+        # deployment_id stays NULL — a content-only refresh records no deployment;
+        # the next full `deploy --obs` re-links provenance.
+        if uploaded_keys:
+            from campfire.deploy.registry import build_registry_rows, upsert_storage_objects
+            sb = get_supabase_client(config)
+            reg_rows = build_registry_rows(tasks, backend='osn', succeeded_keys=uploaded_keys)
+            n_reg = upsert_storage_objects(sb, reg_rows)
+            print(f"Registered {n_reg} storage objects")
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
@@ -1072,13 +1103,16 @@ def deploy_zfit(
 
     try:
         print("Generating zfit JSON files...")
+        scope = Scope(obs=obs_name)
         tasks = []
         for path in zfit_paths:
             json_path = generate_zfit_json(path, temp_dir)
-            tasks.append(UploadTask(json_path, storage_key('zfit', Scope(obs=obs_name), json_path.name), 'application/json'))
+            tasks.append(UploadTask(json_path, storage_key('zfit', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
-        print("Uploading...")
-        success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="Zfit JSON")
+        print("Uploading to OSN...")
+        uploaded_keys: set[str] = set()
+        success, failed, failed_msgs = upload_files_parallel(
+            config, tasks, desc="Zfit JSON", succeeded_out=uploaded_keys, backend='osn')
 
         if failed_msgs:
             print(f"\n  {failed} failed:")
@@ -1086,6 +1120,16 @@ def deploy_zfit(
                 print(f"    - {msg}")
 
         print(f"Uploaded {success}/{len(zfit_paths)} zfit JSON files")
+
+        # Refresh registry rows for the re-uploaded canonical objects so the served
+        # OSN bytes and the recorded sha256 stay consistent (epic #210 / #216).
+        # Must run before `finally` removes temp_dir (build_registry_rows hashes the
+        # local files). deployment_id stays NULL (content-only refresh).
+        if uploaded_keys:
+            from campfire.deploy.registry import build_registry_rows, upsert_storage_objects
+            reg_rows = build_registry_rows(tasks, backend='osn', succeeded_keys=uploaded_keys)
+            n_reg = upsert_storage_objects(get_supabase_client(config), reg_rows)
+            print(f"Registered {n_reg} storage objects")
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)

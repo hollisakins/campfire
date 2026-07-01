@@ -3,7 +3,13 @@ import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { validateAuth } from '@/lib/api-auth';
 import { createClient } from '@supabase/supabase-js';
-import { getS3Client, getBucketName, type StoragePurpose } from '@/lib/storage';
+import {
+  getS3Client,
+  getBucketName,
+  getOsnWriteClient,
+  getOsnWriteBucket,
+  type StoragePurpose,
+} from '@/lib/storage';
 import { isKnownKey } from '@/lib/layout';
 
 const MAX_BATCH_SIZE = 500;
@@ -18,6 +24,9 @@ const PRESIGN_EXPIRY_SECONDS = 3600; // 1 hour
  * Request body:
  * {
  *   bucket: "data" | "tiles",
+ *   backend?: "r2" | "osn",   // default "r2"; "osn" signs against the OSN data
+ *                             // bucket (epic #210 / #216 — deploy → OSN). Only
+ *                             // valid with bucket="data".
  *   uploads: [
  *     { key: "spectra/obs_name/file.fits", content_type: "application/fits" },
  *     ...
@@ -64,7 +73,7 @@ export async function POST(request: NextRequest) {
 
     // Parse request
     const body = await request.json();
-    const { bucket: bucketId = 'data', uploads, cache_control } = body;
+    const { bucket: bucketId = 'data', backend = 'r2', uploads, cache_control } = body;
 
     if (!uploads || !Array.isArray(uploads) || uploads.length === 0) {
       return NextResponse.json(
@@ -87,6 +96,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (backend !== 'r2' && backend !== 'osn') {
+      return NextResponse.json(
+        { error: 'invalid_request', error_description: 'backend must be "r2" or "osn"' },
+        { status: 400 }
+      );
+    }
+
+    // OSN holds only data-bucket products (tiles stay on R2 permanently).
+    if (backend === 'osn' && bucketId !== 'data') {
+      return NextResponse.json(
+        { error: 'invalid_request', error_description: 'backend "osn" is only valid with bucket "data"' },
+        { status: 400 }
+      );
+    }
+
     // Allowlist: every key must be a contract-valid key for the requested bucket.
     // Rejects traversal/unsafe keys and anything outside the layout contract, so
     // a presign can never sign an arbitrary or out-of-tree object.
@@ -100,10 +124,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Resolve the storage client + bucket for the requested purpose.
-    const purpose = bucketId as StoragePurpose;
-    const client = getS3Client(purpose);
-    const bucket = getBucketName(purpose);
+    // Resolve the storage client + bucket. The key allowlist above is keyed on the
+    // logical bucket ('data'/'tiles'); the signing target is chosen by `backend`:
+    // 'osn' signs canonical data keys against the OSN bucket with write creds,
+    // 'r2' keeps today's behavior (R2 'data'/'tiles' purpose).
+    const client = backend === 'osn' ? getOsnWriteClient() : getS3Client(bucketId as StoragePurpose);
+    const bucket = backend === 'osn' ? getOsnWriteBucket() : getBucketName(bucketId as StoragePurpose);
 
     // Generate presigned URLs in parallel
     const urlEntries = await Promise.all(
