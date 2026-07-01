@@ -124,3 +124,19 @@ def test_canonical_exposure_row_carries_osn_key_and_exposure_ref():
     assert row["storage_key"].startswith("data/products/nirspec/")
     assert row["product_type"] == "nirspec_spectrum_exposure"
     assert row["exposure_ref"] == "jw07076020001_04101_00001_nrs1_117757"
+
+
+def test_canonical_photometry_pz_registers_as_osn_field_scoped():
+    # photometry_pz is a migrated (DEFAULT_COPY_PRODUCT_TYPES) data-bucket product;
+    # deploy_field_photometry must write it canonical+osn like the NIRSpec paths,
+    # else `campfire deploy [photometry]` silently re-creates a stale r2/legacy row.
+    canon = storage_key("photometry_pz", Scope(field="egs", object_id="egs_12345"),
+                        scheme=KeyScheme.CANONICAL)
+    row = row_for_key(canon, backend="osn", content_hash=SHA, size_bytes=1,
+                      content_type="application/json")
+    assert row["backend"] == "osn"
+    assert row["storage_key"] == canon == "data/photometry/egs/egs_12345_pz.json"
+    assert row["product_type"] == "photometry_pz"
+    assert row["field"] == "egs"
+    assert row["observation"] is None
+    assert row["exposure_ref"] is None
