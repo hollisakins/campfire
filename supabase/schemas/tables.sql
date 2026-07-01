@@ -818,6 +818,15 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     "bucket" "text" NOT NULL,
     "storage_key" "text" NOT NULL,
     "content_hash" "text" NOT NULL,
+    -- Secondary, science-only content digest (epic #261, N1 / D1). For products
+    -- that re-save identical science with volatile bytes (a NIRCam canonical
+    -- exposure re-written by the pipeline gets fresh header timestamps, so its
+    -- whole-file sha256 changes even when SCI+DQ do not), deploy compares this
+    -- stable sha256(SCI+DQ) to skip re-uploading unchanged exposures. content_hash
+    -- stays the authoritative whole-file hash that download/copy verification
+    -- checks; sci_dq_hash is only a change-detection key. NULL for products with
+    -- no partial digest (everything except nircam_exposure today).
+    "sci_dq_hash" "text",
     "size_bytes" bigint NOT NULL,
     "content_type" "text" NOT NULL,
     "product_type" "text" NOT NULL,
@@ -841,6 +850,9 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- provisional from an S3 LIST/HEAD (no GET) for backfilled objects with no stored
     -- sha256, upgraded to sha256 by the A1 copy+verify pass (#215). No raw/bare hex.
     CONSTRAINT "storage_objects_content_hash_check" CHECK (("content_hash" ~ '^(sha256|etag):'::"text")),
+    -- sci_dq_hash, when present, is always an authoritative sha256 (no provisional
+    -- etag form — it is computed from the local FITS arrays, never a HEAD).
+    CONSTRAINT "storage_objects_sci_dq_hash_check" CHECK (("sci_dq_hash" IS NULL OR "sci_dq_hash" ~ '^sha256:'::"text")),
     -- product_type tracks the campfire_layout PRODUCTS registry (every entry with a
     -- non-null bucket). A new cloud-backed product type requires a migration here.
     CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
@@ -881,6 +893,8 @@ COMMENT ON COLUMN "public"."storage_objects"."content_hash" IS 'Scheme-prefixed 
 COMMENT ON COLUMN "public"."storage_objects"."spectrum_id" IS 'Typed, indexed scope column (not an FK). spectra.spectrum_id is GENERATED from fits_path and not uniquely constrained, so an FK would over-constrain; an index provides the joinability the registry needs.';
 
 COMMENT ON COLUMN "public"."storage_objects"."exposure_ref" IS 'Stable per-exposure reference for intermediate products (nircam rootname; nirspec (root,nod,detector,source) tuple). Backs the partial unique (product_type, exposure_ref) WHERE status=''active'' — one current object per product/exposure.';
+
+COMMENT ON COLUMN "public"."storage_objects"."sci_dq_hash" IS 'Science-only sha256(SCI+DQ) change-detection digest (epic #261, N1). Lets deploy skip re-uploading a NIRCam canonical exposure whose science is unchanged even though its whole-file content_hash shifted (pipeline re-save bumps header timestamps). content_hash remains the authoritative whole-file integrity token; this is never used for download/copy verification. NULL for products without a partial digest.';
 
 COMMENT ON COLUMN "public"."storage_objects"."status" IS 'active = current object; superseded = replaced by a newer hash (tombstone, GC-eligible later); revoked = un-published. Only active rows count toward the budget and the partial-unique constraint.';
 

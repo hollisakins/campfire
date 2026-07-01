@@ -206,6 +206,26 @@ def test_reconcile_no_bucket_skips_dangling_orphan():
     assert rep.covered
 
 
+def test_reconcile_osn_native_key_not_dangling_when_scoped(tmp_path):
+    # #261/N1: an OSN-native NIRCam exposure has no R2 twin, so it's absent from the
+    # R2-only bucket LIST by design — not because it's dangling. With danglable_keys
+    # scoped to the R2-backed registry rows, the OSN key is NOT flagged; with the
+    # legacy default (danglable_keys=None) it WOULD be (the pre-N1 assumption).
+    osn_key = "data/products/nircam/cosmos/f444w/jw1_nrcalong.fits"
+    r2_key = SPEC_KEY
+    registry = [r2_key, osn_key]        # both registered
+    bucket = [r2_key]                    # R2 LIST — osn object never appears here
+
+    # Legacy behaviour: the OSN key looks dangling.
+    naive = reg.compute_reconcile([r2_key], registry, bucket)
+    assert osn_key in naive.dangling
+
+    # Scoped: dangling only over the R2-backed rows -> OSN key excluded, clean.
+    scoped = reg.compute_reconcile([r2_key], registry, bucket, danglable_keys=[r2_key])
+    assert scoped.dangling == set()
+    assert scoped.covered
+
+
 def test_reconcile_matches_legacy_pointer_to_canonical_registry_key():
     # #249: A1 re-keyed migrated objects legacy->canonical, but the live pointer
     # (spectra.fits_path) stays legacy. Reconcile must match them by canonical

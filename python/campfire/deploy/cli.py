@@ -950,13 +950,19 @@ def registry_reconcile(ctx, config_path, no_bucket, local):
     reg_keys = reg.registry_keys(sb)
 
     bucket_keys = None
+    danglable_keys = None
     if not no_bucket:
         try:
             bucket_keys = list(reg.list_bucket_keys(config))
+            # The bucket LIST only enumerates the data backend (R2 in F1); an
+            # OSN-native object (NIRCam FITS/expmaps, #261/N1) has no R2 twin, so
+            # scope dangling to registry rows homed on the LISTed backend, else
+            # every deployed NIRCam object is reported spuriously dangling.
+            danglable_keys = reg.registry_keys(sb, backend=reg.resolve_backend_label(config))
         except Exception as e:
             print(f"(bucket LIST unavailable — coverage only: {e})")
 
-    report = reg.compute_reconcile(live, reg_keys, bucket_keys)
+    report = reg.compute_reconcile(live, reg_keys, bucket_keys, danglable_keys=danglable_keys)
     print(f"live pointers: {len(set(live))}  registry rows: {len(set(reg_keys))}")
     print(report.summary())
     if report.missing:
@@ -1290,7 +1296,19 @@ def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
 # NIRCam subcommand group (exposure tracking)
 # ---------------------------------------------------------------------------
 
-@deploy_group.command()
+@deploy_group.group('nircam')
+def nircam():
+    """NIRCam field deploy commands (epic #261).
+
+    `exposures` uploads the canonical exposure FITS (+ expmaps) to OSN,
+    content-hash deduped, and upserts nircam_exposures (admin-only
+    intermediates). `import-masks` / `pull-masks` round-trip the DB-resident
+    region masks with local reference/.../masks/*.reg files.
+    """
+    pass
+
+
+@nircam.command('exposures')
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', required=True,
@@ -1299,21 +1317,28 @@ def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
               help='Filter(s) to process (default: all).')
 @click.option('--dry-run', is_flag=True,
               help='Show what would be deployed without making changes.')
-def nircam(config_path, field, filter_names, dry_run):
-    """Push NIRCam exposure state (preview PNGs + metadata) to Supabase.
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nircam_exposures(ctx, config_path, field, filter_names, dry_run, local):
+    """Push NIRCam exposure state to OSN + Supabase.
+
+    Uploads the canonical exposure FITS (+ any field expmaps) to OSN under
+    campfire-layout canonical keys — content-hash deduped on sha256(SCI+DQ) so
+    unchanged exposures are not re-uploaded — uploads preview PNGs to R2, and
+    upserts nircam_exposures (registered admin-only; deployment_id=NULL).
 
     Reviewer-set exclusions (review_status='excluded') are surfaced in the
-    web admin UI for copy-paste into the field's skip=[] block in
-    fields.toml — there is no longer a pull/contract-file workflow.
+    web admin UI for copy-paste into the field's skip=[] block in fields.toml.
     """
     from campfire.deploy.nircam import deploy_nircam
-    config = load_config(config_path)
+    config = load_config(config_path, local=_resolve_local(ctx, local))
     deploy_nircam(field, config,
                   filters=list(filter_names) if filter_names else None,
                   dry_run=dry_run)
 
 
-@deploy_group.command('import-masks')
+@nircam.command('import-masks')
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', required=True, help='Field name (e.g. cosmos).')
@@ -1334,7 +1359,7 @@ def nircam_import_masks(ctx, config_path, field, dry_run, local):
     import_masks(field, config, dry_run=dry_run)
 
 
-@deploy_group.command('pull-masks')
+@nircam.command('pull-masks')
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', required=True, help='Field name (e.g. cosmos).')

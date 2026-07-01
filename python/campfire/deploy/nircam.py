@@ -1,12 +1,27 @@
 """
-NIRCam exposure deployment — push canonical exposure state to Supabase + R2.
+NIRCam exposure deployment — push canonical exposure state to OSN + Supabase.
 
-Scans the per-filter flat directories (the new canonical layout where each
-exposure is a single ``{rootname}.fits`` mutated in place through the
-``CFP_*`` provenance keys), derives a ``stage`` value from the highest
-completed CFP key, uploads ``*_preview.png`` thumbnails to R2, and upserts
-``nircam_exposures`` while preserving any web-triage fields
-(``review_status``, ``correction``, ``notes``).
+Scans the per-filter flat directories (the canonical layout where each exposure
+is a single ``{rootname}.fits`` mutated in place through the ``CFP_*`` provenance
+keys), derives a ``stage`` value from the highest completed CFP key, and:
+
+* uploads the **canonical exposure FITS** (and any field ``expmap`` coverage
+  files) to **OSN** under ``campfire-layout`` canonical keys, content-hash-
+  deduped so an unchanged exposure is not re-uploaded (epic #261, N1 / D1);
+* registers those objects in ``storage_objects`` (``nircam_exposure`` /
+  ``nircam_expmap``) with ``deployment_id=NULL`` so they stay **admin-only** — a
+  NIRCam exposure is a reduction intermediate, never public science, exactly the
+  "backfilled NIRCam is admin-only until a deployment lands" case the
+  ``storage_objects`` RLS anticipates;
+* uploads ``*_preview.png`` / ``*_full.png`` thumbnails (unchanged from before —
+  still on R2 legacy keys; their migration to canonical OSN keys rides N5 with
+  the inspection-UI rework that retires ``*_full.png``);
+* upserts ``nircam_exposures`` while preserving web-triage fields
+  (``review_status``, ``correction``, ``notes``).
+
+There is no ``--draft`` / publish toggle for exposures: they are admin-only
+unconditionally (the storage gate), so the public/draft lifecycle lives at the
+mosaic level (N3), matching design decision D4.
 
 Excluded exposures flagged by reviewers in the admin UI are surfaced for
 copy-paste into the field's ``skip = [...]`` block in ``fields.toml``; we no
@@ -14,18 +29,27 @@ longer maintain a local ``exposures.json`` contract since nothing in the
 pipeline consumes it.
 """
 
+import hashlib
 import os
 import sys
 from collections import Counter
 from datetime import datetime, timezone
-from glob import glob
 from pathlib import Path
 
 from astropy.io import fits
 
-from campfire_layout import Scope, storage_key
+from campfire_layout import KeyScheme, Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
-from campfire.deploy.supabase import get_supabase_client
+from campfire.deploy.supabase import (
+    claim_deploy_scope, get_deploy_scope_version, get_supabase_client,
+    get_user_id_from_token, log_deploy_event,
+)
+
+# The OSN data backend NIRCam canonical intermediates are homed on (epic #210/#216,
+# same as NIRSpec canonical spectrum-exposures). Preview PNGs stay on the legacy R2
+# 'data' keys until N5 migrates them alongside the inspection-UI rework.
+_CANONICAL_BACKEND = 'osn'
+_FITS_CONTENT_TYPE = 'application/fits'
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +88,33 @@ def _stage_from_header(header):
         if key in header:
             stage = name
     return stage
+
+
+def _sci_dq_hash(path):
+    """Return ``'sha256:<hex>'`` over just the SCI+DQ arrays, or None.
+
+    The science-only change-detection digest for the deploy dedup (epic #261, D1).
+    Reproduces ``campfire_pipeline.nircam.manifest.compute_file_hash`` deploy-side
+    (deploy must not import the pipeline): ``do_not_scale_image_data=True`` hashes
+    the raw stored bytes regardless of BZERO/BSCALE, ``memmap=False`` forces a real
+    read. Whole-file hashes churn on every pipeline re-save (header timestamps), so
+    they can't drive dedup; the SCI+DQ digest is stable across a science-identical
+    re-save. Returns None if neither array is present (never dedup on an empty hash).
+    """
+    h = hashlib.sha256()
+    hashed_any = False
+    try:
+        with fits.open(path, memmap=False, do_not_scale_image_data=True) as hdul:
+            for extname in ('SCI', 'DQ'):
+                if extname not in hdul:
+                    continue
+                data = hdul[extname].data
+                if data is not None:
+                    h.update(data.tobytes())
+                    hashed_any = True
+    except Exception:
+        return None
+    return f'sha256:{h.hexdigest()}' if hashed_any else None
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +169,8 @@ def discover_exposures(dirs, filters):
     -------
     dict
         ``{(filter, basename): info}`` where info has keys ``basename``,
-        ``filter``, ``stage``, ``visit``, ``detector``, ``date_obs``,
-        ``ra_center``, ``dec_center``.
+        ``filter``, ``path`` (the canonical FITS Path), ``stage``, ``visit``,
+        ``detector``, ``date_obs``, ``ra_center``, ``dec_center``.
     """
     exposures = {}
     for filtname in filters:
@@ -134,6 +185,7 @@ def discover_exposures(dirs, filters):
             info = _read_exposure_metadata(path)
             info['basename'] = basename
             info['filter'] = filtname
+            info['path'] = path
             exposures[(filtname, basename)] = info
     return exposures
 
@@ -235,18 +287,66 @@ def _read_full_png_dimensions(png_path):
 
 
 # ---------------------------------------------------------------------------
+# Canonical FITS + expmap discovery (epic #261, N1)
+# ---------------------------------------------------------------------------
+
+def build_fits_upload_tasks(field, exposures):
+    """Build canonical-key OSN upload tasks for the exposure FITS.
+
+    One ``nircam_exposure`` task per discovered exposure, keyed under the
+    ``campfire-layout`` CANONICAL scheme (``data/products/nircam/<field>/<filter>/
+    <rootname>.fits``). Returns a list of ``UploadTask``; content-hash dedup is
+    applied by the caller (unchanged exposures are dropped before upload).
+    """
+    tasks = []
+    for (filtname, basename), info in sorted(exposures.items()):
+        path = info['path']
+        key = storage_key('nircam_exposure', Scope(field=field, filt=filtname),
+                          path.name, scheme=KeyScheme.CANONICAL)
+        tasks.append(UploadTask(local_path=path, r2_key=key,
+                                content_type=_FITS_CONTENT_TYPE))
+    return tasks
+
+
+def discover_expmap_tasks(dirs, field):
+    """Build canonical-key OSN upload tasks for any field expmap coverage files.
+
+    Expmaps are per-``(field, filter)`` coverage maps written under
+    ``products/nircam/<field>/expmaps/``. They are produced at combine time, so a
+    process-only field may have none yet — deploy is idempotent and picks them up
+    on a later run. Returns a list of ``UploadTask`` (empty if the dir is absent).
+    """
+    expmap_dir = dirs['products'] / 'expmaps'
+    if not expmap_dir.exists():
+        return []
+    tasks = []
+    for path in sorted(expmap_dir.glob('*.fits')):
+        key = storage_key('nircam_expmap', Scope(field=field), path.name,
+                          scheme=KeyScheme.CANONICAL)
+        tasks.append(UploadTask(local_path=path, r2_key=key,
+                                content_type=_FITS_CONTENT_TYPE))
+    return tasks
+
+
+# ---------------------------------------------------------------------------
 # Deploy (push)
 # ---------------------------------------------------------------------------
 
 def deploy_nircam(field, config, filters=None, dry_run=False):
-    """Push NIRCam exposure state: upload PNGs to R2, upsert nircam_exposures.
+    """Push NIRCam exposure state to OSN + Supabase.
+
+    Uploads the canonical exposure FITS (+ any field expmaps) to OSN under
+    ``campfire-layout`` canonical keys (content-hash deduped on ``sha256(SCI+DQ)``
+    so unchanged exposures are not re-uploaded), uploads preview PNGs to R2,
+    upserts ``nircam_exposures``, and registers every landed object in
+    ``storage_objects`` with ``deployment_id=NULL`` (admin-only intermediates).
 
     Parameters
     ----------
     field : str
         Field name.
     config : dict
-        Deploy config (Supabase + R2 credentials).
+        Deploy config (Supabase + R2/OSN credentials).
     filters : list of str, optional
         Filters to deploy. If None, discovers every directory under
         ``products/nircam/{field}/``.
@@ -299,6 +399,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
     print(f"Preview PNGs to upload: {len(png_tasks)} "
           f"({len(thumb_r2_keys)} thumb, {len(full_r2_keys)} full)")
 
+    fits_tasks = build_fits_upload_tasks(field, exposures)
+    expmap_tasks = discover_expmap_tasks(dirs, field)
+    print(f"Canonical FITS: {len(fits_tasks)} exposure(s), {len(expmap_tasks)} expmap(s) → OSN")
+
     records = []
     for (filtname, basename), info in sorted(exposures.items()):
         masking = _detect_masking(dirs, basename, filtname)
@@ -331,42 +435,98 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         mask_count = sum(1 for r in records if r.get('masking') == 'done')
         if mask_count:
             print(f"  with masks: {mask_count}")
-        print("\nDry run — no changes made.")
+        print(f"\nWould upload {len(fits_tasks)} canonical FITS (subject to "
+              f"SCI+DQ content-hash dedup) + {len(expmap_tasks)} expmap(s) to OSN, "
+              f"and {len(png_tasks)} preview PNG(s) to R2.")
+        print("Dry run — no changes made.")
         return
 
-    upload_task_list: list = []
-    uploaded_keys: set[str] = set()
-    if png_tasks:
-        print("\nUploading PNGs to R2...")
-        upload_task_list = [t[0] for t in png_tasks]
+    from campfire.deploy.registry import (
+        build_registry_rows, fetch_active_sci_dq_hashes, resolve_backend_label,
+        upsert_storage_objects,
+    )
+
+    client = get_supabase_client(config)
+    user_id = get_user_id_from_token(config)
+
+    # Read the field's optimistic-concurrency version BEFORE any work so a
+    # concurrent same-field deploy is detected at finalize (epic #210, B4 / D12).
+    scope_version = get_deploy_scope_version(client, 'field', field)
+
+    # --- Content-hash dedup for the canonical FITS (D1) ---------------------
+    # Compare each exposure's local sha256(SCI+DQ) to the digest already stored in
+    # the registry; skip the upload when the science is unchanged (a pipeline
+    # re-save with fresh header timestamps shifts the whole-file hash but not this).
+    local_sci_dq = {t.r2_key: _sci_dq_hash(t.local_path) for t in fits_tasks}
+    existing_sci_dq = fetch_active_sci_dq_hashes(client, [t.r2_key for t in fits_tasks])
+    fits_to_upload = [
+        t for t in fits_tasks
+        if not (local_sci_dq.get(t.r2_key)
+                and existing_sci_dq.get(t.r2_key) == local_sci_dq[t.r2_key])
+    ]
+    n_skipped = len(fits_tasks) - len(fits_to_upload)
+    if n_skipped:
+        print(f"\nSkipping {n_skipped} unchanged exposure(s) (SCI+DQ hash match)")
+
+    # --- Upload canonical FITS + expmaps to OSN ----------------------------
+    osn_tasks = fits_to_upload + expmap_tasks
+    osn_uploaded: set[str] = set()
+    if osn_tasks:
+        print(f"\nUploading {len(osn_tasks)} canonical FITS/expmap(s) to OSN...")
         success, failed, failures = upload_files_parallel(
-            config, upload_task_list,
-            desc='Uploading PNGs',
-            succeeded_out=uploaded_keys,
-        )
+            config, osn_tasks, desc='OSN uploads',
+            succeeded_out=osn_uploaded, backend=_CANONICAL_BACKEND)
+        print(f"  Uploaded: {success}, Failed: {failed}")
+        for msg in failures:
+            print(f"  Error: {msg}")
+
+    # --- Upload preview PNGs to R2 (legacy keys — migrated in N5) -----------
+    png_upload_list = [t[0] for t in png_tasks]
+    png_uploaded: set[str] = set()
+    if png_upload_list:
+        print("\nUploading preview PNGs to R2...")
+        success, failed, failures = upload_files_parallel(
+            config, png_upload_list, desc='Uploading PNGs',
+            succeeded_out=png_uploaded)
         print(f"  Uploaded: {success}, Failed: {failed}")
         for msg in failures:
             print(f"  Error: {msg}")
 
     print("\nUpserting exposures to Supabase...")
-    client = get_supabase_client(config)
     _upsert_exposures(client, records)
     print(f"  Upserted {len(records)} exposures")
 
-    # Storage registry (#214): index the preview/full PNGs that landed.
-    if uploaded_keys:
-        from campfire.deploy.registry import (
-            build_registry_rows, resolve_backend_label, upsert_storage_objects,
-        )
-        from campfire.deploy.supabase import get_user_id_from_token
+    # --- Register storage objects (admin-only: deployment_id=NULL) ----------
+    # NIRCam exposures are reduction intermediates with no spectrum_id and no
+    # deployment, so the storage_objects RLS + sync/presign RPCs keep them
+    # admin-only (the "backfilled NIRCam" case the schema anticipates). The FITS
+    # carry a science-only sci_dq_hash for change detection; content_hash stays
+    # the authoritative whole-file digest for download/copy verification.
+    n_reg = 0
+    if osn_uploaded:
         reg_rows = build_registry_rows(
-            upload_task_list,
-            backend=resolve_backend_label(config),
-            uploaded_by=get_user_id_from_token(config),
-            succeeded_keys=uploaded_keys,
-        )
-        n_reg = upsert_storage_objects(client, reg_rows)
-        print(f"  Registered {n_reg} storage objects")
+            osn_tasks, backend=_CANONICAL_BACKEND, uploaded_by=user_id,
+            succeeded_keys=osn_uploaded, sci_dq_hashes=local_sci_dq)
+        n_reg += upsert_storage_objects(client, reg_rows)
+    if png_uploaded:
+        reg_rows = build_registry_rows(
+            png_upload_list, backend=resolve_backend_label(config),
+            uploaded_by=user_id, succeeded_keys=png_uploaded)
+        n_reg += upsert_storage_objects(client, reg_rows)
+    if n_reg:
+        print(f"  Registered {n_reg} storage object(s) (admin-only intermediates)")
+
+    # --- Multi-reducer scope claim + audit (epic #210, B4 / D12) -----------
+    claim = claim_deploy_scope(client, 'field', field, scope_version, actor=user_id)
+    if claim.get('conflict'):
+        print(f"⚠  CONCURRENT DEPLOY DETECTED for field '{field}': another reducer "
+              f"advanced this field while this deploy was running. Re-run to reconcile.")
+    log_deploy_event(
+        client, action='upload', actor=user_id, observation=None,
+        affected_count=len(records),
+        metadata={'nircam': True, 'field': field, 'filters': filters,
+                  'exposures': len(records), 'fits_uploaded': len(osn_uploaded),
+                  'fits_skipped': n_skipped})
 
 
 def _upsert_exposures(client, records, batch_size=500):

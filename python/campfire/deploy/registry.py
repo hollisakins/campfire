@@ -118,16 +118,17 @@ def normalize_etag(etag: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _exposure_ref_for(product_type: str, filename: str) -> str | None:
-    """Stable per-exposure reference for exposure-level intermediates (epic #210).
+    """Stable per-exposure reference for exposure-level intermediates (epic #210/#261).
 
     For ``nirspec_spectrum_exposure`` the canonical filename
-    (``{root}_{nod}_nrs[12]_{source}.fits``) IS the natural unique exposure key, so
-    the ref is the filename stem (drop ``.fits``). Backs the partial-unique
+    (``{root}_{nod}_nrs[12]_{source}.fits``) IS the natural unique exposure key, and
+    for ``nircam_exposure`` the JWST rootname (``jw..._nrc{a,b}{1-4,long}.fits``) is,
+    so the ref is the filename stem (drop ``.fits``). Backs the partial-unique
     ``(product_type, exposure_ref) WHERE status='active'`` registry contract
     (one current object per product/exposure). None for non-exposure products
     (their exposure_ref stays NULL; NULLs are distinct, so finals never collide).
     """
-    if product_type == 'nirspec_spectrum_exposure' and filename.endswith('.fits'):
+    if product_type in ('nirspec_spectrum_exposure', 'nircam_exposure') and filename.endswith('.fits'):
         return filename[: -len('.fits')]
     return None
 
@@ -158,6 +159,7 @@ def row_for_key(
     cfpipe_version: Optional[str] = None,
     status: str = 'active',
     bucket: Optional[str] = None,
+    sci_dq_hash: Optional[str] = None,
 ) -> dict | None:
     """Build one ``storage_objects`` row dict from a storage key + integrity info.
 
@@ -193,6 +195,9 @@ def row_for_key(
         'bucket': obj_bucket,
         'storage_key': storage_key,
         'content_hash': content_hash,
+        # Science-only change-detection digest (epic #261, N1). Only NIRCam
+        # canonical exposures carry one today; None leaves the column NULL.
+        'sci_dq_hash': sci_dq_hash,
         'size_bytes': int(size_bytes),
         'content_type': content_type,
         'product_type': product_type,
@@ -220,13 +225,20 @@ def build_registry_rows(
     uploaded_by: Optional[str] = None,
     cfpipe_version: Optional[str] = None,
     succeeded_keys: Optional[set[str]] = None,
+    sci_dq_hashes: Optional[dict[str, str]] = None,
 ) -> list[dict]:
     """Build ``storage_objects`` rows for the objects an upload actually landed.
 
     For each :class:`UploadTask` whose ``r2_key`` is in ``succeeded_keys`` (or
     all, if ``succeeded_keys`` is None), hashes the local file and maps the key
     to a row via :func:`row_for_key`. Tiles and non-cloud products are skipped.
+
+    ``sci_dq_hashes`` optionally supplies a precomputed ``sha256:<hex>`` science-only
+    digest per storage key (NIRCam exposures, epic #261) — the ``content_hash`` is
+    still the whole-file sha256, but ``sci_dq_hash`` carries the science-only digest
+    that change-detection compares against.
     """
+    sci_dq_hashes = sci_dq_hashes or {}
     rows: list[dict] = []
     for task in tasks:
         if succeeded_keys is not None and task.r2_key not in succeeded_keys:
@@ -244,10 +256,38 @@ def build_registry_rows(
             deployment_id=deployment_id,
             uploaded_by=uploaded_by,
             cfpipe_version=cfpipe_version,
+            sci_dq_hash=sci_dq_hashes.get(task.r2_key),
         )
         if row is not None:
             rows.append(row)
     return rows
+
+
+def fetch_active_sci_dq_hashes(client, keys: list[str]) -> dict[str, str]:
+    """Return ``{storage_key: sci_dq_hash}`` for the active registry rows among *keys*.
+
+    The change-detection read for the NIRCam exposure dedup (epic #261, N1): deploy
+    compares each candidate exposure's local ``sha256(SCI+DQ)`` against the stored
+    digest and skips the upload when they match. Only rows that both exist and carry
+    a non-NULL ``sci_dq_hash`` are returned, so a first-time deploy (or a legacy row
+    with no digest) always re-uploads. Chunked to keep the ``in_`` filter small.
+    """
+    if not keys:
+        return {}
+    out: dict[str, str] = {}
+    for i in range(0, len(keys), 200):
+        chunk = keys[i:i + 200]
+        resp = (
+            client.table('storage_objects')
+            .select('storage_key, sci_dq_hash')
+            .in_('storage_key', chunk)
+            .eq('status', 'active')
+            .execute()
+        )
+        for r in (resp.data or []):
+            if r.get('sci_dq_hash'):
+                out[r['storage_key']] = r['sci_dq_hash']
+    return out
 
 
 def upsert_storage_objects(client, rows: list[dict], batch_size: int = UPSERT_BATCH) -> int:
@@ -363,6 +403,8 @@ def compute_reconcile(
     live_pointers: Iterable[str],
     registry_keys: Iterable[str],
     bucket_keys: Optional[Iterable[str]] = None,
+    *,
+    danglable_keys: Optional[Iterable[str]] = None,
 ) -> ReconcileReport:
     """Classify the three storage vocabularies against each other **by canonical
     identity**, reporting the original keys.
@@ -380,10 +422,17 @@ def compute_reconcile(
     (legacy + canonical duplicates of the same object coincide), then report the
     original keys so the operator sees the real fits_path / bucket key.
 
-    NOTE: ``bucket_keys`` today comes from a single data-bucket (R2) LIST; migrated
-    objects live on OSN but R2 retains their legacy copies, so canonicalizing keeps
-    dangling/orphan correct. When R2 *data* is retired (deferred A2 work), the LIST
-    must union OSN so dangling detection stays honest.
+    NOTE: ``bucket_keys`` today comes from a single data-bucket (R2) LIST. Objects
+    that live on OSN fall into two classes: (a) A1-migrated finals, whose legacy R2
+    twin is still in the bucket, so canonicalizing keeps them covered; and (b) since
+    #261/N1, **OSN-native** NIRCam FITS/expmaps with *no* R2 twin. A row in class (b)
+    is absent from an R2 LIST by design, not because it's dangling — so ``dangling``
+    is computed only over ``danglable_keys`` (the registry rows whose home is the
+    LISTed backend; the caller passes the R2-backed subset). ``missing``/``orphans``
+    still use the full ``registry_keys`` so A1 OSN rows keep covering their R2 twins.
+    When R2 *data* is retired (deferred A2 work) and the LIST unions OSN, class (b)
+    gets real dangling detection. ``danglable_keys=None`` ⇒ all registry keys are
+    danglable (back-compat: the pre-N1 world where every object had an R2 presence).
     """
     # canonical identity -> original key, per vocabulary (last-writer-wins on a
     # legacy+canonical collision is fine: same logical object).
@@ -395,7 +444,9 @@ def compute_reconcile(
         return ReconcileReport(missing, set(), set(), set())
 
     bucket = {_canonical_identity(k): k for k in bucket_keys if k}
-    dangling = {registry[c] for c in (registry.keys() - bucket.keys())}
+    danglable = (registry if danglable_keys is None
+                 else {_canonical_identity(k): k for k in danglable_keys if k})
+    dangling = {danglable[c] for c in (danglable.keys() - bucket.keys())}
     orphans = {bucket[c] for c in (bucket.keys() - registry.keys())}
     adoptable = {k for k in orphans if is_known_key(k)}
     return ReconcileReport(missing, dangling, orphans, adoptable)
@@ -449,12 +500,18 @@ def live_pointers(client) -> dict[str, list[str]]:
     }
 
 
-def registry_keys(client, bucket: str = 'data') -> list[str]:
-    """All storage keys currently in the registry for a bucket."""
+def registry_keys(client, bucket: str = 'data', backend: str | None = None) -> list[str]:
+    """All storage keys currently in the registry for a bucket.
+
+    ``backend`` optionally restricts to one storage backend ('r2' | 'osn') — used by
+    reconcile to compute dangling only over rows whose home is the LISTed backend
+    (an OSN-native object can't be confirmed against an R2-only bucket LIST).
+    """
     return [
         r['storage_key']
-        for r in _iter_rows(client, 'storage_objects', 'storage_key, bucket')
+        for r in _iter_rows(client, 'storage_objects', 'storage_key, bucket, backend')
         if r.get('bucket') == bucket and r.get('storage_key')
+        and (backend is None or r.get('backend') == backend)
     ]
 
 
