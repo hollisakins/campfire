@@ -167,14 +167,19 @@ _ALL_STORAGE_ENV = [
 @pytest.fixture
 def clean_env(monkeypatch):
     monkeypatch.delenv('CAMPFIRE_ROOT', raising=False)
+    monkeypatch.delenv('CAMPFIRE_DEPLOY_MODE', raising=False)
     for var in _ALL_STORAGE_ENV:
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
 
 
 def _set_supabase(mp):
+    # These tests exercise the direct-storage path, which lives behind the
+    # explicit service-role opt-in (issue #250) — a service-role key alone no
+    # longer selects that mode.
     mp.setenv('CAMPFIRE_SUPABASE_URL', 'https://prod.supabase.co')
     mp.setenv('CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY', 'svc-key')
+    mp.setenv('CAMPFIRE_DEPLOY_MODE', 'service-role')
 
 
 def test_neutral_s3_env_resolves_to_backend(clean_env):

@@ -25,6 +25,7 @@ _SUPABASE_ENV = (
 
 def _clear_env(monkeypatch):
     monkeypatch.delenv("CAMPFIRE_ROOT", raising=False)
+    monkeypatch.delenv("CAMPFIRE_DEPLOY_MODE", raising=False)
     for var in _SUPABASE_ENV:
         monkeypatch.delenv(var, raising=False)
 
@@ -93,7 +94,10 @@ class _LoginTM:
         return "e@x"
 
 
-def test_env_service_role_skips_login(monkeypatch):
+def test_env_service_role_key_ignored_without_optin(monkeypatch):
+    # Issue #250: a service-role key merely present in the env must NOT flip the
+    # mode. With a login session available, the default resolves to login and the
+    # ambient service-role key is ignored.
     _clear_env(monkeypatch)
     for var in _SUPABASE_ENV:
         monkeypatch.setenv(var, "x")
@@ -101,11 +105,63 @@ def test_env_service_role_skips_login(monkeypatch):
     monkeypatch.setenv("CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY", "svc-key")
     monkeypatch.setattr("campfire.auth.tokens.TokenManager", _LoginTM)
 
+    config = load_config()
+    sb = config["supabase"]
+    assert sb["_auth_mode"] == "login"
+    assert sb["supabase_token"] == "login.jwt"
+    assert "service_role_key" not in sb
+    # Storage is still resolved from env, independently of the auth mode.
+    assert config["r2"]["access_key_id"] == "x"
+
+
+def test_explicit_service_role_via_env(monkeypatch):
+    _clear_env(monkeypatch)
+    for var in _SUPABASE_ENV:
+        monkeypatch.setenv(var, "x")
+    monkeypatch.setenv("CAMPFIRE_SUPABASE_URL", "https://prod.supabase.co")
+    monkeypatch.setenv("CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY", "svc-key")
+    monkeypatch.setenv("CAMPFIRE_DEPLOY_MODE", "service-role")
+    monkeypatch.setattr("campfire.auth.tokens.TokenManager", _LoginTM)
+
     sb = load_config()["supabase"]
     assert sb["_auth_mode"] == "service_role"
     assert sb["service_role_key"] == "svc-key"
     assert "supabase_token" not in sb
     assert "_token_manager" not in sb
+
+
+def test_explicit_service_role_via_kwarg(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("CAMPFIRE_SUPABASE_URL", "https://prod.supabase.co")
+    monkeypatch.setenv("CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY", "svc-key")
+    monkeypatch.setattr("campfire.auth.tokens.TokenManager", _LoginTM)
+
+    sb = load_config(service_role=True)["supabase"]
+    assert sb["_auth_mode"] == "service_role"
+    assert sb["service_role_key"] == "svc-key"
+
+
+def test_service_role_optin_without_creds_errors(monkeypatch):
+    # Explicit service-role but no key present -> hard error, never a silent
+    # downgrade to anon/login.
+    _clear_env(monkeypatch)
+    monkeypatch.setattr("campfire.auth.tokens.TokenManager", _LoginTM)
+    with pytest.raises(SystemExit):
+        load_config(service_role=True)
+
+
+def test_login_is_default_and_resolves_storage(monkeypatch):
+    # Logged in, storage creds present, no explicit mode -> login, and storage is
+    # still available for the maintenance/direct paths.
+    _clear_env(monkeypatch)
+    for var in ("CAMPFIRE_R2_ACCOUNT_ID", "CAMPFIRE_R2_ACCESS_KEY_ID",
+                "CAMPFIRE_R2_SECRET_ACCESS_KEY", "CAMPFIRE_R2_BUCKET_NAME"):
+        monkeypatch.setenv(var, "x")
+    monkeypatch.setattr("campfire.auth.tokens.TokenManager", _LoginTM)
+
+    config = load_config()
+    assert config["supabase"]["_auth_mode"] == "login"
+    assert config["r2"]["bucket_name"] == "x"
 
 
 def test_local_mode(monkeypatch):
@@ -131,7 +187,9 @@ def test_login_overwrites_foreign_toml_url(tmp_path, monkeypatch):
     assert sb["_token_manager"].__class__ is _LoginTM
 
 
-def test_toml_service_role_skips_login(tmp_path, monkeypatch):
+def test_toml_service_role_ignored_without_optin(tmp_path, monkeypatch):
+    # A TOML service_role_key no longer silently wins either (issue #250): with a
+    # login session the default mode is login.
     _clear_env(monkeypatch)
     monkeypatch.setattr("campfire.auth.tokens.TokenManager", _LoginTM)
     toml = tmp_path / "deploy.toml"
@@ -141,9 +199,24 @@ def test_toml_service_role_skips_login(tmp_path, monkeypatch):
     )
 
     sb = load_config(str(toml))["supabase"]
+    assert sb["_auth_mode"] == "login"
+    assert "service_role_key" not in sb
+
+
+def test_toml_service_role_used_with_optin(tmp_path, monkeypatch):
+    # The TOML [supabase] block supplies the creds when service-role is explicit.
+    _clear_env(monkeypatch)
+    monkeypatch.setattr("campfire.auth.tokens.TokenManager", _LoginTM)
+    toml = tmp_path / "deploy.toml"
+    toml.write_text(
+        '[supabase]\nurl = "https://prod.supabase.co"\n'
+        'service_role_key = "svc-key"\n'
+    )
+
+    sb = load_config(str(toml), service_role=True)["supabase"]
     assert sb["_auth_mode"] == "service_role"
+    assert sb["service_role_key"] == "svc-key"
     assert "supabase_token" not in sb
-    assert "_token_manager" not in sb
 
 
 # --------------------------------------------------------------------------

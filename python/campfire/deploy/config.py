@@ -1,8 +1,31 @@
 """
 Configuration loading, credential resolution, and path helpers.
 
-Credential resolution (env vars take priority over TOML):
-  1. CAMPFIRE_SUPABASE_URL, CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY,
+Deploy auth has ONE default — ``campfire login`` — and one explicit escape hatch.
+The two decisions that used to be tangled are now independent:
+
+  * **Supabase auth mode** — resolved from an *explicit* signal only (issue #250):
+      - ``login`` (default): the logged-in user's credentials (device-flow OAuth
+        via ``CredentialManager``). Operates through RLS; uploads go presigned.
+      - ``service_role``: opt-in via ``CAMPFIRE_DEPLOY_MODE=service-role`` (or the
+        top-level ``--service-role`` flag). Bypasses RLS; for unattended / CI runs.
+        Requires ``CAMPFIRE_SUPABASE_URL`` + ``CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY``
+        (or a TOML ``[supabase]`` block). A service-role key that merely *exists*
+        in the environment no longer wins by precedence — it is ignored unless the
+        mode is explicitly requested.
+      - ``local``: ``--local`` (or ``CAMPFIRE_DEPLOY_MODE=local``) — the local
+        Supabase instance with the standard CLI service-role key.
+
+  * **Object-store credentials** — the ``data`` / ``tiles`` / ``osn`` storage
+    sections are resolved from env vars / TOML *independently of the Supabase
+    mode*. Presence of storage creds never changes the auth mode. The normal
+    deploy uploads via presigned URLs (no local write keys needed); the storage
+    sections are only consumed by the direct-boto3 maintenance paths
+    (``remove`` / ``reconcile`` / ``registry backfill`` / ``registry copy``) and
+    by ``service_role`` / ``local`` uploads.
+
+Credential source precedence (env vars take priority over TOML), per section:
+  1. CAMPFIRE_SUPABASE_URL, CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY (service-role mode);
      CAMPFIRE_S3_ACCESS_KEY_ID, CAMPFIRE_S3_SECRET_ACCESS_KEY,
      CAMPFIRE_S3_BUCKET_NAME, and either CAMPFIRE_S3_ENDPOINT or
      CAMPFIRE_S3_ACCOUNT_ID (R2 host derived from the account id).
@@ -101,6 +124,19 @@ _OSN_ENV = {
 # its endpoint (an explicit endpoint, or an account_id to derive the R2 host).
 _STORAGE_REQUIRED = ('access_key_id', 'secret_access_key', 'bucket_name')
 
+# Storage config-dict section -> its env-var spec. Each is resolved independently
+# of the Supabase auth mode (issue #250): storage creds never decide who you are.
+_STORAGE_ENV = {
+    'r2': _DATA_ENV,
+    'r2_tiles': _TILES_ENV,
+    'r2_osn': _OSN_ENV,
+}
+
+# The explicit deploy-mode switch. Values (case/dash-insensitive): 'login'
+# (default), 'service-role', 'local'. The top-level --service-role / --local
+# flags override it.
+_DEPLOY_MODE_ENV = 'CAMPFIRE_DEPLOY_MODE'
+
 
 def _load_toml(path: Path) -> dict:
     """Load a TOML file and return as dict."""
@@ -127,34 +163,56 @@ def _storage_section_complete(section: dict) -> bool:
     return bool(section.get('endpoint') or section.get('account_id'))
 
 
-def _config_from_env() -> dict | None:
+def _resolve_storage_sections(toml_config: dict | None) -> dict:
+    """Resolve every storage section (data / tiles / osn) from TOML + env vars.
+
+    Storage is resolved the SAME way in every auth mode — presence of these creds
+    no longer influences who you authenticate as (issue #250). TOML seeds each
+    section; env vars override per-key (env wins, TOML fills gaps).
+
+    A section is included when it is actually usable (complete creds + resolvable
+    endpoint) or when a TOML block explicitly declared it — an intentional config
+    is honored even if partial, and ``backend.resolve_backend`` surfaces any gap
+    precisely at the point of use. A stray partial *env* section (e.g. a lone
+    ``CAMPFIRE_R2_TILES_ACCOUNT_ID``) is dropped rather than half-created.
     """
-    Build a config dict from environment variables.
-
-    Returns a config dict when Supabase service-role creds **and** a usable
-    ``data`` storage section are present, or None otherwise. The optional
-    ``tiles`` and ``osn`` sections are included when usable, but never block
-    loading.
-    """
-    supabase = _read_env_section(_SUPABASE_ENV)
-    if not all(supabase.get(k) for k in _SUPABASE_ENV):
-        return None
-
-    data = _read_env_section(_DATA_ENV)
-    if not _storage_section_complete(data):
-        return None
-
-    config: dict = {'supabase': supabase, 'r2': data}
-
-    tiles = _read_env_section(_TILES_ENV)
-    if _storage_section_complete(tiles):
-        config['r2_tiles'] = tiles
-
-    osn = _read_env_section(_OSN_ENV)
-    if _storage_section_complete(osn):
-        config['r2_osn'] = osn
-
+    config: dict = {}
+    for section_key, spec in _STORAGE_ENV.items():
+        toml_section = (toml_config or {}).get(section_key)
+        has_toml = isinstance(toml_section, dict) and bool(toml_section)
+        merged: dict = dict(toml_section) if has_toml else {}
+        merged.update(_read_env_section(spec))  # env overrides TOML per key
+        if merged and (has_toml or _storage_section_complete(merged)):
+            config[section_key] = merged
     return config
+
+
+def _resolve_deploy_mode(*, local: bool, service_role: bool) -> str:
+    """Resolve the explicit Supabase auth mode: 'login' | 'service_role' | 'local'.
+
+    Flags win over the env var; the env var wins over the 'login' default. A
+    service-role key that merely exists in the environment does NOT flip the mode
+    (that silent precedence was the issue #250 footgun) — it is used only when the
+    mode is explicitly ``service_role``.
+    """
+    if local:
+        return 'local'
+    if service_role:
+        return 'service_role'
+
+    raw = (os.environ.get(_DEPLOY_MODE_ENV) or '').strip().lower().replace('-', '_')
+    if raw in ('', 'login'):
+        return 'login'
+    if raw == 'local':
+        return 'local'
+    if raw in ('service_role', 'servicerole'):
+        return 'service_role'
+
+    print(
+        f"Error: {_DEPLOY_MODE_ENV}={os.environ.get(_DEPLOY_MODE_ENV)!r} is not a "
+        f"valid deploy mode. Use one of: login (default), service-role, local."
+    )
+    sys.exit(1)
 
 
 def _find_toml(config_path: str | None = None) -> dict | None:
@@ -184,73 +242,76 @@ _LOCAL_SUPABASE_SERVICE_ROLE_KEY = (
 )
 
 
-def load_config(config_path: str | None = None, *, local: bool = False) -> dict:
+def load_config(
+    config_path: str | None = None,
+    *,
+    local: bool = False,
+    service_role: bool = False,
+) -> dict:
     """
-    Load deployment credentials (Supabase + R2).
+    Load deployment credentials (Supabase + object storage).
 
-    Resolves Supabase auth into exactly ONE coherent mode, tagged on
-    ``config['supabase']['_auth_mode']``:
+    Object-storage sections (``r2`` / ``r2_tiles`` / ``r2_osn``) are resolved from
+    env vars + TOML in **every** mode, independently of the Supabase auth decision.
+    The Supabase auth mode — tagged on ``config['supabase']['_auth_mode']`` — is
+    chosen *explicitly*, never by which credentials happen to be lying around
+    (issue #250):
 
-      - ``local`` (``--local``): local instance (127.0.0.1:54321) with the
-        standard Supabase CLI service-role key.
-      - ``service_role``: env vars (``CAMPFIRE_SUPABASE_URL`` +
-        ``CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY``) or a TOML ``[supabase]`` block
-        with ``service_role_key`` + ``url``. Bypasses RLS — the preferred path
-        for unattended / batch / CI deploys (no JWT expiry).
-      - ``login``: the logged-in user's Supabase credentials from
-        ``campfire login`` (url + anon_key + token + TokenManager, taken as a
-        matched set). Operates through RLS.
+      - ``login`` (default): the logged-in user's Supabase credentials from
+        ``campfire login`` (url + anon_key + token + TokenManager, a matched set).
+        Operates through RLS; uploads go via presigned URLs (no local write keys).
+      - ``service_role`` (``--service-role`` / ``CAMPFIRE_DEPLOY_MODE=service-role``):
+        ``CAMPFIRE_SUPABASE_URL`` + ``CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY`` (or a TOML
+        ``[supabase]`` block). Bypasses RLS — for unattended / CI deploys. A
+        service-role key present in the env is used ONLY when this mode is
+        explicitly requested; it never silently wins.
+      - ``local`` (``--local`` / ``CAMPFIRE_DEPLOY_MODE=local``): the local instance
+        (127.0.0.1:54321) with the standard Supabase CLI service-role key.
 
-    Precedence: ``--local`` > env service-role > TOML service-role > login.
-    When env or TOML supplies a service-role key, login credentials are NOT
-    injected. R2 / r2_tiles sections are always resolved from env vars / TOML.
+    ``local`` and ``service_role`` args are the flag overrides; absent them the
+    mode comes from ``CAMPFIRE_DEPLOY_MODE`` (default ``login``).
     """
-    if local:
-        base = _config_from_env() or _find_toml(config_path) or {}
-        base.setdefault('supabase', {})
-        base['supabase']['url'] = _LOCAL_SUPABASE_URL
-        base['supabase']['service_role_key'] = _LOCAL_SUPABASE_SERVICE_ROLE_KEY
-        base['supabase'].pop('supabase_token', None)
-        base['supabase'].pop('anon_key', None)
-        base['supabase'].pop('_token_manager', None)
-        base['supabase']['_auth_mode'] = 'local'
+    mode = _resolve_deploy_mode(local=local, service_role=service_role)
+    toml_config = _find_toml(config_path)
+
+    # Storage first — same in every mode, decoupled from auth.
+    base = _resolve_storage_sections(toml_config)
+
+    if mode == 'local':
+        base['supabase'] = {
+            'url': _LOCAL_SUPABASE_URL,
+            'service_role_key': _LOCAL_SUPABASE_SERVICE_ROLE_KEY,
+            '_auth_mode': 'local',
+        }
         print(f"  Using local Supabase at {_LOCAL_SUPABASE_URL}")
         return base
 
-    # 1. Environment service-role credentials. `_config_from_env` only returns a
-    #    config when both url and service_role_key are present, so this is always
-    #    service-role mode (used as-is, no login injection).
-    env_config = _config_from_env()
-    if env_config:
-        toml_config = _find_toml(config_path)
-        if toml_config:
-            for key, val in toml_config.items():
-                if key not in env_config:
-                    env_config[key] = val
-                elif isinstance(val, dict) and isinstance(env_config[key], dict):
-                    # env takes priority per-key; TOML fills any gaps (e.g. a
-                    # public_url_base configured in TOML alongside env creds).
-                    for subkey, subval in val.items():
-                        env_config[key].setdefault(subkey, subval)
-        env_config.setdefault('supabase', {})['_auth_mode'] = 'service_role'
-        return env_config
+    if mode == 'service_role':
+        # url + service_role_key from env (canonical) then TOML [supabase] gaps.
+        sb = _read_env_section(_SUPABASE_ENV)
+        toml_sb = (toml_config or {}).get('supabase', {})
+        if isinstance(toml_sb, dict):
+            for key in ('url', 'service_role_key'):
+                if not sb.get(key) and toml_sb.get(key):
+                    sb[key] = toml_sb[key]
+        if not (sb.get('url') and sb.get('service_role_key')):
+            _service_role_missing_error(config_path)
+        sb['_auth_mode'] = 'service_role'
+        base['supabase'] = sb
+        return base
 
-    # 2. TOML service-role credentials short-circuit (no login injection).
-    toml_config = _find_toml(config_path)
-    if toml_config:
-        sb = toml_config.setdefault('supabase', {})
-        if sb.get('service_role_key') and sb.get('url'):
-            sb['_auth_mode'] = 'service_role'
-            return toml_config
-
-    # 3. Logged-in user credentials (matched set), merged onto any TOML (R2 etc.).
-    base = toml_config or {}
+    # mode == 'login': inject the logged-in user's matched credential set.
     base = _inject_user_credentials(base)
     if base.get('supabase', {}).get('_auth_mode') == 'login':
         return base
 
-    # Nothing found — show helpful error
-    candidates = []
+    # Login was requested (default) but no usable session exists.
+    _no_login_error()
+
+
+def _service_role_missing_error(config_path: str | None) -> None:
+    """Explicit service-role mode was requested but creds are absent."""
+    candidates: list[str] = []
     if config_path:
         candidates.append(config_path)
     else:
@@ -258,33 +319,36 @@ def load_config(config_path: str | None = None, *, local: bool = False) -> dict:
         if root:
             candidates.append(str(Path(root) / 'config' / 'deploy.toml'))
 
-    searched = ', '.join(candidates) if candidates else '(none)'
-    # Show the canonical (neutral) env var names for the required sections.
-    env_names = (
-        [names[0] for names in _SUPABASE_ENV.values()]
-        + [_DATA_ENV[k][0] for k in _STORAGE_REQUIRED]
-    )
-
-    print("Error: No deploy credentials found.")
+    print("Error: service-role deploy mode requested, but no service-role "
+          "credentials were found.")
     print()
-    print("Option 1 — Log in with your CAMPFIRE account:")
+    print("Provide both, via environment:")
+    print(f"  export {_SUPABASE_ENV['url'][0]}=...")
+    print(f"  export {_SUPABASE_ENV['service_role_key'][0]}=...")
+    print("Or a TOML [supabase] block with url + service_role_key.")
+    if candidates:
+        print(f"  Searched: {', '.join(candidates)}")
+    print()
+    print("To deploy as yourself instead, drop the service-role mode and run:")
+    print("  campfire login")
+    sys.exit(1)
+
+
+def _no_login_error() -> None:
+    """Default (login) mode but the user isn't logged in."""
+    print("Error: Not logged in — no deploy credentials available.")
+    print()
+    print("Deploys authenticate as you by default (uploads go via presigned URLs,")
+    print("so your machine needs no object-store write keys):")
     print("  campfire login")
     print()
-    print("Option 2 — Set environment variables (service role):")
-    for name in env_names:
-        print(f"  export {name}=...")
-    # The endpoint can be given directly (OSN/MinIO/any S3) or derived from an
-    # R2 account id — one of the two is required, not both.
-    print(f"  export {_DATA_ENV['endpoint'][0]}=...        "
-          f"# e.g. https://<host>  (OSN / MinIO / S3)")
-    print(f"  # or, for Cloudflare R2:  export {_DATA_ENV['account_id'][0]}=...")
+    print("For an unattended / CI deploy, opt into service-role mode explicitly:")
+    print(f"  export {_DEPLOY_MODE_ENV}=service-role")
+    print(f"  export {_SUPABASE_ENV['url'][0]}=...")
+    print(f"  export {_SUPABASE_ENV['service_role_key'][0]}=...")
+    print("  # plus CAMPFIRE_S3_* object-store credentials for direct uploads")
     print()
-    print("Option 3 — Create a TOML config file:")
-    if candidates:
-        print(f"  Searched: {searched}")
-    else:
-        print("  Set $CAMPFIRE_ROOT and create $CAMPFIRE_ROOT/config/deploy.toml")
-        print("  Or use --config <path>")
+    print("Or target a local Supabase instance with --local.")
     sys.exit(1)
 
 

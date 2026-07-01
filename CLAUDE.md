@@ -174,7 +174,13 @@ campfire deploy tiles --field cosmos --filter f444w      # map tiles
 campfire deploy sync-programs                            # upsert from programs.toml
 ```
 
-Credentials via env vars (`CAMPFIRE_SUPABASE_URL`, `CAMPFIRE_S3_*`; legacy `CAMPFIRE_R2_*` accepted as aliases) or gitignored `$CAMPFIRE_ROOT/config/deploy.toml`. Storage endpoint/region/path-style are configurable per purpose (`CAMPFIRE_S3_*` for data, `CAMPFIRE_S3_TILES_*` for tiles); see `python/campfire/deploy/backend.py`.
+**Deploy auth (issue #250).** Two decisions, kept independent:
+
+- **Supabase auth mode** is chosen *explicitly*, never inferred from which creds are present:
+  - `login` (**default**): `campfire login` (device-flow OAuth). Operates through RLS; uploads go via **presigned URLs** so admin machines hold no object-store write keys. This is the only path the normal `campfire deploy` uses — presigning is required, with **no silent boto3 fallback**.
+  - `service-role` (**explicit opt-in** — `--service-role` or `CAMPFIRE_DEPLOY_MODE=service-role`): bypasses RLS for unattended / CI deploys. Needs `CAMPFIRE_SUPABASE_URL` + `CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY` (or a TOML `[supabase]` block). A service-role key merely *present* in the env no longer wins by precedence.
+  - `local` (`--local` / `CAMPFIRE_DEPLOY_MODE=local`): local Supabase (127.0.0.1:54321) with the standard CLI service-role key.
+- **Object-store credentials** (`CAMPFIRE_S3_*`; legacy `CAMPFIRE_R2_*` aliases; or a gitignored `$CAMPFIRE_ROOT/config/deploy.toml`) resolve the same way in every mode and are decoupled from the Supabase decision. In `login` mode they're only needed by the direct-boto3 maintenance commands (`deploy remove`, `objects reconcile`, `registry backfill`/`copy`, tile deletion) — the LIST/HEAD/DELETE/cross-bucket-COPY ops presigned PutObject URLs can't express. Storage endpoint/region/path-style are configurable per purpose (`CAMPFIRE_S3_*` data, `CAMPFIRE_S3_TILES_*` tiles, `CAMPFIRE_S3_OSN_*` OSN); see `python/campfire/deploy/backend.py`.
 
 ## General Notes
 

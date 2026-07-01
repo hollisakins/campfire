@@ -30,6 +30,7 @@ Multiple observations are processed serially:
     campfire deploy rgb --obs ember_uds_p4 ember_uds_p5
 """
 
+import os
 import sys
 
 import click
@@ -158,6 +159,41 @@ def _resolve_local(ctx, local: bool) -> bool:
     return bool(local) or bool((ctx.obj or {}).get('local', False))
 
 
+def _resolve_service_role(ctx) -> bool:
+    """Whether the explicit service-role escape hatch is engaged.
+
+    True when the top-level ``--service-role`` flag was passed (stored in ctx.obj)
+    or ``CAMPFIRE_DEPLOY_MODE=service-role`` is set. The env var is the universal
+    switch (works for every subcommand); the flag is convenience sugar for the
+    main deploy command. Either way it is an explicit opt-in — a service-role key
+    merely present in the environment does NOT engage it (issue #250).
+    """
+    if (ctx.obj or {}).get('service_role', False):
+        return True
+    raw = (os.environ.get('CAMPFIRE_DEPLOY_MODE') or '').strip().lower().replace('-', '_')
+    return raw in ('service_role', 'servicerole')
+
+
+def _announce_auth_mode(config: dict) -> None:
+    """Print the resolved deploy auth mode + where uploads land (issue #250 #4).
+
+    Makes the login/presigned vs service-role/direct choice obvious and
+    non-surprising up front, instead of silently inferring it from ambient creds.
+    """
+    sb = config.get('supabase', {})
+    mode = sb.get('_auth_mode')
+    if mode == 'login':
+        tm = sb.get('_token_manager')
+        email = tm.get_user_email() if tm else None
+        who = f" as {email}" if email else ""
+        print(f"Deploy auth: login{who} → presigned uploads (no local write keys).")
+    elif mode == 'service_role':
+        print("Deploy auth: service-role → direct uploads via local S3 creds "
+              "(RLS bypassed).")
+    elif mode == 'local':
+        print("Deploy auth: local Supabase → direct uploads via local S3 creds.")
+
+
 def source_ids_option(f):
     """Decorator: --source-ids."""
     f = click.option('--source-ids', multiple=True, type=str, default=None,
@@ -194,17 +230,29 @@ def source_ids_option(f):
                    'B1 lifecycle to be applied to the target DB (checked up front).')
 @click.option('--local', is_flag=True,
               help='Use local Supabase (127.0.0.1:54321).')
+@click.option('--service-role', 'service_role', is_flag=True,
+              help='Explicit escape hatch: authenticate to Supabase with a '
+                   'service-role key and upload directly with local S3 creds '
+                   '(bypasses RLS + presigned URLs). For unattended / CI deploys. '
+                   'Equivalent to CAMPFIRE_DEPLOY_MODE=service-role.')
 @click.pass_context
 def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                  force_overwrite, auto_approve, rgb, no_sed, no_shutters,
-                 no_photometry, skip_astrometry, draft, local):
-    """Deploy CAMPFIRE pipeline products to Supabase + R2."""
+                 no_photometry, skip_astrometry, draft, local, service_role):
+    """Deploy CAMPFIRE pipeline products to Supabase + object storage."""
     ctx.ensure_object(dict)
     ctx.obj['local'] = local
+    # Propagate the flag to subcommands via the env switch load_config reads, so
+    # ``campfire deploy --service-role <sub>`` behaves like the env var everywhere.
+    if service_role:
+        os.environ['CAMPFIRE_DEPLOY_MODE'] = 'service-role'
+    ctx.obj['service_role'] = _resolve_service_role(ctx)
     if not local:
         # Gate once here (the group callback runs before every subcommand and
-        # subgroup), through the actual write client.
-        _gate_admin(load_config(config_path, local=local))
+        # subgroup), through the actual write client. Skipped for service-role
+        # (it bypasses RLS; the gate no-ops for that mode anyway).
+        _gate_admin(load_config(config_path, local=local,
+                                service_role=ctx.obj['service_role']))
 
     # When invoked without a subcommand, --obs is required
     if ctx.invoked_subcommand is None:
@@ -213,12 +261,14 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
             print("Usage: campfire deploy --obs <observation_name>")
             sys.exit(1)
 
-        config = load_config(config_path, local=local)
+        config = load_config(config_path, local=local,
+                             service_role=ctx.obj['service_role'])
+        _announce_auth_mode(config)
         multi = len(obs) > 1
         if multi and config.get('supabase', {}).get('_auth_mode') == 'login':
             print(f"  Note: deploying {len(obs)} observations on a user login "
-                  f"(token auto-refreshes). For large unattended batches, prefer "
-                  f"a service-role key (CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY).")
+                  f"(the token auto-refreshes, so long batches are fine). For "
+                  f"unattended batches, --service-role is available.")
         fields_needing_rebuild: set[str] = set()
 
         for obs_name in obs:
