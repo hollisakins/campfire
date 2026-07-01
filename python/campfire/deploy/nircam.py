@@ -410,7 +410,9 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
 
     fits_tasks = build_fits_upload_tasks(field, exposures)
     expmap_tasks = discover_expmap_tasks(dirs, field)
-    print(f"Canonical FITS: {len(fits_tasks)} exposure(s), {len(expmap_tasks)} expmap(s) → OSN")
+    n_mosaics = len(discover_mosaics(dirs, field, filters))
+    print(f"Canonical FITS: {len(fits_tasks)} exposure(s), {len(expmap_tasks)} expmap(s), "
+          f"{n_mosaics} mosaic(s) → OSN")
 
     records = []
     for (filtname, basename), info in sorted(exposures.items()):
@@ -445,9 +447,9 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         if mask_count:
             print(f"  with masks: {mask_count}")
         print(f"\nWould record a {'draft' if draft else 'published'} field "
-              f"deployment and upload {len(fits_tasks)} canonical FITS (subject to "
-              f"SCI+DQ content-hash dedup) + {len(expmap_tasks)} expmap(s) to OSN, "
-              f"and {len(png_tasks)} preview PNG(s) to R2.")
+              f"deployment and upload {len(fits_tasks)} canonical FITS + "
+              f"{len(expmap_tasks)} expmap(s) + {n_mosaics} mosaic(s) to OSN "
+              f"(subject to content-hash dedup), and {len(png_tasks)} preview PNG(s) to R2.")
         print("Dry run — no changes made.")
         return
 
@@ -542,6 +544,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         if n_moved:
             print(f"  Re-pointed {n_moved} unchanged exposure(s) to deployment #{deployment_id}")
 
+    # --- Mosaics: deploy under the same field deployment (epic #261, N2) ----
+    _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
+                          draft, user_id)
+
     # --- Multi-reducer scope claim + audit (epic #210, B4 / D12) -----------
     claim = claim_deploy_scope(client, 'field', field, scope_version, actor=user_id)
     if claim.get('conflict'):
@@ -634,3 +640,175 @@ def _upsert_exposures(client, records, batch_size=500):
             batch,
             on_conflict='field,filter,filename',
         ).execute()
+
+
+# ---------------------------------------------------------------------------
+# Mosaic deploy (epic #261, N2) — combined mosaics → OSN + nircam_images index
+# ---------------------------------------------------------------------------
+
+# Split-extension products the resample step emits, mapped to the nircam_images
+# `extension` value. A slot deploys only the files that exist on disk.
+_MOSAIC_EXTENSIONS = (
+    ('_i2d.fits', 'i2d'),
+    ('_sci.fits', 'sci'),
+    ('_err.fits', 'err'),
+    ('_wht.fits', 'wht'),
+    ('_srcmask.fits', 'srcmask'),
+)
+
+
+def discover_mosaics(dirs, field, filters):
+    """Discover deployable mosaic products via their manifests.
+
+    Each ``mosaic_*_manifest.json`` (written by the resample step) carries the
+    authoritative ``(mosaic_name, filter, tile, pixel_scale)`` — read from the
+    manifest rather than parsed from the filename, so a multi-underscore field
+    name can't break a positional split. Returns one dict per existing mosaic
+    file: ``{path, filter, tile, pixel_scale, extension, storage_key}`` under the
+    version-free canonical key (epic #261, N2 / D3).
+    """
+    import json
+    products = dirs['products']
+    out = []
+    for filtname in filters:
+        filter_dir = products / filtname
+        if not filter_dir.exists():
+            continue
+        for manifest_path in sorted(filter_dir.glob('mosaic_*_manifest.json')):
+            try:
+                m = json.loads(manifest_path.read_text())
+            except Exception:
+                continue
+            base = m.get('mosaic_name')
+            tile = m.get('tile')
+            pixel_scale = m.get('pixel_scale')
+            mfilter = m.get('filter') or filtname
+            mfield = m.get('field') or field
+            if not (base and tile and pixel_scale):
+                continue
+            # Skip stale pre-N2 versioned / `_latest_` manifests: only the
+            # canonical version-free name is deployable (epic #261, D3). A field
+            # reduced before N2 keeps its old `..._v0_1_..._manifest.json` on
+            # disk after re-combine; without this guard that stale slot would
+            # both re-upload a version-bearing key to OSN AND collide with the
+            # version-free row on the nircam_images (field,tile,filter,scale,
+            # extension) conflict key, crashing the batch upsert. Reconstruct the
+            # expected name deploy-side (deploy must not import the pipeline) —
+            # the same version-free contract rgb._find_mosaic enforces.
+            if base != f'mosaic_nircam_{mfilter}_{mfield}_{pixel_scale}_{tile}':
+                continue
+            for suffix, ext in _MOSAIC_EXTENSIONS:
+                fpath = filter_dir / f'{base}{suffix}'
+                if not fpath.exists():
+                    continue
+                key = storage_key('nircam_mosaic', Scope(field=field, filt=filtname),
+                                  fpath.name, scheme=KeyScheme.CANONICAL)
+                out.append({
+                    'path': fpath, 'filter': mfilter, 'tile': tile,
+                    'pixel_scale': pixel_scale, 'extension': ext, 'storage_key': key,
+                })
+    return out
+
+
+def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
+                          draft, user_id):
+    """Deploy this field's mosaics under the field deployment (epic #261, N2).
+
+    Called from :func:`deploy_nircam` so ``campfire deploy --field`` ships exposures
+    and mosaics as one field deployment. Uploads each mosaic product (the ``_i2d``
+    cube + any split ``_sci/_err/_wht/_srcmask`` extensions) to OSN under canonical
+    keys — whole-file content-hash deduped — upserts one ``nircam_images`` row per
+    ``(field, tile, filter, pixel_scale, extension)`` carrying ``deploy_status``
+    (draft/published to match the deployment) + ``deployment_id``, and registers
+    ``nircam_mosaic`` storage objects tagged with the deployment. Re-combine
+    overwrites the same key in place (stable, version-free — D3/D4); visibility
+    rides the deployment (published => public to everyone).
+    """
+    from campfire.deploy.registry import (
+        fetch_active_content_hashes, hash_file, row_for_key,
+        set_active_deployment, upsert_storage_objects,
+    )
+    mosaics = discover_mosaics(dirs, field, filters)
+    if not mosaics:
+        return
+    print(f"\nMosaics: {len(mosaics)} product(s)")
+
+    # Whole-file content-hash dedup: skip re-uploading a byte-identical mosaic.
+    existing = fetch_active_content_hashes(client, [m['storage_key'] for m in mosaics])
+    upload_tasks = []
+    for m in mosaics:
+        local_hash, local_size = hash_file(m['path'])
+        m['content_hash'] = local_hash
+        m['size'] = local_size
+        if existing.get(m['storage_key']) != local_hash:
+            upload_tasks.append(UploadTask(local_path=m['path'],
+                                           r2_key=m['storage_key'],
+                                           content_type=_FITS_CONTENT_TYPE))
+    n_skipped = len(mosaics) - len(upload_tasks)
+    if n_skipped:
+        print(f"  Skipping {n_skipped} unchanged mosaic file(s)")
+
+    uploaded: set[str] = set()
+    if upload_tasks:
+        print(f"  Uploading {len(upload_tasks)} mosaic file(s) to OSN...")
+        success, failed, failures = upload_files_parallel(
+            config, upload_tasks, desc='OSN mosaic uploads',
+            succeeded_out=uploaded, backend=_CANONICAL_BACKEND)
+        print(f"    Uploaded: {success}, Failed: {failed}")
+        for msg in failures:
+            print(f"    Error: {msg}")
+
+    # Index only mosaics actually present in OSN — uploaded this run or unchanged +
+    # already registered. A failed upload must NOT get a nircam_images row (it would
+    # advertise a file_path with no object + no registry row; the slot 404s). A
+    # re-run heals. deploy_status matches the deployment so the public page shows
+    # only published mosaics; deployment_id ties them to the lifecycle batch.
+    present = set(uploaded) | {
+        m['storage_key'] for m in mosaics
+        if existing.get(m['storage_key']) == m['content_hash']
+    }
+    img_status = 'draft' if draft else 'published'
+    img_rows = [{
+        'field': field, 'tile': m['tile'], 'filter': m['filter'],
+        'pixel_scale': m['pixel_scale'], 'extension': m['extension'],
+        'file_path': m['storage_key'], 'file_size': m['size'],
+        'deploy_status': img_status, 'deployment_id': deployment_id,
+    } for m in mosaics if m['storage_key'] in present]
+    n_img = _upsert_nircam_images(client, img_rows)
+    print(f"  Indexed {n_img} nircam_images row(s) ({img_status})")
+    n_failed = len(mosaics) - len(img_rows)
+    if n_failed:
+        print(f"  ({n_failed} mosaic(s) not indexed — upload failed; re-run to retry)")
+
+    # Register landed objects, reusing the dedup hash (no re-hash of multi-GB files).
+    reg_rows = []
+    for m in mosaics:
+        if m['storage_key'] not in uploaded:
+            continue
+        row = row_for_key(
+            m['storage_key'], backend=_CANONICAL_BACKEND,
+            content_hash=m['content_hash'], size_bytes=m['size'],
+            content_type=_FITS_CONTENT_TYPE, deployment_id=deployment_id,
+            uploaded_by=user_id)
+        if row is not None:
+            reg_rows.append(row)
+    if reg_rows:
+        print(f"  Registered {upsert_storage_objects(client, reg_rows)} mosaic storage object(s)")
+
+    # Re-point unchanged (skipped) mosaics to the current deployment.
+    skipped_keys = [m['storage_key'] for m in mosaics
+                    if m['storage_key'] in present and m['storage_key'] not in uploaded]
+    if skipped_keys:
+        set_active_deployment(client, skipped_keys, deployment_id)
+
+
+def _upsert_nircam_images(client, rows, batch_size=500):
+    """Upsert nircam_images rows keyed on (field, tile, filter, pixel_scale, extension)."""
+    if not rows:
+        return 0
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i:i + batch_size]
+        client.table('nircam_images').upsert(
+            batch, on_conflict='field,tile,filter,pixel_scale,extension',
+        ).execute()
+    return len(rows)

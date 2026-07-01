@@ -11,11 +11,11 @@ Input source for the canonical-exposure layout is
 ``field.get_exposure_files(filter, with_step='CFP_OUT')`` — only exposures
 that have completed outlier detection are eligible to be drizzled.
 
-Mosaic outputs and the manifest format are unchanged from the legacy
-implementation: ``CMPFRTIM`` / ``CMPFRVER`` stamping on the primary header,
-optional 2D background subtraction via ``SubtractBackground``, optional
-extension splitting into ``_sci/_err/_wht/_srcmask`` files, and a
-``_latest_`` symlink to the versioned output.
+Mosaic outputs: ``CMPFRTIM`` / ``CMPFRVER`` stamping on the primary header,
+optional 2D background subtraction via ``SubtractBackground``, and optional
+extension splitting into ``_sci/_err/_wht/_srcmask`` files. The mosaic
+basename is version-free (epic #261, N2 / D3) — one canonical name per
+``(field, filter, tile, pixel_scale)`` — so there is no ``_latest_`` alias.
 """
 
 import os
@@ -182,7 +182,7 @@ def resample_step(filtname, exposure_files, field, step_config,
     overwrite : bool
     """
     from campfire_pipeline.nircam.manifest import (
-        check_config_changed, check_inputs_changed,
+        build_mosaic_name, check_config_changed, check_inputs_changed,
         create_manifest, write_manifest,
     )
 
@@ -193,7 +193,6 @@ def resample_step(filtname, exposure_files, field, step_config,
     if mode != 'tile':
         raise NotImplementedError(f"resample mode {mode!r} not supported")
 
-    version = step_config.get('version', 'v0_1')
     tiles = step_config.get('tile', None) or list(field.tiles.keys())
     if isinstance(tiles, str):
         tiles = [tiles]
@@ -201,16 +200,10 @@ def resample_step(filtname, exposure_files, field, step_config,
     for tile in tiles:
         log(f"resample: tile {tile}, {filtname}, {pixel_scale_str}")
 
-        mosaic_name = step_config.get(
-            'mosaic_name',
-            'mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[version]_[tile]',
+        mosaic_name = build_mosaic_name(
+            filtname, field.name, pixel_scale_str, tile,
+            template=step_config.get('mosaic_name'),
         )
-        mosaic_name = (mosaic_name
-                       .replace('[filter]', filtname)
-                       .replace('[field_name]', field.name)
-                       .replace('[pixel_scale]', pixel_scale_str)
-                       .replace('[version]', version)
-                       .replace('[tile]', tile))
         mosaic_outdir = field.filter_dir(filtname)
         mosaic_file = os.path.join(mosaic_outdir, f'{mosaic_name}_i2d.fits')
         manifest_path = os.path.join(
@@ -279,7 +272,7 @@ def resample_step(filtname, exposure_files, field, step_config,
 
             manifest = create_manifest(
                 mosaic_name, field, filtname, tile, pixel_scale_str,
-                version, selected, {'resample': step_config},
+                selected, {'resample': step_config},
             )
             write_manifest(manifest, manifest_path)
 
@@ -448,26 +441,8 @@ def resample_step(filtname, exposure_files, field, step_config,
                     )
                     log(f"  saved {os.path.basename(bkg_png)}")
 
-        latest_name = mosaic_name.replace(f'_{version}_', '_latest_')
-        latest_link = os.path.join(mosaic_outdir, f'{latest_name}_i2d.fits')
-        if os.path.islink(latest_link) or os.path.exists(latest_link):
-            os.remove(latest_link)
-        os.symlink(os.path.basename(mosaic_file), latest_link)
-        log(f"  symlinked {os.path.basename(latest_link)} → "
-            f"{os.path.basename(mosaic_file)}")
-
-        if step_config.get('split_extensions', True):
-            base = os.path.basename(mosaic_file)
-            for suffix in ('_sci.fits', '_err.fits',
-                           '_wht.fits', '_srcmask.fits'):
-                ver_ext = os.path.join(
-                    mosaic_outdir, base.replace('_i2d.fits', suffix),
-                )
-                if os.path.exists(ver_ext):
-                    latest_ext = os.path.join(
-                        mosaic_outdir, f'{latest_name}{suffix}',
-                    )
-                    if (os.path.islink(latest_ext)
-                            or os.path.exists(latest_ext)):
-                        os.remove(latest_ext)
-                    os.symlink(os.path.basename(ver_ext), latest_ext)
+        # The `version` axis is retired (epic #261, N2 / D3): the mosaic basename
+        # is now the single canonical name per (field, filter, tile, pixel_scale),
+        # so the old `_latest_` symlink farm that aliased a versioned output has no
+        # target to point at and is gone. Readers (rgb, refcat, deploy) resolve the
+        # direct version-free name.

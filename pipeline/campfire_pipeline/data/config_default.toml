@@ -406,8 +406,9 @@
     # ERR agrees to ~1%. See issue #138.
     implementation = "jwst"
     pixel_scale = "30mas"
-    version = "v0_1"
-    mosaic_name = "mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[version]_[tile]"
+    # Version-free mosaic naming (epic #261, N2 / D3): one canonical mosaic per
+    # (field, filter, tile, pixel_scale). Do not reintroduce a [version] segment.
+    mosaic_name = "mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[tile]"
     pixfrac = 1
     kernel = "square"
     background_subtract = true

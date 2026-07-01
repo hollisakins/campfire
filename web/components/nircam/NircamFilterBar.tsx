@@ -9,7 +9,6 @@ export interface NircamFilterOptions {
   tiles: string[];
   filters: string[];
   pixel_scales: string[];
-  versions: string[];
   extensions: string[];
 }
 
@@ -18,7 +17,6 @@ export const DEFAULT_NIRCAM_FILTERS: NircamFilterOptions = {
   tiles: [],
   filters: [],
   pixel_scales: [],
-  versions: [],
   extensions: [],
 };
 
@@ -29,7 +27,6 @@ interface NircamFilterBarProps {
   availableTiles: string[];
   availableFilters: string[];
   availablePixelScales: string[];
-  availableVersions: string[];
   availableExtensions: string[];
   className?: string;
 }
@@ -41,7 +38,6 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
   availableTiles,
   availableFilters,
   availablePixelScales,
-  availableVersions,
   availableExtensions,
   className = '',
 }) => {
@@ -73,11 +69,6 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
     label: p,
   }));
 
-  const versionOptions: FilterOption[] = availableVersions.map((v) => ({
-    value: v,
-    label: v,
-  }));
-
   const extensionOptions: FilterOption[] = availableExtensions.map((e) => ({
     value: e,
     label: e.toUpperCase(),
@@ -89,7 +80,6 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
     filterState.tiles.length > 0 ||
     filterState.filters.length > 0 ||
     filterState.pixel_scales.length > 0 ||
-    filterState.versions.length > 0 ||
     filterState.extensions.length > 0;
 
   const handleClearAll = () => {
@@ -133,14 +123,6 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
           options={pixelScaleOptions}
           selected={filterState.pixel_scales}
           onChange={(selected) => updateFilter('pixel_scales', selected as string[])}
-        />
-
-        {/* Version filter */}
-        <FilterChip
-          label="Version"
-          options={versionOptions}
-          selected={filterState.versions}
-          onChange={(selected) => updateFilter('versions', selected as string[])}
         />
 
         {/* Extension filter */}

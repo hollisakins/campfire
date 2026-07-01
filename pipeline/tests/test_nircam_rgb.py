@@ -125,14 +125,21 @@ class TestFindMosaic:
     def test_returns_none_when_missing(self, tmp_path):
         assert _find_mosaic(str(tmp_path), 'cosmos', 'f444w', '60mas', 'A1') is None
 
-    def test_picks_latest_version(self, tmp_path):
-        for ver in ('v0_1', 'v0_2', 'v0_3'):
-            (tmp_path / f'mosaic_nircam_f444w_cosmos_60mas_{ver}_A1_i2d.fits').touch()
-        # Add an unrelated file the glob should ignore.
-        (tmp_path / 'mosaic_nircam_f444w_cosmos_60mas_v0_3_A1_i2d_thumb.png').touch()
+    def test_resolves_version_free_name(self, tmp_path):
+        # epic #261, N2 / D3: the mosaic basename is version-free — one canonical
+        # name per slot, resolved directly (no glob, no _latest_).
+        target = tmp_path / 'mosaic_nircam_f444w_cosmos_60mas_A1_i2d.fits'
+        target.touch()
         path = _find_mosaic(str(tmp_path), 'cosmos', 'f444w', '60mas', 'A1')
         assert path is not None
-        assert os.path.basename(path) == 'mosaic_nircam_f444w_cosmos_60mas_v0_3_A1_i2d.fits'
+        assert os.path.basename(path) == 'mosaic_nircam_f444w_cosmos_60mas_A1_i2d.fits'
+
+    def test_ignores_stale_versioned_files(self, tmp_path):
+        # A pre-N2 versioned/`_latest_` mosaic is NOT matched — that slot is
+        # re-reduced fresh (D6), never silently served from a stale reduction.
+        (tmp_path / 'mosaic_nircam_f444w_cosmos_60mas_v0_3_A1_i2d.fits').touch()
+        (tmp_path / 'mosaic_nircam_f444w_cosmos_60mas_latest_A1_i2d.fits').touch()
+        assert _find_mosaic(str(tmp_path), 'cosmos', 'f444w', '60mas', 'A1') is None
 
 
 class TestFieldRgbParsing:

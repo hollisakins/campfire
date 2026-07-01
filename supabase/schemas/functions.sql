@@ -3356,6 +3356,7 @@ DECLARE
   v_field text;
   v_action text;
   v_spectrum_ids integer[];
+  v_n_images integer;
   v_result json;
 BEGIN
   SELECT COALESCE(up.is_admin, false) INTO v_is_admin
@@ -3373,10 +3374,10 @@ BEGIN
     RAISE EXCEPTION 'Deployment % not found', p_deployment_id;
   END IF;
 
-  -- NIRCam field-scoped deployment (epic #261, N1): no spectra to flip — the
-  -- exposure/mosaic FITS visibility rides deployment.status via the storage_objects
-  -- gate, so flipping the deployment row is the whole transition. (N2 extends this
-  -- to also flip nircam_images.deploy_status for the public mosaic index.)
+  -- NIRCam field-scoped deployment (epic #261, N1/N2): exposure/mosaic FITS
+  -- visibility rides deployment.status via the storage_objects gate; the public
+  -- mosaic index (nircam_images) carries its own deploy_status, flipped here to
+  -- match (mirrors how the observation path flips spectra.deploy_status).
   IF v_field IS NOT NULL THEN
     v_action := CASE WHEN p_to = 'revoked' THEN 'revoke'
                      WHEN p_to = 'draft' THEN 'upload' ELSE 'publish' END;
@@ -3385,12 +3386,17 @@ BEGIN
       published_at = CASE WHEN p_to = 'published' THEN now() ELSE published_at END,
       revoked_at = CASE WHEN p_to = 'revoked' THEN now() ELSE revoked_at END
     WHERE id = p_deployment_id;
-    INSERT INTO deploy_events (actor, action, deployment_id, status_to, host, metadata)
-      VALUES (p_actor, v_action, p_deployment_id, p_to, p_host,
+    WITH flipped AS (
+      UPDATE nircam_images SET deploy_status = p_to
+      WHERE deployment_id = p_deployment_id AND deploy_status <> p_to
+      RETURNING 1)
+    SELECT count(*) INTO v_n_images FROM flipped;
+    INSERT INTO deploy_events (actor, action, deployment_id, status_to, host, affected_count, metadata)
+      VALUES (p_actor, v_action, p_deployment_id, p_to, p_host, v_n_images,
               jsonb_build_object('field', v_field));
     RETURN json_build_object(
-      'deployment_id', p_deployment_id, 'field', v_field,
-      'status', p_to, 'spectra', json_build_object('updated', 0, 'action', v_action));
+      'deployment_id', p_deployment_id, 'field', v_field, 'status', p_to,
+      'nircam_images', json_build_object('updated', v_n_images, 'action', v_action));
   END IF;
 
   -- Which current statuses transition to p_to:

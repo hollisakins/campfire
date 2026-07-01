@@ -283,7 +283,6 @@ export interface NircamImage {
   tile: string;
   filter: string;
   pixel_scale: string;
-  version: string;
   extension: string;  // sci, err, rms, srcmask
   file_path: string;
   file_size?: number; // in bytes, if available

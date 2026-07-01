@@ -282,6 +282,33 @@ def set_active_deployment(client, keys: list[str], deployment_id: int) -> int:
     return len(keys)
 
 
+def fetch_active_content_hashes(client, keys: list[str]) -> dict[str, str]:
+    """Return ``{storage_key: content_hash}`` for the active registry rows among *keys*.
+
+    The whole-file change-detection read for the NIRCam mosaic dedup (epic #261,
+    N2): deploy skips re-uploading a mosaic whose bytes are unchanged. Only rows
+    with an authoritative ``sha256:`` hash are returned (a provisional ``etag:``
+    can't be compared to a fresh local sha256, so those always re-upload).
+    """
+    if not keys:
+        return {}
+    out: dict[str, str] = {}
+    for i in range(0, len(keys), 200):
+        chunk = keys[i:i + 200]
+        resp = (
+            client.table('storage_objects')
+            .select('storage_key, content_hash')
+            .in_('storage_key', chunk)
+            .eq('status', 'active')
+            .execute()
+        )
+        for r in (resp.data or []):
+            h = r.get('content_hash')
+            if h and h.startswith('sha256:'):
+                out[r['storage_key']] = h
+    return out
+
+
 def fetch_active_sci_dq_hashes(client, keys: list[str]) -> dict[str, str]:
     """Return ``{storage_key: sci_dq_hash}`` for the active registry rows among *keys*.
 

@@ -89,11 +89,38 @@ def input_entry(filepath, extra=None):
 
 
 # ---------------------------------------------------------------------------
+# Mosaic naming (epic #261, N2 / D3 — the version axis is retired)
+# ---------------------------------------------------------------------------
+
+# One logical mosaic per (field, filter, tile, pixel_scale, extension); no
+# version segment. The single builder below is the sole authority for the
+# basename, shared by the resample step and the staleness check so the two can
+# never disagree.
+DEFAULT_MOSAIC_NAME = 'mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[tile]'
+
+
+def build_mosaic_name(filtname, field_name, pixel_scale, tile, template=None):
+    """Version-free mosaic basename (without ``_i2d.fits``).
+
+    Expands the ``[filter]`` / ``[field_name]`` / ``[pixel_scale]`` / ``[tile]``
+    placeholders. A ``template`` override (from ``resample.mosaic_name`` config)
+    may omit some placeholders but must NOT reintroduce ``[version]`` — that axis
+    is retired (D3).
+    """
+    tmpl = template or DEFAULT_MOSAIC_NAME
+    return (tmpl
+            .replace('[filter]', filtname)
+            .replace('[field_name]', field_name)
+            .replace('[pixel_scale]', pixel_scale)
+            .replace('[tile]', tile))
+
+
+# ---------------------------------------------------------------------------
 # Manifest creation / I/O
 # ---------------------------------------------------------------------------
 
 def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
-                    version, input_files, stage_config):
+                    input_files, stage_config):
     """Build a manifest dict for a completed mosaic tile.
 
     Parameters
@@ -108,8 +135,6 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
         Tile name.
     pixel_scale : str
         Pixel scale string (e.g. ``'60mas'``).
-    version : str
-        Mosaic version string (e.g. ``'v0_1'``).
     input_files : list of str
         Paths to the CRF files that were drizzled into this tile.
     stage_config : dict
@@ -153,7 +178,6 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
         'filter': filtname,
         'tile': tile,
         'pixel_scale': pixel_scale,
-        'version': version,
         'created_at': datetime.now(timezone.utc).isoformat(),
         'pipeline_version': pipeline_version,
         'config_hash': config_hash,
@@ -308,7 +332,6 @@ def get_stale_tiles(field, filtname, stage_config):
     from campfire_pipeline.nircam.geometry import select_overlapping_files
 
     resample_cfg = stage_config.get('resample', {})
-    version = resample_cfg.get('version', 'v0_1')
     pixel_scale = resample_cfg.get('pixel_scale', '60mas')
     if isinstance(pixel_scale, (float, int)):
         if pixel_scale > 1:
@@ -333,15 +356,10 @@ def get_stale_tiles(field, filtname, stage_config):
 
     results = []
     for tile in tiles:
-        mosaic_name = resample_cfg.get(
-            'mosaic_name',
-            'mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[version]_[tile]',
+        mosaic_name = build_mosaic_name(
+            filtname, field.name, pixel_scale, tile,
+            template=resample_cfg.get('mosaic_name'),
         )
-        mosaic_name = mosaic_name.replace('[filter]', filtname)
-        mosaic_name = mosaic_name.replace('[field_name]', field.name)
-        mosaic_name = mosaic_name.replace('[pixel_scale]', pixel_scale)
-        mosaic_name = mosaic_name.replace('[version]', version)
-        mosaic_name = mosaic_name.replace('[tile]', tile)
 
         manifest_path = os.path.join(
             field.filter_dir(filtname), f'{mosaic_name}_manifest.json',

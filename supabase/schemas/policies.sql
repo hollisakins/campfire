@@ -641,11 +641,13 @@ CREATE POLICY "insert_audit_by_access"
 
 ALTER TABLE nircam_images ENABLE ROW LEVEL SECURITY;
 
--- All authenticated users can read (reference data, no program association).
+-- Published mosaics are public science (a field spans multiple programs, so there
+-- is no per-program scope — published => visible to everyone); draft/revoked are
+-- admin-only (epic #261, N2). Mirrors the spectra deploy_status gate.
 DROP POLICY IF EXISTS "authenticated_select_nircam" ON nircam_images;
 CREATE POLICY "authenticated_select_nircam"
   ON nircam_images FOR SELECT TO authenticated
-  USING (true);
+  USING (deploy_status = 'published' OR (SELECT public.is_admin()));
 
 
 -- =============================================================================
