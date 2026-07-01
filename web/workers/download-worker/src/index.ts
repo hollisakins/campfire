@@ -1,84 +1,114 @@
 /**
- * Cloudflare Worker for CAMPFIRE FITS file downloads
- * Authenticated file proxy — serves individual files from R2
+ * Cloudflare Worker for CAMPFIRE FITS file downloads.
+ *
+ * A credential-free, per-file CORS proxy. Vercel authorizes a download (RLS),
+ * presigns each file against whichever backend homes it (dual-read: R2 or OSN),
+ * signs the presigned URL with the shared secret, and hands the browser ready
+ * `/proxy?url=…&sig=…` links. This Worker verifies the signature, checks the
+ * target host against an allowlist, then streams the object back with CORS
+ * headers so the browser can read the bytes and zip them client-side.
+ *
+ * It holds NO object-store credentials and NO R2 binding — that's what keeps it
+ * on the free Workers plan (1 subrequest, ~0 CPU per request) and lets it serve
+ * OSN, which the old R2-binding proxy could not.
  */
 
-import { verifyToken } from './auth';
+import { verifyUrlSignature } from './auth';
 
 export interface Env {
-  R2_BUCKET: R2Bucket;
-  JWT_SECRET: string;
-  ALLOWED_ORIGINS: string;
+  JWT_SECRET: string; // shared HMAC secret with the Next.js server action
+  ALLOWED_ORIGINS: string; // comma-separated browser origins allowed to read responses
+  ALLOWED_FETCH_HOSTS: string; // comma-separated object-store hosts the proxy may fetch
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // Handle CORS preflight
     if (request.method === 'OPTIONS') {
       return handleCORS(request, env);
     }
 
-    // Only GET /file is supported
-    if (request.method !== 'GET' || url.pathname !== '/file') {
+    if (request.method !== 'GET' || url.pathname !== '/proxy') {
       return new Response('Not found', { status: 404 });
     }
 
     try {
-      // Extract parameters
-      const key = url.searchParams.get('key');
-      if (!key) {
-        return new Response('Missing key parameter', { status: 400 });
+      const target = url.searchParams.get('url');
+      const sig = url.searchParams.get('sig');
+      if (!target || !sig) {
+        return corsError('Missing url or sig parameter', 400, request, env);
       }
 
-      const authHeader = request.headers.get('Authorization');
-      const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-      if (!token) {
-        return new Response('Missing Authorization header', { status: 401 });
+      // Only fetch URLs our own server signed — the proxy is not an open relay.
+      const valid = await verifyUrlSignature(target, sig, env.JWT_SECRET);
+      if (!valid) {
+        return corsError('Invalid signature', 403, request, env);
       }
 
-      // Verify JWT
-      const payload = await verifyToken(token, env.JWT_SECRET);
-
-      if (payload.exp && payload.exp < Date.now()) {
-        return new Response('Token expired', { status: 401 });
+      // Defense-in-depth: even a validly-signed URL must point at an allowlisted
+      // object-store host over https (guards SSRF if the secret ever leaks).
+      const check = isAllowedFetchUrl(target, env.ALLOWED_FETCH_HOSTS);
+      if (!check.ok) {
+        return corsError(`Target not allowed: ${check.reason}`, 403, request, env);
       }
 
-      // Check that requested key is in the token's allowlist
-      const allowed = payload.files?.some((f) => f.key === key);
-      if (!allowed) {
-        return new Response('File not authorized', { status: 403 });
+      // redirect: 'error' — an allowlisted host must not be able to bounce us
+      // to an arbitrary host after the allowlist check.
+      const upstream = await fetch(target, { redirect: 'error' });
+      if (!upstream.ok || !upstream.body) {
+        return corsError(`Upstream fetch failed (${upstream.status})`, 502, request, env);
       }
 
-      // Fetch from R2
-      const object = await env.R2_BUCKET.get(key);
-      if (!object) {
-        return new Response('File not found', { status: 404 });
-      }
+      const headers = new Headers();
+      headers.set('Content-Type', upstream.headers.get('Content-Type') || 'application/octet-stream');
+      const len = upstream.headers.get('Content-Length');
+      if (len) headers.set('Content-Length', len);
+      headers.set('Access-Control-Allow-Origin', getAllowedOrigin(request, env));
+      headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      headers.set('Vary', 'Origin');
+      headers.set('Cache-Control', 'no-store');
 
-      return new Response(object.body, {
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'Content-Length': object.size.toString(),
-          'Access-Control-Allow-Origin': getAllowedOrigin(request, env),
-          'Access-Control-Allow-Methods': 'GET, OPTIONS',
-          'Access-Control-Allow-Headers': 'Authorization',
-        },
-      });
+      return new Response(upstream.body, { status: 200, headers });
     } catch (error) {
       console.error('Worker error:', error);
-
-      if (error instanceof Error) {
-        if (error.message.includes('Invalid token') || error.message.includes('verification')) {
-          return new Response('Invalid or expired token', { status: 401 });
-        }
-      }
-
-      return new Response('Internal server error', { status: 500 });
+      return corsError('Internal server error', 500, request, env);
     }
   },
 };
+
+/**
+ * Validate that a signed target URL is safe to fetch: https, no embedded
+ * credentials, and a hostname that exactly matches (or is a subdomain of) one
+ * of the allowlisted object-store hosts. Exported for unit testing.
+ */
+export function isAllowedFetchUrl(
+  rawUrl: string,
+  allowedHostsCsv: string
+): { ok: true } | { ok: false; reason: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return { ok: false, reason: 'unparseable url' };
+  }
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, reason: 'non-https scheme' };
+  }
+  if (parsed.username || parsed.password) {
+    return { ok: false, reason: 'embedded credentials' };
+  }
+  const allowed = allowedHostsCsv
+    .split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+  const host = parsed.hostname.toLowerCase();
+  const hostOk = allowed.some((h) => host === h || host.endsWith('.' + h));
+  if (!hostOk) {
+    return { ok: false, reason: 'host not in allowlist' };
+  }
+  return { ok: true };
+}
 
 function handleCORS(request: Request, env: Env): Response {
   return new Response(null, {
@@ -86,19 +116,33 @@ function handleCORS(request: Request, env: Env): Response {
     headers: {
       'Access-Control-Allow-Origin': getAllowedOrigin(request, env),
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Authorization',
       'Access-Control-Max-Age': '86400',
+      'Vary': 'Origin',
     },
   });
 }
 
 function getAllowedOrigin(request: Request, env: Env): string {
   const origin = request.headers.get('Origin');
-  const allowedOrigins = env.ALLOWED_ORIGINS.split(',');
+  const allowedOrigins = (env.ALLOWED_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
 
   if (origin && allowedOrigins.includes(origin)) {
     return origin;
   }
 
-  return allowedOrigins[0] || '*';
+  // Never fall back to '*': a misconfigured (empty) allowlist must DENY, not
+  // open the proxy to every origin. 'null' is a valid Origin value no browser matches.
+  return allowedOrigins[0] ?? 'null';
+}
+
+/** Error response that still carries CORS headers, so the browser can read the
+ * status/message instead of collapsing every failure into an opaque network error. */
+function corsError(message: string, status: number, request: Request, env: Env): Response {
+  return new Response(message, {
+    status,
+    headers: {
+      'Access-Control-Allow-Origin': getAllowedOrigin(request, env),
+      'Vary': 'Origin',
+    },
+  });
 }

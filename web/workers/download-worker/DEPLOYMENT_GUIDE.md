@@ -5,9 +5,11 @@ This guide will walk you through deploying the CAMPFIRE download worker to Cloud
 ## Prerequisites
 
 - Cloudflare account (you have account ID: `2d136e3d61aca8a4ae08a2ea760f6d23`)
-- Wrangler CLI installed (you have version 4.28.0)
-- R2 bucket named `campfire` with FITS files
+- Wrangler CLI installed
+- FITS objects on R2 (`campfire`) and/or OSN — the Worker fetches presigned URLs,
+  so it needs **no** bucket binding and holds no object-store credentials
 - Domain: `download.campfire.hollisakins.com`
+- Free Workers plan is sufficient (one subrequest, ~0 CPU per request)
 
 ## Step 1: Install Worker Dependencies
 
@@ -19,9 +21,11 @@ npm install
 ```
 
 This will install:
-- `fflate` - For ZIP streaming
 - `@cloudflare/workers-types` - TypeScript types
 - `wrangler` - Cloudflare deployment tool
+
+The Worker has no runtime dependencies — it holds no credentials and does not
+zip; the browser zips client-side with `fflate`, which lives in the web app.
 
 ## Step 2: Generate JWT Secret
 
@@ -113,21 +117,19 @@ Published campfire-download (X.XX sec)
 Current Deployment ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
-## Step 8: Verify R2 Bucket Binding
+## Step 8: Smoke-Test the Proxy
 
-Check that the worker can access your R2 bucket:
+The Worker has no R2 binding — it proxies presigned URLs. Confirm it's up and
+rejecting unsigned requests:
 
 ```bash
-cd workers/download-worker
-wrangler whoami
+curl -i 'https://download.campfire.hollisakins.com/proxy'
+# expect: HTTP/1.1 400  Missing url or sig parameter
 ```
 
-Then verify the bucket is bound:
-```bash
-wrangler r2 bucket list
-```
-
-You should see `campfire` in the list.
+Also confirm `ALLOWED_FETCH_HOSTS` in `wrangler.toml` lists both the OSN host and
+your R2 account host, so both backends are fetchable. A real download is exercised
+end-to-end from the web app in Step 9.
 
 ## Step 9: Test from Next.js
 
@@ -171,14 +173,21 @@ Press `Ctrl+C` to stop tailing logs.
 1. Verify secrets match in both places
 2. Regenerate and update both if needed
 
-### Error: "File not found in R2"
+### A file fails with 403 "Target not allowed"
 
-**Cause:** FITS file path in database doesn't match R2 object key
+**Cause:** The presigned URL's host is not in `ALLOWED_FETCH_HOSTS` (e.g. an object
+still on R2 while the var lists only OSN, or a mismatched R2 account host).
 
 **Fix:**
-1. Check a sample FITS path in your database
-2. Verify it exists in R2: `wrangler r2 object get campfire <path>`
-3. Ensure paths match exactly (case-sensitive!)
+1. Confirm the presign host is `uaz1.osn.mghpcc.org` (OSN) or
+   `<accountid>.r2.cloudflarestorage.com` (R2).
+2. Add the missing host to `ALLOWED_FETCH_HOSTS` in `wrangler.toml` and redeploy.
+
+### A file fails with 403 "Invalid signature"
+
+**Cause:** `JWT_SECRET` (Worker) and `WORKER_JWT_SECRET` (Next.js) differ.
+
+**Fix:** Set both to the same value and redeploy.
 
 ### Error: "CORS error" in browser
 
@@ -227,7 +236,7 @@ Before going to production:
 - [ ] JWT secret generated and set in both Next.js and Worker
 - [ ] DNS record created for `download.campfire.hollisakins.com`
 - [ ] Worker deployed successfully
-- [ ] R2 bucket binding working
+- [ ] Proxy smoke test passes (`GET /proxy` → 400) and `ALLOWED_FETCH_HOSTS` lists OSN + R2
 - [ ] Test download with small dataset (1-5 objects)
 - [ ] Test download with larger dataset (50-100 objects)
 - [ ] Test download with max limit (200 objects)
