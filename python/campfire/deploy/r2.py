@@ -1,14 +1,20 @@
 """
-Cloudflare R2 upload helpers.
+Object-store upload helpers.
 
-Supports two upload modes:
+Two upload modes, selected by the resolved deploy auth mode — NOT by a silent
+fallback (issue #250):
 
-1. **Presigned URLs** (preferred): Requests batch presigned PutObject URLs from
-   the CAMPFIRE web API and uploads directly to R2. No R2 credentials needed
-   on the client — just ``campfire login``.
+1. **Presigned URLs** (``login`` mode, the default): request batch presigned
+   PutObject URLs from the CAMPFIRE web API and upload straight to the store. No
+   object-store write credentials on the client — just ``campfire login``. If the
+   presign endpoint is unavailable the upload FAILS loudly; it never silently
+   drops to direct-boto3 (that silent switch was the footgun #250 removed).
 
-2. **Direct boto3** (legacy fallback): Uses R2 credentials from deploy config.
-   Used when presigned URL generation is not available.
+2. **Direct boto3** (``service_role`` / ``local`` mode): an explicit opt-in that
+   uses object-store credentials from the deploy config. Also the mechanism the
+   maintenance paths (``remove`` / ``reconcile`` / ``registry copy``) use for the
+   LIST / HEAD / DELETE / cross-bucket-COPY operations that presigned PutObject
+   URLs structurally cannot express.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -38,21 +44,27 @@ PRESIGN_BATCH_SIZE = 500  # Max URLs per presign request
 
 
 def _get_presign_headers(config: dict) -> Optional[dict]:
-    """Get auth headers for presign endpoint, or None if not available."""
-    sb = config.get('supabase', {})
-    token = sb.get('supabase_token')
-    if not token:
-        return None
+    """Bearer auth headers for the presign endpoint, straight from the login
+    ``TokenManager``; ``None`` when there is no usable login session.
 
-    # Try to get the access token from stored credentials for API auth
+    Authenticates directly against the stored OAuth session rather than gating on
+    ``config['supabase']['supabase_token']`` (issue #250): the presign route wants
+    the API access token, and coupling it to the Supabase token's presence is what
+    let an ambient service-role key silently disable presigned uploads.
+    """
     try:
         from campfire.api.session import resolve_base_url
         from campfire.auth.tokens import TokenManager
         tm = TokenManager(base_url=resolve_base_url())
+        if not tm.is_oauth():
+            return None
         access_token = tm.get_valid_token()
-        return {'Authorization': f'Bearer {access_token}'}
     except Exception:
         return None
+
+    if not access_token:
+        return None
+    return {'Authorization': f'Bearer {access_token}'}
 
 
 def _get_presign_base_url() -> str:
@@ -337,10 +349,13 @@ def upload_files_parallel(
     backend: str = 'r2',
 ) -> tuple[int, int, list[str]]:
     """
-    Upload files to the data store, using presigned URLs if available, else boto3.
+    Upload files to the data store, dispatching on the resolved deploy auth mode.
 
-    This is the main entry point for all uploads. It tries presigned URLs first
-    (no local object-store credentials needed), falling back to direct boto3.
+    This is the main entry point for all uploads. In ``login`` mode (the default)
+    it uploads via presigned URLs ONLY — if presigning is unavailable it raises,
+    rather than silently falling back to direct boto3 (the footgun #250 removed).
+    In the explicit ``service_role`` / ``local`` modes it uploads directly with
+    boto3 using local object-store credentials.
 
     Parameters
     ----------
@@ -373,11 +388,22 @@ def upload_files_parallel(
     if not tasks:
         return 0, 0, []
 
-    # Try presigned URL mode first
-    urls = request_presigned_urls(
-        config, tasks, bucket=bucket_id, cache_control=cache_control, backend=backend,
-    )
-    if urls:
+    # Direct boto3 is an EXPLICIT opt-in (service-role / --local), never a silent
+    # fallback. In login mode (default) uploads go only via presigned URLs.
+    mode = config.get('supabase', {}).get('_auth_mode')
+    if mode not in ('service_role', 'local'):
+        urls = request_presigned_urls(
+            config, tasks, bucket=bucket_id, cache_control=cache_control, backend=backend,
+        )
+        if not urls:
+            raise RuntimeError(
+                "Presigned upload URLs are unavailable, and login-mode deploys "
+                "upload only via presigned URLs (no direct-S3 fallback — issue #250). "
+                "This usually means the login session expired or the deploy API is "
+                "unreachable. Re-run `campfire login`; or, for an unattended run, set "
+                "CAMPFIRE_DEPLOY_MODE=service-role with CAMPFIRE_S3_* credentials to "
+                "upload directly."
+            )
         # Guard against a web deployment that predates OSN upload support: an old
         # /deploy/presign ignores `backend` and signs R2, which would land bytes in
         # R2 under canonical keys while the registry records backend='osn' — silent
@@ -388,7 +414,7 @@ def upload_files_parallel(
             urls, tasks, max_workers=max_workers, desc=desc, succeeded_out=succeeded_out,
         )
 
-    # Fall back to direct boto3 upload via the per-purpose backend factory.
+    # Explicit direct-boto3 upload via the per-purpose backend factory.
     from campfire.deploy.backend import (
         PURPOSE_SECTIONS, make_s3_client, resolve_backend,
     )
