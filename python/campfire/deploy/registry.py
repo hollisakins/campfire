@@ -347,29 +347,56 @@ class ReconcileReport:
         )
 
 
+def _canonical_identity(key: str) -> str:
+    """Scheme-invariant identity for a storage key: its CANONICAL form, or the key
+    verbatim if it does not parse. A1 (#215) re-keyed migrated objects
+    legacy→canonical while the denormalized DB pointers (spectra.fits_path,
+    nircam_*) stayed legacy, so the vocabularies only line up under
+    canonicalization. Non-layout / unsafe keys raise and are compared as-is."""
+    try:
+        return canonical_key_for(key)
+    except Exception:
+        return key
+
+
 def compute_reconcile(
     live_pointers: Iterable[str],
     registry_keys: Iterable[str],
     bucket_keys: Optional[Iterable[str]] = None,
 ) -> ReconcileReport:
-    """Classify the three storage vocabularies against each other.
+    """Classify the three storage vocabularies against each other **by canonical
+    identity**, reporting the original keys.
 
     ``live_pointers`` = the union of denormalized DB storage keys
-    (spectra.fits_path, nircam_images.file_path, nircam_exposures png paths).
-    ``registry_keys`` = storage_objects.storage_key for the data bucket.
-    ``bucket_keys`` = actual object keys from a bucket LIST (optional; when None,
-    dangling/orphan detection is skipped — coverage is still computed).
+    (spectra.fits_path, nircam_images.file_path, nircam_exposures png paths) — all
+    LEGACY. ``registry_keys`` = storage_objects.storage_key (CANONICAL for objects
+    A1 migrated to OSN; LEGACY for the rest). ``bucket_keys`` = actual object keys
+    from a bucket LIST (optional; when None, dangling/orphan detection is skipped —
+    coverage is still computed).
+
+    #249: because A1 re-keyed migrated objects legacy→canonical while fits_path
+    stayed legacy, a naïve set difference reports every migrated final as
+    ``missing``. We collapse each key to its canonical identity for the set math
+    (legacy + canonical duplicates of the same object coincide), then report the
+    original keys so the operator sees the real fits_path / bucket key.
+
+    NOTE: ``bucket_keys`` today comes from a single data-bucket (R2) LIST; migrated
+    objects live on OSN but R2 retains their legacy copies, so canonicalizing keeps
+    dangling/orphan correct. When R2 *data* is retired (deferred A2 work), the LIST
+    must union OSN so dangling detection stays honest.
     """
-    live = {k for k in live_pointers if k}
-    registry = {k for k in registry_keys if k}
-    missing = live - registry
+    # canonical identity -> original key, per vocabulary (last-writer-wins on a
+    # legacy+canonical collision is fine: same logical object).
+    live = {_canonical_identity(k): k for k in live_pointers if k}
+    registry = {_canonical_identity(k): k for k in registry_keys if k}
+    missing = {live[c] for c in (live.keys() - registry.keys())}
 
     if bucket_keys is None:
         return ReconcileReport(missing, set(), set(), set())
 
-    bucket = {k for k in bucket_keys if k}
-    dangling = registry - bucket
-    orphans = bucket - registry
+    bucket = {_canonical_identity(k): k for k in bucket_keys if k}
+    dangling = {registry[c] for c in (registry.keys() - bucket.keys())}
+    orphans = {bucket[c] for c in (bucket.keys() - registry.keys())}
     adoptable = {k for k in orphans if is_known_key(k)}
     return ReconcileReport(missing, dangling, orphans, adoptable)
 
