@@ -63,14 +63,28 @@ def boxcar_profile(start, end, n_pixels):
     return profile
 
 
-def optext_profile(collapsed, start, end):
+def optext_profile(collapsed, start, end, bounded=True):
+    """Build a normalized cross-dispersion profile for optimal extraction.
 
+    When ``bounded`` is True (the default) the profile is restricted to the
+    nominal extraction aperture ``[start, end]``. This is appropriate for MSA
+    slitlets, where bars separate adjacent shutters and flux outside the
+    aperture belongs to neighbouring sources rather than the target.
+
+    NIRSpec fixed-slit exposures have no such bars, so the full cross-dispersion
+    cut is a valid spatial profile; pass ``bounded=False`` to use every pixel
+    (``start``/``end`` are then ignored for the profile itself).
+    """
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', category=RuntimeWarning)
 
-        x = np.arange(len(collapsed)+1)
         profile = np.zeros_like(collapsed)
-        profile[(x[:-1] > start)&(x[1:] <= end)] = collapsed[(x[:-1] > start)&(x[1:] <= end)]
+        if bounded:
+            x = np.arange(len(collapsed)+1)
+            in_ap = (x[:-1] > start) & (x[1:] <= end)
+            profile[in_ap] = collapsed[in_ap]
+        else:
+            profile[:] = collapsed
         profile[profile < 0] = 0
         profile /= np.nansum(profile)
 

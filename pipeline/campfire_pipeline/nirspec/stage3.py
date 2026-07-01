@@ -398,6 +398,11 @@ def opt_ext_single_source(
     except (KeyError, IndexError):
         pass
 
+    # Fixed-slit exposures have no MSA bars, so the optimal-extraction profile
+    # need not be bounded to the nominal aperture (the bounding exists to avoid
+    # picking up neighbouring shutters across bars in MSA data).
+    is_fixed_slit = bool(ph.get('CFFXSLT', False))
+
     primary = fits.PrimaryHDU(header=ph)
 
     # Optimal extraction
@@ -407,7 +412,7 @@ def opt_ext_single_source(
     x1d_start = x1d['EXTRACT1D'].header['EXTRYSTR']-1
     x1d_stop = x1d['EXTRACT1D'].header['EXTRYSTP']
     cen = (x1d_start+x1d_stop)/2
-    profile_opt = optext_profile(collapsed, x1d_start, x1d_stop)
+    profile_opt = optext_profile(collapsed, x1d_start, x1d_stop, bounded=not is_fixed_slit)
     corrupted, n_pos, pos_frac = optext_profile_is_corrupted(collapsed, x1d_start, x1d_stop)
     if corrupted or all(np.isnan(profile_opt)):
         log(f"Optimal-extraction profile is corrupted for {product_name} "
@@ -614,7 +619,15 @@ def combine_per_eg_spectra(
     x1d_start = x1d['EXTRACT1D'].header['EXTRYSTR'] - 1
     x1d_stop = x1d['EXTRACT1D'].header['EXTRYSTP']
     cen = (x1d_start + x1d_stop) / 2
-    profile_opt = optext_profile(collapsed, x1d_start, x1d_stop)
+    # Fixed-slit exposures have no MSA bars, so skip the aperture bounding on the
+    # optimal-extraction profile (see opt_ext_single_source).
+    try:
+        _exp = s2d['EXPOSURES'].data
+        is_fixed_slit = ('fixed_slit' in _exp.columns.names
+                         and bool(np.any(_exp['fixed_slit'])))
+    except (KeyError, IndexError):
+        is_fixed_slit = False
+    profile_opt = optext_profile(collapsed, x1d_start, x1d_stop, bounded=not is_fixed_slit)
     corrupted, n_pos, pos_frac = optext_profile_is_corrupted(collapsed, x1d_start, x1d_stop)
     if corrupted or all(np.isnan(profile_opt)):
         log(f"Stacked optimal-extraction profile is corrupted for {product_name} "

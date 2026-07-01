@@ -71,6 +71,17 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- NIRSpec optimal extraction no longer bounds the cross-dispersion profile to
+  the nominal aperture for fixed-slit sources. The aperture bounding in
+  `optext_profile` exists to keep the profile from picking up flux from
+  neighbouring shutters across the bars in MSA slitlets; NIRSpec fixed slits
+  have no such bars, so the full cross-dispersion cut is a valid spatial
+  profile. Fixed-slit sources (detected from the `fixed_slit` column of the
+  s2d `EXPOSURES` table / `CFFXSLT` header, covering both standalone
+  `NRS_FIXEDSLIT` and fixed-slit-in-MSA sources) now extract with
+  `bounded=False`, changing the optimally-extracted `fnu`/`flam` for those
+  sources. MSA sources are unchanged (still bounded), and the boxcar
+  extractions are unaffected.
 - **NIRSpec canonical spectrum-exposure + instrument-parity layout (issue #212).
   BREAKING file-naming/structure change — a pipeline MAJOR.** The four NIRSpec
   intermediate files per `(exposure, detector, source)` (`_cal` / `_cal_bkgsub` /
