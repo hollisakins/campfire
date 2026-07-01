@@ -1,15 +1,19 @@
 name = "campfire-download"
 main = "src/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2025-06-01"
 
-# R2 bucket binding
-[[r2_buckets]]
-binding = "R2_BUCKET"
-bucket_name = "campfire"
+# No R2 binding: the Worker fetches presigned URLs (R2 or OSN) that Vercel mints,
+# so it holds no object-store credentials and works for either backend. This is
+# also what keeps it on the free Workers plan — one subrequest, ~0 CPU per request.
 
 # Environment variables (non-secret)
 [vars]
 ALLOWED_ORIGINS = "https://campfire.hollisakins.com,https://dev.campfire.hollisakins.com,http://localhost:3000"
+# Object-store hosts the proxy is allowed to fetch (SSRF guard). Both backends
+# are included so the proxy is storage-agnostic: OSN holds migrated FITS, the R2
+# account host serves un-migrated / NIRCam objects. Subdomains match too, so R2
+# virtual-hosted URLs (<bucket>.<account>.r2.cloudflarestorage.com) are covered.
+ALLOWED_FETCH_HOSTS = "uaz1.osn.mghpcc.org,2d136e3d61aca8a4ae08a2ea760f6d23.r2.cloudflarestorage.com"
 
 # Secrets (set via: wrangler secret put SECRET_NAME)
-# JWT_SECRET - shared with Next.js for token signing/verification
+# JWT_SECRET - shared with Next.js; used to HMAC-sign/verify the presigned URLs.

@@ -1,54 +1,37 @@
 /**
- * JWT verification for download tokens
- * Uses Web Crypto API (built into Cloudflare Workers)
+ * Per-URL HMAC-SHA256 verification for the download proxy.
+ *
+ * The Worker no longer holds object-store credentials or an R2 binding — it
+ * proxies presigned URLs that Vercel minted (dual-read: R2 or OSN) and signed
+ * with the shared secret. Verifying the signature over the exact URL means the
+ * proxy will only fetch URLs our own server authorized, so it can't be turned
+ * into an open relay. Uses the Web Crypto API (built into Cloudflare Workers).
  */
-
-export interface DownloadFile {
-  key: string; // R2 object key
-  filename: string; // Original filename
-}
-
-export interface DownloadPayload {
-  files: DownloadFile[];
-  exp: number; // Expiration timestamp (milliseconds)
-  zipFilename: string; // Name for the ZIP file
-}
 
 /**
- * Verify JWT token using HMAC SHA-256
+ * Verify that `signature` is HMAC-SHA256(secret, url), base64url-encoded.
+ * Constant-time via crypto.subtle.verify.
  */
-export async function verifyToken(token: string, secret: string): Promise<DownloadPayload> {
-  const parts = token.split('.');
-
-  if (parts.length !== 3) {
-    throw new Error('Invalid token format');
-  }
-
-  const [headerB64, payloadB64, signatureB64] = parts;
-
-  // Verify signature
+export async function verifyUrlSignature(
+  url: string,
+  signature: string,
+  secret: string
+): Promise<boolean> {
   const encoder = new TextEncoder();
-  const data = encoder.encode(`${headerB64}.${payloadB64}`);
-  const secretKey = await crypto.subtle.importKey(
+  const key = await crypto.subtle.importKey(
     'raw',
     encoder.encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['verify']
   );
-
-  const signature = base64UrlDecode(signatureB64);
-  const isValid = await crypto.subtle.verify('HMAC', secretKey, signature, data);
-
-  if (!isValid) {
-    throw new Error('Invalid token signature');
+  let sigBytes: ArrayBuffer;
+  try {
+    sigBytes = base64UrlDecode(signature);
+  } catch {
+    return false;
   }
-
-  // Decode payload
-  const payloadJson = atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/'));
-  const payload = JSON.parse(payloadJson);
-
-  return payload as DownloadPayload;
+  return crypto.subtle.verify('HMAC', key, sigBytes, encoder.encode(url));
 }
 
 /**

@@ -91,12 +91,12 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
     try {
       const result = await generateFitsDownloadUrl(filters, sortColumn, sortDirection, viewMode);
 
-      if (result.error || !result.files || !result.token || !result.workerUrl) {
+      if (result.error || !result.files) {
         setError(result.error || 'Failed to generate download URL');
         return;
       }
 
-      const { files, token, workerUrl, zipFilename } = result;
+      const { files, zipFilename } = result;
       setFitsProgress({ done: 0, total: files.length });
 
       // Fetch files in parallel with concurrency limit
@@ -110,10 +110,9 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
         while (queue.length > 0) {
           const file = queue.shift()!;
           try {
-            const resp = await fetch(
-              `${workerUrl}/file?key=${encodeURIComponent(file.key)}`,
-              { headers: { Authorization: `Bearer ${token}` } }
-            );
+            // proxyUrl is a ready-to-fetch Worker link (?url=<presigned>&sig=<hmac>);
+            // the Worker supplies CORS so the browser can read the bytes to zip them.
+            const resp = await fetch(file.proxyUrl);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const buf = await resp.arrayBuffer();
             fileData.push({ filename: file.filename, data: new Uint8Array(buf) });
