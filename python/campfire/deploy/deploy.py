@@ -473,15 +473,17 @@ def deploy_observation(
         if force_overwrite:
             print("!! FORCE OVERWRITE: inspection data will be reset")
         if not supabase_only:
-            print(f"Would upload to R2:")
+            print(f"Would upload to OSN (NIRSpec, canonical keys):")
             print(f"  {len(spec_paths)} FITS files")
             print(f"  {len(spec_paths)} spectrum JSON files")
             if zfit_paths:
                 print(f"  {len(zfit_paths)} zfit JSON files")
-            if rgb_files:
-                print(f"  {len(rgb_files)} RGB images")
-            if sed_files:
-                print(f"  {len(sed_files)} SED plots")
+            if rgb_files or sed_files:
+                print(f"Would upload to R2 (dead rgb/sed, legacy keys):")
+                if rgb_files:
+                    print(f"  {len(rgb_files)} RGB images")
+                if sed_files:
+                    print(f"  {len(sed_files)} SED plots")
         print(f"Would upsert to Supabase:")
         print(f"  Program: {program_slug}")
         print(f"  {len(objects)} object(s)")

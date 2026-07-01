@@ -26,7 +26,7 @@ from astropy.table import Table
 import astropy.units as u
 from supabase import Client
 
-from campfire_layout import Scope, storage_key
+from campfire_layout import KeyScheme, Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 
 
@@ -690,7 +690,7 @@ def deploy_field_photometry(
                 if sidecar is not None:
                     has_pz = True
                     n_pz += 1
-                    r2_key = storage_key('photometry_pz', Scope(field=field, object_id=obj['object_id']))
+                    r2_key = storage_key('photometry_pz', Scope(field=field, object_id=obj['object_id']), scheme=KeyScheme.CANONICAL)
                     local_path = Path(tmpdir) / f"{obj['object_id']}_pz.json"
                     local_path.write_text(
                         json.dumps(sidecar, separators=(',', ':')),
@@ -714,13 +714,16 @@ def deploy_field_photometry(
         }
         records.append(record)
 
-    # Upload P(z) sidecars to R2
+    # Upload P(z) sidecars to OSN (epic #210 / #216 — deploy → OSN). photometry_pz
+    # is a migrated data-bucket product, so it writes CANONICAL keys to OSN with
+    # backend='osn', matching the migrated registry row in place (see the NIRSpec
+    # paths in deploy.py).
     if upload_tasks:
-        print(f"  Uploading {len(upload_tasks)} P(z) sidecars to R2...")
+        print(f"  Uploading {len(upload_tasks)} P(z) sidecars to OSN...")
         uploaded_keys: set[str] = set()
         success, failed, errors = upload_files_parallel(
             deploy_config, upload_tasks, desc="P(z) sidecars",
-            succeeded_out=uploaded_keys,
+            succeeded_out=uploaded_keys, backend='osn',
         )
         if failed:
             print(f"    WARNING: {failed} sidecar uploads failed")
@@ -730,12 +733,12 @@ def deploy_field_photometry(
         # Storage registry (#214): index the P(z) sidecars that landed.
         if uploaded_keys:
             from campfire.deploy.registry import (
-                build_registry_rows, resolve_backend_label, upsert_storage_objects,
+                build_registry_rows, upsert_storage_objects,
             )
             from campfire.deploy.supabase import get_user_id_from_token
             reg_rows = build_registry_rows(
                 upload_tasks,
-                backend=resolve_backend_label(deploy_config),
+                backend='osn',
                 uploaded_by=get_user_id_from_token(deploy_config),
                 succeeded_keys=uploaded_keys,
             )
