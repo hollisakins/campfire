@@ -97,17 +97,19 @@ def test_exposure_ref_for_nircam_exposure():
     assert reg._exposure_ref_for("nircam_exposure_preview", f"{ROOT}_preview.png") is None
 
 
-def test_row_for_nircam_exposure_is_admin_only_and_carries_sci_dq():
+def test_row_for_nircam_exposure_identity_and_sci_dq():
+    # Deploy tags the row with a field deployment_id (visibility rides
+    # deployment.status); row_for_key defaults it to None when not supplied.
     row = reg.row_for_key(
         EXP_KEY, backend="osn", content_hash="sha256:" + "a" * 64,
         size_bytes=100, content_type="application/fits",
-        sci_dq_hash="sha256:" + "b" * 64)
+        deployment_id=42, sci_dq_hash="sha256:" + "b" * 64)
     assert row["product_type"] == "nircam_exposure"
     assert row["instrument"] == "nircam"
     assert row["field"] == "cosmos"
     assert row["observation"] is None
     assert row["spectrum_id"] is None       # not a spectrum
-    assert row["deployment_id"] is None      # admin-only intermediate
+    assert row["deployment_id"] == 42        # tagged with the field deployment
     assert row["exposure_ref"] == ROOT       # one active row per exposure
     assert row["sci_dq_hash"] == "sha256:" + "b" * 64
 

@@ -84,7 +84,8 @@ from campfire.deploy.deploy import (
 )
 from campfire.deploy.supabase import (
     get_supabase_client, upsert_programs, refresh_filter_options,
-    refresh_programs_overview, get_latest_deployment_id, set_deployment_status,
+    refresh_programs_overview, get_latest_deployment_id,
+    get_latest_field_deployment_id, set_deployment_status,
     get_user_id_from_token,
 )
 
@@ -209,7 +210,12 @@ def source_ids_option(f):
 @click.group(invoke_without_command=True)
 @click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
 @click.option('--obs', default=None, multiple=True, type=str, cls=_VariadicOption,
-              help='Observation name(s) (e.g. ember_uds_p4).')
+              help='NIRSpec observation name(s) (e.g. ember_uds_p4).')
+@click.option('--field', default=None, type=str,
+              help='NIRCam field name (e.g. cosmos). Deploys exposures/mosaics for '
+                   'the field; mutually exclusive with --obs.')
+@click.option('--filter', 'filter_names', multiple=True, cls=_VariadicOption,
+              help='NIRCam filter(s) to deploy with --field (default: all).')
 @click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
 @click.option('--source-ids', multiple=True, type=str, default=None,
               cls=_VariadicOption, callback=_parse_source_ids,
@@ -236,10 +242,17 @@ def source_ids_option(f):
                    '(bypasses RLS + presigned URLs). For unattended / CI deploys. '
                    'Equivalent to CAMPFIRE_DEPLOY_MODE=service-role.')
 @click.pass_context
-def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
-                 force_overwrite, auto_approve, rgb, no_sed, no_shutters,
-                 no_photometry, skip_astrometry, draft, local, service_role):
-    """Deploy CAMPFIRE pipeline products to Supabase + object storage."""
+def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids,
+                 supabase_only, force_overwrite, auto_approve, rgb, no_sed,
+                 no_shutters, no_photometry, skip_astrometry, draft, local,
+                 service_role):
+    """Deploy CAMPFIRE pipeline products to Supabase + object storage.
+
+    NIRSpec: `campfire deploy --obs <obs>`.  NIRCam:
+    `campfire deploy --field <field> [--filter f1 --filter f2] [--draft]` —
+    first-class parity, recording a field-scoped deployment (published by default;
+    --draft holds it admin-only for review, then `deploy publish --field`).
+    """
     ctx.ensure_object(dict)
     ctx.obj['local'] = local
     # Propagate the flag to subcommands via the env switch load_config reads, so
@@ -254,11 +267,25 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
         _gate_admin(load_config(config_path, local=local,
                                 service_role=ctx.obj['service_role']))
 
-    # When invoked without a subcommand, --obs is required
+    # When invoked without a subcommand: NIRCam field deploy (--field) or NIRSpec
+    # observation deploy (--obs).
     if ctx.invoked_subcommand is None:
+        if field and obs:
+            print("Error: --field (NIRCam) and --obs (NIRSpec) are mutually exclusive.")
+            sys.exit(1)
+        if field:
+            config = load_config(config_path, local=local,
+                                 service_role=ctx.obj['service_role'])
+            _announce_auth_mode(config)
+            from campfire.deploy.nircam import deploy_nircam
+            deploy_nircam(field, config,
+                          filters=list(filter_names) if filter_names else None,
+                          dry_run=dry_run, draft=draft)
+            return
         if not obs:
-            print("Error: --obs is required for full deployment.")
+            print("Error: --obs (NIRSpec) or --field (NIRCam) is required for full deployment.")
             print("Usage: campfire deploy --obs <observation_name>")
+            print("       campfire deploy --field <field> [--filter <f> ...] [--draft]")
             sys.exit(1)
 
         config = load_config(config_path, local=local,
@@ -422,16 +449,31 @@ def slits(ctx, config_path, obs, dry_run, local):
         deploy_slits(obs_name, config, dry_run=dry_run)
 
 
-def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, verb):
-    """Shared body for the publish/revoke subcommands (epic #210, B2).
+def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, verb,
+                          field=None):
+    """Shared body for the publish/revoke subcommands (epic #210, B2 / #261).
 
-    Resolves each observation's latest deployment and calls set_deployment_status,
-    which flips the deployment + its spectra + recomputes has_published_spectrum +
-    writes audit rows server-side.
+    Resolves each observation's (or a NIRCam field's) latest deployment and calls
+    set_deployment_status, which flips the deployment + its spectra / nircam_images
+    + writes audit rows server-side.
     """
     config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
     actor = get_user_id_from_token(config)
+    if field:
+        dep_id = get_latest_field_deployment_id(sb, field)
+        if dep_id is None:
+            print(f"  field {field}: no deployment found, skipping")
+            return
+        if dry_run:
+            print(f"  [dry-run] {verb} field {field} (deployment #{dep_id})")
+            return
+        result = set_deployment_status(sb, dep_id, to_status, actor=actor)
+        if result is None:
+            print(f"  field {field}: {verb.lower()} failed")
+            return
+        print(f"  {verb}ed field {field} (deployment #{dep_id}) -> {to_status}")
+        return
     for obs_name in obs:
         dep_id = get_latest_deployment_id(sb, obs_name)
         if dep_id is None:
@@ -451,20 +493,22 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
 
 @deploy_group.command()
 @shared_options
+@click.option('--field', default=None, help='NIRCam field to publish (instead of --obs).')
 @click.pass_context
-def publish(ctx, config_path, obs, dry_run, local):
-    """Publish draft observation(s): make their spectra visible to users."""
+def publish(ctx, config_path, obs, dry_run, local, field):
+    """Publish draft observation(s) or a NIRCam field: make products public."""
     _lifecycle_transition(ctx, config_path, obs, dry_run, local,
-                          to_status='published', verb='Publish')
+                          to_status='published', verb='Publish', field=field)
 
 
 @deploy_group.command()
 @shared_options
+@click.option('--field', default=None, help='NIRCam field to revoke (instead of --obs).')
 @click.pass_context
-def revoke(ctx, config_path, obs, dry_run, local):
-    """Revoke published observation(s): hide their spectra from users (bytes retained)."""
+def revoke(ctx, config_path, obs, dry_run, local, field):
+    """Revoke published observation(s) or a NIRCam field: hide products (bytes retained)."""
     _lifecycle_transition(ctx, config_path, obs, dry_run, local,
-                          to_status='revoked', verb='Revoke')
+                          to_status='revoked', verb='Revoke', field=field)
 
 
 @deploy_group.command('delete-local')
@@ -1298,44 +1342,13 @@ def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
 
 @deploy_group.group('nircam')
 def nircam():
-    """NIRCam field deploy commands (epic #261).
+    """NIRCam mask utilities (epic #261).
 
-    `exposures` uploads the canonical exposure FITS (+ expmaps) to OSN,
-    content-hash deduped, and upserts nircam_exposures (admin-only
-    intermediates). `import-masks` / `pull-masks` round-trip the DB-resident
-    region masks with local reference/.../masks/*.reg files.
+    Field deploy is the top-level `campfire deploy --field <field>` (parity with
+    `--obs`); `import-masks` / `pull-masks` here round-trip the DB-resident region
+    masks with local reference/.../masks/*.reg files.
     """
     pass
-
-
-@nircam.command('exposures')
-@click.option('--config', 'config_path', default=None,
-              help='Path to deploy config TOML.')
-@click.option('--field', required=True,
-              help='Field name (e.g. cosmos).')
-@click.option('--filter', 'filter_names', multiple=True, cls=_VariadicOption,
-              help='Filter(s) to process (default: all).')
-@click.option('--dry-run', is_flag=True,
-              help='Show what would be deployed without making changes.')
-@click.option('--local', is_flag=True,
-              help='Use local Supabase (127.0.0.1:54321).')
-@click.pass_context
-def nircam_exposures(ctx, config_path, field, filter_names, dry_run, local):
-    """Push NIRCam exposure state to OSN + Supabase.
-
-    Uploads the canonical exposure FITS (+ any field expmaps) to OSN under
-    campfire-layout canonical keys — content-hash deduped on sha256(SCI+DQ) so
-    unchanged exposures are not re-uploaded — uploads preview PNGs to R2, and
-    upserts nircam_exposures (registered admin-only; deployment_id=NULL).
-
-    Reviewer-set exclusions (review_status='excluded') are surfaced in the
-    web admin UI for copy-paste into the field's skip=[] block in fields.toml.
-    """
-    from campfire.deploy.nircam import deploy_nircam
-    config = load_config(config_path, local=_resolve_local(ctx, local))
-    deploy_nircam(field, config,
-                  filters=list(filter_names) if filter_names else None,
-                  dry_run=dry_run)
 
 
 @nircam.command('import-masks')

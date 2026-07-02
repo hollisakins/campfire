@@ -263,6 +263,25 @@ def build_registry_rows(
     return rows
 
 
+def set_active_deployment(client, keys: list[str], deployment_id: int) -> int:
+    """Point active registry rows at a deployment without re-uploading (epic #261).
+
+    Re-deploying a NIRCam field records a NEW deployment, but exposures/mosaics whose
+    bytes are unchanged are dedup-skipped (not re-registered), so their rows would
+    keep the PRIOR deployment_id — and thus its (possibly draft) visibility. This
+    re-points those skipped rows to the current deployment so a publish or re-deploy
+    flips the whole field's visibility consistently. Chunked; returns keys touched.
+    """
+    if not keys:
+        return 0
+    for i in range(0, len(keys), 200):
+        chunk = keys[i:i + 200]
+        (client.table('storage_objects')
+         .update({'deployment_id': deployment_id})
+         .in_('storage_key', chunk).eq('status', 'active').execute())
+    return len(keys)
+
+
 def fetch_active_sci_dq_hashes(client, keys: list[str]) -> dict[str, str]:
     """Return ``{storage_key: sci_dq_hash}`` for the active registry rows among *keys*.
 

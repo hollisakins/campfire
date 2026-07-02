@@ -8,20 +8,20 @@ keys), derives a ``stage`` value from the highest completed CFP key, and:
 * uploads the **canonical exposure FITS** (and any field ``expmap`` coverage
   files) to **OSN** under ``campfire-layout`` canonical keys, content-hash-
   deduped so an unchanged exposure is not re-uploaded (epic #261, N1 / D1);
-* registers those objects in ``storage_objects`` (``nircam_exposure`` /
-  ``nircam_expmap``) with ``deployment_id=NULL`` so they stay **admin-only** — a
-  NIRCam exposure is a reduction intermediate, never public science, exactly the
-  "backfilled NIRCam is admin-only until a deployment lands" case the
-  ``storage_objects`` RLS anticipates;
+* records a **field-scoped deployment** (provenance + lifecycle anchor) and
+  registers those objects in ``storage_objects`` (``nircam_exposure`` /
+  ``nircam_expmap``) tagged with its ``deployment_id`` — visibility rides
+  ``deployment.status`` via the storage gate: ``published`` is public to everyone
+  (NIRCam fields span multiple programs, so there is no per-program scope),
+  ``draft`` is admin-only for review;
 * uploads ``*_preview.png`` / ``*_full.png`` thumbnails (unchanged from before —
   still on R2 legacy keys; their migration to canonical OSN keys rides N5 with
   the inspection-UI rework that retires ``*_full.png``);
 * upserts ``nircam_exposures`` while preserving web-triage fields
   (``review_status``, ``correction``, ``notes``).
 
-There is no ``--draft`` / publish toggle for exposures: they are admin-only
-unconditionally (the storage gate), so the public/draft lifecycle lives at the
-mosaic level (N3), matching design decision D4.
+A normal deploy publishes immediately; ``--draft`` holds the field admin-only for
+portal inspection, then ``campfire deploy publish --field`` makes it public.
 
 Excluded exposures flagged by reviewers in the admin UI are surfaced for
 copy-paste into the field's ``skip = [...]`` block in ``fields.toml``; we no
@@ -42,7 +42,7 @@ from campfire_layout import KeyScheme, Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     claim_deploy_scope, get_deploy_scope_version, get_supabase_client,
-    get_user_id_from_token, log_deploy_event,
+    get_user_id_from_token, insert_deployment, log_deploy_event,
 )
 
 # The OSN data backend NIRCam canonical intermediates are homed on (epic #210/#216,
@@ -332,14 +332,20 @@ def discover_expmap_tasks(dirs, field):
 # Deploy (push)
 # ---------------------------------------------------------------------------
 
-def deploy_nircam(field, config, filters=None, dry_run=False):
-    """Push NIRCam exposure state to OSN + Supabase.
+def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
+    """Push NIRCam exposure state to OSN + Supabase (epic #261, N1).
 
-    Uploads the canonical exposure FITS (+ any field expmaps) to OSN under
-    ``campfire-layout`` canonical keys (content-hash deduped on ``sha256(SCI+DQ)``
-    so unchanged exposures are not re-uploaded), uploads preview PNGs to R2,
-    upserts ``nircam_exposures``, and registers every landed object in
-    ``storage_objects`` with ``deployment_id=NULL`` (admin-only intermediates).
+    Records a **field-scoped deployment** (provenance + the draft->published
+    lifecycle), uploads the canonical exposure FITS (+ any field expmaps) to OSN
+    under ``campfire-layout`` canonical keys (content-hash deduped on
+    ``sha256(SCI+DQ)``), uploads preview PNGs to R2, upserts ``nircam_exposures``,
+    and registers every landed object in ``storage_objects`` tagged with that
+    ``deployment_id``.
+
+    Visibility rides the deployment (not a bespoke admin-only special case): a
+    ``published`` field deployment is public to everyone (NIRCam fields span
+    multiple programs, so there is no per-program scope); ``--draft`` keeps it
+    admin-only for portal inspection until ``campfire deploy publish --field``.
 
     Parameters
     ----------
@@ -352,6 +358,9 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         ``products/nircam/{field}/``.
     dry_run : bool
         If True, print what would be done without making changes.
+    draft : bool
+        If True, record the deployment as ``draft`` (admin-only) for review;
+        otherwise ``published`` (public) immediately.
     """
     dirs = _resolve_nircam_dirs(field)
 
@@ -435,7 +444,8 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         mask_count = sum(1 for r in records if r.get('masking') == 'done')
         if mask_count:
             print(f"  with masks: {mask_count}")
-        print(f"\nWould upload {len(fits_tasks)} canonical FITS (subject to "
+        print(f"\nWould record a {'draft' if draft else 'published'} field "
+              f"deployment and upload {len(fits_tasks)} canonical FITS (subject to "
               f"SCI+DQ content-hash dedup) + {len(expmap_tasks)} expmap(s) to OSN, "
               f"and {len(png_tasks)} preview PNG(s) to R2.")
         print("Dry run — no changes made.")
@@ -443,7 +453,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
 
     from campfire.deploy.registry import (
         build_registry_rows, fetch_active_sci_dq_hashes, resolve_backend_label,
-        upsert_storage_objects,
+        set_active_deployment, upsert_storage_objects,
     )
 
     client = get_supabase_client(config)
@@ -452,6 +462,14 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
     # Read the field's optimistic-concurrency version BEFORE any work so a
     # concurrent same-field deploy is detected at finalize (epic #210, B4 / D12).
     scope_version = get_deploy_scope_version(client, 'field', field)
+
+    # Record the field-scoped deployment up front — it is the provenance anchor and
+    # the draft/published visibility gate every registered object hangs off.
+    deployment_id = insert_deployment(
+        client, field=field, deployed_by=user_id,
+        status='draft' if draft else 'published', n_targets=len(records))
+    print(f"Deployment #{deployment_id} recorded "
+          f"({'draft — admin-only' if draft else 'published — public'})")
 
     # --- Content-hash dedup for the canonical FITS (D1) ---------------------
     # Compare each exposure's local sha256(SCI+DQ) to the digest already stored in
@@ -496,25 +514,33 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
     _upsert_exposures(client, records)
     print(f"  Upserted {len(records)} exposures")
 
-    # --- Register storage objects (admin-only: deployment_id=NULL) ----------
-    # NIRCam exposures are reduction intermediates with no spectrum_id and no
-    # deployment, so the storage_objects RLS + sync/presign RPCs keep them
-    # admin-only (the "backfilled NIRCam" case the schema anticipates). The FITS
-    # carry a science-only sci_dq_hash for change detection; content_hash stays
-    # the authoritative whole-file digest for download/copy verification.
+    # --- Register storage objects, tagged with the field deployment ---------
+    # Visibility rides deployment.status via the storage_objects gate: published ->
+    # public to everyone, draft -> admin-only. The FITS carry a science-only
+    # sci_dq_hash for change detection; content_hash stays the authoritative
+    # whole-file digest for download/copy verification.
     n_reg = 0
     if osn_uploaded:
         reg_rows = build_registry_rows(
-            osn_tasks, backend=_CANONICAL_BACKEND, uploaded_by=user_id,
-            succeeded_keys=osn_uploaded, sci_dq_hashes=local_sci_dq)
+            osn_tasks, backend=_CANONICAL_BACKEND, deployment_id=deployment_id,
+            uploaded_by=user_id, succeeded_keys=osn_uploaded, sci_dq_hashes=local_sci_dq)
         n_reg += upsert_storage_objects(client, reg_rows)
     if png_uploaded:
         reg_rows = build_registry_rows(
             png_upload_list, backend=resolve_backend_label(config),
-            uploaded_by=user_id, succeeded_keys=png_uploaded)
+            deployment_id=deployment_id, uploaded_by=user_id, succeeded_keys=png_uploaded)
         n_reg += upsert_storage_objects(client, reg_rows)
     if n_reg:
-        print(f"  Registered {n_reg} storage object(s) (admin-only intermediates)")
+        print(f"  Registered {n_reg} storage object(s)")
+
+    # Re-point dedup-skipped exposures (unchanged bytes, not re-registered) to this
+    # deployment so a publish / re-deploy flips the whole field's visibility.
+    skipped_keys = ([t.r2_key for t in fits_tasks if t.r2_key not in osn_uploaded]
+                    if deployment_id else [])
+    if skipped_keys:
+        n_moved = set_active_deployment(client, skipped_keys, deployment_id)
+        if n_moved:
+            print(f"  Re-pointed {n_moved} unchanged exposure(s) to deployment #{deployment_id}")
 
     # --- Multi-reducer scope claim + audit (epic #210, B4 / D12) -----------
     claim = claim_deploy_scope(client, 'field', field, scope_version, actor=user_id)
@@ -522,9 +548,9 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         print(f"⚠  CONCURRENT DEPLOY DETECTED for field '{field}': another reducer "
               f"advanced this field while this deploy was running. Re-run to reconcile.")
     log_deploy_event(
-        client, action='upload', actor=user_id, observation=None,
-        affected_count=len(records),
-        metadata={'nircam': True, 'field': field, 'filters': filters,
+        client, action='upload', actor=user_id, deployment_id=deployment_id,
+        observation=None, affected_count=len(records),
+        metadata={'nircam': True, 'field': field, 'filters': filters, 'draft': draft,
                   'exposures': len(records), 'fits_uploaded': len(osn_uploaded),
                   'fits_skipped': n_skipped})
 
