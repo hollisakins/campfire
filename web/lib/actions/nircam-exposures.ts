@@ -1,7 +1,15 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { getS3ClientForBackend, getBucketNameForBackend, type DataBackend } from '@/lib/storage';
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
+
+export interface ExposurePngUrls {
+  preview: string | null;
+  full: string | null;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -139,6 +147,85 @@ export async function getNircamExposureById(id: number): Promise<{
       exposure: null,
       error: err instanceof Error ? err.message : 'Failed to fetch exposure',
     };
+  }
+}
+
+const PNG_PRESIGN_TTL_SECONDS = 3600;
+
+/**
+ * Presigned GET URLs for a batch of exposures' preview + full PNGs, keyed by
+ * exposure id (epic #261, N5). The admin UI puts these straight in `<img src>`
+ * — display needs no CORS, so we skip the `/api/nircam-preview` proxy hop and
+ * let the browser fetch object storage directly.
+ *
+ * Keys are re-derived server-side from `nircam_exposures` under the admin's RLS
+ * session, never trusted from the client, so this can't presign arbitrary
+ * objects. Each object's home backend is read from the registry (defaulting
+ * OSN, where canonical PNGs live — like the FITS route; deliberately NOT the
+ * `OSN_READ_ENABLED`-gated dual-read helper, which would divert to R2 when the
+ * flag is off, and legacy R2 rows still resolve via their `r2` registry entry).
+ *
+ * ALWAYS returns an entry for every requested id (null urls when a PNG is
+ * absent or a single sign fails) so the caller can distinguish "no PNG" from
+ * "still presigning" and never wedges on a spinner. URLs live ~1h (covers a
+ * viewing session + the sibling prefetch window).
+ */
+export async function presignExposurePngs(
+  ids: number[],
+): Promise<Record<number, ExposurePngUrls>> {
+  const out: Record<number, ExposurePngUrls> = Object.fromEntries(
+    ids.map((i) => [i, { preview: null, full: null } as ExposurePngUrls]),
+  );
+  if (ids.length === 0) return out;
+  try {
+    const supabase = await requireAdmin();
+    const { data, error } = await supabase
+      .from('nircam_exposures')
+      .select('id, png_path, full_png_path')
+      .in('id', ids);
+    if (error || !data) return out;
+
+    const keys = [...new Set(
+      data.flatMap((r) => [r.png_path, r.full_png_path].filter(Boolean) as string[]),
+    )];
+    if (keys.length === 0) return out;
+
+    // Resolve each object's home backend from the registry (admin RLS sees all
+    // rows); default OSN for anything unregistered — canonical PNGs are OSN.
+    const { data: soRows } = await supabase
+      .from('storage_objects')
+      .select('storage_key, backend')
+      .eq('status', 'active')
+      .in('storage_key', keys);
+    const backendByKey = new Map(
+      (soRows ?? []).map((r) => [r.storage_key as string, r.backend as DataBackend]),
+    );
+
+    // Presign per key, resilient: one unsignable key doesn't sink the batch.
+    const urlByKey = new Map<string, string>();
+    await Promise.all(keys.map(async (k) => {
+      try {
+        const backend: DataBackend = backendByKey.get(k) === 'r2' ? 'r2' : 'osn';
+        const url = await getSignedUrl(
+          getS3ClientForBackend(backend),
+          new GetObjectCommand({ Bucket: getBucketNameForBackend(backend), Key: k }),
+          { expiresIn: PNG_PRESIGN_TTL_SECONDS },
+        );
+        urlByKey.set(k, url);
+      } catch (err) {
+        console.error(`presignExposurePngs: failed to sign ${k}:`, err);
+      }
+    }));
+
+    for (const r of data) {
+      out[r.id] = {
+        preview: r.png_path ? urlByKey.get(r.png_path) ?? null : null,
+        full: r.full_png_path ? urlByKey.get(r.full_png_path) ?? null : null,
+      };
+    }
+    return out;
+  } catch {
+    return out;
   }
 }
 
