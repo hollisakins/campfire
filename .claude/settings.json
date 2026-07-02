@@ -4,6 +4,7 @@
       "Bash(*)",
       "WebSearch",
       "WebFetch(domain:github.com)",
+      "Skill",
       "mcp__github_inline_comment",
       "mcp__github_comment"
     ],
