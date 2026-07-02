@@ -505,6 +505,28 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
     if not exposures:
         log(f"resample: no CFP_OUT-stamped exposures for {filtname}")
         return
+
+    # Drop exposures that jhat could not align (off-footprint, failed-with-
+    # coverage, or errored). They kept their original, possibly-wrong WCS, so
+    # co-adding them would smear the mosaic. They re-enter automatically once a
+    # wcs_shift rule or param change lets them align (sentinel → refcat name).
+    from campfire_pipeline.nircam import jhat_report
+    aligned, excluded = [], []
+    for f in exposures:
+        if jhat_report.is_failure(status.value(f, 'CFP_JHAT')):
+            excluded.append(f)
+        else:
+            aligned.append(f)
+    if excluded:
+        log(f"resample: excluding {len(excluded)}/{len(exposures)} exposures "
+            f"from {filtname} mosaic — jhat did not align them (see jhat "
+            f"alignment report). Resolve via a wcs_shift rule or accept the "
+            f"loss.")
+        exposures = aligned
+    if not exposures:
+        log(f"resample: all {filtname} exposures failed jhat alignment; "
+            f"nothing to drizzle")
+        return
     from campfire_pipeline.nircam.steps.resample import resample_step
     cfg = get_nircam_step_config('resample', config, field)
     resample_step(filtname, exposures, field, cfg, reduction_version,
@@ -602,6 +624,8 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
         for step_name, _ in PROCESS_STEPS:
             _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
                                 status)
+    from campfire_pipeline.nircam import jhat_report
+    jhat_report.report(field, filters)
 
 
 def run_combine(field, config, filters=None, n_processes=1, overwrite=False):
@@ -620,6 +644,8 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False):
             else:
                 _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
                                     status)
+    from campfire_pipeline.nircam import jhat_report
+    jhat_report.report(field, filters)
 
 
 def run_step(step_name, field, config, filters=None, n_processes=1,
@@ -649,3 +675,8 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
         else:
             _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
                                 status)
+
+    # Surface the jhat alignment summary whenever alignment state is relevant.
+    if step_name in ('jhat', 'resample'):
+        from campfire_pipeline.nircam import jhat_report
+        jhat_report.report(field, filters)

@@ -170,6 +170,21 @@ def has_step(path_or_header, key, *, keyset=NIRCAM):
         return key in hdul[0].header
 
 
+def get_value(path_or_header, key, default=None, *, keyset=NIRCAM):
+    """Return the value of CFP ``key`` on an exposure, or ``default`` if absent.
+
+    Accepts a path or an already-open ``fits.Header``. Unlike ``has_step`` this
+    hands back the recorded value (e.g. the refcat name or a failure sentinel in
+    ``CFP_JHAT``) so callers can branch on it. ``keyset`` selects the instrument
+    namespace (default :data:`NIRCAM`).
+    """
+    keyset.validate(key)
+    if isinstance(path_or_header, fits.Header):
+        return path_or_header.get(key, default)
+    with fits.open(path_or_header, memmap=False) as hdul:
+        return hdul[0].header.get(key, default)
+
+
 def should_skip(exposure_file, key, rootname, step_name, status, overwrite,
                 *, keyset=NIRCAM):
     """Skip-check shared across per-exposure/per-source step modules.

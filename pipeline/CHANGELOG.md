@@ -193,6 +193,47 @@ Release procedure: edit the `## Unreleased` section below, then run
   `clean_flicker_noise` is not adopted — its `fit_method="fft"` is NIRSpec-only
   (skipped for `NRC_IMAGE`) and its `"median"` mode underperforms our amp-row
   estimators and introduces per-amp DC steps.
+- NIRCam `jhat` WCS-alignment failures are now caught, classified, and
+  reported instead of aborting the whole `process` run (one bad exposure used
+  to kill the other 1600+), and exposures that fail to align are excluded from
+  mosaics. A new `campfire_pipeline/nircam/jhat_report.py` centralizes the
+  handling:
+  - *Catch-all + classify.* `jhat_step` wraps the align call, catches any
+    exception, and maps it to a `CFP_JHAT` sentinel: `NO_REFCAT_OVERLAP` (zero
+    refcat sources on the detector — off-footprint, benign), `ALIGN_FAILED`
+    (refcat coverage exists but the cross-matched set is too sparse/degenerate
+    to fit — needs attention), or `ERROR` (an unexpected exception, caught so it
+    can't abort the pool and logged with a traceback). The input WCS is always
+    preserved. The same root cause (too few usable cross-matches) previously
+    surfaced as three unrelated crashes — `KeyError(None)`,
+    `ValueError("No valid polygons provided")` from `SphericalPolygon.multi_union`
+    on a collinear hull, and `tweakwcs.NotEnoughPointsError` — each of which
+    took the run down; all three are now classified and survived.
+  - *Triage diagnostics.* On failure, jhat's verbose stdout is tee'd and scraped
+    for source/match statistics (`n_detected`, `n_refcat_in_bounds`,
+    `n_matched`, and the 1st-iteration match-median pixel offset). These drive a
+    one-line hint distinguishing the two actionable `ALIGN_FAILED` modes: many
+    sources detected but matches collapse ⇒ likely a bad input (MAST) WCS, with
+    the rough offset reported as a seed for a `wcs_shift` rule; few sources
+    detected ⇒ likely too shallow, tune the jhat cuts. Each failing exposure
+    drops a lock-free `<rootname>.jhat_fail.json` sidecar; a successful
+    (re-)alignment clears it.
+  - *End-of-run summary.* `run_process` / `run_combine` / `run_step` print a
+    grouped jhat alignment report (off-footprint vs. failed-with-coverage vs.
+    errored, with per-exposure hints) and write an aggregated
+    `jhat_alignment_report.ecsv`. It re-reads the sidecars each run, so the
+    lists re-surface until the exposures are fixed.
+  - *Mosaic exclusion (changes mosaic outputs).* `resample` now drops exposures
+    whose `CFP_JHAT` is a failure sentinel (they kept their original,
+    possibly-wrong WCS) so a bad alignment can't smear the stack; they re-enter
+    automatically once they align. This changes mosaic pixels for any tile that
+    previously co-added an off-footprint (`NO_REFCAT_OVERLAP`) exposure, hence
+    the Algorithm/MINOR categorization.
+  The *degenerate diagnostic plot* crash (jhat's dx/dy plotters raising
+  `ValueError: Axis limits cannot be NaN or Inf` on a degenerate best-match
+  panel, sometimes after a valid WCS was already written) remains fixed by
+  no-op'ing jhat's plot functions; plotting defaults off and re-enables per
+  field with `[<field>.jhat].saveplots = true`.
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
   ERR map no longer fills with `inf`/`nan`. The variance pass summed the three
   variance components before drizzling, so a single input pixel with a
@@ -344,30 +385,6 @@ Release procedure: edit the `## Unreleased` section below, then run
   for an otherwise up-to-date tile and re-splits from the existing i2d (no
   re-drizzle, no bkgsub redo). SRCMASK is only re-split when the i2d actually
   carries that extension.
-- NIRCam `jhat` WCS-alignment step no longer aborts the entire `process` run
-  on exposures near/over the edge of the reference-catalog footprint. Two
-  distinct jhat crash modes were taking down the whole run (one bad exposure
-  killed the other 1600+):
-  - *Zero refcat overlap.* When no refcat sources land on the detector, jhat
-    skips its matching steps leaving `refcat_xcol` unset, then indexes
-    `phot.t[None]` and raises a bare `KeyError(None)`. `jhat_step` now catches
-    that specific signature, leaves the input WCS untouched, and stamps
-    `CFP_JHAT=NO_REFCAT_OVERLAP` so the exposure reads as
-    intentionally-not-aligned and isn't retried every run.
-  - *Degenerate diagnostic plot.* jhat's dx/dy plotters compute a NaN axis
-    limit from a degenerate best-match panel (few matches, common at the
-    footprint edge) and raise `ValueError: Axis limits cannot be NaN or Inf` —
-    sometimes *after* a perfectly good WCS solution has already been written,
-    so the crash discarded a valid alignment. The plots are diagnostic-only,
-    but jhat gates them on several independent flags not all reachable through
-    `align_wcs`, so the `saveplots` config flag alone can't suppress them.
-    Diagnostic plotting now defaults to off and is enforced by no-op'ing jhat's
-    plot functions at the source; the affected exposures align normally. Plots
-    re-enable per-field with `[<field>.jhat].saveplots = true` (restoring the
-    crash risk on edge exposures).
-  Net effect: the `process` run completes, edge exposures with real refcat
-  coverage are aligned and included, and only the truly-uncoverable ones are
-  skipped (and recorded as such). Genuine alignment errors still propagate.
 - `Observation.load` now validates the observations.toml `program` field
   against `programs.toml` (when present): if the value is not a known program
   *slug* it raises immediately, with a hint when the value matches a program

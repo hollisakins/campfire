@@ -12,10 +12,19 @@ trip without extra handling.
 JHAT also writes diagnostic PDFs and photometry tables alongside its
 output; we copy those into the canonical exposure's directory so they're
 preserved when the scratch directory goes away.
+
+Alignment failures never abort the worker pool: any exception is caught,
+classified into a ``CFP_JHAT`` sentinel, and recorded for the end-of-run
+report (see ``campfire_pipeline.nircam.jhat_report``). The input WCS is
+preserved and ``resample`` later excludes any exposure left with a failure
+sentinel so a bad WCS can't smear the mosaic.
 """
 
+import contextlib
+import io
 import os
 import shutil
+import sys
 import tempfile
 import warnings
 
@@ -23,13 +32,10 @@ from astropy.io import fits
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
-
-
-# Sentinel stamped into CFP_JHAT when an exposure cannot be aligned because it
-# lies at/beyond the edge of the reference catalog footprint (zero refcat
-# sources land on the detector). The input WCS is left untouched. Recorded so
-# the exposure reads as intentionally-not-aligned and isn't retried every run.
-NO_REFCAT_SENTINEL = 'NO_REFCAT_OVERLAP'
+# CFP_JHAT sentinels plus the classify/diagnostics/report machinery live in
+# jhat_report so resample (mosaic exclusion) and the orchestrator (end-of-run
+# summary) can share them without importing this heavy module.
+from campfire_pipeline.nircam import jhat_report
 
 
 def _disable_jhat_plots():
@@ -192,67 +198,80 @@ def jhat_step(exposure_file, field, step_config, overwrite=False, status=None):
             addfilter2outsubdir=False,
         )
 
+        # Tee jhat's verbose stdout into a buffer: on failure we scrape it for
+        # the source/match statistics that drive the report's triage hint. The
+        # tee keeps the output visible on the console for successful exposures.
+        diag_buf = io.StringIO()
+        tee = jhat_report.TeeStdout(sys.stdout, diag_buf)
         try:
-            align_batch.align_wcs(
-                ixs, overwrite=True, outrootdir=scratch, outsubdir=filtname,
-                addfilter2outsubdir=False,
-                photometry_method='aperture',
-                find_stars_threshold=3.0,
-                sci_xy_catalog=None,
-                use_dq=False,
-                refcatname=refcat,
-                refcat_racol='RA',
-                refcat_deccol='DEC',
-                refcat_magcol='mag',
-                refcat_magerrcol='mag_err',
-                refcat_colorcol=None,
-                pmflag=False,
-                pm_median=False,
-                load_photcat_if_exists=False,
-                rematch_refcat=False,
-                SNR_min=10.0,
-                d2d_max=step_config.get('d2d_max', 1.5),
-                dmag_max=0.1,
-                sharpness_lim=(None, None),
-                roundness1_lim=(None, None),
-                delta_mag_lim=step_config.get('delta_mag_lim', [-3, 4]),
-                objmag_lim=step_config.get('objmag_lim', [19, 28]),
-                refmag_lim=(None, None),
-                slope_min=-10 / 2048.0,
-                Nbright4match=None, Nbright=None,
-                histocut_order=step_config.get('histocut_order', 'dxdy'),
-                xshift=0.0, yshift=0.0,
-                iterate_with_xyshifts=step_config.get('iterate_with_xyshifts',
-                                                     True),
-                showplots=0,
-                # Off by default; jhat's plotters are also no-op'd above unless
-                # this is set (see _disable_jhat_plots). Re-enable diagnostics
-                # per-field via [<field>.jhat].saveplots = true.
-                saveplots=step_config.get('saveplots', False),
-                savephottable=step_config.get('savephottable', True),
-            )
-        except KeyError as e:
-            # jhat raises a bare ``KeyError(None)`` when it finds zero
-            # reference sources within the image bounds: it prints
-            # "0 sources from reference catalog within the image bounderies"
-            # and skips the matching steps, leaving ``refcat_xcol`` unset, then
-            # indexes ``phot.t[None]``. This means the exposure lies at/over
-            # the edge of the refcat footprint -- a data-coverage condition,
-            # not a campfire failure -- so it must not abort the whole run.
-            # Record the skip and move on; the input WCS is preserved.
-            if e.args == (None,):
-                log(f"jhat: no refcat overlap for {rootname}; skipping "
-                    f"alignment (input WCS preserved, CFP_JHAT="
-                    f"{NO_REFCAT_SENTINEL})")
-                _stamp_jhat(exposure_file, NO_REFCAT_SENTINEL)
-                return
-            log(f"jhat failed on {exposure_file}")
-            raise
-        except Exception:
-            log(f"jhat failed on {exposure_file}")
-            raise
+            with contextlib.redirect_stdout(tee):
+                align_batch.align_wcs(
+                    ixs, overwrite=True, outrootdir=scratch, outsubdir=filtname,
+                    addfilter2outsubdir=False,
+                    photometry_method='aperture',
+                    find_stars_threshold=3.0,
+                    sci_xy_catalog=None,
+                    use_dq=False,
+                    refcatname=refcat,
+                    refcat_racol='RA',
+                    refcat_deccol='DEC',
+                    refcat_magcol='mag',
+                    refcat_magerrcol='mag_err',
+                    refcat_colorcol=None,
+                    pmflag=False,
+                    pm_median=False,
+                    load_photcat_if_exists=False,
+                    rematch_refcat=False,
+                    SNR_min=10.0,
+                    d2d_max=step_config.get('d2d_max', 1.5),
+                    dmag_max=0.1,
+                    sharpness_lim=(None, None),
+                    roundness1_lim=(None, None),
+                    delta_mag_lim=step_config.get('delta_mag_lim', [-3, 4]),
+                    objmag_lim=step_config.get('objmag_lim', [19, 28]),
+                    refmag_lim=(None, None),
+                    slope_min=-10 / 2048.0,
+                    Nbright4match=None, Nbright=None,
+                    histocut_order=step_config.get('histocut_order', 'dxdy'),
+                    xshift=0.0, yshift=0.0,
+                    iterate_with_xyshifts=step_config.get(
+                        'iterate_with_xyshifts', True),
+                    showplots=0,
+                    # Off by default; jhat's plotters are also no-op'd above
+                    # unless this is set (see _disable_jhat_plots). Re-enable
+                    # diagnostics per-field via [<field>.jhat].saveplots = true.
+                    saveplots=step_config.get('saveplots', False),
+                    savephottable=step_config.get('savephottable', True),
+                )
+        except Exception as exc:
+            # No single exposure may abort the pool (one bad frame used to kill
+            # 1600+). Classify the failure, preserve the input WCS, drop a
+            # per-exposure diagnostics sidecar for the end-of-run report, and
+            # move on. The same root cause (too few usable cross-matches)
+            # surfaces as several unrelated exception types depending on exactly
+            # how the matched set collapses; jhat_report.classify maps them to a
+            # CFP_JHAT sentinel. Truly unexpected exceptions are caught too, but
+            # categorized ERROR and logged with a traceback so they get noticed.
+            diag = jhat_report.parse_diagnostics(diag_buf.getvalue())
+            category = jhat_report.classify(exc, diag)
+            hint = jhat_report.hint(category, diag)
+            if category == jhat_report.ERROR_SENTINEL:
+                log(f"jhat: UNEXPECTED error on {rootname} "
+                    f"(caught; CFP_JHAT={category}, WCS preserved):")
+                import traceback
+                log(traceback.format_exc())
+            else:
+                log(f"jhat: {rootname} not aligned (CFP_JHAT={category}, WCS "
+                    f"preserved) — {hint}")
+            jhat_report.write_failure(input_dir, rootname, filtname, category,
+                                      exc, diag, hint)
+            _stamp_jhat(exposure_file, category)
+            return
 
         align_batch.write()
+        # Alignment succeeded: clear any stale failure sidecar from a prior run
+        # (e.g. a wcs_shift rule was added and this exposure now aligns).
+        jhat_report.clear_failure(input_dir, rootname)
 
         scratch_out = align_batch.t.loc[ixs[0], 'outfilename']
         if not os.path.exists(scratch_out):
