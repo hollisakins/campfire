@@ -325,6 +325,23 @@ def get_latest_field_deployment_id(client: Client, field: str) -> int | None:
     return None
 
 
+def get_field_deployment_ids(client: Client, field: str) -> list[int]:
+    """ALL deployment ids for a NIRCam field, newest first (epic #261).
+
+    publish/revoke act on a whole field, but a field's objects can be spread across
+    several deployments (a ``--filter`` subset re-deploy re-points only that subset,
+    leaving other filters on an earlier deployment). Flipping just the latest would
+    partially publish — or, worse, leave part of a revoked field public — so the
+    lifecycle transition flips every deployment the field has.
+    """
+    resp = (client.table('deployments')
+            .select('id')
+            .eq('field', field)
+            .order('id', desc=True)
+            .execute())
+    return [r['id'] for r in (resp.data or [])]
+
+
 def set_deployment_status(
     client: Client,
     deployment_id: int,

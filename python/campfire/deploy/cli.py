@@ -85,8 +85,7 @@ from campfire.deploy.deploy import (
 from campfire.deploy.supabase import (
     get_supabase_client, upsert_programs, refresh_filter_options,
     refresh_programs_overview, get_latest_deployment_id,
-    get_latest_field_deployment_id, set_deployment_status,
-    get_user_id_from_token,
+    get_field_deployment_ids, set_deployment_status, get_user_id_from_token,
 )
 
 
@@ -461,18 +460,23 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
     sb = get_supabase_client(config)
     actor = get_user_id_from_token(config)
     if field:
-        dep_id = get_latest_field_deployment_id(sb, field)
-        if dep_id is None:
+        # Flip EVERY deployment the field has, not just the latest: a --filter
+        # subset re-deploy spreads a field's objects across deployments, so flipping
+        # only the newest would partially publish (or leave part of a revoked field
+        # public). set_deployment_status per deployment also flips its nircam_images.
+        dep_ids = get_field_deployment_ids(sb, field)
+        if not dep_ids:
             print(f"  field {field}: no deployment found, skipping")
             return
         if dry_run:
-            print(f"  [dry-run] {verb} field {field} (deployment #{dep_id})")
+            print(f"  [dry-run] {verb} field {field} ({len(dep_ids)} deployment(s): "
+                  f"{', '.join('#'+str(d) for d in dep_ids)})")
             return
-        result = set_deployment_status(sb, dep_id, to_status, actor=actor)
-        if result is None:
-            print(f"  field {field}: {verb.lower()} failed")
-            return
-        print(f"  {verb}ed field {field} (deployment #{dep_id}) -> {to_status}")
+        n_ok = 0
+        for dep_id in dep_ids:
+            if set_deployment_status(sb, dep_id, to_status, actor=actor) is not None:
+                n_ok += 1
+        print(f"  {verb}ed field {field}: {n_ok}/{len(dep_ids)} deployment(s) -> {to_status}")
         return
     for obs_name in obs:
         dep_id = get_latest_deployment_id(sb, obs_name)

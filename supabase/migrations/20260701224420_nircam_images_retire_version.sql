@@ -20,6 +20,16 @@ alter table "public"."nircam_images" drop constraint "nircam_images_unique";
 
 alter table "public"."nircam_images" drop column "version";
 
+-- Collapse pre-existing multi-version rows before the version-free UNIQUE, else the
+-- index build aborts on production (older reductions kept a row per version, so a
+-- slot can hold >1 row once `version` is dropped). Keep the newest (highest id) per
+-- (field, tile, filter, pixel_scale, extension). No-op on a fresh DB (0 rows).
+DELETE FROM public.nircam_images a
+  USING public.nircam_images b
+ WHERE a.field = b.field AND a.tile = b.tile AND a.filter = b.filter
+   AND a.pixel_scale = b.pixel_scale AND a.extension = b.extension
+   AND a.id < b.id;
+
 create unique index nircam_images_unique
   on public.nircam_images using btree (field, tile, filter, pixel_scale, extension);
 
