@@ -136,9 +136,10 @@ def get_user_id_from_token(config: dict) -> str | None:
 
 def insert_deployment(
     client: Client,
-    observation: str,
-    deployed_by: str | None,
+    observation: str | None = None,
+    deployed_by: str | None = None,
     *,
+    field: str | None = None,
     cfpipe_version: str | None = None,
     jwst_version: str | None = None,
     crds_context: str | None = None,
@@ -159,13 +160,20 @@ def insert_deployment(
     ``status`` is the deployment lifecycle (epic #210): 'published' for a normal
     deploy (stamps published_at=now), 'draft' for a draft / incomplete deploy.
 
+    A deployment is anchored to EXACTLY ONE of a NIRSpec ``observation`` or a NIRCam
+    ``field`` (epic #261; enforced by deployments_scope_check). NIRCam field deploys
+    record the same provenance and drive the same draft->published->revoked lifecycle.
+
     The deployment record is ALWAYS written (it is the admin-review anchor for the
     draft lifecycle). On a service-role / `--local` deploy there is no user JWT, so
     ``deployed_by`` is NULL (the column is nullable as of B5); prod `login` deploys
     still record the real user. Returns the new id, or None only on insert failure.
     """
+    if (observation is None) == (field is None):
+        raise ValueError("insert_deployment requires exactly one of observation/field")
     data = {
         'observation': observation,
+        'field': field,
         'deployed_by': deployed_by,  # may be NULL on service-role / local deploys
         'force_overwrite': force_overwrite,
         'supabase_only': supabase_only,
@@ -296,6 +304,19 @@ def get_latest_deployment_id(client: Client, observation: str) -> int | None:
     resp = (client.table('deployments')
             .select('id')
             .eq('observation', observation)
+            .order('id', desc=True)
+            .limit(1)
+            .execute())
+    if resp.data:
+        return resp.data[0]['id']
+    return None
+
+
+def get_latest_field_deployment_id(client: Client, field: str) -> int | None:
+    """The most recent deployment id for a NIRCam field (epic #261 lifecycle anchor)."""
+    resp = (client.table('deployments')
+            .select('id')
+            .eq('field', field)
             .order('id', desc=True)
             .limit(1)
             .execute())

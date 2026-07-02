@@ -769,10 +769,15 @@ CREATE POLICY "select_storage_objects_by_access"
       OR
       (storage_objects.spectrum_id IS NULL AND storage_objects.deployment_id IS NOT NULL AND EXISTS (
          SELECT 1 FROM deployments d
-         JOIN observations o ON o.name = d.observation
+         LEFT JOIN observations o ON o.name = d.observation
          WHERE d.id = storage_objects.deployment_id
            AND d.status = 'published'
-           AND o.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])))
+           AND (
+             -- NIRCam field-scoped deploy (epic #261, N1): a field spans multiple
+             -- programs, so there is no per-program scope — a published field
+             -- deployment is public to everyone. Draft/revoked stay admin-only.
+             d.field IS NOT NULL
+             OR o.program_slug = ANY((SELECT public.accessible_program_slugs())::text[]))))
     )
   );
 
