@@ -227,6 +227,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **`cfpipe download --target` accepts comma-separated coordinates.** MAST's
+  JWST search API resolves the top-level `target` field as either an object
+  name or a *space*-separated `"RA Dec"` pair in decimal degrees (matching
+  astroquery's `MastMissions`, which sends `f"{ra.deg} {dec.deg}"`). A
+  comma-separated pair such as `--target 215.0,52.9` is not a valid name, so
+  the resolver raised server-side and the whole search failed with an opaque
+  `HTTPError: 500 Server Error` traceback. The download tool now folds an exact
+  `"num,num"` coordinate pair into the space-separated form before querying
+  (object names and already-spaced coords are untouched), MAST error bodies are
+  surfaced instead of discarded by `raise_for_status`, and the `download`
+  command catches `HTTPError` to print an actionable `--target`-format hint
+  rather than a stack trace. **No change to scientific output** (download CLI
+  ergonomics only).
 - **`migrate_layout_212.py` now delegates to a shared migrator (#244).** The
   one-time `$CAMPFIRE_ROOT` re-org logic moved verbatim into the zero-dependency
   `campfire_layout.migrate` core, so the operator script and `campfire sync` run

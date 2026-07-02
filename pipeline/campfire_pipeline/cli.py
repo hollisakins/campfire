@@ -178,6 +178,7 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
     Auxiliary metafiles (e.g. NIRSpec MSA metadata) are fetched first so
     reduction can begin while uncal files are still downloading.
     """
+    import requests
     from campfire_pipeline.common.query import download_jwst_data
 
     instrument_upper = instrument.upper()
@@ -228,6 +229,16 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
             token=token,
             workers=processes,
         )
+    except requests.HTTPError as e:
+        msg = f"MAST API error: {e}"
+        if targets:
+            msg += (
+                "\n\nHint: --target must be a resolvable object name (e.g. "
+                '"M1") or a "RA Dec" pair in decimal degrees separated by a '
+                'space (e.g. --target "215.0 52.9"). A comma-separated pair '
+                "is rejected by MAST's resolver."
+            )
+        raise click.ClickException(msg)
     except KeyboardInterrupt:
         click.echo("\n\nInterrupted. Re-run to resume (existing files will be skipped).")
         sys.exit(130)
