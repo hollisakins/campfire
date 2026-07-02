@@ -4,11 +4,7 @@ import React, { useState, useMemo } from 'react';
 import { ChevronDown, ChevronUp, Download, Copy, Check } from 'lucide-react';
 import type { NircamImage } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
-
-// CANDIDE server configuration
-const CDN_BASE_URL = 'https://exchg.calet.org/hakins/data/data/nircam';
-const CDN_USERNAME = 'ember';
-const CDN_PASSWORD = 'ember!jwst';
+import { generateNircamMosaicDownloadUrls } from '@/lib/actions/download';
 
 interface CurlScriptGeneratorProps {
   selectedImages: NircamImage[];
@@ -30,37 +26,47 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [script, setScript] = useState('');
+  const [generating, setGenerating] = useState(false);
 
   // Calculate total size
   const totalSize = useMemo(() => {
     return selectedImages.reduce((sum, img) => sum + (img.file_size || 0), 0);
   }, [selectedImages]);
 
-  // Generate the curl script
-  const script = useMemo(() => {
+  // Build the curl script. Presigned + HMAC-authorized proxy URLs come from the
+  // server action (authorized per-viewer against nircam_images RLS), so the
+  // script carries no credentials — just `curl` against the proxy URL. Async
+  // because it awaits the presign round-trip.
+  const buildScript = React.useCallback(async (): Promise<string> => {
     if (selectedImages.length === 0) return '';
 
+    const { urls } = await generateNircamMosaicDownloadUrls(
+      selectedImages.map((img) => img.file_path)
+    );
+
+    // Only include images we were authorized to presign.
+    const images = selectedImages.filter((img) => urls[img.file_path]);
+    if (images.length === 0) return '';
+
     // Group by field for organization
-    const fields = [...new Set(selectedImages.map((img) => img.field))];
+    const fields = [...new Set(images.map((img) => img.field))];
 
     let scriptContent = `#!/bin/bash
 # CAMPFIRE NIRCam Data Download Script
 # Generated: ${new Date().toISOString()}
-# Files: ${selectedImages.length}
+# Files: ${images.length}
 # Total size: ${formatFileSize(totalSize)}
+#
+# Download URLs below are pre-signed and expire after ~6 hours. Re-generate
+# this script if the links have expired.
 
 echo "============================="
 echo "CAMPFIRE NIRCam Data Download"
 echo "============================="
 echo ""
-echo "This script will download ${selectedImages.length} files (${formatFileSize(totalSize)} total)"
+echo "This script will download ${images.length} files (${formatFileSize(totalSize)} total)"
 echo ""
-
-# CDN credentials (pre-configured)
-USERNAME="${CDN_USERNAME}"
-PASSWORD="${CDN_PASSWORD}"
-
-BASE_URL="${CDN_BASE_URL}"
 
 # Create output directory
 mkdir -p nircam_data
@@ -73,7 +79,7 @@ echo ""
 
     // Add download commands grouped by field
     fields.forEach((field) => {
-      const fieldImages = selectedImages.filter((img) => img.field === field);
+      const fieldImages = images.filter((img) => img.field === field);
       scriptContent += `# Field: ${field.toUpperCase()} (${fieldImages.length} files)\n`;
       scriptContent += `mkdir -p ${field}\n`;
       scriptContent += `cd ${field}\n\n`;
@@ -82,7 +88,7 @@ echo ""
         const filename = img.file_path.split('/').pop() || img.file_path;
         scriptContent += `# File ${index + 1}/${fieldImages.length}: ${filename}\n`;
         scriptContent += `echo "Downloading ${filename}..."\n`;
-        scriptContent += `curl -L -u "$USERNAME:$PASSWORD" --progress-bar -o "${filename}" "$BASE_URL/${img.file_path}"\n`;
+        scriptContent += `curl -L --progress-bar -o "${filename}" "${urls[img.file_path]}"\n`;
         if (index < fieldImages.length - 1) {
           scriptContent += `\n`;
         }
@@ -98,6 +104,31 @@ echo "Files saved in: $(pwd)"
 
     return scriptContent;
   }, [selectedImages, totalSize]);
+
+  // (Re)generate the script whenever the panel is open and the selection
+  // changes. Presigned URLs are per-request, so we rebuild rather than memoize.
+  React.useEffect(() => {
+    if (!isExpanded || selectedImages.length === 0) {
+      setScript('');
+      return;
+    }
+    let cancelled = false;
+    setGenerating(true);
+    buildScript()
+      .then((content) => {
+        if (!cancelled) setScript(content);
+      })
+      .catch((err) => {
+        console.error('Failed to generate NIRCam download script:', err);
+        if (!cancelled) setScript('');
+      })
+      .finally(() => {
+        if (!cancelled) setGenerating(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isExpanded, buildScript, selectedImages.length]);
 
   const handleCopy = async () => {
     try {
@@ -160,6 +191,7 @@ echo "Files saved in: $(pwd)"
                     variant="ghost"
                     size="sm"
                     onClick={handleCopy}
+                    disabled={generating || !script}
                     className="text-gray-400 hover:text-white"
                   >
                     {copied ? (
@@ -178,6 +210,7 @@ echo "Files saved in: $(pwd)"
                     variant="ghost"
                     size="sm"
                     onClick={handleDownload}
+                    disabled={generating || !script}
                     className="text-gray-400 hover:text-white"
                   >
                     <Download className="w-4 h-4 mr-1.5" />
@@ -186,7 +219,7 @@ echo "Files saved in: $(pwd)"
                 </div>
               </div>
               <pre className="p-4 text-sm text-gray-300 font-mono overflow-x-auto max-h-96 overflow-y-auto">
-                <code>{script}</code>
+                <code>{generating ? 'Generating pre-signed download links…' : script}</code>
               </pre>
             </div>
           </div>

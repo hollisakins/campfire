@@ -487,6 +487,68 @@ export async function generateFitsDownloadUrl(
 }
 
 /**
+ * Authorize NIRCam mosaic downloads and return ready-to-fetch Worker proxy URLs,
+ * keyed by canonical storage key (file_path).
+ *
+ * Client-supplied keys are never trusted: the authorized set is re-derived
+ * server-side by querying `nircam_images` under the caller's RLS session. Because
+ * the table's RLS returns only published mosaics to non-admins (and all rows to
+ * admins), the intersection of the requested paths with what the query returns is
+ * exactly the set the caller may download — a draft/revoked or forged key simply
+ * never gets presigned. Each authorized key is presigned against its home backend
+ * (dual-read: OSN or R2) and HMAC-signed so the credential-free proxy Worker will
+ * fetch only URLs we authorized. Requested keys that aren't authorized are absent
+ * from the returned map.
+ */
+export async function generateNircamMosaicDownloadUrls(
+  filePaths: string[]
+): Promise<{ urls: Record<string, string>; error: string | null }> {
+  try {
+    if (!JWT_SECRET) {
+      return { urls: {}, error: 'Server configuration error: JWT secret not set' };
+    }
+
+    if (filePaths.length === 0) {
+      return { urls: {}, error: null };
+    }
+
+    // Re-derive the authorized key set server-side under the caller's RLS
+    // session. Never presign a client-supplied path we can't see in the DB.
+    const supabase = await createClient();
+    const { data: rows, error: queryError } = await supabase
+      .from('nircam_images')
+      .select('file_path')
+      .in('file_path', filePaths);
+
+    if (queryError) {
+      console.error('Error authorizing NIRCam mosaic download:', queryError);
+      return { urls: {}, error: 'Failed to authorize download' };
+    }
+
+    const authorizedKeys = [...new Set((rows || []).map((r) => r.file_path as string))];
+    if (authorizedKeys.length === 0) {
+      return { urls: {}, error: null };
+    }
+
+    // Presign each authorized key against its home backend (dual-read), then
+    // HMAC-sign the presigned URL so the proxy only fetches URLs we authorized.
+    const signed = await generateDownloadUrls(authorizedKeys, PRESIGN_TTL_SECONDS);
+    const urls: Record<string, string> = {};
+    await Promise.all(
+      authorizedKeys.map(async (key, i) => {
+        const sig = await signUrlSignature(signed[i], JWT_SECRET);
+        urls[key] = `${WORKER_URL}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
+      })
+    );
+
+    return { urls, error: null };
+  } catch (error) {
+    console.error('Error generating NIRCam mosaic download URLs:', error);
+    return { urls: {}, error: 'Failed to generate download URLs' };
+  }
+}
+
+/**
  * HMAC-SHA256(secret, url), base64url-encoded — the per-URL signature the proxy
  * Worker verifies. Web Crypto API (same primitive both ends).
  */

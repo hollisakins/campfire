@@ -16,9 +16,7 @@ import type { NircamImage } from '@/lib/types';
 import type { NircamFilterOptions } from './NircamFilterBar';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
-
-// CANDIDE server base URL for NIRCam data
-const CDN_BASE_URL = 'https://exchg.calet.org/hakins/data/data/nircam';
+import { generateNircamMosaicDownloadUrls } from '@/lib/actions/download';
 
 interface NircamTableProps {
   images: NircamImage[];
@@ -60,9 +58,44 @@ const formatFileSize = (bytes: number | undefined): string => {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 };
 
-// Helper to construct download URL
-const getDownloadUrl = (image: NircamImage): string => {
-  return `${CDN_BASE_URL}/${image.file_path}`;
+// Per-row download button: authorizes + presigns the mosaic key server-side,
+// then navigates the browser to the credential-free proxy URL to start the
+// download. Kept as a small component so each row owns its loading state.
+const DownloadCell: React.FC<{ image: NircamImage }> = ({ image }) => {
+  const [busy, setBusy] = useState(false);
+
+  const handleDownload = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { urls } = await generateNircamMosaicDownloadUrls([image.file_path]);
+      const proxyUrl = urls[image.file_path];
+      if (proxyUrl) {
+        const link = document.createElement('a');
+        link.href = proxyUrl;
+        link.download = image.file_path.split('/').pop() || image.file_path;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    } catch (err) {
+      console.error('Failed to start NIRCam mosaic download:', err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleDownload}
+      disabled={busy}
+      className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary-hover hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      <Download className="w-4 h-4" />
+      <span>{busy ? 'Preparing…' : 'Download'}</span>
+    </button>
+  );
 };
 
 export const NircamTable: React.FC<NircamTableProps> = ({
@@ -213,16 +246,7 @@ export const NircamTable: React.FC<NircamTableProps> = ({
       {
         id: 'download',
         header: () => <span>Download</span>,
-        cell: ({ row }) => (
-          <a
-            href={getDownloadUrl(row.original)}
-            className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary-hover hover:underline"
-            download
-          >
-            <Download className="w-4 h-4" />
-            <span>Download</span>
-          </a>
-        ),
+        cell: ({ row }) => <DownloadCell image={row.original} />,
       },
     ],
     []
