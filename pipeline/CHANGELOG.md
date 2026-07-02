@@ -71,6 +71,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- **BREAKING (MAJOR):** the NIRCam mosaic `version` axis is retired (epic #261,
+  N2 / D3). Mosaic products are now named `mosaic_nircam_<filter>_<field>_<scale>_<tile>_<ext>.fits`
+  with **no** `_<version>_` segment — one canonical mosaic per
+  `(field, filter, tile, pixel_scale, extension)`, overwritten in place on
+  re-combine. The `[nircam.resample].version` config key and the `--version`
+  option on `cfpipe nircam refcat extract` are removed; the `_latest_` symlink
+  farm is gone (the canonical name *is* the latest). The `version` key is dropped
+  from mosaic manifests. **Consequence:** existing `..._v0_1_..._i2d.fits` mosaics
+  become orphaned vs the new name, so the first post-upgrade `combine` rebuilds
+  every tile fresh — intended (the portal re-serves mosaics from OSN per field/
+  filter as they are re-reduced; see #261 N3). Readers (`rgb`, `refcat`) resolve
+  the direct version-free name and intentionally do **not** fall back to a stale
+  versioned/`_latest_` file.
 - NIRSpec optimal extraction no longer bounds the cross-dispersion profile to
   the nominal aperture for fixed-slit sources. The aperture bounding in
   `optext_profile` exists to keep the profile from picking up flux from

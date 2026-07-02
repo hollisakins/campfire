@@ -192,8 +192,6 @@ def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
               help="Tile name (must exist in fields.toml).")
 @click.option("--scale", default="30mas",
               help="Pixel-scale tag (default 30mas).")
-@click.option("--version", default="latest",
-              help="Mosaic version tag (default 'latest').")
 @click.option("--err", "err_path", default=None,
               help="Override error-map path; auto-detected otherwise.")
 @click.option("--snr-thresh", default=3.0, type=float,
@@ -210,7 +208,7 @@ def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
 @click.option("--notes", default=None,
               help="Free-form note stamped into the catalog meta.")
 @click.option("--overwrite", is_flag=True)
-def extract(config, field_name, mosaic_path, filter_name, tile, scale, version,
+def extract(config, field_name, mosaic_path, filter_name, tile, scale,
             err_path, snr_thresh, minarea, snr_min, mag_range, out_path,
             notes, overwrite):
     """Build a refcat by extracting sources from a mosaic.
@@ -219,8 +217,7 @@ def extract(config, field_name, mosaic_path, filter_name, tile, scale, version,
 
       \b
       --mosaic <path>                          (explicit, anywhere on disk)
-      --filter F277W --tile A1 [--scale 30mas] [--version latest]
-                                               (resolves under
+      --filter F277W --tile A1 [--scale 30mas] (resolves under
                                                 field.filter_dir(<filter>)/)
     """
     _, field_obj = _refcat_setup(config, field_name)
@@ -233,11 +230,10 @@ def extract(config, field_name, mosaic_path, filter_name, tile, scale, version,
         if not (filter_name and tile):
             raise click.UsageError(
                 "Provide either --mosaic <path> or --filter <name> --tile "
-                "<name> [--scale 30mas] [--version latest]."
+                "<name> [--scale 30mas]."
             )
         mosaic_path = resolve_mosaic_path(
-            field_obj, filter_name=filter_name, tile=tile,
-            scale=scale, version=version,
+            field_obj, filter_name=filter_name, tile=tile, scale=scale,
         )
 
     mag_range_t = _parse_mag_range(mag_range)

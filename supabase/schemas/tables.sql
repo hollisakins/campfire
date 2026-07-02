@@ -690,17 +690,26 @@ CREATE TABLE IF NOT EXISTS "public"."programs" (
 ALTER TABLE "public"."programs" OWNER TO "postgres";
 
 
+-- One logical mosaic per (field, tile, filter, pixel_scale, extension). The
+-- `version` axis is retired (epic #261, N2 / D3): the pipeline emits a single
+-- canonical mosaic name per slot and re-combine overwrites it in place.
 CREATE TABLE IF NOT EXISTS "public"."nircam_images" (
     "id" integer NOT NULL,
     "field" "text" NOT NULL,
     "tile" "text" NOT NULL,
     "filter" "text" NOT NULL,
     "pixel_scale" "text" NOT NULL,
-    "version" "text" NOT NULL,
     "extension" "text" NOT NULL,
     "file_path" "text" NOT NULL,
     "created_at" timestamp without time zone DEFAULT "now"(),
-    "file_size" bigint
+    "file_size" bigint,
+    -- Lifecycle (epic #261, N2): mosaics are public science with the same
+    -- draft->published->revoked gate as spectra, flipped by set_deployment_status.
+    -- `deployment_id` links the mosaic to its NIRCam field deployment (provenance +
+    -- the batch the lifecycle transition acts on). `deploy_status` is the public
+    -- visibility gate the RLS reads (published => everyone; draft/revoked => admin).
+    "deploy_status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "nircam_images_deploy_status_check" CHECK (("deploy_status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
+    "deployment_id" integer
 );
 
 
@@ -1447,17 +1456,15 @@ ALTER TABLE ONLY "public"."map_layers"
 
 
 ALTER TABLE ONLY "public"."nircam_images"
-    ADD CONSTRAINT "nircam_images_field_tile_filter_pixel_scale_version_extensi_key" UNIQUE ("field", "tile", "filter", "pixel_scale", "version", "extension");
-
-
-
-ALTER TABLE ONLY "public"."nircam_images"
     ADD CONSTRAINT "nircam_images_pkey" PRIMARY KEY ("id");
 
 
 
+-- Single version-free uniqueness (epic #261, N2 / D3). The former redundant
+-- twin `nircam_images_field_tile_filter_pixel_scale_version_extensi_key` is
+-- dropped alongside the `version` axis.
 ALTER TABLE ONLY "public"."nircam_images"
-    ADD CONSTRAINT "nircam_images_unique" UNIQUE ("field", "tile", "filter", "pixel_scale", "version", "extension");
+    ADD CONSTRAINT "nircam_images_unique" UNIQUE ("field", "tile", "filter", "pixel_scale", "extension");
 
 
 ALTER TABLE ONLY "public"."nircam_exposures"
@@ -1692,6 +1699,9 @@ ALTER TABLE ONLY "public"."storage_objects"
 
 ALTER TABLE ONLY "public"."storage_objects"
     ADD CONSTRAINT "storage_objects_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
+
+ALTER TABLE ONLY "public"."nircam_images"
+    ADD CONSTRAINT "nircam_images_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
 
 
 

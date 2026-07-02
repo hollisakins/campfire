@@ -135,3 +135,78 @@ def test_build_registry_rows_threads_sci_dq_hashes(tmp_path):
     assert rows[0]["content_hash"].startswith("sha256:")   # whole-file digest
     assert rows[0]["content_hash"] != "sha256:" + "c" * 64  # not the sci_dq one
     assert rows[0]["sci_dq_hash"] == "sha256:" + "c" * 64
+
+
+# --- mosaic deploy (N2) -----------------------------------------------------
+
+def _write_manifest(filter_dir, base, *, field, filt, tile, scale):
+    import json
+    (filter_dir / f"{base}_manifest.json").write_text(json.dumps({
+        "mosaic_name": base, "field": field, "filter": filt,
+        "tile": tile, "pixel_scale": scale,
+    }))
+
+
+def test_discover_mosaics_manifest_based_version_free_keys(tmp_path):
+    # A version-free mosaic slot with i2d + split extensions, discovered via its
+    # manifest and keyed under canonical nircam_mosaic keys.
+    fdir = tmp_path / "products" / "nircam" / "cosmos" / "f444w"
+    fdir.mkdir(parents=True)
+    base = "mosaic_nircam_f444w_cosmos_30mas_A1"
+    _write_manifest(fdir, base, field="cosmos", filt="f444w", tile="A1", scale="30mas")
+    for suffix in ("_i2d.fits", "_sci.fits", "_err.fits", "_wht.fits"):
+        (fdir / f"{base}{suffix}").write_bytes(b"\x00")
+    # a stray split with no i2d/manifest twin must be ignored
+    (fdir / "orphan_sci.fits").write_bytes(b"\x00")
+
+    dirs = {"products": tmp_path / "products" / "nircam" / "cosmos"}
+    found = nc.discover_mosaics(dirs, "cosmos", ["f444w"])
+    exts = sorted(m["extension"] for m in found)
+    assert exts == ["err", "i2d", "sci", "wht"]
+    i2d = next(m for m in found if m["extension"] == "i2d")
+    assert i2d["tile"] == "A1" and i2d["pixel_scale"] == "30mas"
+    assert i2d["storage_key"] == \
+        "data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_A1_i2d.fits"
+    # every discovered key registers as nircam_mosaic (no version segment)
+    row = reg.row_for_key(i2d["storage_key"], backend="osn",
+                          content_hash="sha256:" + "a" * 64, size_bytes=1,
+                          content_type="application/fits")
+    assert row["product_type"] == "nircam_mosaic"
+    assert row["field"] == "cosmos"
+
+
+def test_discover_mosaics_skips_stale_versioned_manifest(tmp_path):
+    # A field re-reduced after N2 keeps its pre-N2 `..._v0_1_..._manifest.json`
+    # on disk next to the new version-free one. discover_mosaics must accept ONLY
+    # the canonical version-free slot — else it emits a duplicate (field, tile,
+    # filter, scale, extension) row that crashes the batch upsert and re-uploads
+    # a version-bearing key to OSN.
+    fdir = tmp_path / "products" / "nircam" / "cosmos" / "f444w"
+    fdir.mkdir(parents=True)
+    canon = "mosaic_nircam_f444w_cosmos_30mas_A1"
+    stale = "mosaic_nircam_f444w_cosmos_30mas_v0_1_A1"
+    for base in (canon, stale):
+        _write_manifest(fdir, base, field="cosmos", filt="f444w", tile="A1", scale="30mas")
+        (fdir / f"{base}_i2d.fits").write_bytes(b"\x00")
+
+    dirs = {"products": tmp_path / "products" / "nircam" / "cosmos"}
+    found = nc.discover_mosaics(dirs, "cosmos", ["f444w"])
+    assert len(found) == 1
+    assert found[0]["storage_key"].endswith(f"{canon}_i2d.fits")
+    # no version segment leaked into any discovered key
+    assert all("_v0_1_" not in m["storage_key"] for m in found)
+
+
+def test_discover_mosaics_multiunderscore_field(tmp_path):
+    # Field name with underscores survives (manifest-driven, not positional).
+    fdir = tmp_path / "products" / "nircam" / "ember_egs_p1" / "f356w"
+    fdir.mkdir(parents=True)
+    base = "mosaic_nircam_f356w_ember_egs_p1_30mas_t2"
+    _write_manifest(fdir, base, field="ember_egs_p1", filt="f356w", tile="t2", scale="30mas")
+    (fdir / f"{base}_i2d.fits").write_bytes(b"\x00")
+    dirs = {"products": tmp_path / "products" / "nircam" / "ember_egs_p1"}
+    found = nc.discover_mosaics(dirs, "ember_egs_p1", ["f356w"])
+    assert len(found) == 1
+    assert found[0]["tile"] == "t2"
+    assert found[0]["storage_key"].endswith(
+        "ember_egs_p1/f356w/mosaic_nircam_f356w_ember_egs_p1_30mas_t2_i2d.fits")

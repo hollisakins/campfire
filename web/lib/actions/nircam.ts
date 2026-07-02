@@ -15,7 +15,6 @@ export interface NircamFilterOptionsResult {
   tiles: string[];
   filters: string[];
   pixel_scales: string[];
-  versions: string[];
   extensions: string[];
   error?: string;
 }
@@ -88,7 +87,6 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
       tiles: [],
       filters: [],
       pixel_scales: [],
-      versions: [],
       extensions: [],
     };
   }
@@ -96,11 +94,11 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
   try {
     const { data: images, error } = await paginateQuery<{
       field: string; tile: string; filter: string;
-      pixel_scale: string; version: string; extension: string;
+      pixel_scale: string; extension: string;
     }>(
       () => supabase
         .from('nircam_images')
-        .select('field, tile, filter, pixel_scale, version, extension')
+        .select('field, tile, filter, pixel_scale, extension')
         .order('field')
         .order('filter')
         .order('tile'),
@@ -113,7 +111,6 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
         tiles: [],
         filters: [],
         pixel_scales: [],
-        versions: [],
         extensions: [],
         error: error.message,
       };
@@ -122,7 +119,6 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
     const fields = [...new Set(images.map(i => i.field))].sort();
     const filters = [...new Set(images.map(i => i.filter))].sort();
     const pixel_scales = [...new Set(images.map(i => i.pixel_scale))].sort();
-    const versions = [...new Set(images.map(i => i.version))].sort();
     const extensions = [...new Set(images.map(i => i.extension))].sort((a, b) => {
       // Sort extensions by priority: sci > err > rms > srcmask
       const order = ['sci', 'err', 'rms', 'srcmask'];
@@ -157,7 +153,6 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
       tiles,
       filters,
       pixel_scales,
-      versions,
       extensions,
     };
   } catch (err) {
@@ -167,7 +162,6 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
       tiles: [],
       filters: [],
       pixel_scales: [],
-      versions: [],
       extensions: [],
       error: 'An unexpected error occurred',
     };

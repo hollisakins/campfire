@@ -93,9 +93,6 @@ export const NircamTable: React.FC<NircamTableProps> = ({
       if (filters.pixel_scales.length > 0 && !filters.pixel_scales.includes(image.pixel_scale)) {
         return false;
       }
-      if (filters.versions.length > 0 && !filters.versions.includes(image.version)) {
-        return false;
-      }
       if (filters.extensions.length > 0 && !filters.extensions.includes(image.extension)) {
         return false;
       }
@@ -174,18 +171,6 @@ export const NircamTable: React.FC<NircamTableProps> = ({
         cell: ({ row }) => (
           <span className="text-sm font-mono text-text-primary">
             {row.original.pixel_scale}
-          </span>
-        ),
-        sortingFn: 'alphanumeric',
-      },
-      {
-        accessorKey: 'version',
-        header: ({ column }) => (
-          <SortableHeader column={column}>Version</SortableHeader>
-        ),
-        cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary">
-            {row.original.version}
           </span>
         ),
         sortingFn: 'alphanumeric',
