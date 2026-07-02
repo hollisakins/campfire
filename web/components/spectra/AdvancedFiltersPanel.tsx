@@ -514,7 +514,7 @@ export function AdvancedFiltersPanel({
               max={filters.max_snr_max ?? null}
               onChange={(min, max) => onFiltersChange({ ...filters, max_snr_min: min, max_snr_max: max })}
               minBound={0}
-              maxBound={150}
+              maxBound={100000}
               step={1}
               precision={0}
             />
