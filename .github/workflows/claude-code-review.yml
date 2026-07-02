@@ -2,7 +2,10 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, ready_for_review, reopened]
+    # `synchronize` is required so the review also re-runs when new commits are
+    # pushed to an existing PR — without it the review only fired on open/reopen/
+    # ready-for-review, which looked like "it didn't run" after follow-up pushes.
+    types: [opened, synchronize, reopened, ready_for_review]
     # Optional: Only run on specific file changes
     # paths:
     #   - "src/**/*.ts"
@@ -39,6 +42,16 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
+          # Post a single updating summary comment in addition to inline comments,
+          # so the PR always gets visible feedback even when the review has no
+          # line-specific inline nits to buffer.
+          use_sticky_comment: true
+          # TEMPORARY (debugging, remove after we confirm posting works): surface the
+          # full agent transcript in the Actions log so we can see the exact tool that
+          # `permission_denials_count` is blocking. Note: this prints everything the
+          # agent read/ran into the (world-readable, on a public repo) job log, so it
+          # must be turned back off once the denied tool is identified.
+          show_full_output: true
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
