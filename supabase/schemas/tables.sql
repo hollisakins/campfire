@@ -622,7 +622,14 @@ ALTER TABLE "public"."observations" OWNER TO "postgres";
 
 CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "id" integer NOT NULL,
-    "observation" "text" NOT NULL,
+    -- A deployment is anchored to EITHER a NIRSpec observation OR a NIRCam field
+    -- (epic #261, N1): exactly one is non-null. `observation` was NOT NULL before
+    -- NIRCam deploy became first-class; it is now nullable so a field-scoped deploy
+    -- can record the same provenance (deployed_by/at, cfpipe_version, crds_context,
+    -- config_snapshot) and drive the same draft->published->revoked lifecycle. The
+    -- observation FK still holds (NULL references nothing).
+    "observation" "text",
+    "field" "text",
     "deployed_by" "uuid",
     "deployed_at" timestamp with time zone DEFAULT "now"(),
     "cfpipe_version" "text",
@@ -645,7 +652,9 @@ CREATE TABLE IF NOT EXISTS "public"."deployments" (
     -- spectra.deploy_status; this column is the provenance/audit record.
     "status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "deployments_status_check" CHECK (("status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
     "published_at" timestamp with time zone,
-    "revoked_at" timestamp with time zone
+    "revoked_at" timestamp with time zone,
+    -- Exactly one scope: a NIRSpec observation or a NIRCam field (epic #261, N1).
+    CONSTRAINT "deployments_scope_check" CHECK (("num_nonnulls"("observation", "field") = 1))
 );
 
 

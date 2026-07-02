@@ -2527,10 +2527,12 @@ BEGIN
                 AND t.program_slug = ANY(p_program_slugs)))
         OR (so.spectrum_id IS NULL AND so.deployment_id IS NOT NULL AND EXISTS (
               SELECT 1 FROM deployments d
-              JOIN observations o ON o.name = d.observation
+              LEFT JOIN observations o ON o.name = d.observation
               WHERE d.id = so.deployment_id
                 AND d.status = 'published'
-                AND o.program_slug = ANY(p_program_slugs)))
+                -- NIRCam field deploy (epic #261, N1): multi-program, public to all
+                -- when published. NIRSpec obs deploy stays program-scoped.
+                AND (d.field IS NOT NULL OR o.program_slug = ANY(p_program_slugs))))
       )
   ),
   matched AS MATERIALIZED (
@@ -2611,10 +2613,12 @@ AS $$
               AND t.program_slug = ANY(p_program_slugs)))
       OR (so.spectrum_id IS NULL AND so.deployment_id IS NOT NULL AND EXISTS (
             SELECT 1 FROM deployments d
-            JOIN observations o ON o.name = d.observation
+            LEFT JOIN observations o ON o.name = d.observation
             WHERE d.id = so.deployment_id
               AND d.status = 'published'
-              AND o.program_slug = ANY(p_program_slugs)))
+              -- NIRCam field deploy (epic #261, N1): multi-program, public to all
+              -- when published. NIRSpec obs deploy stays program-scoped.
+              AND (d.field IS NOT NULL OR o.program_slug = ANY(p_program_slugs))))
     );
 $$;
 
@@ -3349,6 +3353,7 @@ AS $$
 DECLARE
   v_is_admin boolean;
   v_obs text;
+  v_field text;
   v_action text;
   v_spectrum_ids integer[];
   v_result json;
@@ -3363,9 +3368,29 @@ BEGIN
     RAISE EXCEPTION 'Invalid status: %', p_to;
   END IF;
 
-  SELECT observation INTO v_obs FROM deployments WHERE id = p_deployment_id;
-  IF v_obs IS NULL THEN
+  SELECT observation, field INTO v_obs, v_field FROM deployments WHERE id = p_deployment_id;
+  IF NOT FOUND THEN
     RAISE EXCEPTION 'Deployment % not found', p_deployment_id;
+  END IF;
+
+  -- NIRCam field-scoped deployment (epic #261, N1): no spectra to flip — the
+  -- exposure/mosaic FITS visibility rides deployment.status via the storage_objects
+  -- gate, so flipping the deployment row is the whole transition. (N2 extends this
+  -- to also flip nircam_images.deploy_status for the public mosaic index.)
+  IF v_field IS NOT NULL THEN
+    v_action := CASE WHEN p_to = 'revoked' THEN 'revoke'
+                     WHEN p_to = 'draft' THEN 'upload' ELSE 'publish' END;
+    UPDATE deployments SET
+      status = p_to,
+      published_at = CASE WHEN p_to = 'published' THEN now() ELSE published_at END,
+      revoked_at = CASE WHEN p_to = 'revoked' THEN now() ELSE revoked_at END
+    WHERE id = p_deployment_id;
+    INSERT INTO deploy_events (actor, action, deployment_id, status_to, host, metadata)
+      VALUES (p_actor, v_action, p_deployment_id, p_to, p_host,
+              jsonb_build_object('field', v_field));
+    RETURN json_build_object(
+      'deployment_id', p_deployment_id, 'field', v_field,
+      'status', p_to, 'spectra', json_build_object('updated', 0, 'action', v_action));
   END IF;
 
   -- Which current statuses transition to p_to:
