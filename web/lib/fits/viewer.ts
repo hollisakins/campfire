@@ -91,7 +91,14 @@ export class FitsImageViewer {
   private rafHandle = 0;
   private disposed = false;
 
-  constructor(private canvas: HTMLCanvasElement) {
+  // interactive (default): internal pan/zoom camera, backing store = CSS×dpr.
+  // static: backing store = the image's native pixel size and pan/zoom are
+  // no-ops — the host CSS-transforms the canvas (so an SVG mask overlay drawn in
+  // the same transformed container stays pixel-aligned; epic #261, N5).
+  private interactive: boolean;
+
+  constructor(private canvas: HTMLCanvasElement, opts?: { interactive?: boolean }) {
+    this.interactive = opts?.interactive ?? true;
     const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
     if (!gl) throw new Error('WebGL2 is not available in this browser');
     // Sampling an R32F texture with NEAREST is core WebGL2 — no float-buffer
@@ -177,8 +184,9 @@ export class FitsImageViewer {
     return { w, h, s: fit * this.zoom };
   }
 
-  /** Pan by a screen delta in CSS pixels (drag). */
+  /** Pan by a screen delta in CSS pixels (drag). No-op in static mode. */
   panByCss(dxCss: number, dyCss: number): void {
+    if (!this.interactive) return;
     const dpr = this.canvas.width / Math.max(1, this.canvas.clientWidth);
     const { s } = this.backingSize();
     if (s <= 0) return;
@@ -189,7 +197,7 @@ export class FitsImageViewer {
 
   /** Zoom by `factor` about a cursor position given in CSS pixels within the canvas. */
   zoomAt(factor: number, cssX: number, cssY: number): void {
-    if (!this.image) return;
+    if (!this.interactive || !this.image) return;
     const dpr = this.canvas.width / Math.max(1, this.canvas.clientWidth);
     const { w, h, s } = this.backingSize();
     if (s <= 0) return;
@@ -233,6 +241,18 @@ export class FitsImageViewer {
   }
 
   private syncBackingStore(): void {
+    // Static mode: the backing store is the image's native pixel grid, so one
+    // texel maps to one canvas pixel and the host's CSS transform scales it (a
+    // fit/zoom of 1 with the camera centred makes the quad fill the canvas).
+    if (!this.interactive) {
+      if (this.image) {
+        if (this.canvas.width !== this.image.width || this.canvas.height !== this.image.height) {
+          this.canvas.width = this.image.width;
+          this.canvas.height = this.image.height;
+        }
+      }
+      return;
+    }
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     const cssW = Math.max(1, this.canvas.clientWidth);
     const cssH = Math.max(1, this.canvas.clientHeight);
