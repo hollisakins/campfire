@@ -16,7 +16,6 @@ import {
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 import { stageBadgeClasses } from '@/lib/nircam-stages';
 import MaskEditor from '@/components/nircam/MaskEditor';
-import FitsExposureViewer from '@/components/nircam/FitsExposureViewer';
 import { storageKey } from '@/lib/layout';
 import { lookupNircamNav, type NircamNavLookup } from '@/lib/nircam-nav-cache';
 import {
@@ -247,6 +246,10 @@ export default function ExposureDetailPage() {
   } catch {
     fitsKey = null;
   }
+  // FITS masking needs the key plus the pixel dims (for the overlay viewBox).
+  const fitsMaskAvailable = Boolean(
+    fitsKey && exposure.image_width && exposure.image_height,
+  );
 
   const handleSaveMasks = async (regions: MaskRegionsPayload) => {
     const res = await saveExposureMaskRegions(exposure.id, regions);
@@ -343,17 +346,23 @@ export default function ExposureDetailPage() {
             </button>
             <button
               onClick={() => setViewMode('fits')}
-              disabled={!fitsKey}
-              title={fitsKey ? 'Live FITS render (SCI)' : 'FITS key unavailable for this exposure'}
+              disabled={!fitsMaskAvailable}
+              title={fitsMaskAvailable ? 'Live FITS render (SCI) + masking' : 'FITS unavailable for this exposure'}
               className={`rounded-md px-3 py-1 disabled:opacity-40 ${viewMode === 'fits' ? 'bg-card-hover text-text-primary' : 'text-text-secondary'}`}
             >
               FITS <span className="text-text-tertiary">beta</span>
             </button>
           </div>
           <Card className="overflow-hidden">
-            {viewMode === 'fits' && fitsKey ? (
+            {viewMode === 'fits' && fitsMaskAvailable ? (
               <div className="h-[80vh]">
-                <FitsExposureViewer fitsKey={fitsKey} />
+                <MaskEditor
+                  fitsKey={fitsKey!}
+                  imageWidth={exposure.image_width!}
+                  imageHeight={exposure.image_height!}
+                  initialRegions={exposure.mask_regions}
+                  onSave={handleSaveMasks}
+                />
               </div>
             ) : editorAvailable ? (
               <div className="h-[80vh]">
