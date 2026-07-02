@@ -16,6 +16,8 @@ import {
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 import { stageBadgeClasses } from '@/lib/nircam-stages';
 import MaskEditor from '@/components/nircam/MaskEditor';
+import FitsExposureViewer from '@/components/nircam/FitsExposureViewer';
+import { storageKey } from '@/lib/layout';
 import { lookupNircamNav, type NircamNavLookup } from '@/lib/nircam-nav-cache';
 import {
   getCachedExposure,
@@ -52,6 +54,9 @@ export default function ExposureDetailPage() {
   // Re-derived on every id change; null when there's no cache (direct entry).
   const [nav, setNav] = useState<NircamNavLookup | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  // N4 (epic #261): live FITS render vs the legacy pre-generated PNG. Defaults
+  // to PNG; the toggle doubles as the pixel-parity check during the rollout.
+  const [viewMode, setViewMode] = useState<'png' | 'fits'>('png');
   useEffect(() => { setNav(lookupNircamNav(id)); }, [id]);
 
   // When the route id changes, reset state synchronously from the in-memory
@@ -227,6 +232,22 @@ export default function ExposureDetailPage() {
     fullPngUrl && exposure.image_width && exposure.image_height
   );
 
+  // Canonical OSN key for the exposure SCI FITS, for the live N4 renderer.
+  let fitsKey: string | null = null;
+  try {
+    if (exposure.field && exposure.filter && exposure.filename) {
+      const fname = `${exposure.filename.replace(/\.fits$/, '')}.fits`;
+      fitsKey = storageKey(
+        'nircam_exposure',
+        { field: exposure.field, filt: exposure.filter },
+        fname,
+        'canonical',
+      );
+    }
+  } catch {
+    fitsKey = null;
+  }
+
   const handleSaveMasks = async (regions: MaskRegionsPayload) => {
     const res = await saveExposureMaskRegions(exposure.id, regions);
     if (res.exposure) {
@@ -311,10 +332,30 @@ export default function ExposureDetailPage() {
       )}
 
       <div className="flex gap-6">
-        {/* PNG viewer / mask editor */}
+        {/* Image viewer: live FITS render (N4) or the legacy PNG / mask editor */}
         <div className="flex-1 min-w-0">
+          <div className="mb-2 inline-flex rounded-lg border border-border p-0.5 text-xs">
+            <button
+              onClick={() => setViewMode('png')}
+              className={`rounded-md px-3 py-1 ${viewMode === 'png' ? 'bg-card-hover text-text-primary' : 'text-text-secondary'}`}
+            >
+              PNG
+            </button>
+            <button
+              onClick={() => setViewMode('fits')}
+              disabled={!fitsKey}
+              title={fitsKey ? 'Live FITS render (SCI)' : 'FITS key unavailable for this exposure'}
+              className={`rounded-md px-3 py-1 disabled:opacity-40 ${viewMode === 'fits' ? 'bg-card-hover text-text-primary' : 'text-text-secondary'}`}
+            >
+              FITS <span className="text-text-tertiary">beta</span>
+            </button>
+          </div>
           <Card className="overflow-hidden">
-            {editorAvailable ? (
+            {viewMode === 'fits' && fitsKey ? (
+              <div className="h-[80vh]">
+                <FitsExposureViewer fitsKey={fitsKey} />
+              </div>
+            ) : editorAvailable ? (
               <div className="h-[80vh]">
                 <MaskEditor
                   pngUrl={fullPngUrl!}
