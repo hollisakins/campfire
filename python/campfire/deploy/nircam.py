@@ -385,8 +385,15 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     print(f"Filters: {', '.join(filters)}")
 
     exposures = discover_exposures(dirs, filters)
-    print(f"Discovered {len(exposures)} canonical exposures")
-    if not exposures:
+    expmap_tasks = discover_expmap_tasks(dirs, field)
+    n_mosaics = len(discover_mosaics(dirs, field, filters))
+    print(f"Discovered {len(exposures)} canonical exposure(s), "
+          f"{len(expmap_tasks)} expmap(s), {n_mosaics} mosaic(s)")
+    # Deploy whatever the field has — mosaics/expmaps are independent of the
+    # per-exposure FITS (a field can keep its science mosaics after the large cal
+    # exposures are pruned). Only bail if there is genuinely nothing to ship.
+    if not exposures and not expmap_tasks and not n_mosaics:
+        print("Nothing to deploy for this field.")
         return
 
     png_tasks = build_upload_tasks(dirs, field, filters)
@@ -409,10 +416,8 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
           f"({len(thumb_r2_keys)} thumb, {len(full_r2_keys)} full)")
 
     fits_tasks = build_fits_upload_tasks(field, exposures)
-    expmap_tasks = discover_expmap_tasks(dirs, field)
-    n_mosaics = len(discover_mosaics(dirs, field, filters))
-    print(f"Canonical FITS: {len(fits_tasks)} exposure(s), {len(expmap_tasks)} expmap(s), "
-          f"{n_mosaics} mosaic(s) → OSN")
+    print(f"→ OSN: {len(fits_tasks)} exposure(s), {len(expmap_tasks)} expmap(s), "
+          f"{n_mosaics} mosaic(s)")
 
     records = []
     for (filtname, basename), info in sorted(exposures.items()):
@@ -536,9 +541,12 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         print(f"  Registered {n_reg} storage object(s)")
 
     # Re-point dedup-skipped exposures (unchanged bytes, not re-registered) to this
-    # deployment so a publish / re-deploy flips the whole field's visibility.
+    # deployment so a PUBLISHED re-deploy flips the whole field consistently. NOT on
+    # a --draft re-deploy: draft is staging — leave already-published unchanged
+    # objects on their published deployment (only the new/changed ones stage as
+    # draft), else the whole live field goes dark.
     skipped_keys = ([t.r2_key for t in fits_tasks if t.r2_key not in osn_uploaded]
-                    if deployment_id else [])
+                    if (deployment_id and not draft) else [])
     if skipped_keys:
         n_moved = set_active_deployment(client, skipped_keys, deployment_id)
         if n_moved:
@@ -758,25 +766,27 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
         for msg in failures:
             print(f"    Error: {msg}")
 
-    # Index only mosaics actually present in OSN — uploaded this run or unchanged +
-    # already registered. A failed upload must NOT get a nircam_images row (it would
-    # advertise a file_path with no object + no registry row; the slot 404s). A
-    # re-run heals. deploy_status matches the deployment so the public page shows
-    # only published mosaics; deployment_id ties them to the lifecycle batch.
+    # A failed upload must NOT get a nircam_images row (it would advertise a
+    # file_path with no object + no registry row; the slot 404s). A re-run heals.
     present = set(uploaded) | {
         m['storage_key'] for m in mosaics
         if existing.get(m['storage_key']) == m['content_hash']
     }
+    # PUBLISHED: (re-)index every present mosaic under this deployment. DRAFT is
+    # staging — only index the NEW/CHANGED (uploaded) mosaics as draft; leave
+    # unchanged, already-published mosaics on their live deployment so the field
+    # doesn't go dark. (A first-time deploy has uploaded == present anyway.)
     img_status = 'draft' if draft else 'published'
+    indexable = uploaded if draft else present
     img_rows = [{
         'field': field, 'tile': m['tile'], 'filter': m['filter'],
         'pixel_scale': m['pixel_scale'], 'extension': m['extension'],
         'file_path': m['storage_key'], 'file_size': m['size'],
         'deploy_status': img_status, 'deployment_id': deployment_id,
-    } for m in mosaics if m['storage_key'] in present]
+    } for m in mosaics if m['storage_key'] in indexable]
     n_img = _upsert_nircam_images(client, img_rows)
     print(f"  Indexed {n_img} nircam_images row(s) ({img_status})")
-    n_failed = len(mosaics) - len(img_rows)
+    n_failed = len(present) - len(img_rows) if not draft else 0
     if n_failed:
         print(f"  ({n_failed} mosaic(s) not indexed — upload failed; re-run to retry)")
 
@@ -795,11 +805,14 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     if reg_rows:
         print(f"  Registered {upsert_storage_objects(client, reg_rows)} mosaic storage object(s)")
 
-    # Re-point unchanged (skipped) mosaics to the current deployment.
-    skipped_keys = [m['storage_key'] for m in mosaics
-                    if m['storage_key'] in present and m['storage_key'] not in uploaded]
-    if skipped_keys:
-        set_active_deployment(client, skipped_keys, deployment_id)
+    # Re-point unchanged (skipped) mosaics to the current deployment — only on a
+    # PUBLISHED deploy. On --draft, leave unchanged mosaics on their live deployment
+    # (staging: don't take the published field dark).
+    if not draft:
+        skipped_keys = [m['storage_key'] for m in mosaics
+                        if m['storage_key'] in present and m['storage_key'] not in uploaded]
+        if skipped_keys:
+            set_active_deployment(client, skipped_keys, deployment_id)
 
 
 def _upsert_nircam_images(client, rows, batch_size=500):
