@@ -50,8 +50,8 @@ export interface DeploymentsResult {
   error?: string;
 }
 
-/** Sort keys accepted by get_admin_deployments — mirror the RPC whitelist. */
-export const DEPLOYMENT_SORT_KEYS = ['id', 'deployed_at', 'status', 'scope'] as const;
+// Sort-key whitelists live in @/lib/admin/sort-keys — a 'use server' module
+// may only export async functions.
 
 // ---------------------------------------------------------------------------
 // Read: deployments (the lifecycle units)
@@ -119,9 +119,6 @@ export interface DeployEventsResult {
   total: number;
   error?: string;
 }
-
-/** Sort keys accepted by get_admin_deploy_events — mirror the RPC whitelist. */
-export const DEPLOY_EVENT_SORT_KEYS = ['occurred_at', 'action'] as const;
 
 // Backed by get_admin_deploy_events: the NIRCam scope extraction and the
 // actor-name join happen in SQL (one scan), replacing two extra round-trips.

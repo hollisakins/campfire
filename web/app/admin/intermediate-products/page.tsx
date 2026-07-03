@@ -13,9 +13,9 @@ import { useAdminTableQuery } from '@/lib/hooks/useAdminTableQuery';
 import {
   getStorageObjects, getStorageBudget, getStorageFacets,
   presignStorageObjectDownload,
-  STORAGE_OBJECT_SORT_KEYS,
   type StorageObjectRow, type StorageBudget,
 } from '@/lib/actions/storage-registry';
+import { STORAGE_OBJECT_SORT_KEYS } from '@/lib/admin/sort-keys';
 
 async function downloadObject(id: number) {
   const res = await presignStorageObjectDownload(id);

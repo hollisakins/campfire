@@ -15,9 +15,9 @@ import {
 import { useAdminTableQuery } from '@/lib/hooks/useAdminTableQuery';
 import {
   getDeployments, getDeployEvents, setDeploymentLifecycle,
-  DEPLOYMENT_SORT_KEYS,
   type DeploymentRow, type DeployEventRow, type DeployStatus, type LifecycleAction,
 } from '@/lib/actions/deployments';
+import { DEPLOYMENT_SORT_KEYS } from '@/lib/admin/sort-keys';
 
 // ---------------------------------------------------------------------------
 // Display helpers
