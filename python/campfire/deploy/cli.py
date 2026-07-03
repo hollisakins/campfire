@@ -1225,6 +1225,17 @@ def registry_prune(ctx, config_path, duplicates, dead_products, execute, local):
     n = reg.delete_objects(sb, list(ids))
     print(f"\nDeleted {n} row(s).")
 
+    # Audit the registry prune (audit B3): registry-row deletion was silent.
+    from campfire.deploy.supabase import (
+        deploy_event_metadata, get_user_id_from_token, log_deploy_event,
+    )
+    log_deploy_event(
+        sb, action='delete', actor=get_user_id_from_token(config),
+        affected_count=n,
+        metadata=deploy_event_metadata(
+            'registry', items=n, prune=True,
+            duplicates=bool(duplicates), dead_products=bool(dead_products)))
+
 
 # ---------------------------------------------------------------------------
 # photometry subcommand
