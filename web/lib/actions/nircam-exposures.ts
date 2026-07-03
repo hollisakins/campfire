@@ -146,7 +146,7 @@ export async function getExposureNeighbors(
     });
 
     if (error) return { ...empty, error: error.message };
-    const rows = (data ?? []) as { id: number; position: number; total_count: number }[];
+    const rows = (data ?? []) as { id: number; nav_position: number; total_count: number }[];
     if (rows.length === 0) return empty;  // currentId not in the filtered set
 
     const idx = rows.findIndex((r) => r.id === currentId);
@@ -154,7 +154,7 @@ export async function getExposureNeighbors(
     return {
       prevId: idx > 0 ? rows[idx - 1].id : null,
       nextId: idx >= 0 && idx < rows.length - 1 ? rows[idx + 1].id : null,
-      position: current?.position ?? null,
+      position: current?.nav_position ?? null,
       total: rows[0]?.total_count ?? 0,
       windowIds: rows.map((r) => r.id),
     };

@@ -347,7 +347,7 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposure_neighbors(
 )
 RETURNS TABLE (
   id integer,
-  position bigint,
+  nav_position bigint,   -- 1-based rank in the filtered set ("position" is reserved)
   total_count bigint
 )
 LANGUAGE plpgsql STABLE
