@@ -45,8 +45,8 @@ from astropy.io import fits
 from campfire_layout import KeyScheme, Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
-    claim_deploy_scope, get_deploy_scope_version, get_supabase_client,
-    get_user_id_from_token, insert_deployment, log_deploy_event,
+    claim_deploy_scope, deploy_event_metadata, get_deploy_scope_version,
+    get_supabase_client, get_user_id_from_token, insert_deployment, log_deploy_event,
 )
 
 # The OSN data backend NIRCam canonical intermediates are homed on (epic #210/#216,
@@ -378,6 +378,33 @@ def discover_expmap_tasks(dirs, field):
 # Deploy (push)
 # ---------------------------------------------------------------------------
 
+def _read_field_provenance(dirs, field, filters):
+    """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` for a field.
+
+    Read from a deployed mosaic's primary header — mosaics are the only NIRCam
+    product stamped with ``CMPFRVER`` / ``CAL_VER`` / ``CRDS_CTX`` (canonical
+    exposures carry only ``CFP_*`` step keys). Returns ``(None, None, None)``
+    when no mosaic exists yet, which is the normal case for a mid-reduction
+    ``--draft`` exposure deploy: the pipeline version that produced the
+    exposures is not recorded in exposure headers, so a draft-only deploy
+    legitimately has no batch-level provenance (audit B2). A follow-on could
+    stamp ``CMPFRVER`` on canonical exposures at reduction time to close this.
+    """
+    try:
+        mosaics = discover_mosaics(dirs, field, filters)
+    except Exception:
+        return None, None, None
+    if not mosaics:
+        return None, None, None
+    chosen = next((m for m in mosaics if m.get('extension') == 'i2d'), mosaics[0])
+    try:
+        with fits.open(chosen['path'], memmap=False) as hdul:
+            hdr = hdul[0].header
+            return hdr.get('CMPFRVER'), hdr.get('CAL_VER'), hdr.get('CRDS_CTX')
+    except Exception:
+        return None, None, None
+
+
 def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     """Push NIRCam exposure state to OSN + Supabase (epic #261, N1).
 
@@ -516,11 +543,18 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # concurrent same-field deploy is detected at finalize (epic #210, B4 / D12).
     scope_version = get_deploy_scope_version(client, 'field', field)
 
+    # Batch-level provenance (audit B2, Phase 3). Best-effort: only mosaics carry
+    # the version cards, so an exposure-only --draft deploy (no mosaic yet)
+    # records NULL provenance — the pipeline version that produced the exposures
+    # is not stamped on exposure headers.
+    cfpipe_version, jwst_version, crds_context = _read_field_provenance(dirs, field, filters)
+
     # Record the field-scoped deployment up front — it is the provenance anchor and
     # the draft/published visibility gate every registered object hangs off.
     deployment_id = insert_deployment(
         client, field=field, deployed_by=user_id,
-        status='draft' if draft else 'published', n_targets=len(records))
+        status='draft' if draft else 'published', n_targets=len(records),
+        cfpipe_version=cfpipe_version, jwst_version=jwst_version, crds_context=crds_context)
     print(f"Deployment #{deployment_id} recorded "
           f"({'draft — admin-only' if draft else 'published — public'})")
 
@@ -540,6 +574,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         print(f"\nSkipping {n_skipped} unchanged exposure(s) (SCI+DQ hash match)")
 
     # --- Upload canonical FITS + expmaps to OSN ----------------------------
+    n_failed = 0
     osn_tasks = fits_to_upload + expmap_tasks
     osn_uploaded: set[str] = set()
     if osn_tasks:
@@ -547,6 +582,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         success, failed, failures = upload_files_parallel(
             config, osn_tasks, desc='OSN uploads',
             succeeded_out=osn_uploaded, backend=_CANONICAL_BACKEND)
+        n_failed += failed
         print(f"  Uploaded: {success}, Failed: {failed}")
         for msg in failures:
             print(f"  Error: {msg}")
@@ -559,6 +595,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         success, failed, failures = upload_files_parallel(
             config, png_upload_list, desc='Uploading PNGs',
             succeeded_out=png_uploaded, backend=_CANONICAL_BACKEND)
+        n_failed += failed
         print(f"  Uploaded: {success}, Failed: {failed}")
         for msg in failures:
             print(f"  Error: {msg}")
@@ -576,11 +613,12 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     if osn_uploaded:
         reg_rows = build_registry_rows(
             osn_tasks, backend=_CANONICAL_BACKEND, deployment_id=deployment_id,
-            uploaded_by=user_id, succeeded_keys=osn_uploaded, sci_dq_hashes=local_sci_dq)
+            uploaded_by=user_id, cfpipe_version=cfpipe_version,
+            succeeded_keys=osn_uploaded, sci_dq_hashes=local_sci_dq)
         n_reg += upsert_storage_objects(client, reg_rows)
     if png_uploaded:
         reg_rows = build_registry_rows(
-            png_upload_list, backend=_CANONICAL_BACKEND,
+            png_upload_list, backend=_CANONICAL_BACKEND, cfpipe_version=cfpipe_version,
             deployment_id=deployment_id, uploaded_by=user_id, succeeded_keys=png_uploaded)
         n_reg += upsert_storage_objects(client, reg_rows)
     if n_reg:
@@ -609,10 +647,12 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
               f"advanced this field while this deploy was running. Re-run to reconcile.")
     log_deploy_event(
         client, action='upload', actor=user_id, deployment_id=deployment_id,
-        observation=None, affected_count=len(records),
-        metadata={'nircam': True, 'field': field, 'filters': filters, 'draft': draft,
-                  'exposures': len(records), 'fits_uploaded': len(osn_uploaded),
-                  'fits_skipped': n_skipped})
+        observation=None, field=field, affected_count=len(osn_uploaded),
+        metadata=deploy_event_metadata(
+            'nircam', field=field, filters=filters, planned=len(records),
+            succeeded=len(osn_uploaded), failed=n_failed, skipped=n_skipped,
+            items=len(records), draft=draft,
+            fits_uploaded=len(osn_uploaded), fits_skipped=n_skipped))
 
 
 def _upsert_exposures(client, records, batch_size=500):

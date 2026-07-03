@@ -41,6 +41,7 @@ from campfire.deploy.supabase import (
     batch_upsert_objects,
     batch_upsert_spectra,
     check_existing_objects,
+    deploy_event_metadata,
     deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
     fetch_deployment_config,
@@ -195,6 +196,26 @@ def _jwst_pid_from_obs_cfg(obs_cfg: dict) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _read_exposure_provenance(exposure_files):
+    """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` from the first
+    spectrum-exposure header (Phase 3).
+
+    Reads whatever provenance cards the reduction stamped
+    (``CMPFRVER`` / ``CAL_VER`` / ``CRDS_CTX``); any absent card is None. Purely
+    additive over the old ``cfpipe_version=None`` on the intermediates-draft
+    path — a missing/unreadable header just yields all-None.
+    """
+    if not exposure_files:
+        return None, None, None
+    try:
+        from astropy.io import fits
+        with fits.open(exposure_files[0], memmap=False) as hdul:
+            hdr = hdul[0].header
+            return hdr.get('CMPFRVER'), hdr.get('CAL_VER'), hdr.get('CRDS_CTX')
+    except Exception:
+        return None, None, None
+
+
 def _deploy_intermediates_only(
     obs_name: str, obs_dir, config: dict, *,
     dry_run: bool = False, auto_approve: bool = False,
@@ -288,17 +309,25 @@ def _deploy_intermediates_only(
         backend='osn')
     print(f"Uploaded {success}/{len(upload_tasks)} files")
 
+    # Best-effort provenance from the first exposure header (Phase 3): the
+    # intermediates carry whatever cards the reduction stamped. Absent → NULL.
+    cfpipe_version, jwst_version, crds_context = _read_exposure_provenance(exposure_files)
+
     deployment_id = insert_deployment(
         sb, observation=obs_name, deployed_by=user_id, status='draft',
-        cfpipe_version=None, n_targets=0, n_spectra=0,
+        cfpipe_version=cfpipe_version, jwst_version=jwst_version,
+        crds_context=crds_context, n_targets=0, n_spectra=0,
     )
     if deployment_id:
         update_latest_deployment(sb, obs_name, deployment_id)
         print(f"\nDeployment #{deployment_id} recorded (draft — intermediates only)")
         log_deploy_event(
             sb, action='upload', actor=user_id, deployment_id=deployment_id,
-            observation=obs_name, affected_count=len(exposure_files),
-            metadata={'intermediates_only': True, 'draft': True})
+            observation=obs_name, affected_count=success,
+            metadata=deploy_event_metadata(
+                'nirspec', observation=obs_name, planned=len(upload_tasks),
+                succeeded=success, failed=failed, items=len(exposure_files),
+                draft=True, intermediates_only=True))
 
     if uploaded_keys:
         from campfire.deploy.registry import (
@@ -308,7 +337,7 @@ def _deploy_intermediates_only(
         reg_rows = build_registry_rows(
             upload_tasks, backend='osn',
             deployment_id=deployment_id, uploaded_by=user_id,
-            succeeded_keys=uploaded_keys)
+            cfpipe_version=cfpipe_version, succeeded_keys=uploaded_keys)
         n_reg = upsert_storage_objects(sb, reg_rows)
         print(f"Registered {n_reg} storage objects")
 
@@ -819,7 +848,9 @@ def deploy_observation(
             update_latest_deployment(sb, obs_name, deployment_id)
             print(f"\nDeployment #{deployment_id} recorded"
                   f"{' (draft)' if draft else ''}")
-            # B2: record the deploy in the lifecycle audit log.
+            # B2: record the deploy in the lifecycle audit log (normalized
+            # envelope, Phase 3). `success`/`failed` are the actual OSN+R2 upload
+            # tallies; `affected_count` stays the spectra count for continuity.
             log_deploy_event(
                 sb,
                 action='upload',
@@ -827,7 +858,10 @@ def deploy_observation(
                 deployment_id=deployment_id,
                 observation=obs_name,
                 affected_count=len(spectra),
-                metadata={'draft': draft, 'n_objects': len(objects)},
+                metadata=deploy_event_metadata(
+                    'nirspec', observation=obs_name, planned=total_tasks,
+                    succeeded=success, failed=failed, items=len(spectra),
+                    draft=draft, n_objects=len(objects)),
             )
 
         # B4 multi-reducer safety: compare-and-set the scope version. A conflict
