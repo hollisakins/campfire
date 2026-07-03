@@ -3256,9 +3256,9 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_admin_deployments TO authenticated;
 
--- Audit-log browse. Folds the NIRCam scope (metadata->>'field' until
--- deploy_events grows a field column in Phase 3) and the actor display name
--- (full_name, falling back to username) into the row, replacing two extra
+-- Audit-log browse. Reads the first-class deploy_events.field column (Phase 3;
+-- backfilled from the legacy metadata->>'field') and folds the actor display
+-- name (full_name, falling back to username) into the row, replacing two extra
 -- client round-trips.
 CREATE OR REPLACE FUNCTION public.get_admin_deploy_events(
   p_action text DEFAULT NULL,
@@ -3299,7 +3299,7 @@ BEGIN
 
   RETURN QUERY
   SELECT e.id, e.action, e.observation,
-         (e.metadata ->> 'field') AS field,
+         e.field,
          e.deployment_id, e.status_to, e.affected_count, e.occurred_at,
          e.actor,
          COALESCE(up.full_name, up.username) AS actor_name,
@@ -3308,7 +3308,7 @@ BEGIN
   LEFT JOIN user_profiles up ON up.user_id = e.actor
   WHERE (p_action IS NULL OR e.action = p_action)
     AND (p_observation IS NULL OR e.observation = p_observation)
-    AND (p_field IS NULL OR e.metadata ->> 'field' = p_field)
+    AND (p_field IS NULL OR e.field = p_field)
   ORDER BY
     CASE WHEN p_sort_column = 'occurred_at' AND p_sort_direction = 'desc' THEN e.occurred_at END DESC,
     CASE WHEN p_sort_column = 'occurred_at' AND p_sort_direction = 'asc'  THEN e.occurred_at END ASC,
@@ -3861,6 +3861,7 @@ CREATE OR REPLACE FUNCTION public.log_deploy_event(
   p_actor uuid DEFAULT NULL,
   p_deployment_id integer DEFAULT NULL,
   p_observation text DEFAULT NULL,
+  p_field text DEFAULT NULL,
   p_affected_count integer DEFAULT NULL,
   p_metadata jsonb DEFAULT NULL,
   p_host text DEFAULT NULL
@@ -3882,14 +3883,14 @@ BEGIN
     RAISE EXCEPTION 'Invalid deploy_event action: %', p_action;
   END IF;
 
-  INSERT INTO deploy_events(actor, action, deployment_id, observation, affected_count, metadata, host)
-  VALUES (p_actor, p_action, p_deployment_id, p_observation, p_affected_count, p_metadata, p_host)
+  INSERT INTO deploy_events(actor, action, deployment_id, observation, field, affected_count, metadata, host)
+  VALUES (p_actor, p_action, p_deployment_id, p_observation, p_field, p_affected_count, p_metadata, p_host)
   RETURNING id INTO v_id;
   RETURN v_id;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.log_deploy_event(text, uuid, integer, text, integer, jsonb, text) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.log_deploy_event(text, uuid, integer, text, text, integer, jsonb, text) TO authenticated, service_role;
 
 
 -- set_spectra_deploy_status: the publish/revoke/recover primitive. Transitions a
@@ -3947,7 +3948,12 @@ BEGIN
 
   INSERT INTO deploy_events(actor, action, deployment_id, status_to, affected_count, host, metadata)
   VALUES (p_actor, v_action, p_deployment_id, p_to, v_updated, p_host,
-          jsonb_build_object('n_targets', COALESCE(array_length(v_target_ids, 1), 0)));
+          jsonb_build_object(
+            'instrument', 'nirspec',
+            'counts', jsonb_build_object(
+              'succeeded', v_updated,
+              'targets', COALESCE(array_length(v_target_ids, 1), 0)),
+            'flags', jsonb_build_object('lifecycle', true)));
 
   RETURN json_build_object('updated', v_updated, 'action', v_action, 'recompute', v_recompute);
 END;
@@ -4010,9 +4016,13 @@ BEGIN
       WHERE deployment_id = p_deployment_id AND deploy_status <> p_to
       RETURNING 1)
     SELECT count(*) INTO v_n_images FROM flipped;
-    INSERT INTO deploy_events (actor, action, deployment_id, status_to, host, affected_count, metadata)
-      VALUES (p_actor, v_action, p_deployment_id, p_to, p_host, v_n_images,
-              jsonb_build_object('field', v_field));
+    INSERT INTO deploy_events (actor, action, deployment_id, field, status_to, host, affected_count, metadata)
+      VALUES (p_actor, v_action, p_deployment_id, v_field, p_to, p_host, v_n_images,
+              jsonb_build_object(
+                'instrument', 'nircam',
+                'scope', jsonb_build_object('field', v_field),
+                'counts', jsonb_build_object('succeeded', v_n_images),
+                'flags', jsonb_build_object('lifecycle', true)));
     RETURN json_build_object(
       'deployment_id', p_deployment_id, 'field', v_field, 'status', p_to,
       'nircam_images', json_build_object('updated', v_n_images, 'action', v_action));

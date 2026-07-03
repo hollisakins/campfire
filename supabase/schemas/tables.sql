@@ -928,6 +928,9 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_events" (
     "action" "text" NOT NULL,
     "deployment_id" integer,
     "observation" "text",
+    -- NIRCam field scope (audit B5, Phase 3). Mirrors deployments.field; first-
+    -- class column (was buried in metadata->>'field'). NULL for NIRSpec events.
+    "field" "text",
     "spectrum_id" "text",
     "object_id" integer,
     "status_from" "text",
