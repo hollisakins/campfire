@@ -264,6 +264,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam canonical exposures now carry `CMPFRVER` provenance.** `detector1`
+  stamps the CAMPFIRE reduction version (+ `CMPFRTIM`) on each canonical
+  exposure's primary header at creation, mirroring the mosaic stamp in
+  `resample.py` (jwst already writes `CAL_VER` / `CRDS_CTX`, but not the
+  CAMPFIRE version). This lets `campfire deploy` record real pipeline-version
+  provenance for a mid-reduction `--draft` exposure deploy — before any mosaic
+  exists — instead of leaving `deployments.cfpipe_version` NULL (admin audit
+  2026-07-03, B2). Additive header card only; no pixel/flux change.
 - **`cfpipe download --target` accepts comma-separated coordinates.** MAST's
   JWST search API resolves the top-level `target` field as either an object
   name or a *space*-separated `"RA Dec"` pair in decimal degrees (matching

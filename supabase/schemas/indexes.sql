@@ -382,6 +382,11 @@ CREATE INDEX IF NOT EXISTS idx_deploy_events_observation
     ON public.deploy_events USING btree (observation)
     WHERE observation IS NOT NULL;
 
+-- NIRCam events filter by field, now a first-class column (audit B5, Phase 3).
+CREATE INDEX IF NOT EXISTS idx_deploy_events_field
+    ON public.deploy_events USING btree (field)
+    WHERE field IS NOT NULL;
+
 
 -- =============================================================================
 -- storage_objects (epic #210, F1)
