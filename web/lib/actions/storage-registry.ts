@@ -49,43 +49,86 @@ export interface StorageObjectsResult {
   error?: string;
 }
 
+/** Sort keys accepted by get_admin_storage_objects — mirror the RPC whitelist. */
+export const STORAGE_OBJECT_SORT_KEYS = [
+  'created_at', 'size_bytes', 'product_type', 'storage_key', 'observation', 'field', 'status',
+] as const;
+
+// Backed by the get_admin_storage_objects RPC: whitelisted server-side sort +
+// windowed total in one scan (the previous count:'exact' ran a second full
+// COUNT over the registry — its largest-table hot path).
 export async function getStorageObjects(params?: {
   observation?: string;
+  field?: string;
   productType?: string;
   status?: string;
-  page?: number;
+  backend?: string;
+  sortColumn?: string;
+  sortDirection?: 'asc' | 'desc';
+  page?: number;      // 1-based
   pageSize?: number;
 }): Promise<StorageObjectsResult> {
   try {
     const supabase = await requireAdmin();
-    const page = Math.max(0, params?.page ?? 0);
-    const pageSize = Math.max(1, params?.pageSize ?? 100);
-    const from = page * pageSize;
-    const to = from + pageSize - 1;
 
-    let query = supabase
-      .from('storage_objects')
-      .select(
-        'id, storage_key, product_type, instrument, observation, field, exposure_ref, ' +
-        'size_bytes, content_hash, backend, status, cfpipe_version, created_at',
-        { count: 'exact' },
-      )
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    const { data, error } = await supabase.rpc('get_admin_storage_objects', {
+      p_product_type: params?.productType ?? null,
+      p_status: params?.status ?? null,
+      p_field: params?.field ?? null,
+      p_observation: params?.observation ?? null,
+      p_backend: params?.backend ?? null,
+      p_sort_column: params?.sortColumn ?? 'created_at',
+      p_sort_direction: params?.sortDirection ?? 'desc',
+      p_page: params?.page ?? 1,
+      p_page_size: params?.pageSize ?? 50,
+    });
 
-    if (params?.observation) query = query.eq('observation', params.observation);
-    if (params?.productType) query = query.eq('product_type', params.productType);
-    if (params?.status) query = query.eq('status', params.status);
-
-    const { data, count, error } = await query;
     if (error) return { objects: [], total: 0, error: error.message };
-    return { objects: (data as unknown as StorageObjectRow[]) || [], total: count ?? 0 };
+    const rows = (data ?? []) as (StorageObjectRow & { total_count: number })[];
+    const total = rows[0]?.total_count ?? 0;
+    return {
+      objects: rows.map(({ total_count: _t, ...row }) => row as StorageObjectRow),
+      total,
+    };
   } catch (err) {
     return {
       objects: [],
       total: 0,
       error: err instanceof Error ? err.message : 'Failed to load storage objects',
     };
+  }
+}
+
+export interface StorageFacets {
+  productTypes: string[];
+  statuses: string[];
+  backends: string[];
+  fields: string[];
+  observations: string[];
+  error?: string;
+}
+
+// Distinct facet values for the filter dropdowns (get_admin_storage_facets —
+// grouped scans server-side, replacing the hardcoded 5-of-22 product list).
+export async function getStorageFacets(): Promise<StorageFacets> {
+  const empty: StorageFacets = {
+    productTypes: [], statuses: [], backends: [], fields: [], observations: [],
+  };
+  try {
+    const supabase = await requireAdmin();
+    const { data, error } = await supabase.rpc('get_admin_storage_facets');
+    if (error) return { ...empty, error: error.message };
+    const rows = (data ?? []) as { kind: string; value: string }[];
+    const pick = (kind: string) => rows.filter((r) => r.kind === kind).map((r) => r.value);
+    return {
+      productTypes: pick('product_type'),
+      statuses: pick('status'),
+      backends: pick('backend'),
+      fields: pick('field'),
+      observations: pick('observation'),
+    };
+  } catch (err) {
+    return { ...empty, error: err instanceof Error ? err.message : 'Failed to load facets' };
   }
 }
 
