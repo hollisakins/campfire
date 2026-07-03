@@ -41,7 +41,22 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
+          # Headless-CI workaround for anthropics/claude-code-action#1462. In a
+          # one-shot (`-p`) run the model otherwise spawns background sub-agents +
+          # ScheduleWakeup and ends its turn — which kills the sub-agents, so the
+          # step goes green while posting nothing. Force fully-synchronous work.
+          prompt: |
+            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment
+
+            This is a headless, non-interactive CI run: your turn cannot be resumed
+            once it ends, and any background agents or scheduled wakeups are killed
+            when the turn ends. Do NOT call ScheduleWakeup and do NOT run agents in
+            the background. Run every sub-agent synchronously (run_in_background:
+            false) and complete the entire review — posting all inline comments —
+            before you end your turn.
+          # Strip the interactive-only tools the model reaches for in headless runs
+          # (anthropics/claude-code-action#1462) so it cannot defer work off-turn.
+          claude_args: '--disallowedTools "ScheduleWakeup,SendMessage,Monitor"'
           # Post a single updating summary comment in addition to inline comments,
           # so the PR always gets visible feedback even when the review has no
           # line-specific inline nits to buffer.
