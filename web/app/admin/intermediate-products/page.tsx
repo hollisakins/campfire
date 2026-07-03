@@ -1,19 +1,28 @@
 'use client';
 
-import React, { Suspense, useMemo } from 'react';
+import React, { Suspense, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Card } from '@/components/ui/Card';
-import { Loader2, Database, HardDrive } from 'lucide-react';
+import { Loader2, Database, HardDrive, Download } from 'lucide-react';
 import { AdminTable } from '@/components/admin/AdminTable';
 import { AdminFilterBar, type FacetOption } from '@/components/admin/AdminFilterBar';
+import { StorageObjectDrawer } from '@/components/admin/StorageObjectDrawer';
 import { flatFilterCodec, useTableUrlState, type SortState } from '@/lib/hooks/useTableUrlState';
 import { useAdminTableQuery } from '@/lib/hooks/useAdminTableQuery';
 import {
   getStorageObjects, getStorageBudget, getStorageFacets,
+  presignStorageObjectDownload,
   STORAGE_OBJECT_SORT_KEYS,
   type StorageObjectRow, type StorageBudget,
 } from '@/lib/actions/storage-registry';
+
+async function downloadObject(id: number) {
+  const res = await presignStorageObjectDownload(id);
+  const dl = res[id];
+  if (dl?.url) window.location.assign(dl.url);
+  else alert(dl?.error ?? 'Failed to presign download');
+}
 
 function fmtBytes(n: number): string {
   let v = Number(n);
@@ -51,7 +60,7 @@ function statusBadge(status: string) {
 // URL-state config (module-level: codec/whitelist must be stable references).
 // status defaults to 'active' so the initial view hides superseded/revoked
 // tombstones, matching the page's pre-framework behavior.
-const FILTER_KEYS = ['product', 'status', 'backend', 'field', 'obs'] as const;
+const FILTER_KEYS = ['product', 'status', 'backend', 'field', 'obs', 'key'] as const;
 const codec = flatFilterCodec(FILTER_KEYS, { status: 'active' });
 const DEFAULT_SORT: SortState = { column: 'created_at', direction: 'desc' };
 
@@ -120,9 +129,24 @@ const columns: ColumnDef<StorageObjectRow, unknown>[] = [
     ),
     meta: { sortKey: 'created_at' },
   },
+  {
+    id: 'download',
+    header: '',
+    cell: ({ row }) => (
+      <button
+        onClick={(e) => { e.stopPropagation(); void downloadObject(row.original.id); }}
+        className="text-text-secondary hover:text-primary transition-colors"
+        title="Download"
+      >
+        <Download className="w-4 h-4" />
+      </button>
+    ),
+    meta: { align: 'right' },
+  },
 ];
 
 function StoragePageInner() {
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const state = useTableUrlState({
     codec,
     sortWhitelist: STORAGE_OBJECT_SORT_KEYS,
@@ -143,6 +167,7 @@ function StoragePageInner() {
         backend: f.backend || undefined,
         field: f.field || undefined,
         observation: f.obs || undefined,
+        search: f.key || undefined,
         sortColumn: state.sort.column,
         sortDirection: state.sort.direction,
         page,
@@ -165,6 +190,7 @@ function StoragePageInner() {
   });
 
   const facetDescriptors = useMemo(() => [
+    { kind: 'search' as const, key: 'key', placeholder: 'Search key…' },
     { kind: 'pills' as const, key: 'status', options: STATUS_OPTIONS },
     {
       kind: 'select' as const, key: 'product', label: 'Product',
@@ -234,7 +260,12 @@ function StoragePageInner() {
         onPageChange={state.setPage}
         onPageSizeChange={state.setPageSize}
         getRowKey={(o) => o.id}
+        onRowClick={(o) => setSelectedId(o.id)}
       />
+
+      {selectedId != null && (
+        <StorageObjectDrawer id={selectedId} onClose={() => setSelectedId(null)} />
+      )}
     </div>
   );
 }
