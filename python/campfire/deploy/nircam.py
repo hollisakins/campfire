@@ -14,9 +14,10 @@ keys), derives a ``stage`` value from the highest completed CFP key, and:
   ``deployment.status`` via the storage gate: ``published`` is public to everyone
   (NIRCam fields span multiple programs, so there is no per-program scope),
   ``draft`` is admin-only for review;
-* uploads ``*_preview.png`` / ``*_full.png`` thumbnails (unchanged from before —
-  still on R2 legacy keys; their migration to canonical OSN keys rides N5 with
-  the inspection-UI rework that retires ``*_full.png``);
+* uploads ``*_preview.png`` (grid thumbnail) / ``*_full.png`` (native-res mask
+  surface) to **OSN** under canonical keys and registers them too (epic #261,
+  N5) — the admin UI serves both via short-lived presigned OSN GET URLs, so the
+  R2 legacy keys + the ``/api/nircam-preview`` proxy are retired;
 * upserts ``nircam_exposures`` while preserving web-triage fields
   (``review_status``, ``correction``, ``notes``).
 
@@ -46,8 +47,8 @@ from campfire.deploy.supabase import (
 )
 
 # The OSN data backend NIRCam canonical intermediates are homed on (epic #210/#216,
-# same as NIRSpec canonical spectrum-exposures). Preview PNGs stay on the legacy R2
-# 'data' keys until N5 migrates them alongside the inspection-UI rework.
+# same as NIRSpec canonical spectrum-exposures). As of N5 the preview/full PNGs
+# also land here under canonical keys (served via presigned OSN GET URLs).
 _CANONICAL_BACKEND = 'osn'
 _FITS_CONTENT_TYPE = 'application/fits'
 
@@ -240,13 +241,19 @@ def _detect_masking(dirs, basename, filtname):
 # ---------------------------------------------------------------------------
 
 def build_upload_tasks(dirs, field, filters):
-    """Build R2 upload tasks for per-exposure preview PNGs.
+    """Build OSN upload tasks for per-exposure preview PNGs.
 
     The ``preview`` pipeline step writes two PNGs per exposure:
     ``{rootname}_preview.png`` (downsampled thumbnail) and
     ``{rootname}_full.png`` (native resolution, used by the in-browser mask
     editor). Both are uploaded so the table view stays fast while the
     editor renders at exposure-pixel resolution.
+
+    Keyed under the ``campfire-layout`` CANONICAL scheme (OSN,
+    ``data/products/nircam/<field>/<filter>/<rootname>_{preview,full}.png``) —
+    the same tier as the canonical FITS. The admin UI serves them via
+    short-lived presigned OSN GET URLs (epic #261, N5), retiring the R2 legacy
+    keys + the ``/api/nircam-preview`` proxy hop.
 
     Returns list of (UploadTask, basename, filter, kind) tuples where
     ``kind`` is ``'thumb'`` or ``'full'``.
@@ -258,17 +265,19 @@ def build_upload_tasks(dirs, field, filters):
             continue
         for png_path in sorted(png_dir.glob('jw*_preview.png')):
             basename = png_path.name.removesuffix('_preview.png')
-            r2_key = storage_key('nircam_exposure_preview', Scope(field=field, filt=filtname), png_path.name)
+            key = storage_key('nircam_exposure_preview', Scope(field=field, filt=filtname),
+                              png_path.name, scheme=KeyScheme.CANONICAL)
             tasks.append((
-                UploadTask(local_path=png_path, r2_key=r2_key,
+                UploadTask(local_path=png_path, r2_key=key,
                            content_type='image/png'),
                 basename, filtname, 'thumb',
             ))
         for png_path in sorted(png_dir.glob('jw*_full.png')):
             basename = png_path.name.removesuffix('_full.png')
-            r2_key = storage_key('nircam_exposure_full', Scope(field=field, filt=filtname), png_path.name)
+            key = storage_key('nircam_exposure_full', Scope(field=field, filt=filtname),
+                              png_path.name, scheme=KeyScheme.CANONICAL)
             tasks.append((
-                UploadTask(local_path=png_path, r2_key=r2_key,
+                UploadTask(local_path=png_path, r2_key=key,
                            content_type='image/png'),
                 basename, filtname, 'full',
             ))
@@ -338,7 +347,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     Records a **field-scoped deployment** (provenance + the draft->published
     lifecycle), uploads the canonical exposure FITS (+ any field expmaps) to OSN
     under ``campfire-layout`` canonical keys (content-hash deduped on
-    ``sha256(SCI+DQ)``), uploads preview PNGs to R2, upserts ``nircam_exposures``,
+    ``sha256(SCI+DQ)``), uploads preview PNGs to OSN, upserts ``nircam_exposures``,
     and registers every landed object in ``storage_objects`` tagged with that
     ``deployment_id``.
 
@@ -454,12 +463,12 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         print(f"\nWould record a {'draft' if draft else 'published'} field "
               f"deployment and upload {len(fits_tasks)} canonical FITS + "
               f"{len(expmap_tasks)} expmap(s) + {n_mosaics} mosaic(s) to OSN "
-              f"(subject to content-hash dedup), and {len(png_tasks)} preview PNG(s) to R2.")
+              f"(subject to content-hash dedup), and {len(png_tasks)} preview PNG(s) to OSN.")
         print("Dry run — no changes made.")
         return
 
     from campfire.deploy.registry import (
-        build_registry_rows, fetch_active_sci_dq_hashes, resolve_backend_label,
+        build_registry_rows, fetch_active_sci_dq_hashes,
         set_active_deployment, upsert_storage_objects,
     )
 
@@ -505,14 +514,14 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         for msg in failures:
             print(f"  Error: {msg}")
 
-    # --- Upload preview PNGs to R2 (legacy keys — migrated in N5) -----------
+    # --- Upload preview PNGs to OSN (canonical keys, epic #261 N5) ----------
     png_upload_list = [t[0] for t in png_tasks]
     png_uploaded: set[str] = set()
     if png_upload_list:
-        print("\nUploading preview PNGs to R2...")
+        print("\nUploading preview PNGs to OSN...")
         success, failed, failures = upload_files_parallel(
             config, png_upload_list, desc='Uploading PNGs',
-            succeeded_out=png_uploaded)
+            succeeded_out=png_uploaded, backend=_CANONICAL_BACKEND)
         print(f"  Uploaded: {success}, Failed: {failed}")
         for msg in failures:
             print(f"  Error: {msg}")
@@ -534,7 +543,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         n_reg += upsert_storage_objects(client, reg_rows)
     if png_uploaded:
         reg_rows = build_registry_rows(
-            png_upload_list, backend=resolve_backend_label(config),
+            png_upload_list, backend=_CANONICAL_BACKEND,
             deployment_id=deployment_id, uploaded_by=user_id, succeeded_keys=png_uploaded)
         n_reg += upsert_storage_objects(client, reg_rows)
     if n_reg:

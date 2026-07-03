@@ -59,3 +59,20 @@ export function lookupNircamNav(id: number): NircamNavLookup | null {
     total: cache.ids.length,
   };
 }
+
+/**
+ * The ids in a window around `id` (excluding `id` itself), for eager PNG
+ * prefetch: `ahead` in the forward tab direction, `behind` backward. Forward is
+ * weighted heavier since inspection tabs forward. Returns [] when `id` isn't in
+ * the cached order (direct entry). Epic #261, N5.
+ */
+export function nircamNavWindow(id: number, ahead: number, behind: number): number[] {
+  const cache = getNircamNav();
+  if (!cache) return [];
+  const idx = cache.ids.indexOf(id);
+  if (idx === -1) return [];
+  const out: number[] = [];
+  for (let d = 1; d <= ahead && idx + d < cache.ids.length; d++) out.push(cache.ids[idx + d]);
+  for (let d = 1; d <= behind && idx - d >= 0; d++) out.push(cache.ids[idx - d]);
+  return out;
+}

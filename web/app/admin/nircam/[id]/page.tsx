@@ -12,24 +12,24 @@ import {
   getNircamExposureById,
   updateExposureReview,
   saveExposureMaskRegions,
+  presignExposurePngs,
+  type ExposurePngUrls,
 } from '@/lib/actions/nircam-exposures';
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 import { stageBadgeClasses } from '@/lib/nircam-stages';
 import MaskEditor from '@/components/nircam/MaskEditor';
 import { storageKey } from '@/lib/layout';
-import { lookupNircamNav, type NircamNavLookup } from '@/lib/nircam-nav-cache';
+import { lookupNircamNav, nircamNavWindow, type NircamNavLookup } from '@/lib/nircam-nav-cache';
 import {
   getCachedExposure,
   setCachedExposure,
   prefetchPreviewPng,
 } from '@/lib/nircam-exposure-cache';
 
-// PNGs live in R2 under nircam/exposures/<field>/<filter>/...; the
-// /api/nircam-preview proxy handles auth and streams them same-origin.
-function previewUrl(r2Key: string | null): string | null {
-  if (!r2Key) return null;
-  return `/api/nircam-preview?key=${encodeURIComponent(r2Key)}`;
-}
+// Eager PNG prefetch window: previews (~1.3 MB) for a few exposures ahead + one
+// back; the heavy full-res mask surface (~5.7 MB) only for the immediate next.
+const PREFETCH_AHEAD = 3;
+const PREFETCH_BEHIND = 1;
 
 export default function ExposureDetailPage() {
   const params = useParams();
@@ -56,6 +56,15 @@ export default function ExposureDetailPage() {
   // N4 (epic #261): live FITS render vs the legacy pre-generated PNG. Defaults
   // to PNG; the toggle doubles as the pixel-parity check during the rollout.
   const [viewMode, setViewMode] = useState<'png' | 'fits'>('png');
+  // Presigned OSN GET URLs (dual-read R2 fallback) for the current + windowed
+  // exposures' PNGs (epic #261, N5), keyed by exposure id. Served straight into
+  // <img> — no /api/nircam-preview proxy hop. Refreshed on navigation.
+  const [pngUrls, setPngUrls] = useState<Record<number, ExposurePngUrls>>({});
+  // Read-only mirror so the presign effect can skip ids already presigned:
+  // re-presigning mints a fresh signature, which would change the <img src> and
+  // force the browser to refetch a PNG the prefetch already cached.
+  const pngUrlsRef = useRef(pngUrls);
+  pngUrlsRef.current = pngUrls;
   useEffect(() => { setNav(lookupNircamNav(id)); }, [id]);
 
   // When the route id changes, reset state synchronously from the in-memory
@@ -102,29 +111,41 @@ export default function ExposureDetailPage() {
     return () => { cancelled = true; };
   }, [id]);
 
-  // Prefetch sibling exposures (data + warm PNG cache) so prev/next paints
-  // instantly. Fires after both `exposure` and `nav` are known. PNG fetches
-  // go through the same /api/nircam-preview proxy the editor uses, so they
-  // populate the same browser-cache bucket.
+  // Warm the sibling exposure *data* cache (prev/next) so navigation paints in
+  // the same frame — independent of PNG bytes.
   useEffect(() => {
     if (!nav) return;
     for (const sibId of [nav.next, nav.prev]) {
-      if (sibId == null) continue;
-      const cached = getCachedExposure(sibId);
-      if (cached) {
-        prefetchPreviewPng(previewUrl(cached.full_png_path));
-        prefetchPreviewPng(previewUrl(cached.png_path));
-        continue;
-      }
+      if (sibId == null || getCachedExposure(sibId)) continue;
       getNircamExposureById(sibId).then((res) => {
-        if (res.exposure) {
-          setCachedExposure(res.exposure);
-          prefetchPreviewPng(previewUrl(res.exposure.full_png_path));
-          prefetchPreviewPng(previewUrl(res.exposure.png_path));
-        }
+        if (res.exposure) setCachedExposure(res.exposure);
       });
     }
-  }, [exposure, nav]);
+  }, [nav]);
+
+  // Presign the current exposure's PNGs + eagerly prefetch a window of upcoming
+  // ones (epic #261, N5). Keys are re-derived server-side; URLs go straight into
+  // <img> (no proxy hop). Preview (~1.3 MB) is prefetched across the whole
+  // window; the heavy full-res mask surface (~5.7 MB) only for the immediate
+  // next, so a fast tab-through stays ahead without flooding the network.
+  useEffect(() => {
+    const win = nircamNavWindow(id, PREFETCH_AHEAD, PREFETCH_BEHIND);
+    // Only presign ids we haven't already (prefetched siblings keep their URL).
+    const batch = [id, ...win].filter((x) => pngUrlsRef.current[x] === undefined);
+    if (batch.length === 0) return;
+    let cancelled = false;
+    presignExposurePngs(batch).then((urls) => {
+      if (cancelled) return;
+      setPngUrls((prev) => ({ ...prev, ...urls }));
+      // `urls` holds only the newly-presigned (previously-absent) ids, so each
+      // sibling is prefetched exactly once, at the URL that will be reused.
+      for (const sib of win) if (urls[sib]) prefetchPreviewPng(urls[sib].preview);
+      // Heavy full-res PNG: only the genuine immediate next (undefined at the end).
+      const immediateNext = nircamNavWindow(id, 1, 0)[0];
+      if (immediateNext != null && urls[immediateNext]) prefetchPreviewPng(urls[immediateNext].full);
+    });
+    return () => { cancelled = true; };
+  }, [id]);
 
   const hasChanges = !!(exposure && (
     reviewStatus !== exposure.review_status ||
@@ -225,8 +246,12 @@ export default function ExposureDetailPage() {
     );
   }
 
-  const pngUrl = previewUrl(exposure.png_path);
-  const fullPngUrl = previewUrl(exposure.full_png_path);
+  // Presigned OSN URLs for the current exposure (undefined until the presign
+  // round-trip lands; null once resolved if the exposure has no PNG).
+  const currentUrls = pngUrls[id];
+  const pngUrl = currentUrls?.preview ?? null;
+  const fullPngUrl = currentUrls?.full ?? null;
+  const pngPresignPending = currentUrls === undefined;
   const editorAvailable = Boolean(
     fullPngUrl && exposure.image_width && exposure.image_height
   );
@@ -363,6 +388,12 @@ export default function ExposureDetailPage() {
                   initialRegions={exposure.mask_regions}
                   onSave={handleSaveMasks}
                 />
+              </div>
+            ) : pngPresignPending ? (
+              // Presign round-trip for the PNG hasn't landed yet — don't flash
+              // "No PNG" before we know whether one exists.
+              <div className="flex items-center justify-center py-24">
+                <Loader2 className="w-8 h-8 animate-spin text-text-secondary" />
               </div>
             ) : editorAvailable ? (
               <div className="h-[80vh]">
