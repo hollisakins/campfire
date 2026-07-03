@@ -103,8 +103,8 @@ export interface DeployEventRow {
   id: string;
   action: string;
   observation: string | null;
-  // deploy_events has no field column yet — the RPC extracts metadata->>'field'
-  // (NIRCam events carry their scope there) so the UI has one shape.
+  // NIRCam scope. First-class deploy_events.field column (Phase 3), surfaced by
+  // the get_admin_deploy_events RPC; NULL for NIRSpec (observation) events.
   field: string | null;
   deployment_id: number | null;
   status_to: string | null;
