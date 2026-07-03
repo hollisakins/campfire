@@ -259,7 +259,7 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
     // Best-fit vertical line
     traces.push({
       x: [fitData.redshift, fitData.redshift],
-      y: [chi2Min * 0.5, chi2Max * 2],
+      y: [chi2Min * 0.9, chi2Max * 1.1],
       type: 'scatter' as const,
       mode: 'lines' as const,
       name: 'Best fit',
