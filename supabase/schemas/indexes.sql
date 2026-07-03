@@ -433,6 +433,13 @@ CREATE INDEX IF NOT EXISTS idx_storage_objects_field
     ON public.storage_objects USING btree (field)
     WHERE field IS NOT NULL;
 
+-- Substring key search in the admin registry browser (admin audit 2026-07-03,
+-- C2 / Phase 2): operators search by a fragment anywhere in the canonical key,
+-- so a left-anchored btree can't serve it — trigram GIN does. Opclass is
+-- schema-qualified (pg_trgm lives in public, like idx_comments_content_trgm).
+CREATE INDEX IF NOT EXISTS idx_storage_objects_key_trgm
+    ON public.storage_objects USING gin (storage_key public.gin_trgm_ops);
+
 
 -- =============================================================================
 -- access_codes

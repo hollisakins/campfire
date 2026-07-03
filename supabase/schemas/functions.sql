@@ -3330,7 +3330,8 @@ CREATE OR REPLACE FUNCTION public.get_admin_storage_objects(
   p_sort_column text DEFAULT 'created_at',
   p_sort_direction text DEFAULT 'desc',
   p_page integer DEFAULT 1,
-  p_page_size integer DEFAULT 50
+  p_page_size integer DEFAULT 50,
+  p_search text DEFAULT NULL              -- substring ILIKE on storage_key
 )
 RETURNS TABLE (
   id bigint,
@@ -3375,6 +3376,7 @@ BEGIN
     AND (p_field IS NULL OR so.field = p_field)
     AND (p_observation IS NULL OR so.observation = p_observation)
     AND (p_backend IS NULL OR so.backend = p_backend)
+    AND (p_search IS NULL OR so.storage_key ILIKE '%' || p_search || '%')
   ORDER BY
     CASE WHEN p_sort_column = 'created_at' AND p_sort_direction = 'desc' THEN so.created_at END DESC,
     CASE WHEN p_sort_column = 'created_at' AND p_sort_direction = 'asc'  THEN so.created_at END ASC,
