@@ -71,6 +71,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- NIRCam `combine` now honors per-exposure reviewer exclusions (epic #261, N6 /
+  D10). `Field.setup_workspace` reads `reference/<field>/exposures.json`
+  (materialized by `campfire deploy nircam pull` from the portal's
+  `review_status='excluded'` flags) and folds the listed rootnames into the skip
+  set in `get_exposure_files` / `get_uncal_files` — so a flagged exposure drops
+  from **both** resample and outlier detection (it can no longer pollute the
+  outlier median for its visit-mates). Additive + reversible: an absent or empty
+  file is exactly today's behavior, and un-excluding in the portal + re-pulling
+  re-includes the exposure on the next combine. No change to any exposure's
+  pixel values.
 - **BREAKING (MAJOR):** the NIRCam mosaic `version` axis is retired (epic #261,
   N2 / D3). Mosaic products are now named `mosaic_nircam_<filter>_<field>_<scale>_<tile>_<ext>.fits`
   with **no** `_<version>_` segment — one canonical mosaic per
