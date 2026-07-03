@@ -53,7 +53,8 @@ CHANGELOG categories map directly: **Calibration → MINOR**, **Algorithm → MI
 
 ### Workflow
 
-- Every PR touching `pipeline/**` adds an entry under `## Unreleased` in `pipeline/CHANGELOG.md`, categorized.
+- Before a PR touching `pipeline/**` is opened, its `## Unreleased` section in `pipeline/CHANGELOG.md` should carry one categorized entry covering the pipeline changes in that PR. This is a **PR-completeness** check, not a per-edit obligation: edit freely during a session and add (or update) the single entry once, before you open the PR — several related commits share one entry. Everything that ships in a pipeline tag stays logged, including pure Infrastructure/refactor changes (PATCH).
+- **Do not defer or avoid a pipeline change to sidestep the changelog.** If a pipeline fix belongs in the session you're working, make it — then add the Unreleased line. The entry is cheap; a deferred fix that should have shipped is the real cost. Uncertain which category? Pick the closest of Calibration / Algorithm / Infrastructure and note the uncertainty in the entry — a rough categorization is far better than skipping the change.
 - Tags happen separately, after merge, when you're ready to deploy. PRs do not bump versions.
 - Use `/pipeline-release [X.Y.Z]` (or `bash scripts/release-pipeline.sh X.Y.Z`) to do the rollover, commit, and tag. The script enforces: on `main`, clean tree, up-to-date with origin, non-empty Unreleased section, tag does not exist.
 - `campfire deploy` warns and requires explicit confirmation when any FITS being deployed carries a non-release `cfpipe_version` (anything not matching `^X.Y.Z$` — i.e. `.dev`, `+dirty`, `+nondefault`, or a free-form override string). The dev string is preserved verbatim in `spectra.cfpipe_version` so provenance stays visible downstream; the prompt exists so deployers consciously choose to ship unreleased data, not to block it. Pass `--auto-approve` to skip the prompt when knowingly redeploying old or experimental data.
@@ -143,7 +144,7 @@ Test users: `admin@campfire.dev`, `user@campfire.dev`, `viewer@campfire.dev` (pa
 - Feature/fix branches off `main` → preview deployments with branched Supabase instances, merge back to `main` via PR
 - On PR open: Supabase creates a preview branch (isolated DB + Auth), runs migrations, seeds from `supabase/seed.sql`, and injects credentials into the Vercel preview deployment
 - On PR merge to `main`: Supabase automatically runs new migrations against production
-- PRs touching `pipeline/**` must add an entry to `pipeline/CHANGELOG.md` under `## Unreleased`, categorized as Calibration / Algorithm / Infrastructure. PRs touching only `web/`, `python/`, or `supabase/` do not need a changelog entry.
+- A PR touching `pipeline/**` should, by the time it's opened, have one categorized entry (Calibration / Algorithm / Infrastructure) under `## Unreleased` in `pipeline/CHANGELOG.md` covering its pipeline changes — a PR-completeness check, not a gate on individual edits (see Pipeline Versioning & Releases → Workflow). Don't hold back an in-session pipeline change to avoid the entry; make the change and log it. PRs touching only `web/`, `python/`, or `supabase/` do not need a changelog entry.
 
 ### Build Verification
 
