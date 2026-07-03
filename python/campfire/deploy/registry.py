@@ -585,26 +585,27 @@ class DeleteLocalPlan:
 
 
 def plan_delete_local(
-    client, observation: str, products_root: Path, *,
-    verify: bool = False, bucket: str = 'data',
+    client, observation, products_root: Path, *,
+    field: Optional[str] = None, verify: bool = False, bucket: str = 'data',
 ) -> DeleteLocalPlan:
-    """Build a safe delete plan for an observation's local product files.
+    """Build a safe delete plan for a scope's local product files.
 
-    Enumerates the observation's *active registry rows* (objects known to be in
-    the cloud), maps each to its local path via the layout contract, and clears
-    only those that pass the interlock. Files with no registry row are never
-    touched — they are not in the candidate set.
+    Scope is an ``observation`` (NIRSpec) or a ``field`` (NIRCam, whose rows carry
+    ``observation IS NULL``) — pass exactly one. Enumerates that scope's *active
+    registry rows* (objects known to be in the cloud), maps each to its local path
+    via the layout contract, and clears only those that pass the interlock. Files
+    with no registry row are never touched — they are not in the candidate set.
     """
     from campfire.config import products_relpath
 
-    resp = (
+    q = (
         client.table('storage_objects')
         .select('storage_key, content_hash, size_bytes')
-        .eq('observation', observation)
         .eq('bucket', bucket)
         .eq('status', 'active')
-        .execute()
     )
+    q = q.eq('field', field) if field is not None else q.eq('observation', observation)
+    resp = q.execute()
     rows = resp.data or []
     plan = DeleteLocalPlan()
     for r in rows:

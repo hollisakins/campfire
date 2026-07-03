@@ -460,6 +460,26 @@ class TestDownloadTracking:
         pending = store.get_pending_objects(product_types=["nirspec_spec"])
         assert sum(len(v) for v in pending.values()) == 3
 
+    def test_get_pending_by_field_nircam(self, store):
+        # A field-scoped NIRCam exposure: observation IS NULL, field set (#261 N6).
+        store.upsert_storage_objects([{
+            "storage_key": "data/products/nircam/cosmos/f444w/jw1_nrcalong.fits",
+            "id": None, "backend": "osn", "bucket": "data",
+            "content_hash": "sha256:nc1", "size_bytes": 16777216,
+            "content_type": "application/fits", "product_type": "nircam_exposure",
+            "instrument": "nircam", "status": "active",
+            "observation": None, "field": "cosmos", "spectrum_id": None,
+            "exposure_ref": None, "deployment_id": 1, "cfpipe_version": "v1.0",
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+        }])
+        # Observation-keyed selection can't reach it (observation IS NULL)...
+        assert store.get_pending_objects(observations=["cosmos"]) == {}
+        # ...but field selection finds it, grouped under the field name.
+        pending = store.get_pending_objects(fields=["cosmos"])
+        assert list(pending.keys()) == ["cosmos"]
+        assert len(pending["cosmos"]) == 1
+        assert pending["cosmos"][0]["product_type"] == "nircam_exposure"
+
 
 class TestStatusView:
     """get_object_summary / get_object_stats drive `campfire status`."""

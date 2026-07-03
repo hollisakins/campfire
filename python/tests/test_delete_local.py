@@ -121,3 +121,24 @@ def test_unregistered_local_file_is_never_a_candidate(tmp_path):
     _make_local(tmp_path, SPEC_KEY, b"orphan-local")
     plan = reg.plan_delete_local(_FakeClient([]), OBS, tmp_path)
     assert not plan.deletable and not plan.skipped and not plan.absent
+
+
+NIRCAM_KEY = "data/products/nircam/cosmos/f444w/jw1_nrcalong.fits"
+
+
+def test_field_scope_selects_nircam_rows(tmp_path):
+    # NIRCam exposure: observation IS NULL, field set (#261 N6). Field mode must
+    # select it; observation mode for the same name must not.
+    body = b"nircam-sci" * 100
+    local = _make_local(tmp_path, NIRCAM_KEY, body)
+    rows = [{
+        "storage_key": NIRCAM_KEY, "content_hash": _sha256(body),
+        "size_bytes": len(body), "observation": None, "field": "cosmos",
+        "bucket": "data", "status": "active",
+    }]
+    plan = reg.plan_delete_local(_FakeClient(rows), None, tmp_path, field="cosmos")
+    assert [k for _, k, _ in plan.deletable] == [NIRCAM_KEY]
+    assert local.exists()  # planning never deletes
+    # observation mode with the field name finds nothing (row has observation NULL)
+    plan_obs = reg.plan_delete_local(_FakeClient(rows), "cosmos", tmp_path)
+    assert not plan_obs.deletable
