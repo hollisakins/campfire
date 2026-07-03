@@ -18,6 +18,39 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: 'revoked', label: 'Revoked' },
 ];
 
+const INSTRUMENT_FILTERS: { value: string; label: string }[] = [
+  { value: 'all', label: 'All instruments' },
+  { value: 'nirspec', label: 'NIRSpec' },
+  { value: 'nircam', label: 'NIRCam' },
+];
+
+// Exactly one of observation/field is set (deployments_scope_check).
+function scopeOf(d: DeploymentRow): string {
+  return d.observation ?? d.field ?? `#${d.id}`;
+}
+
+function instrumentOf(d: DeploymentRow): 'NIRSpec' | 'NIRCam' {
+  return d.observation ? 'NIRSpec' : 'NIRCam';
+}
+
+function instrumentBadge(d: DeploymentRow) {
+  const inst = instrumentOf(d);
+  const cls = inst === 'NIRSpec'
+    ? 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300'
+    : 'bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300';
+  return (
+    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${cls}`}>
+      {inst}
+    </span>
+  );
+}
+
+const PAST_TENSE: Record<LifecycleAction, string> = {
+  publish: 'Published',
+  revoke: 'Revoked',
+  recover: 'Recovered',
+};
+
 function statusBadge(status: DeployStatus) {
   const map: Record<DeployStatus, string> = {
     draft: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
@@ -57,6 +90,7 @@ function actionFor(status: DeployStatus): { action: LifecycleAction; label: stri
 
 export default function DeploymentsPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [instrumentFilter, setInstrumentFilter] = useState<string>('all');
   const [deployments, setDeployments] = useState<DeploymentRow[]>([]);
   const [events, setEvents] = useState<DeployEventRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,23 +102,32 @@ export default function DeploymentsPage() {
     setLoading(true);
     setError(null);
     const status = statusFilter === 'all' ? undefined : (statusFilter as DeployStatus);
+    const instrument = instrumentFilter === 'all'
+      ? undefined
+      : (instrumentFilter as 'nirspec' | 'nircam');
     const [dep, ev] = await Promise.all([
-      getDeployments({ status, pageSize: 100 }),
+      getDeployments({ status, instrument, pageSize: 100 }),
       getDeployEvents({ pageSize: 50 }),
     ]);
     if (dep.error) setError(dep.error);
     else setDeployments(dep.deployments);
     if (!ev.error) setEvents(ev.events);
     setLoading(false);
-  }, [statusFilter]);
+  }, [statusFilter, instrumentFilter]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
   const onAction = async (dep: DeploymentRow, action: LifecycleAction, label: string) => {
     const verb = label.toLowerCase();
+    const scope = scopeOf(dep);
+    const isNirspec = instrumentOf(dep) === 'NIRSpec';
+    const noun = isNirspec ? 'spectra' : 'NIRCam images';
+    const affects = isNirspec
+      ? `This affects ${dep.n_spectra ?? '?'} spectra.`
+      : `This affects its NIRCam images.`;
     const warn = action === 'revoke'
-      ? `Revoke "${dep.observation}"? Its spectra will be hidden from users (bytes retained, recoverable).`
-      : `${label} "${dep.observation}"? This affects ${dep.n_spectra ?? '?'} spectra.`;
+      ? `Revoke "${scope}"? Its ${noun} will be hidden from users (bytes retained, recoverable).`
+      : `${label} "${scope}"? ${affects}`;
     if (!window.confirm(warn)) return;
     setBusyId(dep.id);
     setNotice(null);
@@ -94,7 +137,8 @@ export default function DeploymentsPage() {
       setError(res.error ?? `Failed to ${verb}`);
       return;
     }
-    setNotice(`${label}ed ${dep.observation} — ${res.updated ?? 0} spectra updated.`);
+    const unit = res.updatedKind === 'images' ? 'images' : 'spectra';
+    setNotice(`${PAST_TENSE[action]} ${scope} — ${res.updated ?? 0} ${unit} updated.`);
     await refresh();
   };
 
@@ -129,13 +173,27 @@ export default function DeploymentsPage() {
         </div>
       )}
 
-      <div className="flex gap-2 mb-4">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
         {STATUS_FILTERS.map((f) => (
           <button
             key={f.value}
             onClick={() => setStatusFilter(f.value)}
             className={`px-3 py-1 rounded-full text-sm transition-colors ${
               statusFilter === f.value
+                ? 'bg-primary text-on-primary'
+                : 'bg-card-hover text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+        <span className="mx-1 h-5 w-px bg-border" aria-hidden />
+        {INSTRUMENT_FILTERS.map((f) => (
+          <button
+            key={f.value}
+            onClick={() => setInstrumentFilter(f.value)}
+            className={`px-3 py-1 rounded-full text-sm transition-colors ${
+              instrumentFilter === f.value
                 ? 'bg-primary text-on-primary'
                 : 'bg-card-hover text-text-secondary hover:text-text-primary'
             }`}
@@ -156,10 +214,11 @@ export default function DeploymentsPage() {
           <table className="w-full text-sm">
             <thead className="bg-card-hover text-text-secondary text-left">
               <tr>
-                <th className="px-4 py-2 font-medium">Observation</th>
+                <th className="px-4 py-2 font-medium">Scope</th>
+                <th className="px-4 py-2 font-medium">Instrument</th>
                 <th className="px-4 py-2 font-medium">Status</th>
                 <th className="px-4 py-2 font-medium text-right">Spectra</th>
-                <th className="px-4 py-2 font-medium text-right">Targets</th>
+                <th className="px-4 py-2 font-medium text-right">Targets / Exp.</th>
                 <th className="px-4 py-2 font-medium">Pipeline</th>
                 <th className="px-4 py-2 font-medium">Deployed</th>
                 <th className="px-4 py-2 font-medium text-right">Action</th>
@@ -170,7 +229,8 @@ export default function DeploymentsPage() {
                 const act = actionFor(d.status);
                 return (
                   <tr key={d.id} className="border-t border-border hover:bg-card-hover/50">
-                    <td className="px-4 py-2 font-mono text-text-primary">{d.observation}</td>
+                    <td className="px-4 py-2 font-mono text-text-primary">{scopeOf(d)}</td>
+                    <td className="px-4 py-2">{instrumentBadge(d)}</td>
                     <td className="px-4 py-2">{statusBadge(d.status)}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{d.n_spectra ?? '—'}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{d.n_targets ?? '—'}</td>
@@ -212,7 +272,7 @@ export default function DeploymentsPage() {
               <tr>
                 <th className="px-4 py-2 font-medium">When</th>
                 <th className="px-4 py-2 font-medium">Action</th>
-                <th className="px-4 py-2 font-medium">Observation</th>
+                <th className="px-4 py-2 font-medium">Scope</th>
                 <th className="px-4 py-2 font-medium">→ Status</th>
                 <th className="px-4 py-2 font-medium text-right">Affected</th>
                 <th className="px-4 py-2 font-medium">By</th>
@@ -223,7 +283,7 @@ export default function DeploymentsPage() {
                 <tr key={e.id} className="border-t border-border">
                   <td className="px-4 py-2 text-text-secondary whitespace-nowrap">{fmt(e.occurred_at)}</td>
                   <td className="px-4 py-2 font-medium text-text-primary">{e.action}</td>
-                  <td className="px-4 py-2 font-mono text-xs">{e.observation ?? '—'}</td>
+                  <td className="px-4 py-2 font-mono text-xs">{e.observation ?? e.field ?? '—'}</td>
                   <td className="px-4 py-2 text-text-secondary">{e.status_to ?? '—'}</td>
                   <td className="px-4 py-2 text-right tabular-nums">{e.affected_count ?? '—'}</td>
                   <td className="px-4 py-2 text-text-secondary">{e.actor_name ?? '—'}</td>

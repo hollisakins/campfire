@@ -24,10 +24,13 @@ keys), derives a ``stage`` value from the highest completed CFP key, and:
 A normal deploy publishes immediately; ``--draft`` holds the field admin-only for
 portal inspection, then ``campfire deploy publish --field`` makes it public.
 
-Excluded exposures flagged by reviewers in the admin UI are surfaced for
-copy-paste into the field's ``skip = [...]`` block in ``fields.toml``; we no
-longer maintain a local ``exposures.json`` contract since nothing in the
-pipeline consumes it.
+Excluded exposures flagged by reviewers in the admin UI round-trip back to the
+pipeline via ``campfire deploy nircam pull`` (epic #261, N6): it materializes
+``review_status='excluded'`` rows into
+``$CAMPFIRE_ROOT/reference/nircam/<field>/exposures.json``
+(``nircam_exclusions.pull_exclusions``), which ``combine`` reads to drop those
+rootnames. The DB is the source of truth; the JSON file is a generated,
+fully-overwritten artifact — don't hand-edit it.
 """
 
 import hashlib

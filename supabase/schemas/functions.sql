@@ -2926,6 +2926,7 @@ GRANT EXECUTE ON FUNCTION public.get_user_profile_stats TO authenticated;
 CREATE OR REPLACE FUNCTION public.get_download_stats(p_days integer DEFAULT 30)
 RETURNS json
 LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   result JSON;
@@ -3018,6 +3019,168 @@ GRANT EXECUTE ON FUNCTION public.get_download_stats TO authenticated;
 
 
 -- =============================================================================
+-- get_activity_feed / get_activity_users (admin activity feed)
+-- =============================================================================
+-- Server-side replacement for the /api/admin/activity route's fetch-everything-
+-- then-sort-in-JS approach: UNION the two activity sources (comments +
+-- flag_audit_log), filter/sort/paginate in one scan, and return the page total
+-- via a window count. Semantics mirror the route exactly:
+--   * comments are joined to targets (inner — object-level comments are not
+--     surfaced in the feed, matching the previous targets!inner embed);
+--   * inspection rows label their subject as target -> object -> spectrum
+--     (spectra label = target_id/grating), degrading to '' if all FKs are NULL;
+--   * the user filter matches rows whose user_id is in p_user_ids, plus (for
+--     inspections) NULL-user system rows when p_include_system. No user filter
+--     at all (empty p_user_ids, p_include_system=false) means everything.
+-- SECURITY DEFINER because flag_audit_log's RLS is access-scoped, not
+-- admin-scoped; the admin gate here is the authorization boundary.
+
+CREATE OR REPLACE FUNCTION public.get_activity_feed(
+  p_include_comments boolean DEFAULT true,
+  p_include_inspections boolean DEFAULT true,
+  p_user_ids uuid[] DEFAULT NULL,
+  p_include_system boolean DEFAULT false,
+  p_field_names text[] DEFAULT NULL,
+  p_page integer DEFAULT 1,
+  p_page_size integer DEFAULT 50
+)
+RETURNS TABLE (
+  id text,
+  type text,
+  target_db_id integer,
+  target_display_id text,
+  user_id uuid,
+  ts timestamp without time zone,
+  content text,
+  edited_at timestamp without time zone,
+  field_name text,
+  old_value integer,
+  new_value integer,
+  user_full_name text,
+  user_is_group_account boolean,
+  total_count bigint
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_has_user_filter boolean :=
+    (p_user_ids IS NOT NULL AND array_length(p_user_ids, 1) > 0) OR p_include_system;
+  v_limit integer := LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 100);
+  v_offset integer := GREATEST(COALESCE(p_page, 1) - 1, 0) * LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 100);
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  RETURN QUERY
+  WITH feed AS (
+    SELECT
+      'comment-' || c.id AS id,
+      'comment'::text AS type,
+      c.target_id AS target_db_id,
+      t.target_id AS target_display_id,
+      c.user_id,
+      c.created_at AS ts,
+      c.content,
+      c.edited_at,
+      NULL::text AS field_name,
+      NULL::integer AS old_value,
+      NULL::integer AS new_value
+    FROM comments c
+    JOIN targets t ON t.id = c.target_id
+    WHERE p_include_comments
+      AND NOT c.is_deleted
+      AND (NOT v_has_user_filter
+           OR c.user_id = ANY(COALESCE(p_user_ids, '{}'::uuid[])))
+
+    UNION ALL
+
+    SELECT
+      'audit-' || f.id,
+      'inspection'::text,
+      COALESCE(f.target_id, f.object_id, f.spectrum_id, 0),
+      COALESCE(
+        t.target_id,
+        o.object_id,
+        CASE WHEN s.id IS NOT NULL THEN s.target_id || '/' || s.grating END,
+        ''
+      ),
+      f.user_id,
+      f.changed_at,
+      NULL::text,
+      NULL::timestamp without time zone,
+      f.field_name,
+      f.old_value,
+      f.new_value
+    FROM flag_audit_log f
+    LEFT JOIN targets t ON t.id = f.target_id
+    LEFT JOIN objects o ON o.id = f.object_id
+    LEFT JOIN spectra s ON s.id = f.spectrum_id
+    WHERE p_include_inspections
+      AND (p_field_names IS NULL OR f.field_name = ANY(p_field_names))
+      AND (NOT v_has_user_filter
+           OR f.user_id = ANY(COALESCE(p_user_ids, '{}'::uuid[]))
+           OR (p_include_system AND f.user_id IS NULL))
+  )
+  SELECT
+    feed.id,
+    feed.type,
+    feed.target_db_id,
+    feed.target_display_id,
+    feed.user_id,
+    feed.ts,
+    feed.content,
+    feed.edited_at,
+    feed.field_name,
+    feed.old_value,
+    feed.new_value,
+    up.full_name,
+    COALESCE(up.is_group_account, false),
+    count(*) OVER ()
+  FROM feed
+  LEFT JOIN user_profiles up ON up.user_id = feed.user_id
+  ORDER BY feed.ts DESC, feed.id DESC
+  OFFSET v_offset
+  LIMIT v_limit;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_activity_feed TO authenticated;
+
+-- The activity page's user-filter dropdown: distinct users with any activity.
+-- A NULL user_id row signals system-generated activity (NULL-user audit rows);
+-- the route maps it to its synthetic "System" entry.
+CREATE OR REPLACE FUNCTION public.get_activity_users()
+RETURNS TABLE (
+  user_id uuid,
+  full_name text
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  RETURN QUERY
+  WITH active AS (
+    SELECT DISTINCT c.user_id FROM comments c WHERE NOT c.is_deleted
+    UNION
+    SELECT DISTINCT f.user_id FROM flag_audit_log f
+  )
+  SELECT a.user_id, up.full_name
+  FROM active a
+  LEFT JOIN user_profiles up ON up.user_id = a.user_id
+  ORDER BY (a.user_id IS NULL) DESC, up.full_name ASC NULLS LAST;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_activity_users TO authenticated;
+
+
+-- =============================================================================
 -- get_storage_budget (epic #210, F1)
 -- =============================================================================
 -- Bytes-at-rest budget against the 20 TB cap. Egress is free (OSN academic
@@ -3029,6 +3192,7 @@ GRANT EXECUTE ON FUNCTION public.get_download_stats TO authenticated;
 CREATE OR REPLACE FUNCTION public.get_storage_budget()
 RETURNS json
 LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   result JSON;

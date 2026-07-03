@@ -28,9 +28,13 @@ async function requireAdmin() {
 
 export type DeployStatus = 'draft' | 'published' | 'revoked';
 
+// Scope: exactly one of observation (NIRSpec) / field (NIRCam) is set,
+// mirroring the deployments_scope_check constraint. For NIRCam rows,
+// n_targets carries the exposure count (no n_spectra).
 export interface DeploymentRow {
   id: number;
-  observation: string;
+  observation: string | null;
+  field: string | null;
   status: DeployStatus;
   n_targets: number | null;
   n_spectra: number | null;
@@ -53,6 +57,8 @@ export interface DeploymentsResult {
 export async function getDeployments(params?: {
   status?: DeployStatus;
   observation?: string;
+  field?: string;
+  instrument?: 'nirspec' | 'nircam';
   page?: number;
   pageSize?: number;
 }): Promise<DeploymentsResult> {
@@ -66,7 +72,7 @@ export async function getDeployments(params?: {
     let query = supabase
       .from('deployments')
       .select(
-        'id, observation, status, n_targets, n_spectra, cfpipe_version, deployed_at, published_at, revoked_at',
+        'id, observation, field, status, n_targets, n_spectra, cfpipe_version, deployed_at, published_at, revoked_at',
         { count: 'exact' },
       )
       .order('id', { ascending: false })
@@ -74,6 +80,9 @@ export async function getDeployments(params?: {
 
     if (params?.status) query = query.eq('status', params.status);
     if (params?.observation) query = query.eq('observation', params.observation);
+    if (params?.field) query = query.eq('field', params.field);
+    if (params?.instrument === 'nirspec') query = query.not('observation', 'is', null);
+    if (params?.instrument === 'nircam') query = query.not('field', 'is', null);
 
     const { data, count, error } = await query;
     if (error) return { deployments: [], total: 0, error: error.message };
@@ -95,6 +104,9 @@ export interface DeployEventRow {
   id: string;
   action: string;
   observation: string | null;
+  // deploy_events has no field column yet — NIRCam events carry their scope in
+  // metadata.field. Extracted server-side here so the UI has one shape.
+  field: string | null;
   deployment_id: number | null;
   status_to: string | null;
   affected_count: number | null;
@@ -125,7 +137,7 @@ export async function getDeployEvents(params?: {
     let query = supabase
       .from('deploy_events')
       .select(
-        'id, action, observation, deployment_id, status_to, affected_count, occurred_at, actor',
+        'id, action, observation, deployment_id, status_to, affected_count, occurred_at, actor, metadata',
         { count: 'exact' },
       )
       .order('occurred_at', { ascending: false })
@@ -137,7 +149,11 @@ export async function getDeployEvents(params?: {
     const { data, count, error } = await query;
     if (error) return { events: [], total: 0, error: error.message };
 
-    const events = (data as DeployEventRow[]) || [];
+    const events = ((data as (DeployEventRow & { metadata?: { field?: string } | null })[]) || [])
+      .map(({ metadata, ...e }) => ({
+        ...e,
+        field: e.field ?? (typeof metadata?.field === 'string' ? metadata.field : null),
+      }));
     // Resolve actor uuids -> usernames in one batch (no FK to embed on).
     const actorIds = Array.from(new Set(events.map((e) => e.actor).filter(Boolean))) as string[];
     if (actorIds.length) {
@@ -177,7 +193,12 @@ const ACTION_TO_STATUS: Record<LifecycleAction, DeployStatus> = {
 export async function setDeploymentLifecycle(
   deploymentId: number,
   action: LifecycleAction,
-): Promise<{ success: boolean; updated?: number; error?: string }> {
+): Promise<{
+  success: boolean;
+  updated?: number;
+  updatedKind?: 'spectra' | 'images';
+  error?: string;
+}> {
   try {
     const { supabase, userId } = await requireAdmin();
     const toStatus = ACTION_TO_STATUS[action];
@@ -192,8 +213,13 @@ export async function setDeploymentLifecycle(
     });
 
     if (error) return { success: false, error: error.message };
-    const updated = (data?.spectra?.updated as number) ?? 0;
-    return { success: true, updated };
+    // The RPC's result shape is instrument-dependent: NIRSpec deployments
+    // report {spectra: {updated}}, NIRCam deployments {nircam_images: {updated}}.
+    const spectraUpdated = data?.spectra?.updated as number | undefined;
+    const imagesUpdated = data?.nircam_images?.updated as number | undefined;
+    const updated = spectraUpdated ?? imagesUpdated ?? 0;
+    const updatedKind = spectraUpdated != null ? 'spectra' as const : 'images' as const;
+    return { success: true, updated, updatedKind };
   } catch (err) {
     return {
       success: false,
