@@ -9,6 +9,7 @@ PIDs are derived from the leading ``jwNNNNN`` of each ``files`` glob, so a field
 that spans multiple programs naturally pulls from multiple PID directories.
 """
 
+import json
 import os
 import re
 from glob import glob
@@ -186,6 +187,10 @@ class Field:
     raw_root: Optional[str] = None  # $CAMPFIRE_ROOT/raw/nircam (parent of PID dirs)
     products_dir: Optional[str] = None
     reference_dir: Optional[str] = None
+    # Reviewer-flagged exclusions from reference/<field>/exposures.json (epic
+    # #261, N6). {filter: [rootname]} — materialized by `campfire deploy nircam
+    # pull`; folded into the skip list so they drop from combine + outlier.
+    excluded_exposures: dict = field(default_factory=dict)
 
     # Reference subdirectories
     bad_pixel_dir: Optional[str] = None
@@ -341,6 +346,7 @@ class Field:
         self.raw_root = str(layout_raw_dir('nircam', root=campfire_root))
         self.products_dir = str(roots(campfire_root).products / 'nircam' / self.name)
         self.reference_dir = str(layout_reference_dir('nircam', scope, root=campfire_root))
+        self.excluded_exposures = self._load_excluded_exposures()
 
         # Reducer-decision reference state is per-field.
         self.bad_pixel_dir = str(dir_for('nircam_bad_pixel', scope, root=campfire_root))
@@ -387,6 +393,33 @@ class Field:
         return str(dir_for('nircam_exposure', Scope(field=self.name, filt=filter_name),
                            root=self.campfire_root))
 
+    def _load_excluded_exposures(self):
+        """Load reviewer exclusions from ``reference/<field>/exposures.json``.
+
+        Materialized by ``campfire deploy nircam pull`` from the portal's
+        ``review_status='excluded'`` flags (epic #261, N6). Returns
+        ``{filter: [rootname]}``; a missing/blank file → ``{}`` (today's
+        behavior); a malformed file → ``{}`` + a warning (never hard-fail a
+        reduction over an advisory list).
+        """
+        if self.reference_dir is None:
+            return {}
+        path = os.path.join(self.reference_dir, 'exposures.json')
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path) as f:
+                doc = json.load(f)
+            out = {filt: list(names or [])
+                   for filt, names in (doc.get('excluded') or {}).items()}
+            n = sum(len(v) for v in out.values())
+            if n:
+                log(f"Excluding {n} reviewer-flagged exposure(s) per {path}")
+            return out
+        except (ValueError, OSError) as e:
+            log(f"Warning: could not read {path}: {e}; ignoring exclusions.")
+            return {}
+
     def get_uncal_files(self, filter_name, skip=None):
         """Get uncal files from PID-organized raw directories.
 
@@ -404,7 +437,9 @@ class Field:
             full_pattern = os.path.join(stage_dir, filter_name, pattern + '*_uncal.fits')
             result.extend(glob(full_pattern))
 
-        effective_skip = list(self.skip) + list(skip or [])
+        effective_skip = (list(self.skip)
+                          + list(self.excluded_exposures.get(filter_name, []))
+                          + list(skip or []))
         # Brace-expand any caller-passed skip patterns (field-level skip is
         # already expanded at load time).
         effective_skip = [p for raw in effective_skip for p in _expand_braces(raw)]
@@ -471,7 +506,9 @@ class Field:
                     continue
                 result.append(path)
 
-        effective_skip = list(self.skip) + list(skip or [])
+        effective_skip = (list(self.skip)
+                          + list(self.excluded_exposures.get(filter_name, []))
+                          + list(skip or []))
         effective_skip = [p for raw in effective_skip for p in _expand_braces(raw)]
         if effective_skip:
             excluded = set()

@@ -1346,11 +1346,14 @@ def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
 
 @deploy_group.group('nircam')
 def nircam():
-    """NIRCam mask utilities (epic #261).
+    """NIRCam inspection round-trip utilities (epic #261).
 
     Field deploy is the top-level `campfire deploy --field <field>` (parity with
-    `--obs`); `import-masks` / `pull-masks` here round-trip the DB-resident region
-    masks with local reference/.../masks/*.reg files.
+    `--obs`). These subcommands round-trip the portal's DB-resident inspection
+    state with the reduction workspace: `pull` (masks + exclusions + drift
+    report, the reducer's one-shot after inspecting), `pull-masks` / `import-masks`
+    (region masks ↔ reference/.../masks/*.reg), and `import-skip` (seed DB
+    exclusions from a field's fields.toml `skip` globs).
     """
     pass
 
@@ -1394,6 +1397,52 @@ def nircam_pull_masks(ctx, config_path, field, dry_run, local):
     from campfire.deploy.nircam_masks import pull_masks
     config = load_config(config_path, local=_resolve_local(ctx, local))
     pull_masks(field, config, dry_run=dry_run)
+
+
+@nircam.command('pull')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--field', required=True, help='Field name (e.g. cosmos).')
+@click.option('--dry-run', is_flag=True,
+              help='Show what would be written without touching files.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nircam_pull(ctx, config_path, field, dry_run, local):
+    """Pull the full review loop: masks + exclusions + drift report (epic #261).
+
+    Materializes DB masks to reference/.../masks/*.reg, the excluded-exposure
+    list to reference/nircam/<field>/exposures.json (which `cfpipe nircam
+    combine` honors), and prints a drift report of local .reg vs DB masks.
+    """
+    from campfire.deploy.nircam_masks import pull_masks, mask_drift_report
+    from campfire.deploy.nircam_exclusions import pull_exclusions
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    pull_masks(field, config, dry_run=dry_run)
+    pull_exclusions(field, config, dry_run=dry_run)
+    if not dry_run:
+        mask_drift_report(field, config)
+
+
+@nircam.command('import-skip')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--field', required=True, help='Field name (e.g. cosmos).')
+@click.option('--dry-run', is_flag=True,
+              help='List exposures that would be excluded without writing.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nircam_import_skip(ctx, config_path, field, dry_run, local):
+    """Seed DB exclusions from this field's fields.toml `skip` globs.
+
+    Sets review_status='excluded' for every exposure whose rootname matches a
+    skip pattern (same glob semantics as combine). Additive — the portal stays
+    the authority for un-excluding.
+    """
+    from campfire.deploy.nircam_exclusions import import_skip
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    import_skip(field, config, dry_run=dry_run)
 
 
 # ---------------------------------------------------------------------------
