@@ -214,6 +214,10 @@ CREATE INDEX IF NOT EXISTS idx_deployments_field
     ON public.deployments USING btree (field)
     WHERE field IS NOT NULL;
 
+-- Admin list: status facet + newest-first sort (get_admin_deployments).
+CREATE INDEX IF NOT EXISTS idx_deployments_status_deployed
+    ON public.deployments USING btree (status, deployed_at DESC);
+
 
 -- =============================================================================
 -- comments
@@ -415,6 +419,19 @@ CREATE INDEX IF NOT EXISTS idx_storage_objects_spectrum_id
 -- the registry's ever-growing table (admin audit 2026-07-03, P4).
 CREATE INDEX IF NOT EXISTS idx_storage_objects_created_at
     ON public.storage_objects USING btree (created_at DESC);
+
+-- Admin registry browser filtered+sorted shapes (get_admin_storage_objects):
+-- product_type / status facets each combined with the newest-first default.
+CREATE INDEX IF NOT EXISTS idx_storage_objects_product_created
+    ON public.storage_objects USING btree (product_type, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_storage_objects_status_created
+    ON public.storage_objects USING btree (status, created_at DESC);
+
+-- NIRCam-scoped registry lookups (field facet; partial — most rows are NIRSpec).
+CREATE INDEX IF NOT EXISTS idx_storage_objects_field
+    ON public.storage_objects USING btree (field)
+    WHERE field IS NOT NULL;
 
 
 -- =============================================================================
