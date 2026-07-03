@@ -280,7 +280,7 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
     // Layout configuration
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout: any = {
-      uirevision: 'debug-1',
+      uirevision: 'constant',
       title: {
         text: `${grating} Redshift Fit (z = ${fitData.redshift.toFixed(4)}, χ² = ${fitData.chi2_min.toFixed(2)}, conf = ${fitData.confidence.toFixed(1)}%)`,
         font: { size: 16, color: colors.text },
@@ -320,6 +320,7 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
         zerolinecolor: colors.grid,
         domain: [0, 0.3],
         range: [Math.log10(chi2Min * 0.9), Math.log10(chi2Max * 1.1)],
+        autorange: false,
       },
       margin: { l: 80, r: 120, t: 50, b: 50 },
       paper_bgcolor: colors.paper,
