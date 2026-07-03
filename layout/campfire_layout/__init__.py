@@ -34,6 +34,7 @@ from .paths import (
     glob_pattern,
     local_path,
     local_relpath,
+    nircam_work_dir,
     raw_dir,
     raw_path,
     reference_dir,
@@ -56,6 +57,7 @@ __all__ = [
     "PRODUCTS", "ProductSpec", "get",
     # paths
     "Roots", "roots", "campfire_root", "dir_for", "local_path", "local_relpath",
+    "nircam_work_dir",
     "reference_dir", "shared_reference_dir", "raw_dir", "raw_path", "cache_path",
     "glob_pattern",
     # keys

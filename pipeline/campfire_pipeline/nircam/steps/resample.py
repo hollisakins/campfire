@@ -139,7 +139,7 @@ def _drizzle_tile_via_jwst(
             'output_shape': shape,
             'crpix': crpix,
             'crval': crval,
-            'fillval': 'indef',
+            'fillval': 'NaN',
             'weight_type': 'ivm',
             'single': False,
             'blendheaders': True,
@@ -324,24 +324,10 @@ def resample_step(filtname, exposure_files, field, step_config,
                 log(f"  skipping background subtraction "
                     f"for {os.path.basename(mosaic_file)}")
 
-        if needs_rebuild:
-            # Set SCI = NaN where WHT = 0 (matches the ERR=NaN convention).
-            # bkgsub subtracts a smooth background everywhere, so without
-            # this pass uncovered pixels carry small nonzero residuals.
-            # Applied after bkgsub and before extension splitting so the
-            # NaN-fill propagates to _sci.fits / _i2d.fits.
-            with fits.open(mosaic_file, mode='update') as hdul:
-                wht = hdul['WHT'].data
-                sci = hdul['SCI'].data
-                no_cov = wht == 0
-                n_no_cov = int(no_cov.sum())
-                if n_no_cov:
-                    sci[no_cov] = np.nan
-                    hdul['SCI'].data = sci
-                    log(
-                        f"  set SCI=NaN at {n_no_cov:,} WHT=0 pixels "
-                        f"({n_no_cov / sci.size * 100:.1f}%)"
-                    )
+        # No post-drizzle "SCI=NaN where WHT=0" pass is needed: both drizzle
+        # backends use fillval='NaN', so uncovered / fully-masked pixels are
+        # already NaN, and bkgsub preserves that (it masks isnan(sci) before
+        # fitting and subtracts elementwise, so NaN - background = NaN).
 
         split_enabled = step_config.get('split_extensions', True)
 

@@ -85,6 +85,26 @@ def local_path(product_type: str, scope: Scope, filename: Optional[str] = None,
     return roots(root).campfire_root / PurePosixPath(local_relpath(product_type, scope, filename))
 
 
+def nircam_work_dir(scope: Scope, *, root: Optional[Path] = None) -> Path:
+    """Local combine working-copy dir: ``products/nircam_work/<field>/<filt>/``.
+
+    The combine phase (bad-pixel, outlier, resample) mutates disposable working
+    copies of the per-exposure FITS here so the canonical ``nircam_exposure``
+    under ``products/nircam/<field>/<filt>/`` stays frozen as the process-phase
+    output.
+
+    Deliberately *not* a ``PRODUCTS`` entry, for the same reason ``cache_path`` /
+    ``raw_dir`` are plain helpers: it is a regenerable, local-only tree that
+    carries no storage key, is never deployed (deploy globs
+    ``products/nircam/…``, not this sibling ``nircam_work``), and is never
+    reverse-dispatched (:func:`~campfire_layout.bijection.parse_relpath`). The
+    ``<filt>`` leaf mirrors the canonical tree's path tail so the pipeline's
+    ``split('/')[-2]`` filter parse keeps working on a work copy.
+    """
+    scope.require("field", "filt")
+    return roots(root).campfire_root / "products" / "nircam_work" / scope.field / scope.filt
+
+
 # ---------------------------------------------------------------------------
 # Tree-level helpers (span products, used by Observation/Field setup)
 # ---------------------------------------------------------------------------

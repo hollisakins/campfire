@@ -26,6 +26,18 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Calibration
+- NIRCam manual masks now actually reach the mosaic, and uncovered pixels are
+  `NaN` (epic #261, N7). The `apply_mask` step painted user region masks as DQ
+  bit `1024` (`DEAD`), which `good_bits='~DO_NOT_USE'` **ignores** — so a mask
+  had no effect on the mosaic unless the (default-off) `mask_set_nan` knob was
+  set. Masks are now honored via `DO_NOT_USE` (fused onto the combine working
+  copy), so masked pixels are correctly dropped from outlier detection and
+  resample. Separately, both drizzle backends now use `fillval='NaN'`, so mosaic
+  pixels with no coverage — or masked in every overlapping exposure — read as
+  `NaN` instead of `0`, retiring the post-drizzle "SCI=NaN where WHT=0" pass
+  (`bkgsub` is NaN-safe, so covered pixels are unchanged). Both change mosaic
+  pixel values. The `[nircam.apply_mask]` `mask_flag` / `mask_set_nan` config
+  knobs are removed — the mask now lives purely in the DQ contract.
 - NIRCam `striping` now runs **after** `image2`, on flat-fielded, flux-
   calibrated cal-stage data, and fits *and applies* the 1/f correction in that
   same frame. Process order is now detector1 → persistence → wisp → image2 →
@@ -81,6 +93,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   file is exactly today's behavior, and un-excluding in the portal + re-pulling
   re-includes the exposure on the next combine. No change to any exposure's
   pixel values.
+- **NIRCam combine no longer mutates the canonical per-exposure FITS** (epic
+  #261, N7). `bad_pixel`, `outlier`, and `resample` now run on disposable
+  working copies under `products/nircam_work/<field>/<filter>/`, materialized
+  from the frozen canonical by `Field.materialize_work` (copy where stale + fuse
+  `CFMASK` → `DO_NOT_USE`). Only `apply_mask` still writes the canonical, and
+  only its `CFMASK` extension — the canonical's SCI/DQ stay byte-identical to the
+  process-phase output. This is what lets a mosaic re-deploy leave the pristine
+  exposure in OSN untouched (instead of overwriting it with outlier-rejected
+  bytes) and lets a restored exposure re-combine from a clean input. The working
+  tree is local-only and never deployed; combine stays incremental because the
+  working copies retain their `CFP_OUT` stamps across runs (re-copied only when
+  the canonical is re-processed or its mask changes). `campfire deploy`
+  additionally hard-refuses to upload a canonical carrying combine-phase CFP
+  stamps (`CFP_BPIX`/`CFP_OUT`) — a field reduced by the old in-place combine
+  must be re-run through `cfpipe nircam process` before it can deploy.
 - **BREAKING (MAJOR):** the NIRCam mosaic `version` axis is retired (epic #261,
   N2 / D3). Mosaic products are now named `mosaic_nircam_<filter>_<field>_<scale>_<tile>_<ext>.fits`
   with **no** `_<version>_` segment — one canonical mosaic per
