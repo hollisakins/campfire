@@ -378,31 +378,48 @@ def discover_expmap_tasks(dirs, field):
 # Deploy (push)
 # ---------------------------------------------------------------------------
 
-def _read_field_provenance(dirs, field, filters):
-    """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` for a field.
-
-    Read from a deployed mosaic's primary header — mosaics are the only NIRCam
-    product stamped with ``CMPFRVER`` / ``CAL_VER`` / ``CRDS_CTX`` (canonical
-    exposures carry only ``CFP_*`` step keys). Returns ``(None, None, None)``
-    when no mosaic exists yet, which is the normal case for a mid-reduction
-    ``--draft`` exposure deploy: the pipeline version that produced the
-    exposures is not recorded in exposure headers, so a draft-only deploy
-    legitimately has no batch-level provenance (audit B2). A follow-on could
-    stamp ``CMPFRVER`` on canonical exposures at reduction time to close this.
-    """
+def _provenance_from_header(path):
+    """``(CMPFRVER, CAL_VER, CRDS_CTX)`` from a FITS primary header, or a None
+    triple on any read failure."""
     try:
-        mosaics = discover_mosaics(dirs, field, filters)
-    except Exception:
-        return None, None, None
-    if not mosaics:
-        return None, None, None
-    chosen = next((m for m in mosaics if m.get('extension') == 'i2d'), mosaics[0])
-    try:
-        with fits.open(chosen['path'], memmap=False) as hdul:
+        with fits.open(path, memmap=False) as hdul:
             hdr = hdul[0].header
             return hdr.get('CMPFRVER'), hdr.get('CAL_VER'), hdr.get('CRDS_CTX')
     except Exception:
         return None, None, None
+
+
+def _read_field_provenance(dirs, field, filters):
+    """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` for a field.
+
+    Prefer a deployed mosaic's ``i2d`` header (the combined science product);
+    fall back to any canonical exposure header. Both now carry the CAMPFIRE
+    ``CMPFRVER`` — the mosaic from ``resample.py``, the exposure from
+    ``detector1`` at creation — plus the jwst-native ``CAL_VER`` / ``CRDS_CTX``.
+    So a mid-reduction ``--draft`` exposure deploy (no mosaic yet) now records
+    real provenance instead of NULL (audit B2). Returns ``(None, None, None)``
+    only when the field has neither a mosaic nor a readable exposure.
+    """
+    try:
+        mosaics = discover_mosaics(dirs, field, filters)
+    except Exception:
+        mosaics = []
+    if mosaics:
+        chosen = next((m for m in mosaics if m.get('extension') == 'i2d'), mosaics[0])
+        prov = _provenance_from_header(chosen['path'])
+        if any(prov):
+            return prov
+
+    # No mosaic (or an unstamped one): read a representative exposure header.
+    try:
+        exposures = discover_exposures(dirs, filters)
+    except Exception:
+        return None, None, None
+    for info in exposures.values():
+        prov = _provenance_from_header(info['path'])
+        if any(prov):
+            return prov
+    return None, None, None
 
 
 def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):

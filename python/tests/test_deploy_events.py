@@ -63,9 +63,24 @@ def test_log_deploy_event_best_effort_swallows_errors():
 
 # --- provenance header reads (best-effort) ----------------------------------
 
-def test_read_field_provenance_none_when_no_mosaic(tmp_path, monkeypatch):
+def test_read_field_provenance_none_when_no_mosaic_or_exposure(monkeypatch):
     monkeypatch.setattr(nc, "discover_mosaics", lambda *a, **k: [])
+    monkeypatch.setattr(nc, "discover_exposures", lambda *a, **k: {})
     assert nc._read_field_provenance({}, "cosmos", ["f444w"]) == (None, None, None)
+
+
+def test_read_field_provenance_falls_back_to_exposure(tmp_path, monkeypatch):
+    # No mosaic yet (mid-reduction --draft): read the stamped exposure header.
+    epath = tmp_path / "jw123_nrcalong.fits"
+    hdu = fits.PrimaryHDU(data=np.zeros((2, 2), dtype="float32"))
+    hdu.header["CMPFRVER"] = "2.0.0"
+    hdu.header["CAL_VER"] = "1.14.0"
+    fits.HDUList([hdu]).writeto(epath)
+    monkeypatch.setattr(nc, "discover_mosaics", lambda *a, **k: [])
+    monkeypatch.setattr(
+        nc, "discover_exposures",
+        lambda *a, **k: {("f444w", "jw123_nrcalong"): {"path": str(epath)}})
+    assert nc._read_field_provenance({}, "cosmos", ["f444w"]) == ("2.0.0", "1.14.0", None)
 
 
 def test_read_field_provenance_reads_mosaic_cards(tmp_path, monkeypatch):
