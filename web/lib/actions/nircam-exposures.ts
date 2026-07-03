@@ -46,41 +46,63 @@ export interface ExposureFilters {
   detector?: string;
   reviewStatus?: string;
   stage?: string;
+  masking?: string;
+  correction?: string;
 }
 
-export async function getNircamExposures(params?: ExposureFilters & {
-  page?: number;       // 0-indexed
+export interface ExposureSort {
+  sortColumn?: string;
+  sortDirection?: 'asc' | 'desc';
+}
+
+/**
+ * Sort keys accepted by get_admin_exposures / get_admin_exposure_neighbors —
+ * mirror the RPC whitelist. 'filename' is the compound (field, filter,
+ * filename) list order.
+ */
+export const EXPOSURE_SORT_KEYS = [
+  'filename', 'field', 'filter', 'detector', 'stage', 'review_status', 'date_obs', 'updated_at',
+] as const;
+
+function rpcExposureParams(params?: ExposureFilters & ExposureSort) {
+  return {
+    p_field: params?.field ?? null,
+    p_filter: params?.filter ?? null,
+    p_detector: params?.detector ?? null,
+    p_review_status: params?.reviewStatus ?? null,
+    p_stage: params?.stage ?? null,
+    p_masking: params?.masking ?? null,
+    p_correction: params?.correction ?? null,
+    p_sort_column: params?.sortColumn ?? 'filename',
+    p_sort_direction: params?.sortDirection ?? 'asc',
+  };
+}
+
+// Backed by get_admin_exposures: whitelisted server-side sort + windowed total
+// in one scan (no count:'exact' second query).
+export async function getNircamExposures(params?: ExposureFilters & ExposureSort & {
+  page?: number;       // 1-based
   pageSize?: number;   // default 50
 }): Promise<ExposuresResult> {
   try {
     const supabase = await requireAdmin();
 
-    const page = Math.max(0, params?.page ?? 0);
-    const pageSize = Math.max(1, params?.pageSize ?? 50);
-    const from = page * pageSize;
-    const to = from + pageSize - 1;
-
-    let query = supabase
-      .from('nircam_exposures')
-      .select('*', { count: 'exact' })
-      .order('field')
-      .order('filter')
-      .order('filename')
-      .range(from, to);
-
-    if (params?.field) query = query.eq('field', params.field);
-    if (params?.filter) query = query.eq('filter', params.filter);
-    if (params?.detector) query = query.eq('detector', params.detector);
-    if (params?.reviewStatus) query = query.eq('review_status', params.reviewStatus);
-    if (params?.stage) query = query.eq('stage', params.stage);
-
-    const { data, count, error } = await query;
+    const { data, error } = await supabase.rpc('get_admin_exposures', {
+      ...rpcExposureParams(params),
+      p_page: params?.page ?? 1,
+      p_page_size: params?.pageSize ?? 50,
+    });
 
     if (error) {
       return { exposures: [], total: 0, error: error.message };
     }
 
-    return { exposures: data || [], total: count ?? 0 };
+    const rows = (data ?? []) as (NircamExposure & { total_count: number })[];
+    const total = rows[0]?.total_count ?? 0;
+    return {
+      exposures: rows.map(({ total_count: _t, ...row }) => row as NircamExposure),
+      total,
+    };
   } catch (err) {
     return {
       exposures: [],
@@ -90,36 +112,56 @@ export async function getNircamExposures(params?: ExposureFilters & {
   }
 }
 
-// Lightweight companion to getNircamExposures: returns just the IDs of every
-// exposure matching the same filters, in the same order. Feeds the detail
-// page's prev/next nav cache so the operator can step through the entire
-// filtered set with arrow keys, not just the current page.
-export async function getNircamExposureIds(
-  params?: ExposureFilters,
-): Promise<{ ids: number[]; error?: string }> {
+export interface ExposureNeighbors {
+  /** id of the previous/next exposure in the filtered, ordered set. */
+  prevId: number | null;
+  nextId: number | null;
+  /** 1-based position of the current exposure, and total matches. */
+  position: number | null;
+  total: number;
+  /** The ±window ids in order — feeds the PNG prefetch. */
+  windowIds: number[];
+  error?: string;
+}
+
+// Bounded prev/next nav for the detail page (get_admin_exposure_neighbors):
+// the ±window neighbor ids and absolute position of the current exposure
+// within the SAME filtered+ordered set the list page shows. Replaces the
+// sessionStorage nav cache that fetched every matching id and broke on
+// refresh/direct entry.
+export async function getExposureNeighbors(
+  currentId: number,
+  params?: ExposureFilters & ExposureSort & { window?: number },
+): Promise<ExposureNeighbors> {
+  const empty: ExposureNeighbors = {
+    prevId: null, nextId: null, position: null, total: 0, windowIds: [],
+  };
   try {
     const supabase = await requireAdmin();
 
-    let query = supabase
-      .from('nircam_exposures')
-      .select('id')
-      .order('field')
-      .order('filter')
-      .order('filename');
+    const { data, error } = await supabase.rpc('get_admin_exposure_neighbors', {
+      p_current_id: currentId,
+      ...rpcExposureParams(params),
+      p_window: params?.window ?? 3,
+    });
 
-    if (params?.field) query = query.eq('field', params.field);
-    if (params?.filter) query = query.eq('filter', params.filter);
-    if (params?.detector) query = query.eq('detector', params.detector);
-    if (params?.reviewStatus) query = query.eq('review_status', params.reviewStatus);
-    if (params?.stage) query = query.eq('stage', params.stage);
+    if (error) return { ...empty, error: error.message };
+    const rows = (data ?? []) as { id: number; nav_position: number; total_count: number }[];
+    if (rows.length === 0) return empty;  // currentId not in the filtered set
 
-    const { data, error } = await query;
-    if (error) return { ids: [], error: error.message };
-    return { ids: (data || []).map(r => r.id) };
+    const idx = rows.findIndex((r) => r.id === currentId);
+    const current = idx >= 0 ? rows[idx] : null;
+    return {
+      prevId: idx > 0 ? rows[idx - 1].id : null,
+      nextId: idx >= 0 && idx < rows.length - 1 ? rows[idx + 1].id : null,
+      position: current?.nav_position ?? null,
+      total: rows[0]?.total_count ?? 0,
+      windowIds: rows.map((r) => r.id),
+    };
   } catch (err) {
     return {
-      ids: [],
-      error: err instanceof Error ? err.message : 'Failed to fetch exposure IDs',
+      ...empty,
+      error: err instanceof Error ? err.message : 'Failed to fetch neighbors',
     };
   }
 }
@@ -415,6 +457,8 @@ export async function getExcludedExposures(): Promise<{
 // Filter options (for dropdowns)
 // ---------------------------------------------------------------------------
 
+// Backed by get_admin_exposure_facets: distinct values via grouped scans
+// server-side (replaces fetching every row and deduping in JS).
 export async function getExposureFilterOptions(): Promise<{
   fields: string[];
   filters: string[];
@@ -425,20 +469,19 @@ export async function getExposureFilterOptions(): Promise<{
   try {
     const supabase = await requireAdmin();
 
-    const { data, error } = await supabase
-      .from('nircam_exposures')
-      .select('field, filter, detector, stage');
+    const { data, error } = await supabase.rpc('get_admin_exposure_facets');
 
     if (error) {
       return { fields: [], filters: [], detectors: [], stages: [], error: error.message };
     }
 
-    const rows = data || [];
+    const rows = (data ?? []) as { kind: string; value: string }[];
+    const pick = (kind: string) => rows.filter((r) => r.kind === kind).map((r) => r.value);
     return {
-      fields: [...new Set(rows.map(r => r.field))].sort(),
-      filters: [...new Set(rows.map(r => r.filter))].sort(),
-      detectors: [...new Set(rows.map(r => r.detector))].sort(),
-      stages: [...new Set(rows.map(r => r.stage))].sort(),
+      fields: pick('field'),
+      filters: pick('filter'),
+      detectors: pick('detector'),
+      stages: pick('stage'),
     };
   } catch (err) {
     return {

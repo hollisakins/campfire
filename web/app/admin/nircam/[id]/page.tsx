@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import React, { Suspense, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -10,16 +10,18 @@ import {
 } from 'lucide-react';
 import {
   getNircamExposureById,
+  getExposureNeighbors,
   updateExposureReview,
   saveExposureMaskRegions,
   presignExposurePngs,
   type ExposurePngUrls,
+  type ExposureNeighbors,
 } from '@/lib/actions/nircam-exposures';
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 import { stageBadgeClasses } from '@/lib/nircam-stages';
 import MaskEditor from '@/components/nircam/MaskEditor';
 import { storageKey } from '@/lib/layout';
-import { lookupNircamNav, nircamNavWindow, type NircamNavLookup } from '@/lib/nircam-nav-cache';
+import { parseExposureNavParams } from '@/lib/nircam-exposure-nav';
 import {
   getCachedExposure,
   setCachedExposure,
@@ -31,10 +33,20 @@ import {
 const PREFETCH_AHEAD = 3;
 const PREFETCH_BEHIND = 1;
 
-export default function ExposureDetailPage() {
+function ExposureDetailPageInner() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const id = Number(params.id);
+
+  // The list page's filter+sort state, carried in the URL (see
+  // lib/nircam-exposure-nav.ts). Defines the ordered set prev/next walks;
+  // empty params (direct entry) = the full unfiltered set, so nav always works.
+  const navFilters = useMemo(
+    () => parseExposureNavParams(new URLSearchParams(searchParams.toString())),
+    [searchParams],
+  );
+  const navQuery = searchParams.toString();
 
   const [exposure, setExposure] = useState<NircamExposure | null>(null);
   const [exposureForId, setExposureForId] = useState<number | null>(null);
@@ -49,9 +61,10 @@ export default function ExposureDetailPage() {
   const [correction, setCorrection] = useState<string>('none');
   const [notes, setNotes] = useState<string>('');
 
-  // Sibling-exposure nav (from sessionStorage cache populated by the list).
-  // Re-derived on every id change; null when there's no cache (direct entry).
-  const [nav, setNav] = useState<NircamNavLookup | null>(null);
+  // Sibling-exposure nav: the ±window neighbors + absolute position within
+  // the filtered, ordered set, from get_admin_exposure_neighbors. Survives
+  // refresh and direct entry because the filter context lives in the URL.
+  const [nav, setNav] = useState<ExposureNeighbors | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   // N4 (epic #261): live FITS render vs the legacy pre-generated PNG. Defaults
   // to PNG; the toggle doubles as the pixel-parity check during the rollout.
@@ -65,7 +78,14 @@ export default function ExposureDetailPage() {
   // force the browser to refetch a PNG the prefetch already cached.
   const pngUrlsRef = useRef(pngUrls);
   pngUrlsRef.current = pngUrls;
-  useEffect(() => { setNav(lookupNircamNav(id)); }, [id]);
+  useEffect(() => {
+    let cancelled = false;
+    getExposureNeighbors(id, { ...navFilters, window: PREFETCH_AHEAD }).then((res) => {
+      if (cancelled) return;
+      setNav(res.error || res.total === 0 ? null : res);
+    });
+    return () => { cancelled = true; };
+  }, [id, navFilters]);
 
   // When the route id changes, reset state synchronously from the in-memory
   // cache so the new exposure paints in the same frame as the URL change —
@@ -115,7 +135,7 @@ export default function ExposureDetailPage() {
   // the same frame — independent of PNG bytes.
   useEffect(() => {
     if (!nav) return;
-    for (const sibId of [nav.next, nav.prev]) {
+    for (const sibId of [nav.nextId, nav.prevId]) {
       if (sibId == null || getCachedExposure(sibId)) continue;
       getNircamExposureById(sibId).then((res) => {
         if (res.exposure) setCachedExposure(res.exposure);
@@ -129,7 +149,15 @@ export default function ExposureDetailPage() {
   // window; the heavy full-res mask surface (~5.7 MB) only for the immediate
   // next, so a fast tab-through stays ahead without flooding the network.
   useEffect(() => {
-    const win = nircamNavWindow(id, PREFETCH_AHEAD, PREFETCH_BEHIND);
+    if (!nav) return;
+    // Derive the prefetch window from the neighbors RPC result: ahead-heavy
+    // slice of the ordered window ids around the current exposure.
+    const idx = nav.windowIds.indexOf(id);
+    if (idx < 0) return;
+    const win = [
+      ...nav.windowIds.slice(idx + 1, idx + 1 + PREFETCH_AHEAD),
+      ...nav.windowIds.slice(Math.max(0, idx - PREFETCH_BEHIND), idx),
+    ];
     // Only presign ids we haven't already (prefetched siblings keep their URL).
     const batch = [id, ...win].filter((x) => pngUrlsRef.current[x] === undefined);
     if (batch.length === 0) return;
@@ -140,12 +168,11 @@ export default function ExposureDetailPage() {
       // `urls` holds only the newly-presigned (previously-absent) ids, so each
       // sibling is prefetched exactly once, at the URL that will be reused.
       for (const sib of win) if (urls[sib]) prefetchPreviewPng(urls[sib].preview);
-      // Heavy full-res PNG: only the genuine immediate next (undefined at the end).
-      const immediateNext = nircamNavWindow(id, 1, 0)[0];
-      if (immediateNext != null && urls[immediateNext]) prefetchPreviewPng(urls[immediateNext].full);
+      // Heavy full-res PNG: only the genuine immediate next (null at the end).
+      if (nav.nextId != null && urls[nav.nextId]) prefetchPreviewPng(urls[nav.nextId].full);
     });
     return () => { cancelled = true; };
-  }, [id]);
+  }, [id, nav]);
 
   const hasChanges = !!(exposure && (
     reviewStatus !== exposure.review_status ||
@@ -191,11 +218,12 @@ export default function ExposureDetailPage() {
       const result = await handleSave();
       if (!result.ok) return; // don't navigate on a save failure
     }
-    router.push(`/admin/nircam/${targetId}`);
-  }, [handleSave, router]);
+    // Carry the filter context so the next exposure's nav walks the same set.
+    router.push(`/admin/nircam/${targetId}${navQuery ? `?${navQuery}` : ''}`);
+  }, [handleSave, router, navQuery]);
 
-  const handleNext = useCallback(() => goTo(nav?.next ?? null), [goTo, nav]);
-  const handlePrev = useCallback(() => goTo(nav?.prev ?? null), [goTo, nav]);
+  const handleNext = useCallback(() => goTo(nav?.nextId ?? null), [goTo, nav]);
+  const handlePrev = useCallback(() => goTo(nav?.prevId ?? null), [goTo, nav]);
 
   // Global keyboard shortcuts (mirrors web/components/spectra/inspection
   // pattern). Skip when an input has focus so users can type in notes etc.
@@ -289,7 +317,11 @@ export default function ExposureDetailPage() {
     <div>
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <button onClick={() => router.push('/admin/nircam')} className="text-text-secondary hover:text-text-primary" title="Back to list">
+        <button
+          onClick={() => router.push(`/admin/nircam${navQuery ? `?${navQuery}` : ''}`)}
+          className="text-text-secondary hover:text-text-primary"
+          title="Back to list"
+        >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1 min-w-0">
@@ -304,18 +336,18 @@ export default function ExposureDetailPage() {
           <div className="flex items-center gap-1 text-sm text-text-secondary">
             <button
               onClick={handlePrev}
-              disabled={nav.prev == null}
+              disabled={nav.prevId == null}
               title="Previous (← / P)"
               className="p-1.5 rounded hover:bg-card-hover disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <ChevronLeft className="w-5 h-5" />
             </button>
             <span className="font-mono tabular-nums text-xs px-1">
-              {nav.index} / {nav.total}
+              {nav.position} / {nav.total}
             </span>
             <button
               onClick={handleNext}
-              disabled={nav.next == null}
+              disabled={nav.nextId == null}
               title="Next (→ / N)"
               className="p-1.5 rounded hover:bg-card-hover disabled:opacity-30 disabled:cursor-not-allowed"
             >
@@ -549,5 +581,19 @@ export default function ExposureDetailPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ExposureDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        </div>
+      }
+    >
+      <ExposureDetailPageInner />
+    </Suspense>
   );
 }

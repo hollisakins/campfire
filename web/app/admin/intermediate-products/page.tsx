@@ -1,30 +1,19 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { Suspense, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import type { ColumnDef } from '@tanstack/react-table';
 import { Card } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { Loader2, RefreshCw, Database, AlertCircle, HardDrive } from 'lucide-react';
+import { Loader2, Database, HardDrive } from 'lucide-react';
+import { AdminTable } from '@/components/admin/AdminTable';
+import { AdminFilterBar, type FacetOption } from '@/components/admin/AdminFilterBar';
+import { flatFilterCodec, useTableUrlState, type SortState } from '@/lib/hooks/useTableUrlState';
+import { useAdminTableQuery } from '@/lib/hooks/useAdminTableQuery';
 import {
-  getStorageObjects, getStorageBudget,
+  getStorageObjects, getStorageBudget, getStorageFacets,
+  STORAGE_OBJECT_SORT_KEYS,
   type StorageObjectRow, type StorageBudget,
 } from '@/lib/actions/storage-registry';
-
-// Intermediate/data product types worth filtering by (the registry holds more,
-// but these are the ones an admin browses here). 'all' clears the filter.
-const PRODUCT_FILTERS: { value: string; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'nirspec_spectrum_exposure', label: 'Spectrum exposures' },
-  { value: 'nirspec_spec', label: 'Spectra (final)' },
-  { value: 'nircam_exposure', label: 'NIRCam exposures' },
-  { value: 'zfit', label: 'Zfit' },
-];
-
-const STATUS_FILTERS: { value: string; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'active', label: 'Active' },
-  { value: 'superseded', label: 'Superseded' },
-  { value: 'revoked', label: 'Revoked' },
-];
 
 function fmtBytes(n: number): string {
   let v = Number(n);
@@ -59,132 +48,207 @@ function statusBadge(status: string) {
   );
 }
 
-export default function IntermediateProductsPage() {
-  const [productFilter, setProductFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState('active');
-  const [objects, setObjects] = useState<StorageObjectRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [budget, setBudget] = useState<StorageBudget | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+// URL-state config (module-level: codec/whitelist must be stable references).
+// status defaults to 'active' so the initial view hides superseded/revoked
+// tombstones, matching the page's pre-framework behavior.
+const FILTER_KEYS = ['product', 'status', 'backend', 'field', 'obs'] as const;
+const codec = flatFilterCodec(FILTER_KEYS, { status: 'active' });
+const DEFAULT_SORT: SortState = { column: 'created_at', direction: 'desc' };
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    const [res, bud] = await Promise.all([
-      getStorageObjects({
-        productType: productFilter === 'all' ? undefined : productFilter,
-        status: statusFilter === 'all' ? undefined : statusFilter,
-        pageSize: 200,
-      }),
-      getStorageBudget(),
-    ]);
-    if (res.error) setError(res.error);
-    else { setObjects(res.objects); setTotal(res.total); }
-    if (bud && !('error' in bud)) setBudget(bud as StorageBudget);
-    setLoading(false);
-  }, [productFilter, statusFilter]);
+const STATUS_OPTIONS = [
+  { value: 'active', label: 'Active' },
+  { value: 'superseded', label: 'Superseded' },
+  { value: 'revoked', label: 'Revoked' },
+];
 
-  useEffect(() => { refresh(); }, [refresh]);
+const toOptions = (values: string[]): FacetOption[] =>
+  values.map((v) => ({ value: v, label: v }));
+
+const columns: ColumnDef<StorageObjectRow, unknown>[] = [
+  {
+    id: 'storage_key',
+    header: 'Key',
+    cell: ({ row }) => (
+      <span
+        className="font-mono text-xs text-text-primary block truncate max-w-[32rem]"
+        title={row.original.storage_key}
+      >
+        {row.original.storage_key}
+      </span>
+    ),
+    meta: { sortKey: 'storage_key' },
+  },
+  {
+    id: 'product_type',
+    header: 'Product',
+    cell: ({ row }) => <span className="text-text-secondary">{row.original.product_type}</span>,
+    meta: { sortKey: 'product_type' },
+  },
+  {
+    id: 'scope',
+    header: 'Scope',
+    cell: ({ row }) => (
+      <span className="font-mono text-xs">
+        {row.original.observation ?? row.original.field ?? '—'}
+      </span>
+    ),
+  },
+  {
+    id: 'size_bytes',
+    header: 'Size',
+    cell: ({ row }) => <span className="tabular-nums">{fmtBytes(row.original.size_bytes)}</span>,
+    meta: { sortKey: 'size_bytes', align: 'right' },
+  },
+  {
+    id: 'backend',
+    header: 'Backend',
+    cell: ({ row }) => (
+      <span className="uppercase text-xs text-text-secondary">{row.original.backend}</span>
+    ),
+  },
+  {
+    id: 'status',
+    header: 'Status',
+    cell: ({ row }) => statusBadge(row.original.status),
+    meta: { sortKey: 'status' },
+  },
+  {
+    id: 'created_at',
+    header: 'Created',
+    cell: ({ row }) => (
+      <span className="text-text-secondary whitespace-nowrap">{fmtDate(row.original.created_at)}</span>
+    ),
+    meta: { sortKey: 'created_at' },
+  },
+];
+
+function StoragePageInner() {
+  const state = useTableUrlState({
+    codec,
+    sortWhitelist: STORAGE_OBJECT_SORT_KEYS,
+    defaultSort: DEFAULT_SORT,
+  });
+
+  const objects = useAdminTableQuery<StorageObjectRow>({
+    scope: 'admin-storage-objects',
+    filters: state.debouncedFilters,
+    sort: state.sort,
+    page: state.page,
+    pageSize: state.pageSize,
+    fetchPage: async (page) => {
+      const f = state.debouncedFilters;
+      const res = await getStorageObjects({
+        productType: f.product || undefined,
+        status: f.status || undefined,
+        backend: f.backend || undefined,
+        field: f.field || undefined,
+        observation: f.obs || undefined,
+        sortColumn: state.sort.column,
+        sortDirection: state.sort.direction,
+        page,
+        pageSize: state.pageSize,
+      });
+      return { rows: res.objects, total: res.total, error: res.error };
+    },
+  });
+
+  const { data: budget } = useQuery({
+    queryKey: ['admin-storage-budget'],
+    queryFn: getStorageBudget,
+    staleTime: 60_000,
+  });
+
+  const { data: facets } = useQuery({
+    queryKey: ['admin-storage-facets'],
+    queryFn: getStorageFacets,
+    staleTime: 5 * 60_000,
+  });
+
+  const facetDescriptors = useMemo(() => [
+    { kind: 'pills' as const, key: 'status', options: STATUS_OPTIONS },
+    {
+      kind: 'select' as const, key: 'product', label: 'Product',
+      options: toOptions(facets?.productTypes ?? []),
+    },
+    {
+      kind: 'select' as const, key: 'backend', label: 'Backend',
+      options: toOptions(facets?.backends ?? []),
+    },
+    {
+      kind: 'select' as const, key: 'field', label: 'Field',
+      options: toOptions(facets?.fields ?? []),
+    },
+    {
+      kind: 'select' as const, key: 'obs', label: 'Observation',
+      options: toOptions(facets?.observations ?? []),
+    },
+  ], [facets]);
+
+  const budgetOk = budget && !('error' in budget && budget.error) && 'total_bytes' in budget;
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <Database className="w-6 h-6 text-primary" />
-          <h1 className="text-2xl font-semibold text-text-primary">Intermediate Products</h1>
-        </div>
-        <Button variant="secondary" size="sm" onClick={refresh} disabled={loading}>
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </Button>
+      <div className="flex items-center gap-2 mb-2">
+        <Database className="w-6 h-6 text-primary" />
+        <h1 className="text-2xl font-semibold text-text-primary">Storage</h1>
       </div>
       <p className="text-text-secondary text-sm mb-6">
-        Every object in cloud storage — the canonical spectrum-exposure intermediates and final
-        products each deploy uploads. This is the storage/registry view; the draft → published
-        lifecycle lives on the <span className="font-medium">Deployments</span> page.
+        Every registered object in cloud storage — canonical intermediates and final products
+        each deploy uploads. This is the registry (&ldquo;what&rsquo;s in the bucket&rdquo;) view; the
+        draft → published lifecycle lives on the <span className="font-medium">Deployments</span> page.
       </p>
 
-      {budget && (
+      {budgetOk && (
         <Card className="mb-6 p-4">
           <div className="flex items-center gap-3 text-sm">
             <HardDrive className="w-5 h-5 text-text-secondary" />
-            <span className="text-text-primary font-medium">{fmtBytes(budget.total_bytes)}</span>
-            <span className="text-text-secondary">of {fmtBytes(budget.cap_bytes)} ({budget.pct_used}%)</span>
+            <span className="text-text-primary font-medium">
+              {fmtBytes((budget as StorageBudget).total_bytes)}
+            </span>
+            <span className="text-text-secondary">
+              of {fmtBytes((budget as StorageBudget).cap_bytes)} ({(budget as StorageBudget).pct_used}%)
+            </span>
           </div>
         </Card>
       )}
 
-      {error && (
-        <div className="mb-4 px-4 py-2 rounded-lg bg-red-50 dark:bg-red-950 text-red-800 dark:text-red-300 text-sm flex items-center gap-2">
-          <AlertCircle className="w-4 h-4" /> {error}
-        </div>
-      )}
+      <AdminFilterBar
+        facets={facetDescriptors}
+        values={state.filters}
+        onChange={(key, value) => state.setFilters({ ...state.filters, [key]: value })}
+        onReset={state.resetFilters}
+      />
 
-      <div className="flex flex-wrap gap-2 mb-2">
-        {PRODUCT_FILTERS.map((f) => (
-          <button key={f.value} onClick={() => setProductFilter(f.value)}
-            className={`px-3 py-1 rounded-full text-sm transition-colors ${
-              productFilter === f.value ? 'bg-primary text-on-primary'
-                : 'bg-card-hover text-text-secondary hover:text-text-primary'}`}>
-            {f.label}
-          </button>
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-2 mb-4">
-        {STATUS_FILTERS.map((f) => (
-          <button key={f.value} onClick={() => setStatusFilter(f.value)}
-            className={`px-3 py-1 rounded-full text-xs transition-colors ${
-              statusFilter === f.value ? 'bg-primary text-on-primary'
-                : 'bg-card-hover text-text-secondary hover:text-text-primary'}`}>
-            {f.label}
-          </button>
-        ))}
-      </div>
-
-      <Card className="overflow-hidden p-0">
-        {loading && objects.length === 0 ? (
-          <div className="p-8 flex items-center justify-center text-text-secondary">
-            <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading…
-          </div>
-        ) : objects.length === 0 ? (
-          <div className="p-8 text-center text-text-secondary text-sm">No storage objects match this filter.</div>
-        ) : (
-          <>
-            <div className="px-4 py-2 text-xs text-text-secondary border-b border-border">
-              Showing {objects.length} of {total}
-            </div>
-            <table className="w-full text-sm">
-              <thead className="bg-card-hover text-text-secondary text-left">
-                <tr>
-                  <th className="px-4 py-2 font-medium">Key</th>
-                  <th className="px-4 py-2 font-medium">Product</th>
-                  <th className="px-4 py-2 font-medium">Observation</th>
-                  <th className="px-4 py-2 font-medium text-right">Size</th>
-                  <th className="px-4 py-2 font-medium">Backend</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
-                  <th className="px-4 py-2 font-medium">Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {objects.map((o) => (
-                  <tr key={o.id} className="border-t border-border hover:bg-card-hover/50">
-                    <td className="px-4 py-2 font-mono text-xs text-text-primary truncate max-w-[28rem]" title={o.storage_key}>
-                      {o.storage_key.split('/').pop()}
-                    </td>
-                    <td className="px-4 py-2 text-text-secondary">{o.product_type}</td>
-                    <td className="px-4 py-2 font-mono text-xs">{o.observation ?? '—'}</td>
-                    <td className="px-4 py-2 text-right tabular-nums">{fmtBytes(o.size_bytes)}</td>
-                    <td className="px-4 py-2 uppercase text-xs text-text-secondary">{o.backend}</td>
-                    <td className="px-4 py-2">{statusBadge(o.status)}</td>
-                    <td className="px-4 py-2 text-text-secondary whitespace-nowrap">{fmtDate(o.created_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        )}
-      </Card>
+      <AdminTable
+        columns={columns}
+        data={objects.rows}
+        total={objects.total}
+        page={state.page}
+        pageSize={state.pageSize}
+        sort={state.sort}
+        loading={objects.isInitialLoading}
+        fetching={objects.isFetching || state.isDebouncing}
+        error={objects.error}
+        emptyTitle="No storage objects match this filter."
+        onSortChange={state.setSort}
+        onPageChange={state.setPage}
+        onPageSizeChange={state.setPageSize}
+        getRowKey={(o) => o.id}
+      />
     </div>
+  );
+}
+
+export default function StoragePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-8 flex items-center justify-center text-text-secondary">
+          <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading…
+        </div>
+      }
+    >
+      <StoragePageInner />
+    </Suspense>
   );
 }

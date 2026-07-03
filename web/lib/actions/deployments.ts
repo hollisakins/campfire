@@ -28,9 +28,13 @@ async function requireAdmin() {
 
 export type DeployStatus = 'draft' | 'published' | 'revoked';
 
+// Scope: exactly one of observation (NIRSpec) / field (NIRCam) is set,
+// mirroring the deployments_scope_check constraint. For NIRCam rows,
+// n_targets carries the exposure count (no n_spectra).
 export interface DeploymentRow {
   id: number;
-  observation: string;
+  observation: string | null;
+  field: string | null;
   status: DeployStatus;
   n_targets: number | null;
   n_spectra: number | null;
@@ -46,38 +50,42 @@ export interface DeploymentsResult {
   error?: string;
 }
 
+/** Sort keys accepted by get_admin_deployments — mirror the RPC whitelist. */
+export const DEPLOYMENT_SORT_KEYS = ['id', 'deployed_at', 'status', 'scope'] as const;
+
 // ---------------------------------------------------------------------------
 // Read: deployments (the lifecycle units)
 // ---------------------------------------------------------------------------
+// Backed by the get_admin_deployments RPC: whitelisted server-side sort +
+// windowed total in one scan (no PostgREST count:'exact' second query).
 
 export async function getDeployments(params?: {
   status?: DeployStatus;
-  observation?: string;
-  page?: number;
+  instrument?: 'nirspec' | 'nircam';
+  sortColumn?: string;
+  sortDirection?: 'asc' | 'desc';
+  page?: number;      // 1-based
   pageSize?: number;
 }): Promise<DeploymentsResult> {
   try {
     const { supabase } = await requireAdmin();
-    const page = Math.max(0, params?.page ?? 0);
-    const pageSize = Math.max(1, params?.pageSize ?? 50);
-    const from = page * pageSize;
-    const to = from + pageSize - 1;
 
-    let query = supabase
-      .from('deployments')
-      .select(
-        'id, observation, status, n_targets, n_spectra, cfpipe_version, deployed_at, published_at, revoked_at',
-        { count: 'exact' },
-      )
-      .order('id', { ascending: false })
-      .range(from, to);
+    const { data, error } = await supabase.rpc('get_admin_deployments', {
+      p_status: params?.status ?? null,
+      p_instrument: params?.instrument ?? null,
+      p_sort_column: params?.sortColumn ?? 'deployed_at',
+      p_sort_direction: params?.sortDirection ?? 'desc',
+      p_page: params?.page ?? 1,
+      p_page_size: params?.pageSize ?? 50,
+    });
 
-    if (params?.status) query = query.eq('status', params.status);
-    if (params?.observation) query = query.eq('observation', params.observation);
-
-    const { data, count, error } = await query;
     if (error) return { deployments: [], total: 0, error: error.message };
-    return { deployments: (data as DeploymentRow[]) || [], total: count ?? 0 };
+    const rows = (data ?? []) as (DeploymentRow & { total_count: number })[];
+    const total = rows[0]?.total_count ?? 0;
+    return {
+      deployments: rows.map(({ total_count: _t, ...row }) => row as DeploymentRow),
+      total,
+    };
   } catch (err) {
     return {
       deployments: [],
@@ -95,12 +103,15 @@ export interface DeployEventRow {
   id: string;
   action: string;
   observation: string | null;
+  // deploy_events has no field column yet — the RPC extracts metadata->>'field'
+  // (NIRCam events carry their scope there) so the UI has one shape.
+  field: string | null;
   deployment_id: number | null;
   status_to: string | null;
   affected_count: number | null;
   occurred_at: string;
   actor: string | null;
-  actor_name?: string | null;
+  actor_name: string | null;
 }
 
 export interface DeployEventsResult {
@@ -109,50 +120,40 @@ export interface DeployEventsResult {
   error?: string;
 }
 
+/** Sort keys accepted by get_admin_deploy_events — mirror the RPC whitelist. */
+export const DEPLOY_EVENT_SORT_KEYS = ['occurred_at', 'action'] as const;
+
+// Backed by get_admin_deploy_events: the NIRCam scope extraction and the
+// actor-name join happen in SQL (one scan), replacing two extra round-trips.
 export async function getDeployEvents(params?: {
   action?: string;
   observation?: string;
-  page?: number;
+  field?: string;
+  sortColumn?: string;
+  sortDirection?: 'asc' | 'desc';
+  page?: number;      // 1-based
   pageSize?: number;
 }): Promise<DeployEventsResult> {
   try {
     const { supabase } = await requireAdmin();
-    const page = Math.max(0, params?.page ?? 0);
-    const pageSize = Math.max(1, params?.pageSize ?? 50);
-    const from = page * pageSize;
-    const to = from + pageSize - 1;
 
-    let query = supabase
-      .from('deploy_events')
-      .select(
-        'id, action, observation, deployment_id, status_to, affected_count, occurred_at, actor',
-        { count: 'exact' },
-      )
-      .order('occurred_at', { ascending: false })
-      .range(from, to);
+    const { data, error } = await supabase.rpc('get_admin_deploy_events', {
+      p_action: params?.action ?? null,
+      p_observation: params?.observation ?? null,
+      p_field: params?.field ?? null,
+      p_sort_column: params?.sortColumn ?? 'occurred_at',
+      p_sort_direction: params?.sortDirection ?? 'desc',
+      p_page: params?.page ?? 1,
+      p_page_size: params?.pageSize ?? 50,
+    });
 
-    if (params?.action) query = query.eq('action', params.action);
-    if (params?.observation) query = query.eq('observation', params.observation);
-
-    const { data, count, error } = await query;
     if (error) return { events: [], total: 0, error: error.message };
-
-    const events = (data as DeployEventRow[]) || [];
-    // Resolve actor uuids -> usernames in one batch (no FK to embed on).
-    const actorIds = Array.from(new Set(events.map((e) => e.actor).filter(Boolean))) as string[];
-    if (actorIds.length) {
-      const { data: profiles } = await supabase
-        .from('user_profiles')
-        .select('user_id, username, full_name')
-        .in('user_id', actorIds);
-      const nameById = new Map(
-        (profiles || []).map((p) => [p.user_id, p.full_name || p.username]),
-      );
-      for (const e of events) {
-        if (e.actor) e.actor_name = nameById.get(e.actor) ?? null;
-      }
-    }
-    return { events, total: count ?? 0 };
+    const rows = (data ?? []) as (DeployEventRow & { total_count: number })[];
+    const total = rows[0]?.total_count ?? 0;
+    return {
+      events: rows.map(({ total_count: _t, ...row }) => row as DeployEventRow),
+      total,
+    };
   } catch (err) {
     return {
       events: [],
@@ -177,7 +178,12 @@ const ACTION_TO_STATUS: Record<LifecycleAction, DeployStatus> = {
 export async function setDeploymentLifecycle(
   deploymentId: number,
   action: LifecycleAction,
-): Promise<{ success: boolean; updated?: number; error?: string }> {
+): Promise<{
+  success: boolean;
+  updated?: number;
+  updatedKind?: 'spectra' | 'images';
+  error?: string;
+}> {
   try {
     const { supabase, userId } = await requireAdmin();
     const toStatus = ACTION_TO_STATUS[action];
@@ -192,8 +198,13 @@ export async function setDeploymentLifecycle(
     });
 
     if (error) return { success: false, error: error.message };
-    const updated = (data?.spectra?.updated as number) ?? 0;
-    return { success: true, updated };
+    // The RPC's result shape is instrument-dependent: NIRSpec deployments
+    // report {spectra: {updated}}, NIRCam deployments {nircam_images: {updated}}.
+    const spectraUpdated = data?.spectra?.updated as number | undefined;
+    const imagesUpdated = data?.nircam_images?.updated as number | undefined;
+    const updated = spectraUpdated ?? imagesUpdated ?? 0;
+    const updatedKind = spectraUpdated != null ? 'spectra' as const : 'images' as const;
+    return { success: true, updated, updatedKind };
   } catch (err) {
     return {
       success: false,

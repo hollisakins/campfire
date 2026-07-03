@@ -2926,6 +2926,7 @@ GRANT EXECUTE ON FUNCTION public.get_user_profile_stats TO authenticated;
 CREATE OR REPLACE FUNCTION public.get_download_stats(p_days integer DEFAULT 30)
 RETURNS json
 LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   result JSON;
@@ -3018,6 +3019,621 @@ GRANT EXECUTE ON FUNCTION public.get_download_stats TO authenticated;
 
 
 -- =============================================================================
+-- get_activity_feed / get_activity_users (admin activity feed)
+-- =============================================================================
+-- Server-side replacement for the /api/admin/activity route's fetch-everything-
+-- then-sort-in-JS approach: UNION the two activity sources (comments +
+-- flag_audit_log), filter/sort/paginate in one scan, and return the page total
+-- via a window count. Semantics mirror the route exactly:
+--   * comments are joined to targets (inner — object-level comments are not
+--     surfaced in the feed, matching the previous targets!inner embed);
+--   * inspection rows label their subject as target -> object -> spectrum
+--     (spectra label = target_id/grating), degrading to '' if all FKs are NULL;
+--   * the user filter matches rows whose user_id is in p_user_ids, plus (for
+--     inspections) NULL-user system rows when p_include_system. No user filter
+--     at all (empty p_user_ids, p_include_system=false) means everything.
+-- SECURITY DEFINER because flag_audit_log's RLS is access-scoped, not
+-- admin-scoped; the admin gate here is the authorization boundary.
+
+CREATE OR REPLACE FUNCTION public.get_activity_feed(
+  p_include_comments boolean DEFAULT true,
+  p_include_inspections boolean DEFAULT true,
+  p_user_ids uuid[] DEFAULT NULL,
+  p_include_system boolean DEFAULT false,
+  p_field_names text[] DEFAULT NULL,
+  p_page integer DEFAULT 1,
+  p_page_size integer DEFAULT 50
+)
+RETURNS TABLE (
+  id text,
+  type text,
+  target_db_id integer,
+  target_display_id text,
+  user_id uuid,
+  ts timestamp without time zone,
+  content text,
+  edited_at timestamp without time zone,
+  field_name text,
+  old_value integer,
+  new_value integer,
+  user_full_name text,
+  user_is_group_account boolean,
+  total_count bigint
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_has_user_filter boolean :=
+    (p_user_ids IS NOT NULL AND array_length(p_user_ids, 1) > 0) OR p_include_system;
+  v_limit integer := LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 100);
+  v_offset integer := GREATEST(COALESCE(p_page, 1) - 1, 0) * LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 100);
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  RETURN QUERY
+  WITH feed AS (
+    SELECT
+      'comment-' || c.id AS id,
+      'comment'::text AS type,
+      c.target_id AS target_db_id,
+      t.target_id AS target_display_id,
+      c.user_id,
+      c.created_at AS ts,
+      c.content,
+      c.edited_at,
+      NULL::text AS field_name,
+      NULL::integer AS old_value,
+      NULL::integer AS new_value
+    FROM comments c
+    JOIN targets t ON t.id = c.target_id
+    WHERE p_include_comments
+      AND NOT c.is_deleted
+      AND (NOT v_has_user_filter
+           OR c.user_id = ANY(COALESCE(p_user_ids, '{}'::uuid[])))
+
+    UNION ALL
+
+    SELECT
+      'audit-' || f.id,
+      'inspection'::text,
+      COALESCE(f.target_id, f.object_id, f.spectrum_id, 0),
+      COALESCE(
+        t.target_id,
+        o.object_id,
+        CASE WHEN s.id IS NOT NULL THEN s.target_id || '/' || s.grating END,
+        ''
+      ),
+      f.user_id,
+      f.changed_at,
+      NULL::text,
+      NULL::timestamp without time zone,
+      f.field_name,
+      f.old_value,
+      f.new_value
+    FROM flag_audit_log f
+    LEFT JOIN targets t ON t.id = f.target_id
+    LEFT JOIN objects o ON o.id = f.object_id
+    LEFT JOIN spectra s ON s.id = f.spectrum_id
+    WHERE p_include_inspections
+      AND (p_field_names IS NULL OR f.field_name = ANY(p_field_names))
+      AND (NOT v_has_user_filter
+           OR f.user_id = ANY(COALESCE(p_user_ids, '{}'::uuid[]))
+           OR (p_include_system AND f.user_id IS NULL))
+  )
+  SELECT
+    feed.id,
+    feed.type,
+    feed.target_db_id,
+    feed.target_display_id,
+    feed.user_id,
+    feed.ts,
+    feed.content,
+    feed.edited_at,
+    feed.field_name,
+    feed.old_value,
+    feed.new_value,
+    up.full_name,
+    COALESCE(up.is_group_account, false),
+    count(*) OVER ()
+  FROM feed
+  LEFT JOIN user_profiles up ON up.user_id = feed.user_id
+  ORDER BY feed.ts DESC, feed.id DESC
+  OFFSET v_offset
+  LIMIT v_limit;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_activity_feed TO authenticated;
+
+-- The activity page's user-filter dropdown: distinct users with any activity.
+-- A NULL user_id row signals system-generated activity (NULL-user audit rows);
+-- the route maps it to its synthetic "System" entry.
+CREATE OR REPLACE FUNCTION public.get_activity_users()
+RETURNS TABLE (
+  user_id uuid,
+  full_name text
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  RETURN QUERY
+  WITH active AS (
+    SELECT DISTINCT c.user_id FROM comments c WHERE NOT c.is_deleted
+    UNION
+    SELECT DISTINCT f.user_id FROM flag_audit_log f
+  )
+  SELECT a.user_id, up.full_name
+  FROM active a
+  LEFT JOIN user_profiles up ON up.user_id = a.user_id
+  ORDER BY (a.user_id IS NULL) DESC, up.full_name ASC NULLS LAST;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_activity_users TO authenticated;
+
+
+-- =============================================================================
+-- Admin list RPCs (admin audit 2026-07-03, Phase 1)
+-- =============================================================================
+-- One RPC per admin list, replacing PostgREST count:'exact' + hardcoded sort:
+-- whitelisted sort column/direction (CASE-based ORDER BY, the
+-- get_filtered_objects_paginated house pattern), windowed count(*) OVER()
+-- total, and page-size clamping. All are STABLE **invoker-rights** functions
+-- (the underlying tables are admin-readable via RLS; no definer needed) with
+-- an explicit is_admin() gate for clean errors, SET search_path per the
+-- definer-hardening convention.
+--
+-- get_admin_exposures and get_admin_exposure_neighbors MUST keep identical
+-- filter predicates and ORDER BY expressions (including the e.id tiebreak):
+-- the neighbors window feeds the detail page's prev/next + prefetch, which
+-- must walk the exact order the list shows.
+
+CREATE OR REPLACE FUNCTION public.get_admin_deployments(
+  p_status text DEFAULT NULL,
+  p_instrument text DEFAULT NULL,       -- 'nirspec' | 'nircam' | NULL
+  p_sort_column text DEFAULT 'deployed_at',
+  p_sort_direction text DEFAULT 'desc',
+  p_page integer DEFAULT 1,
+  p_page_size integer DEFAULT 50
+)
+RETURNS TABLE (
+  id integer,
+  observation text,
+  field text,
+  status text,
+  n_targets integer,
+  n_spectra integer,
+  cfpipe_version text,
+  deployed_at timestamptz,
+  published_at timestamptz,
+  revoked_at timestamptz,
+  total_count bigint
+)
+LANGUAGE plpgsql STABLE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_limit integer := LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 200);
+  v_offset integer := GREATEST(COALESCE(p_page, 1) - 1, 0) * LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 200);
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'desc'; END IF;
+  IF p_sort_column NOT IN ('id', 'deployed_at', 'status', 'scope') THEN
+    p_sort_column := 'deployed_at';
+  END IF;
+
+  RETURN QUERY
+  SELECT d.id, d.observation, d.field, d.status, d.n_targets, d.n_spectra,
+         d.cfpipe_version, d.deployed_at, d.published_at, d.revoked_at,
+         count(*) OVER ()
+  FROM deployments d
+  WHERE (p_status IS NULL OR d.status = p_status)
+    AND (p_instrument IS NULL
+         OR (p_instrument = 'nirspec' AND d.observation IS NOT NULL)
+         OR (p_instrument = 'nircam'  AND d.field IS NOT NULL))
+  ORDER BY
+    CASE WHEN p_sort_column = 'deployed_at' AND p_sort_direction = 'desc' THEN d.deployed_at END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'deployed_at' AND p_sort_direction = 'asc'  THEN d.deployed_at END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'status' AND p_sort_direction = 'desc' THEN d.status END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'status' AND p_sort_direction = 'asc'  THEN d.status END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'scope' AND p_sort_direction = 'desc' THEN COALESCE(d.observation, d.field) END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'scope' AND p_sort_direction = 'asc'  THEN COALESCE(d.observation, d.field) END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'id' AND p_sort_direction = 'asc' THEN d.id END ASC,
+    d.id DESC
+  OFFSET v_offset LIMIT v_limit;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_admin_deployments TO authenticated;
+
+-- Audit-log browse. Folds the NIRCam scope (metadata->>'field' until
+-- deploy_events grows a field column in Phase 3) and the actor display name
+-- (full_name, falling back to username) into the row, replacing two extra
+-- client round-trips.
+CREATE OR REPLACE FUNCTION public.get_admin_deploy_events(
+  p_action text DEFAULT NULL,
+  p_observation text DEFAULT NULL,
+  p_field text DEFAULT NULL,
+  p_sort_column text DEFAULT 'occurred_at',
+  p_sort_direction text DEFAULT 'desc',
+  p_page integer DEFAULT 1,
+  p_page_size integer DEFAULT 50
+)
+RETURNS TABLE (
+  id uuid,
+  action text,
+  observation text,
+  field text,
+  deployment_id integer,
+  status_to text,
+  affected_count integer,
+  occurred_at timestamptz,
+  actor uuid,
+  actor_name text,
+  total_count bigint
+)
+LANGUAGE plpgsql STABLE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_limit integer := LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 200);
+  v_offset integer := GREATEST(COALESCE(p_page, 1) - 1, 0) * LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 200);
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'desc'; END IF;
+  IF p_sort_column NOT IN ('occurred_at', 'action') THEN
+    p_sort_column := 'occurred_at';
+  END IF;
+
+  RETURN QUERY
+  SELECT e.id, e.action, e.observation,
+         (e.metadata ->> 'field') AS field,
+         e.deployment_id, e.status_to, e.affected_count, e.occurred_at,
+         e.actor,
+         COALESCE(up.full_name, up.username) AS actor_name,
+         count(*) OVER ()
+  FROM deploy_events e
+  LEFT JOIN user_profiles up ON up.user_id = e.actor
+  WHERE (p_action IS NULL OR e.action = p_action)
+    AND (p_observation IS NULL OR e.observation = p_observation)
+    AND (p_field IS NULL OR e.metadata ->> 'field' = p_field)
+  ORDER BY
+    CASE WHEN p_sort_column = 'occurred_at' AND p_sort_direction = 'desc' THEN e.occurred_at END DESC,
+    CASE WHEN p_sort_column = 'occurred_at' AND p_sort_direction = 'asc'  THEN e.occurred_at END ASC,
+    CASE WHEN p_sort_column = 'action' AND p_sort_direction = 'desc' THEN e.action END DESC,
+    CASE WHEN p_sort_column = 'action' AND p_sort_direction = 'asc'  THEN e.action END ASC,
+    e.occurred_at DESC
+  OFFSET v_offset LIMIT v_limit;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_admin_deploy_events TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.get_admin_storage_objects(
+  p_product_type text DEFAULT NULL,
+  p_status text DEFAULT NULL,
+  p_field text DEFAULT NULL,
+  p_observation text DEFAULT NULL,
+  p_backend text DEFAULT NULL,
+  p_sort_column text DEFAULT 'created_at',
+  p_sort_direction text DEFAULT 'desc',
+  p_page integer DEFAULT 1,
+  p_page_size integer DEFAULT 50
+)
+RETURNS TABLE (
+  id bigint,
+  storage_key text,
+  product_type text,
+  instrument text,
+  observation text,
+  field text,
+  exposure_ref text,
+  size_bytes bigint,
+  content_hash text,
+  backend text,
+  status text,
+  cfpipe_version text,
+  created_at timestamptz,
+  total_count bigint
+)
+LANGUAGE plpgsql STABLE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_limit integer := LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 200);
+  v_offset integer := GREATEST(COALESCE(p_page, 1) - 1, 0) * LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 200);
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'desc'; END IF;
+  IF p_sort_column NOT IN ('created_at', 'size_bytes', 'product_type', 'storage_key',
+                           'observation', 'field', 'status') THEN
+    p_sort_column := 'created_at';
+  END IF;
+
+  RETURN QUERY
+  SELECT so.id, so.storage_key, so.product_type, so.instrument, so.observation,
+         so.field, so.exposure_ref, so.size_bytes, so.content_hash, so.backend,
+         so.status, so.cfpipe_version, so.created_at,
+         count(*) OVER ()
+  FROM storage_objects so
+  WHERE (p_product_type IS NULL OR so.product_type = p_product_type)
+    AND (p_status IS NULL OR so.status = p_status)
+    AND (p_field IS NULL OR so.field = p_field)
+    AND (p_observation IS NULL OR so.observation = p_observation)
+    AND (p_backend IS NULL OR so.backend = p_backend)
+  ORDER BY
+    CASE WHEN p_sort_column = 'created_at' AND p_sort_direction = 'desc' THEN so.created_at END DESC,
+    CASE WHEN p_sort_column = 'created_at' AND p_sort_direction = 'asc'  THEN so.created_at END ASC,
+    CASE WHEN p_sort_column = 'size_bytes' AND p_sort_direction = 'desc' THEN so.size_bytes END DESC,
+    CASE WHEN p_sort_column = 'size_bytes' AND p_sort_direction = 'asc'  THEN so.size_bytes END ASC,
+    CASE WHEN p_sort_column = 'product_type' AND p_sort_direction = 'desc' THEN so.product_type END DESC,
+    CASE WHEN p_sort_column = 'product_type' AND p_sort_direction = 'asc'  THEN so.product_type END ASC,
+    CASE WHEN p_sort_column = 'storage_key' AND p_sort_direction = 'desc' THEN so.storage_key END DESC,
+    CASE WHEN p_sort_column = 'storage_key' AND p_sort_direction = 'asc'  THEN so.storage_key END ASC,
+    CASE WHEN p_sort_column = 'observation' AND p_sort_direction = 'desc' THEN so.observation END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'observation' AND p_sort_direction = 'asc'  THEN so.observation END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN so.field END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc'  THEN so.field END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'status' AND p_sort_direction = 'desc' THEN so.status END DESC,
+    CASE WHEN p_sort_column = 'status' AND p_sort_direction = 'asc'  THEN so.status END ASC,
+    so.id DESC
+  OFFSET v_offset LIMIT v_limit;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_admin_storage_objects TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.get_admin_exposures(
+  p_field text DEFAULT NULL,
+  p_filter text DEFAULT NULL,
+  p_detector text DEFAULT NULL,
+  p_review_status text DEFAULT NULL,
+  p_stage text DEFAULT NULL,
+  p_masking text DEFAULT NULL,
+  p_correction text DEFAULT NULL,
+  p_sort_column text DEFAULT 'filename',   -- 'filename' = the compound (field, filter, filename) list order
+  p_sort_direction text DEFAULT 'asc',
+  p_page integer DEFAULT 1,
+  p_page_size integer DEFAULT 50
+)
+RETURNS TABLE (
+  id integer,
+  field text,
+  filter text,
+  detector text,
+  filename text,
+  visit text,
+  date_obs timestamp without time zone,
+  ra_center double precision,
+  dec_center double precision,
+  stage text,
+  review_status text,
+  masking text,
+  correction text,
+  png_path text,
+  full_png_path text,
+  image_width integer,
+  image_height integer,
+  mask_regions jsonb,
+  notes text,
+  created_at timestamp without time zone,
+  updated_at timestamp without time zone,
+  total_count bigint
+)
+LANGUAGE plpgsql STABLE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_limit integer := LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 200);
+  v_offset integer := GREATEST(COALESCE(p_page, 1) - 1, 0) * LEAST(GREATEST(COALESCE(p_page_size, 50), 1), 200);
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
+  IF p_sort_column NOT IN ('filename', 'field', 'filter', 'detector', 'stage',
+                           'review_status', 'date_obs', 'updated_at') THEN
+    p_sort_column := 'filename';
+  END IF;
+
+  RETURN QUERY
+  SELECT e.id, e.field, e.filter, e.detector, e.filename, e.visit, e.date_obs,
+         e.ra_center, e.dec_center, e.stage, e.review_status, e.masking,
+         e.correction, e.png_path, e.full_png_path, e.image_width,
+         e.image_height, e.mask_regions, e.notes, e.created_at, e.updated_at,
+         count(*) OVER ()
+  FROM nircam_exposures e
+  WHERE (p_field IS NULL OR e.field = p_field)
+    AND (p_filter IS NULL OR e.filter = p_filter)
+    AND (p_detector IS NULL OR e.detector = p_detector)
+    AND (p_review_status IS NULL OR e.review_status = p_review_status)
+    AND (p_stage IS NULL OR e.stage = p_stage)
+    AND (p_masking IS NULL OR e.masking = p_masking)
+    AND (p_correction IS NULL OR e.correction = p_correction)
+  ORDER BY
+    -- Keep in lockstep with get_admin_exposure_neighbors.
+    CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.field END ASC,
+    CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.filter END ASC,
+    CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.filename END ASC,
+    CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.field END DESC,
+    CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.filter END DESC,
+    CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.filename END DESC,
+    CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc'  THEN e.field END ASC,
+    CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN e.field END DESC,
+    CASE WHEN p_sort_column = 'filter' AND p_sort_direction = 'asc'  THEN e.filter END ASC,
+    CASE WHEN p_sort_column = 'filter' AND p_sort_direction = 'desc' THEN e.filter END DESC,
+    CASE WHEN p_sort_column = 'detector' AND p_sort_direction = 'asc'  THEN e.detector END ASC,
+    CASE WHEN p_sort_column = 'detector' AND p_sort_direction = 'desc' THEN e.detector END DESC,
+    CASE WHEN p_sort_column = 'stage' AND p_sort_direction = 'asc'  THEN e.stage END ASC,
+    CASE WHEN p_sort_column = 'stage' AND p_sort_direction = 'desc' THEN e.stage END DESC,
+    CASE WHEN p_sort_column = 'review_status' AND p_sort_direction = 'asc'  THEN e.review_status END ASC,
+    CASE WHEN p_sort_column = 'review_status' AND p_sort_direction = 'desc' THEN e.review_status END DESC,
+    CASE WHEN p_sort_column = 'date_obs' AND p_sort_direction = 'asc'  THEN e.date_obs END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'date_obs' AND p_sort_direction = 'desc' THEN e.date_obs END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'updated_at' AND p_sort_direction = 'asc'  THEN e.updated_at END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'updated_at' AND p_sort_direction = 'desc' THEN e.updated_at END DESC NULLS LAST,
+    e.id ASC
+  OFFSET v_offset LIMIT v_limit;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_admin_exposures TO authenticated;
+
+-- The detail page's prev/next nav: absolute positions of the current exposure
+-- and its ±p_window neighbors within the SAME filtered, ordered set the list
+-- shows. Bounded transfer (≤ 2*window+1 rows) — replaces the unbounded
+-- fetch-every-matching-id nav cache. Returns zero rows if p_current_id does
+-- not match the filters.
+CREATE OR REPLACE FUNCTION public.get_admin_exposure_neighbors(
+  p_current_id integer,
+  p_field text DEFAULT NULL,
+  p_filter text DEFAULT NULL,
+  p_detector text DEFAULT NULL,
+  p_review_status text DEFAULT NULL,
+  p_stage text DEFAULT NULL,
+  p_masking text DEFAULT NULL,
+  p_correction text DEFAULT NULL,
+  p_sort_column text DEFAULT 'filename',
+  p_sort_direction text DEFAULT 'asc',
+  p_window integer DEFAULT 3
+)
+RETURNS TABLE (
+  id integer,
+  nav_position bigint,   -- 1-based rank in the filtered set ("position" is reserved)
+  total_count bigint
+)
+LANGUAGE plpgsql STABLE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_window integer := LEAST(GREATEST(COALESCE(p_window, 3), 1), 25);
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
+  IF p_sort_column NOT IN ('filename', 'field', 'filter', 'detector', 'stage',
+                           'review_status', 'date_obs', 'updated_at') THEN
+    p_sort_column := 'filename';
+  END IF;
+
+  RETURN QUERY
+  WITH ranked AS (
+    SELECT e.id AS exp_id,
+           row_number() OVER (ORDER BY
+             -- Keep in lockstep with get_admin_exposures.
+             CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.field END ASC,
+             CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.filter END ASC,
+             CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.filename END ASC,
+             CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.field END DESC,
+             CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.filter END DESC,
+             CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.filename END DESC,
+             CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc'  THEN e.field END ASC,
+             CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN e.field END DESC,
+             CASE WHEN p_sort_column = 'filter' AND p_sort_direction = 'asc'  THEN e.filter END ASC,
+             CASE WHEN p_sort_column = 'filter' AND p_sort_direction = 'desc' THEN e.filter END DESC,
+             CASE WHEN p_sort_column = 'detector' AND p_sort_direction = 'asc'  THEN e.detector END ASC,
+             CASE WHEN p_sort_column = 'detector' AND p_sort_direction = 'desc' THEN e.detector END DESC,
+             CASE WHEN p_sort_column = 'stage' AND p_sort_direction = 'asc'  THEN e.stage END ASC,
+             CASE WHEN p_sort_column = 'stage' AND p_sort_direction = 'desc' THEN e.stage END DESC,
+             CASE WHEN p_sort_column = 'review_status' AND p_sort_direction = 'asc'  THEN e.review_status END ASC,
+             CASE WHEN p_sort_column = 'review_status' AND p_sort_direction = 'desc' THEN e.review_status END DESC,
+             CASE WHEN p_sort_column = 'date_obs' AND p_sort_direction = 'asc'  THEN e.date_obs END ASC NULLS LAST,
+             CASE WHEN p_sort_column = 'date_obs' AND p_sort_direction = 'desc' THEN e.date_obs END DESC NULLS LAST,
+             CASE WHEN p_sort_column = 'updated_at' AND p_sort_direction = 'asc'  THEN e.updated_at END ASC NULLS LAST,
+             CASE WHEN p_sort_column = 'updated_at' AND p_sort_direction = 'desc' THEN e.updated_at END DESC NULLS LAST,
+             e.id ASC
+           ) AS rn,
+           count(*) OVER () AS n
+    FROM nircam_exposures e
+    WHERE (p_field IS NULL OR e.field = p_field)
+      AND (p_filter IS NULL OR e.filter = p_filter)
+      AND (p_detector IS NULL OR e.detector = p_detector)
+      AND (p_review_status IS NULL OR e.review_status = p_review_status)
+      AND (p_stage IS NULL OR e.stage = p_stage)
+      AND (p_masking IS NULL OR e.masking = p_masking)
+      AND (p_correction IS NULL OR e.correction = p_correction)
+  ),
+  cur AS (
+    SELECT r.rn AS rn0 FROM ranked r WHERE r.exp_id = p_current_id
+  )
+  SELECT r.exp_id, r.rn, r.n
+  FROM ranked r, cur
+  WHERE r.rn BETWEEN cur.rn0 - v_window AND cur.rn0 + v_window
+  ORDER BY r.rn;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_admin_exposure_neighbors TO authenticated;
+
+-- Distinct facet values for the admin filter dropdowns, one grouped scan per
+-- facet — replaces the fetch-every-row-then-Set() option builders.
+CREATE OR REPLACE FUNCTION public.get_admin_exposure_facets()
+RETURNS TABLE (kind text, value text)
+LANGUAGE plpgsql STABLE
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  RETURN QUERY
+  SELECT 'field'::text, e.field FROM nircam_exposures e GROUP BY e.field
+  UNION ALL
+  SELECT 'filter'::text, e.filter FROM nircam_exposures e GROUP BY e.filter
+  UNION ALL
+  SELECT 'detector'::text, e.detector FROM nircam_exposures e GROUP BY e.detector
+  UNION ALL
+  SELECT 'stage'::text, e.stage FROM nircam_exposures e GROUP BY e.stage
+  ORDER BY 1, 2;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_admin_exposure_facets() TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.get_admin_storage_facets()
+RETURNS TABLE (kind text, value text)
+LANGUAGE plpgsql STABLE
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  RETURN QUERY
+  SELECT 'product_type'::text, so.product_type FROM storage_objects so GROUP BY so.product_type
+  UNION ALL
+  SELECT 'status'::text, so.status FROM storage_objects so GROUP BY so.status
+  UNION ALL
+  SELECT 'backend'::text, so.backend FROM storage_objects so GROUP BY so.backend
+  UNION ALL
+  SELECT 'field'::text, so.field FROM storage_objects so WHERE so.field IS NOT NULL GROUP BY so.field
+  UNION ALL
+  SELECT 'observation'::text, so.observation FROM storage_objects so WHERE so.observation IS NOT NULL GROUP BY so.observation
+  ORDER BY 1, 2;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_admin_storage_facets() TO authenticated;
+
+
+-- =============================================================================
 -- get_storage_budget (epic #210, F1)
 -- =============================================================================
 -- Bytes-at-rest budget against the 20 TB cap. Egress is free (OSN academic
@@ -3029,6 +3645,7 @@ GRANT EXECUTE ON FUNCTION public.get_download_stats TO authenticated;
 CREATE OR REPLACE FUNCTION public.get_storage_budget()
 RETURNS json
 LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   result JSON;
