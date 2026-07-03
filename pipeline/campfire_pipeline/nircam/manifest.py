@@ -346,12 +346,15 @@ def get_stale_tiles(field, filtname, stage_config):
         tiles = [tiles]
 
     files_to_skip = stage_config.get('files_to_skip', [])
-    # Resample's input source: canonical exposures whose outlier detection
-    # has finished (CFP_OUT keyword stamped).
+    # Resample's input source: the combine working copies whose outlier
+    # detection has finished (CFP_OUT keyword stamped). CFP_OUT lives on the
+    # working copies, never the frozen canonical, so this must match the set
+    # resample_step actually drizzles (work=True).
     candidate_files = field.get_exposure_files(
         filtname,
         skip=files_to_skip if files_to_skip else None,
         with_step='CFP_OUT',
+        work=True,
     )
 
     results = []

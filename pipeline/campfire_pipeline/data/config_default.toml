@@ -349,8 +349,10 @@
 # --- combine phase (ensemble) ---
 
 [nircam.apply_mask]
-    mask_flag = 1024
-    mask_set_nan = false
+    # No tunable keys: the user region masks are recorded as a CFMASK extension
+    # on the canonical exposure and honored via DO_NOT_USE on the combine
+    # working copy (good_bits='~DO_NOT_USE'). The former mask_flag / mask_set_nan
+    # knobs are gone — the mask now lives purely in the DQ contract.
 
 [nircam.bad_pixel]
     # Opt-in "consistently bad" pixel detector: stacks the DO_NOT_USE bit

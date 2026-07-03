@@ -66,6 +66,12 @@ COMBINE_STEPS = [
 ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 STEP_NAMES = [name for name, _ in ALL_STEPS]
 
+# Combine steps that read/write the disposable working copies rather than the
+# frozen canonical (apply_mask is excluded — it writes the canonical's CFMASK).
+# Running any of these standalone via ``run_step`` must materialize the work
+# tree first.
+_COMBINE_WORK_STEPS = {'bad_pixel', 'outlier', 'resample'}
+
 # Steps that hit CRDS — used by run_step() to decide when to pre-fetch
 # reference files before parallel dispatch. striping now runs *after* image2
 # (on flat-fielded, flux-calibrated cal-stage data) so it no longer resolves a
@@ -352,7 +358,8 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
 
 
 def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
-    exposures = field.get_exposure_files(filtname)
+    # Combine phase: operate on the working copies, never the frozen canonical.
+    exposures = field.get_exposure_files(filtname, work=True)
     if not exposures:
         log(f"bad_pixel: no exposures for {filtname}")
         return
@@ -413,10 +420,12 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     Parallelization
     ---------------
     Visits are dispatched in parallel across ``n_processes`` workers.
-    Each visit writes only to its own canonical files (via ``atomic_save``)
-    while reading other visits' files as cross-visit overlap padding.
-    Because reads/writes are atomic and outlier_detection only ADDS DQ
-    bits (SCI is unchanged), parallel runs cannot crash; the only
+    Each visit writes only to its own working copies (via ``atomic_save``)
+    while reading other visits' working copies as cross-visit overlap padding.
+    The frozen canonical exposures are never touched (see
+    ``Field.materialize_work``). Because reads/writes are atomic and
+    outlier_detection only ADDS DQ bits (SCI is unchanged), parallel runs
+    cannot crash; the only
     observable difference vs. serial is that a worker may read an overlap
     file's DQ before the visit owning that file has stamped its new
     outlier bits, producing a small median bias in those overlap pixels.
@@ -430,7 +439,8 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
         outlier_step_campfire if implementation == 'campfire' else outlier_step
     )
 
-    exposures = field.get_exposure_files(filtname)
+    # Combine phase: operate on the working copies, never the frozen canonical.
+    exposures = field.get_exposure_files(filtname, work=True)
     if not exposures:
         log(f"outlier: no exposures for {filtname}")
         return
@@ -500,8 +510,10 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
 
 def _run_resample(field, config, filtname, n_processes, overwrite, status,
                   reduction_version):
+    # Read the outlier-finished working copies; the mosaic itself is written to
+    # the canonical filter dir (resample_step derives it from field.filter_dir).
     exposures = field.get_exposure_files(filtname, with_step='CFP_OUT',
-                                         status=status)
+                                         status=status, work=True)
     if not exposures:
         log(f"resample: no CFP_OUT-stamped exposures for {filtname}")
         return
@@ -614,7 +626,16 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False):
     for filt in filters:
         log(f"--- Combine: {filt} ---")
         for step_name, _ in COMBINE_STEPS:
-            if step_name == 'resample':
+            if step_name == 'apply_mask':
+                # apply_mask writes the canonical (CFMASK extension only) — the
+                # last thing to touch the frozen canonical this phase. Then
+                # refresh the disposable working copies the ensemble steps
+                # mutate (copy canonical -> work where stale, fuse CFMASK ->
+                # DO_NOT_USE) and rescan them into the status cache.
+                _RUNNERS[step_name](field, config, filt, n_processes,
+                                    overwrite, status)
+                field.materialize_work(filt, status=status, overwrite=overwrite)
+            elif step_name == 'resample':
                 _run_resample(field, config, filt, n_processes, overwrite,
                               status, reduction_version)
             else:
@@ -642,6 +663,10 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
                                     overwrite=overwrite)
 
     for filt in filters:
+        # A standalone combine ensemble step needs the working copies present
+        # and primed (canonical -> work, CFMASK -> DO_NOT_USE) before it runs.
+        if step_name in _COMBINE_WORK_STEPS:
+            field.materialize_work(filt, status=status, overwrite=overwrite)
         if step_name == 'resample':
             reduction_version = _resolve_reduction_version(config)
             _run_resample(field, config, filt, n_processes, overwrite,

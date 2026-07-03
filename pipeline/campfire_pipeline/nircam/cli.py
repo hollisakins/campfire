@@ -42,6 +42,11 @@ _SCI_MUTATING_STEPS = {
     'wisp', 'striping', 'image2', 'sky', 'variance',
 }
 
+# Combine ensemble steps whose CFP stamp (CFP_BPIX/CFP_OUT) lives on the working
+# copy rather than the frozen canonical — `reset --from` must target the work
+# tree for these. apply_mask is excluded: its CFP_MASK lives on the canonical.
+_COMBINE_WORK_CFP_STEPS = {'bad_pixel', 'outlier'}
+
 # Short labels for the status command's column headers (max 4 chars).
 _STEP_LABELS = {
     'detector1':   'det1',
@@ -347,11 +352,21 @@ def status(config, field, filters):
                 f'{field_obj.filter_dir(filt)}')
             continue
 
-        # Read CFP_* once per exposure
-        per_exp = {
-            os.path.basename(f).removesuffix('.fits'): cfp_mod.get_steps(f)
-            for f in sorted(exposures)
-        }
+        # Read CFP_* once per exposure. Process stamps + CFP_MASK live on the
+        # canonical; the combine ensemble stamps (CFP_BPIX/CFP_OUT) live on the
+        # working copy, so overlay those from the work tree when it exists —
+        # otherwise combine steps would always render as "not done".
+        per_exp = {}
+        for f in sorted(exposures):
+            rootname = os.path.basename(f).removesuffix('.fits')
+            steps = cfp_mod.get_steps(f)
+            work = field_obj.get_exposure_path(rootname, filt, work=True)
+            if os.path.exists(work):
+                work_steps = cfp_mod.get_steps(work)
+                for k in ('CFP_BPIX', 'CFP_OUT'):
+                    if k in work_steps:
+                        steps[k] = work_steps[k]
+            per_exp[rootname] = steps
 
         rootname_width = max(len(r) for r in per_exp) + 2
         log('')
@@ -398,8 +413,9 @@ def status(config, field, filters):
               help='Filters to reset (default: all from field).')
 @click.option('--from', 'from_step', default=None,
               type=click.Choice(STEP_NAMES),
-              help='Clear CFP_<step> + every later CFP key on each '
-                   'canonical exposure. Refuses SCI-mutating steps.')
+              help='Clear CFP_<step> + every later CFP key on each exposure '
+                   '(the combine working copies for bad_pixel/outlier, the '
+                   'canonical otherwise). Refuses SCI-mutating steps.')
 @click.option('--uncal', 'uncal', is_flag=True,
               help='Delete every canonical exposure file (and any '
                    '_jump.fits sidecars) for the selected filters.')
@@ -452,16 +468,23 @@ def reset(config, field, filters, from_step, uncal, yes):
             f"across filters {filter_list}"
         )
     else:
+        cfp_key = _step_to_cfp_key(from_step)
+        # CFP_BPIX / CFP_OUT live on the combine working copies, not the frozen
+        # canonical, so resetting those steps must target the work tree.
+        # Resetting a process step or apply_mask clears canonical keys, and the
+        # combine re-run cascades automatically (materialize_work re-copies the
+        # work tree once the canonical is rewritten with a newer mtime).
+        on_work = from_step in _COMBINE_WORK_CFP_STEPS
         affected = []
         for filt in filter_list:
             affected.extend(
-                f for f in field_obj.get_exposure_files(filt)
-                if cfp_mod.has_step(f, _step_to_cfp_key(from_step))
+                f for f in field_obj.get_exposure_files(filt, work=on_work)
+                if cfp_mod.has_step(f, cfp_key)
             )
+        where = 'working copies' if on_work else 'canonical exposures'
         action = (
-            f"CLEAR CFP_{_step_to_cfp_key(from_step)[4:]}+ keys on "
-            f"{len(affected)} canonical exposures across filters "
-            f"{filter_list}"
+            f"CLEAR {cfp_key}+ keys on "
+            f"{len(affected)} {where} across filters {filter_list}"
         )
 
     log(f'Reset action: {action}')

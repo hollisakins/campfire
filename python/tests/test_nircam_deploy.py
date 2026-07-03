@@ -62,6 +62,22 @@ def test_sci_dq_hash_none_without_sci_or_dq(tmp_path):
     assert nc._sci_dq_hash(p) is None
 
 
+def test_sci_dq_hash_includes_cfmask(tmp_path):
+    # A manual-mask edit (N7 records it as a CFMASK extension on the canonical,
+    # without touching SCI/DQ) must still change the digest so the exposure
+    # re-uploads; an un-masked exposure (no CFMASK) hashes as before.
+    sci = np.arange(16, dtype="float32").reshape(4, 4)
+    dq = np.zeros((4, 4), dtype="int32")
+    plain = _make_exposure(tmp_path / "p.fits", sci, dq)
+    masked = _make_exposure(tmp_path / "m.fits", sci, dq)
+    cf = np.zeros((4, 4), dtype="uint8")
+    cf[1, 1] = 1
+    with fits.open(masked, mode="update") as hdul:
+        hdul.append(fits.ImageHDU(data=cf, name="CFMASK"))
+        hdul.flush()
+    assert nc._sci_dq_hash(masked) != nc._sci_dq_hash(plain)
+
+
 # --- upload-task builders ---------------------------------------------------
 
 def test_build_fits_upload_tasks_uses_canonical_keys(tmp_path):
@@ -72,6 +88,30 @@ def test_build_fits_upload_tasks_uses_canonical_keys(tmp_path):
     assert len(tasks) == 1
     assert tasks[0].r2_key == EXP_KEY
     assert tasks[0].content_type == "application/fits"
+
+
+def test_read_metadata_flags_only_combine_stamps(tmp_path):
+    # CFP_MASK (apply_mask on the canonical) is allowed; CFP_BPIX / CFP_OUT
+    # (ensemble steps) mark a mutated canonical the freeze guard must reject.
+    sci = np.zeros((4, 4), "float32")
+    dq = np.zeros((4, 4), "int32")
+    clean = _make_exposure(tmp_path / "clean.fits", sci, dq,
+                           extra_header={"CFP_JHAT": "t", "CFP_MASK": "t"})
+    stamped = _make_exposure(tmp_path / "stamped.fits", sci, dq,
+                             extra_header={"CFP_JHAT": "t", "CFP_OUT": "t"})
+    assert nc._read_exposure_metadata(clean)["combine_stamped"] is False
+    assert nc._read_exposure_metadata(stamped)["combine_stamped"] is True
+
+
+def test_build_fits_upload_tasks_refuses_combine_stamped(tmp_path):
+    path = tmp_path / f"{ROOT}.fits"
+    path.write_bytes(b"\x00")
+    exposures = {
+        ("f444w", ROOT): {"path": path, "filter": "f444w", "basename": ROOT,
+                          "combine_stamped": True},
+    }
+    with pytest.raises(RuntimeError, match="combine-mutated"):
+        nc.build_fits_upload_tasks("cosmos", exposures)
 
 
 def test_discover_expmap_tasks_canonical_keys(tmp_path):

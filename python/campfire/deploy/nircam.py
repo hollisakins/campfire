@@ -92,21 +92,29 @@ def _stage_from_header(header):
 
 
 def _sci_dq_hash(path):
-    """Return ``'sha256:<hex>'`` over just the SCI+DQ arrays, or None.
+    """Return ``'sha256:<hex>'`` over the SCI+DQ+CFMASK arrays, or None.
 
     The science-only change-detection digest for the deploy dedup (epic #261, D1).
     Reproduces ``campfire_pipeline.nircam.manifest.compute_file_hash`` deploy-side
     (deploy must not import the pipeline): ``do_not_scale_image_data=True`` hashes
     the raw stored bytes regardless of BZERO/BSCALE, ``memmap=False`` forces a real
     read. Whole-file hashes churn on every pipeline re-save (header timestamps), so
-    they can't drive dedup; the SCI+DQ digest is stable across a science-identical
-    re-save. Returns None if neither array is present (never dedup on an empty hash).
+    they can't drive dedup; the SCI+DQ+CFMASK digest is stable across a
+    science-identical re-save.
+
+    CFMASK (the user manual-mask extension) is included so a mask edit — which the
+    N7 freeze records as CFMASK on the canonical without touching SCI/DQ — still
+    re-uploads the exposure. It is hashed *last*, and the ``not in hdul`` guard
+    skips it when absent, so an un-masked exposure hashes byte-identically to the
+    old SCI+DQ-only digest (no spurious re-upload on the first post-N7 deploy).
+
+    Returns None if none of the arrays are present (never dedup on an empty hash).
     """
     h = hashlib.sha256()
     hashed_any = False
     try:
         with fits.open(path, memmap=False, do_not_scale_image_data=True) as hdul:
-            for extname in ('SCI', 'DQ'):
+            for extname in ('SCI', 'DQ', 'CFMASK'):
                 if extname not in hdul:
                     continue
                 data = hdul[extname].data
@@ -200,6 +208,7 @@ def _read_exposure_metadata(path):
         'date_obs': None,
         'ra_center': None,
         'dec_center': None,
+        'combine_stamped': False,
     }
     # JWST naming convention: {visit}_{activity}_{exposure}_{detector}.fits
     parts = path.stem.split('_')
@@ -212,6 +221,9 @@ def _read_exposure_metadata(path):
         with fits.open(path, memmap=True) as hdul:
             hdr0 = hdul[0].header
             info['stage'] = _stage_from_header(hdr0)
+            # A canonical exposure must be the frozen process output; a
+            # combine-phase stamp means it was mutated in place (old pipeline).
+            info['combine_stamped'] = ('CFP_BPIX' in hdr0 or 'CFP_OUT' in hdr0)
             info['date_obs'] = hdr0.get('DATE-OBS')
             info['detector'] = hdr0.get('DETECTOR', info['detector'])
             if len(hdul) > 1:
@@ -306,7 +318,29 @@ def build_fits_upload_tasks(field, exposures):
     ``campfire-layout`` CANONICAL scheme (``data/products/nircam/<field>/<filter>/
     <rootname>.fits``). Returns a list of ``UploadTask``; content-hash dedup is
     applied by the caller (unchanged exposures are dropped before upload).
+
+    Freeze guard (epic #261, N7): the canonical ``nircam_exposure`` must be the
+    frozen process-phase output. An exposure carrying a combine-phase CFP stamp
+    (``CFP_BPIX`` / ``CFP_OUT``) was mutated in place by an old-pipeline combine;
+    uploading it would overwrite the pristine canonical in OSN with
+    outlier-rejected bytes and poison a later restore. Refuse loudly rather than
+    silently clobber — the fix is to regenerate the canonical with
+    ``cfpipe nircam process``. ``CFP_MASK`` is allowed: apply_mask legitimately
+    records the manual mask on the canonical.
     """
+    stamped = sorted(
+        f'{filtname}/{basename}'
+        for (filtname, basename), info in exposures.items()
+        if info.get('combine_stamped')
+    )
+    if stamped:
+        raise RuntimeError(
+            "Refusing to deploy combine-mutated canonical exposures — these carry "
+            "CFP_BPIX/CFP_OUT (bad-pixel/outlier flags baked into the canonical by "
+            "an old-pipeline combine). Re-run `cfpipe nircam process` to regenerate "
+            "the frozen canonical, then redeploy:\n  " + "\n  ".join(stamped)
+        )
+
     tasks = []
     for (filtname, basename), info in sorted(exposures.items()):
         path = info['path']
@@ -347,7 +381,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     Records a **field-scoped deployment** (provenance + the draft->published
     lifecycle), uploads the canonical exposure FITS (+ any field expmaps) to OSN
     under ``campfire-layout`` canonical keys (content-hash deduped on
-    ``sha256(SCI+DQ)``), uploads preview PNGs to OSN, upserts ``nircam_exposures``,
+    ``sha256(SCI+DQ+CFMASK)``), uploads preview PNGs to OSN, upserts ``nircam_exposures``,
     and registers every landed object in ``storage_objects`` tagged with that
     ``deployment_id``.
 

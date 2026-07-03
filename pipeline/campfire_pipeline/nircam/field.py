@@ -18,10 +18,12 @@ from typing import List, Optional
 
 import toml
 import numpy as np
+from astropy.io import fits
 
 from campfire_layout import (
     Scope,
     dir_for,
+    nircam_work_dir as layout_nircam_work_dir,
     raw_dir as layout_raw_dir,
     reference_dir as layout_reference_dir,
     roots,
@@ -67,6 +69,34 @@ def _expand_braces(pattern):
     for opt in options:
         result.extend(_expand_braces(prefix + opt + suffix))
     return result
+
+
+# DO_NOT_USE == 1 (jwst.datamodels.dqflags.pixel['DO_NOT_USE']). Hardcoded so
+# field.py stays free of the jwst/CRDS import chain (which, imported at module
+# top, would lock CRDS into serverless mode before setup_environment runs).
+_DO_NOT_USE = np.uint32(1)
+
+
+def _prime_work_copy(path):
+    """Prime a freshly-copied combine working copy for the ensemble steps.
+
+    Fuses the canonical's CFMASK extension into the working copy's DQ as
+    ``DO_NOT_USE`` (so ``good_bits='~DO_NOT_USE'`` excludes the user-masked
+    pixels in outlier detection and resample), and clears any ``CFP_BPIX`` /
+    ``CFP_OUT`` provenance so those ensemble steps re-derive their flags on the
+    fresh copy. Operates on the copy only — the canonical is never touched.
+    """
+    with fits.open(path, mode='update', memmap=False) as hdul:
+        if 'CFMASK' in hdul and 'DQ' in hdul:
+            masked = np.asarray(hdul['CFMASK'].data).astype(bool)
+            dq = np.asarray(hdul['DQ'].data)
+            dq[masked] |= _DO_NOT_USE
+            hdul['DQ'].data = dq          # reassign so astropy flushes the change
+        hdr = hdul[0].header
+        for key in ('CFP_BPIX', 'CFP_OUT'):
+            if key in hdr:
+                del hdr[key]
+        hdul.flush()
 
 
 def _is_pixel_scale_section(value):
@@ -380,18 +410,26 @@ class Field:
 
         log(f"Workspace ready for field '{self.name}' at {self.products_dir}")
 
-    def filter_dir(self, filter_name):
+    def filter_dir(self, filter_name, work=False):
         """Return the flat per-filter products directory for this field.
 
         ``$CAMPFIRE_ROOT/products/nircam/<field>/<filter>/`` holds every
         output for the (field, filter) pair: per-exposure FITS files,
         drizzled mosaic tiles, split extension files, diagnostic PDFs,
         and outlier/mosaic manifest JSON.
+
+        With ``work=True`` return the combine *working-copy* directory
+        ``products/nircam_work/<field>/<filter>/`` instead — the disposable,
+        never-deployed tree the combine phase (bad_pixel / outlier / resample)
+        mutates so the canonical per-exposure FITS stay frozen as the
+        process-phase output. See :meth:`materialize_work`.
         """
         if self.products_dir is None:
             raise RuntimeError("setup_workspace() must be called first")
-        return str(dir_for('nircam_exposure', Scope(field=self.name, filt=filter_name),
-                           root=self.campfire_root))
+        scope = Scope(field=self.name, filt=filter_name)
+        if work:
+            return str(layout_nircam_work_dir(scope, root=self.campfire_root))
+        return str(dir_for('nircam_exposure', scope, root=self.campfire_root))
 
     def _load_excluded_exposures(self):
         """Load reviewer exclusions from ``reference/<field>/exposures.json``.
@@ -457,12 +495,18 @@ class Field:
         return sorted(result)
 
     def get_exposure_files(self, filter_name, skip=None, with_step=None,
-                           status=None):
+                           status=None, work=False):
         """Get canonical per-exposure files from the filter's flat dir.
 
-        These are the files that the new pipeline mutates in place — one FITS
-        file per exposure, named simply ``<rootname>.fits`` (no ``_rate`` /
-        ``_cal`` / ``_jhat`` / ``_crf`` suffix).
+        These are the files that the process phase writes — one FITS file per
+        exposure, named simply ``<rootname>.fits`` (no ``_rate`` / ``_cal`` /
+        ``_jhat`` / ``_crf`` suffix).
+
+        With ``work=True`` enumerate the combine working-copy tree
+        (``products/nircam_work/…``) instead of the canonical tree — used by the
+        combine steps, which operate on working copies (see
+        :meth:`materialize_work`). The glob, skip list, and ``with_step`` CFP
+        filtering are identical; only the directory differs.
 
         Mosaic outputs share the same directory but are named ``mosaic_*``,
         which the ``jw*`` field globs naturally exclude.
@@ -485,13 +529,15 @@ class Field:
             in the orchestrator (which marks fresh CFP_OUT keys onto the
             cache as outlier finishes); other callers can omit it and pay
             the per-file fits.open.
+        work : bool, optional
+            Enumerate the working-copy tree instead of the canonical tree.
 
         Returns
         -------
         list of str
             Sorted absolute paths.
         """
-        filter_dir = self.filter_dir(filter_name)
+        filter_dir = self.filter_dir(filter_name, work=work)
 
         result = []
         for pattern in self.files:
@@ -526,13 +572,68 @@ class Field:
 
         return sorted(result)
 
-    def get_exposure_path(self, rootname, filter_name):
+    def get_exposure_path(self, rootname, filter_name, work=False):
         """Return the canonical path for a given exposure rootname.
 
         ``rootname`` is the JWST filename stem without any ``_<suffix>.fits``
-        (e.g. ``'jw01727028001_04101_00003_nrcalong'``).
+        (e.g. ``'jw01727028001_04101_00003_nrcalong'``). With ``work=True``
+        return the working-copy path under ``products/nircam_work/…``.
         """
-        return os.path.join(self.filter_dir(filter_name), f'{rootname}.fits')
+        return os.path.join(self.filter_dir(filter_name, work=work),
+                            f'{rootname}.fits')
+
+    def materialize_work(self, filter_name, status=None, overwrite=False):
+        """Refresh the combine working copies for a filter; return their paths.
+
+        The combine phase must not mutate the canonical per-exposure FITS (those
+        are the frozen process-phase output that gets deployed to OSN). Instead
+        it works on disposable copies under ``products/nircam_work/…``. This
+        method brings that tree up to date:
+
+        * A canonical exposure is (re)copied to its working path when the working
+          copy is missing, ``overwrite`` is set, or the canonical is newer than
+          the working copy (i.e. it was re-processed, or its manual mask changed
+          — both rewrite the canonical). Up-to-date working copies are left
+          untouched so their ``CFP_BPIX`` / ``CFP_OUT`` stamps survive and
+          bad_pixel / outlier skip them — this is what keeps combine incremental.
+        * Each freshly-copied working copy is *primed*: the canonical's CFMASK
+          extension is fused into its DQ as ``DO_NOT_USE`` (so downstream steps'
+          ``good_bits='~DO_NOT_USE'`` exclude masked pixels), and any stale
+          ``CFP_BPIX`` / ``CFP_OUT`` provenance is cleared so combine re-derives
+          those flags on the fresh copy. The canonical is never modified.
+
+        The freshness test is an mtime comparison, which is reliable here because
+        the canonical and its working copy live on the same filesystem (one
+        clock). ``--overwrite`` forces a full re-copy.
+
+        If a ``StepStatus`` is passed, the working paths are rescanned into it so
+        the combine steps' skip checks reflect the working tree's current state.
+        """
+        import shutil
+
+        canon = self.get_exposure_files(filter_name)          # frozen process outputs
+        work_dir = self.filter_dir(filter_name, work=True)
+        os.makedirs(work_dir, exist_ok=True)
+
+        work_paths = []
+        for src in canon:
+            dst = os.path.join(work_dir, os.path.basename(src))
+            work_paths.append(dst)
+            stale = (
+                overwrite
+                or not os.path.exists(dst)
+                or os.path.getmtime(src) > os.path.getmtime(dst)
+            )
+            if not stale:
+                continue
+            tmp = dst + '.tmp'
+            shutil.copyfile(src, tmp)      # content only → work copy gets a fresh mtime
+            _prime_work_copy(tmp)          # fuse mask + clear combine stamps on the tmp
+            os.replace(tmp, dst)           # atomic reveal of the primed copy
+
+        if status is not None:
+            status.rescan(work_paths)
+        return sorted(work_paths)
 
     def get_tile_wcs(self, tile_name, pixel_scale='30mas'):
         """Get WCS parameters for a tile at the requested pixel scale.

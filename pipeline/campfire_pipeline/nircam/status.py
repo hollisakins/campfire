@@ -82,3 +82,15 @@ class StepStatus:
                     self._present[p] = {k for k in cfp.CFP_KEYS if k in hdr}
             except (OSError, IOError):
                 self._present[p] = set()
+
+    def rescan(self, paths):
+        """Force a re-read of ``paths``, overwriting any cached entry.
+
+        Unlike :meth:`add_paths` (which leaves already-seen paths untouched),
+        this refreshes the snapshot from disk — used when a file's on-disk CFP
+        state was reset out from under the cache, e.g. a combine working copy
+        re-materialized from its canonical, which drops CFP_BPIX / CFP_OUT.
+        """
+        for p in paths:
+            self._present.pop(p, None)
+        self.add_paths(paths)
