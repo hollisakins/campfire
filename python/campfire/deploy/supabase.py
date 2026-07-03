@@ -232,6 +232,54 @@ def get_lifecycle_status(client: Client) -> dict:
     return {'enabled': False, 'error': 'unexpected get_lifecycle_status response'}
 
 
+def deploy_event_metadata(
+    instrument: str,
+    *,
+    field: str | None = None,
+    observation: str | None = None,
+    filters: list[str] | None = None,
+    planned: int | None = None,
+    succeeded: int | None = None,
+    failed: int | None = None,
+    skipped: int | None = None,
+    items: int | None = None,
+    draft: bool = False,
+    supabase_only: bool = False,
+    **extra,
+) -> dict:
+    """Build the normalized deploy_events metadata envelope (audit B5, Phase 3).
+
+    One shape across every producer, so the consumer parses one thing:
+        {instrument, scope:{field, observation, filters},
+         counts:{planned, succeeded, failed, skipped, items},
+         flags:{draft, partial, supabase_only}}
+    ``partial`` is derived (failed > 0). Only non-None counts are included so a
+    producer that doesn't track a given count leaves it absent rather than 0.
+    ``extra`` folds in any producer-specific keys (e.g. exposures details).
+    """
+    scope = {}
+    if field is not None:
+        scope['field'] = field
+    if observation is not None:
+        scope['observation'] = observation
+    if filters:
+        scope['filters'] = filters
+
+    counts = {}
+    for k, v in (('planned', planned), ('succeeded', succeeded),
+                 ('failed', failed), ('skipped', skipped), ('items', items)):
+        if v is not None:
+            counts[k] = v
+
+    flags = {'draft': draft, 'partial': bool(failed)}
+    if supabase_only:
+        flags['supabase_only'] = True
+
+    meta = {'instrument': instrument, 'scope': scope, 'counts': counts, 'flags': flags}
+    meta.update(extra)
+    return meta
+
+
 def log_deploy_event(
     client: Client,
     *,
@@ -239,6 +287,7 @@ def log_deploy_event(
     actor: str | None = None,
     deployment_id: int | None = None,
     observation: str | None = None,
+    field: str | None = None,
     affected_count: int | None = None,
     metadata: dict | None = None,
     host: str | None = None,
@@ -253,6 +302,7 @@ def log_deploy_event(
             'p_actor': actor,
             'p_deployment_id': deployment_id,
             'p_observation': observation,
+            'p_field': field,
             'p_affected_count': affected_count,
             'p_metadata': metadata,
             'p_host': host,
