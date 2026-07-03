@@ -319,6 +319,7 @@ export const RedshiftFitPlot: React.FC<RedshiftFitPlotProps> = ({
         gridcolor: colors.grid,
         zerolinecolor: colors.grid,
         domain: [0, 0.3],
+        range: [Math.log10(chi2Min * 0.9), Math.log10(chi2Max * 1.1)],
       },
       margin: { l: 80, r: 120, t: 50, b: 50 },
       paper_bgcolor: colors.paper,
