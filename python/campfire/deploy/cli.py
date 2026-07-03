@@ -517,27 +517,32 @@ def revoke(ctx, config_path, obs, dry_run, local, field):
 
 @deploy_group.command('delete-local')
 @click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
-@click.option('--obs', required=True, multiple=True, cls=_VariadicOption,
-              help='Observation name(s) whose local product files to delete.')
+@click.option('--obs', multiple=True, cls=_VariadicOption,
+              help='NIRSpec observation name(s) whose local product files to delete.')
+@click.option('--field', 'fields', multiple=True, cls=_VariadicOption,
+              help='NIRCam field name(s) whose local product files to delete.')
 @click.option('--verify', is_flag=True,
               help='Hash each local file and require it to match the registry sha256 '
                    'before deleting (default: trust the registry row exists + has a hash).')
 @click.option('--yes', is_flag=True, help='Actually delete (default is a dry-run preview).')
 @click.option('--local', is_flag=True, help='Use local Supabase (127.0.0.1:54321).')
 @click.pass_context
-def delete_local(ctx, config_path, obs, verify, yes, local):
+def delete_local(ctx, config_path, obs, fields, verify, yes, local):
     """Delete local product files that are verified-present in cloud storage (B4).
 
-    The verified-in-cloud interlock: only files that have an *active registry row
-    carrying a sha256 hash* are candidates, so a local file is never deleted
-    unless a verified cloud copy exists. --verify additionally requires the local
-    file to hash-match the cloud copy. Files with no registry row are never
-    touched. Dry-run by default — pass --yes to unlink. The delete half of the
-    reduce -> deploy -> delete-local -> re-download restore loop (intermediate
-    resume-set fetch lands with the canonical-exposure upload follow-up).
+    Scope by NIRSpec `--obs` and/or NIRCam `--field`. The verified-in-cloud
+    interlock: only files that have an *active registry row carrying a sha256
+    hash* are candidates, so a local file is never deleted unless a verified cloud
+    copy exists. --verify additionally requires the local file to hash-match the
+    cloud copy. Files with no registry row are never touched. Dry-run by default —
+    pass --yes to unlink. The delete half of the reduce -> deploy -> delete-local
+    -> re-download restore loop.
     """
     from campfire.deploy import registry as reg
     from campfire.config import products_dir
+
+    if not obs and not fields:
+        raise click.UsageError("Pass --obs <observation> and/or --field <field>.")
 
     config = load_config(config_path, local=_resolve_local(ctx, local))
     _gate_admin(config)
@@ -546,9 +551,12 @@ def delete_local(ctx, config_path, obs, verify, yes, local):
 
     grand_deleted = 0
     grand_bytes = 0
-    for obs_name in obs:
-        plan = reg.plan_delete_local(sb, obs_name, proot, verify=verify)
-        print(f"\n{obs_name}: {len(plan.deletable)} deletable "
+    scopes = [('obs', o) for o in obs] + [('field', f) for f in fields]
+    for kind, name in scopes:
+        plan = (reg.plan_delete_local(sb, None, proot, field=name, verify=verify)
+                if kind == 'field'
+                else reg.plan_delete_local(sb, name, proot, verify=verify))
+        print(f"\n{name}: {len(plan.deletable)} deletable "
               f"({_fmt_bytes(plan.total_bytes)}), {len(plan.skipped)} skipped, "
               f"{len(plan.absent)} registered-but-absent")
         for local_path, _key, reason in plan.skipped:
@@ -569,7 +577,8 @@ def delete_local(ctx, config_path, obs, verify, yes, local):
 
     if yes:
         print(f"\nDeleted {grand_deleted} files ({_fmt_bytes(grand_bytes)} freed). "
-              f"Restore with: campfire download --obs <name>")
+              f"Restore with: campfire download --obs <name> "
+              f"(or --field <name> --intermediate for NIRCam).")
     else:
         print(f"\nDry run — pass --yes to delete. Interlock: only registered, "
               f"sha256-hashed{'+verified' if verify else ''} files are candidates.")

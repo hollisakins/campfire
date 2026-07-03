@@ -313,18 +313,21 @@ def download_objects(
     dry_run: bool = False,
     download_session: Optional[requests.Session] = None,
     gratings: Optional[List[str]] = None,
+    fields: Optional[List[str]] = None,
 ) -> dict:
-    """Download storage objects for the given observations + product types.
+    """Download storage objects for the given observations/fields + product types.
 
     The single, product-type-agnostic download engine: plan locally from the
     storage_objects mirror, presign the to-download set, fetch in parallel,
-    verify ``content_hash``, and record local state. Used for finals,
-    intermediates, and (later) NIRCam alike.
+    verify ``content_hash``, and record local state. ``fields`` selects
+    field-scoped NIRCam rows (``observation IS NULL``); used for NIRSpec finals,
+    intermediates, and NIRCam alike.
     """
     pending = store.get_pending_objects(
         observations=list(observations),
         product_types=list(product_types),
         gratings=gratings,
+        fields=list(fields) if fields else None,
     )
     to_download = [row for rows in pending.values() for row in rows]
 

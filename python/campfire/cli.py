@@ -744,7 +744,8 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             click.echo(output)
         return
 
-    # Determine which observations to download
+    # Determine which observations (NIRSpec) + fields (NIRCam) to download
+    target_fields = set()
     if stale:
         stale_files = store.get_stale_objects()
         if not stale_files:
@@ -783,15 +784,17 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             for fld in field_filter:
                 spectra = store.query_spectra(fields=[fld], limit=999999)
                 obs_for_field = set(s["observation"] for s in spectra if s.get("observation"))
-                if not obs_for_field:
-                    click.echo(f"✗ No observations found for field '{fld}'", err=True)
-                    store.close()
-                    sys.exit(1)
-                target_obs.update(obs_for_field)
+                if obs_for_field:
+                    target_obs.update(obs_for_field)  # NIRSpec field → its observations
+                else:
+                    # NIRCam (or spectra-less) field: field-scoped storage objects
+                    # (observation NULL), selected directly by field below.
+                    target_fields.add(fld)
 
         target_obs = sorted(target_obs)
 
-    if not target_obs:
+    target_fields = sorted(target_fields)
+    if not target_obs and not target_fields:
         click.echo("Nothing to download.")
         store.close()
         return
@@ -815,14 +818,15 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         observations=list(target_obs),
         product_types=product_types,
         gratings=grating_list,
+        fields=list(target_fields),
     )
 
-    # Show per-observation status
+    # Show per-scope status (observation for NIRSpec, field for NIRCam)
     obs_with_downloads = []
     total_download = 0
     total_files = 0
 
-    for obs in target_obs:
+    for obs in list(target_obs) + list(target_fields):
         obs_pending = pending.get(obs, [])
         if not obs_pending:
             click.echo(f"  {obs}: up to date")
@@ -868,13 +872,14 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
 
     stats = download_objects(
         api,
-        obs_with_downloads,
+        list(target_obs),
         product_types,
         store,
         _products_dir(),
         max_workers=workers,
         download_session=dl_session,
         gratings=grating_list,
+        fields=list(target_fields),
     )
 
     click.echo(f"\n✓ Download complete")

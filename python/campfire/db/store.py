@@ -25,8 +25,10 @@ SCHEMA_VERSION = 6
 # default download set; --intermediate adds the canonical spectrum-exposures.
 # Both are layout-mirrored (have a local relpath), so the same engine places
 # them. Widen these tuples as more product types become client-fetchable.
-FINAL_PRODUCT_TYPES = ("nirspec_spec",)
-INTERMEDIATE_PRODUCT_TYPES = ("nirspec_spectrum_exposure",)
+FINAL_PRODUCT_TYPES = ("nirspec_spec", "nircam_mosaic")
+INTERMEDIATE_PRODUCT_TYPES = (
+    "nirspec_spectrum_exposure", "nircam_exposure", "nircam_expmap",
+)
 DOWNLOADABLE_PRODUCT_TYPES = FINAL_PRODUCT_TYPES + INTERMEDIATE_PRODUCT_TYPES
 
 
@@ -1175,13 +1177,16 @@ class LocalStore:
         observations: Optional[List[str]] = None,
         product_types: Optional[List[str]] = None,
         gratings: Optional[List[str]] = None,
+        fields: Optional[List[str]] = None,
     ) -> Dict[str, List[dict]]:
-        """Find storage objects that need downloading, grouped by observation.
+        """Find storage objects that need downloading, grouped by scope.
 
         A row is pending if it isn't materialized locally, or its local hash no
         longer matches the server's content_hash. ``--grating`` narrows finals
         (joined to the science spectrum); the registry has no grating column, so
-        exposure-level intermediates are always included.
+        exposure-level intermediates are always included. ``fields`` selects
+        field-scoped NIRCam rows (``observation IS NULL``); results are grouped by
+        ``observation`` for NIRSpec and by ``field`` for NIRCam.
         """
         where = ["so.status = 'active'"]
         params: list = []
@@ -1191,10 +1196,18 @@ class LocalStore:
             where.append(f"so.product_type IN ({ph})")
             params.extend(product_types)
 
+        # Scope: observations (NIRSpec) and/or fields (NIRCam, observation NULL).
+        scope = []
         if observations:
             ph = ",".join("?" * len(observations))
-            where.append(f"so.observation IN ({ph})")
+            scope.append(f"so.observation IN ({ph})")
             params.extend(observations)
+        if fields:
+            ph = ",".join("?" * len(fields))
+            scope.append(f"so.field IN ({ph})")
+            params.extend(fields)
+        if scope:
+            where.append("(" + " OR ".join(scope) + ")")
 
         join = ""
         if gratings:
@@ -1212,11 +1225,12 @@ class LocalStore:
         rows = self._conn.execute(
             f"""
             SELECT so.storage_key, so.content_hash, so.size_bytes, so.product_type,
-                   so.observation, so.spectrum_id, so.exposure_ref, so.local_file_hash
+                   so.observation, so.field, so.spectrum_id, so.exposure_ref,
+                   so.local_file_hash
             FROM storage_objects so
             {join}
             WHERE {where_sql}
-            ORDER BY so.observation, so.storage_key
+            ORDER BY so.observation, so.field, so.storage_key
             """,
             params,
         ).fetchall()
@@ -1225,7 +1239,9 @@ class LocalStore:
         for row in rows:
             d = dict(row)
             d["status"] = "new" if d["local_file_hash"] is None else "updated"
-            result.setdefault(d["observation"], []).append(d)
+            # NIRSpec rows key on observation; field-scoped NIRCam rows
+            # (observation NULL) key on field.
+            result.setdefault(d["observation"] or d.get("field"), []).append(d)
         return result
 
     def mark_object_synced(
