@@ -236,7 +236,7 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
     log(f"detector1: dispatching {len(pending)} files for {filtname}")
     dispatch(detector1_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
-             status=status)
+             status=status, reduction_version=_resolve_reduction_version(config))
     new_canonical = [
         field.get_exposure_path(
             os.path.basename(u).removesuffix('_uncal.fits'), filtname,
