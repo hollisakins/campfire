@@ -625,6 +625,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           type: 'log' as const,
           gridcolor: plotColors.grid,
           zerolinecolor: plotColors.grid,
+          range: [Math.log10(chi2Min * 0.9), Math.log10(chi2Max * 1.1)],
+          autorange: false,
         },
         margin: { l: 80, r: 20, t: 40, b: 40 },
         paper_bgcolor: plotColors.paper,
