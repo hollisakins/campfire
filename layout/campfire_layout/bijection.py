@@ -98,8 +98,6 @@ def parse_relpath(relpath: str) -> ParsedKey:
         field = seg[2]
         if len(seg) == 4 and seg[3].endswith("_rgb.png"):
             return ParsedKey("nircam_rgb", Scope(field=field), seg[3])
-        if len(seg) == 5 and seg[3] == "expmaps":
-            return ParsedKey("nircam_expmap", Scope(field=field), seg[4])
         if len(seg) == 5:
             filt, fname = seg[3], seg[4]
             scope = Scope(field=field, filt=filt)
@@ -108,6 +106,8 @@ def parse_relpath(relpath: str) -> ParsedKey:
                 return ParsedKey(ptype, scope, fname)
             if fname.startswith("mosaic"):
                 return ParsedKey("nircam_mosaic", scope, fname)
+            if fname.startswith("expmap"):
+                return ParsedKey("nircam_expmap", scope, fname)
             if fname.endswith(".fits"):
                 return ParsedKey("nircam_exposure", scope, fname)
 

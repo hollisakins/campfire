@@ -261,7 +261,8 @@ def rgb(config, field, tiles, pixel_scale, preview_max_dim, processes, overwrite
 @click.option('--padding', type=float, default=30.0, show_default=True,
               help='Sky padding around the union footprint, arcsec.')
 @click.option('--out-dir', default=None,
-              help='Output directory (default: {products}/<field>/expmaps/).')
+              help='Base products dir; per-filter FITS/PDFs land in '
+                   '<out-dir>/<filter>/ (default: {products}/nircam/<field>/).')
 @click.option('--processes', '-p', default=1, type=int, show_default=True,
               help='Per-filter parallelism (one filter per worker).')
 @click.option('--overwrite', is_flag=True,

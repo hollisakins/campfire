@@ -84,7 +84,7 @@ reg(spec({ name: 'nircam_exposure_preview', tree: 'products', bucket: 'data', sc
 reg(spec({ name: 'nircam_exposure_full', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_full.png', legacyPrefix: (s) => `nircam/exposures/${s.field}/${s.filt}` }));
 reg(spec({ name: 'nircam_mosaic', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
 reg(spec({ name: 'nircam_rgb', tree: 'products', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}`, suffix: '_rgb.png' }));
-reg(spec({ name: 'nircam_expmap', tree: 'products', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}/expmaps`, suffix: null }));
+reg(spec({ name: 'nircam_expmap', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
 
 // --- Map tiles (separate bucket, scheme-invariant) ---
 reg(spec({
@@ -226,13 +226,13 @@ export function parseRelpath(relpath: string): ParsedKey {
   if (tree === 'products' && seg.length >= 4 && seg[1] === 'nircam') {
     const field = seg[2];
     if (seg.length === 4 && seg[3].endsWith('_rgb.png')) return { productType: 'nircam_rgb', scope: { field }, filename: seg[3] };
-    if (seg.length === 5 && seg[3] === 'expmaps') return { productType: 'nircam_expmap', scope: { field }, filename: seg[4] };
     if (seg.length === 5) {
       const filt = seg[3];
       const fname = seg[4];
       const pt = dispatch(fname, NIRCAM_FILTER_SUFFIXES);
       if (pt) return { productType: pt, scope: { field, filt }, filename: fname };
       if (fname.startsWith('mosaic')) return { productType: 'nircam_mosaic', scope: { field, filt }, filename: fname };
+      if (fname.startsWith('expmap')) return { productType: 'nircam_expmap', scope: { field, filt }, filename: fname };
       if (fname.endsWith('.fits')) return { productType: 'nircam_exposure', scope: { field, filt }, filename: fname };
     }
   }

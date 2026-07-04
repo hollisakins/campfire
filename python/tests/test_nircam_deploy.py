@@ -115,18 +115,23 @@ def test_build_fits_upload_tasks_refuses_combine_stamped(tmp_path):
 
 
 def test_discover_expmap_tasks_canonical_keys(tmp_path):
-    expdir = tmp_path / "products" / "nircam" / "cosmos" / "expmaps"
-    expdir.mkdir(parents=True)
-    (expdir / "cosmos_f444w_expmap.fits").write_bytes(b"\x00")
-    dirs = {"products": tmp_path / "products" / "nircam" / "cosmos"}
-    tasks = nc.discover_expmap_tasks(dirs, "cosmos")
+    # Expmaps now live in the canonical per-filter dir (alongside mosaics), keyed
+    # off an ``expmap_`` filename prefix so they carry a real filter.
+    products = tmp_path / "products" / "nircam" / "cosmos"
+    (products / "f444w").mkdir(parents=True)
+    (products / "f444w" / "expmap_cosmos_f444w_canonical.fits").write_bytes(b"\x00")
+    # A non-expmap FITS in the same dir must not be picked up by the expmap glob.
+    (products / "f444w" / "jw01_00001_nrcalong.fits").write_bytes(b"\x00")
+    dirs = {"products": products}
+    tasks = nc.discover_expmap_tasks(dirs, "cosmos", ["f444w"])
     assert len(tasks) == 1
-    assert tasks[0].r2_key == "data/products/nircam/cosmos/expmaps/cosmos_f444w_expmap.fits"
+    assert tasks[0].r2_key == \
+        "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w_canonical.fits"
 
 
 def test_discover_expmap_tasks_empty_when_absent(tmp_path):
     dirs = {"products": tmp_path / "nope"}
-    assert nc.discover_expmap_tasks(dirs, "cosmos") == []
+    assert nc.discover_expmap_tasks(dirs, "cosmos", ["f444w"]) == []
 
 
 # --- registry identity ------------------------------------------------------
@@ -147,6 +152,7 @@ def test_row_for_nircam_exposure_identity_and_sci_dq():
     assert row["product_type"] == "nircam_exposure"
     assert row["instrument"] == "nircam"
     assert row["field"] == "cosmos"
+    assert row["filter"] == "f444w"
     assert row["observation"] is None
     assert row["spectrum_id"] is None       # not a spectrum
     assert row["deployment_id"] == 42        # tagged with the field deployment
@@ -155,12 +161,15 @@ def test_row_for_nircam_exposure_identity_and_sci_dq():
 
 
 def test_row_sci_dq_hash_none_by_default():
-    # An expmap (and every non-exposure product) carries no science digest.
+    # An expmap (and every non-exposure product) carries no science digest, but
+    # does carry its per-filter scope column now that it lives in the filter dir.
     row = reg.row_for_key(
-        "data/products/nircam/cosmos/expmaps/cosmos_f444w_expmap.fits",
+        "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w_canonical.fits",
         backend="osn", content_hash="sha256:" + "a" * 64, size_bytes=1,
         content_type="application/fits")
     assert row["product_type"] == "nircam_expmap"
+    assert row["field"] == "cosmos"
+    assert row["filter"] == "f444w"
     assert row["sci_dq_hash"] is None
 
 

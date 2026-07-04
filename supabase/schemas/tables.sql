@@ -852,6 +852,7 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     "status" "text" NOT NULL DEFAULT 'active'::"text",
     "observation" "text",
     "field" "text",
+    "filter" "text",
     "spectrum_id" "text",
     "exposure_ref" "text",
     "deployment_id" integer,
@@ -908,7 +909,7 @@ COMMENT ON TABLE "public"."storage_objects" IS 'Shadow index of every object in 
 
 COMMENT ON COLUMN "public"."storage_objects"."content_hash" IS 'Scheme-prefixed integrity token. ''sha256:<hex>'' is authoritative (deploy hashes the local file; spectra backfill reuses spectra.file_hash). ''etag:<hex>'' is provisional from an S3 LIST/HEAD (no GET) for backfilled objects with no stored sha256; the A1 copy+verify pass (#215) upgrades it to sha256.';
 
-COMMENT ON COLUMN "public"."storage_objects"."spectrum_id" IS 'Typed, indexed scope column (not an FK). spectra.spectrum_id is GENERATED from fits_path and not uniquely constrained, so an FK would over-constrain; an index provides the joinability the registry needs.';
+COMMENT ON COLUMN "public"."storage_objects"."filter" IS 'Typed, indexed scope column for per-filter NIRCam products (nircam_exposure/_preview/_full, nircam_mosaic, nircam_expmap), denormalized from the campfire_layout key''s <field>/<filter>/ segment by deploy/row_for_key. NULL for NIRSpec and field-level products (no filter concept). Mirrors observation/field/spectrum_id — lets the registry filter/aggregate by filter without parsing keys.';
 
 COMMENT ON COLUMN "public"."storage_objects"."exposure_ref" IS 'Stable per-exposure reference for intermediate products (nircam rootname; nirspec (root,nod,detector,source) tuple). Backs the partial unique (product_type, exposure_ref) WHERE status=''active'' — one current object per product/exposure.';
 

@@ -617,24 +617,35 @@ class _VariadicOption(click.Option):
 @click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption, help="Download by observation name")
 @click.option("--program", "program_filter", multiple=True, cls=_VariadicOption, help="Download by program slug")
 @click.option("--field", "field_filter", multiple=True, cls=_VariadicOption, help="Download by field name")
-@click.option("--grating", "grating_filter", multiple=True, cls=_VariadicOption, help="Filter by grating type")
+@click.option("--grating", "grating_filter", multiple=True, cls=_VariadicOption,
+              help="NIRSpec: narrow finals to these gratings (e.g. PRISM G395M)")
+@click.option("--filters", "filter_filter", multiple=True, cls=_VariadicOption,
+              help="NIRCam: narrow to these filters (e.g. f277w f356w f444w)")
 @click.option("--stale", is_flag=True, help="Re-download files updated on the server")
 @click.option("--intermediate", "include_intermediate", is_flag=True,
-              help="Also fetch canonical spectrum-exposure intermediates (the resume set)")
+              help="Also fetch canonical intermediates (NIRSpec spectrum-exposures, NIRCam exposures + expmaps)")
 @click.option("--all", "download_all", is_flag=True, help="Download everything accessible")
 @click.option("--workers", default=4, help="Parallel download workers")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
 @click.option("--dry-run", is_flag=True, help="Show plan without downloading")
 @click.option("--base-url", default=None, help="API base URL")
-def download(obs_filter, program_filter, field_filter, grating_filter,
+def download(obs_filter, program_filter, field_filter, grating_filter, filter_filter,
              stale, include_intermediate, download_all, workers, yes, dry_run, base_url):
-    """Download data products.
+    """Download data products (NIRSpec spectra + NIRCam field products).
 
-    Requires a prior 'campfire sync' to populate the local catalog. Use filters
-    to select which observations to download. By default only final spectra are
-    fetched; --intermediate also pulls the canonical spectrum-exposures (so you
-    can restore a deleted-local observation or inspect a stage-1/2 draft).
-    --grating narrows finals only.
+    Requires a prior 'campfire sync' to populate the local catalog. Select what
+    to download with --obs / --program (NIRSpec) or --field (NIRSpec observations
+    in a field, or NIRCam field products), then optionally scope within a
+    selection:
+
+    \b
+      --grating   NIRSpec: narrow finals to these gratings (e.g. PRISM G395M)
+      --filters   NIRCam:  narrow to these filters (e.g. f277w f356w f444w)
+
+    By default only finals are fetched (NIRSpec spectra, NIRCam mosaics);
+    --intermediate also pulls the canonical intermediates (NIRSpec spectrum-
+    exposures, NIRCam exposures + expmaps) so you can restore a deleted-local
+    observation or inspect a stage-1/2 draft.
 
     \b
     Examples:
@@ -642,7 +653,8 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
       campfire download --obs ember_uds_p4 ember_uds_p5
       campfire download --program EMBER-UDS --grating PRISM
       campfire download --obs ember_egs_p1 --intermediate
-      campfire download --field COSMOS
+      campfire download --field egs --filters f277w f356w f444w --intermediate
+      campfire download --field cosmos
       campfire download --stale
       campfire download --all
     """
@@ -799,6 +811,11 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         store.close()
         return
 
+    filter_list = list(filter_filter) if filter_filter else None
+    if filter_list and not target_fields:
+        click.echo("Note: --filters scopes NIRCam field products; this selection "
+                   "has no NIRCam field, so it has no effect.")
+
     # Reconcile DB with filesystem before planning
     verify = store.verify_local_objects(
         _products_dir(), product_types=product_types, show_progress=True
@@ -819,6 +836,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         product_types=product_types,
         gratings=grating_list,
         fields=list(target_fields),
+        filters=filter_list,
     )
 
     # Show per-scope status (observation for NIRSpec, field for NIRCam)
@@ -880,6 +898,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
         download_session=dl_session,
         gratings=grating_list,
         fields=list(target_fields),
+        filters=filter_list,
     )
 
     click.echo(f"\n✓ Download complete")
