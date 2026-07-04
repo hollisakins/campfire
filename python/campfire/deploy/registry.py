@@ -205,6 +205,10 @@ def row_for_key(
         'status': status,
         'observation': scope.obs,
         'field': scope.field,
+        # Typed scope column for per-filter NIRCam products (mosaic/exposure/
+        # expmap/previews); None for NIRSpec and field-level products. Lets the
+        # registry + download plan scope by filter without parsing keys.
+        'filter': scope.filt,
         'spectrum_id': _spectrum_id_for(parsed.filename),
         # Exposure-level intermediates (nirspec_spectrum_exposure) carry a stable
         # exposure_ref (filename stem) backing the partial-unique registry contract;

@@ -438,6 +438,13 @@ CREATE INDEX IF NOT EXISTS idx_storage_objects_field
     ON public.storage_objects USING btree (field)
     WHERE field IS NOT NULL;
 
+-- NIRCam download/registry scoping by (field, filter) — the `campfire download
+-- --field <f> --filters <...>` plan and any per-filter aggregate. Partial: only
+-- per-filter NIRCam rows carry a filter (most rows are NIRSpec, filter NULL).
+CREATE INDEX IF NOT EXISTS idx_storage_objects_field_filter
+    ON public.storage_objects USING btree ("field", "filter")
+    WHERE "filter" IS NOT NULL;
+
 -- Substring key search in the admin registry browser (admin audit 2026-07-03,
 -- C2 / Phase 2): operators search by a fragment anywhere in the canonical key,
 -- so a left-anchored btree can't serve it — trigram GIN does. Opclass is

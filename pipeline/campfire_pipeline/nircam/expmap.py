@@ -14,11 +14,15 @@ pixel-registered for direct stacking/comparison. No tile dependency —
 works on fields without a ``[tiles]`` block, suitable for full-field
 diagnostics.
 
-Outputs (per invocation, under ``{products_dir}/expmaps/``):
+Outputs (per invocation, rooted at ``{products_dir}`` = ``products/nircam/<field>/``):
 
-    expmap_{field}_{filter}_{stage}.fits   float32, ``BUNIT='s'``, WCS in header
-    expmap_{field}_{filter}_{stage}.pdf    diagnostic with RA/Dec gridlines + colorbar
-    footprints_{stage}.reg                 ds9 fk5 polygons across all filters
+    <filter>/expmap_{field}_{filter}_{stage}.fits   float32, ``BUNIT='s'``, WCS in header
+    <filter>/expmap_{field}_{filter}_{stage}.pdf    diagnostic with RA/Dec gridlines + colorbar
+    footprints_{stage}.reg                          ds9 fk5 polygons across all filters
+
+The per-filter FITS sits in the canonical filter directory alongside the
+mosaics/exposures so the deployed coverage map carries a real filter in the
+registry (same key shape as every other per-filter NIRCam product).
 
 All per-filter PDFs in one invocation share the same colorbar
 ``vmin``/``vmax`` (log-norm across the union of nonzero pixels) so the
@@ -386,10 +390,17 @@ def _collect_metas(field, filter_name, stage, *,
     return metas
 
 
-def _expmap_paths(out_dir, field_name, filter_name, stage):
-    base = f'expmap_{field_name}_{filter_name}_{stage}'
-    return (os.path.join(out_dir, base + '.fits'),
-            os.path.join(out_dir, base + '.pdf'))
+def _expmap_paths(base_dir, field_name, filter_name, stage):
+    """Canonical per-filter FITS + PDF paths.
+
+    Expmaps live in the filter directory alongside the mosaics/exposures
+    (``<base_dir>/<filter>/expmap_<field>_<filter>_<stage>.{fits,pdf}``) so the
+    deployed FITS carries a real filter in the registry — same key shape as every
+    other per-filter NIRCam product. ``base_dir`` is the per-field products dir.
+    """
+    d = os.path.join(base_dir, filter_name)
+    base = os.path.join(d, f'expmap_{field_name}_{filter_name}_{stage}')
+    return base + '.fits', base + '.pdf'
 
 
 def _nz_range(expmap):
@@ -427,6 +438,7 @@ def _accumulate_filter(args):
 
     expmap = _accumulate_expmap(metas, wcs, shape,
                                 desc=f'[{filter_name}] stacking')
+    os.makedirs(os.path.dirname(fits_path), exist_ok=True)
     _write_fits(fits_path, expmap, wcs,
                 field_name=field.name, filter_name=filter_name,
                 stage=stage, metas=metas)
@@ -475,7 +487,10 @@ def run_expmap(
     padding
         Sky padding in arcsec around the union footprint.
     out_dir
-        Output directory. Defaults to ``{field.products_dir}/expmaps/``.
+        Base products directory. Per-filter FITS + PDFs land in
+        ``<out_dir>/<filter>/``; the combined ``footprints_<stage>.reg`` and the
+        metadata cache land at its root. Defaults to ``field.products_dir``
+        (``products/nircam/<field>/``).
     n_processes
         Per-filter parallelism (one filter per worker).
     overwrite
@@ -491,7 +506,7 @@ def run_expmap(
         return
 
     if out_dir is None:
-        out_dir = os.path.join(field.products_dir, 'expmaps')
+        out_dir = field.products_dir
     os.makedirs(out_dir, exist_ok=True)
 
     log(f'Expmap: field={field.name}, filters={filter_list}, '

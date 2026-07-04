@@ -18,7 +18,9 @@ from typing import Dict, List, Optional, Tuple
 #   v6 (epic #210): storage_objects is now the single download/availability
 #   layer. The spectra table holds science metadata only; file keys, hashes, and
 #   local-download bookkeeping moved to the storage_objects mirror.
-SCHEMA_VERSION = 6
+#   v7: storage_objects.filter — per-filter NIRCam scope column (mirrors the
+#   server registry), so `campfire download --filters` scopes without key parsing.
+SCHEMA_VERSION = 7
 
 
 # Product-type classes the client download engine understands. Finals are the
@@ -193,6 +195,7 @@ CREATE TABLE IF NOT EXISTS storage_objects (
     status TEXT,
     observation TEXT,
     field TEXT,
+    filter TEXT,
     spectrum_id TEXT,
     exposure_ref TEXT,
     deployment_id INTEGER,
@@ -211,6 +214,7 @@ CREATE INDEX IF NOT EXISTS idx_so_observation ON storage_objects(observation);
 CREATE INDEX IF NOT EXISTS idx_so_product_type ON storage_objects(product_type);
 CREATE INDEX IF NOT EXISTS idx_so_spectrum_id ON storage_objects(spectrum_id);
 CREATE INDEX IF NOT EXISTS idx_so_obs_product ON storage_objects(observation, product_type);
+CREATE INDEX IF NOT EXISTS idx_so_field_filter ON storage_objects(field, filter);
 
 CREATE TABLE IF NOT EXISTS object_photometry (
     id INTEGER PRIMARY KEY,
@@ -1096,9 +1100,9 @@ class LocalStore:
                 INSERT INTO storage_objects
                     (storage_key, id, backend, bucket, content_hash, size_bytes,
                      content_type, product_type, instrument, status, observation,
-                     field, spectrum_id, exposure_ref, deployment_id, cfpipe_version,
+                     field, filter, spectrum_id, exposure_ref, deployment_id, cfpipe_version,
                      created_at, updated_at, _synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(storage_key) DO UPDATE SET
                     id=excluded.id,
                     backend=excluded.backend,
@@ -1111,6 +1115,7 @@ class LocalStore:
                     status=excluded.status,
                     observation=excluded.observation,
                     field=excluded.field,
+                    filter=excluded.filter,
                     spectrum_id=excluded.spectrum_id,
                     exposure_ref=excluded.exposure_ref,
                     deployment_id=excluded.deployment_id,
@@ -1132,6 +1137,7 @@ class LocalStore:
                     r.get("status"),
                     r.get("observation"),
                     r.get("field"),
+                    r.get("filter"),
                     r.get("spectrum_id"),
                     r.get("exposure_ref"),
                     r.get("deployment_id"),
@@ -1178,15 +1184,19 @@ class LocalStore:
         product_types: Optional[List[str]] = None,
         gratings: Optional[List[str]] = None,
         fields: Optional[List[str]] = None,
+        filters: Optional[List[str]] = None,
     ) -> Dict[str, List[dict]]:
         """Find storage objects that need downloading, grouped by scope.
 
         A row is pending if it isn't materialized locally, or its local hash no
-        longer matches the server's content_hash. ``--grating`` narrows finals
-        (joined to the science spectrum); the registry has no grating column, so
-        exposure-level intermediates are always included. ``fields`` selects
-        field-scoped NIRCam rows (``observation IS NULL``); results are grouped by
-        ``observation`` for NIRSpec and by ``field`` for NIRCam.
+        longer matches the server's content_hash. ``gratings`` narrows NIRSpec
+        finals (joined to the science spectrum); the registry has no grating
+        column, so exposure-level intermediates are always included. ``filters``
+        narrows per-filter NIRCam products against the typed ``filter`` scope
+        column; rows without a filter (NIRSpec, field-level) are always included,
+        mirroring the grating rule. ``fields`` selects field-scoped NIRCam rows
+        (``observation IS NULL``); results are grouped by ``observation`` for
+        NIRSpec and by ``field`` for NIRCam.
         """
         where = ["so.status = 'active'"]
         params: list = []
@@ -1195,6 +1205,11 @@ class LocalStore:
             ph = ",".join("?" * len(product_types))
             where.append(f"so.product_type IN ({ph})")
             params.extend(product_types)
+
+        if filters:
+            ph = ",".join("?" * len(filters))
+            where.append(f"(so.filter IS NULL OR UPPER(so.filter) IN ({ph}))")
+            params.extend(f.upper() for f in filters)
 
         # Scope: observations (NIRSpec) and/or fields (NIRCam, observation NULL).
         scope = []
@@ -1225,7 +1240,7 @@ class LocalStore:
         rows = self._conn.execute(
             f"""
             SELECT so.storage_key, so.content_hash, so.size_bytes, so.product_type,
-                   so.observation, so.field, so.spectrum_id, so.exposure_ref,
+                   so.observation, so.field, so.filter, so.spectrum_id, so.exposure_ref,
                    so.local_file_hash
             FROM storage_objects so
             {join}

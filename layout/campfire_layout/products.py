@@ -166,11 +166,14 @@ _register(ProductSpec(
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field",), subdir=_nircam_field_dir,
     suffix="_rgb.png", legacy_prefix=None,
 ))
-# Exposure-coverage maps.
+# Per-(field, filter) exposure-coverage maps. Live in the canonical filter dir
+# alongside the mosaics/exposures (products/nircam/<field>/<filter>/), keyed off
+# an ``expmap_`` filename prefix; scoped by filt so the registry carries a real
+# filter for them like every other per-filter NIRCam product.
 _register(ProductSpec(
     name="nircam_expmap", instrument=NC, tree="products", bucket="data",
-    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field",),
-    subdir=lambda s: f"nircam/{s.field}/expmaps", suffix=None, legacy_prefix=None,
+    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
+    subdir=_nircam_field_filter_dir, suffix=None, legacy_prefix=None,
 ))
 
 # --- Map tiles (separate 'tiles' bucket, scheme-invariant, stays on R2) ---------

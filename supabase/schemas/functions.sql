@@ -2593,6 +2593,7 @@ BEGIN
         'status', m.status,
         'observation', m.observation,
         'field', m.field,
+        'filter', m.filter,
         'spectrum_id', m.spectrum_id,
         'exposure_ref', m.exposure_ref,
         'deployment_id', m.deployment_id,

@@ -155,13 +155,18 @@ def _resolve_nircam_dirs(field):
 
 
 def _discover_filters(dirs):
-    """List available filters by scanning the products directory."""
+    """List available filters by scanning the products directory.
+
+    Each real filter is a subdirectory (``<field>/<filter>/``). A stray legacy
+    ``expmaps/`` dir (expmaps now live per-filter) is skipped so it is never
+    treated as a filter.
+    """
     products = dirs['products']
     if not products.exists():
         return []
     return sorted(
         d.name for d in products.iterdir()
-        if d.is_dir() and not d.name.startswith('.')
+        if d.is_dir() and not d.name.startswith('.') and d.name != 'expmaps'
     )
 
 
@@ -354,23 +359,26 @@ def build_fits_upload_tasks(field, exposures):
     return tasks
 
 
-def discover_expmap_tasks(dirs, field):
-    """Build canonical-key OSN upload tasks for any field expmap coverage files.
+def discover_expmap_tasks(dirs, field, filters):
+    """Build canonical-key OSN upload tasks for any per-filter expmap coverage files.
 
-    Expmaps are per-``(field, filter)`` coverage maps written under
-    ``products/nircam/<field>/expmaps/``. They are produced at combine time, so a
+    Expmaps are per-``(field, filter)`` coverage maps written into the canonical
+    filter directory (``products/nircam/<field>/<filter>/expmap_*.fits``),
+    alongside the mosaics/exposures. They are produced at combine time, so a
     process-only field may have none yet — deploy is idempotent and picks them up
-    on a later run. Returns a list of ``UploadTask`` (empty if the dir is absent).
+    on a later run. Returns a list of ``UploadTask`` (empty if none found).
     """
-    expmap_dir = dirs['products'] / 'expmaps'
-    if not expmap_dir.exists():
-        return []
+    products = dirs['products']
     tasks = []
-    for path in sorted(expmap_dir.glob('*.fits')):
-        key = storage_key('nircam_expmap', Scope(field=field), path.name,
-                          scheme=KeyScheme.CANONICAL)
-        tasks.append(UploadTask(local_path=path, r2_key=key,
-                                content_type=_FITS_CONTENT_TYPE))
+    for filtname in filters:
+        filter_dir = products / filtname
+        if not filter_dir.exists():
+            continue
+        for path in sorted(filter_dir.glob('expmap_*.fits')):
+            key = storage_key('nircam_expmap', Scope(field=field, filt=filtname),
+                              path.name, scheme=KeyScheme.CANONICAL)
+            tasks.append(UploadTask(local_path=path, r2_key=key,
+                                    content_type=_FITS_CONTENT_TYPE))
     return tasks
 
 
@@ -475,7 +483,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     print(f"Filters: {', '.join(filters)}")
 
     exposures = discover_exposures(dirs, filters)
-    expmap_tasks = discover_expmap_tasks(dirs, field)
+    expmap_tasks = discover_expmap_tasks(dirs, field, filters)
     n_mosaics = len(discover_mosaics(dirs, field, filters))
     print(f"Discovered {len(exposures)} canonical exposure(s), "
           f"{len(expmap_tasks)} expmap(s), {n_mosaics} mosaic(s)")

@@ -264,6 +264,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam expmaps now live in the canonical filter directory.** `cfpipe nircam
+  expmap` writes each per-filter coverage map to
+  `products/nircam/<field>/<filter>/expmap_<field>_<filter>_<stage>.fits` (with
+  its diagnostic `.pdf` alongside) instead of a shared `<field>/expmaps/` dir;
+  the combined `footprints_<stage>.reg` and metadata cache now sit at the field
+  products root. This puts the expmap under the same `<field>/<filter>/` key
+  shape as every other per-filter NIRCam product, so the deployed coverage map
+  carries a real `filter` in the storage registry. Breaking file-location change
+  for the expmap product only; pixel/flux values are unchanged (the `--out-dir`
+  override now names the *base* products dir under which `<filter>/` subdirs are
+  created). Categorized Infrastructure — no scientific-output change — though it
+  does move where a product file lands.
 - **NIRCam canonical exposures now carry `CMPFRVER` provenance.** `detector1`
   stamps the CAMPFIRE reduction version (+ `CMPFRTIM`) on each canonical
   exposure's primary header at creation, mirroring the mosaic stamp in

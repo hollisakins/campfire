@@ -31,14 +31,15 @@ def store(tmp_path):
     s.close()
 
 
-def _so(key, product_type, content_hash, spectrum_id=None, exposure_ref=None):
+def _so(key, product_type, content_hash, spectrum_id=None, exposure_ref=None,
+        observation="test_obs", field="cosmos", filter=None, instrument="nirspec"):
     return {
         "storage_key": key, "backend": "r2", "bucket": "data",
         "content_hash": content_hash, "size_bytes": len(CONTENT),
         "content_type": "application/fits", "product_type": product_type,
-        "instrument": "nirspec", "status": "active", "observation": "test_obs",
-        "field": "cosmos", "spectrum_id": spectrum_id, "exposure_ref": exposure_ref,
-        "deployment_id": 1,
+        "instrument": instrument, "status": "active", "observation": observation,
+        "field": field, "filter": filter, "spectrum_id": spectrum_id,
+        "exposure_ref": exposure_ref, "deployment_id": 1,
     }
 
 
@@ -137,6 +138,64 @@ def test_dry_run_plans_without_fetching(store, tmp_path):
     assert stats["to_download"] == 1
     assert stats["downloaded"] == 0
     sess.get.assert_not_called()
+
+
+def _nircam_mosaic(filt):
+    """A NIRCam field mosaic row (observation NULL, field-scoped, per-filter)."""
+    key = f"data/products/nircam/egs/{filt}/mosaic_nircam_{filt}_egs_30mas_sci.fits"
+    return _so(key, "nircam_mosaic", CONTENT_SHA, observation=None,
+               field="egs", filter=filt, instrument="nircam")
+
+
+def test_get_pending_filters_narrows_nircam(store):
+    store.upsert_storage_objects([
+        _nircam_mosaic("f277w"), _nircam_mosaic("f356w"), _nircam_mosaic("f444w"),
+    ])
+    pending = store.get_pending_objects(
+        product_types=["nircam_mosaic"], fields=["egs"], filters=["f277w", "f444w"],
+    )
+    got = sorted(r["filter"] for rows in pending.values() for r in rows)
+    assert got == ["f277w", "f444w"]  # f356w excluded
+
+
+def test_get_pending_filters_case_insensitive(store):
+    store.upsert_storage_objects([_nircam_mosaic("f444w")])
+    pending = store.get_pending_objects(
+        product_types=["nircam_mosaic"], fields=["egs"], filters=["F444W"],
+    )
+    assert [r["filter"] for rows in pending.values() for r in rows] == ["f444w"]
+
+
+def test_get_pending_filters_keeps_null_filter_rows(store):
+    # A filter-less row (NIRSpec final) is never excluded by --filters, mirroring
+    # the grating rule for attribute-less rows.
+    store.upsert_storage_objects([
+        _so(FINAL_KEY, "nirspec_spec", CONTENT_SHA, "test_obs_prism_100"),
+        _nircam_mosaic("f444w"),
+    ])
+    pending = store.get_pending_objects(
+        product_types=["nirspec_spec", "nircam_mosaic"],
+        observations=["test_obs"], fields=["egs"], filters=["f150w"],
+    )
+    keys = {r["storage_key"] for rows in pending.values() for r in rows}
+    assert FINAL_KEY in keys          # NULL-filter NIRSpec row survives
+    assert all("f444w" not in k for k in keys)  # non-matching NIRCam filter dropped
+
+
+def test_download_objects_filters_scope(store, tmp_path):
+    store.upsert_storage_objects([_nircam_mosaic("f277w"), _nircam_mosaic("f444w")])
+    products = tmp_path / "products"
+    keys = [_nircam_mosaic(f)["storage_key"] for f in ("f277w", "f444w")]
+
+    stats = download_objects(
+        _FakeAPI(keys), [], ["nircam_mosaic"], store, products,
+        fields=["egs"], filters=["f444w"], download_session=_fake_session(),
+    )
+
+    assert stats["downloaded"] == 1
+    assert (products / "nircam" / "egs" / "f444w" /
+            "mosaic_nircam_f444w_egs_30mas_sci.fits").exists()
+    assert not (products / "nircam" / "egs" / "f277w").exists()
 
 
 def test_skips_already_local(store, tmp_path):
