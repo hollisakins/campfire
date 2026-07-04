@@ -33,6 +33,7 @@ function NodGridInner() {
   const colormap: ColormapName = 'gray';
 
   const [dataById, setDataById] = useState<Map<number, Float32Array>>(new Map());
+  const [settledIds, setSettledIds] = useState<Set<number>>(new Set());
   const [range, setRange] = useState<[number, number] | null>(null);
 
   useEffect(() => {
@@ -53,25 +54,33 @@ function NodGridInner() {
 
   // Reset the shared-stretch accumulator whenever the view (bkgsub) changes — the
   // cells refetch the other HDU, so old pixels are stale.
-  useEffect(() => { setDataById(new Map()); setRange(null); }, [bkgsub, rows]);
+  useEffect(() => {
+    setDataById(new Map());
+    setSettledIds(new Set());
+    setRange(null);
+  }, [bkgsub, rows]);
 
   const expectedIds = useMemo(
     () => rows.filter((r) => r.storage_key).map((r) => r.id), [rows]);
 
   const onData = useCallback((id: number, data: Float32Array) => {
-    setDataById((prev) => {
-      const next = new Map(prev);
-      next.set(id, data);
-      return next;
-    });
+    setDataById((prev) => new Map(prev).set(id, data));
   }, []);
 
-  // Once every expected cell has reported its pixels, compute one shared ZScale.
+  const onSettled = useCallback((id: number) => {
+    setSettledIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+  }, []);
+
+  // Once every expected cell has SETTLED (succeeded, or hit the absent/error
+  // fallback — absent cells never produce pixels), compute one shared ZScale from
+  // whichever cells did produce data. Gating on "settled" not "succeeded" is what
+  // keeps a single absent cell from leaving the whole grid unpainted.
   useEffect(() => {
     if (expectedIds.length === 0) return;
-    if (!expectedIds.every((id) => dataById.has(id))) return;
-    setRange(sharedRange(expectedIds.map((id) => dataById.get(id)!)));
-  }, [dataById, expectedIds]);
+    if (!expectedIds.every((id) => settledIds.has(id))) return;
+    const arrays = expectedIds.map((id) => dataById.get(id)).filter((a): a is Float32Array => !!a);
+    if (arrays.length > 0) setRange(sharedRange(arrays));
+  }, [settledIds, dataById, expectedIds]);
 
   if (loading) {
     return <div className="flex items-center justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
@@ -142,6 +151,7 @@ function NodGridInner() {
                       colormap={colormap}
                       bkgsub={bkgsub}
                       onData={onData}
+                      onSettled={onSettled}
                     />
                   </div>
                 ))}

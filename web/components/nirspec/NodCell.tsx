@@ -17,6 +17,10 @@ interface Props {
   bkgsub: boolean;
   /** Report the fetched pixels up so the page can compute the shared stretch. */
   onData: (id: number, data: Float32Array) => void;
+  /** Report that this cell reached a terminal state (success OR absent/error) so
+   * the page can compute the shared stretch once ALL cells have settled — not
+   * only once all have succeeded (absent cells never call onData). */
+  onSettled: (id: number) => void;
 }
 
 /** Median across the dispersion axis (columns) → one value per row. Mirrors the
@@ -59,7 +63,7 @@ function ProfileSvg({ data, width, height }: { data: Float32Array; width: number
   );
 }
 
-export default function NodCell({ exposure, range, stretch, colormap, bkgsub, onData }: Props) {
+export default function NodCell({ exposure, range, stretch, colormap, bkgsub, onData, onSettled }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [cell, setCell] = useState<S2dCell | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'absent' | 'error'>('loading');
@@ -79,16 +83,17 @@ export default function NodCell({ exposure, range, stretch, colormap, bkgsub, on
         setCell(c);
         setState('ready');
         onData(exposure.id, c.data);
+        onSettled(exposure.id);
       })
       .catch((e) => {
         if (cancelled) return;
-        if (e instanceof HduNotFoundError) { setState('absent'); return; }
-        if (e?.name === 'AbortError') return;
-        setState('error');
-        setErrMsg(e instanceof Error ? e.message : 'render failed');
+        if (e?.name === 'AbortError') return;  // unmount/dep change — not settled
+        setState(e instanceof HduNotFoundError ? 'absent' : 'error');
+        if (!(e instanceof HduNotFoundError)) setErrMsg(e instanceof Error ? e.message : 'render failed');
+        onSettled(exposure.id);  // settled without data — unblocks the shared-stretch gate
       });
     return () => { cancelled = true; controller.abort(); };
-  }, [key, bkgsub, exposure, onData]);
+  }, [key, bkgsub, exposure, onData, onSettled]);
 
   // Paint once we have both the pixels and the shared stretch range.
   useEffect(() => {
