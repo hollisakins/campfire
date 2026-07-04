@@ -54,10 +54,24 @@ const config: Config = {
           '0%': { opacity: '0', transform: 'scale(0.95)' },
           '100%': { opacity: '1', transform: 'scale(1)' },
         },
+        // Override Tailwind's default `spin` keyframe, which only defines a
+        // `to: rotate(360deg)` frame. With an implicit `from` (the element's
+        // underlying `none`), Firefox interpolates `none -> rotate(360deg)` via
+        // matrix decomposition instead of component-wise angle interpolation.
+        // Because rotate(360deg) decomposes to the identity matrix, Firefox's
+        // decompose/recompose of the intermediate frames leaks a 3D rotation
+        // component, making `animate-spin` flip around a vertical axis instead
+        // of spinning flat (Chrome/Safari are unaffected). Declaring both
+        // endpoints as matching rotate() functions keeps the interpolation 2D.
+        spin: {
+          from: { transform: 'rotate(0deg)' },
+          to: { transform: 'rotate(360deg)' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 200ms ease-out',
         'zoom-in': 'zoom-in 200ms ease-out',
+        spin: 'spin 1s linear infinite',
       },
     }
   },
