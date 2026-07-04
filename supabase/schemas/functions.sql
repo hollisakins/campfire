@@ -137,8 +137,35 @@ RETURNS TABLE(
   max_snr           DOUBLE PRECISION,
   max_exposure_time DOUBLE PRECISION
 )
-LANGUAGE sql STABLE
+LANGUAGE plpgsql STABLE
 AS $$
+BEGIN
+  -- Fast path (perf, issue #103): when the caller can access every program this
+  -- object belongs to AND unpublished members are excluded, the viewer-scoped
+  -- recompute below is provably identical to the aggregate columns already
+  -- stored on the object -- both are the deploy-time builder's aggregation over
+  -- published members (reconcile_field_objects keeps the stored columns in
+  -- lockstep with the object row, and targets/spectra only change at deploy).
+  -- Restricting the recompute to a superset of the object's programs drops
+  -- nothing, so `o.programs <@ p_program_slugs` is exactly the "recompute ==
+  -- stored" condition. Returning the stored columns via a single PK lookup skips
+  -- the per-row targets+spectra scans that dominated get_objects_for_sync (and
+  -- the catalog list RPCs) at scale. Partial-access or draft-inclusive callers
+  -- fall through to the recompute, preserving the anti-leak scoping (see the
+  -- header comment and supabase/tests/check_object_aggregate_scoping.sql).
+  IF NOT p_include_unpublished THEN
+    RETURN QUERY
+    SELECT o.programs, o.gratings, o.observations,
+           o.n_targets, o.n_spectra, o.max_snr, o.max_exposure_time
+    FROM objects o
+    WHERE o.id = p_object_id
+      AND o.programs <@ p_program_slugs;
+    IF FOUND THEN
+      RETURN;
+    END IF;
+  END IF;
+
+  RETURN QUERY
   WITH m AS (
     SELECT t.target_id, t.program_slug, t.observation
     FROM targets t
@@ -162,6 +189,7 @@ AS $$
     (SELECT COUNT(*) FROM sp)::integer,
     (SELECT MAX(sp.signal_to_noise) FROM sp),
     (SELECT MAX(sp.exposure_time) FROM sp);
+END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[], BOOLEAN) TO authenticated;

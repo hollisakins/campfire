@@ -5,6 +5,7 @@ consolidating session creation that was previously duplicated across modules.
 """
 
 import os
+import threading
 from typing import Optional
 
 import requests
@@ -56,6 +57,9 @@ class APISession:
         self._token_manager: Optional[TokenManager] = None
         self._auth_type: Optional[str] = None
         self._auth_token: Optional[str] = None
+        # Serializes OAuth refresh so concurrent sync workers can't both rotate
+        # the (single-use) refresh token or race on the shared auth header.
+        self._token_lock = threading.Lock()
 
         # Load credentials
         self._load_credentials()
@@ -90,16 +94,26 @@ class APISession:
         self._session.headers["Authorization"] = f"Bearer {self._auth_token}"
 
     def _ensure_valid_token(self) -> None:
-        """Ensure we have a valid token, refreshing if necessary."""
+        """Ensure we have a valid token, refreshing if necessary.
+
+        Thread-safe: the /sync/* paginators call this from concurrent worker
+        threads. Double-checked locking keeps the common (no-refresh) path
+        lock-free while ensuring only one thread performs an actual refresh.
+        """
         if self._auth_type != "oauth" or not self._auto_refresh:
             return
 
-        if self._token_manager and self._token_manager.needs_refresh():
-            try:
-                self._auth_token = self._token_manager.get_valid_token(auto_refresh=True)
-                self._update_auth_header()
-            except AuthenticationError:
-                pass
+        if not (self._token_manager and self._token_manager.needs_refresh()):
+            return
+
+        with self._token_lock:
+            # Re-check under the lock: a peer thread may have refreshed already.
+            if self._token_manager.needs_refresh():
+                try:
+                    self._auth_token = self._token_manager.get_valid_token(auto_refresh=True)
+                    self._update_auth_header()
+                except AuthenticationError:
+                    pass
 
     def request(self, method: str, path: str, **kwargs) -> requests.Response:
         """Make an authenticated request with automatic token refresh.
