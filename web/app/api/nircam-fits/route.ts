@@ -12,6 +12,12 @@ import { isKnownKey, parseKey } from '@/lib/layout';
 
 export const runtime = 'nodejs';
 
+// Product types this proxy is allowed to serve. NIRCam exposures (epic #261) plus
+// NIRSpec rate files (review loop, P3) — both are uncompressed detector FITS the
+// in-browser SCI viewer range-fetches. Keeps the route from being an arbitrary
+// object read.
+const FITS_ALLOWED_PRODUCTS = new Set(['nircam_exposure', 'nirspec_rate']);
+
 /**
  * GET /api/nircam-fits?key=<canonical OSN key>   (HTTP Range required)
  *
@@ -43,7 +49,7 @@ export async function GET(request: NextRequest) {
   if (!key || !isKnownKey(key, { bucket: 'data' })) {
     return new Response('Invalid key', { status: 400 });
   }
-  if (parseKey(key).productType !== 'nircam_exposure') {
+  if (!FITS_ALLOWED_PRODUCTS.has(parseKey(key).productType)) {
     return new Response('Invalid key', { status: 400 });
   }
 
