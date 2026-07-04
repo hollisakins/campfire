@@ -39,6 +39,19 @@ RETURNS TABLE(
 LANGUAGE plpgsql STABLE
 AS $$
 BEGIN
+  -- Fast path (perf, issue #103): when the caller can access every program this
+  -- object belongs to AND unpublished members are excluded, the viewer-scoped
+  -- recompute below is provably identical to the aggregate columns already
+  -- stored on the object -- both are the deploy-time builder's aggregation over
+  -- published members (reconcile_field_objects keeps the stored columns in
+  -- lockstep with the object row, and targets/spectra only change at deploy).
+  -- Restricting the recompute to a superset of the object's programs drops
+  -- nothing, so `o.programs <@ p_program_slugs` is exactly the "recompute ==
+  -- stored" condition. Returning the stored columns via a single PK lookup skips
+  -- the per-row targets+spectra scans that dominated get_objects_for_sync (and
+  -- the catalog list RPCs) at scale. Partial-access or draft-inclusive callers
+  -- fall through to the recompute, preserving the anti-leak scoping (see the
+  -- header comment and supabase/tests/check_object_aggregate_scoping.sql).
   IF NOT p_include_unpublished THEN
     RETURN QUERY
     SELECT o.programs, o.gratings, o.observations,
@@ -57,6 +70,8 @@ BEGIN
     FROM targets t
     WHERE t.object_id = p_object_id
       AND t.program_slug = ANY(p_program_slugs)
+      -- B1: only count targets that contribute a published spectrum so
+      -- n_targets / programs / observations don't include draft-only members.
       AND (p_include_unpublished OR t.has_published_spectrum)
   ),
   sp AS (
