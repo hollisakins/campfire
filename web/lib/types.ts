@@ -377,6 +377,32 @@ export interface NirspecRateExposure {
   updated_at: string;
 }
 
+// NIRSpec nods-renderer grid row (review loop P4/P5). One per canonical per-source
+// spectrum-exposure; the web nods renderer groups these as rows=(exp_group, nod) ×
+// cols=detector per source. Mirrors the supabase spectrum_exposures table. NB:
+// exposure_root here is the 2-token pipeline root (nod split out) — different
+// semantics from NirspecRateExposure.exposure_root (3 tokens).
+export interface SpectrumExposure {
+  id: number;
+  observation: string;
+  exposure_root: string;
+  nod: string;
+  detector: string;               // 'nrs1' | 'nrs2'
+  source_id: number;
+  exp_group: number | null;
+  grating: string | null;
+  filename: string;
+  storage_key: string | null;     // canonical nirspec_spectrum_exposure key
+  image_width: number | null;
+  image_height: number | null;
+  stage: string;
+  review_status: 'pending' | 'approved' | 'excluded';
+  masking: 'none' | 'needed' | 'done';
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // One entry in observations.pointings — a NIRSpec MSA pointing.
 export interface Pointing {
   msametid: number;
