@@ -27,6 +27,7 @@ import { Button } from '@/components/ui/Button';
 import type { MaskPolygon, MaskRegionsPayload } from '@/lib/types';
 import FitsCanvas, { type FitsCanvasLoad } from './FitsCanvas';
 import { STRETCH_MODES, COLORMAP_NAMES, type StretchMode, type ColormapName } from '@/lib/fits';
+import { isPngCached } from '@/lib/nircam-exposure-cache';
 
 type Mode = 'inspect' | 'draw' | 'edit';
 
@@ -127,6 +128,12 @@ export default function MaskEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
+  // The PNG actually painted. Swapped by the effect below: held across a warm
+  // navigation (seamless) but cleared to a loading state on a cold one, so we
+  // never show a stale exposure under the next one's metadata + mask.
+  const [shownUrl, setShownUrl] = useState<string | undefined>(pngUrl);
+  const swappedOnceRef = useRef(false);
+
   // FITS render controls (only used when `fitsKey` is set). vmin/vmax drive the
   // display interval; 0/0 means "unset" so FitsCanvas keeps its on-load ZScale
   // until the range flows back in from `handleFitsLoad`.
@@ -189,6 +196,27 @@ export default function MaskEditor({
     setSelectedId(null);
     setDraftVertices([]);
   }, [initialRegions, imageHeight]);
+
+  // Image swap on prev/next. The initial mount already shows `pngUrl`, so skip
+  // the first run and let that image load natively. On later navigations:
+  //   - Warm (already decoded in the retained cache): keep the current frame
+  //     and swap on the ~instant decode, so the step never flashes.
+  //   - Cold: blank to a loading state immediately rather than lingering on the
+  //     previous exposure's pixels (misleading beside the new metadata + mask),
+  //     then swap once the incoming image has decoded.
+  useEffect(() => {
+    if (!swappedOnceRef.current) { swappedOnceRef.current = true; return; }
+    if (pngUrl === undefined) { setShownUrl(undefined); return; }
+    if (!isPngCached(pngUrl)) setShownUrl(undefined);
+    let cancelled = false;
+    const swap = () => { if (!cancelled) setShownUrl(pngUrl); };
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = pngUrl;
+    // Swap on decode-error too, so a bad frame never wedges us on a blank panel.
+    img.decode().then(swap).catch(swap);
+    return () => { cancelled = true; };
+  }, [pngUrl]);
 
   const markDirty = useCallback(() => { setDirty(true); setSavedAt(null); }, []);
 
@@ -454,10 +482,10 @@ export default function MaskEditor({
               onLoad={handleFitsLoad}
               onError={setFitsError}
             />
-          ) : pngUrl ? (
+          ) : shownUrl ? (
             /* eslint-disable-next-line @next/next/no-img-element */
             <img
-              src={pngUrl}
+              src={shownUrl}
               width={imageWidth}
               height={imageHeight}
               alt="exposure preview"
@@ -466,6 +494,9 @@ export default function MaskEditor({
               style={{ imageRendering: 'pixelated' }}
             />
           ) : null}
+          {/* Overlay only when an image is present — during a cold-load blank
+              there's nothing to draw masks against. */}
+          {(shownUrl || fitsKey) && (
           <svg
             ref={svgRef}
             width={imageWidth}
@@ -516,7 +547,17 @@ export default function MaskEditor({
               </g>
             )}
           </svg>
+          )}
         </div>
+
+        {/* Cold-load indicator: the incoming PNG isn't cached yet, so the panel
+            stays blank (rather than showing the previous exposure) until it's
+            fetched and decoded. */}
+        {!fitsKey && pngUrl && !shownUrl && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <Loader2 className="w-8 h-8 animate-spin text-white/40" />
+          </div>
+        )}
 
         {/* Help footer */}
         <div className="absolute bottom-2 left-2 right-2 text-[11px] text-white/70 pointer-events-none font-mono">
