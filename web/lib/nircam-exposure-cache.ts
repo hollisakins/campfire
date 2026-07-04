@@ -27,11 +27,13 @@ export function clearExposureCache(): void {
 }
 
 /**
- * Warm browser HTTP cache for a preview PNG so the next render of an
- * <img src=...> is paint-instant. Returns immediately; the fetch continues
- * in the background and lands in the same cache the eventual <img> will use.
+ * Warm browser HTTP cache for a PNG (full-res mask surface or preview) so the
+ * next render of an <img src=...> is paint-instant. Returns immediately; the
+ * fetch continues in the background and lands in the same cache the eventual
+ * <img> will use. Re-warming an already-cached URL is a cache hit (no network),
+ * so it's safe to call on every navigation.
  */
-export function prefetchPreviewPng(url: string | null): void {
+export function prefetchPng(url: string | null): void {
   if (!url || typeof window === 'undefined') return;
   // new Image() triggers a normal HTTP fetch from the renderer with the
   // browser's image cache; safer than fetch() (which can land in a different
