@@ -78,6 +78,36 @@ def schema_version_card(version=CANONICAL_SCHEMA_VERSION):
     return {SCHEMA_VERSION_KEYWORD: (int(version), SCHEMA_VERSION_COMMENT)}
 
 
+# The pipeline-computed exposure-group id (``observation.group_files``): one int
+# per sub-pixel-dither group, spanning both detectors and all nods within it. It
+# is NOT derivable from a single filename (it depends on the whole exposure set's
+# dither pattern), so the pipeline stamps it here for deploy to populate the web
+# nods-renderer grid with the exact pipeline grouping (NIRSpec review loop, §4.2).
+# A standalone primary-header card (like ``CFSCHEMA``, NOT a ``CFP_*`` state card),
+# so it survives ``cfpipe nirspec reset`` and stage2b's MultiSlitModel re-save.
+EXP_GROUP_KEYWORD = 'CFEXPGRP'
+EXP_GROUP_COMMENT = 'campfire: exposure group id (subpixel-dither)'
+
+
+def exp_group_card(exp_group):
+    """The ``(value, comment)`` dict for the ``CFEXPGRP`` card.
+
+    Returned as a dict so it composes with the other ``header_updates`` passed to
+    the canonical writers (``save_canonical`` / ``append_extras``).
+    """
+    return {EXP_GROUP_KEYWORD: (int(exp_group), EXP_GROUP_COMMENT)}
+
+
+def read_exp_group(path_or_header):
+    """Return a canonical file's stamped ``exp_group`` (int), or None if absent."""
+    if isinstance(path_or_header, fits.Header):
+        header = path_or_header
+    else:
+        header = fits.getheader(path_or_header)
+    val = header.get(EXP_GROUP_KEYWORD)
+    return int(val) if val is not None else None
+
+
 def read_schema_version(path_or_header):
     """Return a canonical file's format version (int).
 

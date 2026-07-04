@@ -41,10 +41,14 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- A spectrum_exposures row for an object-3 spectrum, so the admin-only RLS on
--- that table is exercised against real data (it is otherwise empty here).
-INSERT INTO public.spectrum_exposures (spectrum_id, exposure_ref, stage)
-  SELECT (SELECT id FROM _o3spec ORDER BY id LIMIT 1), 'harness_root_1_nrs1_999', 'cal';
+-- A spectrum_exposures row so the admin-only RLS on that table is exercised
+-- against real data (it is otherwise empty here). The table no longer FKs to
+-- spectra (review-loop P4 revived it as the nods grid, re-keyed to
+-- observations.name), so a standalone row is valid.
+INSERT INTO public.spectrum_exposures
+    (observation, exposure_root, nod, detector, source_id, filename, stage)
+  VALUES ('harness_obs', 'jw_harness_1', '00001', 'nrs1', 999,
+          'jw_harness_1_00001_nrs1_999.fits', 'cal');
 
 -- A deployment for object 3's observation, to exercise the DEPLOYMENT-level
 -- lifecycle (set_deployment_status) — the path B3's admin UI uses (section H).
