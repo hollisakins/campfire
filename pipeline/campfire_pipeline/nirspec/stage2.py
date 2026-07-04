@@ -314,7 +314,8 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     if detect_enabled:
         from campfire_pipeline.nirspec.stuck_shutters import (
             detect_stuck_shutters, merge_stuck_shutters,
-            write_stuck_shutters_toml, _get_n_shutters,
+            write_stuck_shutters_toml, load_stuck_shutters_tagged,
+            _get_n_shutters,
         )
         from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
         import toml as _toml
@@ -323,12 +324,18 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
                                         n_processes=n_processes)
 
         if detected:
-            # Merge with existing TOML entries
+            # Merge with existing TOML entries, preserving each entry's
+            # provenance tag (hand/web/auto) through the rewrite so a later
+            # `pull-stuck-shutters` authority merge still tells web from hand.
+            prior_tags = load_stuck_shutters_tagged(obs.stuck_closed_shutters_file)
             existing = _toml.load(obs.stuck_closed_shutters_file)
             merged, updated = merge_stuck_shutters(existing, detected)
+            provenance = {k: tag for k, (_sh, tag) in prior_tags.items()}
+            for (root, sid) in updated:
+                provenance[(root, str(sid))] = 'auto'
             write_stuck_shutters_toml(
                 merged, obs.stuck_closed_shutters_file, obs.name,
-                auto_detected=updated,
+                provenance=provenance,
             )
 
             # Generate diagnostic plots

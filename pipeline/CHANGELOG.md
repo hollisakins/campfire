@@ -276,6 +276,17 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRSpec `stuck_closed_shutters.toml` entries now carry a `# hand` / `# web` /
+  `# auto` provenance tag.** `write_stuck_shutters_toml` preserves the tag of each
+  existing entry (via a new `provenance` arg) instead of collapsing it to untagged,
+  and a new `load_stuck_shutters_tagged` reads the tags back out (the reader
+  `toml.load` still ignores them). The stage2a / detect-stuck auto-detect callsites
+  now thread tags through the rewrite, tagging freshly auto-detected entries `# auto`.
+  This lets the new `campfire deploy nirspec pull-stuck-shutters` authority merge
+  (`hand > web > auto`) survive an auto-detect rewrite — preserving hand entries,
+  refreshing web entries from the DB, and letting auto fill gaps. Pure provenance
+  plumbing: no change to which shutters are detected or dropped, or to extracted flux.
+  (NIRSpec review loop, P7.)
 - **NIRSpec canonical spectrum-exposure FITS now carry a `CFEXPGRP` primary-header
   card** recording the pipeline-computed `exp_group` (the sub-pixel-dither grouping
   id from `Observation.group_files`). Stamped by a final pass at the end of
