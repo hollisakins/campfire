@@ -21,6 +21,7 @@ from campfire.deploy.discover import (
     discover_pointings_ecsv,
     discover_rgb_images,
     discover_sed_plots,
+    discover_rate_files,
     discover_shutters_ecsv,
     discover_spectrum_exposures,
     discover_slits_json,
@@ -234,6 +235,11 @@ def _deploy_intermediates_only(
         exposure_files = _filter_exposures_by_source_ids(exposure_files, source_ids)
         print(f"Filtered {total} spectrum-exposures to {len(exposure_files)} "
               f"matching {len(source_ids)} source IDs")
+    # Detector rate files (P1, design §3.1) — source-INDEPENDENT, never source-filtered.
+    # The rate deploy runs after stage 1 / before stage 2, precisely when no
+    # spectrum-exposures exist yet, so this path must handle rate-only deploys (see
+    # the guard below).
+    rate_files = discover_rate_files(obs_dir)
     obs_cfg = load_observations().get(obs_name, {})
     field = obs_cfg.get('field', '')
     program_slug = obs_cfg.get('program', '')
@@ -257,15 +263,17 @@ def _deploy_intermediates_only(
     print(f"  Field: {field}")
     print(f"  Program: {program_slug}")
     print(f"  Canonical spectrum-exposures: {len(exposure_files)}")
+    print(f"  Detector rate files: {len(rate_files)}")
 
-    if not exposure_files:
-        print("No canonical spectrum-exposures and no finals — nothing to deploy.")
+    if not exposure_files and not rate_files:
+        print("No canonical spectrum-exposures, rate files, or finals — nothing to deploy.")
         return {'field': field, 'needs_reconcile': False}
 
     if dry_run:
         print("\n=== DRY RUN (intermediates-only → auto-draft) ===")
         print(f"Would upload {len(exposure_files)} canonical spectrum-exposures "
-              f"and record a draft deployment for {obs_name}.")
+              f"and {len(rate_files)} detector rate files, and record a draft "
+              f"deployment for {obs_name}.")
         return {'field': field, 'needs_reconcile': False}
 
     sb = get_supabase_client(config)
@@ -301,9 +309,14 @@ def _deploy_intermediates_only(
         UploadTask(p, storage_key('nirspec_spectrum_exposure', scope, p.name,
                                   scheme=KeyScheme.CANONICAL), 'application/fits')
         for p in exposure_files
+    ] + [
+        UploadTask(p, storage_key('nirspec_rate', scope, p.name,
+                                  scheme=KeyScheme.CANONICAL), 'application/fits')
+        for p in rate_files
     ]
     uploaded_keys: set[str] = set()
-    print(f"Uploading {len(upload_tasks)} canonical spectrum-exposures to OSN...")
+    print(f"Uploading {len(upload_tasks)} intermediates "
+          f"({len(exposure_files)} spectrum-exposures + {len(rate_files)} rate files) to OSN...")
     success, failed, failed_msgs = upload_files_parallel(
         config, upload_tasks, desc="OSN uploads", succeeded_out=uploaded_keys,
         backend='osn')
@@ -311,7 +324,10 @@ def _deploy_intermediates_only(
 
     # Best-effort provenance from the first exposure header (Phase 3): the
     # intermediates carry whatever cards the reduction stamped. Absent → NULL.
-    cfpipe_version, jwst_version, crds_context = _read_exposure_provenance(exposure_files)
+    # For a rate-only deploy (stage 1 done, stage 2 not yet) there are no
+    # spectrum-exposures, so fall back to a rate header for provenance.
+    cfpipe_version, jwst_version, crds_context = _read_exposure_provenance(
+        exposure_files or rate_files)
 
     deployment_id = insert_deployment(
         sb, observation=obs_name, deployed_by=user_id, status='draft',
@@ -326,7 +342,7 @@ def _deploy_intermediates_only(
             observation=obs_name, affected_count=success,
             metadata=deploy_event_metadata(
                 'nirspec', observation=obs_name, planned=len(upload_tasks),
-                succeeded=success, failed=failed, items=len(exposure_files),
+                succeeded=success, failed=failed, items=len(upload_tasks),
                 draft=True, intermediates_only=True))
 
     if uploaded_keys:
@@ -347,7 +363,8 @@ def _deploy_intermediates_only(
               f"this observation while this one was running.")
 
     print(f"\nDeployed {len(exposure_files)} canonical spectrum-exposures "
-          f"(draft — no finals yet). Finish stage3 + re-deploy to publish.")
+          f"+ {len(rate_files)} detector rate files (draft — no finals yet). "
+          f"Finish stage3 + re-deploy to publish.")
     return {'field': field, 'needs_reconcile': False}
 
 
@@ -662,6 +679,20 @@ def deploy_observation(
                     'application/fits'))
             if exposure_files:
                 print(f"  + {len(exposure_files)} canonical spectrum-exposure intermediates")
+
+            # Detector rate-file intermediates (P1, design §3.1). SOURCE-INDEPENDENT:
+            # uploaded on every deploy regardless of --source-ids (rate-level masks are
+            # per-detector, not per-source), so we deliberately do NOT run these
+            # through _filter_exposures_by_source_ids. Registered
+            # product_type='nirspec_rate' with a per-(exposure,detector) exposure_ref;
+            # uploaded uncompressed (the web SCI decoder rejects fpack ZIMAGE).
+            rate_files = discover_rate_files(obs_dir)
+            for rate_path in rate_files:
+                upload_tasks.append(UploadTask(
+                    rate_path, storage_key('nirspec_rate', scope, rate_path.name, scheme=KeyScheme.CANONICAL),
+                    'application/fits'))
+            if rate_files:
+                print(f"  + {len(rate_files)} detector rate files")
 
             total_tasks = len(upload_tasks) + len(legacy_tasks)
             print(f"Uploading {total_tasks} files ({len(upload_tasks)} NIRSpec → OSN)...")
