@@ -54,18 +54,24 @@ const config: Config = {
           '0%': { opacity: '0', transform: 'scale(0.95)' },
           '100%': { opacity: '1', transform: 'scale(1)' },
         },
-        // Override Tailwind's default `spin` keyframe, which only defines a
-        // `to: rotate(360deg)` frame. With an implicit `from` (the element's
-        // underlying `none`), Firefox interpolates `none -> rotate(360deg)` via
-        // matrix decomposition instead of component-wise angle interpolation.
-        // Because rotate(360deg) decomposes to the identity matrix, Firefox's
-        // decompose/recompose of the intermediate frames leaks a 3D rotation
-        // component, making `animate-spin` flip around a vertical axis instead
-        // of spinning flat (Chrome/Safari are unaffected). Declaring both
-        // endpoints as matching rotate() functions keeps the interpolation 2D.
+        // Override Tailwind's default `spin` keyframe (a single
+        // `to: rotate(360deg)` frame). Firefox interpolates transform
+        // animations by decomposing the endpoints into rotation quaternions and
+        // slerping between them. A full turn, rotate(360deg), maps to the
+        // quaternion antipodal to the identity, so the rotation axis is
+        // undefined and Firefox slerps around an arbitrary axis (Y) — the
+        // spinner flips in/out of the page instead of spinning flat.
+        // Chrome/Safari special-case 2D rotate() and interpolate the scalar
+        // angle, so they're unaffected. Breaking the turn into quarter-turn
+        // waypoints keeps every interpolation segment an unambiguous 90deg
+        // Z-rotation, which no engine can reinterpret as a 3D flip. Applies to
+        // every `animate-spin` (all Loader2 icons + the border spinner).
         spin: {
-          from: { transform: 'rotate(0deg)' },
-          to: { transform: 'rotate(360deg)' },
+          '0%': { transform: 'rotate(0deg)' },
+          '25%': { transform: 'rotate(90deg)' },
+          '50%': { transform: 'rotate(180deg)' },
+          '75%': { transform: 'rotate(270deg)' },
+          '100%': { transform: 'rotate(360deg)' },
         },
       },
       animation: {
