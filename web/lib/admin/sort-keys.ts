@@ -17,3 +17,7 @@ export const STORAGE_OBJECT_SORT_KEYS = [
 export const EXPOSURE_SORT_KEYS = [
   'filename', 'field', 'filter', 'detector', 'stage', 'review_status', 'date_obs', 'updated_at',
 ] as const;
+
+export const NIRSPEC_RATE_SORT_KEYS = [
+  'filename', 'observation', 'exposure_root', 'detector', 'grating', 'review_status', 'updated_at',
+] as const;

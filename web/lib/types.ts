@@ -355,6 +355,28 @@ export interface NircamExposure {
   updated_at: string;
 }
 
+// NIRSpec rate-file detector triage (NIRSpec review loop, P2/P3). Detector-grain
+// analogue of NircamExposure: source-independent rate-level masks reviewed on the
+// web. Mirrors the supabase nirspec_rate_exposures table.
+export interface NirspecRateExposure {
+  id: number;
+  observation: string;
+  exposure_root: string;
+  detector: string;               // 'nrs1' | 'nrs2'
+  filename: string;
+  grating: string | null;
+  image_width: number | null;
+  image_height: number | null;
+  storage_key: string | null;     // canonical nirspec_rate key for the FITS proxy
+  stage: string;
+  review_status: 'pending' | 'approved' | 'excluded';
+  masking: 'none' | 'needed' | 'done';
+  mask_regions: MaskRegionsPayload | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // One entry in observations.pointings — a NIRSpec MSA pointing.
 export interface Pointing {
   msametid: number;
