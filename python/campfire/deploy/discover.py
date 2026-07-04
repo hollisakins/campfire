@@ -28,11 +28,31 @@ def discover_spectrum_exposures(obs_dir: Path) -> list[Path]:
     directory as the final ``*_spec.fits`` products; the ``_nrs[12]_`` segment is
     what distinguishes a per-exposure intermediate from a final (whose name is
     grating/filter-based and ends ``_spec.fits``). Excludes finals defensively.
+
+    Also excludes the stage-1 detector rate files (``{root}_{nrsN}_rate.fits``,
+    see discover_rate_files): they too match ``*_nrs[12]_*.fits`` but are a
+    separate product (``nirspec_rate``), so without this guard a rate file would be
+    double-discovered here and mis-registered as a spectrum-exposure.
     """
     return sorted(
         p for p in obs_dir.glob('*_nrs[12]_*.fits')
         if not p.name.endswith('_spec.fits')
+        and not p.name.endswith('_rate.fits')
     )
+
+
+def discover_rate_files(obs_dir: Path) -> list[Path]:
+    """Find the NIRSpec stage-1 detector rate files (P1, design §3.1).
+
+    Named ``{root}_{nrsN}_rate.fits`` — e.g.
+    ``jw07076020001_04101_00001_nrs1_rate.fits`` — one per (exposure, detector),
+    living in the same products directory as the spectrum-exposures and finals.
+    These are SOURCE-INDEPENDENT detector products (rate-level masks are
+    per-detector, not per-source), so unlike discover_spectrum_exposures the caller
+    must NOT filter them by source id. Deployed uncompressed (the web SCI decoder
+    rejects fpack ZIMAGE); we upload the pipeline's plain rate FITS as-is.
+    """
+    return sorted(obs_dir.glob('*_nrs[12]_rate.fits'))
 
 
 def discover_slits_json(obs_dir: Path, obs_name: str) -> Path | None:

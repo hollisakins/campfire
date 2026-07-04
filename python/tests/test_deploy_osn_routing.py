@@ -126,6 +126,22 @@ def test_canonical_exposure_row_carries_osn_key_and_exposure_ref():
     assert row["exposure_ref"] == "jw07076020001_04101_00001_nrs1_117757"
 
 
+def test_canonical_rate_row_carries_osn_key_and_exposure_ref():
+    # P1: rate files register like spectrum-exposures — canonical OSN key under the
+    # obs products dir, with a per-(exposure,detector) exposure_ref (rate stem) so
+    # a re-deploy UPDATEs in place on the partial-unique (product_type, exposure_ref).
+    fname = "jw07076020001_04101_00001_nrs1_rate.fits"
+    canon = storage_key("nirspec_rate", Scope(obs="ember_egs_p1"),
+                        fname, scheme=KeyScheme.CANONICAL)
+    row = row_for_key(canon, backend="osn", content_hash=SHA, size_bytes=1,
+                      content_type="application/fits")
+    assert row["backend"] == "osn"
+    assert row["storage_key"].startswith("data/products/nirspec/")
+    assert row["product_type"] == "nirspec_rate"
+    assert row["observation"] == "ember_egs_p1"
+    assert row["exposure_ref"] == "jw07076020001_04101_00001_nrs1_rate"
+
+
 def test_canonical_photometry_pz_registers_as_osn_field_scoped():
     # photometry_pz is a migrated (DEFAULT_COPY_PRODUCT_TYPES) data-bucket product;
     # deploy_field_photometry must write it canonical+osn like the NIRSpec paths,
