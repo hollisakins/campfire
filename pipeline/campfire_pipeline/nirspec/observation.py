@@ -167,18 +167,11 @@ class Observation:
             for cfg in group:
                 config_groups[cfg] = label
 
-        # Manual masks: { rate_basename (no _rate.fits suffix): DS9 region string }
-        manual_masks = {}
-        masks_section = obs.get('masks', {})
-        if isinstance(masks_section, dict):
-            for basename, reg_string in masks_section.items():
-                if not isinstance(reg_string, str):
-                    raise TypeError(
-                        f"masks['{basename}'] must be a string in [{name}.masks]; "
-                        f"got {type(reg_string).__name__}"
-                    )
-                manual_masks[basename] = reg_string
-
+        # Manual masks are NOT read from observations.toml anymore (design §3.5):
+        # they live as .reg files under reference/nirspec/<obs>/masks/, populated by
+        # `campfire deploy nirspec pull-rate-masks` (web) or local mask editing, and
+        # loaded into self.manual_masks in setup_workspace_directory (the reference
+        # dir isn't known until then). Left empty here.
         return cls(
             name=name,
             field=field_name,
@@ -189,7 +182,6 @@ class Observation:
             gratings=gratings,
             stage_overrides=stage_overrides,
             config_groups=config_groups,
-            manual_masks=manual_masks,
         )
 
     def setup_workspace_directory(self, data_dir, product_dir, overwrite=False):
@@ -230,7 +222,24 @@ class Observation:
             root=os.path.dirname(os.path.abspath(data_dir))))
         self.rate_files = self.glob('_rate.fits')
 
+        # Manual masks live under reference/nirspec/<obs>/masks/*.reg (design §3.5);
+        # load them now that reference_dir is known. Keyed by rate basename (the
+        # <exposure_root>_<detector> stem = masks._rate_basename), the same key the
+        # stage1/stage2 consumers look up.
+        self.manual_masks = self._load_manual_masks_from_reg()
+
         self.directories_setup = True
+
+    def _load_manual_masks_from_reg(self) -> dict:
+        """Read reference/nirspec/<obs>/masks/*.reg into a {basename: reg_string} dict."""
+        masks_dir = os.path.join(self.reference_dir, "masks")
+        out: dict[str, str] = {}
+        if os.path.isdir(masks_dir):
+            for fname in sorted(os.listdir(masks_dir)):
+                if fname.endswith(".reg"):
+                    with open(os.path.join(masks_dir, fname)) as f:
+                        out[fname[:-len(".reg")]] = f.read()
+        return out
 
     def discover_raw_files(self):
         """Discover raw uncal files and associated MSA metadata.

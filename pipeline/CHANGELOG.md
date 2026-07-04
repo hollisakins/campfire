@@ -264,6 +264,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRSpec rate-mask region strings now come from
+  `reference/nirspec/<obs>/masks/*.reg`, not `observations.toml`.** The NIRSpec
+  web review loop (design §3.5). `Observation.setup_workspace_directory` populates
+  `manual_masks` by reading `.reg` files (one per `<exposure_root>_<detector>.reg`,
+  DS9 image coords) from the observation's reference `masks/` dir, materialized by
+  the new `campfire deploy nirspec pull-rate-masks` from the web editor's DB rows.
+  The `observations.toml [<obs>.masks]` read path and the `workspace_dir/
+  manual_masks/` mirror (`materialize_reg_files`) are removed; the local `mask
+  edit` / `mask clear` writers now target the same reference `.reg` store. Only the
+  *source* of the region string changes — the `apply_mask_dq` / `CFDQMASK`
+  reversible DQ OR, `CFMASKSH` staleness, and `bkgsub_with_masks` / `ensure_fresh`
+  auto-re-apply are unchanged, so a web-edited mask with a changed canonical hash
+  still re-applies before bkg sub. No change to pixel/flux values for the same
+  regions.
 - **NIRCam expmaps now live in the canonical filter directory.** `cfpipe nircam
   expmap` writes each per-filter coverage map to
   `products/nircam/<field>/<filter>/expmap_<field>_<filter>_<stage>.fits` (with

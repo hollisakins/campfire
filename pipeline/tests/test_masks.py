@@ -95,42 +95,6 @@ class TestSentinelRoundTrip:
         assert masks.is_stale(rate, "image\npolygon(7,8,9,10,11,12)") is True
 
 
-class TestTomlRoundTrip:
-    def test_write_and_delete(self, tmp_path):
-        toml_path = tmp_path / "observations.toml"
-        toml_path.write_text(
-            "# top-of-file comment\n"
-            "[demo]\n"
-            "    field = 'cosmos'\n"
-            "    program = 'p'\n"
-            "    data_subdir = '0'\n"
-            "    files = ['jw00000000001*']\n"
-        )
-        masks.write_masks_to_observations_toml(
-            str(toml_path), "demo",
-            {"jw00000000001_nrs1": "image\npolygon(1,2,3,4,5,6)"},
-        )
-        text = toml_path.read_text()
-        assert "top-of-file comment" in text  # tomlkit preserved the comment
-        assert "polygon(1,2,3,4,5,6)" in text
-        assert "[demo.masks]" in text or "demo.masks" in text
-
-        # Now delete it.
-        masks.write_masks_to_observations_toml(
-            str(toml_path), "demo", {"jw00000000001_nrs1": None},
-        )
-        text2 = toml_path.read_text()
-        assert "polygon" not in text2
-
-    def test_write_requires_existing_obs(self, tmp_path):
-        toml_path = tmp_path / "observations.toml"
-        toml_path.write_text("[other]\nfield = 'x'\n")
-        with pytest.raises(ValueError):
-            masks.write_masks_to_observations_toml(
-                str(toml_path), "missing", {"foo": "image\npolygon(0,0,1,0,1,1)"},
-            )
-
-
 class TestApplyAndClearDQ:
     def _make_rate_with_dq(self, path, dq_init):
         # Build a 4-extension FITS that ImageModel will accept (SCI/ERR/DQ/VAR_RNOISE).

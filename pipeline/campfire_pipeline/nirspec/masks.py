@@ -90,16 +90,23 @@ def parse_regions_to_mask(reg_string: str, shape: tuple[int, int]) -> np.ndarray
 
 
 # ---------------------------------------------------------------------------
-# Workspace .reg mirror
+# Reference-dir .reg mask store (the authoritative source; see design §3.5)
 # ---------------------------------------------------------------------------
+#
+# Manual masks live as .reg files under reference/nirspec/<obs>/masks/, one per
+# rate file (named <rate_basename>.reg, e.g. jw..._nrs1.reg — the _rate_basename
+# stem). `campfire deploy nirspec pull-rate-masks` writes them from the web
+# editor's DB rows; local editing (mask edit / mask clear) writes them too. The
+# pipeline reads them into Observation.manual_masks at workspace setup. This
+# replaced the old observations.toml [<obs>.masks] source + workspace mirror.
 
 
-def workspace_masks_dir(obs) -> str:
-    return os.path.join(obs.workspace_dir, "manual_masks")
+def reference_masks_dir(obs) -> str:
+    return os.path.join(obs.reference_dir, "masks")
 
 
-def workspace_reg_path(obs, rate_basename: str) -> str:
-    return os.path.join(workspace_masks_dir(obs), f"{rate_basename}.reg")
+def reference_reg_path(obs, rate_basename: str) -> str:
+    return os.path.join(reference_masks_dir(obs), f"{rate_basename}.reg")
 
 
 def write_reg_file(path: str, reg_string: str) -> None:
@@ -115,14 +122,20 @@ def write_reg_file(path: str, reg_string: str) -> None:
             f.write("\n")
 
 
-def materialize_reg_files(obs) -> dict[str, str]:
-    """Write all of an observation's manual masks to disk as ``.reg`` mirrors."""
-    paths: dict[str, str] = {}
-    for basename, reg_string in (obs.manual_masks or {}).items():
-        path = workspace_reg_path(obs, basename)
-        write_reg_file(path, reg_string)
-        paths[basename] = path
-    return paths
+def write_reference_masks(obs, masks: dict[str, "str | None"]) -> None:
+    """Write/clear manual-mask .reg files under reference/nirspec/<obs>/masks/.
+
+    Keys are rate basenames (``_rate_basename`` stem). A truthy region string is
+    written via ``write_reg_file``; a falsy/``None`` value deletes that exposure's
+    ``.reg`` (mask cleared). The authoritative local writer used by the mpl editor
+    and ``mask clear`` — the read counterpart of ``pull-rate-masks``.
+    """
+    for basename, reg_string in (masks or {}).items():
+        path = reference_reg_path(obs, basename)
+        if reg_string:
+            write_reg_file(path, reg_string)
+        elif os.path.exists(path):
+            os.remove(path)
 
 
 # ---------------------------------------------------------------------------
@@ -351,8 +364,6 @@ def apply_to_observation(obs, stage1_config: dict, force: bool = False) -> None:
         log(f"No manual masks defined for {obs.name}; nothing to apply.")
         return
 
-    materialize_reg_files(obs)
-
     bkgsub_kwargs = _bkgsub_kwargs(stage1_config)
 
     rate_by_basename = {_rate_basename(p): p for p in obs.rate_files}
@@ -514,55 +525,6 @@ def validate_observation(obs) -> list[dict]:
                 "basename": basename, "ok": False, "n_pixels": 0, "message": f"parse error: {exc}",
             })
     return results
-
-
-# ---------------------------------------------------------------------------
-# observations.toml round-trip (tomlkit-based, comment-preserving)
-# ---------------------------------------------------------------------------
-
-
-def write_masks_to_observations_toml(
-    observations_file: str,
-    obs_name: str,
-    masks: dict[str, str | None],
-) -> None:
-    """Update the ``[<obs_name>.masks]`` table in observations.toml in place.
-
-    ``masks`` maps rate basename -> region string (or ``None``/``''`` to delete).
-    Preserves the rest of the file (comments, ordering) via tomlkit.
-    """
-    import tomlkit
-
-    with open(observations_file, "r") as f:
-        doc = tomlkit.parse(f.read())
-
-    if obs_name not in doc:
-        raise ValueError(f"Observation '{obs_name}' not found in {observations_file}")
-
-    obs_table = doc[obs_name]
-
-    # Find or create the masks sub-table.
-    if "masks" in obs_table:
-        masks_table = obs_table["masks"]
-    else:
-        masks_table = tomlkit.table()
-        obs_table["masks"] = masks_table
-
-    for basename, reg_string in masks.items():
-        canon = canonicalize(reg_string) if reg_string else ""
-        if not canon:
-            if basename in masks_table:
-                del masks_table[basename]
-            continue
-        # Use a multi-line basic string for readability.
-        masks_table[basename] = tomlkit.string(canon + "\n", multiline=True)
-
-    # If we wiped every entry, drop the empty subtable to keep the file tidy.
-    if len(masks_table) == 0 and "masks" in obs_table:
-        del obs_table["masks"]
-
-    with open(observations_file, "w") as f:
-        f.write(tomlkit.dumps(doc))
 
 
 def read_reg_file(path: str) -> str:
