@@ -352,6 +352,18 @@ CREATE INDEX IF NOT EXISTS idx_nircam_exposures_review
 
 
 -- =============================================================================
+-- nirspec_rate_exposures (design §3.2)
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_nirspec_rate_exposures_observation
+    ON public.nirspec_rate_exposures USING btree (observation);
+
+CREATE INDEX IF NOT EXISTS idx_nirspec_rate_exposures_review
+    ON public.nirspec_rate_exposures USING btree (review_status)
+    WHERE review_status != 'approved';
+
+
+-- =============================================================================
 -- spectrum_exposures (epic #210, B2)
 -- =============================================================================
 

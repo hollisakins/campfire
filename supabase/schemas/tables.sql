@@ -774,6 +774,47 @@ ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNED BY "public"."nircam_exposures"."id";
 
 
+-- NIRSpec rate-mask triage (P2, design §3.2). Detector-grain analogue of
+-- nircam_exposures, keyed on (observation, exposure_root, detector). Admin-only
+-- (RLS); deploy-populated (split-ownership upsert preserves web review state).
+CREATE TABLE IF NOT EXISTS "public"."nirspec_rate_exposures" (
+    "id" integer NOT NULL,
+    "observation" "text" NOT NULL,
+    "exposure_root" "text" NOT NULL,
+    "detector" "text" NOT NULL,
+    "filename" "text" NOT NULL,
+    "grating" "text",
+    "image_width" integer,
+    "image_height" integer,
+    "storage_key" "text",
+    "stage" "text" NOT NULL DEFAULT 'rate'::"text",
+    "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
+    "masking" "text" NOT NULL DEFAULT 'none'::"text",
+    "mask_regions" "jsonb",
+    "notes" "text",
+    "created_at" timestamp with time zone NOT NULL DEFAULT "now"(),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."nirspec_rate_exposures" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."nirspec_rate_exposures_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."nirspec_rate_exposures_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."nirspec_rate_exposures_id_seq" OWNED BY "public"."nirspec_rate_exposures"."id";
+
+
 -- spectrum_exposures: NIRSpec canonical spectrum-exposure intermediates (epic
 -- #210, B2). One logical row per (exposure, detector, source) that combines into
 -- a final spectrum — the NIRSpec analogue of nircam_exposures. Child of spectra
@@ -1330,6 +1371,9 @@ ALTER TABLE ONLY "public"."nircam_images" ALTER COLUMN "id" SET DEFAULT "nextval
 ALTER TABLE ONLY "public"."nircam_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nircam_exposures_id_seq"'::"regclass");
 
 
+ALTER TABLE ONLY "public"."nirspec_rate_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nirspec_rate_exposures_id_seq"'::"regclass");
+
+
 
 ALTER TABLE ONLY "public"."spectrum_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."spectrum_exposures_id_seq"'::"regclass");
 
@@ -1477,6 +1521,12 @@ ALTER TABLE ONLY "public"."nircam_exposures"
 
 ALTER TABLE ONLY "public"."nircam_exposures"
     ADD CONSTRAINT "nircam_exposures_unique" UNIQUE ("field", "filter", "filename");
+
+ALTER TABLE ONLY "public"."nirspec_rate_exposures"
+    ADD CONSTRAINT "nirspec_rate_exposures_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."nirspec_rate_exposures"
+    ADD CONSTRAINT "nirspec_rate_exposures_unique" UNIQUE ("observation", "exposure_root", "detector");
 
 ALTER TABLE ONLY "public"."spectrum_exposures"
     ADD CONSTRAINT "spectrum_exposures_pkey" PRIMARY KEY ("id");
@@ -2016,6 +2066,11 @@ GRANT ALL ON TABLE "public"."nircam_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."nircam_exposures" TO "service_role";
 
 
+-- nirspec_rate_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
+GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "authenticated";
+GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "service_role";
+
+
 -- spectrum_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
 GRANT ALL ON TABLE "public"."spectrum_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectrum_exposures" TO "service_role";
@@ -2126,6 +2181,10 @@ GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "service_role";
 
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "service_role";
+
+
+GRANT ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" TO "service_role";
 
 
 GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "authenticated";
