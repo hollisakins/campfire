@@ -31,6 +31,7 @@ class ParsedKey:
 # filename is matched against these to recover its product_type.
 _NIRSPEC_OBS_SUFFIXES = (
     ("_spec.fits", "nirspec_spec"),
+    ("_rate.fits", "nirspec_rate"),  # must precede the bare-'.fits' fallback below
     ("_spec.json", "spectrum_json"),
     ("_zfit.json", "zfit"),
     ("_rgb.png", "rgb"),

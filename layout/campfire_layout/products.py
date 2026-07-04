@@ -120,6 +120,17 @@ _register(ProductSpec(
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
     suffix=".fits", legacy_prefix=None,
 ))
+# The stage-1 detector rate file ('<root>_<nrsN>_rate.fits'), one tier earlier
+# than the spectrum-exposure. A source-independent intermediate deployed to OSN
+# so rate-level masks can be reviewed on the web; reserved key, real local home.
+# NB: its '_rate.fits' suffix must be dispatched BEFORE the bare-'.fits' fallback
+# in bijection._nirspec_obs_product, or it is silently mis-parsed as a
+# spectrum-exposure.
+_register(ProductSpec(
+    name="nirspec_rate", instrument=NS, tree="products", bucket="data",
+    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
+    suffix="_rate.fits", legacy_prefix=None,
+))
 # Per-object visualizations, keyed by obs (legacy keys live in their own prefixes
 # but mirror locally into the obs products dir).
 _register(ProductSpec(

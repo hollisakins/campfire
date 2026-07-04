@@ -75,6 +75,7 @@ reg(spec({ name: 'nirspec_spec', tree: 'products', bucket: 'data', scopeKeys: ['
 reg(spec({ name: 'spectrum_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
 reg(spec({ name: 'zfit', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_zfit.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
 reg(spec({ name: 'nirspec_spectrum_exposure', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '.fits' }));
+reg(spec({ name: 'nirspec_rate', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rate.fits' }));
 reg(spec({ name: 'rgb', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rgb.png', legacyPrefix: (s) => `rgb/${s.obs}` }));
 reg(spec({ name: 'sed', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_sed.pdf', legacyPrefix: (s) => `sed/${s.obs}` }));
 
@@ -181,6 +182,7 @@ export interface ParsedKey {
 
 const NIRSPEC_OBS_SUFFIXES: [string, string][] = [
   ['_spec.fits', 'nirspec_spec'],
+  ['_rate.fits', 'nirspec_rate'], // must precede the bare-'.fits' fallback below
   ['_spec.json', 'spectrum_json'],
   ['_zfit.json', 'zfit'],
   ['_rgb.png', 'rgb'],
