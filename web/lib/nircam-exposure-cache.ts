@@ -77,3 +77,15 @@ export function prefetchPng(url: string | null): void {
     retainedImages.delete(oldest);
   }
 }
+
+/**
+ * True when a PNG is already fully loaded in the retained cache — i.e. it can be
+ * painted with no network wait. Callers use this to decide between a seamless
+ * swap (warm) and blanking to a loading state (cold), so the viewer never shows
+ * a stale exposure's pixels beside the next exposure's metadata.
+ */
+export function isPngCached(url: string | null): boolean {
+  if (!url) return false;
+  const img = retainedImages.get(url);
+  return !!img && img.complete && img.naturalWidth > 0;
+}
