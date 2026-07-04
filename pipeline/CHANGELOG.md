@@ -26,6 +26,18 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Calibration
+- NIRCam `apply_masks` now reads web-defined masks instead of crashing on them.
+  Masks drawn in the web editor materialize (via `campfire deploy pull-masks`)
+  as DS9 **image**-coordinate `.reg` files, which `Regions.read` parses back as
+  `PolygonPixelRegion`s. The step called `reg.to_pixel(wcs)` unconditionally —
+  a method only sky regions have — so every web-defined mask aborted the combine
+  phase with `AttributeError: 'PolygonPixelRegion' object has no attribute
+  'to_pixel'`. Pixel regions are now rasterized directly and only sky regions
+  (legacy FK5/ICRS hand-drawn masks) are projected through the exposure WCS,
+  matching the guard the deploy-side `import-masks` already used. Regions whose
+  footprint falls entirely off the frame (`to_image` → `None`) are now skipped
+  rather than crashing on `None.astype`. Net effect: web-defined masks reach the
+  mosaic (excluding masked pixels) where they previously produced no output.
 - NIRCam manual masks now actually reach the mosaic, and uncovered pixels are
   `NaN` (epic #261, N7). The `apply_mask` step painted user region masks as DQ
   bit `1024` (`DEAD`), which `good_bits='~DO_NOT_USE'` **ignores** — so a mask
