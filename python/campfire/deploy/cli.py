@@ -1426,8 +1426,10 @@ def nirspec():
     Observation deploy is the top-level `campfire deploy --obs <obs>`. These
     subcommands round-trip the portal's DB-resident review state with the reduction
     workspace: `pull-rate-masks` materializes the web-drawn rate-file masks
-    (nirspec_rate_exposures.mask_regions) to reference/nirspec/<obs>/masks/*.reg,
-    which the pipeline reads before stage 2.
+    (nirspec_rate_exposures.mask_regions) to reference/nirspec/<obs>/masks/*.reg;
+    `pull-stuck-shutters` / `pull-bkg-overrides` materialize the nods-view flags
+    (nirspec_source_review) to reference/nirspec/<obs>/stuck_closed_shutters.toml and
+    nodded_background_overrides.toml. The pipeline reads all three before stage 2.
     """
     pass
 
@@ -1451,6 +1453,47 @@ def nirspec_pull_rate_masks(ctx, config_path, obs, dry_run, local):
     from campfire.deploy.nirspec_masks import pull_rate_masks
     config = load_config(config_path, local=_resolve_local(ctx, local))
     pull_rate_masks(obs, config, dry_run=dry_run)
+
+
+@nirspec.command('pull-stuck-shutters')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
+@click.option('--dry-run', is_flag=True,
+              help='Show what would be written without touching files.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nirspec_pull_stuck_shutters(ctx, config_path, obs, dry_run, local):
+    """Merge nirspec_source_review.stuck_shutters into stuck_closed_shutters.toml.
+
+    Authority merge hand > web > auto: preserves hand entries, refreshes web entries
+    from the DB (dropping ones the DB no longer flags), and leaves auto-detected
+    entries to fill gaps. The pipeline reads the TOML before stage 2.
+    """
+    from campfire.deploy.nirspec_flags import pull_stuck_shutters
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    pull_stuck_shutters(obs, config, dry_run=dry_run)
+
+
+@nirspec.command('pull-bkg-overrides')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
+@click.option('--dry-run', is_flag=True,
+              help='Show what would be written without touching files.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nirspec_pull_bkg_overrides(ctx, config_path, obs, dry_run, local):
+    """Regenerate nodded_background_overrides.toml from nirspec_source_review.bkg_overrides.
+
+    Clean full-overwrite (no auto-writer to conflict with). The pipeline reads the
+    TOML before stage 2 to pick per-nod background nods (empty list = exclude nod).
+    """
+    from campfire.deploy.nirspec_flags import pull_bkg_overrides
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    pull_bkg_overrides(obs, config, dry_run=dry_run)
 
 
 @nircam.command('pull')

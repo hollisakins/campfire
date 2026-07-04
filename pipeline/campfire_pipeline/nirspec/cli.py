@@ -215,7 +215,8 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
     from campfire_pipeline.nirspec.stage2 import resample_single_exposure
     from campfire_pipeline.nirspec.stuck_shutters import (
         detect_stuck_shutters, merge_stuck_shutters,
-        write_stuck_shutters_toml, _get_n_shutters,
+        write_stuck_shutters_toml, load_stuck_shutters_tagged,
+        _get_n_shutters,
     )
     from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
 
@@ -258,25 +259,30 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
 
         if detected:
             if overwrite:
-                # Write fresh detection results, replacing existing TOML
-                all_detected = set(
-                    (root, sid)
-                    for root, sources in detected.items()
-                    for sid in sources.keys()
-                )
+                # Write fresh detection results, replacing existing TOML — every
+                # entry is auto-detected, so tag them all `# auto`.
+                data = {r: {str(s): sh for s, sh in srcs.items()}
+                        for r, srcs in detected.items()}
+                provenance = {(r, str(s)): 'auto'
+                              for r, sources in detected.items()
+                              for s in sources.keys()}
                 write_stuck_shutters_toml(
-                    {r: {str(s): sh for s, sh in srcs.items()}
-                     for r, srcs in detected.items()},
-                    obs_obj.stuck_closed_shutters_file, obs_obj.name,
-                    auto_detected=all_detected,
+                    data, obs_obj.stuck_closed_shutters_file, obs_obj.name,
+                    provenance=provenance,
                 )
             else:
-                # Merge with existing TOML entries (manual entries preserved)
+                # Merge with existing TOML entries (manual entries preserved),
+                # carrying each entry's provenance tag (hand/web/auto) through the
+                # rewrite so a later pull-stuck-shutters merge still tells them apart.
+                prior_tags = load_stuck_shutters_tagged(obs_obj.stuck_closed_shutters_file)
                 existing = _toml.load(obs_obj.stuck_closed_shutters_file)
                 merged, updated = merge_stuck_shutters(existing, detected)
+                provenance = {k: tag for k, (_sh, tag) in prior_tags.items()}
+                for (root, sid) in updated:
+                    provenance[(root, str(sid))] = 'auto'
                 write_stuck_shutters_toml(
                     merged, obs_obj.stuck_closed_shutters_file, obs_obj.name,
-                    auto_detected=updated,
+                    provenance=provenance,
                 )
 
             # Generate diagnostic plots
