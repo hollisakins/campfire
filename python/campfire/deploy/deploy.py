@@ -357,6 +357,16 @@ def _deploy_intermediates_only(
         n_reg = upsert_storage_objects(sb, reg_rows)
         print(f"Registered {n_reg} storage objects")
 
+    # Rate-mask triage rows (P2, design §3.2): one per (obs, exposure, detector),
+    # split-ownership upsert so re-deploy never clobbers web review state.
+    if rate_files:
+        from campfire.deploy.rate_exposures import (
+            build_rate_exposure_records, upsert_rate_exposures,
+        )
+        n_rate = upsert_rate_exposures(
+            sb, build_rate_exposure_records(rate_files, observation=obs_name, scope=scope))
+        print(f"Upserted {n_rate} rate-exposure triage rows")
+
     claim = claim_deploy_scope(sb, 'observation', obs_name, scope_version_at_start, actor=user_id)
     if claim.get('conflict'):
         print(f"⚠  CONCURRENT DEPLOY DETECTED for {obs_name}: another deploy advanced "
@@ -639,6 +649,7 @@ def deploy_observation(
     try:
         upload_tasks: list[UploadTask] = []
         uploaded_keys: set[str] = set()  # r2_keys that actually landed (for the registry)
+        rate_files: list = []  # populated in the not-supabase_only block; drives P2 triage upsert
         scope = Scope(obs=obs_name)
 
         # NIRSpec science products are homed on OSN under CANONICAL keys (epic #210 /
@@ -927,6 +938,16 @@ def deploy_observation(
             )
             n_reg = upsert_storage_objects(sb, reg_rows)
             print(f"Registered {n_reg} storage objects")
+
+        # Rate-mask triage rows (P2, design §3.2): split-ownership upsert so a
+        # re-deploy refreshes render columns without clobbering web review state.
+        if rate_files:
+            from campfire.deploy.rate_exposures import (
+                build_rate_exposure_records, upsert_rate_exposures,
+            )
+            n_rate = upsert_rate_exposures(
+                sb, build_rate_exposure_records(rate_files, observation=obs_name, scope=scope))
+            print(f"Upserted {n_rate} rate-exposure triage rows")
 
         print()
         msg = f"Deployed {len(spectra)} spectra from {len(objects)} objects"

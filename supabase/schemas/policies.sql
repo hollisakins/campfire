@@ -677,6 +677,32 @@ CREATE POLICY "admin_update_exposures"
 
 
 -- =============================================================================
+-- nirspec_rate_exposures (admin-only — NIRSpec rate-mask triage, design §3.2)
+-- =============================================================================
+
+ALTER TABLE nirspec_rate_exposures ENABLE ROW LEVEL SECURITY;
+
+-- Admins can read all rate exposures.
+DROP POLICY IF EXISTS "admin_select_nirspec_rate_exposures" ON nirspec_rate_exposures;
+CREATE POLICY "admin_select_nirspec_rate_exposures"
+  ON nirspec_rate_exposures FOR SELECT TO authenticated
+  USING ((SELECT public.is_admin()));
+
+-- Admins can insert rate exposures.
+DROP POLICY IF EXISTS "admin_insert_nirspec_rate_exposures" ON nirspec_rate_exposures;
+CREATE POLICY "admin_insert_nirspec_rate_exposures"
+  ON nirspec_rate_exposures FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+-- Admins can update rate exposures.
+DROP POLICY IF EXISTS "admin_update_nirspec_rate_exposures" ON nirspec_rate_exposures;
+CREATE POLICY "admin_update_nirspec_rate_exposures"
+  ON nirspec_rate_exposures FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
+
+-- =============================================================================
 -- spectrum_exposures (admin-only — NIRSpec intermediates, epic #210 B2)
 -- =============================================================================
 -- Reduction intermediates, never user-facing science. Admin-only, mirroring
