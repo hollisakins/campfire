@@ -84,7 +84,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   triggers a rebuild while existing tiered mosaics keep their hash (no mass
   rebuild). Vendored/hardened from research code by H. C. Ferguson: the
   statistic is now NaN/valid-aware (fixes a zero-fill-before-standardize bias)
-  and fully vectorized over patches.
+  and fully vectorized over patches. The A/B harness
+  (`experiments/moransi_ab/run_ab.py`) is hardened for real mosaics: per-source
+  zoom cutouts, ERR-based coverage, and source detection that survives
+  non-contiguous, >2³¹-px tiles (crop-confined to dodge `sep`'s 32-bit index
+  overflow). A mosaic A/B on EGS F444W (Phase 3b) kept the default at `"tiered"`
+  — see the scoping doc for the result.
 - **BREAKING (MAJOR):** the NIRCam mosaic `version` axis is retired (epic #261,
   N2 / D3). Mosaic products are now named `mosaic_nircam_<filter>_<field>_<scale>_<tile>_<ext>.fits`
   with **no** `_<version>_` segment — one canonical mosaic per

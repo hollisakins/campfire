@@ -171,27 +171,163 @@ def plot_panels(arms, sources, out_png):
     print(f"wrote {out_png}")
 
 
-def run(path, arm_tokens, patch, kernel, do_plot, outdir):
+_SEP_PIXEL_LIMIT = 2 ** 31 - 1   # sep uses 32-bit indexing; guard huge tiles.
+
+
+def _pick_covered_crop(valid, size=8000, stride=32):
+    """Top-left (cy0, cx0) of a ``size``x``size`` window over the densest-
+    coverage region, found cheaply on a strided coverage map. Used to keep
+    ``sep`` off arrays larger than 2**31 px (it would integer-overflow) while
+    still detecting real interior sources on a non-contiguous mosaic.
+    """
+    from scipy.ndimage import uniform_filter
+    cov = valid[::stride, ::stride].astype(np.float32)
+    w = max(1, size // stride)
+    dens = uniform_filter(cov, size=w, mode="constant")
+    iy, ix = np.unravel_index(int(np.argmax(dens)), dens.shape)
+    cy0 = min(max(0, iy * stride - size // 2), max(0, valid.shape[0] - size))
+    cx0 = min(max(0, ix * stride - size // 2), max(0, valid.shape[1] - size))
+    return cy0, cx0
+
+
+def detect_sources_safe(image, valid, nmax=30, crop=8000):
+    """Detect bright sources on the INPUT image (positions are defined on the
+    shared input, identical across arms, and only *measured* on each arm's
+    subtracted output). ``valid`` is the coverage mask (True = usable). On
+    arrays larger than sep's 2**31-px limit, detection is confined to a covered
+    crop (sep would integer-overflow on the full array); positions are returned
+    in FULL-array coordinates so downstream cutouts index the full arrays."""
+    if image.size <= _SEP_PIXEL_LIMIT:
+        return detect_bright_sources(image, valid, nmax=nmax)
+    cy0, cx0 = _pick_covered_crop(valid, size=crop)
+    print(f"tile {image.shape} > 2**31 px: detecting sources on covered crop "
+          f"[{cy0}:{cy0+crop}, {cx0}:{cx0+crop}] to avoid sep overflow")
+    img_c = image[cy0:cy0 + crop, cx0:cx0 + crop]
+    valid_c = valid[cy0:cy0 + crop, cx0:cx0 + crop]
+    src = detect_bright_sources(img_c, valid_c, nmax=nmax)
+    return [(y + cy0, x + cx0, f) for (y, x, f) in src]
+
+
+def _window(shape, y, x, half):
+    """In-bounds (y0, y1, x0, x1) cutout window, or None if it runs off-array."""
+    y, x = int(round(y)), int(round(x))
+    y0, y1, x0, x1 = y - half, y + half, x - half, x + half
+    if y0 < 0 or x0 < 0 or y1 > shape[0] or x1 > shape[1]:
+        return None
+    return (y0, y1, x0, x1)
+
+
+def plot_zoom_cutouts(arms, sources, out_png, valid=None, half=100, nsrc=6,
+                      min_covered=0.9):
+    """Per-source zoom cutouts of the subtracted residual, arms vs sources.
+
+    Rows = arms, columns = the same interior bright sources; a diverging
+    colormap centered at 0 (scaled to the reference arm's ``bkg_width``) so
+    negative wings around bright sources read as blue. Only sources whose
+    ``2*half`` window is fully in-bounds AND ``>= min_covered`` covered (per the
+    ``valid`` coverage mask) are used — this deliberately skips gap-adjacent
+    sources so the wing comparison stays meaningful on **non-contiguous**
+    mosaics (where the scalar ``trough`` metric breaks). Returns the written
+    path, or None if no clean source qualified.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ref = arms[0]
+    if valid is None:                         # fall back to finite-SCI coverage
+        valid = np.isfinite(ref["sci"])
+    chosen = []
+    for (y, x, f) in sources:
+        win = _window(ref["sub"].shape, y, x, half)
+        if win is None:
+            continue
+        y0, y1, x0, x1 = win
+        if valid[y0:y1, x0:x1].mean() < min_covered:
+            continue
+        chosen.append((y, x, f, win))
+        if len(chosen) >= nsrc:
+            break
+    if not chosen:
+        print("no fully-covered interior bright sources; skipping zoom cutouts")
+        return None
+
+    blank_ref = np.isfinite(ref["sub"]) & ~ref["mask"]
+    w = float(mad_std(ref["sub"][blank_ref])) if blank_ref.any() else np.nan
+    lim = 5.0 * w if np.isfinite(w) and w > 0 else None
+
+    n, m = len(arms), len(chosen)
+    fig, axes = plt.subplots(n, m, figsize=(3.0 * m, 3.0 * n), squeeze=False)
+    for r, arm in enumerate(arms):
+        for c, (y, x, f, win) in enumerate(chosen):
+            y0, y1, x0, x1 = win
+            ax = axes[r, c]
+            kw = dict(vmin=-lim, vmax=lim) if lim else {}
+            ax.imshow(arm["sub"][y0:y1, x0:x1], origin="lower", cmap="RdBu_r",
+                      interpolation="nearest", **kw)
+            ax.set_xticks([]); ax.set_yticks([])
+            if r == 0:
+                ax.set_title(f"src {c} @({int(x)},{int(y)})", fontsize=9)
+            if c == 0:
+                name = arm["method"] + ("" if arm["pct"] is None
+                                        else f":{arm['pct']:g}")
+                ax.set_ylabel(name, fontsize=11)
+    scale = f"±5·bkg_width = ±{lim:.3g}" if lim else "auto"
+    fig.suptitle(f"zoom residual cutouts ({2*half}px), diverging {scale}; "
+                 "blue = negative (oversubtraction / wings)", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    os.makedirs(os.path.dirname(out_png), exist_ok=True)
+    fig.savefig(out_png, dpi=130)
+    print(f"wrote {out_png}")
+    return out_png
+
+
+def run(path, arm_tokens, patch, kernel, do_plot, outdir,
+        zoom_half=100, zoom_nsrc=6):
     arms = [run_arm(path, m, p, patch, kernel)
             for (m, p) in (parse_arm(t) for t in arm_tokens)]
     # Detect bright sources ONCE on the reference arm, reuse positions for all.
+    # nmax is generous so the zoom-cutout coverage filter still leaves enough
+    # clean interior sources on a gappy (non-contiguous) mosaic.
     ref = arms[0]
-    blank_ref = np.isfinite(ref["sub"]) & ~ref["mask"]
+    # Detect on the shared INPUT SCI (identical across arms) with coverage as
+    # the valid mask; measure per-arm on the subtracted output. Detecting on a
+    # single arm's subtracted+masked image is fragile (it found nothing on real
+    # tiles); the input positions are unambiguous and arm-independent.
+    #
+    # Coverage comes from ERR, not isfinite(SCI): drizzled tiles zero-FILL the
+    # no-coverage SCI (finite), so only ERR (NaN or <=0 off-footprint) marks
+    # real coverage — matching bkgsub.off_detector = isnan(err).
+    sci_in = ref["sci"]
+    with fits.open(path, memmap=True) as h:
+        err_in = h["ERR"].data
+        valid_in = np.isfinite(err_in) & (err_in > 0)
+    big = sci_in.size > _SEP_PIXEL_LIMIT
     try:
-        sources = detect_bright_sources(ref["sub"], blank_ref, nmax=8)
+        sources = detect_sources_safe(sci_in, valid_in, nmax=30)
     except Exception as e:
         print(f"source detection failed ({e}); skipping flux/trough metrics")
         sources = []
+    # arm_metrics runs sep photometry on the FULL array, which overflows past
+    # 2**31 px; on such tiles report bkg_width/masked_frac only (flux/trough
+    # NaN). Panels + crop-detected zoom cutouts still use `sources`.
+    metric_sources = [] if big else sources
+    if big and sources:
+        print("full-array sep photometry skipped (>2**31 px); flux_ratio/trough "
+              "reported NaN — judge oversubtraction from the zoom cutouts.")
     metrics = []
     ref_flux = None
     for arm in arms:
-        mm = arm_metrics(arm, sources, ref_flux=ref_flux)
+        mm = arm_metrics(arm, metric_sources, ref_flux=ref_flux)
         if ref_flux is None:
             ref_flux = mm["_flux"]
         metrics.append(mm)
     summarize(arms, metrics, os.path.join(outdir, "summary.md"))
     if do_plot:
         plot_panels(arms, sources, os.path.join(outdir, "ab_panels.png"))
+        plot_zoom_cutouts(arms, sources,
+                          os.path.join(outdir, "ab_zoom_cutouts.png"),
+                          valid=valid_in, half=zoom_half, nsrc=zoom_nsrc)
     return arms, metrics
 
 
@@ -241,6 +377,10 @@ def main():
     ap.add_argument("--kernel", default="queen")
     ap.add_argument("--plot", action="store_true")
     ap.add_argument("--outdir", default=os.path.join(HERE, "figs"))
+    ap.add_argument("--zoom-half", type=int, default=100,
+                    help="half-size (px) of per-source zoom cutouts")
+    ap.add_argument("--zoom-nsrc", type=int, default=6,
+                    help="number of interior bright sources to zoom on")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
@@ -248,7 +388,8 @@ def main():
         return
     if not a.mosaic:
         ap.error("provide a mosaic path or --selftest")
-    run(a.mosaic, a.arms, a.patch, a.kernel, a.plot, a.outdir)
+    run(a.mosaic, a.arms, a.patch, a.kernel, a.plot, a.outdir,
+        zoom_half=a.zoom_half, zoom_nsrc=a.zoom_nsrc)
 
 
 if __name__ == "__main__":
