@@ -25,11 +25,13 @@ import { parseExposureNavParams } from '@/lib/nircam-exposure-nav';
 import {
   getCachedExposure,
   setCachedExposure,
-  prefetchPreviewPng,
+  prefetchPng,
 } from '@/lib/nircam-exposure-cache';
 
-// Eager PNG prefetch window: previews (~1.3 MB) for a few exposures ahead + one
-// back; the heavy full-res mask surface (~5.7 MB) only for the immediate next.
+// Eager PNG prefetch window: warm the full-res mask surface (~5.7 MB) the
+// editor actually renders for a few exposures ahead + one back, so stepping
+// through the queue paints instantly. Falls back to the preview (~1.3 MB) for
+// exposures that have no full PNG (the thumbnail-only view).
 const PREFETCH_AHEAD = 3;
 const PREFETCH_BEHIND = 1;
 
@@ -145,9 +147,12 @@ function ExposureDetailPageInner() {
 
   // Presign the current exposure's PNGs + eagerly prefetch a window of upcoming
   // ones (epic #261, N5). Keys are re-derived server-side; URLs go straight into
-  // <img> (no proxy hop). Preview (~1.3 MB) is prefetched across the whole
-  // window; the heavy full-res mask surface (~5.7 MB) only for the immediate
-  // next, so a fast tab-through stays ahead without flooding the network.
+  // <img> (no proxy hop). We warm the full-res mask surface (~5.7 MB) — the byte
+  // the editor actually renders — across the whole window, keyed off the
+  // *persistent* URL map so a sibling presigned by an earlier window is still
+  // warmed on every step. (Previously the warm keyed off only the freshly-signed
+  // ids, so once the next exposure had been presigned by a prior window its full
+  // PNG was never prefetched again — every Next reloaded it cold from OSN.)
   useEffect(() => {
     if (!nav) return;
     // Derive the prefetch window from the neighbors RPC result: ahead-heavy
@@ -158,18 +163,29 @@ function ExposureDetailPageInner() {
       ...nav.windowIds.slice(idx + 1, idx + 1 + PREFETCH_AHEAD),
       ...nav.windowIds.slice(Math.max(0, idx - PREFETCH_BEHIND), idx),
     ];
-    // Only presign ids we haven't already (prefetched siblings keep their URL).
+    // Warm the exact byte the viewer will show for each windowed exposure: the
+    // full-res mask surface the editor renders, or the preview when there's no
+    // full PNG. Re-warming an already-cached URL is a browser cache hit, so the
+    // only new network per step is the frontier exposure entering the window.
+    const warm = (map: Record<number, ExposurePngUrls>) => {
+      for (const sib of win) {
+        const u = map[sib];
+        if (u) prefetchPng(u.full ?? u.preview);
+      }
+    };
+    // Only presign ids we haven't already (prefetched siblings keep their URL);
+    // when the whole window is already signed, just re-warm from what we have.
     const batch = [id, ...win].filter((x) => pngUrlsRef.current[x] === undefined);
-    if (batch.length === 0) return;
+    if (batch.length === 0) {
+      warm(pngUrlsRef.current);
+      return;
+    }
     let cancelled = false;
     presignExposurePngs(batch).then((urls) => {
       if (cancelled) return;
-      setPngUrls((prev) => ({ ...prev, ...urls }));
-      // `urls` holds only the newly-presigned (previously-absent) ids, so each
-      // sibling is prefetched exactly once, at the URL that will be reused.
-      for (const sib of win) if (urls[sib]) prefetchPreviewPng(urls[sib].preview);
-      // Heavy full-res PNG: only the genuine immediate next (null at the end).
-      if (nav.nextId != null && urls[nav.nextId]) prefetchPreviewPng(urls[nav.nextId].full);
+      const merged = { ...pngUrlsRef.current, ...urls };
+      setPngUrls(merged);
+      warm(merged);
     });
     return () => { cancelled = true; };
   }, [id, nav]);
