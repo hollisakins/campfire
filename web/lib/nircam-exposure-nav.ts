@@ -6,7 +6,7 @@
 // nav survives refresh, direct entry, and shared links.
 
 import type { ExposureFilters, ExposureSort } from '@/lib/actions/nircam-exposures';
-import { EXPOSURE_SORT_KEYS } from '@/lib/actions/nircam-exposures';
+import { EXPOSURE_SORT_KEYS } from '@/lib/admin/sort-keys';
 
 export const EXPOSURE_FILTER_PARAM_KEYS = [
   'field', 'filter', 'detector', 'review', 'stage', 'masking', 'correction',

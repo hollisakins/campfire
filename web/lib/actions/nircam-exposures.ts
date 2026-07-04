@@ -55,14 +55,9 @@ export interface ExposureSort {
   sortDirection?: 'asc' | 'desc';
 }
 
-/**
- * Sort keys accepted by get_admin_exposures / get_admin_exposure_neighbors —
- * mirror the RPC whitelist. 'filename' is the compound (field, filter,
- * filename) list order.
- */
-export const EXPOSURE_SORT_KEYS = [
-  'filename', 'field', 'filter', 'detector', 'stage', 'review_status', 'date_obs', 'updated_at',
-] as const;
+// Sort-key whitelist (accepted by get_admin_exposures /
+// get_admin_exposure_neighbors) lives in @/lib/admin/sort-keys — a 'use server'
+// module may only export async functions.
 
 function rpcExposureParams(params?: ExposureFilters & ExposureSort) {
   return {

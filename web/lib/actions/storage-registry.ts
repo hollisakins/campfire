@@ -60,10 +60,8 @@ export interface StorageObjectsResult {
   error?: string;
 }
 
-/** Sort keys accepted by get_admin_storage_objects — mirror the RPC whitelist. */
-export const STORAGE_OBJECT_SORT_KEYS = [
-  'created_at', 'size_bytes', 'product_type', 'storage_key', 'observation', 'field', 'status',
-] as const;
+// Sort-key whitelist lives in @/lib/admin/sort-keys — a 'use server' module
+// may only export async functions.
 
 // Backed by the get_admin_storage_objects RPC: whitelisted server-side sort +
 // windowed total in one scan (the previous count:'exact' ran a second full

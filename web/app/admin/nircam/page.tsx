@@ -15,10 +15,10 @@ import {
   getReductionProgress,
   getExposureFilterOptions,
   getExcludedExposures,
-  EXPOSURE_SORT_KEYS,
   type ReductionProgress,
   type ExcludedExposure,
 } from '@/lib/actions/nircam-exposures';
+import { EXPOSURE_SORT_KEYS } from '@/lib/admin/sort-keys';
 import type { NircamExposure } from '@/lib/types';
 import {
   stageBadgeClasses,
