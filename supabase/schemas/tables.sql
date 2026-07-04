@@ -875,6 +875,52 @@ COMMENT ON COLUMN "public"."spectrum_exposures"."exposure_root" IS 'Pipeline 2-t
 COMMENT ON COLUMN "public"."spectrum_exposures"."exp_group" IS 'Pipeline-computed exposure-group id (subpixel-dither), read from the canonical FITS CFEXPGRP header card. One value per group, spanning nods+detectors; a render/grouping attribute, NOT part of the unique key. Nullable (files predating the P4 stamp).';
 
 
+-- nirspec_source_review: the editable flag channel for the NIRSpec nods review
+-- loop (P6, design §4.3). One row per (observation, exposure_root, source_id) — a
+-- SOURCE-scoped grain, coarser than the spectrum_exposures render grid (which is
+-- per nod×detector), so the two flag channels live here rather than duplicating
+-- across every nod/detector row. Both channels are jsonb mirroring the local
+-- reference/nirspec/<obs>/ TOMLs 1:1, so P7's pull serializes without transform:
+--   stuck_shutters  = [1,2,3]     ordinal list   (mirrors stuck_closed_shutters.toml)
+--   bkg_overrides   = {"3":[1]}   {nod: [nods]}  (mirrors nodded_background_overrides.toml;
+--                                  keys/values are exposure-sequence numbers, not indices)
+-- Admin-only (RLS); web-editable; NOT deployed to OSN (deployments.stuck_shutters is a
+-- per-deploy snapshot, this is the live editable record). exposure_root is the 2-token
+-- root (jw07076020001_04101), same semantics as spectrum_exposures.exposure_root.
+CREATE TABLE IF NOT EXISTS "public"."nirspec_source_review" (
+    "id" integer NOT NULL,
+    "observation" "text" NOT NULL,
+    "exposure_root" "text" NOT NULL,
+    "source_id" integer NOT NULL,
+    "stuck_shutters" "jsonb",
+    "bkg_overrides" "jsonb",
+    "notes" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."nirspec_source_review" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."nirspec_source_review_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."nirspec_source_review_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."nirspec_source_review_id_seq" OWNED BY "public"."nirspec_source_review"."id";
+
+
+COMMENT ON TABLE "public"."nirspec_source_review" IS 'Editable flag channel for the NIRSpec nods review loop (P6). One row per (observation, exposure_root, source_id); admin-only, web-editable, NOT deployed. stuck_shutters/bkg_overrides jsonb mirror the reference/nirspec/<obs>/ TOMLs 1:1 for the P7 pull-back.';
+
+
 -- storage_objects: the keystone shadow index of every object in cloud storage
 -- (epic #210, F1). Deploy writes one row per uploaded object using canonical keys
 -- from the campfire_layout contract; a backfill/reconcile pass covers historical
@@ -1386,6 +1432,8 @@ ALTER TABLE ONLY "public"."nirspec_rate_exposures" ALTER COLUMN "id" SET DEFAULT
 
 ALTER TABLE ONLY "public"."spectrum_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."spectrum_exposures_id_seq"'::"regclass");
 
+ALTER TABLE ONLY "public"."nirspec_source_review" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nirspec_source_review_id_seq"'::"regclass");
+
 
 
 ALTER TABLE ONLY "public"."storage_objects" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."storage_objects_id_seq"'::"regclass");
@@ -1542,6 +1590,12 @@ ALTER TABLE ONLY "public"."spectrum_exposures"
 
 ALTER TABLE ONLY "public"."spectrum_exposures"
     ADD CONSTRAINT "spectrum_exposures_unique" UNIQUE ("observation", "exposure_root", "nod", "detector", "source_id");
+
+ALTER TABLE ONLY "public"."nirspec_source_review"
+    ADD CONSTRAINT "nirspec_source_review_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."nirspec_source_review"
+    ADD CONSTRAINT "nirspec_source_review_unique" UNIQUE ("observation", "exposure_root", "source_id");
 
 ALTER TABLE ONLY "public"."deploy_events"
     ADD CONSTRAINT "deploy_events_pkey" PRIMARY KEY ("id");
@@ -2082,6 +2136,10 @@ GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "service_role";
 GRANT ALL ON TABLE "public"."spectrum_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectrum_exposures" TO "service_role";
 
+-- nirspec_source_review is admin-only (RLS); not granted to anon.
+GRANT ALL ON TABLE "public"."nirspec_source_review" TO "authenticated";
+GRANT ALL ON TABLE "public"."nirspec_source_review" TO "service_role";
+
 
 -- deploy_events is an admin/internal audit log (RLS admin-only); not granted to anon.
 GRANT ALL ON TABLE "public"."deploy_events" TO "authenticated";
@@ -2196,6 +2254,9 @@ GRANT ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" TO "service_role"
 
 GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "service_role";
+
+GRANT ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" TO "service_role";
 
 
 GRANT ALL ON SEQUENCE "public"."storage_objects_id_seq" TO "authenticated";

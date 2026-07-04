@@ -1,7 +1,7 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
-import type { SpectrumExposure } from '@/lib/types';
+import type { SpectrumExposure, NirspecSourceReview } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -104,5 +104,70 @@ export async function getNirspecNodGrid(
       rows: [],
       error: err instanceof Error ? err.message : 'Failed to fetch nod grid',
     };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Source-scoped flags (P6): nirspec_source_review, one row per
+// (observation, exposure_root, source_id). A nods grid spans several exposure
+// roots, so the page loads all reviews for the source and indexes by root.
+// ---------------------------------------------------------------------------
+
+export async function getNirspecSourceReviews(
+  observation: string,
+  sourceId: number,
+): Promise<{ reviews: NirspecSourceReview[]; error?: string }> {
+  try {
+    const supabase = await requireAdmin();
+    const { data, error } = await supabase
+      .from('nirspec_source_review')
+      .select('*')
+      .eq('observation', observation)
+      .eq('source_id', sourceId);
+    if (error) return { reviews: [], error: error.message };
+    return { reviews: (data ?? []) as NirspecSourceReview[] };
+  } catch (err) {
+    return {
+      reviews: [],
+      error: err instanceof Error ? err.message : 'Failed to fetch source reviews',
+    };
+  }
+}
+
+/**
+ * Upsert a source's review row by its natural key. BOTH flag channels are written
+ * on every save (the caller passes the current sibling value) so a single-channel
+ * edit can't null the other column — the upsert writes a whole row. Empty
+ * stuck-shutter lists / empty override maps are stored as SQL NULL (see the
+ * normalizeBkgOverrides / caller conventions).
+ */
+export async function saveSourceReview(
+  observation: string,
+  exposureRoot: string,
+  sourceId: number,
+  stuckShutters: number[] | null,
+  bkgOverrides: Record<string, number[]> | null,
+): Promise<{ review?: NirspecSourceReview; error?: string }> {
+  try {
+    const supabase = await requireAdmin();
+    const { data, error } = await supabase
+      .from('nirspec_source_review')
+      .upsert(
+        {
+          observation,
+          exposure_root: exposureRoot,
+          source_id: sourceId,
+          stuck_shutters: stuckShutters && stuckShutters.length ? stuckShutters : null,
+          bkg_overrides: bkgOverrides,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'observation,exposure_root,source_id' },
+      )
+      .select()
+      .single();
+    if (error) return { error: error.message };
+    return { review: data as NirspecSourceReview };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Failed to save source review' };
   }
 }

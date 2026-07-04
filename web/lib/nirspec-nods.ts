@@ -67,3 +67,43 @@ export function buildNodGrid(rows: SpectrumExposure[]): NodGridRow[] {
   }
   return result;
 }
+
+// ---------------------------------------------------------------------------
+// Flag helpers (P6) — pure, shared by the page + server actions + tests.
+// ---------------------------------------------------------------------------
+
+/**
+ * The jsonb/TOML key for a nod is the exposure-SEQUENCE number (the int-parsed
+ * filename token), NOT the zero-padded token. Matches stage2.py's
+ * `int(filename.split('_')[2])` and the bkg-override TOML docstring. So the DB key
+ * for nod token '00003' is '3'.
+ */
+export function nodKey(nodToken: string): string {
+  return String(parseInt(nodToken, 10));
+}
+
+/** Toggle a 1-indexed shutter ordinal in a stuck-shutter list; returns a new sorted, deduped list. */
+export function toggleStuckOrdinal(list: number[], ordinal: number): number[] {
+  const set = new Set(list);
+  if (set.has(ordinal)) set.delete(ordinal);
+  else set.add(ordinal);
+  return [...set].sort((a, b) => a - b);
+}
+
+/**
+ * Normalize a bkg-override map for storage: an empty list `[]` for a nod is
+ * meaningful (it means "exclude this nod", distinct from an absent key) and is
+ * preserved, but a wholly-empty map collapses to `null` so the column reads as
+ * "no overrides".
+ */
+export function normalizeBkgOverrides(
+  map: Record<string, number[]>,
+): Record<string, number[]> | null {
+  const keys = Object.keys(map);
+  if (keys.length === 0) return null;
+  const out: Record<string, number[]> = {};
+  for (const k of keys.sort((a, b) => Number(a) - Number(b))) {
+    out[k] = [...map[k]!].sort((a, b) => a - b);
+  }
+  return out;
+}

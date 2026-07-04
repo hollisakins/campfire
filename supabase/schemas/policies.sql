@@ -728,6 +728,31 @@ CREATE POLICY "admin_update_spectrum_exposures"
 
 
 -- =============================================================================
+-- nirspec_source_review (admin-only — NIRSpec editable flag channel, P6)
+-- =============================================================================
+-- Reviewer-editable stuck-shutter / bkg-override flags. Admin-only, web-editable
+-- (unlike the deploy-only intermediate tables, admins INSERT/UPDATE directly here).
+
+ALTER TABLE nirspec_source_review ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "admin_select_nirspec_source_review" ON nirspec_source_review;
+CREATE POLICY "admin_select_nirspec_source_review"
+  ON nirspec_source_review FOR SELECT TO authenticated
+  USING ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_insert_nirspec_source_review" ON nirspec_source_review;
+CREATE POLICY "admin_insert_nirspec_source_review"
+  ON nirspec_source_review FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_update_nirspec_source_review" ON nirspec_source_review;
+CREATE POLICY "admin_update_nirspec_source_review"
+  ON nirspec_source_review FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
+
+-- =============================================================================
 -- deploy_events (admin-only — lifecycle audit log, epic #210 B2/B3)
 -- =============================================================================
 -- Append-only audit log, written only by the lifecycle RPCs (SECURITY DEFINER,
