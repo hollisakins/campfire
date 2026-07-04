@@ -11,6 +11,7 @@
  */
 
 import type { NircamExposure } from '@/lib/types';
+import type { ExposurePngUrls } from '@/lib/actions/nircam-exposures';
 
 const cache = new Map<number, NircamExposure>();
 
@@ -88,4 +89,30 @@ export function isPngCached(url: string | null): boolean {
   if (!url) return false;
   const img = retainedImages.get(url);
   return !!img && img.complete && img.naturalWidth > 0;
+}
+
+/**
+ * Presigned OSN GET URLs per exposure id.
+ *
+ * MODULE scope on purpose: the /admin/nircam/[id] page REMOUNTS on every
+ * prev/next (the App Router re-instantiates the dynamic-segment page), so
+ * holding these in React state — as the page originally did — wiped them on
+ * each step. That forced a fresh presign (a new signature) on arrival, which
+ * both flashed the presign spinner AND missed the retained-image cache keyed by
+ * that URL, so every step refetched the PNG from OSN. Cached here alongside the
+ * row + image caches, a prefetched sibling's URL survives the remount: the next
+ * exposure paints from cache with no spinner and no network round-trip.
+ *
+ * Unbounded like the row cache (a couple of small strings per id; sessions are
+ * short). URLs carry a ~1 h TTL, but a prefetched image is already fully loaded
+ * and paints from the retained element even if its URL later expires.
+ */
+const pngUrlCache = new Map<number, ExposurePngUrls>();
+
+export function getCachedPngUrls(id: number): ExposurePngUrls | undefined {
+  return pngUrlCache.get(id);
+}
+
+export function setCachedPngUrls(id: number, urls: ExposurePngUrls): void {
+  pngUrlCache.set(id, urls);
 }
