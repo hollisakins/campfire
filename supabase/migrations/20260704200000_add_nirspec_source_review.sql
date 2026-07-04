@@ -55,3 +55,7 @@ create policy "admin_update_nirspec_source_review"
   on "public"."nirspec_source_review" as permissive for update to authenticated
   using (( SELECT public.is_admin() AS is_admin))
   with check (( SELECT public.is_admin() AS is_admin));
+
+-- Comments are not tracked by the migra diff engine (CLAUDE.md), so the table
+-- comment declared in schemas/tables.sql must be applied by hand here to reach prod.
+comment on table "public"."nirspec_source_review" is 'Editable flag channel for the NIRSpec nods review loop (P6). One row per (observation, exposure_root, source_id); admin-only, web-editable, NOT deployed. stuck_shutters/bkg_overrides jsonb mirror the reference/nirspec/<obs>/ TOMLs 1:1 for the P7 pull-back.';
