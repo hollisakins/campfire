@@ -309,6 +309,13 @@ def resample_step(filtname, exposure_files, field, step_config,
                         'bg_exclude_percentile', 90),
                     bg_sigma=step_config.get('bg_sigma', 3),
                     bg_interpolator=step_config.get('bg_interpolator', 'zoom'),
+                    mask_method=step_config.get('mask_method', 'tiered'),
+                    moransi_patch_size=step_config.get('moransi_patch_size', 20),
+                    moransi_percentile=step_config.get(
+                        'moransi_percentile', 40.0),
+                    moransi_kernel=step_config.get('moransi_kernel', 'queen'),
+                    moransi_min_valid_frac=step_config.get(
+                        'moransi_min_valid_frac', 0.25),
                     suffix='bkgsub',
                     replace_sci=True,
                 )

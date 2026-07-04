@@ -90,6 +90,18 @@ class SubtractBackground:
     bg_sigma: float = 3
     bg_interpolator: str = "zoom"
 
+    # -- Source-mask method ----------------------------------------------------
+    # Selects *how the source mask is built* for the (unchanged) Background2D
+    # fit. "tiered" = the ring-median + tiered detect_sources path below;
+    # "moransi" = the Moran's-I spatial-autocorrelation mask (moransi_bkgsub).
+    # The fitter (estimate_background) is identical for both, so this is the
+    # single A/B variable. See docs/moransi-background-scoping.md.
+    mask_method: str = "tiered"
+    moransi_patch_size: int = 20
+    moransi_percentile: float = 40.0
+    moransi_kernel: str = "queen"
+    moransi_min_valid_frac: float = 0.25
+
     # -- Output options --------------------------------------------------------
     plot_smooth: int = 0
     suffix: str = "bkgsub"
@@ -411,8 +423,30 @@ class SubtractBackground:
         mask = np.logical_or(mask, np.isnan(sci))
         bitmask = np.bitwise_or(bitmask, np.left_shift(mask, 0))
 
-        filtered = self.clipped_ring_median_filter(sci, mask)
-        bitmask = self.mask_sources(filtered, bitmask, starting_bit=1)
+        if self.mask_method == "moransi":
+            # Alternative source mask; the Background2D fit below is unchanged.
+            from campfire_pipeline.nircam.moransi_bkgsub import morans_source_mask
+            log(f"Source masking via Moran's I "
+                f"(patch={self.moransi_patch_size}, "
+                f"pct={self.moransi_percentile})")
+            src = morans_source_mask(
+                sci, self.moransi_patch_size,
+                input_mask=mask, error=err,
+                kernel=self.moransi_kernel,
+                percentile=self.moransi_percentile,
+                min_valid_frac=self.moransi_min_valid_frac,
+            )
+            bitmask = np.bitwise_or(
+                bitmask, np.left_shift(src.astype(np.uint32), 1)
+            )
+        elif self.mask_method == "tiered":
+            filtered = self.clipped_ring_median_filter(sci, mask)
+            bitmask = self.mask_sources(filtered, bitmask, starting_bit=1)
+        else:
+            raise ValueError(
+                f"Unknown mask_method: {self.mask_method!r} "
+                f"(expected 'tiered' or 'moransi')"
+            )
         mask_final = bitmask != 0
 
         bkg = self.estimate_background(sci, mask_final)
@@ -457,6 +491,21 @@ class SubtractBackground:
                 bitmask.astype("uint8"), header=wcs.to_header(), name="SRCMASK"
             )
             hdu.append(newhdu)
+
+            # Background-method provenance on the primary header (mosaic path).
+            hdu[0].header["CMPFRBKG"] = (
+                self.mask_method, "bkgsub source-mask method"
+            )
+            if self.mask_method == "moransi":
+                hdu[0].header["BKGPATCH"] = (
+                    self.moransi_patch_size, "Morans-I patch size [px]"
+                )
+                hdu[0].header["BKGPCTL"] = (
+                    self.moransi_percentile, "Morans-I background percentile"
+                )
+                hdu[0].header["BKGKERN"] = (
+                    str(self.moransi_kernel), "Morans-I neighbour kernel"
+                )
 
             log(f"Writing out {os.path.basename(outfile)}")
             hdu.writeto(outfile, overwrite=True)

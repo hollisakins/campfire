@@ -1,0 +1,8 @@
+# Heavy / regenerable artifacts — only the harness code + README are tracked.
+figs/
+logs/
+__pycache__/
+*.fits
+*.png
+*.pdf
+.DS_Store

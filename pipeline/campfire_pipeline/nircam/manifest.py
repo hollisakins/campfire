@@ -119,6 +119,34 @@ def build_mosaic_name(filtname, field_name, pixel_scale, tile, template=None):
 # Manifest creation / I/O
 # ---------------------------------------------------------------------------
 
+def _resample_config_hash(resample_cfg, pixel_scale):
+    """Hash the resample config fields that affect mosaic pixels.
+
+    Single source of truth for both :func:`create_manifest` and
+    :func:`check_config_changed` so the two can never drift. The source-mask
+    method is folded in **only when it is not the historical default**
+    (``'tiered'``): this keeps the hash of existing tiered mosaics unchanged
+    (no spurious global rebuild when this lands) while making any Moran's-I
+    A/B tile hash distinctly, so ``get_stale_tiles`` correctly rebuilds it.
+    """
+    cfg = {
+        'pixfrac': resample_cfg.get('pixfrac', 1),
+        'kernel': resample_cfg.get('kernel', 'square'),
+        'pixel_scale': pixel_scale,
+        'background_subtract': resample_cfg.get('background_subtract', True),
+    }
+    mask_method = resample_cfg.get('mask_method', 'tiered')
+    if mask_method != 'tiered':
+        cfg['mask_method'] = mask_method
+        cfg['moransi_patch_size'] = resample_cfg.get('moransi_patch_size', 20)
+        cfg['moransi_percentile'] = resample_cfg.get('moransi_percentile', 40.0)
+        cfg['moransi_kernel'] = resample_cfg.get('moransi_kernel', 'queen')
+        cfg['moransi_min_valid_frac'] = resample_cfg.get(
+            'moransi_min_valid_frac', 0.25)
+    config_str = json.dumps(cfg, sort_keys=True)
+    return f'sha256:{hashlib.sha256(config_str.encode()).hexdigest()}'
+
+
 def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
                     input_files, stage_config):
     """Build a manifest dict for a completed mosaic tile.
@@ -164,13 +192,7 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
         inputs.append(input_entry(f, extra=extra))
 
     # Hash the relevant processing config so we can detect config changes too
-    config_str = json.dumps({
-        'pixfrac': resample_cfg.get('pixfrac', 1),
-        'kernel': resample_cfg.get('kernel', 'square'),
-        'pixel_scale': pixel_scale,
-        'background_subtract': resample_cfg.get('background_subtract', True),
-    }, sort_keys=True)
-    config_hash = f'sha256:{hashlib.sha256(config_str.encode()).hexdigest()}'
+    config_hash = _resample_config_hash(resample_cfg, pixel_scale)
 
     return {
         'mosaic_name': mosaic_name,
@@ -185,6 +207,7 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
         'processing': {
             'outlier_detection': True,
             'background_subtracted': resample_cfg.get('background_subtract', True),
+            'background_method': resample_cfg.get('mask_method', 'tiered'),
             'pixfrac': resample_cfg.get('pixfrac', 1),
             'kernel': resample_cfg.get('kernel', 'square'),
         },
@@ -298,13 +321,7 @@ def check_config_changed(manifest_path, stage_config, pixel_scale):
         return True
 
     resample_cfg = stage_config.get('resample', {})
-    config_str = json.dumps({
-        'pixfrac': resample_cfg.get('pixfrac', 1),
-        'kernel': resample_cfg.get('kernel', 'square'),
-        'pixel_scale': pixel_scale,
-        'background_subtract': resample_cfg.get('background_subtract', True),
-    }, sort_keys=True)
-    current_hash = f'sha256:{hashlib.sha256(config_str.encode()).hexdigest()}'
+    current_hash = _resample_config_hash(resample_cfg, pixel_scale)
 
     return current_hash != manifest.get('config_hash')
 

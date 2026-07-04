@@ -71,6 +71,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- NIRCam background subtraction gains a selectable **source-mask method**
+  (`[nircam.resample].mask_method = "tiered" | "moransi"`, default `"tiered"`).
+  `"moransi"` builds the `Background2D` source mask from a Moran's-I spatial-
+  autocorrelation statistic (`nircam/moransi_bkgsub.py`) instead of the tiered
+  `detect_sources` path; the `Background2D` fit itself is unchanged, so this is
+  purely an alternative masking strategy for A/B evaluation (mosaic path first;
+  see `docs/moransi-background-scoping.md`). **Additive and default-off — no
+  change to existing output.** The chosen method + params are stamped on the
+  mosaic primary header (`CMPFRBKG`/`BKGPATCH`/`BKGPCTL`/`BKGKERN`) and folded
+  into the tile `config_hash` **only when non-default**, so switching methods
+  triggers a rebuild while existing tiered mosaics keep their hash (no mass
+  rebuild). Vendored/hardened from research code by H. C. Ferguson: the
+  statistic is now NaN/valid-aware (fixes a zero-fill-before-standardize bias)
+  and fully vectorized over patches.
 - **BREAKING (MAJOR):** the NIRCam mosaic `version` axis is retired (epic #261,
   N2 / D3). Mosaic products are now named `mosaic_nircam_<filter>_<field>_<scale>_<tile>_<ext>.fits`
   with **no** `_<version>_` segment — one canonical mosaic per

@@ -427,6 +427,17 @@
     bg_exclude_percentile = 90
     bg_sigma = 3
     bg_interpolator = "zoom"
+    # Source-mask method for the Background2D fit (the fit itself is unchanged):
+    #   "tiered"  = ring-median + tiered detect_sources (default, incumbent)
+    #   "moransi" = Moran's-I spatial-autocorrelation patch mask
+    # The moransi_* keys only apply when mask_method = "moransi". Switching the
+    # method changes the tile's config_hash, forcing a rebuild (A/B safe).
+    # See docs/moransi-background-scoping.md.
+    mask_method = "tiered"
+    moransi_patch_size = 20
+    moransi_percentile = 40.0
+    moransi_kernel = "queen"
+    moransi_min_valid_frac = 0.25
     split_extensions = true
     plot = true
     plot_downsample = 4
