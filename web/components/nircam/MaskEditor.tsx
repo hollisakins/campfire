@@ -127,6 +127,10 @@ export default function MaskEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
+  // The PNG actually painted. We hold the current exposure's image until the
+  // *next* URL has decoded, then swap in one frame (see the swap effect below).
+  const [shownUrl, setShownUrl] = useState<string | undefined>(pngUrl);
+
   // FITS render controls (only used when `fitsKey` is set). vmin/vmax drive the
   // display interval; 0/0 means "unset" so FitsCanvas keeps its on-load ZScale
   // until the range flows back in from `handleFitsLoad`.
@@ -189,6 +193,24 @@ export default function MaskEditor({
     setSelectedId(null);
     setDraftVertices([]);
   }, [initialRegions, imageHeight]);
+
+  // Seamless image swap. Changing an <img> src blanks the element for a frame
+  // before the new bitmap paints — the "reload" flash on prev/next, even when
+  // the bytes are already cached. Instead we keep showing the current PNG and
+  // only swap `shownUrl` once the incoming URL has decoded — which is ~instant
+  // when it's in the retained image cache (lib/nircam-exposure-cache), so the
+  // step reads as a single seamless frame change with no blank in between.
+  useEffect(() => {
+    if (pngUrl === undefined) { setShownUrl(undefined); return; }
+    let cancelled = false;
+    const swap = () => { if (!cancelled) setShownUrl(pngUrl); };
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = pngUrl;
+    // Swap on decode-error too, so a bad frame never wedges us on the old one.
+    img.decode().then(swap).catch(swap);
+    return () => { cancelled = true; };
+  }, [pngUrl]);
 
   const markDirty = useCallback(() => { setDirty(true); setSavedAt(null); }, []);
 
@@ -454,10 +476,10 @@ export default function MaskEditor({
               onLoad={handleFitsLoad}
               onError={setFitsError}
             />
-          ) : pngUrl ? (
+          ) : shownUrl ? (
             /* eslint-disable-next-line @next/next/no-img-element */
             <img
-              src={pngUrl}
+              src={shownUrl}
               width={imageWidth}
               height={imageHeight}
               alt="exposure preview"
