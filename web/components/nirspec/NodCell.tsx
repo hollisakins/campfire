@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { fetchS2dCell, HduNotFoundError, paintToImageData, type S2dCell } from '@/lib/fits';
 import type { StretchMode } from '@/lib/fits';
 import type { ColormapName } from '@/lib/fits';
 import type { SpectrumExposure } from '@/lib/types';
+import { shutterOverlayRegions } from '@/lib/nirspec-shutters';
 
 interface Props {
   exposure: SpectrumExposure | null;
@@ -21,6 +22,10 @@ interface Props {
    * the page can compute the shared stretch once ALL cells have settled — not
    * only once all have succeeded (absent cells never call onData). */
   onSettled: (id: number) => void;
+  /** 1-indexed shutter ordinals flagged stuck for this cell's source (from the DB). */
+  stuckList: number[];
+  /** Toggle a shutter ordinal stuck/unstuck. The page binds (exposure_root, source_id). */
+  onToggleShutter: (ordinal: number) => void;
 }
 
 /** Median across the dispersion axis (columns) → one value per row. Mirrors the
@@ -63,7 +68,56 @@ function ProfileSvg({ data, width, height }: { data: Float32Array; width: number
   );
 }
 
-export default function NodCell({ exposure, range, stretch, colormap, bkgsub, onData, onSettled }: Props) {
+/** Clickable shutter-boundary overlay drawn over the s2d canvas. Each region is a
+ * band toggling its shutter ordinal stuck/unstuck; stuck ordinals show red + `n*`.
+ * Uses origin='lower' (row 0 at the bottom), matching the canvas + profile. */
+function ShutterOverlay({
+  regions,
+  nRows,
+  onToggle,
+}: {
+  regions: import('@/lib/nirspec-shutters').ShutterOverlayRegion[];
+  nRows: number;
+  onToggle: (ordinal: number) => void;
+}) {
+  const yFromRow = (row: number) => 100 - (row / (nRows - 1)) * 100;
+  return (
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
+      {regions.map((r, k) => {
+        const yTop = yFromRow(r.rowEnd);
+        const yBot = yFromRow(r.rowStart);
+        const h = Math.max(0, yBot - yTop);
+        const yMid = (yTop + yBot) / 2;
+        return (
+          <g key={`${r.ordinal}-${k}`}>
+            {k > 0 && (
+              <line x1={0} x2={100} y1={yBot} y2={yBot} stroke="gray" strokeWidth={0.5}
+                strokeDasharray="2 2" vectorEffect="non-scaling-stroke" opacity={0.6} />
+            )}
+            <rect
+              x={0} y={yTop} width={100} height={h}
+              fill={r.stuck ? 'red' : 'white'} fillOpacity={r.stuck ? 0.18 : 0.001}
+              className="cursor-pointer"
+              onClick={() => onToggle(r.ordinal)}
+            >
+              <title>{r.stuck ? `shutter ${r.ordinal} — stuck (click to clear)` : `shutter ${r.ordinal} (click to mark stuck)`}</title>
+            </rect>
+            <text
+              x={98} y={yMid} textAnchor="end" dominantBaseline="middle"
+              fontSize={6} fill={r.stuck ? '#f87171' : '#d1d5db'}
+              fontWeight={r.stuck ? 'bold' : 'normal'}
+              style={{ pointerEvents: 'none' }}
+            >
+              {r.stuck ? `${r.ordinal}*` : r.ordinal}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+export default function NodCell({ exposure, range, stretch, colormap, bkgsub, onData, onSettled, stuckList, onToggleShutter }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [cell, setCell] = useState<S2dCell | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'absent' | 'error'>('loading');
@@ -107,6 +161,18 @@ export default function NodCell({ exposure, range, stretch, colormap, bkgsub, on
     ctx.putImageData(paintToImageData(cell.data, cell.width, cell.height, range[0], range[1], stretch, colormap), 0, 0);
   }, [state, cell, range, stretch, colormap]);
 
+  // Shutter-boundary overlay regions (P6). Computed from the s2d headers already
+  // captured by fetchS2dCell — matches the *_nods.pdf annotation geometry.
+  const overlay = useMemo(() => {
+    if (state !== 'ready' || !cell) return [];
+    return shutterOverlayRegions({
+      shutsta: cell.sciHeader?.getString('SHUTSTA'),
+      stuckList,
+      stkshtrs: cell.primaryHeader.getString('STKSHTRS'),
+      nRows: cell.height,
+    });
+  }, [state, cell, stuckList]);
+
   if (!exposure) {
     return <div className="flex items-center justify-center h-full text-text-tertiary text-xs">—</div>;
   }
@@ -142,6 +208,9 @@ export default function NodCell({ exposure, range, stretch, colormap, bkgsub, on
           className="w-full h-full"
           style={{ imageRendering: 'pixelated', objectFit: 'fill' }}
         />
+        {cell && overlay.length > 0 && (
+          <ShutterOverlay regions={overlay} nRows={cell.height} onToggle={onToggleShutter} />
+        )}
         {(stkshtrs || shutsta) && (
           <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-black/50 text-[9px] font-mono text-white/80 truncate"
             title={`STKSHTRS=${stkshtrs ?? ''} SHUTSTA=${shutsta ?? ''}`}>

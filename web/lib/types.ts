@@ -403,6 +403,22 @@ export interface SpectrumExposure {
   updated_at: string;
 }
 
+// Source-scoped editable review flags for the NIRSpec nods loop (P6). One row per
+// (observation, exposure_root, source_id). Both jsonb channels mirror the local
+// reference/nirspec/<obs>/ TOMLs 1:1: stuck_shutters is an ordinal list [1,2,3];
+// bkg_overrides is {nod: [bkg nods]} keyed by exposure-sequence number (e.g. {"3":[1]}).
+export interface NirspecSourceReview {
+  id: number;
+  observation: string;
+  exposure_root: string;
+  source_id: number;
+  stuck_shutters: number[] | null;
+  bkg_overrides: Record<string, number[]> | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // One entry in observations.pointings — a NIRSpec MSA pointing.
 export interface Pointing {
   msametid: number;
