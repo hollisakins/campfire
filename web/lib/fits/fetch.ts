@@ -21,6 +21,28 @@ export interface SciImage {
   height: number;
 }
 
+/** A named image HDU (e.g. S2D_SCI) was walked past without being found — the
+ * canonical file has no rectified view for this cutout. Distinct from
+ * IncompleteHeaderError (window too short, grow) so callers render a fallback. */
+export class HduNotFoundError extends Error {}
+
+/** One S2D cutout cell for the NIRSpec nods renderer: the rectified slitlet
+ * pixels plus the header cards the renderer overlays (STKSHTRS on PRIMARY,
+ * SHUTSTA on the live SCI ext) — all captured from the one header window walk. */
+export interface S2dCell {
+  data: Float32Array;
+  width: number;
+  height: number;
+  primaryHeader: FitsHeader;
+  sciHeader: FitsHeader | null;
+}
+
+// The S2D_* HDUs sit behind the slit arrays (SCI/ERR/DQ/VAR*×3 + PRE_BKGSUB_*×5),
+// so its header can be well past the 1 MB NIRCam cap. Cutouts are small rectified
+// slitlets, so a generous contiguous cap virtually always reaches it in one grow
+// loop; if not, we degrade to HduNotFoundError (the OQ-6 "no rectified view" cell).
+const MAX_S2D_HEADER_BYTES = 16 * 1024 * 1024;
+
 /** Initial header-window size; grown on IncompleteHeaderError (large PRIMARY headers). */
 const INITIAL_HEADER_BYTES = 64 * 1024;
 const MAX_HEADER_BYTES = 1024 * 1024;
@@ -129,4 +151,81 @@ export async function fetchSciImage(fitsUrl: string, signal?: AbortSignal): Prom
   }
   const data = swapToFloat32(block.byteLength === sciBytes ? block : block.slice(0, sciBytes));
   return { data, width, height };
+}
+
+/** Walk `buf`'s HDU chain to `extname`, capturing the PRIMARY (i=0) and live-SCI
+ * headers along the way. Throws IncompleteHeaderError if the buffer runs out
+ * mid-walk (caller grows), or HduNotFoundError if all HDUs are walked without a
+ * match (absent → fallback cell). */
+function findS2dHdu(buf: Uint8Array, extname: string): {
+  header: FitsHeader; dataStart: number; primaryHeader: FitsHeader; sciHeader: FitsHeader | null;
+} {
+  let off = 0;
+  let primaryHeader: FitsHeader | null = null;
+  let sciHeader: FitsHeader | null = null;
+  for (let i = 0; i < 64; i++) {
+    if (off + 2880 > buf.length) {
+      throw new IncompleteHeaderError(`${extname} header not reached within ${buf.length} bytes`);
+    }
+    const hdu = hduAt(buf, off);
+    if (i === 0) primaryHeader = hdu.header;
+    if (hdu.extname === 'SCI') sciHeader = hdu.header;
+    if (hdu.extname === extname) {
+      return { header: hdu.header, dataStart: hdu.dataStart, primaryHeader: primaryHeader!, sciHeader };
+    }
+    off = hdu.nextHdu;
+  }
+  throw new HduNotFoundError(`No ${extname} extension in the first 64 HDUs`);
+}
+
+/**
+ * Fetch + decode a named S2D image HDU (default `S2D_SCI`) from a canonical
+ * NIRSpec spectrum-exposure served at `fitsUrl`, plus the header cards the nods
+ * renderer overlays. Throws {@link HduNotFoundError} when the rectified view is
+ * absent (OQ-6), or on a compressed/non-float32 HDU.
+ */
+export async function fetchS2dCell(
+  fitsUrl: string,
+  opts?: { extname?: string; signal?: AbortSignal },
+): Promise<S2dCell> {
+  const extname = opts?.extname ?? 'S2D_SCI';
+  const signal = opts?.signal;
+
+  let headerBytes = INITIAL_HEADER_BYTES;
+  let found: ReturnType<typeof findS2dHdu> | null = null;
+  for (;;) {
+    const head = new Uint8Array(await fetchRange(fitsUrl, 0, headerBytes - 1, signal));
+    try {
+      found = findS2dHdu(head, extname);
+      break;
+    } catch (e) {
+      if (e instanceof IncompleteHeaderError && headerBytes < MAX_S2D_HEADER_BYTES) {
+        headerBytes = Math.min(headerBytes * 4, MAX_S2D_HEADER_BYTES);
+        continue;
+      }
+      if (e instanceof IncompleteHeaderError) {
+        throw new HduNotFoundError(`${extname} not reached within ${headerBytes} bytes`);
+      }
+      throw e; // HduNotFoundError or a parse error
+    }
+  }
+
+  const { header, dataStart, primaryHeader, sciHeader } = found;
+  const width = header.requireInt('NAXIS1');
+  const height = header.requireInt('NAXIS2');
+  const bitpix = header.requireInt('BITPIX');
+  if (bitpix !== -32) {
+    throw new Error(`${extname} is not float32 (BITPIX=${bitpix})`);
+  }
+  if (header.has('ZIMAGE')) {
+    throw new Error(`${extname} is fpack-compressed (ZIMAGE)`);
+  }
+
+  const bytes = width * height * 4;
+  const block = await fetchRange(fitsUrl, dataStart, dataStart + bytes - 1, signal);
+  if (block.byteLength < bytes) {
+    throw new Error(`Short ${extname} read: got ${block.byteLength} of ${bytes} bytes`);
+  }
+  const data = swapToFloat32(block.byteLength === bytes ? block : block.slice(0, bytes));
+  return { data, width, height, primaryHeader, sciHeader };
 }

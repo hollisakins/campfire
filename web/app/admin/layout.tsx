@@ -24,6 +24,7 @@ const adminNavSections: {
     items: [
       { href: '/admin/nircam', label: 'NIRCam', icon: Camera },
       { href: '/admin/nirspec/rate', label: 'NIRSpec Rate', icon: Telescope },
+      { href: '/admin/nirspec/nods', label: 'NIRSpec Nods', icon: Telescope },
       { href: '/admin/deployments', label: 'Deployments', icon: GitBranch },
       { href: '/admin/intermediate-products', label: 'Storage', icon: Database },
     ],
