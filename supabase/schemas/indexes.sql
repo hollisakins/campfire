@@ -364,14 +364,11 @@ CREATE INDEX IF NOT EXISTS idx_nirspec_rate_exposures_review
 
 
 -- =============================================================================
--- spectrum_exposures (epic #210, B2)
+-- spectrum_exposures (nods-renderer grid; review loop P4)
 -- =============================================================================
 
-CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_spectrum_id
-    ON public.spectrum_exposures USING btree (spectrum_id);
-
-CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_exposure_ref
-    ON public.spectrum_exposures USING btree (exposure_ref);
+CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_observation
+    ON public.spectrum_exposures USING btree (observation);
 
 CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_review
     ON public.spectrum_exposures USING btree (review_status)

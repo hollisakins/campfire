@@ -361,6 +361,12 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
                 _skip_stuck_detection=True,
             )
 
+    # Stamp the pipeline-computed exp_group (CFEXPGRP) on each canonical's primary
+    # header (§4.2) so deploy populates the nods grid with the exact grouping. Runs
+    # on every run_stage2a invocation (incl. the stuck-shutter re-run above, which
+    # regenerates its canonicals), so all files end up stamped.
+    dispatch(stamp_exp_group_single, list(files), n_processes=n_processes)
+
 
 def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
                 n_processes=1, data_dir=None, products_dir=None):
@@ -448,6 +454,10 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
         use_starmap=True,
         rectify=rectify,
     )
+
+    # Re-stamp exp_group (CFEXPGRP) after bkgsub's canonical re-saves — this is the
+    # final on-disk state deploy reads (§4.2). Idempotent with the stage2a stamp.
+    dispatch(stamp_exp_group_single, list(files), n_processes=n_processes)
 
     # Optional: plot background-subtracted 2D cutouts
     if plot_bkgsub and rectify:
@@ -889,6 +899,20 @@ def _bkgsub_group_done(canonical_path, rectify):
     if str(cfp_bkg).startswith(('skipped', 'excluded')):
         return True
     return (not rectify) or ('CFP_S2D' in hdr)
+
+
+def stamp_exp_group_single(file):
+    """Stamp ``CFEXPGRP`` (the pipeline-computed exp_group) on one canonical's
+    primary header (NIRSpec review loop §4.2).
+
+    Dispatched over the grouped ``files`` table at the end of stage2a/2b so deploy
+    can populate the web nods-renderer grid with the exact pipeline grouping. Uses
+    ``append_extras`` (which copies the existing header) — additive and idempotent,
+    surviving stage2b's re-save the same way ``CFSCHEMA`` does. Mirrors the
+    per-file ``fix_units`` dispatch shape.
+    """
+    from campfire_pipeline.nirspec import canonical as C
+    C.append_extras(file['path'], header_updates=C.exp_group_card(file['exp_group']))
 
 
 def fix_units(file):

@@ -367,6 +367,18 @@ def _deploy_intermediates_only(
             sb, build_rate_exposure_records(rate_files, observation=obs_name, scope=scope))
         print(f"Upserted {n_rate} rate-exposure triage rows")
 
+    # Nods-renderer grid rows (P4, design §4.2): one per (obs, exposure_root, nod,
+    # detector, source), exp_group from the CFEXPGRP header stamp. Split-ownership
+    # upsert. exposure_files is already source-filtered — correct, the grid is
+    # per-source.
+    if exposure_files:
+        from campfire.deploy.spectrum_grid import (
+            build_spectrum_exposure_records, upsert_spectrum_exposures,
+        )
+        n_grid = upsert_spectrum_exposures(
+            sb, build_spectrum_exposure_records(exposure_files, observation=obs_name, scope=scope))
+        print(f"Upserted {n_grid} spectrum-exposure grid rows")
+
     claim = claim_deploy_scope(sb, 'observation', obs_name, scope_version_at_start, actor=user_id)
     if claim.get('conflict'):
         print(f"⚠  CONCURRENT DEPLOY DETECTED for {obs_name}: another deploy advanced "
@@ -650,6 +662,7 @@ def deploy_observation(
         upload_tasks: list[UploadTask] = []
         uploaded_keys: set[str] = set()  # r2_keys that actually landed (for the registry)
         rate_files: list = []  # populated in the not-supabase_only block; drives P2 triage upsert
+        exposure_files: list = []  # canonical spectrum-exposures; drives the P4 nods grid
         scope = Scope(obs=obs_name)
 
         # NIRSpec science products are homed on OSN under CANONICAL keys (epic #210 /
@@ -948,6 +961,17 @@ def deploy_observation(
             n_rate = upsert_rate_exposures(
                 sb, build_rate_exposure_records(rate_files, observation=obs_name, scope=scope))
             print(f"Upserted {n_rate} rate-exposure triage rows")
+
+        # Nods-renderer grid rows (P4, design §4.2): one per (obs, exposure_root,
+        # nod, detector, source), exp_group from the CFEXPGRP header stamp.
+        # Split-ownership upsert; exposure_files is already source-filtered.
+        if exposure_files:
+            from campfire.deploy.spectrum_grid import (
+                build_spectrum_exposure_records, upsert_spectrum_exposures,
+            )
+            n_grid = upsert_spectrum_exposures(
+                sb, build_spectrum_exposure_records(exposure_files, observation=obs_name, scope=scope))
+            print(f"Upserted {n_grid} spectrum-exposure grid rows")
 
         print()
         msg = f"Deployed {len(spectra)} spectra from {len(objects)} objects"

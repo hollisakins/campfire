@@ -264,6 +264,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRSpec canonical spectrum-exposure FITS now carry a `CFEXPGRP` primary-header
+  card** recording the pipeline-computed `exp_group` (the sub-pixel-dither grouping
+  id from `Observation.group_files`). Stamped by a final pass at the end of
+  `run_stage2a`/`run_stage2b` (via `canonical.append_extras`, so it's additive and
+  survives stage2b's MultiSlitModel re-save like `CFSCHEMA`). `exp_group` is not
+  derivable from a single filename — it depends on the whole exposure set's dither
+  pattern — so the stamp lets `campfire deploy` populate the web nods-renderer grid
+  (`spectrum_exposures`) with the exact pipeline grouping. Additive provenance only:
+  no change to pixel/flux values or file layout. (NIRSpec review loop, P4.)
 - **NIRSpec rate-mask region strings now come from
   `reference/nirspec/<obs>/masks/*.reg`, not `observations.toml`.** The NIRSpec
   web review loop (design §3.5). `Observation.setup_workspace_directory` populates

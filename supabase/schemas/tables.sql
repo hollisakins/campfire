@@ -815,23 +815,32 @@ ALTER SEQUENCE "public"."nirspec_rate_exposures_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."nirspec_rate_exposures_id_seq" OWNED BY "public"."nirspec_rate_exposures"."id";
 
 
--- spectrum_exposures: NIRSpec canonical spectrum-exposure intermediates (epic
--- #210, B2). One logical row per (exposure, detector, source) that combines into
--- a final spectrum — the NIRSpec analogue of nircam_exposures. Child of spectra
--- (FK to the stable integer PK, not the GENERATED spectrum_id). Admin-only: these
--- are reduction intermediates, never user-facing science. The physical object
--- (key/hash/size/backend) lives in storage_objects (product_type
--- 'nirspec_spectrum_exposure'); this table owns the reviewer-facing lifecycle
--- state (stage, review_status, masking, notes) and the join key (exposure_ref).
+-- spectrum_exposures: NIRSpec nods-renderer grid (NIRSpec review loop, P4, design
+-- §2c/§4.2). One row per canonical per-source spectrum-exposure
+-- (observation, exposure_root, nod, detector, source_id) — the render backbone the
+-- web nods renderer groups as rows=(exp_group, nod) × cols=detector per source.
+-- REVIVED + REVISED from the epic-#210-B2 dead scaffold: the old spectrum_id NOT
+-- NULL FK to spectra was unsatisfiable for an intermediates-only deploy (which runs
+-- BEFORE stage-3 combine makes any spectrum row), so it is dropped and the table is
+-- re-keyed to observations.name (no FK). Deploy-populated (split-ownership upsert,
+-- campfire.deploy.spectrum_grid) — exp_group comes from the pipeline's CFEXPGRP
+-- header stamp. Admin-only: reduction intermediates, never user-facing science. The
+-- physical object (key/hash/size/backend) lives in storage_objects (product_type
+-- 'nirspec_spectrum_exposure'); this table owns render columns + reviewer lifecycle
+-- state (review_status, masking, notes — the last two set by the web, not deploy).
 CREATE TABLE IF NOT EXISTS "public"."spectrum_exposures" (
     "id" integer NOT NULL,
-    "spectrum_id" integer NOT NULL,
-    "exposure_ref" "text" NOT NULL,
-    "root" "text",
-    "nod" integer,
-    "detector" "text",
-    "source_id" integer,
+    "observation" "text" NOT NULL,
+    "exposure_root" "text" NOT NULL,
+    "nod" "text" NOT NULL,
+    "detector" "text" NOT NULL,
+    "source_id" integer NOT NULL,
+    "exp_group" integer,
     "grating" "text",
+    "filename" "text" NOT NULL,
+    "storage_key" "text",
+    "image_width" integer,
+    "image_height" integer,
     "stage" "text" NOT NULL DEFAULT 'cal'::"text",
     "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
     "masking" "text" NOT NULL DEFAULT 'none'::"text",
@@ -859,11 +868,11 @@ ALTER SEQUENCE "public"."spectrum_exposures_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."spectrum_exposures_id_seq" OWNED BY "public"."spectrum_exposures"."id";
 
 
-COMMENT ON TABLE "public"."spectrum_exposures" IS 'NIRSpec canonical spectrum-exposure intermediates (epic #210, B2). One logical row per (exposure,detector,source); child of spectra (FK to integer PK). Registered to storage_objects with product_type=''nirspec_spectrum_exposure''. Admin-only lifecycle (intermediates are never user-facing science).';
+COMMENT ON TABLE "public"."spectrum_exposures" IS 'NIRSpec nods-renderer grid (review loop P4). One row per canonical per-source spectrum-exposure (observation, exposure_root, nod, detector, source_id); deploy-populated, admin-only. exp_group is the pipeline CFEXPGRP grouping. Revived+revised from the epic-#210-B2 scaffold (dropped the spectra FK; re-keyed to observations.name).';
 
-COMMENT ON COLUMN "public"."spectrum_exposures"."spectrum_id" IS 'FK to spectra.id (the stable integer PK, NOT the GENERATED spectra.spectrum_id text column which is not uniquely constrained). ON DELETE CASCADE: intermediates die with their parent spectrum and are rebuilt on the next deploy.';
+COMMENT ON COLUMN "public"."spectrum_exposures"."exposure_root" IS 'Pipeline 2-token root (e.g. jw07076020001_04101), with the exposure token broken out as `nod`. NB: DIFFERENT semantics from nirspec_rate_exposures.exposure_root (3 tokens, detector-stripped) — deliberate, matching observation.group_files and the nods grid key.';
 
-COMMENT ON COLUMN "public"."spectrum_exposures"."exposure_ref" IS 'Stable (root,nod,detector,source) tuple identifying the input NIRSpec exposure. Matches storage_objects.exposure_ref for the registry join; backs the partial unique (product_type, exposure_ref) WHERE status=''active'' on storage_objects.';
+COMMENT ON COLUMN "public"."spectrum_exposures"."exp_group" IS 'Pipeline-computed exposure-group id (subpixel-dither), read from the canonical FITS CFEXPGRP header card. One value per group, spanning nods+detectors; a render/grouping attribute, NOT part of the unique key. Nullable (files predating the P4 stamp).';
 
 
 -- storage_objects: the keystone shadow index of every object in cloud storage
@@ -1532,7 +1541,7 @@ ALTER TABLE ONLY "public"."spectrum_exposures"
     ADD CONSTRAINT "spectrum_exposures_pkey" PRIMARY KEY ("id");
 
 ALTER TABLE ONLY "public"."spectrum_exposures"
-    ADD CONSTRAINT "spectrum_exposures_unique" UNIQUE ("spectrum_id", "exposure_ref");
+    ADD CONSTRAINT "spectrum_exposures_unique" UNIQUE ("observation", "exposure_root", "nod", "detector", "source_id");
 
 ALTER TABLE ONLY "public"."deploy_events"
     ADD CONSTRAINT "deploy_events_pkey" PRIMARY KEY ("id");
@@ -1613,11 +1622,9 @@ ALTER TABLE ONLY "public"."spectra"
 
 -- B2 (#218) cross-table FKs, placed after the referenced PKs (spectra_pkey above,
 -- deployments_pkey earlier) so the declarative build order resolves them.
--- spectrum_exposures -> spectra.id, CASCADE: intermediates die with their parent
--- spectrum and are rebuilt on the next deploy.
-ALTER TABLE ONLY "public"."spectrum_exposures"
-    ADD CONSTRAINT "spectrum_exposures_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectra"("id") ON DELETE CASCADE;
-
+-- (spectrum_exposures no longer FKs to spectra — the review loop P4 revive re-keyed
+-- it to observations.name so intermediates-only deploys, which precede stage-3
+-- combine, can populate it before any spectrum row exists.)
 -- deploy_events -> deployments.id, SET NULL: audit rows outlive the deployment
 -- they reference (don't cascade-delete history), matching storage_objects.deployment_id.
 ALTER TABLE ONLY "public"."deploy_events"
