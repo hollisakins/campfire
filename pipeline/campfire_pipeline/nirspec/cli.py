@@ -377,15 +377,13 @@ def mask_validate(config, obs):
               help='Single exposure (rate file basename without _rate.fits) to clear. '
                    'If omitted, clears all masks for the observation.')
 def mask_clear(config, obs, exposure):
-    """Remove a mask entry from observations.toml.
+    """Remove a manual mask (.reg) from reference/nirspec/<obs>/masks/.
 
     Does NOT modify any rate files — run `cfpipe nirspec mask apply` afterwards
     to clear the mask DQ bits and re-run bkg sub.
     """
-    from campfire_pipeline.config import resolve_observations_file
-    from campfire_pipeline.nirspec.masks import write_masks_to_observations_toml
+    from campfire_pipeline.nirspec.masks import write_reference_masks
 
-    obs_file = resolve_observations_file(None)
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
         if not obs_obj.manual_masks:
@@ -395,11 +393,11 @@ def mask_clear(config, obs, exposure):
             if exposure not in obs_obj.manual_masks:
                 log(f"{obs_name}: no mask for {exposure}; nothing to clear.")
                 continue
-            write_masks_to_observations_toml(obs_file, obs_name, {exposure: None})
+            write_reference_masks(obs_obj, {exposure: None})
             log(f"{obs_name}: cleared mask for {exposure}")
         else:
             cleared = {k: None for k in obs_obj.manual_masks}
-            write_masks_to_observations_toml(obs_file, obs_name, cleared)
+            write_reference_masks(obs_obj, cleared)
             log(f"{obs_name}: cleared {len(cleared)} mask(s)")
         log(f"  run `cfpipe nirspec mask apply --obs {obs_name}` to update rate files.")
 
@@ -419,13 +417,11 @@ def mask_edit(config, obs, exposure):
     Does NOT auto-apply the new masks — run `cfpipe nirspec mask apply`
     afterwards to update rate files.
     """
-    from campfire_pipeline.config import resolve_observations_file
     from campfire_pipeline.nirspec.mpl_editor import edit_masks_in_matplotlib
 
-    obs_file = resolve_observations_file(None)
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
-        edit_masks_in_matplotlib(obs_obj, obs_file, exposure=exposure)
+        edit_masks_in_matplotlib(obs_obj, exposure=exposure)
 
 
 def _run_summary(cfg, obs_obj):

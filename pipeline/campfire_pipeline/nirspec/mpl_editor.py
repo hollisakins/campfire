@@ -259,11 +259,10 @@ def run_editor(
 
 def edit_masks_in_matplotlib(
     obs,
-    observations_file: str,
     *,
     exposure: str | None = None,
 ) -> bool:
-    """Run the matplotlib editor and write results back to observations.toml.
+    """Run the matplotlib editor and write results to reference/nirspec/<obs>/masks/.
 
     Returns True if a write occurred (user saved at least one frame), False
     if cancelled or no rate files were available.
@@ -283,7 +282,6 @@ def edit_masks_in_matplotlib(
     else:
         rate_files = list(obs.rate_files)
 
-    masks_mod.materialize_reg_files(obs)
     existing = dict(obs.manual_masks or {})
 
     log(f"Opening matplotlib mask editor ({len(rate_files)} frame(s))…")
@@ -293,25 +291,20 @@ def edit_masks_in_matplotlib(
         log("Editor aborted; no changes written.")
         return False
 
-    new_masks: dict[str, str | None] = {}
+    # Masks are authored as .reg files under reference/nirspec/<obs>/masks/ now
+    # (design §3.5) — the same store `pull-rate-masks` writes and the pipeline
+    # reads — not observations.toml.
+    new_masks: dict[str, "str | None"] = {}
     for basename, reg_text in result.items():
         canon = masks_mod.canonicalize(reg_text or "")
-        if canon:
-            new_masks[basename] = canon
-            masks_mod.write_reg_file(
-                masks_mod.workspace_reg_path(obs, basename), canon
-            )
-        else:
-            new_masks[basename] = None
+        new_masks[basename] = canon if canon else None
 
-    masks_mod.write_masks_to_observations_toml(
-        observations_file, obs.name, new_masks
-    )
+    masks_mod.write_reference_masks(obs, new_masks)
 
     n_set = sum(1 for v in new_masks.values() if v)
     n_cleared = sum(1 for v in new_masks.values() if not v)
     log(
-        f"Wrote {n_set} mask(s) to {observations_file}"
+        f"Wrote {n_set} mask(s) to {masks_mod.reference_masks_dir(obs)}"
         + (f", cleared {n_cleared}" if n_cleared else "")
         + f". Run `cfpipe nirspec mask apply --obs {obs.name}` to update rate files."
     )

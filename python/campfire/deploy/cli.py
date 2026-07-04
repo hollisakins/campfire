@@ -1419,6 +1419,40 @@ def nircam_pull_masks(ctx, config_path, field, dry_run, local):
     pull_masks(field, config, dry_run=dry_run)
 
 
+@deploy_group.group('nirspec')
+def nirspec():
+    """NIRSpec inspection round-trip utilities (NIRSpec review loop, design §3.5).
+
+    Observation deploy is the top-level `campfire deploy --obs <obs>`. These
+    subcommands round-trip the portal's DB-resident review state with the reduction
+    workspace: `pull-rate-masks` materializes the web-drawn rate-file masks
+    (nirspec_rate_exposures.mask_regions) to reference/nirspec/<obs>/masks/*.reg,
+    which the pipeline reads before stage 2.
+    """
+    pass
+
+
+@nirspec.command('pull-rate-masks')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
+@click.option('--dry-run', is_flag=True,
+              help='Show what would be written without touching files.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nirspec_pull_rate_masks(ctx, config_path, obs, dry_run, local):
+    """Materialize Supabase rate mask_regions to reference/nirspec/<obs>/masks/*.reg.
+
+    Only writes files for rate exposures with a non-null mask_regions row; the
+    pipeline reads these before stage 2 (masks.py) and ORs DO_NOT_USE into the
+    rate .dq. Filenames match the rate file (<root>_<detector>.reg).
+    """
+    from campfire.deploy.nirspec_masks import pull_rate_masks
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    pull_rate_masks(obs, config, dry_run=dry_run)
+
+
 @nircam.command('pull')
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
