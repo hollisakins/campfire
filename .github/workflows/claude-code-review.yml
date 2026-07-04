@@ -61,12 +61,6 @@ jobs:
           # so the PR always gets visible feedback even when the review has no
           # line-specific inline nits to buffer.
           use_sticky_comment: true
-          # TEMPORARY (debugging, remove after we confirm posting works): surface the
-          # full agent transcript in the Actions log so we can see the exact tool that
-          # `permission_denials_count` is blocking. Note: this prints everything the
-          # agent read/ran into the (world-readable, on a public repo) job log, so it
-          # must be turned back off once the denied tool is identified.
-          show_full_output: true
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
