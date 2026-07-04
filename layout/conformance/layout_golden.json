@@ -42,6 +42,16 @@
       "tree_class": "cloud-backed-product"
     },
     {
+      "product_type": "nirspec_rate",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": "jw07076020001_04101_00003_nrs1_rate.fits",
+      "relpath": "products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
       "product_type": "rgb",
       "scope": {"obs": "ember_egs_p1"},
       "filename": "ember_egs_p1_15182_rgb.png",
@@ -292,7 +302,8 @@
     "rgb/ember_egs_p1/ember_egs_p1_15182_rgb.png",
     "nircam/exposures/cosmos/f444w/jw01727028001_04101_00003_nrcalong_preview.png",
     "photometry/cosmos/12345_pz.json",
-    "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_15182.fits"
+    "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_15182.fits",
+    "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits"
   ],
   "unknown_keys": [
     "spectra/../etc/passwd",
