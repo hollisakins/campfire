@@ -35,6 +35,37 @@ from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 
 
+def _rasterize_regions(regs, wcs, shape, reg_file=''):
+    """Union a list of DS9 regions into a 0/1 ``uint8`` mask of ``shape``.
+
+    Regions already in image/pixel coordinates (``PixelRegion`` — what
+    ``campfire deploy pull-masks`` writes, since the web canvas is
+    pixel-native) are rasterized directly; only sky regions (legacy
+    FK5/ICRS hand-drawn masks) are projected through the exposure ``wcs``
+    via ``to_pixel``. Calling ``to_pixel`` on a region that is *already*
+    pixel raises ``AttributeError`` — the crash this guards against.
+
+    A region that fails to project, or whose footprint falls entirely off
+    the frame (``to_image`` → ``None``), is skipped with a warning rather
+    than aborting the whole exposure.
+    """
+    from regions import PixelRegion
+
+    cfmask = np.zeros(shape, np.uint8)
+    for reg in regs:
+        try:
+            reg_pix = reg if isinstance(reg, PixelRegion) else reg.to_pixel(wcs)
+            mask_arr = reg_pix.to_mask(mode='center').to_image(shape)
+        except (ValueError, TypeError, AttributeError) as e:
+            log(f"Warning: skipping region in {reg_file}: {e}")
+            continue
+        if mask_arr is None:
+            # Region footprint doesn't overlap the frame — nothing to mask.
+            continue
+        cfmask |= mask_arr.astype(bool).astype(np.uint8)
+    return cfmask
+
+
 def apply_masks_step(exposure_file, field, step_config, overwrite=False,
                      status=None):
     """Apply region-file masks to a single canonical exposure.
@@ -85,19 +116,8 @@ def apply_masks_step(exposure_file, field, step_config, overwrite=False,
         # each run. It records *what* is masked; the DO_NOT_USE fuse (how the
         # mask is honored) happens on the combine working copy, so the canonical
         # SCI/DQ are never touched here.
-        cfmask = np.zeros(shape, np.uint8)
         regs = Regions.read(reg_file)
-        for reg in regs:
-            try:
-                reg_pix = reg.to_pixel(wcs)
-                mask_obj = reg_pix.to_mask(mode='center')
-                mask_arr = mask_obj.to_image(shape)
-                mask_arr = mask_arr.astype(bool)
-            except (ValueError, TypeError) as e:
-                log(f"Warning: skipping region in {reg_file}: {e}")
-                continue
-
-            cfmask |= mask_arr.astype(np.uint8)
+        cfmask = _rasterize_regions(regs, wcs, shape, reg_file=reg_file)
 
         cfmask_hdu = fits.ImageHDU(cfmask, name='CFMASK')
         atomic_save(
