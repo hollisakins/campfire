@@ -12,7 +12,9 @@ import pytest
 
 from campfire.api.client import (
     APIClient,
+    DEFAULT_STORAGE_SYNC_PAGE_SIZE,
     DEFAULT_SYNC_PAGE_SIZE,
+    _resolve_storage_sync_page_size,
     _resolve_sync_page_size,
 )
 from campfire.sync import sync_metadata
@@ -181,3 +183,77 @@ def test_api_client_reads_env_page_size(monkeypatch):
     monkeypatch.setenv("CAMPFIRE_SYNC_PAGE_SIZE", "1234")
     client = APIClient(session=MagicMock())
     assert client._page_size == 1234
+
+
+# ---------------------------------------------------------------------------
+# Storage page-size config (storage_objects paginates with a larger page)
+# ---------------------------------------------------------------------------
+def test_resolve_storage_page_size_default(monkeypatch):
+    monkeypatch.delenv("CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", raising=False)
+    monkeypatch.delenv("CAMPFIRE_SYNC_PAGE_SIZE", raising=False)
+    assert _resolve_storage_sync_page_size() == DEFAULT_STORAGE_SYNC_PAGE_SIZE
+    # Storage default is deliberately larger than the shared default.
+    assert DEFAULT_STORAGE_SYNC_PAGE_SIZE > DEFAULT_SYNC_PAGE_SIZE
+
+
+def test_resolve_storage_page_size_explicit_override(monkeypatch):
+    monkeypatch.setenv("CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", "8000")
+    # The storage-specific var wins, even against the shared one.
+    monkeypatch.setenv("CAMPFIRE_SYNC_PAGE_SIZE", "2000")
+    assert _resolve_storage_sync_page_size() == 8000
+
+
+def test_resolve_storage_page_size_tracks_shared_when_higher(monkeypatch):
+    # No storage-specific var: storage tracks the shared page size once it rises
+    # above the storage floor.
+    monkeypatch.delenv("CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", raising=False)
+    monkeypatch.setenv("CAMPFIRE_SYNC_PAGE_SIZE", str(DEFAULT_STORAGE_SYNC_PAGE_SIZE + 3000))
+    assert _resolve_storage_sync_page_size() == DEFAULT_STORAGE_SYNC_PAGE_SIZE + 3000
+
+
+def test_resolve_storage_page_size_floored_by_default(monkeypatch):
+    # A shared page size below the storage floor does not shrink storage.
+    monkeypatch.delenv("CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", raising=False)
+    monkeypatch.setenv("CAMPFIRE_SYNC_PAGE_SIZE", "500")
+    assert _resolve_storage_sync_page_size() == DEFAULT_STORAGE_SYNC_PAGE_SIZE
+
+
+def test_resolve_storage_page_size_clamps_large(monkeypatch):
+    monkeypatch.setenv("CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", "999999")
+    assert _resolve_storage_sync_page_size() == 50000
+
+
+@pytest.mark.parametrize("bad", ["notanint", "0", "-5"])
+def test_resolve_storage_page_size_invalid_falls_back_to_floor(monkeypatch, bad):
+    monkeypatch.delenv("CAMPFIRE_SYNC_PAGE_SIZE", raising=False)
+    monkeypatch.setenv("CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", bad)
+    assert _resolve_storage_sync_page_size() == DEFAULT_STORAGE_SYNC_PAGE_SIZE
+
+
+def test_api_client_reads_storage_page_size(monkeypatch):
+    monkeypatch.setenv("CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", "7777")
+    client = APIClient(session=MagicMock())
+    assert client._storage_page_size == 7777
+
+
+def test_fetch_all_storage_requests_storage_page_size(monkeypatch):
+    """/sync/storage paginates with the storage page size, not the shared one."""
+    monkeypatch.setenv("CAMPFIRE_SYNC_PAGE_SIZE", "1000")
+    monkeypatch.setenv("CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", "6000")
+
+    session = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "data": [],
+        "pagination": {"total": 0},
+        "total_accessible_count": 0,
+    }
+    session.get.return_value = response
+
+    client = APIClient(session=session)
+    client.fetch_all_storage()
+
+    # The first (and only) page is requested with the storage limit.
+    _path, kwargs = session.get.call_args
+    assert kwargs["params"]["limit"] == 6000
