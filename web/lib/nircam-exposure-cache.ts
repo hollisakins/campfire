@@ -11,6 +11,7 @@
  */
 
 import type { NircamExposure } from '@/lib/types';
+import type { ExposurePngUrls } from '@/lib/actions/nircam-exposures';
 
 const cache = new Map<number, NircamExposure>();
 
@@ -88,4 +89,41 @@ export function isPngCached(url: string | null): boolean {
   if (!url) return false;
   const img = retainedImages.get(url);
   return !!img && img.complete && img.naturalWidth > 0;
+}
+
+/**
+ * Presigned OSN GET URLs per exposure id.
+ *
+ * MODULE scope on purpose: the /admin/nircam/[id] page REMOUNTS on every
+ * prev/next (the App Router re-instantiates the dynamic-segment page), so
+ * holding these in React state — as the page originally did — wiped them on
+ * each step. That forced a fresh presign (a new signature) on arrival, which
+ * both flashed the presign spinner AND missed the retained-image cache keyed by
+ * that URL, so every step refetched the PNG from OSN. Cached here alongside the
+ * row + image caches, a prefetched sibling's URL survives the remount: the next
+ * exposure paints from cache with no spinner and no network round-trip.
+ *
+ * Entries carry a signed-at timestamp and expire before the presigned URL's own
+ * ~1 h TTL (PNG_PRESIGN_TTL_SECONDS in lib/actions/nircam-exposures.ts). Once
+ * stale, getCachedPngUrls treats the id as absent so the caller re-presigns a
+ * fresh URL — otherwise a long session (or an exposure whose retained image has
+ * since been LRU-evicted) could serve an expired URL straight into <img> and
+ * render a broken image with no in-session recovery. Unbounded like the row
+ * cache (a couple of small strings per id; sessions are short).
+ */
+const PNG_URL_FRESH_MS = 50 * 60 * 1000; // < the 3600 s presign TTL, with buffer
+const pngUrlCache = new Map<number, { urls: ExposurePngUrls; signedAt: number }>();
+
+export function getCachedPngUrls(id: number): ExposurePngUrls | undefined {
+  const entry = pngUrlCache.get(id);
+  if (!entry) return undefined;
+  if (Date.now() - entry.signedAt > PNG_URL_FRESH_MS) {
+    pngUrlCache.delete(id);
+    return undefined;
+  }
+  return entry.urls;
+}
+
+export function setCachedPngUrls(id: number, urls: ExposurePngUrls): void {
+  pngUrlCache.set(id, { urls, signedAt: Date.now() });
 }

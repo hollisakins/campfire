@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { Suspense, useState, useEffect, useCallback, useMemo, useRef, useReducer } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
@@ -14,7 +14,6 @@ import {
   updateExposureReview,
   saveExposureMaskRegions,
   presignExposurePngs,
-  type ExposurePngUrls,
   type ExposureNeighbors,
 } from '@/lib/actions/nircam-exposures';
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
@@ -26,6 +25,8 @@ import {
   getCachedExposure,
   setCachedExposure,
   prefetchPng,
+  getCachedPngUrls,
+  setCachedPngUrls,
 } from '@/lib/nircam-exposure-cache';
 
 // Eager PNG prefetch window: warm the full-res mask surface (~5.7 MB) the
@@ -71,15 +72,13 @@ function ExposureDetailPageInner() {
   // N4 (epic #261): live FITS render vs the legacy pre-generated PNG. Defaults
   // to PNG; the toggle doubles as the pixel-parity check during the rollout.
   const [viewMode, setViewMode] = useState<'png' | 'fits'>('png');
-  // Presigned OSN GET URLs (dual-read R2 fallback) for the current + windowed
-  // exposures' PNGs (epic #261, N5), keyed by exposure id. Served straight into
-  // <img> — no /api/nircam-preview proxy hop. Refreshed on navigation.
-  const [pngUrls, setPngUrls] = useState<Record<number, ExposurePngUrls>>({});
-  // Read-only mirror so the presign effect can skip ids already presigned:
-  // re-presigning mints a fresh signature, which would change the <img src> and
-  // force the browser to refetch a PNG the prefetch already cached.
-  const pngUrlsRef = useRef(pngUrls);
-  pngUrlsRef.current = pngUrls;
+  // Presigned OSN GET URLs (epic #261, N5) live in a MODULE-level cache
+  // (getCachedPngUrls) — NOT React state — because this page remounts on every
+  // prev/next, which would otherwise wipe them and force a fresh presign (new
+  // signature) on each step, flashing the spinner and missing the retained PNG.
+  // This reducer just forces a re-render when a presign lands so the pending
+  // spinner clears and the <img> picks up the freshly-cached URL.
+  const [, bumpPngUrls] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
     let cancelled = false;
     getExposureNeighbors(id, { ...navFilters, window: PREFETCH_AHEAD }).then((res) => {
@@ -167,25 +166,27 @@ function ExposureDetailPageInner() {
     // full-res mask surface the editor renders, or the preview when there's no
     // full PNG. Re-warming an already-cached URL is a browser cache hit, so the
     // only new network per step is the frontier exposure entering the window.
-    const warm = (map: Record<number, ExposurePngUrls>) => {
+    const warm = () => {
       for (const sib of win) {
-        const u = map[sib];
+        const u = getCachedPngUrls(sib);
         if (u) prefetchPng(u.full ?? u.preview);
       }
     };
-    // Only presign ids we haven't already (prefetched siblings keep their URL);
-    // when the whole window is already signed, just re-warm from what we have.
-    const batch = [id, ...win].filter((x) => pngUrlsRef.current[x] === undefined);
+    // Only presign ids not already in the module cache (a cached sibling keeps
+    // its URL); when the whole window is already signed, just re-warm.
+    const batch = [id, ...win].filter((x) => getCachedPngUrls(x) === undefined);
     if (batch.length === 0) {
-      warm(pngUrlsRef.current);
+      warm();
       return;
     }
     let cancelled = false;
     presignExposurePngs(batch).then((urls) => {
+      // Populate the module cache even if this instance unmounted mid-flight —
+      // the URLs are valid for whichever instance renders the exposure next.
+      for (const [key, u] of Object.entries(urls)) setCachedPngUrls(Number(key), u);
       if (cancelled) return;
-      const merged = { ...pngUrlsRef.current, ...urls };
-      setPngUrls(merged);
-      warm(merged);
+      bumpPngUrls();
+      warm();
     });
     return () => { cancelled = true; };
   }, [id, nav]);
@@ -291,8 +292,9 @@ function ExposureDetailPageInner() {
   }
 
   // Presigned OSN URLs for the current exposure (undefined until the presign
-  // round-trip lands; null once resolved if the exposure has no PNG).
-  const currentUrls = pngUrls[id];
+  // round-trip lands; null once resolved if the exposure has no PNG). Read from
+  // the module cache so a prefetched sibling is already resolved on arrival.
+  const currentUrls = getCachedPngUrls(id);
   const pngUrl = currentUrls?.preview ?? null;
   const fullPngUrl = currentUrls?.full ?? null;
   const pngPresignPending = currentUrls === undefined;
