@@ -276,6 +276,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `align` phase — per-exposure solve core.** New `nircam/align/solve.py`
+  (`solve_exposure_group`) fits ONE shared shift+rotation per exposure via
+  `tweakwcs.align_wcs` (`fitgeom='rshift'`, SIAF distortion untouched) against the
+  static Gaia-tied reference catalog: one `JWSTWCSCorrector` per detector, all sharing
+  the exposure's `group_id` (the pooling constraint made mechanical); distinct
+  per-exposure group_ids + `expand_refcat=False` keep exposures independent (no global
+  collapse). Per-detector residuals are recomputed directly (`det_to_world` vs matched
+  reference positions), and a detector whose residual exceeds tolerance gets an adaptive
+  shift-only refit against a distractor-free local reference subset (accepted only if it
+  improves). A `SUCCESS` fit that matches too few sources is rejected to a NOT_ALIGNED
+  identity fallback (reject-to-identity). Returns corrected gwcs + diagnostics per
+  detector; no FITS I/O yet. Prototype-validated (2″ offset → 0.036 mas); covered by
+  `tests/test_align_solve.py` with a CRDS-free mock gwcs. No behavior change.
 - **NIRCam `align` phase — centroid-only source detection.** New
   `nircam/align/detect.py` (`detect_star_centroids` / `detect_in_exposure`) finds
   point-source centroids on a detector's SCI image with `photutils.DAOStarFinder` —
