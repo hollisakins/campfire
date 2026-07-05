@@ -276,6 +276,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `align` phase — foundation scaffolding (no behavior change).** Registers
+  the `CFP_ALGN` provenance keyword in the `NIRCAM` CFP keyset (immediately after
+  `CFP_JHAT`, so `reset --from jhat` / `--from wcs_shift` also clears it — both mutate
+  the WCS), opens the `[<field>.align]` per-field config namespace (`known_steps`), and
+  declares the two dependencies the forthcoming adaptive astrometric align step will
+  import (`tweakwcs>=0.8`, previously only transitive via `jwst`; `tristars==0.1`, the
+  triangle/asterism catalog matcher). Nothing new runs yet — this is the pipeline-side
+  foundation for the field-level `align` phase that will replace the JHAT-based
+  `jhat`/`wcs_shift` alignment. No change to any output values.
 - **NIRCam resample tile selection moved from config to a `--tiles` CLI flag.**
   Which mosaic tiles get drizzled is a runtime choice, not a processing
   parameter, so the undocumented `[nircam.resample].tile` config key is retired

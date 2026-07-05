@@ -302,7 +302,7 @@ class Field:
         known_steps = {
             'detector1', 'persistence', 'wisp', 'striping',
             'image2', 'diag_striping', 'edge', 'sky', 'variance',
-            'wcs_shift', 'jhat',
+            'wcs_shift', 'jhat', 'align',
             'apply_mask', 'bad_pixel', 'outlier', 'resample',
         }
 

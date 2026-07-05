@@ -37,6 +37,15 @@ def test_module_aliases_point_at_nircam():
     assert cfp.CFP_KEYS[-1] == 'CFP_OUT'
 
 
+def test_align_key_positioned_after_jhat():
+    # CFP_ALGN (adaptive astrometric align) must sit immediately after CFP_JHAT so
+    # `reset --from jhat` / `--from wcs_shift` also clears the align stamp — both
+    # mutate the WCS. Guards the clear_from reset-slice contract for the align phase.
+    keys = cfp.NIRCAM.keys
+    assert 'CFP_ALGN' in keys
+    assert keys[keys.index('CFP_JHAT') + 1] == 'CFP_ALGN'
+
+
 def test_format_defaults_to_nircam():
     out = cfp.format(CFP_DET1=None)
     val, comment = out['CFP_DET1']
