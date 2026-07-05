@@ -276,6 +276,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `align` phase — triangle/asterism matcher.** New `nircam/align/` subpackage
+  with `TriangleMatch`, a `tweakwcs` `MatchCatalogs` subclass that matches source
+  catalogs by triangle *shape* (side ratios) — invariant to translation/rotation/scale,
+  so it recovers correspondences with no prior on the WCS offset (the regime where the
+  default 2d-histogram + nearest-neighbour matcher silently mis-aligns). Wraps
+  `tristars.match_catalog_tri` (correspondence path only; the fit stays `tweakwcs`'s
+  job). Color-free — magnitude is used only to cap each catalog to its brightest-N
+  triangle vertices, never as a match constraint. Standalone library module for the
+  forthcoming align solve — not yet wired in; covered by `tests/test_align_matcher.py`.
+  No behavior change.
 - **NIRCam `align` phase — exposure-association layer.** New `nircam/association.py`
   groups canonical exposure files into per-exposure `ExposureGroup`s keyed on the
   exposure token (`rootname.rsplit('_',1)[0]`), pooling every detector of one dither
