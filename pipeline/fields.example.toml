@@ -50,9 +50,12 @@
 #       enabled = true
 #       theta_min = 25.0
 #       theta_max = 35.0
-#   [field.jhat.refcat_dict]
+#   [field.jhat]                             # single catalog for all filters
+#       refcat = "gaia_dr3.cat"
+#   [field.jhat.refcat_dict]                 # or per-filter catalogs
 #       f444w = "gaia_dr3_f444w.cat"
 #       f200w = "gaia_dr3_f200w.cat"
+#   If both are given, refcat_dict wins per-filter and refcat is the fallback.
 #
 # Pre-JHAT astrometric shifts (opt-in, declared as an array of tables):
 #   [[field.wcs_shift]]
