@@ -90,6 +90,19 @@ def processing_options(f):
     return f
 
 
+def tile_option(f):
+    """``--tiles``: runtime tile selection for the resample step.
+
+    Tile selection is a runtime parameter, not a config key — a subset only
+    limits which mosaics are drizzled; the exposure-level combine steps
+    (apply_mask, bad_pixel, outlier) still run over the full field.
+    """
+    return click.option('--tiles', multiple=True, default=None,
+                        cls=VariadicOption,
+                        help='Tile name(s) to resample '
+                             '(default: all tiles in field).')(f)
+
+
 def _setup(config_path, field_name):
     """Load config + environment + field; set up the workspace."""
     config = load_config(config_path)
@@ -144,24 +157,27 @@ def process(config, field, filters, processes, overwrite):
 @main.command()
 @common_options
 @processing_options
-def combine(config, field, filters, processes, overwrite):
+@tile_option
+def combine(config, field, filters, processes, overwrite, tiles):
     """Run the ensemble combine phase (apply_mask → resample)."""
     cfg, field_obj = _setup(config, field)
     run_combine(field_obj, cfg,
                 filters=_resolve_filters(filters, field_obj),
-                n_processes=processes, overwrite=overwrite)
+                n_processes=processes, overwrite=overwrite,
+                tiles=list(tiles) if tiles else None)
 
 
 @main.command()
 @common_options
 @processing_options
+@tile_option
 @click.option('--process', 'do_process', is_flag=True,
               help='Run the process phase.')
 @click.option('--combine', 'do_combine', is_flag=True,
               help='Run the combine phase.')
 @click.option('--all', 'do_all', is_flag=True,
               help='Run both phases.')
-def run(config, field, filters, processes, overwrite,
+def run(config, field, filters, processes, overwrite, tiles,
         do_process, do_combine, do_all):
     """Run process and/or combine in one invocation."""
     if do_all:
@@ -169,6 +185,13 @@ def run(config, field, filters, processes, overwrite,
     if not (do_process or do_combine):
         raise click.UsageError(
             "Specify --process, --combine, or --all."
+        )
+
+    tile_list = list(tiles) if tiles else None
+    if tile_list and not do_combine:
+        raise click.UsageError(
+            "--tiles scopes the resample step, which only runs in the "
+            "combine phase; pass --combine or --all."
         )
 
     cfg, field_obj = _setup(config, field)
@@ -179,7 +202,8 @@ def run(config, field, filters, processes, overwrite,
                     n_processes=processes, overwrite=overwrite)
     if do_combine:
         run_combine(field_obj, cfg, filters=filter_list,
-                    n_processes=processes, overwrite=overwrite)
+                    n_processes=processes, overwrite=overwrite,
+                    tiles=tile_list)
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +224,25 @@ def _make_step_command(step_name):
     return _cmd
 
 
+# resample is the only per-tile step, so it carries the extra --tiles option
+# and is registered explicitly below rather than through _make_step_command.
 for _step_name in STEP_NAMES:
+    if _step_name == 'resample':
+        continue
     main.add_command(_make_step_command(_step_name))
+
+
+@main.command()
+@common_options
+@processing_options
+@tile_option
+def resample(config, field, filters, processes, overwrite, tiles):
+    """Run the resample step."""
+    cfg, field_obj = _setup(config, field)
+    run_step('resample', field_obj, cfg,
+             filters=_resolve_filters(filters, field_obj),
+             n_processes=processes, overwrite=overwrite,
+             tiles=list(tiles) if tiles else None)
 
 
 # Refcat utilities: `cfpipe nircam refcat {query,extract,merge,compare}`
@@ -292,13 +333,15 @@ def expmap(config, field, filters, stage, pixel_scale, padding,
 @common_options
 @click.option('--filters', multiple=True, default=None, cls=VariadicOption,
               help='Filters to check (default: all from field).')
-def check(config, field, filters):
+@tile_option
+def check(config, field, filters, tiles):
     """Report which mosaic tiles are stale and need re-mosaicking."""
     from campfire_pipeline.nircam.manifest import get_stale_tiles
     from campfire_pipeline.config import get_nircam_step_config
 
     cfg, field_obj = _setup(config, field)
     filter_list = _resolve_filters(filters, field_obj)
+    tile_list = list(tiles) if tiles else None
 
     any_stale = False
     for filtname in filter_list:
@@ -311,7 +354,7 @@ def check(config, field, filters):
             'resample': resample_cfg,
             'files_to_skip': files_to_skip,
         }
-        results = get_stale_tiles(field_obj, filtname, wrapped)
+        results = get_stale_tiles(field_obj, filtname, wrapped, tiles=tile_list)
         if not results:
             log(f'{filtname}: no tiles configured')
             continue
