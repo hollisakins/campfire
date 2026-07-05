@@ -276,6 +276,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `align` phase — exposure-association layer.** New `nircam/association.py`
+  groups canonical exposure files into per-exposure `ExposureGroup`s keyed on the
+  exposure token (`rootname.rsplit('_',1)[0]`), pooling every detector of one dither
+  across the SW and LW filter directories (they share the token). Reuses
+  `Field.get_exposure_files` so per-filter effective-skip (field `skip` + reviewer
+  `excluded_exposures` + caller skip) is honored; classifies module/channel from the
+  detector token; is imaging-only (grism is gated upstream) and reads filenames only
+  (never opens a FITS). Standalone library module for the forthcoming `align` phase —
+  not yet wired into orchestration; covered by `tests/test_association.py`. No behavior
+  change.
 - **NIRCam `align` phase — foundation scaffolding (no behavior change).** Registers
   the `CFP_ALGN` provenance keyword in the `NIRCAM` CFP keyset (immediately after
   `CFP_JHAT`, so `reset --from jhat` / `--from wcs_shift` also clears it — both mutate
