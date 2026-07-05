@@ -309,7 +309,7 @@ def check_config_changed(manifest_path, stage_config, pixel_scale):
     return current_hash != manifest.get('config_hash')
 
 
-def get_stale_tiles(field, filtname, stage_config):
+def get_stale_tiles(field, filtname, stage_config, tiles=None):
     """Identify tiles that need re-mosaicking.
 
     Parameters
@@ -320,6 +320,9 @@ def get_stale_tiles(field, filtname, stage_config):
         Filter name.
     stage_config : dict
         Stage-3 configuration dict.
+    tiles : str, list of str, or None
+        Tile name(s) to probe. ``None`` (the default) checks every tile in
+        the field.
 
     Returns
     -------
@@ -339,10 +342,9 @@ def get_stale_tiles(field, filtname, stage_config):
         else:
             pixel_scale = f'{int(pixel_scale * 1000)}mas'
 
-    tiles = resample_cfg.get('tile', None)
     if tiles is None:
         tiles = list(field.tiles.keys())
-    if isinstance(tiles, str):
+    elif isinstance(tiles, str):
         tiles = [tiles]
 
     files_to_skip = stage_config.get('files_to_skip', [])

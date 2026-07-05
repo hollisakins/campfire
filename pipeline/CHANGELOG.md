@@ -276,6 +276,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam resample tile selection moved from config to a `--tiles` CLI flag.**
+  Which mosaic tiles get drizzled is a runtime choice, not a processing
+  parameter, so the undocumented `[nircam.resample].tile` config key is retired
+  in favor of `--tiles` on `cfpipe nircam {resample,combine,run,check}` (variadic,
+  e.g. `--tiles A1 A2`; default: all tiles in the field). The flag scopes the
+  resample step *only* — the exposure/visit-level combine steps (`apply_mask`,
+  `bad_pixel`, `outlier`) still run over the full field, so a tile built from a
+  subset run is bit-identical to the same tile from a whole-field run (truncating
+  outlier's cross-visit median pool would change edge pixels). `run` rejects
+  `--tiles` unless the combine phase is selected. Covered by
+  `tests/test_nircam_resample_tiles.py`. CLI ergonomics only; no change to mosaic
+  pixel values.
 - **NIRCam `jhat` accepts a single `refcat` in addition to `refcat_dict`.** A
   field that aligns every filter to the same reference catalog can now set
   `[<field>.jhat].refcat = "<file>"` instead of repeating that filename across a

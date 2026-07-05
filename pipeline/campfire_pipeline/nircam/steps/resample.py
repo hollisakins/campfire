@@ -165,7 +165,7 @@ def _drizzle_tile_via_jwst(
 
 
 def resample_step(filtname, exposure_files, field, step_config,
-                  reduction_version, overwrite=False):
+                  reduction_version, overwrite=False, tiles=None):
     """Drizzle-combine canonical exposure files into mosaic tiles.
 
     Parameters
@@ -180,6 +180,12 @@ def resample_step(filtname, exposure_files, field, step_config,
         Campfire reduction version stamped onto each mosaic primary header
         as ``CMPFRVER``.
     overwrite : bool
+    tiles : str, list of str, or None
+        Tile name(s) to drizzle. ``None`` (the default) resamples every tile
+        in the field. Tile selection is a runtime CLI parameter (``--tiles``),
+        not a config key — passing a subset only limits which mosaics are
+        built; each tile is drizzled from the same exposure set it would use
+        in a whole-field run.
     """
     from campfire_pipeline.nircam.manifest import (
         build_mosaic_name, check_config_changed, check_inputs_changed,
@@ -193,8 +199,9 @@ def resample_step(filtname, exposure_files, field, step_config,
     if mode != 'tile':
         raise NotImplementedError(f"resample mode {mode!r} not supported")
 
-    tiles = step_config.get('tile', None) or list(field.tiles.keys())
-    if isinstance(tiles, str):
+    if tiles is None:
+        tiles = list(field.tiles.keys())
+    elif isinstance(tiles, str):
         tiles = [tiles]
 
     for tile in tiles:

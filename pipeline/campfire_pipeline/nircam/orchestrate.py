@@ -509,7 +509,7 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
 
 
 def _run_resample(field, config, filtname, n_processes, overwrite, status,
-                  reduction_version):
+                  reduction_version, tiles=None):
     # Read the outlier-finished working copies; the mosaic itself is written to
     # the canonical filter dir (resample_step derives it from field.filter_dir).
     exposures = field.get_exposure_files(filtname, with_step='CFP_OUT',
@@ -520,7 +520,7 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
     from campfire_pipeline.nircam.steps.resample import resample_step
     cfg = get_nircam_step_config('resample', config, field)
     resample_step(filtname, exposures, field, cfg, reduction_version,
-                  overwrite=overwrite)
+                  overwrite=overwrite, tiles=tiles)
 
 
 # Dispatch table: step name → callable that takes (field, config, filtname,
@@ -616,8 +616,18 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
                                 status)
 
 
-def run_combine(field, config, filters=None, n_processes=1, overwrite=False):
-    """Run all combine-phase steps in order across each filter."""
+def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
+                tiles=None):
+    """Run all combine-phase steps in order across each filter.
+
+    ``tiles`` scopes the resample step *only* — the exposure/visit-level
+    ensemble steps (apply_mask, bad_pixel, outlier) always run over the full
+    exposure set for the filter. Restricting those to a tile subset would
+    truncate outlier's cross-visit median pool and bad_pixel's per-detector
+    stacks, so a tile built from a subset would not match the same tile built
+    with the whole field. They skip already-stamped exposures, so re-running
+    combine with ``--tiles`` after a full pass goes straight to resampling.
+    """
     filters = _resolve_filters(filters, field)
     reduction_version = _resolve_reduction_version(config)
     status = _scan_status(field, filters, overwrite=overwrite)
@@ -637,17 +647,19 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False):
                 field.materialize_work(filt, status=status, overwrite=overwrite)
             elif step_name == 'resample':
                 _run_resample(field, config, filt, n_processes, overwrite,
-                              status, reduction_version)
+                              status, reduction_version, tiles=tiles)
             else:
                 _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
                                     status)
 
 
 def run_step(step_name, field, config, filters=None, n_processes=1,
-             overwrite=False):
+             overwrite=False, tiles=None):
     """Run a single named step across the field's filters.
 
-    Used by the per-step CLI commands (``cfpipe nircam <step>``).
+    Used by the per-step CLI commands (``cfpipe nircam <step>``). ``tiles``
+    is only meaningful for ``resample`` (it scopes which mosaics are built)
+    and is ignored by every other step.
     """
     if step_name not in STEP_NAMES:
         raise ValueError(
@@ -670,7 +682,7 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
         if step_name == 'resample':
             reduction_version = _resolve_reduction_version(config)
             _run_resample(field, config, filt, n_processes, overwrite,
-                          status, reduction_version)
+                          status, reduction_version, tiles=tiles)
         else:
             _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
                                 status)
