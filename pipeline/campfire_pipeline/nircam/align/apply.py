@@ -134,22 +134,24 @@ def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
                                         header=sm.header.copy(), name='SRCMASK')
 
     model = ImageModel(path, memmap=False)
-    # Preserve the true original: keep an existing WCS_BAK, else the current
-    # (still un-aligned) WCS becomes the baseline.
-    wcs_bak = (existing_wcs_bak if existing_wcs_bak is not None
-               else _serialize_gwcs_to_hdu(model.meta.wcs))
-    model.meta.wcs = corrected_wcs
     try:
-        update_fits_wcsinfo(model)
-    except (ValueError, RuntimeError) as e:
-        log(f"align: update_fits_wcsinfo failed on {os.path.basename(path)} "
-            f"({type(e).__name__}); FITS SIP keywords not refreshed.")
+        # Preserve the true original: keep an existing WCS_BAK, else the current
+        # (still un-aligned) WCS becomes the baseline.
+        wcs_bak = (existing_wcs_bak if existing_wcs_bak is not None
+                   else _serialize_gwcs_to_hdu(model.meta.wcs))
+        model.meta.wcs = corrected_wcs
+        try:
+            update_fits_wcsinfo(model)
+        except (ValueError, RuntimeError) as e:
+            log(f"align: update_fits_wcsinfo failed on {os.path.basename(path)} "
+                f"({type(e).__name__}); FITS SIP keywords not refreshed.")
 
-    extra_hdus = [wcs_bak] + ([srcmask_hdu] if srcmask_hdu is not None else [])
-    atomic_save(model, path,
-                header_updates=cfp.format(CFP_ALGN=cfp_value),
-                extra_hdus=extra_hdus)
-    model.close()
+        extra_hdus = [wcs_bak] + ([srcmask_hdu] if srcmask_hdu is not None else [])
+        atomic_save(model, path,
+                    header_updates=cfp.format(CFP_ALGN=cfp_value),
+                    extra_hdus=extra_hdus)
+    finally:
+        model.close()
 
 
 def align_exposure_group(members, refcat, *, key=None, config=None,
