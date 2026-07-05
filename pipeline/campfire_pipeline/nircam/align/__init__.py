@@ -7,8 +7,9 @@ Gaia-tied reference catalog and fits one shared shift+rotation per exposure via
 residuals demand it. See ``pipeline/ASTROMETRY_ALIGN_HANDOFF.md``.
 
 Modules are added phase by phase; this package currently exports the source
-detector and the triangle matcher. The exposure-grouping layer lives at
-``nircam/association.py`` (a general primitive, not align-specific).
+detector, the triangle matcher, and the per-exposure solve. The
+exposure-grouping layer lives at ``nircam/association.py`` (a general primitive,
+not align-specific).
 """
 
 from campfire_pipeline.nircam.align.detect import (
@@ -16,5 +17,19 @@ from campfire_pipeline.nircam.align.detect import (
     detect_star_centroids,
 )
 from campfire_pipeline.nircam.align.matcher import TriangleMatch
+from campfire_pipeline.nircam.align.solve import (
+    DetectorInput,
+    DetectorSolution,
+    GroupSolution,
+    solve_exposure_group,
+)
 
-__all__ = ['TriangleMatch', 'detect_star_centroids', 'detect_in_exposure']
+__all__ = [
+    'TriangleMatch',
+    'detect_star_centroids',
+    'detect_in_exposure',
+    'solve_exposure_group',
+    'DetectorInput',
+    'DetectorSolution',
+    'GroupSolution',
+]
