@@ -81,6 +81,40 @@ def _stamp_jhat(exposure_file, value):
     os.replace(tmp_path, exposure_file)
 
 
+def _resolve_refcat(step_config, refcat_dir, filtname):
+    """Resolve the reference-catalog path for *filtname* from *step_config*.
+
+    A single ``refcat`` string is used for every filter; a ``refcat_dict``
+    maps filter -> filename for per-filter catalogs. When both are set,
+    ``refcat_dict`` entries win per-filter and ``refcat`` is the fallback for
+    any filter it doesn't list. The chosen filename is joined onto
+    *refcat_dir*. Raises ``ValueError`` if neither is configured, or if only a
+    ``refcat_dict`` is set and it lacks an entry for *filtname*.
+    """
+    refcat_dict = step_config.get('refcat_dict')
+    refcat_single = step_config.get('refcat')
+
+    if refcat_dict is None and refcat_single is None:
+        raise ValueError(
+            "jhat config missing 'refcat'/'refcat_dict'. Define either "
+            "[<field>.jhat].refcat = \"<file>\" (one catalog for all filters) "
+            "or [<field>.jhat.refcat_dict] mapping filter names to refcat "
+            "filenames in fields.toml."
+        )
+
+    if refcat_dict is not None and filtname in refcat_dict:
+        refcat_name = refcat_dict[filtname]
+    elif refcat_single is not None:
+        refcat_name = refcat_single
+    else:
+        raise ValueError(
+            f"jhat.refcat_dict has no entry for filter '{filtname}' and no "
+            f"single 'refcat' fallback is set. Available: "
+            f"{list(refcat_dict.keys())}"
+        )
+    return os.path.join(refcat_dir, refcat_name)
+
+
 def _copy_diagnostics(scratch_subdir, diag_dir, rootname):
     """Move jhat's diagnostic PDFs and ECSV photometry tables to ``diag_dir``."""
     if not os.path.isdir(scratch_subdir):
@@ -107,9 +141,12 @@ def jhat_step(exposure_file, field, step_config, overwrite=False, status=None):
         WCS to be refined).
     field : Field
     step_config : dict
-        ``[nircam.jhat]`` (legacy ``[nircam.stage3.jhat]``). Must include a
-        ``refcat_dict`` mapping filter names to refcat filenames in
-        ``field.refcat_dir``.
+        ``[nircam.jhat]`` (legacy ``[nircam.stage3.jhat]``). Must specify the
+        reference catalog(s) in ``field.refcat_dir`` via either ``refcat`` (a
+        single filename used for every filter) or ``refcat_dict`` (a mapping of
+        filter name to refcat filename). If both are given, ``refcat_dict``
+        entries win per-filter and ``refcat`` is the fallback for any filter
+        not listed.
     overwrite : bool
     status : StepStatus, optional
         Pre-scanned CFP_* status cache.
@@ -135,19 +172,7 @@ def jhat_step(exposure_file, field, step_config, overwrite=False, status=None):
                        'jhat', status, overwrite):
         return
 
-    if 'refcat_dict' not in step_config:
-        raise ValueError(
-            "jhat config missing 'refcat_dict'. Define "
-            "[<field>.jhat.refcat_dict] in fields.toml mapping filter names "
-            "to refcat filenames."
-        )
-    refcat_dict = step_config['refcat_dict']
-    if filtname not in refcat_dict:
-        raise ValueError(
-            f"jhat.refcat_dict has no entry for filter '{filtname}'. "
-            f"Available: {list(refcat_dict.keys())}"
-        )
-    refcat = os.path.join(field.refcat_dir, refcat_dict[filtname])
+    refcat = _resolve_refcat(step_config, field.refcat_dir, filtname)
 
     log(f"Running jhat on {rootname}")
 

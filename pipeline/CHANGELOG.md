@@ -276,6 +276,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `jhat` accepts a single `refcat` in addition to `refcat_dict`.** A
+  field that aligns every filter to the same reference catalog can now set
+  `[<field>.jhat].refcat = "<file>"` instead of repeating that filename across a
+  `[<field>.jhat.refcat_dict]` block. When both are given, `refcat_dict` entries
+  win per-filter and `refcat` is the fallback for any filter it doesn't list.
+  Resolution moved into a small `_resolve_refcat` helper (covered by
+  `tests/test_nircam_jhat_refcat.py`). Config ergonomics only — for a given
+  configuration the same catalog is passed to JHAT as before, so no change to
+  aligned WCS or pixel values.
 - **NIRSpec `stuck_closed_shutters.toml` entries now carry a `# hand` / `# web` /
   `# auto` provenance tag.** `write_stuck_shutters_toml` preserves the tag of each
   existing entry (via a new `provenance` arg) instead of collapsing it to untagged,
