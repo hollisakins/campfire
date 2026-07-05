@@ -1,0 +1,16 @@
+"""NIRCam astrometric ``align`` subsystem.
+
+The field-level alignment algorithm that replaces the JHAT-based ``jhat`` /
+``wcs_shift`` steps: triangle-matches a pooled per-exposure source catalog to a
+Gaia-tied reference catalog and fits one shared shift+rotation per exposure via
+``tweakwcs`` (SIAF distortion fixed), freeing a per-detector shift only where
+residuals demand it. See ``pipeline/ASTROMETRY_ALIGN_HANDOFF.md``.
+
+Modules are added phase by phase; this package currently exports the matcher.
+The exposure-grouping layer lives at ``nircam/association.py`` (a general
+primitive, not align-specific).
+"""
+
+from campfire_pipeline.nircam.align.matcher import TriangleMatch
+
+__all__ = ['TriangleMatch']
