@@ -6,11 +6,15 @@ Gaia-tied reference catalog and fits one shared shift+rotation per exposure via
 ``tweakwcs`` (SIAF distortion fixed), freeing a per-detector shift only where
 residuals demand it. See ``pipeline/ASTROMETRY_ALIGN_HANDOFF.md``.
 
-Modules are added phase by phase; this package currently exports the matcher.
-The exposure-grouping layer lives at ``nircam/association.py`` (a general
-primitive, not align-specific).
+Modules are added phase by phase; this package currently exports the source
+detector and the triangle matcher. The exposure-grouping layer lives at
+``nircam/association.py`` (a general primitive, not align-specific).
 """
 
+from campfire_pipeline.nircam.align.detect import (
+    detect_in_exposure,
+    detect_star_centroids,
+)
 from campfire_pipeline.nircam.align.matcher import TriangleMatch
 
-__all__ = ['TriangleMatch']
+__all__ = ['TriangleMatch', 'detect_star_centroids', 'detect_in_exposure']

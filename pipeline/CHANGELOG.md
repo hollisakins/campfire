@@ -276,6 +276,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `align` phase — centroid-only source detection.** New
+  `nircam/align/detect.py` (`detect_star_centroids` / `detect_in_exposure`) finds
+  point-source centroids on a detector's SCI image with `photutils.DAOStarFinder` —
+  **centroids only, no aperture photometry**, so it structurally avoids JHAT's `-99.99`
+  sky-annulus sentinel (which floods the matcher with fake constant-magnitude sources
+  on CAMPFIRE's sky-subtracted frames). Returns `x, y` (0-indexed detector pixels) plus
+  a PSF-fit brightness proxy (`flux`/`mag`), masking `DO_NOT_USE` DQ and off-detector
+  pixels. WCS-free and `jwst`-free (reads SCI/ERR/DQ via `astropy.io.fits`). Standalone
+  library module for the forthcoming align solve — not yet wired in; covered by
+  `tests/test_align_detect.py`. No behavior change.
 - **NIRCam `align` phase — triangle/asterism matcher.** New `nircam/align/` subpackage
   with `TriangleMatch`, a `tweakwcs` `MatchCatalogs` subclass that matches source
   catalogs by triangle *shape* (side ratios) — invariant to translation/rotation/scale,
