@@ -96,7 +96,7 @@ NIRCAM = Keyset(
         'CFP_SHFT': 'campfire: pre-jhat WCS shift (dra,ddec,droll,scale)',
         'CFP_PREV': 'campfire: preview PNG rendered',
         'CFP_JHAT': 'campfire: jhat refcat used',
-        'CFP_ALGN': 'campfire: align shift/rot + solve_status',
+        'CFP_ALGN': 'campfire: align solve',
         'CFP_MASK': 'campfire: user masks applied',
         'CFP_BPIX': 'campfire: bad pixel mask applied',
         'CFP_OUT':  'campfire: outlier detection done',
