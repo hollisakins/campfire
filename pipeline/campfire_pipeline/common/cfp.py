@@ -78,6 +78,7 @@ NIRCAM = Keyset(
         'CFP_SHFT',  # pre-jhat astrometric WCS shift (opt-in, rule-driven)
         'CFP_PREV',  # per-exposure preview PNG for web admin triage
         'CFP_JHAT',  # WCS alignment
+        'CFP_ALGN',  # adaptive astrometric align (replaces jhat/wcs_shift)
         'CFP_MASK',  # user region masks
         'CFP_BPIX',  # bad pixel mask
         'CFP_OUT',   # outlier detection (per-visit ensemble)
@@ -95,6 +96,7 @@ NIRCAM = Keyset(
         'CFP_SHFT': 'campfire: pre-jhat WCS shift (dra,ddec,droll,scale)',
         'CFP_PREV': 'campfire: preview PNG rendered',
         'CFP_JHAT': 'campfire: jhat refcat used',
+        'CFP_ALGN': 'campfire: align shift/rot + solve_status',
         'CFP_MASK': 'campfire: user masks applied',
         'CFP_BPIX': 'campfire: bad pixel mask applied',
         'CFP_OUT':  'campfire: outlier detection done',
