@@ -103,16 +103,27 @@ export function isPngCached(url: string | null): boolean {
  * row + image caches, a prefetched sibling's URL survives the remount: the next
  * exposure paints from cache with no spinner and no network round-trip.
  *
- * Unbounded like the row cache (a couple of small strings per id; sessions are
- * short). URLs carry a ~1 h TTL, but a prefetched image is already fully loaded
- * and paints from the retained element even if its URL later expires.
+ * Entries carry a signed-at timestamp and expire before the presigned URL's own
+ * ~1 h TTL (PNG_PRESIGN_TTL_SECONDS in lib/actions/nircam-exposures.ts). Once
+ * stale, getCachedPngUrls treats the id as absent so the caller re-presigns a
+ * fresh URL — otherwise a long session (or an exposure whose retained image has
+ * since been LRU-evicted) could serve an expired URL straight into <img> and
+ * render a broken image with no in-session recovery. Unbounded like the row
+ * cache (a couple of small strings per id; sessions are short).
  */
-const pngUrlCache = new Map<number, ExposurePngUrls>();
+const PNG_URL_FRESH_MS = 50 * 60 * 1000; // < the 3600 s presign TTL, with buffer
+const pngUrlCache = new Map<number, { urls: ExposurePngUrls; signedAt: number }>();
 
 export function getCachedPngUrls(id: number): ExposurePngUrls | undefined {
-  return pngUrlCache.get(id);
+  const entry = pngUrlCache.get(id);
+  if (!entry) return undefined;
+  if (Date.now() - entry.signedAt > PNG_URL_FRESH_MS) {
+    pngUrlCache.delete(id);
+    return undefined;
+  }
+  return entry.urls;
 }
 
 export function setCachedPngUrls(id: number, urls: ExposurePngUrls): void {
-  pngUrlCache.set(id, urls);
+  pngUrlCache.set(id, { urls, signedAt: Date.now() });
 }
