@@ -276,6 +276,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `align` phase — exposure I/O + `CFP_ALGN` stamp.** New
+  `nircam/align/apply.py` (`align_exposure_group`) is the FITS layer: it reads each
+  detector's gwcs and detects sources, runs the in-memory solve, and writes the
+  corrected gwcs back onto the canonical (`model.meta.wcs` + `update_fits_wcsinfo`,
+  re-attaching `SRCMASK`, via `atomic_save`) with a per-detector `CFP_ALGN` provenance
+  value (`dof`/residual/match-count) — or a `NOT_ALIGNED` sentinel when the exposure
+  can't be tied to the reference (WCS preserved, never retried). The original
+  (un-aligned) gwcs is stashed in a `WCS_BAK` extension so an `overwrite` re-run solves
+  from the original and never double-corrects (mirrors the `wcs_shift` contract).
+  Right-sizes the `CFP_ALGN` card comment set in the earlier scaffolding so the value +
+  comment fit one 80-char FITS card. Still not wired into any run; covered by
+  `tests/test_align_apply.py` (persistable-gwcs canonical round-trip). No behavior change.
 - **NIRCam `align` phase — per-exposure solve core.** New `nircam/align/solve.py`
   (`solve_exposure_group`) fits ONE shared shift+rotation per exposure via
   `tweakwcs.align_wcs` (`fitgeom='rshift'`, SIAF distortion untouched) against the

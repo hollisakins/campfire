@@ -12,6 +12,7 @@ exposure-grouping layer lives at ``nircam/association.py`` (a general primitive,
 not align-specific).
 """
 
+from campfire_pipeline.nircam.align.apply import align_exposure_group
 from campfire_pipeline.nircam.align.detect import (
     detect_in_exposure,
     detect_star_centroids,
@@ -32,4 +33,5 @@ __all__ = [
     'DetectorInput',
     'DetectorSolution',
     'GroupSolution',
+    'align_exposure_group',
 ]
