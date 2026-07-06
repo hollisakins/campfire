@@ -76,6 +76,12 @@ def _expand_braces(pattern):
 # top, would lock CRDS into serverless mode before setup_environment runs).
 _DO_NOT_USE = np.uint32(1)
 
+# CFP_ALGN value the align phase stamps on an exposure it could not tie to the
+# reference (WCS preserved, never retried). Mirrors
+# ``nircam.align.apply.NOT_ALIGNED_SENTINEL`` — duplicated as a literal to keep
+# field.py off align's heavy import chain (align.apply -> solve -> tweakwcs).
+_NOT_ALIGNED_SENTINEL = 'NOT_ALIGNED'
+
 
 def _prime_work_copy(path):
     """Prime a freshly-copied combine working copy for the ensemble steps.
@@ -602,7 +608,8 @@ class Field:
         return os.path.join(self.filter_dir(filter_name, work=work),
                             f'{rootname}.fits')
 
-    def materialize_work(self, filter_name, status=None, overwrite=False):
+    def materialize_work(self, filter_name, status=None, overwrite=False,
+                         exclude_not_aligned=False):
         """Refresh the combine working copies for a filter; return their paths.
 
         The combine phase must not mutate the canonical per-exposure FITS (those
@@ -628,12 +635,20 @@ class Field:
 
         If a ``StepStatus`` is passed, the working paths are rescanned into it so
         the combine steps' skip checks reflect the working tree's current state.
+
+        With ``exclude_not_aligned`` (set by the combine phase for align-enabled
+        fields), reject-to-identity exposures (``CFP_ALGN = NOT_ALIGNED``) are
+        quarantined from the working tree so they never drizzle or pollute the
+        ensemble — this is the single gate into the tree every combine step reads.
         """
         import shutil
 
         canon = self.get_exposure_files(filter_name)          # frozen process outputs
         work_dir = self.filter_dir(filter_name, work=True)
         os.makedirs(work_dir, exist_ok=True)
+
+        if exclude_not_aligned:
+            canon = self._quarantine_not_aligned(canon, work_dir)
 
         work_paths = []
         for src in canon:
@@ -654,6 +669,33 @@ class Field:
         if status is not None:
             status.rescan(work_paths)
         return sorted(work_paths)
+
+    def _quarantine_not_aligned(self, canon, work_dir):
+        """Drop reject-to-identity exposures from the combine input.
+
+        For an align-enabled field an exposure the align phase could not tie to
+        the reference is stamped ``CFP_ALGN = NOT_ALIGNED`` with its raw WCS
+        preserved; drizzling it doubles sources and defeats CR rejection. We
+        exclude it here — the one gate into the working tree — and delete any
+        stale working copy left from a run before it became NOT_ALIGNED, so a
+        lingering copy can't sneak into the work-tree glob the ensemble steps
+        enumerate. Returns the kept canonical paths.
+        """
+        from campfire_pipeline.common import cfp
+
+        kept, dropped = [], 0
+        for src in canon:
+            if cfp.step_value(src, 'CFP_ALGN') == _NOT_ALIGNED_SENTINEL:
+                dropped += 1
+                dst = os.path.join(work_dir, os.path.basename(src))
+                if os.path.exists(dst):
+                    os.remove(dst)
+            else:
+                kept.append(src)
+        if dropped:
+            log(f"combine: quarantined {dropped} NOT_ALIGNED exposure(s) from "
+                f"the ensemble (use --include-unaligned to override).")
+        return kept
 
     def get_tile_wcs(self, tile_name, pixel_scale='30mas'):
         """Get WCS parameters for a tile at the requested pixel scale.

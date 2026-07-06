@@ -123,6 +123,47 @@ Release procedure: edit the `## Unreleased` section below, then run
   match (and thus the fitted WCS) for opt-in `align` fields; the reference-catalog
   `weight` column is deliberately *not* used to carry brightness, since tweakwcs
   would fold it into the least-squares fit. Covered by `tests/test_align_matcher.py`.
+- **NIRCam `align` shared solve now footprint-clips the refcat and rests the fit
+  on an all-source refine, not the triangle cap.** Previously the full field
+  refcat (e.g. ~550k rows for COSMOS) reached the matcher, so the brightest-N
+  vertex cap kept the globally brightest sources — nearly all off-frame — and that
+  same cap gated the final fit (~17–30 pairs). The solve now (1) clips the refcat
+  to the exposure's detector-union footprint plus a `ref_border_arcmin` margin
+  (default 0.5′), projected through a local gnomonic tangent plane
+  (`align/footprint.py`); (2) runs `TriangleMatch` as a bounded **bootstrap** only
+  (renamed `brightest` → `bootstrap_max`); then (3) refines with an all-source,
+  one-to-one `tweakwcs.XYXYMatch` pass (`fitgeom='rshift'`, σ-clip, up to
+  `refine_niter` iterations, no 2-D-histogram re-acquisition) so the fitted WCS
+  rests on every matched source, not the capped vertices. Per-detector residuals
+  and the reject-to-identity gate now use mutual-nearest-neighbour (one-to-one)
+  matching, so counts no longer pile several detections onto one reference. The
+  translation-invariant matcher (not `XYXYMatch`) still drives the adaptive
+  per-detector refit, so a detector off by up to `match_radius` is still
+  recoverable. Changes which sources match — and thus the fitted WCS — for opt-in
+  `align` fields. `align/{footprint,solve,matcher}.py`, new `[nircam.align]` knobs
+  (`ref_border_arcmin`, `bootstrap_max`, `refine_searchrad/tolerance/niter`);
+  covered by `tests/test_align_{footprint,solve}.py`.
+- **NIRCam `align` detection is quality-selected, not count-capped.** `detect.py`
+  adds a peak-SNR floor (`snr_min`) and an (uncalibrated) DAO-magnitude range trim
+  (`objmag_lim`), and masks `SATURATED` + `NO_LIN_CORR` DQ (not only `DO_NOT_USE`)
+  so a saturated or nonlinearity-uncorrected core can't seed a false centroid or a
+  corrupt flux. The align path drops the fixed `brightest` count cap (the
+  vertex cap moved to the bootstrap), so the full quality-cut catalog reaches the
+  refine. Detection PSF FWHM is now **per filter** (`psf_fwhm_by_filter`, keyed off
+  each member's filter, falling back to the scalar `fwhm`) instead of one value
+  across F070W→F480M. Changes which sources are detected for opt-in `align` fields.
+  `align/{detect,apply}.py`, config; covered by `tests/test_align_detect.py`.
+- **NIRCam `combine` quarantines `NOT_ALIGNED` exposures for align-enabled
+  fields.** An exposure the align phase could not tie to the reference is stamped
+  `CFP_ALGN = NOT_ALIGNED` with its raw WCS preserved; drizzling it doubles sources
+  and defeats CR rejection. `Field.materialize_work` — the single gate into the
+  combine working tree that every ensemble step reads — now drops such exposures
+  (and deletes any stale working copy), so they enter neither the drizzle nor the
+  outlier / bad-pixel pools. A new `--include-unaligned` flag on `cfpipe nircam
+  combine` / `run` overrides. Pre-existing issue (JHAT shares it) and usually
+  ≲0.5″, but now closed for align fields. New `cfp.step_value` accessor;
+  `field.py`, `orchestrate.py`, `cli.py`; covered by `tests/test_nircam_work_tree.py`
+  and `tests/test_cfp.py`.
 - NIRCam `combine` now honors per-exposure reviewer exclusions (epic #261, N6 /
   D10). `Field.setup_workspace` reads `reference/<field>/exposures.json`
   (materialized by `campfire deploy nircam pull` from the portal's

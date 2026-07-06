@@ -739,7 +739,7 @@ def run_align(field, config, filters=None, n_processes=1, overwrite=False,
 
 
 def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
-                tiles=None):
+                tiles=None, include_unaligned=False):
     """Run all combine-phase steps in order across each filter.
 
     ``tiles`` scopes the *whole* combine phase to exposures overlapping the
@@ -757,6 +757,12 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
     reduction_version = _resolve_reduction_version(config)
     status = _scan_status(field, filters, overwrite=overwrite)
 
+    # For an align-enabled field, quarantine NOT_ALIGNED exposures from the
+    # ensemble (they'd drizzle with a raw WCS). --include-unaligned overrides.
+    align_enabled = get_nircam_step_config('align', config, field).get(
+        'enabled', False)
+    exclude_not_aligned = align_enabled and not include_unaligned
+
     log(f"=== Combine phase: field={field.name}, filters={filters} ===")
     for filt in filters:
         log(f"--- Combine: {filt} ---")
@@ -769,7 +775,8 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
                 # DO_NOT_USE) and rescan them into the status cache.
                 _RUNNERS[step_name](field, config, filt, n_processes,
                                     overwrite, status, tiles=tiles)
-                field.materialize_work(filt, status=status, overwrite=overwrite)
+                field.materialize_work(filt, status=status, overwrite=overwrite,
+                                       exclude_not_aligned=exclude_not_aligned)
             elif step_name == 'resample':
                 _run_resample(field, config, filt, n_processes, overwrite,
                               status, reduction_version, tiles=tiles)
@@ -801,11 +808,18 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
         prefetch_process_references(field, filters, status=status,
                                     overwrite=overwrite)
 
+    # A standalone ensemble step honours the same NOT_ALIGNED quarantine as the
+    # full combine phase for align-enabled fields (no --include-unaligned escape
+    # hatch on the per-step CLI — the full `combine` command is where you opt in).
+    exclude_not_aligned = get_nircam_step_config('align', config, field).get(
+        'enabled', False)
+
     for filt in filters:
         # A standalone combine ensemble step needs the working copies present
         # and primed (canonical -> work, CFMASK -> DO_NOT_USE) before it runs.
         if step_name in _COMBINE_WORK_STEPS:
-            field.materialize_work(filt, status=status, overwrite=overwrite)
+            field.materialize_work(filt, status=status, overwrite=overwrite,
+                                   exclude_not_aligned=exclude_not_aligned)
         if step_name == 'resample':
             reduction_version = _resolve_reduction_version(config)
             _run_resample(field, config, filt, n_processes, overwrite,

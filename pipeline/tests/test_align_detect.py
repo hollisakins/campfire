@@ -105,6 +105,63 @@ def test_nan_pixels_handled():
     assert _nearest(cat, 40, 40) < 0.3
 
 
+# --- quality cuts (S2) ------------------------------------------------------
+
+def test_snr_min_drops_low_peak_sources():
+    # peak SNR ≈ amp / background_rms (rms ~ 1 here). snr_min drops the faint
+    # source (~15σ) but keeps the bright one (~400σ), even though nsigma found both.
+    rng = np.random.default_rng(6)
+    img = _inject((100, 100), [(30.0, 30.0, 400.0), (70.0, 70.0, 15.0)], rng)
+    base = detect_star_centroids(img, nsigma=4.0)
+    assert _nearest(base, 30, 30) < 0.3 and _nearest(base, 70, 70) < 0.6
+    cut = detect_star_centroids(img, nsigma=4.0, snr_min=40.0)
+    assert _nearest(cut, 30, 30) < 0.3               # bright kept
+    assert _nearest(cut, 70, 70) > 5.0               # faint dropped
+
+
+def test_objmag_lim_keeps_only_range():
+    # objmag_lim trims a magnitude window (uncalibrated DAO mag). Derive the
+    # limits from the actual catalog so the test doesn't hard-code kernel flux.
+    rng = np.random.default_rng(7)
+    img = _inject((120, 120),
+                  [(30.0, 30.0, 600.0), (60.0, 60.0, 120.0), (90.0, 90.0, 25.0)],
+                  rng)
+    full = detect_star_centroids(img, nsigma=4.0)
+    assert len(full) >= 3
+    # DAOStarFinder can emit a negative-flux detection (mag = nan); rank on the
+    # finite mags. objmag_lim itself drops the nan-mag rows (isfinite gate).
+    mags = np.sort(np.asarray(full['mag']))
+    mags = mags[np.isfinite(mags)]
+    lo, hi = mags[0] + 0.01, mags[-1] - 0.01         # exclude the extremes
+    cut = detect_star_centroids(img, nsigma=4.0, objmag_lim=(lo, hi))
+    assert 0 < len(cut) < len(full)
+    cm = np.asarray(cut['mag'])
+    assert np.all(np.isfinite(cm) & (cm >= lo) & (cm <= hi))
+
+
+def test_detect_in_exposure_masks_saturated_dq(tmp_path):
+    # A SATURATED pixel (DQ bit 1) is masked even without DO_NOT_USE — a
+    # saturated core corrupts the centroid/flux the mag cut can't catch.
+    rng = np.random.default_rng(8)
+    shape = (100, 100)
+    sci = _inject(shape, [(30.0, 30.0, 400.0), (70.0, 70.0, 400.0)],
+                  rng).astype('float32')
+    err = np.ones(shape, dtype='float32')
+    dq = np.zeros(shape, dtype='uint32')
+    dq[24:37, 24:37] = 2                             # SATURATED, no DO_NOT_USE
+    path = tmp_path / 'jw01727028001_04101_00003_nrca1.fits'
+    fits.HDUList([
+        fits.PrimaryHDU(),
+        fits.ImageHDU(sci, name='SCI'),
+        fits.ImageHDU(err, name='ERR'),
+        fits.ImageHDU(dq, name='DQ'),
+    ]).writeto(path, overwrite=True)
+
+    cat = detect_in_exposure(str(path))
+    assert _nearest(cat, 70, 70) < 0.3               # clean source detected
+    assert _nearest(cat, 30, 30) > 5.0               # saturated source masked
+
+
 # --- FITS wrapper -----------------------------------------------------------
 
 def test_detect_in_exposure_masks_dq_and_err(tmp_path):

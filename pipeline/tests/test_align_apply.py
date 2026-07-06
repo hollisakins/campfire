@@ -161,9 +161,15 @@ def test_overwrite_does_not_double_correct(tmp_path):
 # --- adaptive end-to-end ----------------------------------------------------
 
 def test_adaptive_dof_recorded(tmp_path):
+    # Detector 4 carries a 0.6" per-detector offset — large enough that the
+    # all-source shared refine sigma-clips it (rather than tilting the whole
+    # exposure to absorb it), so its residual survives above tolerance and the
+    # adaptive shift-only refit frees it. match_radius=0.8 keeps its sources
+    # matchable at that offset.
     members, refcat, _ = _make_exposure(
-        tmp_path, n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.3)})
-    align_exposure_group(members, refcat, config={'tolerance': 0.15})
+        tmp_path, n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.6)})
+    align_exposure_group(members, refcat,
+                         config={'tolerance': 0.15, 'match_radius': 0.8})
     # detectors 0-3 stay on the shared solution; detector 4 (nrcb1) is freed
     for m in members[:4]:
         assert 'dof=shared' in _cfp_algn(m.path)

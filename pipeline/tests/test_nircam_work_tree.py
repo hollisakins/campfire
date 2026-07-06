@@ -115,3 +115,36 @@ def test_materialize_is_incremental(tmp_path):
     f.materialize_work('f444w')
     with fits.open(wp) as hdul:
         assert 'CFP_OUT' not in hdul[0].header
+
+
+def _stamp_algn(path, value):
+    with fits.open(path, mode='update') as hdul:
+        hdul[0].header['CFP_ALGN'] = value
+        hdul.flush()
+
+
+def test_materialize_quarantines_not_aligned(tmp_path):
+    # An align-enabled combine must keep NOT_ALIGNED exposures out of the working
+    # tree (they'd drizzle with a raw WCS). exclude_not_aligned is the gate.
+    f = _make_field(tmp_path)
+    d = f.filter_dir('f444w')
+    solved = os.path.join(d, f'{_ROOT}.fits')
+    rej_root = 'jw01727028001_04101_00004_nrcalong'
+    rejected = os.path.join(d, f'{rej_root}.fits')
+    _write_canonical(solved, stamps=())
+    _write_canonical(rejected, stamps=())
+    _stamp_algn(solved, 'dof=shared res=0.01 n=30')
+    _stamp_algn(rejected, 'NOT_ALIGNED')
+
+    # Default: no quarantine -> both exposures materialized.
+    both = f.materialize_work('f444w', overwrite=True)
+    assert len(both) == 2
+
+    # With the quarantine, the NOT_ALIGNED exposure is dropped AND its stale work
+    # copy (left by the call above) is removed, so the ensemble glob can't see it.
+    kept = f.materialize_work('f444w', overwrite=True, exclude_not_aligned=True)
+    assert len(kept) == 1
+    assert os.path.basename(kept[0]) == f'{_ROOT}.fits'
+    work_dir = f.filter_dir('f444w', work=True)
+    assert not os.path.exists(os.path.join(work_dir, f'{rej_root}.fits'))
+    assert os.path.exists(os.path.join(work_dir, f'{_ROOT}.fits'))

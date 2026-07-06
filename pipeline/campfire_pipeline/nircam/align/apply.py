@@ -27,7 +27,10 @@ from astropy.io import fits
 
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import atomic_save, log
-from campfire_pipeline.nircam.align.detect import detect_star_centroids
+from campfire_pipeline.nircam.align.detect import (
+    DETECT_DQ_BITS,
+    detect_star_centroids,
+)
 from campfire_pipeline.nircam.align.solve import (
     DetectorInput,
     GroupSolution,
@@ -38,14 +41,18 @@ from campfire_pipeline.nircam.association import exposure_key
 WCS_BAK_EXTNAME = 'WCS_BAK'
 NOT_ALIGNED_SENTINEL = 'NOT_ALIGNED'
 
-# jwst.datamodels.dqflags.pixel['DO_NOT_USE'] == 1 (bit 0).
-_DO_NOT_USE = np.uint32(1)
-
 # Solve/detection knobs threaded from [<field>.align]; the orchestration passes
-# a resolved dict, these are the fallbacks.
+# a resolved dict, these are the fallbacks. Per-filter PSF FWHM
+# (``psf_fwhm_by_filter``) is resolved per member below, not passed through
+# these keys. ``bootstrap_max`` and the ``refine_*`` knobs are solve keys (the
+# triangle-vertex cap moved to the bootstrap; detection is no longer count-
+# capped, so ``brightest`` is gone from the align path).
 _SOLVE_KEYS = ('fitgeom', 'minobj', 'nclip', 'sigma', 'tolerance', 'adaptive',
-               'adaptive_min_matches', 'match_radius', 'min_matched')
-_DETECT_KEYS = ('fwhm', 'nsigma', 'edge', 'brightest')
+               'adaptive_min_matches', 'match_radius', 'min_matched',
+               'ref_border_arcmin', 'bootstrap_max', 'refine_searchrad',
+               'refine_tolerance', 'refine_niter')
+_DETECT_KEYS = ('fwhm', 'nsigma', 'edge', 'snr_min', 'objmag_lim',
+                'sharplo', 'sharphi', 'roundlo', 'roundhi')
 
 
 # --- WCS_BAK gwcs <-> ASDF-in-FITS (replicated from steps/wcs_shift.py) ------
@@ -88,7 +95,7 @@ def _detect_mask(model):
     if getattr(model, 'err', None) is not None:
         mask |= ~np.isfinite(np.asarray(model.err, dtype=float))
     if getattr(model, 'dq', None) is not None:
-        mask |= (np.asarray(model.dq).astype(np.uint32) & _DO_NOT_USE) != 0
+        mask |= (np.asarray(model.dq).astype(np.uint32) & DETECT_DQ_BITS) != 0
     return mask
 
 
@@ -195,13 +202,25 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
     solve_cfg = {k: config[k] for k in _SOLVE_KEYS if k in config}
     detect_cfg = {k: config[k] for k in _DETECT_KEYS if k in config}
 
+    # Per-filter detection PSF FWHM: NIRCam's core width runs from ~F070W to
+    # ~F480M, so a single fwhm is wrong across the exposure's SW+LW channels.
+    # Key it off each member's filter, falling back to the scalar `fwhm`.
+    psf_by_filter = {str(k).lower(): float(v)
+                     for k, v in (config.get('psf_fwhm_by_filter') or {}).items()}
+    default_fwhm = detect_cfg.get('fwhm', 2.5)
+
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         from jwst.datamodels import ImageModel
         from jwst.assign_wcs.util import update_fits_wcsinfo
 
-    detectors = [_load_detector(m.path, m.detector, detect_cfg, ImageModel)
-                 for m in members]
+    detectors = []
+    for m in members:
+        member_cfg = dict(detect_cfg)
+        member_cfg['fwhm'] = psf_by_filter.get(m.filter_name.lower(),
+                                               default_fwhm)
+        detectors.append(_load_detector(m.path, m.detector, member_cfg,
+                                        ImageModel))
 
     solution = solve_exposure_group(detectors, refcat, key=key, **solve_cfg)
 

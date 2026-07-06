@@ -185,13 +185,18 @@ def align(config, field, filters, processes, overwrite, tiles):
 @common_options
 @processing_options
 @tile_option
-def combine(config, field, filters, processes, overwrite, tiles):
+@click.option('--include-unaligned', is_flag=True,
+              help='Include exposures the align phase left NOT_ALIGNED in the '
+                   'combine (default: quarantine them for align-enabled fields).')
+def combine(config, field, filters, processes, overwrite, tiles,
+            include_unaligned):
     """Run the ensemble combine phase (apply_mask → resample)."""
     cfg, field_obj = _setup(config, field)
     run_combine(field_obj, cfg,
                 filters=_resolve_filters(filters, field_obj),
                 n_processes=processes, overwrite=overwrite,
-                tiles=list(tiles) if tiles else None)
+                tiles=list(tiles) if tiles else None,
+                include_unaligned=include_unaligned)
 
 
 @main.command()
@@ -207,8 +212,11 @@ def combine(config, field, filters, processes, overwrite, tiles):
               help='Run the combine phase.')
 @click.option('--all', 'do_all', is_flag=True,
               help='Run all phases (process, align, combine).')
+@click.option('--include-unaligned', is_flag=True,
+              help='Include NOT_ALIGNED exposures in the combine (default: '
+                   'quarantine them for align-enabled fields).')
 def run(config, field, filters, processes, overwrite, tiles,
-        do_process, do_align, do_combine, do_all):
+        do_process, do_align, do_combine, do_all, include_unaligned):
     """Run process, align, and/or combine in one invocation."""
     if do_all:
         do_process = do_align = do_combine = True
@@ -233,7 +241,7 @@ def run(config, field, filters, processes, overwrite, tiles,
     if do_combine:
         run_combine(field_obj, cfg, filters=filter_list,
                     n_processes=processes, overwrite=overwrite,
-                    tiles=tile_list)
+                    tiles=tile_list, include_unaligned=include_unaligned)
 
 
 # ---------------------------------------------------------------------------

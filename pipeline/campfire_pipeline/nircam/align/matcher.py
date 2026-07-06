@@ -21,11 +21,20 @@ plausible pairs in a dense or contaminated field. Trust comes from the
 downstream robust, all-source refine (the sigma-clipped ``align_wcs`` fit), not
 from these raw pairs.
 
+**Bootstrap only.** This matcher *seeds* the solve; it does not decide the fit.
+``bootstrap_max`` caps each catalog to its brightest-N vertices before triangle
+building (to bound the O(N^3) triangle count), so the triangle stage rests on a
+small vertex set by design — the downstream all-source robust refine
+(``tweakwcs.XYXYMatch`` over every detected source; see ``solve.py``) is what the
+fitted WCS actually rests on. Capping the *bootstrap* is correct; the cap never
+reaches the final fit.
+
 **Color-free.** Magnitude is dropped from the correspondence entirely; the
-``mag_col`` is used *only* to cap each catalog to its brightest-N vertices
-before triangle building (to bound the O(N^3) triangle count) — never as a
-match constraint. This is what lets the align phase feed a reference catalog
-whose magnitude zeropoint is inconsistent across build backends.
+``mag_col`` is used *only* to rank the ``bootstrap_max`` cap (brightest first) —
+never as a match constraint. This is what lets the align phase feed a reference
+catalog whose magnitude zeropoint is inconsistent across build backends. Capping
+both catalogs to the same ``bootstrap_max`` also density-matches the two vertex
+sets, so the triangle hash isn't swamped by whichever side is denser.
 
 Wraps ``tristars.match.match_catalog_tri`` on its correspondence-only path
 (``auto_keep=False``): the matcher returns matched index pairs; the
@@ -57,13 +66,15 @@ class TriangleMatch(MatchCatalogs):
 
     Parameters
     ----------
-    brightest : int or None
+    bootstrap_max : int or None
         Cap each catalog to this many brightest vertices before building
-        triangles (bounds the triangle count). ``None`` uses every source.
+        triangles (bounds the triangle count). Bounds the **bootstrap** only —
+        the fit rests on the all-source refine, not on these vertices. ``None``
+        uses every source.
     mag_col : str
-        Column used to rank brightness for the ``brightest`` cap (smaller =
+        Column used to rank brightness for the ``bootstrap_max`` cap (smaller =
         brighter, i.e. an AB magnitude). Used for vertex selection ONLY, never
-        as a match constraint. If absent, the cap falls back to input order.
+        as a match constraint. If absent, the cap falls back to an even spread.
     size_limit : (float, float)
         Min/max triangle side length passed to ``match_catalog_tri``. In the
         JWST tangent plane these are **arcsec**; the default ``(5, 800)`` keeps
@@ -77,10 +88,10 @@ class TriangleMatch(MatchCatalogs):
         defaults (both ``True``) assume the JWST WCS already fixes scale and roll.
     """
 
-    def __init__(self, *, brightest=150, mag_col='mag',
+    def __init__(self, *, bootstrap_max=150, mag_col='mag',
                  size_limit=(5.0, 800.0), ignore_rot=True, ignore_scale=True,
                  ba_max=0.9, max_keep=10):
-        self.brightest = brightest
+        self.bootstrap_max = bootstrap_max
         self.mag_col = mag_col
         self.size_limit = [float(size_limit[0]), float(size_limit[1])]
         self.ignore_rot = ignore_rot
@@ -103,11 +114,11 @@ class TriangleMatch(MatchCatalogs):
                 )
         n = len(cat)
         order = np.arange(n)
-        if self.brightest is not None and n > self.brightest:
+        if self.bootstrap_max is not None and n > self.bootstrap_max:
             if self.mag_col in cat.colnames:
                 # smaller magnitude == brighter
                 order = np.argsort(np.asarray(cat[self.mag_col], dtype=float),
-                                   kind='stable')[:self.brightest]
+                                   kind='stable')[:self.bootstrap_max]
             else:
                 # tweakwcs' create_group_catalog rebuilds the pooled image
                 # catalog from scratch — only x/y/RA/DEC/id (+ its own
@@ -120,7 +131,7 @@ class TriangleMatch(MatchCatalogs):
                 # pooled detector contributes vertices, and since each block is
                 # already flux-sorted the brighter sources within it are kept.
                 order = np.unique(
-                    np.linspace(0, n - 1, self.brightest).round().astype(int))
+                    np.linspace(0, n - 1, self.bootstrap_max).round().astype(int))
                 self._warn_unranked(n)
         tpx = np.asarray(cat['TPx'], dtype=float)[order]
         tpy = np.asarray(cat['TPy'], dtype=float)[order]
@@ -140,8 +151,8 @@ class TriangleMatch(MatchCatalogs):
         _UNRANKED_WARNED = True
         log(f"TriangleMatch: no '{self.mag_col}' column to rank brightness "
             f"(expected for the tweakwcs-pooled image catalog, which drops it); "
-            f"spreading the brightest-{self.brightest} vertex cap evenly across "
-            f"the {n} pooled sources. Logged once per process.")
+            f"spreading the bootstrap-{self.bootstrap_max} vertex cap evenly "
+            f"across the {n} pooled sources. Logged once per process.")
 
     def __call__(self, refcat, imcat, tp_pscale=1.0, tp_units=None, **kwargs):
         # tp_pscale / tp_units are part of the MatchCatalogs contract but unused
