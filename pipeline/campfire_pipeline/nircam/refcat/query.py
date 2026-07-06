@@ -31,6 +31,18 @@ from campfire_pipeline.common.io import log
 SUPPORTED_BACKENDS = ("gaia", "ls_dr10", "hsc_ssp")
 
 
+def _float_col(result, name):
+    """Return column *name* as a float ndarray, masked entries -> NaN.
+
+    Query backends return masked tables; a masked value cast straight to float
+    yields the fill sentinel (garbage), not NaN — which would make a NULL proper
+    motion look like a real one. Fill masked entries with NaN first.
+    """
+    col = result[name]
+    filled = col.filled(np.nan) if hasattr(col, "filled") else col
+    return np.asarray(filled, dtype=float)
+
+
 def query(backend, center, radius_deg, **kwargs):
     """Dispatch to a named backend. ``center`` is ``(ra_deg, dec_deg)``."""
     if backend == "gaia":
@@ -85,7 +97,9 @@ def query_gaia(center, radius_deg, *, mag_band="G", mag_max=None,
 
     ra, dec = center
     adql = f"""
-        SELECT ra, dec, {mag_col}, {flux_col}, {flux_err_col}
+        SELECT source_id, ra, dec, ref_epoch, pmra, pmdec, parallax,
+               pmra_error, pmdec_error,
+               {mag_col}, {flux_col}, {flux_err_col}
         FROM gaiadr3.gaia_source
         WHERE 1 = CONTAINS(
             POINT('ICRS', ra, dec),
@@ -99,17 +113,27 @@ def query_gaia(center, radius_deg, *, mag_band="G", mag_max=None,
         job = Gaia.launch_job_async(adql)
         result = job.get_results()
 
-    flux = np.asarray(result[flux_col], dtype=float)
-    flux_err = np.asarray(result[flux_err_col], dtype=float)
-    mag = np.asarray(result[mag_col], dtype=float)
+    flux = _float_col(result, flux_col)
+    flux_err = _float_col(result, flux_err_col)
+    mag = _float_col(result, mag_col)
     with np.errstate(divide="ignore", invalid="ignore"):
         snr = np.where(flux_err > 0, flux / flux_err, np.nan)
         mag_err = 2.5 / np.log(10) / snr
 
     keep = np.isfinite(mag) & np.isfinite(mag_err) & (mag_err > 0)
+    # Proper-motion columns feed the align phase's epoch propagation. Gaia leaves
+    # them NULL for sources without a 5-parameter solution; NULL -> NaN so those
+    # rows are treated as stationary (see refcat.motion.propagate_to_epoch).
     out = Table({
-        "RA": np.asarray(result["ra"], dtype=float)[keep],
-        "DEC": np.asarray(result["dec"], dtype=float)[keep],
+        "source_id": np.asarray(result["source_id"])[keep],
+        "RA": _float_col(result, "ra")[keep],
+        "DEC": _float_col(result, "dec")[keep],
+        "ref_epoch": _float_col(result, "ref_epoch")[keep],
+        "pmra": _float_col(result, "pmra")[keep],
+        "pmdec": _float_col(result, "pmdec")[keep],
+        "parallax": _float_col(result, "parallax")[keep],
+        "pmra_err": _float_col(result, "pmra_error")[keep],
+        "pmdec_err": _float_col(result, "pmdec_error")[keep],
         "mag": mag[keep],
         "mag_err": mag_err[keep],
     })
