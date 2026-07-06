@@ -171,6 +171,29 @@ def test_footprint_clip_survives_refcat_decoys():
     assert abs(np.hypot(*sol.shift) - 2.0) < 0.1
 
 
+# --- robustness: exceptions never crash the worker --------------------------
+
+def test_refine_exception_keeps_bootstrap(monkeypatch):
+    # A crowded field can make XYXYMatch raise (source confusion). The refine
+    # crash must be swallowed and the good bootstrap solution retained, not
+    # propagated out of the solve (which would abort the align worker).
+    from tweakwcs.matchutils import MatchCatalogs
+    import campfire_pipeline.nircam.align.solve as _s
+
+    class _BoomMatch(MatchCatalogs):
+        def __init__(self, *a, **k):
+            pass
+
+        def __call__(self, refcat, imcat, **k):
+            raise RuntimeError("simulated source confusion")
+
+    monkeypatch.setattr(_s, 'XYXYMatch', _BoomMatch)
+    detectors, refcat = _build_group(n_det=2, offset=(2.0, 0.0))
+    sol = solve_exposure_group(detectors, refcat, key='exp')
+    assert sol.status == 'SOLVED'                       # bootstrap survived
+    assert abs(np.hypot(*sol.shift) - 2.0) < 0.1
+
+
 # --- residual helper --------------------------------------------------------
 
 def test_match_measures_small_offset():

@@ -140,6 +140,24 @@ def _group_by_visit(exposure_files):
     return visits
 
 
+def _visit_membership_matches(manifest, visit, visit_files):
+    """True iff an outlier *manifest* recorded exactly the current *visit_files*
+    as this visit's own inputs.
+
+    Catches a member dropped from the visit (a NOT_ALIGNED quarantine, a new
+    skip/exclusion, a tile re-scope) that the per-file hash check alone would
+    miss — the survivors' hashes still match the larger manifest, so outlier
+    would be skipped and resample would reuse CR masks computed with the
+    now-absent exposure still pooled. A manifest input belongs to this visit iff
+    its filename's leading ``jw...`` token is the visit; cross-visit overlap
+    inputs (a different token) are excluded here and validated by
+    ``outlier_step``'s full input-set check on the slow path.
+    """
+    manifest_this_visit = {inp['filename'] for inp in manifest.get('inputs', [])
+                           if inp['filename'].split('_')[0] == visit}
+    return manifest_this_visit == {os.path.basename(f) for f in visit_files}
+
+
 def _read_sregions(exposure_files):
     """Return S_REGION header strings parallel to ``exposure_files``."""
     sregions = []
@@ -470,10 +488,12 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
         manifest = load_manifest(manifest_path)
         if manifest is None:
             return False
+        # A member dropped from this visit (e.g. a NOT_ALIGNED quarantine) must
+        # force outlier to re-run, else resample reuses CR masks computed with
+        # the now-absent exposure still pooled (see _visit_membership_matches).
+        if not _visit_membership_matches(manifest, visit, visit_files):
+            return False
         # Check that visit_files (a subset of all_inputs) hashes still match.
-        # Cross-visit overlaps are validated inside outlier_step on the slow
-        # path; here we only confirm the visit's own files are unchanged so
-        # we can cheaply skip the obvious no-op case.
         old_hashes = {
             inp['filename']: inp['file_hash']
             for inp in manifest['inputs']

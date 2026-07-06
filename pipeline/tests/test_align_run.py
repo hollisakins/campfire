@@ -32,6 +32,26 @@ def _field(enabled, **kw):
                  step_overrides={'align': {'enabled': enabled, **kw}})
 
 
+def test_visit_membership_detects_dropped_member():
+    # The cheap outlier pre-scan must re-run a visit whose membership changed
+    # (e.g. a NOT_ALIGNED quarantine dropped an exposure) — otherwise resample
+    # reuses CR masks computed with the now-absent exposure still pooled.
+    from campfire_pipeline.nircam.orchestrate import _visit_membership_matches
+    manifest = {'inputs': [
+        {'filename': 'jw001_001_001_nrca1.fits'},
+        {'filename': 'jw001_001_002_nrca1.fits'},
+        {'filename': 'jw002_001_001_nrca1.fits'},     # cross-visit overlap
+    ]}
+    all_members = ['/w/jw001_001_001_nrca1.fits', '/w/jw001_001_002_nrca1.fits']
+    assert _visit_membership_matches(manifest, 'jw001', all_members)  # unchanged
+    # a member dropped (quarantined) -> mismatch -> force re-run
+    assert not _visit_membership_matches(manifest, 'jw001',
+                                         all_members[:1])
+    # a member added -> mismatch too
+    assert not _visit_membership_matches(
+        manifest, 'jw001', all_members + ['/w/jw001_001_003_nrca1.fits'])
+
+
 def test_active_process_steps_gates_jhat_and_wcs_shift():
     off = [n for n, _ in _active_process_steps({}, _field(False))]
     on = [n for n, _ in _active_process_steps({}, _field(True))]

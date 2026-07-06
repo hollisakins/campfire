@@ -163,6 +163,20 @@ def test_not_aligned_reattempted_without_overwrite(tmp_path):
     assert sol2.status == 'NOT_ALIGNED'
 
 
+def test_worker_survives_solve_crash(tmp_path, monkeypatch):
+    # An unexpected solver error on one exposure must degrade it to NOT_ALIGNED
+    # (surfaced + quarantined), never abort the whole field's align worker.
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2)
+    import campfire_pipeline.nircam.align.apply as _a
+    monkeypatch.setattr(_a, 'solve_exposure_group',
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("unexpected solver error")))
+    sol = align_exposure_group(members, refcat, config={}, overwrite=True)
+    assert sol.status == 'NOT_ALIGNED'
+    for m in members:
+        assert _cfp_algn(m.path) == 'NOT_ALIGNED'
+
+
 def test_overwrite_does_not_double_correct(tmp_path):
     members, refcat, xy = _make_exposure(tmp_path, n_det=2, offset=(2.0, 0.0))
     align_exposure_group(members, refcat, config={})

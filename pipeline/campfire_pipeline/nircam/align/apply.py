@@ -219,15 +219,29 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
         from jwst.datamodels import ImageModel
         from jwst.assign_wcs.util import update_fits_wcsinfo
 
-    detectors = []
-    for m in members:
-        member_cfg = dict(detect_cfg)
-        member_cfg['fwhm'] = psf_by_filter.get(m.filter_name.lower(),
-                                               default_fwhm)
-        detectors.append(_load_detector(m.path, m.detector, member_cfg,
-                                        ImageModel))
-
-    solution = solve_exposure_group(detectors, refcat, key=key, **solve_cfg)
+    # Reading + solving one exposure must never abort a whole field's align. Any
+    # unexpected failure (a corrupt canonical, an unforeseen solver error the
+    # in-solve guards missed) degrades this exposure to NOT_ALIGNED — surfaced
+    # loudly by run_align and quarantined from combine — rather than crashing.
+    try:
+        detectors = []
+        for m in members:
+            member_cfg = dict(detect_cfg)
+            member_cfg['fwhm'] = psf_by_filter.get(m.filter_name.lower(),
+                                                   default_fwhm)
+            detectors.append(_load_detector(m.path, m.detector, member_cfg,
+                                            ImageModel))
+        solution = solve_exposure_group(detectors, refcat, key=key, **solve_cfg)
+    except Exception as e:  # noqa: BLE001 — one bad exposure must not abort the field
+        log(f"align[{key}]: FAILED — {type(e).__name__}: {e}; "
+            f"stamping NOT_ALIGNED (WCS preserved, excluded from combine).")
+        for m in members:
+            try:
+                _stamp_algn(m.path, NOT_ALIGNED_SENTINEL)
+            except Exception as se:  # noqa: BLE001 — best-effort stamp
+                log(f"align[{key}]: could not stamp NOT_ALIGNED on "
+                    f"{os.path.basename(m.path)} ({type(se).__name__}).")
+        return GroupSolution(key, 'NOT_ALIGNED', None, None, None, 0, [])
 
     by_detector = {d.detector: d for d in solution.detectors}
     for m in members:

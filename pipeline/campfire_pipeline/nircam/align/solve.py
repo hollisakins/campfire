@@ -237,10 +237,19 @@ def solve_exposure_group(detectors, refcat, *, key='group', matcher=None,
 
     wcs_by_det = {d.detector: d.wcs for d in detectors}
 
-    # 2. Bootstrap: coarse shared shift+rotation from the triangle matcher.
-    correctors, fit_info = _shared_fit(
-        detectors, wcs_by_det, refcat, matcher, key=key, fitgeom=fitgeom,
-        minobj=minobj, nclip=nclip, sigma=sigma)
+    # 2. Bootstrap: coarse shared shift+rotation from the triangle matcher. A
+    #    matcher/align_wcs *exception* (e.g. tweakwcs source confusion on a
+    #    crowded field) must degrade to NOT_ALIGNED, never crash the worker — the
+    #    exposure is then surfaced loudly and quarantined, not silently dropped.
+    try:
+        correctors, fit_info = _shared_fit(
+            detectors, wcs_by_det, refcat, matcher, key=key, fitgeom=fitgeom,
+            minobj=minobj, nclip=nclip, sigma=sigma)
+    except Exception as e:  # noqa: BLE001 — worker robustness; degrade gracefully
+        log(f"align solve[{key}]: bootstrap raised {type(e).__name__}: {e}; "
+            f"NOT_ALIGNED (WCS preserved).")
+        return _not_aligned(key, [(d.detector, d.wcs) for d in detectors],
+                            lambda name, wcs: wcs)
     if not _succeeded(fit_info):
         log(f"align solve[{key}]: bootstrap fit "
             f"{fit_info.get('status', 'FAILED')}; NOT_ALIGNED (WCS preserved).")
@@ -260,9 +269,16 @@ def solve_exposure_group(detectors, refcat, *, key='group', matcher=None,
     for _ in range(max(0, int(refine_niter))):
         refine_match = XYXYMatch(use2dhist=False, searchrad=refine_searchrad,
                                  tolerance=refine_tolerance)
-        r_correctors, r_info = _shared_fit(
-            detectors, wcs_by_det, refcat, refine_match, key=key,
-            fitgeom=fitgeom, minobj=minobj, nclip=nclip, sigma=sigma)
+        try:
+            r_correctors, r_info = _shared_fit(
+                detectors, wcs_by_det, refcat, refine_match, key=key,
+                fitgeom=fitgeom, minobj=minobj, nclip=nclip, sigma=sigma)
+        except Exception as e:  # noqa: BLE001 — XYXYMatch can raise on crowded
+            # fields (source confusion). A refine crash must not lose a good
+            # bootstrap solution; keep the last good transform and stop refining.
+            log(f"align solve[{key}]: refine pass raised {type(e).__name__}: "
+                f"{e}; keeping the last good transform.")
+            break
         if not _succeeded(r_info):
             break  # keep the last good (bootstrap or prior refine) transform
         wcs_by_det = {c.meta['name']: c.wcs for c in r_correctors}
@@ -308,10 +324,15 @@ def solve_exposure_group(detectors, refcat, *, key='group', matcher=None,
             # refine_tolerance could not re-pair sources it can't already see. The
             # local refcat is distractor-free, so the triangle matcher recovers the
             # correspondence at any offset, then a shift-only fit removes it.
-            align_wcs([trial], refcat=local_refcat, enforce_user_order=True,
-                      expand_refcat=False, minobj=None, match=matcher,
-                      fitgeom='shift', nclip=nclip, sigma=(sigma, 'rmse'))
-            tfi = trial.meta.get('fit_info', {})
+            try:
+                align_wcs([trial], refcat=local_refcat, enforce_user_order=True,
+                          expand_refcat=False, minobj=None, match=matcher,
+                          fitgeom='shift', nclip=nclip, sigma=(sigma, 'rmse'))
+                tfi = trial.meta.get('fit_info', {})
+            except Exception as e:  # noqa: BLE001 — keep the shared solution
+                log(f"align solve[{key}]: adaptive refit for {d.detector} raised "
+                    f"{type(e).__name__}: {e}; keeping the shared solution.")
+                tfi = {}
             if (_succeeded(tfi)
                     and int(tfi.get('nmatches', 0)) >= adaptive_min_matches):
                 new_resid, new_n, _ = _match(trial, d.catalog, ref_sky,
