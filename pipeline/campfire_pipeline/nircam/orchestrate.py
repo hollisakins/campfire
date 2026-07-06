@@ -20,6 +20,7 @@ from importlib import import_module
 
 from astropy.io import fits
 
+from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
 from campfire_pipeline.common.parallel import dispatch
 from campfire_pipeline.config import get_nircam_step_config
@@ -670,6 +671,39 @@ def _align_group_worker(key, members, *, refcat, config, overwrite, status):
                                 overwrite=overwrite, status=status)
 
 
+def _warn_not_aligned(field, failed_groups):
+    """Loudly report exposures that failed alignment, and how to resolve them.
+
+    Excluding data from the mosaic is never an automatic decision — a NOT_ALIGNED
+    exposure is quarantined from every future combine (its raw WCS would double
+    sources). Surface the full list at the end of the command and hand the user
+    the two levers: retune + re-run (re-attempted automatically), or force-include.
+    """
+    bar = '!' * 72
+    log('')
+    log(bar)
+    log(f"align: WARNING — {len(failed_groups)} exposure(s) FAILED alignment "
+        f"(CFP_ALGN = {cfp.NOT_ALIGNED}).")
+    log("These are EXCLUDED from all future mosaics by default (the combine")
+    log("quarantine). Omitting data is not automatic — review and resolve first:")
+    log('')
+    for g in failed_groups:
+        log(f"  {g.key}  ({g.n_members} detector(s)):")
+        for m in g.members:
+            log(f"      {m.path}")
+    log('')
+    log("To retry: retune [<field>.align] in fields.toml (e.g. widen "
+        "ref_border_arcmin,")
+    log("  lower snr_min, raise match_radius / refine_searchrad), then re-run")
+    log("  `cfpipe nircam align` — NOT_ALIGNED exposures are re-attempted "
+        "automatically")
+    log("  (no --overwrite needed; already-aligned exposures are left alone).")
+    log("To include them as-is (raw WCS, not recommended): "
+        "`cfpipe nircam combine --include-unaligned`.")
+    log(bar)
+    log('')
+
+
 def run_align(field, config, filters=None, n_processes=1, overwrite=False,
               tiles=None):
     """Field-level astrometric align phase (runs between process and combine).
@@ -709,13 +743,29 @@ def run_align(field, config, filters=None, n_processes=1, overwrite=False,
     if overwrite:
         pending = groups
     else:
-        pending = [g for g in groups
-                   if not all(status.has(m.path, 'CFP_ALGN')
-                              for m in g.members)]
+        # A group is "done" (skippable) only if every detector carries a
+        # completed, non-rejected alignment. NOT_ALIGNED exposures are
+        # re-attempted on a normal re-run — the user may have retuned
+        # [<field>.align] params and wants another try without force-re-solving
+        # everything that already succeeded. Groups are homogeneous (a whole
+        # exposure solves or rejects together), so one stamped member classifies
+        # a fully-stamped group.
+        pending, retry = [], 0
+        for g in groups:
+            stamped = all(status.has(m.path, 'CFP_ALGN') for m in g.members)
+            if stamped and (cfp.step_value(g.members[0].path, 'CFP_ALGN')
+                            != cfp.NOT_ALIGNED):
+                continue                        # already solved -> skip
+            pending.append(g)
+            if stamped:
+                retry += 1                      # stamped but NOT_ALIGNED -> retry
         skipped = len(groups) - len(pending)
         if skipped:
             log(f"align: {skipped}/{len(groups)} exposures already aligned; "
-                f"skipping those")
+                f"skipping those (--overwrite to re-solve)")
+        if retry:
+            log(f"align: re-attempting {retry} previously NOT_ALIGNED "
+                f"exposure(s)")
     if not pending:
         return
 
@@ -736,6 +786,16 @@ def run_align(field, config, filters=None, n_processes=1, overwrite=False,
         counts[st] = counts.get(st, 0) + 1
     log(f"=== Align phase done for {field.name}: "
         f"{dict(sorted(counts.items()))} ===")
+
+    # Failing to align an exposure quietly drops it from every future mosaic
+    # (the combine quarantine). That must never be silent: surface it loudly at
+    # the end of the command and hand the user the tools to resolve it.
+    pending_by_key = {g.key: g for g in pending}
+    failed = [pending_by_key[r.key] for r in results
+              if r is not None and getattr(r, 'status', None) == 'NOT_ALIGNED'
+              and getattr(r, 'key', None) in pending_by_key]
+    if failed:
+        _warn_not_aligned(field, failed)
 
 
 def run_combine(field, config, filters=None, n_processes=1, overwrite=False,

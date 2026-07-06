@@ -39,7 +39,7 @@ from campfire_pipeline.nircam.align.solve import (
 from campfire_pipeline.nircam.association import exposure_key
 
 WCS_BAK_EXTNAME = 'WCS_BAK'
-NOT_ALIGNED_SENTINEL = 'NOT_ALIGNED'
+NOT_ALIGNED_SENTINEL = cfp.NOT_ALIGNED
 
 # Solve/detection knobs threaded from [<field>.align]; the orchestration passes
 # a resolved dict, these are the fallbacks. Per-filter PSF FWHM
@@ -190,13 +190,18 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
         key = exposure_key(members[0].path)
     config = dict(config or {})
 
-    def _done(path):
-        return (status.has(path, 'CFP_ALGN') if status is not None
-                else cfp.has_step(path, 'CFP_ALGN'))
+    def _aligned_ok(path):
+        # A detector counts as done only if it carries a *completed, non-rejected*
+        # alignment. A NOT_ALIGNED exposure is re-attempted on a normal re-run
+        # (no --overwrite) so the user can retune [<field>.align] params and try
+        # again without force-re-solving everything that already succeeded.
+        stamped = (status.has(path, 'CFP_ALGN') if status is not None
+                   else cfp.has_step(path, 'CFP_ALGN'))
+        return stamped and cfp.step_value(path, 'CFP_ALGN') != NOT_ALIGNED_SENTINEL
 
-    if not overwrite and all(_done(m.path) for m in members):
-        log(f"align[{key}]: all {len(members)} detectors already stamped "
-            f"CFP_ALGN; skipping.")
+    if not overwrite and all(_aligned_ok(m.path) for m in members):
+        log(f"align[{key}]: all {len(members)} detectors already aligned; "
+            f"skipping (use --overwrite to re-solve).")
         return GroupSolution(key, 'SKIPPED', None, None, None, 0, [])
 
     solve_cfg = {k: config[k] for k in _SOLVE_KEYS if k in config}

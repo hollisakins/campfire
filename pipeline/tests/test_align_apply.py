@@ -149,6 +149,20 @@ def test_idempotent_skip(tmp_path):
     assert all(os.path.getmtime(m.path) == mtimes[m.path] for m in members)
 
 
+def test_not_aligned_reattempted_without_overwrite(tmp_path):
+    # A rejected exposure is re-attempted on a normal re-run (no --overwrite) —
+    # unlike a solved one, which is skipped — so the user can retune params and
+    # try again without force-re-solving everything that already succeeded.
+    members, _, _ = _make_exposure(tmp_path, n_det=2, seed=3)
+    rng = np.random.default_rng(99)
+    badref = Table({'RA': 80.0 + rng.uniform(-0.05, 0.05, 30),
+                    'DEC': -30.0 + rng.uniform(-0.05, 0.05, 30)})
+    assert align_exposure_group(members, badref, config={}).status == 'NOT_ALIGNED'
+    # Re-run without overwrite: re-attempted (fails again here), NOT skipped.
+    sol2 = align_exposure_group(members, badref, config={}, overwrite=False)
+    assert sol2.status == 'NOT_ALIGNED'
+
+
 def test_overwrite_does_not_double_correct(tmp_path):
     members, refcat, xy = _make_exposure(tmp_path, n_det=2, offset=(2.0, 0.0))
     align_exposure_group(members, refcat, config={})

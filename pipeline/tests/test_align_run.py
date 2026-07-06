@@ -123,3 +123,29 @@ def test_run_align_idempotent(tmp_path):
     mtimes = {p: os.path.getmtime(p) for p in xy_by_path}
     run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
     assert all(os.path.getmtime(p) == mtimes[p] for p in xy_by_path)
+
+
+@pytestmark_e2e
+def test_run_align_warns_and_reattempts_not_aligned(tmp_path, capsys):
+    field, _, xy_by_path = _build_field(tmp_path, enabled=True)
+    # Clobber the refcat with too few sources -> every exposure rejects to
+    # NOT_ALIGNED (the solve's <3-source guard).
+    tiny = Table({'RA': [80.0, 80.001], 'DEC': [-30.0, -30.001]})
+    tiny['mag'] = np.zeros(2, 'float32')
+    tiny['mag_err'] = np.ones(2, 'float32')
+    write_refcat(tiny, os.path.join(field.refcat_dir, 'test.ecsv'), overwrite=True)
+
+    run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    out1 = capsys.readouterr().out
+    for path in xy_by_path:
+        with fits.open(path) as h:
+            assert h[0].header.get('CFP_ALGN') == 'NOT_ALIGNED'
+    assert 'FAILED alignment' in out1                 # loud end-of-command warning
+    assert _TOKEN in out1                              # lists the failed exposure
+
+    # Re-run WITHOUT --overwrite: the NOT_ALIGNED exposure is re-attempted (the
+    # user may have retuned params), not silently skipped, and warned about again.
+    run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    out2 = capsys.readouterr().out
+    assert 're-attempting' in out2
+    assert 'FAILED alignment' in out2

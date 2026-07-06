@@ -163,7 +163,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   combine` / `run` overrides. Pre-existing issue (JHAT shares it) and usually
   ≲0.5″, but now closed for align fields. New `cfp.step_value` accessor;
   `field.py`, `orchestrate.py`, `cli.py`; covered by `tests/test_nircam_work_tree.py`
-  and `tests/test_cfp.py`.
+  and `tests/test_cfp.py`. Because dropping data from a stack must never be a
+  silent, automatic decision, `run_align` now (a) **loudly reports** every
+  `NOT_ALIGNED` exposure at the *end* of the command — a banner with the failed
+  exposure files and the levers to fix it (retune `[<field>.align]` + re-run, or
+  `combine --include-unaligned`) — and (b) **re-attempts** `NOT_ALIGNED`
+  exposures on a normal re-run (no `--overwrite` needed), so retuning parameters
+  and re-running just works, while already-solved exposures are still skipped.
+  The `NOT_ALIGNED` sentinel is now centralized as `cfp.NOT_ALIGNED`. Covered by
+  `tests/test_align_run.py` and `tests/test_align_apply.py`.
 - NIRCam `combine` now honors per-exposure reviewer exclusions (epic #261, N6 /
   D10). `Field.setup_workspace` reads `reference/<field>/exposures.json`
   (materialized by `campfire deploy nircam pull` from the portal's

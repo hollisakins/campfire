@@ -76,12 +76,6 @@ def _expand_braces(pattern):
 # top, would lock CRDS into serverless mode before setup_environment runs).
 _DO_NOT_USE = np.uint32(1)
 
-# CFP_ALGN value the align phase stamps on an exposure it could not tie to the
-# reference (WCS preserved, never retried). Mirrors
-# ``nircam.align.apply.NOT_ALIGNED_SENTINEL`` — duplicated as a literal to keep
-# field.py off align's heavy import chain (align.apply -> solve -> tweakwcs).
-_NOT_ALIGNED_SENTINEL = 'NOT_ALIGNED'
-
 
 def _prime_work_copy(path):
     """Prime a freshly-copied combine working copy for the ensemble steps.
@@ -685,7 +679,7 @@ class Field:
 
         kept, dropped = [], 0
         for src in canon:
-            if cfp.step_value(src, 'CFP_ALGN') == _NOT_ALIGNED_SENTINEL:
+            if cfp.step_value(src, 'CFP_ALGN') == cfp.NOT_ALIGNED:
                 dropped += 1
                 dst = os.path.join(work_dir, os.path.basename(src))
                 if os.path.exists(dst):
