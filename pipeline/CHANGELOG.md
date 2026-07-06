@@ -289,6 +289,24 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `--tiles` now pre-filters the exposure set for `process`/`align`/`combine`,
+  not just `resample`.** Previously `--tiles` scoped only which mosaics were drizzled;
+  every earlier step ran over the whole field, so building one tile meant processing
+  all of it. `--tiles` now restricts each phase to exposures overlapping the named
+  tile(s): `detector1` gates on the uncal `S_REGION` footprint (present before any WCS
+  is assigned), and the canonical-stage steps + `align` groups inherit the subset. The
+  overlap gate lives in `nircam/geometry.py` (`select_overlapping_by_sregion` +
+  `filter_exposures_to_tiles`, exposure-union so a straddling dither keeps its full
+  detector complement; the tile polygon is buffered ~11″ to stay a conservative
+  superset of resample's precise SCI-WCS selection; missing/blank `S_REGION` fails
+  open). This makes a single-tile reduction cheap — e.g. an `align`-vs-`jhat` A/B on one
+  COSMOS tile (`scripts/nircam_ab_astrometry.py` compares the two mosaics' extracted
+  catalogs to each other and to the reference). **Default (no `--tiles`) runs are
+  byte-identical.** A tile-scoped run restricts `outlier`/`bad_pixel` to the overlapping
+  subset, so tile-edge pixels may differ from a full-field pass — expected, since a
+  tile-scoped run is a distinct input set. *(Categorized Infrastructure because the
+  canonical full-field reduction is unchanged; noting the tile-scoped caveat.)* Covered
+  by `tests/test_tile_filter.py` + `tests/test_ab_astrometry.py`.
 - **NIRCam `align` phase — exposure I/O + `CFP_ALGN` stamp.** New
   `nircam/align/apply.py` (`align_exposure_group`) is the FITS layer: it reads each
   detector's gwcs and detects sources, runs the in-memory solve, and writes the

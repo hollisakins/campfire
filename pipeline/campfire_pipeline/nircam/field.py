@@ -458,13 +458,19 @@ class Field:
             log(f"Warning: could not read {path}: {e}; ignoring exclusions.")
             return {}
 
-    def get_uncal_files(self, filter_name, skip=None):
+    def get_uncal_files(self, filter_name, skip=None, tiles=None):
         """Get uncal files from PID-organized raw directories.
 
         Globs across ``$CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/`` for every PID
         derived from this field's ``files`` patterns. The field-wide ``skip``
         list (from fields.toml) is always applied; caller-passed ``skip`` adds
         to it.
+
+        ``tiles`` (optional) restricts the result to exposures overlapping the
+        named tile(s), gated on each uncal's ``S_REGION`` footprint (raw uncals
+        carry it before any WCS is assigned). This is what lets ``--tiles`` skip
+        ``detector1`` on off-tile exposures. See
+        :func:`geometry.filter_exposures_to_tiles`.
         """
         if self.raw_root is None:
             raise RuntimeError("setup_workspace() must be called first")
@@ -492,10 +498,14 @@ class Field:
                 excluded.update(glob(full_exc))
             result = [f for f in result if f not in excluded]
 
-        return sorted(result)
+        result = sorted(result)
+        if tiles:
+            from campfire_pipeline.nircam.geometry import filter_exposures_to_tiles
+            result = filter_exposures_to_tiles(self, result, tiles)
+        return result
 
     def get_exposure_files(self, filter_name, skip=None, with_step=None,
-                           status=None, work=False):
+                           status=None, work=False, tiles=None):
         """Get canonical per-exposure files from the filter's flat dir.
 
         These are the files that the process phase writes — one FITS file per
@@ -531,6 +541,12 @@ class Field:
             the per-file fits.open.
         work : bool, optional
             Enumerate the working-copy tree instead of the canonical tree.
+        tiles : str or list of str, optional
+            Restrict the result to exposures overlapping the named tile(s),
+            gated on each file's ``S_REGION`` footprint via
+            :func:`geometry.filter_exposures_to_tiles` (exposure-union: a whole
+            dither is kept when any of its detectors overlaps). ``None`` (the
+            default) applies no tile restriction.
 
         Returns
         -------
@@ -570,7 +586,11 @@ class Field:
                 from campfire_pipeline.common import cfp
                 result = [f for f in result if cfp.has_step(f, with_step)]
 
-        return sorted(result)
+        result = sorted(result)
+        if tiles:
+            from campfire_pipeline.nircam.geometry import filter_exposures_to_tiles
+            result = filter_exposures_to_tiles(self, result, tiles)
+        return result
 
     def get_exposure_path(self, rootname, filter_name, work=False):
         """Return the canonical path for a given exposure rootname.
