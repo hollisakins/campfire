@@ -189,7 +189,7 @@ asynchronous and multi-machine. Undefined in the vision:
   bumps a mosaic `version`, supersedes the old `storage_objects` row, and keeps the public page on
   the latest *published* version (manifest staleness detection already exists).
 - **Provenance/version gate:** deploying intermediates almost always carries a `.dev`/non-release
-  `CMPFRVER` → the CLAUDE.md warn-and-confirm gate fires. Recommend (per #210) `--draft` auto-confirms;
+  `CMPFRVER` → the AGENTS.md warn-and-confirm gate fires. Recommend (per #210) `--draft` auto-confirms;
   `publish` re-checks. Decide whether intermediate/mosaic deploys need a CHANGELOG entry.
 - **MIRI / photometry:** explicitly out of scope (note it so nobody assumes coverage).
 

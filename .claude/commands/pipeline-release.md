@@ -39,7 +39,7 @@ the pipeline (e.g., NIRCam vs. NIRSpec).
 
 ### 3. Recommend a version bump
 
-Read the rules from `CLAUDE.md`:
+Read the rules from `AGENTS.md`:
 
 - **Calibration** present → MINOR bump (or MAJOR if it's also a breaking format change)
 - **Algorithm** present → MINOR if additive, MAJOR if breaking

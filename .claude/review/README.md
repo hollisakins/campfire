@@ -40,7 +40,7 @@ triage in browser → mark valid/invalid + notes → Export triage JSON
   run the app or pipeline. (The pipeline can't run here anyway: no JWST data / CRDS /
   conda env.) A future variant could add live web + Python client runs against a
   seeded local Supabase for higher-signal behavioral findings.
-- **Astronomer-first.** Every agent reads `persona.md` and `CLAUDE.md` first, applies
+- **Astronomer-first.** Every agent reads `persona.md` and `AGENTS.md` first, applies
   the G/D/D bar (generalizable / defensible / documented), and respects intentional
   decisions (e.g. `deploy/` is deprecated on purpose) so they aren't reported as bugs.
 - **Adversarial verification** before anything surfaces — astronomers' trust in the

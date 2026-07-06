@@ -352,7 +352,7 @@ bkg-override control per nod row.
 
 ## 5. Schema changes (concrete sketch)
 
-All additive and hand-authored where the diff engine can't help. Per CLAUDE.md: edit
+All additive and hand-authored where the diff engine can't help. Per AGENTS.md: edit
 `supabase/schemas/*.sql`, `supabase db reset`, `supabase db diff -f <desc>`, review, commit both; the
 Supabase preview branch validates on PR. **One schema-changing PR to `main` at a time**; **regenerate
 `seed.sql`** on any new-column/table add or preview branches go red.

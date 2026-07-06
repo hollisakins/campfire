@@ -292,7 +292,7 @@ prefix change as long as the basename convention holds (it does).
 > instrument parity; PR-2's contract module is authored against that target
 > layout, and the OSN re-key (above) writes the new scheme — so local dirs, bucket
 > keys, and the contract all adopt one canonical layout at once. The new local
-> dirs are a **pipeline MAJOR** (CLAUDE.md: file-naming is a breaking change); see
+> dirs are a **pipeline MAJOR** (AGENTS.md: file-naming is a breaking change); see
 > PR-4.
 
 > **Ordering:** PR-4 (new layout) and PR-3 (NIRSpec canonical) define the target;
@@ -521,7 +521,7 @@ Notes driven by review:
   deploy; intermediate keys live **only** in `storage_objects`; `spectrum_id`
   stays finals-only.
 - Budgeting is `SUM(size_bytes)` via a **`SECURITY DEFINER` RPC** (tracked by
-  `db diff`), *not* a materialized view (migra doesn't track matviews — CLAUDE.md).
+  `db diff`), *not* a materialized view (migra doesn't track matviews — AGENTS.md).
 
 ### 5.2 `spectrum_exposures` (new — NIRSpec intermediate, mirrors `nircam_exposures`)
 
@@ -608,7 +608,7 @@ supersede,delete}`, object/row ref, `cfpipe_version`, host, `at`) and an admin
 view, mirroring the existing `download_log` + `get_download_stats` pattern
 (functions.sql:2709-2771). `revoke`/`recover`/`publish` write audit rows.
 
-> **migra caveats (CLAUDE.md):** column **comments** (used pervasively in
+> **migra caveats (AGENTS.md):** column **comments** (used pervasively in
 > tables.sql) and matviews are not tracked by `db diff` — every new
 > `COMMENT ON COLUMN` and any matview needs a **hand-authored** migration after
 > the schema-file edit. Prefer the budgeting RPC over a matview to stay tracked.
@@ -873,7 +873,7 @@ The model stays the two existing file/metadata verbs (`sync` = index, `download`
 - **Object versioning:** single-current + `superseded` tombstones (recommended)
   vs a full version chain for rollback.
 - **Non-release version gate × in_prep.** Deploying intermediates implies
-  `.dev`/non-release `CMPFRVER` almost always (CLAUDE.md warn-and-confirm gate).
+  `.dev`/non-release `CMPFRVER` almost always (AGENTS.md warn-and-confirm gate).
   Recommend: `--in-prep` auto-confirms (not public); `publish` re-checks. Decide
   whether intermediate deploys ever need a CHANGELOG entry.
 - **Concurrency primitive:** per-row optimistic lock vs per-observation lock row.
