@@ -28,6 +28,11 @@ from campfire_pipeline.common.io import log
 
 _EMPTY = (np.array([], dtype=int), np.array([], dtype=int))
 
+# Warn at most once per process that the image side reached us without a
+# brightness column: it is expected (see _vertices) and would otherwise print
+# once per exposure, flooding a field's align log with identical lines.
+_UNRANKED_WARNED = False
+
 
 class TriangleMatch(MatchCatalogs):
     """Match two tangent-plane catalogs by triangle shape.
@@ -86,15 +91,41 @@ class TriangleMatch(MatchCatalogs):
             if self.mag_col in cat.colnames:
                 # smaller magnitude == brighter
                 order = np.argsort(np.asarray(cat[self.mag_col], dtype=float),
-                                   kind='stable')
+                                   kind='stable')[:self.brightest]
             else:
-                log(f"TriangleMatch: no '{self.mag_col}' column to rank "
-                    f"brightness; capping to the first {self.brightest} of {n} "
-                    f"sources in input order.")
-            order = order[:self.brightest]
+                # tweakwcs' create_group_catalog rebuilds the pooled image
+                # catalog from scratch — only x/y/RA/DEC/id (+ its own
+                # bookkeeping) survive, every brightness column is dropped — so
+                # the image side arrives here unrankable. The per-detector
+                # catalogs were vstacked head-to-tail, so slicing the first N
+                # would consume one detector's whole block and starve the rest,
+                # collapsing the pooled multi-detector geometry to a single
+                # detector. Subsample evenly across the catalog instead: every
+                # pooled detector contributes vertices, and since each block is
+                # already flux-sorted the brighter sources within it are kept.
+                order = np.unique(
+                    np.linspace(0, n - 1, self.brightest).round().astype(int))
+                self._warn_unranked(n)
         tpx = np.asarray(cat['TPx'], dtype=float)[order]
         tpy = np.asarray(cat['TPy'], dtype=float)[order]
         return np.column_stack([tpx, tpy]), order.astype(int)
+
+    def _warn_unranked(self, n):
+        """Note (once per process) that a catalog reached us without a
+        brightness column, so the vertex cap fell back to an even spread.
+
+        This is the normal path for the tweakwcs-pooled *image* catalog — not a
+        misconfigured reference catalog — so the message says so and is emitted
+        only once to avoid one identical line per exposure.
+        """
+        global _UNRANKED_WARNED
+        if _UNRANKED_WARNED:
+            return
+        _UNRANKED_WARNED = True
+        log(f"TriangleMatch: no '{self.mag_col}' column to rank brightness "
+            f"(expected for the tweakwcs-pooled image catalog, which drops it); "
+            f"spreading the brightest-{self.brightest} vertex cap evenly across "
+            f"the {n} pooled sources. Logged once per process.")
 
     def __call__(self, refcat, imcat, tp_pscale=1.0, tp_units=None, **kwargs):
         # tp_pscale / tp_units are part of the MatchCatalogs contract but unused

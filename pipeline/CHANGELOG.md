@@ -108,6 +108,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   field — exactly one alignment path. Replaces the JHAT-based alignment for opt-in
   fields; JHAT remains the default and coexists during validation. New `[nircam.align]`
   config block; covered by `tests/test_align_run.py`.
+- NIRCam `align` triangle matcher no longer starves multi-detector exposures of
+  their non-first detector. `tweakwcs.WCSGroupCatalog.create_group_catalog`
+  rebuilds the pooled image catalog keeping only `x/y/RA/DEC/id` — it drops the
+  `mag`/`flux` column `detect.py` attaches — so `TriangleMatch`'s brightest-N
+  vertex cap could not rank the image side and fell back to the first N rows *in
+  input order*. Because the per-detector catalogs are vstacked head-to-tail,
+  that consumed one detector's whole block (e.g. all 150 of detector 0) and left
+  the rest with zero triangle vertices, collapsing the pooled shared-fit geometry
+  to a single detector. The cap now subsamples evenly across the pooled catalog
+  when the ranking column is absent, so every detector contributes vertices (each
+  block stays flux-sorted, so the brighter sources within it are still favored).
+  The reference side, which keeps its `mag`, is unchanged. Changes which sources
+  match (and thus the fitted WCS) for opt-in `align` fields; the reference-catalog
+  `weight` column is deliberately *not* used to carry brightness, since tweakwcs
+  would fold it into the least-squares fit. Covered by `tests/test_align_matcher.py`.
 - NIRCam `combine` now honors per-exposure reviewer exclusions (epic #261, N6 /
   D10). `Field.setup_workspace` reads `reference/<field>/exposures.json`
   (materialized by `campfire deploy nircam pull` from the portal's
