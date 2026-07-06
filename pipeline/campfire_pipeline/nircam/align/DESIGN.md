@@ -370,9 +370,43 @@ Layer-3 calibration signal, not per-exposure freedom.
 
 ---
 
-## 13. Versioning / changelog
+## 13. Staged rollout (PR plan)
+
+Sequenced so that **nothing waits on the empirical question that isn't blocked by it.**
+Align is opt-in/default-off, so every stage has a small blast radius and each carries
+its own `## Unreleased` changelog entry. Stages 1–3 are improvements to the *current
+pooled* solve and can land (and be validated on real data) before the architecture
+pivot; the pieces they build (footprint filter, robust refine, quality detection) are
+reused by the joint solve, not thrown away.
+
+```
+S1 ─┐
+S2 ─┼─► S4 (Layer 1 joint attitude) ─► S5 (measure) ─► S6 (Layer 2) ─► S7 (Layer 3)
+S3 ─┘
+(S1/S2/S3 independent, any order/parallel; S4 needs S1; S6 needs S4 + S5's verdict)
+```
+
+| # | PR | Scope / files | Ships alone? | Depends on | Changelog |
+|---|----|---------------|--------------|-----------|-----------|
+| **S1** | **Refcat footprint + robust refine** | Footprint-clip the refcat to the exposure/detector union + border (GWCS bboxes, spherical polygons); density-matched **bootstrap-only** cap; specified `XYXYMatch` all-source robust refine (immutable baseline, 1-to-1 rematch, σ-clip, convergence). Slots into the *current* pooled solve. `matcher.py`, `solve.py`, new refcat-footprint helper, tests | yes | — | Algorithm |
+| **S2** | **Detection quality selection** | SNR/sharpness/roundness + magnitude-range cuts, per-filter PSF `fwhm`, DQ saturation/nonlinearity masking; drop the `brightest` count cap. `detect.py`, config, tests | yes | — | Algorithm |
+| **S3a** | **`NOT_ALIGNED` combine quarantine** | Exclude reject-to-identity exposures from combine for align-enabled fields; explicit `--include-unaligned`. combine path, tests | yes | — | Algorithm |
+| **S3b** | **Refcat epoch/PM contract** | Schema gains `source_id/ref_epoch/pmra/pmdec/parallax` + errors; `apply_space_motion` to exposure mid-time before clip/projection; stationary-vs-star handling. `refcat/{io,query}.py`, tests | yes | — | Calibration |
+| **S3c** | **Dependency closure + mode gating** | Resolve physical-exposure membership across **all** field filters before the write scope; tile selection on the cross-filter union; `EXP_TYPE`/aperture/subarray gating; real SW∩LW overlap. `orchestrate.py`, `association.py`, tests | yes | — | Infrastructure |
+| **S4** | **Layer 1 — hierarchical joint attitude** | Replace pooled `solve_exposure_group` with the single-attitude joint fit (all detectors, precision-weighted), reusing S1's footprint+refine; conditioning-based acceptance (condition #, unique matches, held-out residual); **generation ID** + solution-ID provenance. `solve.py`, `apply.py`, `orchestrate.py`, tests | yes (Layer-1-only, shared-attitude default) | S1 (S2/S3 recommended) | Algorithm |
+| **S5** | **Data validation** *(measurement, not a PR)* | On the A4 harness + regimes in §11: unique 1-to-1 SW∩LW matches & radial leverage per detector, A↔B closure, shared-attitude residual vector fields. Decides whether Layer 2 is justified | — | S4 | — |
+| **S6** | **Layer 2 — gated per-detector shifts** | Shift-only per-detector residual, accepted only on the §7.4 gate. *Only if S5 shows real per-detector structure.* `solve.py`, config, tests | yes | S4 + S5 verdict | Algorithm |
+| **S7** | **Layer 3 + structured provenance** *(later)* | Cross-exposure per-detector/A↔B offset estimation → SIAF-residual/distortion term; full transactional solution records + staleness. Out of first scope | yes | S6 | Calibration/Infra |
+
+**Guidance.** Land S1–S3 first (biggest correctness wins, reusable pieces, real-data
+feedback early). S4 is the pivot but ships as *Layer-1-only* — shared-attitude-first is
+the safe default. Do **not** build S6 before S5's measurement justifies per-detector
+freedom. If S5 shows only noise, stop at S4 and defer any structure to S7 calibration.
+
+## 14. Versioning / changelog
 
 **Algorithm** change (alters which sources match → the fitted WCS) → MINOR. Opt-in and
-default-off, so no existing (JHAT) reduction changes. One `## Unreleased` → Algorithm
-entry before the PR opens. The `NOT_ALIGNED`-quarantine and refcat-epoch items are
-correctness fixes that may warrant their own entries.
+default-off, so no existing (JHAT) reduction changes. Each stage above carries its own
+`## Unreleased` entry in the category shown. The refcat epoch/PM change (S3b) is
+**Calibration** (it moves reference positions → the fitted WCS); the dependency/mode
+closure (S3c) is **Infrastructure**.
