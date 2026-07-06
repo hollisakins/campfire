@@ -1,13 +1,25 @@
 """Triangle/asterism catalog matcher for the NIRCam ``align`` phase.
 
 :class:`TriangleMatch` is a ``tweakwcs`` ``MatchCatalogs`` subclass that finds
-source correspondences by matching triangle *shape* (side ratios) — invariant
-to translation, rotation, and scale — so it recovers the match with **no prior
-on the WCS offset**. That is exactly the regime where ``tweakwcs``'s default
-``XYXYMatch`` (2-D histogram + nearest-neighbour) fails: once the WCS offset
-exceeds the search radius, NN grabs the wrong neighbours and the histogram peak
-lands near zero, so the fit "succeeds" with a spurious ~zero shift. Triangle
-matching demands geometric consistency, so chance can't fake a match.
+source correspondences by matching triangle geometry via ``tristars``. The
+``tristars`` invariance flags are counter-intuitive: with the defaults used here
+(``ignore_scale=True``, ``ignore_rot=True``) the hash keys on the triangles'
+**absolute side lengths** (scale is *constrained*) and the **longest-edge
+position angle** (rotation is *constrained*). So this matcher is
+**translation-invariant only** — it assumes both catalogs already share a scale
+and roll, which holds for JWST because ``assign_wcs`` fixes the pixel scale and
+gives the roll to ≪1°. It is therefore *not* blind to rotation: it leans on the
+pipeline WCS as a prior, which is fine here because we have one. (``tristars``
+itself warns the fully scale/rotation-free mode "doesn't work well.") Set
+``ignore_rot=False`` only to recover a large roll blindly — a deliberate, tested
+choice, never the default.
+
+On the correspondence-only path (``auto_keep=False``) ``tristars`` returns the
+vertices of a few top triangle-hash pairs: a **hypothesis generator**, not
+RANSAC, not one-to-one, and not inlier-validated — chance triangles can supply
+plausible pairs in a dense or contaminated field. Trust comes from the
+downstream robust, all-source refine (the sigma-clipped ``align_wcs`` fit), not
+from these raw pairs.
 
 **Color-free.** Magnitude is dropped from the correspondence entirely; the
 ``mag_col`` is used *only* to cap each catalog to its brightest-N vertices
@@ -58,7 +70,11 @@ class TriangleMatch(MatchCatalogs):
         within- and cross-detector triangles for a pooled exposure. Tune on
         real data during align validation.
     ignore_rot, ignore_scale, ba_max, max_keep :
-        Passed straight through to ``tristars.match.match_catalog_tri``.
+        Passed straight through to ``tristars.match.match_catalog_tri``. The
+        ``tristars`` sense is inverted from the names: ``ignore_scale=True`` keys
+        on absolute side lengths (scale *constrained*) and ``ignore_rot=True``
+        adds the longest-edge position angle (rotation *constrained*). The
+        defaults (both ``True``) assume the JWST WCS already fixes scale and roll.
     """
 
     def __init__(self, *, brightest=150, mag_col='mag',
