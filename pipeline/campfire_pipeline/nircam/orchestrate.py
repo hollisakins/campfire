@@ -201,8 +201,9 @@ def _filter_imaging_uncals(uncals, step_name):
     return keep
 
 
-def _run_detector1(field, config, filtname, n_processes, overwrite, status):
-    uncals = field.get_uncal_files(filtname)
+def _run_detector1(field, config, filtname, n_processes, overwrite, status,
+                   tiles=None):
+    uncals = field.get_uncal_files(filtname, tiles=tiles)
     if not uncals:
         log(f"detector1: no uncal files for {filtname}")
         return
@@ -249,8 +250,9 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
     )
 
 
-def _run_persistence(field, config, filtname, n_processes, overwrite, status):
-    exposures = field.get_exposure_files(filtname)
+def _run_persistence(field, config, filtname, n_processes, overwrite, status,
+                     tiles=None):
+    exposures = field.get_exposure_files(filtname, tiles=tiles)
     if not exposures:
         log(f"persistence: no exposures for {filtname}")
         return
@@ -267,7 +269,7 @@ def _run_persistence(field, config, filtname, n_processes, overwrite, status):
 
 
 def _run_per_exposure(step_name, field, config, filtname,
-                      n_processes, overwrite, status):
+                      n_processes, overwrite, status, tiles=None):
     """Generic per-exposure parallel dispatch.
 
     Filters out already-stamped exposures *before* spinning up the worker
@@ -276,7 +278,7 @@ def _run_per_exposure(step_name, field, config, filtname,
     checks), so a no-op pass doesn't import the step's heavy deps at all.
     """
     module_basename, func_name, cfp_key = _PER_EXPOSURE_STEPS[step_name]
-    exposures = field.get_exposure_files(filtname)
+    exposures = field.get_exposure_files(filtname, tiles=tiles)
     if not exposures:
         log(f"{step_name}: no exposures for {filtname}")
         return
@@ -294,14 +296,15 @@ def _run_per_exposure(step_name, field, config, filtname,
     status.mark_all(pending, cfp_key)
 
 
-def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
+def _run_diag_striping(field, config, filtname, n_processes, overwrite, status,
+                       tiles=None):
     """Opt-in scattered-light diagonal striping. Disabled unless a field
     sets ``[field.diag_striping].enabled = true``."""
     cfg = get_nircam_step_config('diag_striping', config, field)
     if not cfg.get('enabled', False):
         log(f"diag_striping: disabled by config; skipping {filtname}")
         return
-    exposures = field.get_exposure_files(filtname)
+    exposures = field.get_exposure_files(filtname, tiles=tiles)
     if not exposures:
         log(f"diag_striping: no exposures for {filtname}")
         return
@@ -317,14 +320,15 @@ def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
     status.mark_all(pending, 'CFP_DIAG')
 
 
-def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
+def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status,
+                   tiles=None):
     """Opt-in pre-JHAT astrometric shift. No-op unless ``[[<field>.wcs_shift]]``
     rules are defined in fields.toml."""
     rules = field.wcs_shift_rules
     if not rules:
         log(f"wcs_shift: no rules; skipping {filtname}")
         return
-    exposures = field.get_exposure_files(filtname)
+    exposures = field.get_exposure_files(filtname, tiles=tiles)
     if not exposures:
         log(f"wcs_shift: no exposures for {filtname}")
         return
@@ -357,9 +361,10 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
     status.mark_all(pending, 'CFP_SHFT')
 
 
-def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
+def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status,
+                   tiles=None):
     # Combine phase: operate on the working copies, never the frozen canonical.
-    exposures = field.get_exposure_files(filtname, work=True)
+    exposures = field.get_exposure_files(filtname, work=True, tiles=tiles)
     if not exposures:
         log(f"bad_pixel: no exposures for {filtname}")
         return
@@ -391,7 +396,8 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
     status.mark_all(pending, 'CFP_BPIX')
 
 
-def _run_outlier(field, config, filtname, n_processes, overwrite, status):
+def _run_outlier(field, config, filtname, n_processes, overwrite, status,
+                 tiles=None):
     cfg = get_nircam_step_config('outlier', config, field)
     implementation = cfg.get('implementation', 'jwst')
     if implementation not in ('jwst', 'campfire'):
@@ -400,11 +406,11 @@ def _run_outlier(field, config, filtname, n_processes, overwrite, status):
             f"expected 'jwst' or 'campfire'"
         )
     _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
-                           implementation=implementation)
+                           implementation=implementation, tiles=tiles)
 
 
 def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
-                           implementation='jwst'):
+                           implementation='jwst', tiles=None):
     """Per-visit outlier dispatcher.
 
     Both implementations share the same orchestration (visit grouping,
@@ -440,7 +446,7 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     )
 
     # Combine phase: operate on the working copies, never the frozen canonical.
-    exposures = field.get_exposure_files(filtname, work=True)
+    exposures = field.get_exposure_files(filtname, work=True, tiles=tiles)
     if not exposures:
         log(f"outlier: no exposures for {filtname}")
         return
@@ -512,8 +518,11 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
                   reduction_version, tiles=None):
     # Read the outlier-finished working copies; the mosaic itself is written to
     # the canonical filter dir (resample_step derives it from field.filter_dir).
+    # ``tiles`` both coarse-filters the input here and tells resample_step which
+    # tiles to drizzle (its own precise per-tile SCI-WCS selection narrows
+    # further within this set).
     exposures = field.get_exposure_files(filtname, with_step='CFP_OUT',
-                                         status=status, work=True)
+                                         status=status, work=True, tiles=tiles)
     if not exposures:
         log(f"resample: no CFP_OUT-stamped exposures for {filtname}")
         return
@@ -612,12 +621,18 @@ def _active_process_steps(config, field):
     return [(n, k) for n, k in PROCESS_STEPS if n not in ('wcs_shift', 'jhat')]
 
 
-def run_process(field, config, filters=None, n_processes=1, overwrite=False):
+def run_process(field, config, filters=None, n_processes=1, overwrite=False,
+                tiles=None):
     """Run all process-phase steps in order across each filter.
 
     Per-exposure steps run in parallel via ``dispatch``; the per-filter
     persistence step runs serially since it operates over the whole filter
     set at once.
+
+    ``tiles`` restricts the phase to exposures overlapping the named tile(s) —
+    ``detector1`` gates on the uncal ``S_REGION`` footprint, and every later
+    step inherits the resulting canonical subset — so a single tile can be
+    reduced without processing the whole field. ``None`` processes everything.
     """
     from campfire_pipeline.nircam.prefetch import prefetch_process_references
     filters = _resolve_filters(filters, field)
@@ -630,7 +645,7 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
         log(f"--- Process: {filt} ---")
         for step_name, _ in active_steps:
             _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
-                                status)
+                                status, tiles=tiles)
 
 
 def _resolve_align_refcat(align_cfg, refcat_dir):
@@ -655,7 +670,8 @@ def _align_group_worker(key, members, *, refcat, config, overwrite, status):
                                 overwrite=overwrite, status=status)
 
 
-def run_align(field, config, filters=None, n_processes=1, overwrite=False):
+def run_align(field, config, filters=None, n_processes=1, overwrite=False,
+              tiles=None):
     """Field-level astrometric align phase (runs between process and combine).
 
     Groups all detectors of each exposure across the SW+LW filter dirs, ties
@@ -665,6 +681,9 @@ def run_align(field, config, filters=None, n_processes=1, overwrite=False):
     ``[<field>.align].enabled`` — a no-op otherwise, so ``run --all`` on a
     jhat-aligned field skips it and the process phase keeps running
     ``jhat``/``wcs_shift`` instead (decision D6).
+
+    ``tiles`` restricts to exposure groups overlapping the named tile(s)
+    (exposure-union, so each solved dither keeps its full detector complement).
     """
     filters = _resolve_filters(filters, field)
     align_cfg = get_nircam_step_config('align', config, field)
@@ -682,7 +701,7 @@ def run_align(field, config, filters=None, n_processes=1, overwrite=False):
         f"refcat={os.path.basename(refcat_path)} ({len(refcat)} sources) ===")
 
     status = _scan_status(field, filters, overwrite=overwrite)
-    groups = build_exposure_groups(field, filters)
+    groups = build_exposure_groups(field, filters, tiles=tiles)
     if not groups:
         log("align: no exposure groups found; nothing to do.")
         return
@@ -723,13 +742,16 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
                 tiles=None):
     """Run all combine-phase steps in order across each filter.
 
-    ``tiles`` scopes the resample step *only* — the exposure/visit-level
-    ensemble steps (apply_mask, bad_pixel, outlier) always run over the full
-    exposure set for the filter. Restricting those to a tile subset would
-    truncate outlier's cross-visit median pool and bad_pixel's per-detector
-    stacks, so a tile built from a subset would not match the same tile built
-    with the whole field. They skip already-stamped exposures, so re-running
-    combine with ``--tiles`` after a full pass goes straight to resampling.
+    ``tiles`` scopes the *whole* combine phase to exposures overlapping the
+    named tile(s): apply_mask, bad_pixel, outlier, and resample all see only
+    the overlapping subset. This is what lets a single tile be combined without
+    touching the rest of the field (e.g. an A/B reduction), and it pairs with a
+    tile-scoped ``run_process``/``run_align`` that only ever produced the subset
+    canonicals. **Caveat:** restricting the ensemble steps truncates outlier's
+    cross-visit median pool and bad_pixel's per-detector stacks, so a
+    tile-scoped mosaic may differ at tile boundaries from the same tile built
+    with the whole field — a tile-scoped run is a distinct input set by design.
+    ``None`` (the default) runs the full field and is unchanged.
     """
     filters = _resolve_filters(filters, field)
     reduction_version = _resolve_reduction_version(config)
@@ -746,14 +768,14 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
                 # mutate (copy canonical -> work where stale, fuse CFMASK ->
                 # DO_NOT_USE) and rescan them into the status cache.
                 _RUNNERS[step_name](field, config, filt, n_processes,
-                                    overwrite, status)
+                                    overwrite, status, tiles=tiles)
                 field.materialize_work(filt, status=status, overwrite=overwrite)
             elif step_name == 'resample':
                 _run_resample(field, config, filt, n_processes, overwrite,
                               status, reduction_version, tiles=tiles)
             else:
                 _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
-                                    status)
+                                    status, tiles=tiles)
 
 
 def run_step(step_name, field, config, filters=None, n_processes=1,
@@ -761,8 +783,10 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
     """Run a single named step across the field's filters.
 
     Used by the per-step CLI commands (``cfpipe nircam <step>``). ``tiles``
-    is only meaningful for ``resample`` (it scopes which mosaics are built)
-    and is ignored by every other step.
+    restricts the step to exposures overlapping the named tile(s); for
+    ``resample`` it additionally scopes which mosaics are built. The per-step
+    CLI commands other than ``resample`` don't expose ``--tiles``, so they pass
+    ``None`` and run over the full field.
     """
     if step_name not in STEP_NAMES:
         raise ValueError(
@@ -788,4 +812,4 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
                           status, reduction_version, tiles=tiles)
         else:
             _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
-                                status)
+                                status, tiles=tiles)

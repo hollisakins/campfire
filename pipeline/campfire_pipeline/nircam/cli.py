@@ -91,16 +91,18 @@ def processing_options(f):
 
 
 def tile_option(f):
-    """``--tiles``: runtime tile selection for the resample step.
+    """``--tiles``: runtime tile selection.
 
-    Tile selection is a runtime parameter, not a config key — a subset only
-    limits which mosaics are drizzled; the exposure-level combine steps
-    (apply_mask, bad_pixel, outlier) still run over the full field.
+    A runtime parameter, not a config key. On ``process``/``align``/``combine``
+    it pre-filters the exposure set to dithers overlapping the named tile(s)
+    (gated on the ``S_REGION`` footprint), so a single tile can be reduced
+    without processing the whole field; on ``resample`` it additionally scopes
+    which mosaics are drizzled. Default: all tiles / all exposures.
     """
     return click.option('--tiles', multiple=True, default=None,
                         cls=VariadicOption,
-                        help='Tile name(s) to resample '
-                             '(default: all tiles in field).')(f)
+                        help='Tile name(s) to scope the run to '
+                             '(default: all tiles / all exposures).')(f)
 
 
 def _setup(config_path, field_name):
@@ -146,27 +148,37 @@ def main():
 @main.command()
 @common_options
 @processing_options
-def process(config, field, filters, processes, overwrite):
-    """Run the per-exposure process phase (detector1 → jhat)."""
+@tile_option
+def process(config, field, filters, processes, overwrite, tiles):
+    """Run the per-exposure process phase (detector1 → jhat).
+
+    ``--tiles`` restricts the phase to exposures overlapping the named tile(s)
+    (detector1 gates on the uncal S_REGION footprint), so a single tile can be
+    reduced without processing the whole field.
+    """
     cfg, field_obj = _setup(config, field)
     run_process(field_obj, cfg,
                 filters=_resolve_filters(filters, field_obj),
-                n_processes=processes, overwrite=overwrite)
+                n_processes=processes, overwrite=overwrite,
+                tiles=list(tiles) if tiles else None)
 
 
 @main.command()
 @common_options
 @processing_options
-def align(config, field, filters, processes, overwrite):
+@tile_option
+def align(config, field, filters, processes, overwrite, tiles):
     """Run the field-level astrometric align phase (between process and combine).
 
     Opt-in per field via [<field>.align].enabled = true in fields.toml;
-    a no-op for fields that still use jhat.
+    a no-op for fields that still use jhat. ``--tiles`` restricts to exposures
+    overlapping the named tile(s).
     """
     cfg, field_obj = _setup(config, field)
     run_align(field_obj, cfg,
               filters=_resolve_filters(filters, field_obj),
-              n_processes=processes, overwrite=overwrite)
+              n_processes=processes, overwrite=overwrite,
+              tiles=list(tiles) if tiles else None)
 
 
 @main.command()
@@ -206,21 +218,18 @@ def run(config, field, filters, processes, overwrite, tiles,
         )
 
     tile_list = list(tiles) if tiles else None
-    if tile_list and not do_combine:
-        raise click.UsageError(
-            "--tiles scopes the resample step, which only runs in the "
-            "combine phase; pass --combine or --all."
-        )
 
     cfg, field_obj = _setup(config, field)
     filter_list = _resolve_filters(filters, field_obj)
 
     if do_process:
         run_process(field_obj, cfg, filters=filter_list,
-                    n_processes=processes, overwrite=overwrite)
+                    n_processes=processes, overwrite=overwrite,
+                    tiles=tile_list)
     if do_align:
         run_align(field_obj, cfg, filters=filter_list,
-                  n_processes=processes, overwrite=overwrite)
+                  n_processes=processes, overwrite=overwrite,
+                  tiles=tile_list)
     if do_combine:
         run_combine(field_obj, cfg, filters=filter_list,
                     n_processes=processes, overwrite=overwrite,

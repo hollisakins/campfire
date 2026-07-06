@@ -53,8 +53,14 @@ def exposure_key(path) -> str:
     ``'.../jw01727028001_04101_00003_nrcalong.fits'`` ->
     ``'jw01727028001_04101_00003'``. One token identifies one physical exposure
     (one dither) across every detector and both filter channels.
+
+    Also accepts raw ``_uncal.fits`` names (``'..._nrcalong_uncal.fits'``) — the
+    trailing ``_uncal`` is stripped before the detector, so an uncal and its
+    canonical map to the same token. Canonical rootnames never carry ``_uncal``,
+    so this widening is a no-op for them (used by the ``--tiles`` exposure gate,
+    which runs at ``detector1`` on uncals).
     """
-    base = os.path.basename(path).removesuffix('.fits')
+    base = os.path.basename(path).removesuffix('.fits').removesuffix('_uncal')
     return base.rsplit('_', 1)[0]
 
 
@@ -201,7 +207,8 @@ def _make_member(field, path, filter_name) -> ExposureMember:
 
 
 def build_exposure_groups(field, filters=None, *, skip=None, with_step=None,
-                          status=None, work=False) -> List[ExposureGroup]:
+                          status=None, work=False,
+                          tiles=None) -> List[ExposureGroup]:
     """Group a field's canonical exposure files by physical exposure.
 
     Scans every filter in *filters* (default ``field.filters``) via
@@ -210,11 +217,13 @@ def build_exposure_groups(field, filters=None, *, skip=None, with_step=None,
     is applied for free — and buckets the results by :func:`exposure_key`,
     reuniting the SW and LW detectors of each dither.
 
-    *skip*, *with_step*, *status*, and *work* are passed through verbatim to
-    :meth:`Field.get_exposure_files` (the align phase will later pass its
-    process-completion CFP key via *with_step* plus a pre-scanned
-    ``StepStatus``). Requires ``field.setup_workspace()`` to have been called;
-    otherwise ``Field.filter_dir`` raises ``RuntimeError``, which propagates.
+    *skip*, *with_step*, *status*, *work*, and *tiles* are passed through
+    verbatim to :meth:`Field.get_exposure_files`. *tiles* restricts the scan to
+    exposures overlapping the named tile(s); the enumerator's exposure-union
+    gate keeps a dither's full detector complement whenever any member overlaps,
+    so pooled solves stay complete at tile edges. Requires
+    ``field.setup_workspace()`` to have been called; otherwise
+    ``Field.filter_dir`` raises ``RuntimeError``, which propagates.
 
     Returns a list of :class:`ExposureGroup`, sorted by ``key``, each with its
     members in canonical detector order.
@@ -225,7 +234,8 @@ def build_exposure_groups(field, filters=None, *, skip=None, with_step=None,
     for filter_name in filters:
         for path in field.get_exposure_files(filter_name, skip=skip,
                                              with_step=with_step,
-                                             status=status, work=work):
+                                             status=status, work=work,
+                                             tiles=tiles):
             member = _make_member(field, path, filter_name)
             buckets.setdefault(exposure_key(path), []).append(member)
 
