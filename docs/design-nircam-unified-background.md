@@ -9,10 +9,20 @@ flux-preservation test. See §3.
 and `variance` (CFP_VAR) — each build or consume a source mask, and two of them
 build one *independently* with different code and different depth. Striping's
 fit-only 2D background is removed from the fit working copy but **left in the
-output**, so a detector-shaped residual (per-amp pedestal offsets + banding at
-scales larger than the 1/f itself) survives into the canonical SCI. We want one
-step, one source mask, and a 1/f model that also removes that detector-shaped
-residual — without subtracting the astrophysical background per exposure.
+output**, so a detector-shaped residual survives into the canonical SCI. On
+problem exposures (e.g. `jw03990449001_13201_00001_nrca1`) two residuals remain
+after striping: **(a)** a different DC pedestal in each of the 4 amps, and
+**(b)** ~100 px banding in the *row* direction that is mostly common-mode but
+carries a real **amp-dependent** part. The current 1/f GP runs only at a short
+length scale (ρ≈5 rows) and the box-32 detrend excludes the ~100 px scale, so
+nothing models the slow, amp-dependent banding + pedestal. We want one step, one
+source mask, and a **two-scale per-amp GP** that removes 1/f *and* that
+detector-shaped residual *and* the per-exposure DC — without subtracting the
+astrophysical background per exposure.
+
+This revision folds in the **[unified sky+striping handoff](95883f43-UNIFIED_SKY_STRIPING_HANDOFF.md)**
+(the ρ-sweep analysis and the no-skymatch constraint). §4.5–§4.6 and §4.4 are
+the sections it changed.
 
 ## 1. Goals / non-goals
 
@@ -25,13 +35,17 @@ residual — without subtracting the astrophysical background per exposure.
   ring-median pre-filter + tiered `detect_sources`), used at a mosaic-like
   (deep, aggressively dilated) configuration — **for the mask only. We do not
   subtract its 2-D background.**
-- Add a **coarse amp-row GP pass** (ρ≈20 rows) to the 1/f model to remove the
-  detector-shaped per-amp banding that the current fit-only 2-D background
-  leaves behind.
-- Iterate mask → pedestal → 1/f a few times so the mask is refined on the
-  running residual.
+- Replace striping's 1/f **and** sky's pedestal with a single **two-scale
+  per-amp GP** (short ρ≈5 for 1/f + long ρ≈20 for amp-row banding), whose
+  retained per-amp offset means carry the per-exposure DC — so the pedestal is
+  *subsumed*, not a separate fit. See §4.5–§4.6.
+- Preserve the **no-skymatch invariant**: the per-exposure DC term is the only
+  thing zeroing frames before drizzle, so `bkg` must still emit and subtract it
+  and leave each exposure's masked background at ~0. See §4.5.
+- Iterate mask → two-scale GP a few times so the mask refines on the running
+  residual.
 - Correct per-channel pixel-scale handling (SW native ≈31 mas vs LW native
-  ≈63 mas) since the mosaic config was tuned at 30 mas. See §4.4.
+  ≈63 mas, mosaic config tuned at 30 mas → LW ×0.5). See §4.4.
 
 **Non-goals**
 
@@ -103,6 +117,26 @@ different kernels, thresholds, and dilation — the thing this design unifies.
 
 ## 4. Proposed design
 
+### 4.0 Spatial-scale ownership (the organizing principle)
+
+Background removal is split across two phases; the unified step lives entirely
+in the **per-exposure (detector-coordinate)** phase and owns only
+detector-shaped signal. Everything smooth and celestial stays deferred to the
+mosaic.
+
+| spatial scale | structure | owner |
+|---|---|---|
+| few rows (ρ≈5) | 1/f readout striping | **unified GP** — short component |
+| tens–~100 rows (ρ≈20) | amp-row banding, incl. the amp-*dependent* part | **unified GP** — long component |
+| whole-frame DC | per-amp DC steps **+** frame sky pedestal | **unified GP** — per-amp offset *means* (§4.5) |
+| whole-field, celestial | true 2-D sky gradient / ICL / extended wings | **mosaic `SubtractBackground`** — left IN the exposure |
+
+The unified step removes `{1/f, amp-row banding, per-amp DC, frame pedestal}` and
+**leaves** `{large-scale sky}`. Two properties make the detector/celestial split
+clean: the GP length scale is **bounded** (ρ≈20 max — it cannot follow a
+whole-field gradient), and the fit is **per amp** (detector banding is
+discontinuous at amp boundaries; celestial background is continuous across them).
+
 ### 4.1 Position, naming, orchestration
 
 Replace the three `PROCESS_STEPS` entries with one, and move `edge` ahead of it
@@ -144,7 +178,6 @@ def bkg_step(exposure_file, field, cfg, ...):
     mcfg  = scale_mask_config(cfg['mask'], channel)     # §4.4
 
     resid = sci0.astype(np.float64, copy=True)
-    total_pedestal = 0.0
     horizontal = vertical = np.zeros_like(resid)
     edge_dq = (model.dq & DO_NOT_USE) != 0
 
@@ -154,34 +187,36 @@ def bkg_step(exposure_file, field, cfg, ...):
             resid, model.err, model.dq)            # §4.3, new method
         fitmask = edge_dq | srcmask                # + aggressive DQ if configured
 
-        # (2) SKY PEDESTAL   ***to be revised — §4.5***
-        pedestal = fit_pedestal(resid, fitmask)
-        resid -= pedestal
-        total_pedestal += pedestal
-
-        # (3) 1/f: column median + fine amp-row GP (ρ≈5) + coarse amp-row GP (ρ≈20)
-        h, v = fit_oneoverf(resid, fitmask, cfg['striping'])   # §4.6
+        # (2) TWO-SCALE per-amp GP: short (ρ≈5) + long (ρ≈20), fit per amp on the
+        #     masked residual, per-amp offset MEANS retained (do NOT de-mean).
+        #     The horizontal correction therefore carries 1/f + amp-row banding
+        #     + per-amp DC + frame pedestal in one term — no separate sky fit.
+        h = twoscale_gp_amprow(resid, fitmask, cfg['striping'])   # §4.6
+        v = column_pattern(resid - h, fitmask)                    # vertical, on de-striped resid
         resid -= (h + v)
         horizontal += h; vertical += v
 
-    # (4) VARIANCE rescale, using the final mask   (§4.7)
+    # (3) VARIANCE rescale, using the final mask   (§4.7)
     rescale_var_rnoise(model, srcmask, cfg['variance'])
 
-    # (5) write: subtract accumulated corrections from the canonical SCI
-    out = sci0 - total_pedestal - horizontal - vertical
+    # (4) write: subtract accumulated corrections from the canonical SCI
+    out = sci0 - horizontal - vertical
     out[sci0 == 0] = 0; out[np.isnan(out)] = 0
     model.data = out
-    model.meta.background.level = total_pedestal
+    pedestal = float(np.mean(horizontal))          # DC removed, for the skymatch record (§4.5)
+    model.meta.background.level = pedestal
     model.meta.background.subtracted = True
+    # skymatch invariant: masked background median of `out` must be ~0 (§4.5)
     atomic_save(model, exposure_file,
                 header_updates=cfp.format(CFP_BKG=provenance_string),
                 extra_hdus=[fits.ImageHDU(srcmask.astype('uint8'), name='SRCMASK')])
 ```
 
-Convergence: iteration 2+ fits the *residual* pedestal and 1/f (near-zero once
-the first pass removed the bulk), while the mask sharpens as the frame flattens.
-`n_iterations=3` matches the NIRSpec background loop; 1 reproduces roughly the
-current behavior for a resume/debug escape hatch.
+There is **no separate pedestal step** — the per-exposure DC is the frame mean
+of the GP's per-amp offsets (§4.5). Convergence: iteration 2+ fits the *residual*
+1/f + banding (near-zero once the first pass removed the bulk) while the mask
+sharpens as the frame flattens. `n_iterations=3` matches the NIRSpec background
+loop; 1 is a resume/debug escape hatch.
 
 ### 4.3 Source masking — `SubtractBackground`, mask only
 
@@ -238,57 +273,87 @@ Detector channel comes from `association.channel_of(detector)`
 ```toml
 [nircam.bkg.mask.pixel_scale_factor]
   sw = 1.0
-  lw = 2.0    # <-- per your note; but see the direction check below
+  lw = 0.5    # 30 mas tuning / 63 mas native ≈ 0.5 — hold the ANGULAR scale fixed
 ```
 
-> ⚠ **Direction check (resolve in the sky-pedestal revision pass).** The factor
-> that holds the *angular* mask scale fixed is `f = tuning_pixscale /
-> data_pixscale = 30 / 63 ≈ 0.5` for LW — i.e. **halve** the pixel values,
-> because LW pixels are bigger so a fixed angular scale is *fewer* pixels. Your
-> note said to *double* (`f = 2.0`), which instead targets ~2× the angular
-> scale (much more aggressive masking on LW). Making it a config knob costs
-> nothing; flagging so we lock the intended reference before merge. Default
-> shown as `2.0` per your instruction, pending that confirmation.
+The factor that keeps the angular mask scale fixed is `f = tuning_pixscale /
+data_pixscale = 30 / 63 ≈ 0.5` for LW: **halve** the pixel values, because LW
+pixels are bigger so a fixed angular scale spans *fewer* pixels. (Confirmed — it
+is the inverse of "double"; it's a config knob either way, but `0.5` is the
+angular-invariant default.) The `tier_npixels` floor keeps the `f²` area scaling
+from dropping the detection area below a few px.
 
-### 4.5 Sky pedestal — placeholder (to be revised next)
+### 4.5 The pedestal is subsumed into the GP — and the no-skymatch constraint
 
-**This section is the explicit hook for the next iteration.** For now, carry the
-current behavior so the loop is complete and comparable: sample
-`~fitmask & isfinite`, `sigma_clip(sigma_upper=3, sigma_lower=10, maxiters=5)`,
-fit `fit_sky_tot` (scale-free Gaussian sky-peak), subtract the scalar.
+**There is no separate sky-pedestal fit.** The per-exposure DC (per-amp DC steps
++ frame pedestal) is carried by the two-scale GP: we keep the GP's **per-amp
+offset means** (do *not* globally de-mean), so subtracting the GP correction
+removes 1/f + banding + per-amp DC + frame pedestal in one term. `sky_step`'s
+scalar `fit_sky_tot` is retired.
 
-Open items we will revise here: (a) whether the pedestal stays a single scalar
-or becomes low-order per-amp (given the coarse GP also removes per-amp
-structure — see the §4.6/§10 interaction); (b) re-fit every iteration vs once;
-(c) estimator (Gaussian peak vs mode vs clipped median). Left as a clean seam:
-`fit_pedestal(resid, fitmask) -> float | ndarray`.
+This is a hard requirement, not a convenience — **there is no skymatch
+downstream.** JWST `SkyMatchStep` is disabled everywhere (`resample.py:132`,
+`outlier.py:232`) and the orchestrator-level one was removed as a proven no-op.
+Inter-exposure sky matching is owned **entirely** by the per-exposure DC term
+zeroing each frame to a common level before drizzle. So:
 
-### 4.6 1/f striping, incl. the coarse GP pass
+- The GP **must emit and subtract a per-exposure DC.** A band-limited /
+  high-pass variant that leaves the DC floating (the way an `fit_row_term`-style
+  `highpass=80` would) breaks the mosaic: nothing zeroes the frames, per-frame
+  offsets can't be recovered after combination, and overlapping exposures enter
+  the drizzle at different sky levels — inflating noise/depth in the overlaps.
+- **Invariant to validate:** after `bkg`, the masked-background median of each
+  exposure must be ≈ 0. That is what makes the frames co-add cleanly. Recorded
+  as `meta.background.level` = frame mean of the horizontal correction (§4.2).
 
-Keep the existing structure (`fit_residual_striping`: per-amp-row horizontal +
-per-column vertical, `estimator ∈ {median, gp, none}`, cal-frame apply). Two
-changes:
+### 4.6 The two-scale per-amp GP (replaces striping's 1/f *and* sky's pedestal)
 
-1. **Drop the fit-only 2-D background** (`subtract_background`,
-   `subtract_background_box=32`). Its job was to keep large-scale structure out
-   of the amp-row fit, but it is the source of the "subtract-then-restore"
-   leftover the driver calls out. The coarse GP replaces its role for
-   *detector-shaped* structure.
-2. **Add a coarse amp-row GP pass (ρ≈20 rows)** after the fine pass (ρ≈5).
-   Reuse `gp_amprow_offsets` (gp_striping.py:140) with a larger `rho`; the fine
-   pass removes row-scale 1/f, the coarse pass removes the slow per-amp
-   pedestal-offset/banding the fit-only 2-D bg used to leave behind. Both are
-   per-amp (independent between amps, continuous within), so they target
-   detector structure, not smooth cross-amp astrophysical gradients.
+This is the core mechanism. Extend the **existing** per-amp GP
+(`gp_striping.gp_amprow_offsets`, `celerite2` SHOTerm, Q=1/√2, self-adapting
+`kernel_sigma`, `rho` = length scale in *rows*, a frozen hyperparameter) from
+one component to **two, fit per amp** on the source-masked residual:
 
-> **Interaction to watch (§10):** a per-amp-row GP will also absorb the
-> row-direction projection of any smooth astrophysical gradient within an amp.
-> With the fit-only 2-D bg gone, the coarse GP (ρ=20) is the only thing that
-> could eat real background. This is the crux of the "detector-shaped vs
-> astrophysical" separation and needs validation on real frames — it is the
-> main scientific risk of the unification. Candidate guards: cap the coarse-pass
-> amplitude, or require per-amp *offset* (DC) only for the coarse term rather
-> than a full row profile.
+- **short**, ρ≈5 rows → fast row-to-row 1/f (what striping's GP does today);
+- **long**, ρ≈20 rows → the slow amp-row banding *and* per-amp DC. The ρ sweep
+  (8→300) found **ρ≈20 is the sweet spot**: it removes the amp-*dependent*
+  banding, and larger ρ doesn't reduce differential banding further while it
+  *does* cost more source flux.
+
+Because the fit is **per amp**, the long component captures the amp-dependent
+banding a single common-row term cannot. Recommended form: a **single kernel =
+SHOTerm(ρ≈5) + SHOTerm(ρ≈20) fit jointly** per amp (celerite2 terms add), rather
+than two sequential passes — avoids the sequential-fit bias and yields one
+posterior mean. Sequential (fine then long-on-residual) is the fallback if joint
+amplitude partitioning proves finicky (see §10).
+
+The per-column **vertical** pattern is unchanged: measured on `resid −
+horizontal` exactly as today (`gp_amprow_offsets` already returns horizontal
+only).
+
+**Drop the fit-only 2-D background** (`subtract_background`,
+`subtract_background_box=32`, striping.py:458-466). It existed *only* because the
+**median** per-amp-row estimator can't represent a smooth gradient — without a
+pre-flatten, a gradient forces amp-boundary steps. A GP with a bounded length
+scale represents smooth structure natively, so the pre-detrend is not just
+unnecessary but **actively harmful**: pre-subtracting the pedestal/large-scale
+bg from the fit input strips exactly the banding + pedestal signal the long
+component is meant to fit. The GP **subsumes** the detrend — you get its benefit
+(no amp-boundary steps) for free, given per-amp DC is kept (§4.5) and ρ stays
+bounded (§4.0).
+
+> **Detector-shaped vs astrophysical — why this is safe (and where the residual
+> risk is).** A per-amp-row GP would absorb the row-direction projection of a
+> smooth gradient *if* ρ were unbounded. It is bounded at ρ≈20 rows and fit per
+> amp, so it cannot follow a whole-field celestial gradient (that stays for the
+> mosaic, §4.0). The residual cost is source flux at large ρ — which is exactly
+> why the sweep landed on ρ≈20, not larger. Validation still owes a
+> known-background real-frame test (§9); if the long component is found to eat
+> real flux/background, the guard is a per-amp *DC-only* long term rather than a
+> full row profile (§10).
+
+The `estimator` knob survives for A/B work: `gp` (the two-scale default),
+`median` (legacy — note it still needs the pre-detrend the GP drops, so it's a
+reference arm only), and `none` (cfn-only, SRCMASK-only, striping.py:425).
 
 ### 4.7 Variance rescale (post-loop)
 
@@ -323,22 +388,19 @@ New `[nircam.bkg]` block; retire `[nircam.striping]`, `[nircam.sky]`,
     mask_aggressive_dq = true           # fold JUMP_DET|SATURATED|PERSISTENCE into fitmask
     [nircam.bkg.mask.pixel_scale_factor]
       sw = 1.0
-      lw = 2.0                          # see §4.4 direction check
+      lw = 0.5                          # angular-invariant (§4.4)
 
-  [nircam.bkg.pedestal]                 # §4.5 — placeholder, revised next
-    estimator = "sky_peak"              # fit_sky_tot
-    sigma_upper = 3
-    sigma_lower = 10
-    maxiters = 5
+  # NOTE: no [pedestal] block — the per-exposure DC is carried by the GP's
+  # per-amp offset means (§4.5). There is no separate sky-pedestal fit.
 
-  [nircam.bkg.striping]                 # 1/f; largely inherits [nircam.striping]
-    estimator = "gp"                    # median | gp | none
+  [nircam.bkg.striping]                 # two-scale per-amp GP (1/f + banding + DC)
+    estimator = "gp"                    # gp (default) | median (legacy ref) | none (cfn-only)
     maxiters = 3
+    keep_amp_means = true               # §4.5 — carry per-amp DC / pedestal; do NOT de-mean
     [nircam.bkg.striping.gp]
-      rho = 5.0                         # fine pass
-    [nircam.bkg.striping.gp_coarse]     # NEW coarse pass
-      enabled = true
-      rho = 20.0
+      rho_short = 5.0                   # fast 1/f
+      rho_long  = 20.0                  # amp-row banding + per-amp DC (sweep sweet spot)
+      joint = true                      # single SHOTerm(ρ_short)+SHOTerm(ρ_long) kernel (§4.6)
 
   [nircam.bkg.variance]
     block_size = 7
@@ -352,14 +414,17 @@ resolution wrinkle.
 
 - `bkgsub.py`: extract `mask_from_arrays` (§4.3); `compute()` calls it. No
   behavior change for `resample`/`variance` callers of `compute`.
-- `nircam/steps/bkg.py`: new `bkg_step` — the loop (§4.2). Imports the pedestal
-  fit (`skyfit.fit_sky_tot`), `fit_residual_striping`/`gp_amprow_offsets`
-  (striping/gp_striping), `SubtractBackground`, and `association.channel_of`.
+- `nircam/steps/bkg.py`: new `bkg_step` — the loop (§4.2). Imports the two-scale
+  GP + vertical (from `gp_striping`/`oneoverf`), `SubtractBackground`, and
+  `association.channel_of`. No pedestal-fit import — the DC is in the GP (§4.5).
+- `nircam/gp_striping.py`: extend `gp_amprow_offsets` to a **two-component**
+  kernel (SHOTerm ρ_short + SHOTerm ρ_long) with a `keep_amp_means` path that
+  retains per-amp DC (§4.5). Amplitude handling for two SHOTerms is the main new
+  wrinkle (§10).
 - `nircam/steps/striping.py`, `sky.py`, `variance.py`: **removed** (their pure
-  numerics — `fit_residual_striping`, `_median_amprow_offsets`, `fit_sky_tot`,
-  the variance math — move to shared helpers `nircam/oneoverf.py` and
-  `nircam/skyfit.py`; `_build_srcmask` is deleted, superseded by
-  `SubtractBackground`).
+  numerics — `fit_residual_striping`/vertical, the variance math — move to shared
+  helpers `nircam/oneoverf.py`; `_build_srcmask` and `fit_sky_tot`/`sky_step`
+  are deleted, superseded by `SubtractBackground` and the GP's per-amp DC).
 - `orchestrate.py`: `PROCESS_STEPS`, `_PER_EXPOSURE_STEPS` edits (§4.1).
 - `data/config_default.toml`: new `[nircam.bkg]`, delete the three old blocks.
 
@@ -367,22 +432,25 @@ resolution wrinkle.
 
 ```
 image2 out (cal SCI) ──► edge (DQ) ──► bkg:
-   ┌─ loop ×N ────────────────────────────────────────────┐
-   │ resid ─► SubtractBackground.mask_from_arrays ─► srcmask │
-   │ resid ─► fit_pedestal(mask) ─► pedestal ─► resid -= ped │
-   │ resid ─► 1/f (col median + GP ρ5 + GP ρ20) ─► resid -=  │
-   └───────────────────────────────────────────────────────┘
+   ┌─ loop ×N ──────────────────────────────────────────────────────┐
+   │ resid ─► SubtractBackground.mask_from_arrays ─► srcmask          │
+   │ resid ─► two-scale per-amp GP (ρ5+ρ20, keep amp means) ─► h      │
+   │ resid ─► vertical(resid - h) ─► v ;  resid -= (h + v)            │
+   └────────────────────────────────────────────────────────────────┘
    VAR_RNOISE rescale(final mask)
-   write: SCI = sci0 - Σpedestal - Σh - Σv ; SRCMASK ext ; CFP_BKG ; meta.background
+   write: SCI = sci0 - Σh - Σv ; SRCMASK ext ; CFP_BKG ; meta.background.level=mean(Σh)
 ```
+The horizontal correction `h` already carries the per-amp DC + frame pedestal
+(§4.5), so there is no separate pedestal term to accumulate.
 
 ## 7. Provenance, outputs, back-compat
 
-- **`CFP_BKG`** stamped with pedestal, estimator, ρ (fine/coarse), n_iterations,
-  channel factor, mask config summary. Single resume key.
+- **`CFP_BKG`** stamped with the removed DC, estimator, ρ_short/ρ_long,
+  n_iterations, channel factor, mask config summary. Single resume key.
 - **`SRCMASK`** extension preserved (uint8), now the mosaic-depth mask.
-- **`meta.background.level`** = total pedestal; `.subtracted = True`;
-  `.method = 'local'`.
+- **`meta.background.level`** = per-exposure DC removed (frame mean of the
+  horizontal correction, §4.2); `.subtracted = True`; `.method = 'local'`. This
+  is the value the (absent) skymatch would otherwise own — keep it accurate.
 - **`VAR_RNOISE`** rescaled as before (factor shifts slightly, §4.7).
 - Consumers of `CFP_1F`/`CFP_SKY`/`CFP_VAR` (summary/metadata, deploy dry-run
   checks) — audit and update to `CFP_BKG` (§10 decision).
@@ -403,32 +471,48 @@ plus real-frame regression:
 1. **Mask parity:** unified mosaic-depth mask vs current `SRCMASK` on real cal
    frames — IoU on compact sources (expect ~1.0), masked-fraction delta, and
    confirm faint-source completeness at *single-exposure* depth (§3 caveat).
-2. **Pedestal parity:** `bkg` pedestal vs current `sky` pedestal (should track
-   until §4.5 revises it).
-3. **1/f + coarse GP:** residual detector-shaped power before/after — the coarse
-   pass should reduce per-amp banding *without* eating the injected/known
-   background (the §4.6 risk). Test on a frame with a known smooth gradient.
-4. **Flux preservation:** rerun the Sérsic test at the mask (not 2-D-subtract)
+2. **The problem exposure:** `jw03990449001_13201_00001_nrca1` — confirm the two
+   surviving residuals (per-amp DC steps + amp-dependent ~100 px banding) are
+   removed. Measure differential (amp-to-amp) banding power before/after; the
+   long component must knock down the amp-*dependent* part, not just common-mode.
+3. **Skymatch invariant (hard gate):** masked-background median ≈ 0 in every
+   exposure after `bkg` (§4.5). Also check overlap consistency: overlapping
+   exposures should enter the drizzle at matched sky levels (no per-frame DC
+   drift). This is the constraint that replaces `SkyMatchStep`.
+4. **Long component vs astrophysical background:** inject a known smooth gradient
+   + extended source; confirm the ρ≈20 per-amp term removes detector banding but
+   leaves the smooth celestial gradient for the mosaic (§4.6 risk). If it eats
+   real flux, fall back to a per-amp DC-only long term (§10).
+5. **Flux preservation:** rerun the Sérsic test at the mask (not 2-D-subtract)
    config; confirm detected-source flux preserved to a few %.
-5. **Variance factor:** compare `CFP_VAR` factor old vs new; expect a small,
+6. **Variance factor:** compare `CFP_VAR` factor old vs new; expect a small,
    explainable shift from the deeper mask.
-6. **End-to-end:** one field through `run process`, diff canonical SCI vs the
+7. **End-to-end:** one field through `run process`, diff canonical SCI vs the
    three-step pipeline; changes should localize to the detector-shaped residual
-   the driver targets.
+   the driver targets, and the mosaic depth in exposure overlaps should not
+   regress (the skymatch check, at the mosaic level).
 
 ## 10. Open questions / decisions
 
-1. **Sky pedestal (next iteration, by request):** scalar vs low-order per-amp;
-   re-fit per iteration vs once; estimator. §4.5 is the seam.
-2. **LW pixel-scale factor direction:** ×0.5 (angular-invariant) vs ×2 (your
-   note). §4.4. Resolve before merge.
-3. **Coarse-GP vs astrophysical background:** does ρ=20 per-amp-row eat real
-   gradients now that the fit-only 2-D bg is gone? §4.6. Needs a
-   known-background real-frame test; may need an amplitude cap or DC-only coarse
-   term. **Highest scientific risk.**
-4. **Legacy CFP keys:** retire vs keep-stamping `CFP_1F`/`CFP_SKY`/`CFP_VAR`.
+1. **~~Sky pedestal~~ — resolved by the handoff.** No separate pedestal fit; the
+   per-exposure DC is carried by the GP's per-amp offset means (§4.5). Retained
+   sub-question: does the *long* component stay a full per-amp row profile, or
+   collapse to per-amp DC-only if it's found to eat real background (see #3)?
+2. **~~LW pixel-scale direction~~ — resolved: ×0.5** (angular-invariant, §4.4).
+3. **Long-GP vs astrophysical background — the remaining scientific risk.** ρ≈20
+   is bounded and per-amp, so in principle it can't follow a whole-field
+   gradient (§4.0/§4.6), but this needs the known-background real-frame test
+   (§9.4). Fallback guard: per-amp **DC-only** long term instead of a full row
+   profile. **Highest residual risk.**
+4. **Two-component GP: joint kernel vs sequential passes, and amplitude
+   partitioning.** Recommended: a single `SHOTerm(ρ_short)+SHOTerm(ρ_long)`
+   kernel fit jointly (§4.6). Open: how the self-adapting `kernel_sigma` splits
+   variance between the two terms (one self-adapt + one frozen ratio? two
+   self-adapts from band-split marginals?). Sequential fine→long-on-residual is
+   the fallback.
+5. **Legacy CFP keys:** retire vs keep-stamping `CFP_1F`/`CFP_SKY`/`CFP_VAR`.
    §4.1/§7.
-5. **`estimator='none'` arm:** the cfn-only reference path (striping.py:425)
+6. **`estimator='none'` arm:** the cfn-only reference path (striping.py:425)
    still needs a home for A/B comparison — keep as a `bkg` mode.
-6. **Iteration count / convergence criterion:** fixed `n_iterations=3` vs
-   converge-on-Δpedestal/Δcorrection.
+7. **Iteration count / convergence criterion:** fixed `n_iterations=3` vs
+   converge-on-Δcorrection.
