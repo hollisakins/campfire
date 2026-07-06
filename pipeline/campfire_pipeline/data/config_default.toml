@@ -346,6 +346,28 @@
     saveplots = false
     savephottable = true
 
+[nircam.align]
+    # Adaptive astrometric alignment (replaces the JHAT-based jhat/wcs_shift).
+    # Opt-in per field: default OFF so existing reductions are unchanged. A
+    # field enables it — and names its Gaia-tied reference catalog — in
+    # fields.toml:
+    #     [<field>.align]
+    #         enabled = true
+    #         refcat  = "<file>.ecsv"   # in the field's astrom_cats dir
+    # With align enabled the process phase skips jhat + wcs_shift (exactly one
+    # alignment path per field).
+    enabled = false
+    fitgeom = "rshift"          # per-exposure shared shift + rotation (SIAF fixed)
+    tolerance = 0.05            # arcsec; free a per-detector shift above this
+    adaptive = true             # adaptive per-detector shift when over tolerance
+    adaptive_min_matches = 3
+    match_radius = 0.5          # arcsec; NN radius for per-detector residuals
+    min_matched = 4             # reject-to-identity below this many matches
+    nsigma = 5.0                # source-detection threshold (background sigma)
+    fwhm = 2.5                  # detection PSF FWHM (pixels)
+    edge = 8                    # drop detections within this many px of a border
+    brightest = 150             # cap detections per detector (triangle vertices)
+
 # --- combine phase (ensemble) ---
 
 [nircam.apply_mask]

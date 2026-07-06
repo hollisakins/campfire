@@ -29,7 +29,7 @@ from campfire_pipeline.common import cfp as cfp_mod
 from campfire_pipeline.common.cli import VariadicOption
 from campfire_pipeline.nircam.orchestrate import (
     STEP_NAMES, ALL_STEPS, PROCESS_STEPS, COMBINE_STEPS,
-    run_process, run_combine, run_step,
+    run_process, run_align, run_combine, run_step,
 )
 from campfire_pipeline.nircam.refcat.cli import refcat as refcat_group
 
@@ -157,6 +157,21 @@ def process(config, field, filters, processes, overwrite):
 @main.command()
 @common_options
 @processing_options
+def align(config, field, filters, processes, overwrite):
+    """Run the field-level astrometric align phase (between process and combine).
+
+    Opt-in per field via [<field>.align].enabled = true in fields.toml;
+    a no-op for fields that still use jhat.
+    """
+    cfg, field_obj = _setup(config, field)
+    run_align(field_obj, cfg,
+              filters=_resolve_filters(filters, field_obj),
+              n_processes=processes, overwrite=overwrite)
+
+
+@main.command()
+@common_options
+@processing_options
 @tile_option
 def combine(config, field, filters, processes, overwrite, tiles):
     """Run the ensemble combine phase (apply_mask → resample)."""
@@ -173,18 +188,21 @@ def combine(config, field, filters, processes, overwrite, tiles):
 @tile_option
 @click.option('--process', 'do_process', is_flag=True,
               help='Run the process phase.')
+@click.option('--align', 'do_align', is_flag=True,
+              help='Run the astrometric align phase (between process and '
+                   'combine; opt-in via [<field>.align].enabled).')
 @click.option('--combine', 'do_combine', is_flag=True,
               help='Run the combine phase.')
 @click.option('--all', 'do_all', is_flag=True,
-              help='Run both phases.')
+              help='Run all phases (process, align, combine).')
 def run(config, field, filters, processes, overwrite, tiles,
-        do_process, do_combine, do_all):
-    """Run process and/or combine in one invocation."""
+        do_process, do_align, do_combine, do_all):
+    """Run process, align, and/or combine in one invocation."""
     if do_all:
-        do_process = do_combine = True
-    if not (do_process or do_combine):
+        do_process = do_align = do_combine = True
+    if not (do_process or do_align or do_combine):
         raise click.UsageError(
-            "Specify --process, --combine, or --all."
+            "Specify --process, --align, --combine, or --all."
         )
 
     tile_list = list(tiles) if tiles else None
@@ -200,6 +218,9 @@ def run(config, field, filters, processes, overwrite, tiles,
     if do_process:
         run_process(field_obj, cfg, filters=filter_list,
                     n_processes=processes, overwrite=overwrite)
+    if do_align:
+        run_align(field_obj, cfg, filters=filter_list,
+                  n_processes=processes, overwrite=overwrite)
     if do_combine:
         run_combine(field_obj, cfg, filters=filter_list,
                     n_processes=processes, overwrite=overwrite,

@@ -596,6 +596,22 @@ def _scan_status(field, filters, overwrite=False):
     return StepStatus.scan(paths)
 
 
+def _active_process_steps(config, field):
+    """``PROCESS_STEPS`` with ``jhat``+``wcs_shift`` removed when the field has
+    opted into the astrometric ``align`` phase.
+
+    Decision D6 coexistence: a field that runs ``align``
+    (``[<field>.align].enabled = true``) must NOT also run the JHAT-based
+    ``jhat``/``wcs_shift`` steps — exactly one alignment path per field. When
+    align is off (the default), the full ``PROCESS_STEPS`` list runs unchanged.
+    """
+    align_mode = get_nircam_step_config('align', config, field).get(
+        'enabled', False)
+    if not align_mode:
+        return PROCESS_STEPS
+    return [(n, k) for n, k in PROCESS_STEPS if n not in ('wcs_shift', 'jhat')]
+
+
 def run_process(field, config, filters=None, n_processes=1, overwrite=False):
     """Run all process-phase steps in order across each filter.
 
@@ -609,11 +625,98 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
     log(f"=== Process phase: field={field.name}, filters={filters} ===")
     prefetch_process_references(field, filters, status=status,
                                overwrite=overwrite)
+    active_steps = _active_process_steps(config, field)
     for filt in filters:
         log(f"--- Process: {filt} ---")
-        for step_name, _ in PROCESS_STEPS:
+        for step_name, _ in active_steps:
             _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
                                 status)
+
+
+def _resolve_align_refcat(align_cfg, refcat_dir):
+    """Resolve the single per-field align reference-catalog path.
+
+    Align ties a whole multi-filter exposure to ONE refcat, so — unlike jhat —
+    there is no per-filter mapping; just ``[<field>.align].refcat``.
+    """
+    name = align_cfg.get('refcat')
+    if not name:
+        raise ValueError(
+            "align config missing 'refcat'. Set [<field>.align].refcat = "
+            '"<file>" in fields.toml (a Gaia-tied campfire-refcat-v1 ECSV in '
+            "the field's astrometric-catalog directory).")
+    return os.path.join(refcat_dir, name)
+
+
+def _align_group_worker(key, members, *, refcat, config, overwrite, status):
+    """``dispatch`` worker: align one exposure group. Module-level for pickling."""
+    from campfire_pipeline.nircam.align.apply import align_exposure_group
+    return align_exposure_group(members, refcat, key=key, config=config,
+                                overwrite=overwrite, status=status)
+
+
+def run_align(field, config, filters=None, n_processes=1, overwrite=False):
+    """Field-level astrometric align phase (runs between process and combine).
+
+    Groups all detectors of each exposure across the SW+LW filter dirs, ties
+    each exposure to the field's Gaia-tied reference catalog with one shared
+    shift+rotation (plus an adaptive per-detector shift), and writes the
+    corrected gwcs back with a ``CFP_ALGN`` stamp. Opt-in per field via
+    ``[<field>.align].enabled`` — a no-op otherwise, so ``run --all`` on a
+    jhat-aligned field skips it and the process phase keeps running
+    ``jhat``/``wcs_shift`` instead (decision D6).
+    """
+    filters = _resolve_filters(filters, field)
+    align_cfg = get_nircam_step_config('align', config, field)
+    if not align_cfg.get('enabled', False):
+        log(f"align: disabled for field '{field.name}' "
+            f"(set [{field.name}.align].enabled = true to run); skipping.")
+        return
+
+    from campfire_pipeline.nircam.association import build_exposure_groups
+    from campfire_pipeline.nircam.refcat.io import read_refcat
+
+    refcat_path = _resolve_align_refcat(align_cfg, field.refcat_dir)
+    refcat = read_refcat(refcat_path)
+    log(f"=== Align phase: field={field.name}, filters={filters}, "
+        f"refcat={os.path.basename(refcat_path)} ({len(refcat)} sources) ===")
+
+    status = _scan_status(field, filters, overwrite=overwrite)
+    groups = build_exposure_groups(field, filters)
+    if not groups:
+        log("align: no exposure groups found; nothing to do.")
+        return
+
+    if overwrite:
+        pending = groups
+    else:
+        pending = [g for g in groups
+                   if not all(status.has(m.path, 'CFP_ALGN')
+                              for m in g.members)]
+        skipped = len(groups) - len(pending)
+        if skipped:
+            log(f"align: {skipped}/{len(groups)} exposures already aligned; "
+                f"skipping those")
+    if not pending:
+        return
+
+    log(f"align: solving {len(pending)} exposure(s)")
+    tasks = [(g.key, list(g.members)) for g in pending]
+    results = dispatch(_align_group_worker, tasks, n_processes=n_processes,
+                       use_starmap=True, refcat=refcat, config=align_cfg,
+                       overwrite=overwrite, status=status)
+
+    # Workers stamped CFP_ALGN on disk in child processes; sync the parent cache
+    # so a later phase in the same run sees the fresh stamps.
+    for g in pending:
+        status.mark_all([m.path for m in g.members], 'CFP_ALGN')
+
+    counts = {}
+    for r in results:
+        st = getattr(r, 'status', 'UNKNOWN')
+        counts[st] = counts.get(st, 0) + 1
+    log(f"=== Align phase done for {field.name}: "
+        f"{dict(sorted(counts.items()))} ===")
 
 
 def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
