@@ -99,20 +99,29 @@ def input_entry(filepath, extra=None):
 DEFAULT_MOSAIC_NAME = 'mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[tile]'
 
 
-def build_mosaic_name(filtname, field_name, pixel_scale, tile, template=None):
+def build_mosaic_name(filtname, field_name, pixel_scale, tile, epoch=None,
+                      template=None):
     """Version-free mosaic basename (without ``_i2d.fits``).
 
     Expands the ``[filter]`` / ``[field_name]`` / ``[pixel_scale]`` / ``[tile]``
     placeholders. A ``template`` override (from ``resample.mosaic_name`` config)
     may omit some placeholders but must NOT reintroduce ``[version]`` — that axis
     is retired (D3).
+
+    ``epoch`` (optional) appends a trailing ``_<epoch>`` segment, marking a
+    mosaic built from an exposure subset (fields.toml ``[<field>.epochs.<name>]``).
+    An empty/None epoch yields today's version-free full-field name unchanged, so
+    normal mosaics and their deploy identity stay byte-for-byte compatible.
     """
     tmpl = template or DEFAULT_MOSAIC_NAME
-    return (tmpl
+    name = (tmpl
             .replace('[filter]', filtname)
             .replace('[field_name]', field_name)
             .replace('[pixel_scale]', pixel_scale)
             .replace('[tile]', tile))
+    if epoch:
+        name = f'{name}_{epoch}'
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +129,7 @@ def build_mosaic_name(filtname, field_name, pixel_scale, tile, template=None):
 # ---------------------------------------------------------------------------
 
 def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
-                    input_files, stage_config):
+                    input_files, stage_config, epoch=None):
     """Build a manifest dict for a completed mosaic tile.
 
     Parameters
@@ -139,6 +148,9 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
         Paths to the CRF files that were drizzled into this tile.
     stage_config : dict
         Stage-3 configuration dict.
+    epoch : str, optional
+        Epoch name for a subset mosaic, or ``None``/``''`` for the full field.
+        Recorded verbatim (empty string when absent) so deploy can key on it.
 
     Returns
     -------
@@ -178,6 +190,7 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
         'filter': filtname,
         'tile': tile,
         'pixel_scale': pixel_scale,
+        'epoch': epoch or '',
         'created_at': datetime.now(timezone.utc).isoformat(),
         'pipeline_version': pipeline_version,
         'config_hash': config_hash,
@@ -309,7 +322,7 @@ def check_config_changed(manifest_path, stage_config, pixel_scale):
     return current_hash != manifest.get('config_hash')
 
 
-def get_stale_tiles(field, filtname, stage_config, tiles=None):
+def get_stale_tiles(field, filtname, stage_config, tiles=None, epoch=None):
     """Identify tiles that need re-mosaicking.
 
     Parameters
@@ -323,6 +336,10 @@ def get_stale_tiles(field, filtname, stage_config, tiles=None):
     tiles : str, list of str, or None
         Tile name(s) to probe. ``None`` (the default) checks every tile in
         the field.
+    epoch : str, optional
+        Probe the named epoch's mosaics (subset inputs + epoch-labelled
+        manifest name), matching what ``resample --epoch`` builds. ``None``
+        (the default) checks the full-field mosaics.
 
     Returns
     -------
@@ -357,12 +374,13 @@ def get_stale_tiles(field, filtname, stage_config, tiles=None):
         skip=files_to_skip if files_to_skip else None,
         with_step='CFP_OUT',
         work=True,
+        epoch=epoch,
     )
 
     results = []
     for tile in tiles:
         mosaic_name = build_mosaic_name(
-            filtname, field.name, pixel_scale, tile,
+            filtname, field.name, pixel_scale, tile, epoch=epoch,
             template=resample_cfg.get('mosaic_name'),
         )
 

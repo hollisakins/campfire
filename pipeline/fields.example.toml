@@ -41,6 +41,23 @@
 #           crpix = [x, y]
 #           naxis = [nx, ny]
 #
+# Epochs: named exposure subsets, built into their own mosaics at combine time
+# (cfpipe nircam combine/resample --epoch <name>). An epoch selects a subset of
+# the field's exposures by file globs and/or a DATE-OBS range, and scopes the
+# whole combine phase to that subset (like --tiles), so the epoch mosaic is a
+# distinct reduction from only those exposures. The epoch name becomes a trailing
+# segment on the mosaic filename:
+#     mosaic_nircam_<filter>_<field>_<scale>_<tile>_<epoch>_i2d.fits
+# Omitting --epoch builds the full-field mosaics with no epoch segment (the
+# default; unchanged). Epochs nest under the field in an `epochs` table:
+#   [field.epochs.<name>]
+#       files      = ['jw05893*']            # optional: subset of the field's globs
+#                                            # (same jwNNNNN + brace-list syntax).
+#       date_range = ['2023-11-01', '2024-02-01']  # optional: inclusive ISO dates
+#                                            # matched against each exposure's DATE-OBS.
+#   At least one of `files` / `date_range` is required; if both are given a file
+#   must satisfy BOTH (AND). Epoch names are free-form (e.g. CW, PRIMER, Y1).
+#
 # Per-field per-step overrides use a flat layout matching the
 # canonical-exposure config namespace in config_default.toml:
 #   [field.striping]
@@ -106,6 +123,16 @@
         [example_cosmos.A2.60mas]
             crpix = [-2845, 11545]
             naxis = [9600, 12455]
+
+    # Epoch mosaics — subsets of this field's exposures. `CW` keeps only the
+    # Cosmos Web program (PID 5893); `y1` additionally restricts to the first
+    # observing season by DATE-OBS. Build with e.g.
+    #   cfpipe nircam combine --field example_cosmos --epoch CW
+    [example_cosmos.epochs.CW]
+        files = ['jw05893*']
+    [example_cosmos.epochs.y1]
+        files = ['jw01727*']
+        date_range = ['2023-11-01', '2024-05-01']
 
     [example_cosmos.rgb]
         noisesig = 2.0

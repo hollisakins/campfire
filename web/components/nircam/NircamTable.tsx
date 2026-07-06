@@ -129,6 +129,9 @@ export const NircamTable: React.FC<NircamTableProps> = ({
       if (filters.extensions.length > 0 && !filters.extensions.includes(image.extension)) {
         return false;
       }
+      if (filters.epochs.length > 0 && !filters.epochs.includes(image.epoch ?? '')) {
+        return false;
+      }
       return true;
     });
   }, [images, filters]);
@@ -230,6 +233,24 @@ export const NircamTable: React.FC<NircamTableProps> = ({
           if (bIdx === -1) return -1;
           return aIdx - bIdx;
         },
+      },
+      {
+        accessorKey: 'epoch',
+        header: ({ column }) => (
+          <SortableHeader column={column}>Epoch</SortableHeader>
+        ),
+        cell: ({ row }) => {
+          const epoch = row.original.epoch ?? '';
+          return epoch === '' ? (
+            <span className="text-sm text-text-secondary">Full field</span>
+          ) : (
+            <span className="inline-flex items-center rounded border border-border px-1.5 py-0.5 text-xs font-mono font-medium bg-surface-2 text-text-primary">
+              {epoch}
+            </span>
+          );
+        },
+        sortingFn: (rowA, rowB) =>
+          (rowA.original.epoch ?? '').localeCompare(rowB.original.epoch ?? ''),
       },
       {
         accessorKey: 'file_size',

@@ -105,6 +105,22 @@ def tile_option(f):
                              '(default: all tiles / all exposures).')(f)
 
 
+def epoch_option(f):
+    """``--epoch``: runtime epoch selection.
+
+    A runtime parameter, not a config key. Selects one named epoch from
+    fields.toml (``[<field>.epochs.<name>]``) — a subset of the field's
+    exposures, defined by file globs and/or a date range. It scopes the whole
+    combine phase (apply_mask → resample) to that subset, mirroring ``--tiles``,
+    and adds the epoch name as a trailing segment on the mosaic filename
+    (``mosaic_nircam_<filter>_<field>_<scale>_<tile>_<epoch>``). Default: the
+    full field (no epoch segment).
+    """
+    return click.option('--epoch', default=None,
+                        help='Epoch name from fields.toml (subset of exposures; '
+                             'adds a filename segment). Default: full field.')(f)
+
+
 def _setup(config_path, field_name):
     """Load config + environment + field; set up the workspace."""
     config = load_config(config_path)
@@ -185,19 +201,26 @@ def align(config, field, filters, processes, overwrite, tiles):
 @common_options
 @processing_options
 @tile_option
-def combine(config, field, filters, processes, overwrite, tiles):
-    """Run the ensemble combine phase (apply_mask → resample)."""
+@epoch_option
+def combine(config, field, filters, processes, overwrite, tiles, epoch):
+    """Run the ensemble combine phase (apply_mask → resample).
+
+    ``--epoch`` scopes the whole phase to one named epoch's exposure subset and
+    labels the mosaics with the epoch name.
+    """
     cfg, field_obj = _setup(config, field)
     run_combine(field_obj, cfg,
                 filters=_resolve_filters(filters, field_obj),
                 n_processes=processes, overwrite=overwrite,
-                tiles=list(tiles) if tiles else None)
+                tiles=list(tiles) if tiles else None,
+                epoch=epoch)
 
 
 @main.command()
 @common_options
 @processing_options
 @tile_option
+@epoch_option
 @click.option('--process', 'do_process', is_flag=True,
               help='Run the process phase.')
 @click.option('--align', 'do_align', is_flag=True,
@@ -207,9 +230,13 @@ def combine(config, field, filters, processes, overwrite, tiles):
               help='Run the combine phase.')
 @click.option('--all', 'do_all', is_flag=True,
               help='Run all phases (process, align, combine).')
-def run(config, field, filters, processes, overwrite, tiles,
+def run(config, field, filters, processes, overwrite, tiles, epoch,
         do_process, do_align, do_combine, do_all):
-    """Run process, align, and/or combine in one invocation."""
+    """Run process, align, and/or combine in one invocation.
+
+    ``--epoch`` applies only to the combine phase (process/align produce the
+    shared canonical exposures every epoch draws from).
+    """
     if do_all:
         do_process = do_align = do_combine = True
     if not (do_process or do_align or do_combine):
@@ -233,7 +260,7 @@ def run(config, field, filters, processes, overwrite, tiles,
     if do_combine:
         run_combine(field_obj, cfg, filters=filter_list,
                     n_processes=processes, overwrite=overwrite,
-                    tiles=tile_list)
+                    tiles=tile_list, epoch=epoch)
 
 
 # ---------------------------------------------------------------------------
@@ -266,13 +293,19 @@ for _step_name in STEP_NAMES:
 @common_options
 @processing_options
 @tile_option
-def resample(config, field, filters, processes, overwrite, tiles):
-    """Run the resample step."""
+@epoch_option
+def resample(config, field, filters, processes, overwrite, tiles, epoch):
+    """Run the resample step.
+
+    ``--epoch`` restricts the drizzle inputs to the named epoch's exposure
+    subset and labels the mosaics with the epoch name.
+    """
     cfg, field_obj = _setup(config, field)
     run_step('resample', field_obj, cfg,
              filters=_resolve_filters(filters, field_obj),
              n_processes=processes, overwrite=overwrite,
-             tiles=list(tiles) if tiles else None)
+             tiles=list(tiles) if tiles else None,
+             epoch=epoch)
 
 
 # Refcat utilities: `cfpipe nircam refcat {query,extract,merge,compare}`
@@ -364,8 +397,13 @@ def expmap(config, field, filters, stage, pixel_scale, padding,
 @click.option('--filters', multiple=True, default=None, cls=VariadicOption,
               help='Filters to check (default: all from field).')
 @tile_option
-def check(config, field, filters, tiles):
-    """Report which mosaic tiles are stale and need re-mosaicking."""
+@epoch_option
+def check(config, field, filters, tiles, epoch):
+    """Report which mosaic tiles are stale and need re-mosaicking.
+
+    ``--epoch`` reports staleness for the named epoch's mosaics (matching what
+    ``combine``/``resample --epoch`` would build) instead of the full field.
+    """
     from campfire_pipeline.nircam.manifest import get_stale_tiles
     from campfire_pipeline.config import get_nircam_step_config
 
@@ -384,7 +422,8 @@ def check(config, field, filters, tiles):
             'resample': resample_cfg,
             'files_to_skip': files_to_skip,
         }
-        results = get_stale_tiles(field_obj, filtname, wrapped, tiles=tile_list)
+        results = get_stale_tiles(field_obj, filtname, wrapped, tiles=tile_list,
+                                  epoch=epoch)
         if not results:
             log(f'{filtname}: no tiles configured')
             continue
