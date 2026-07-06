@@ -43,16 +43,6 @@ def test_tiles_flag_absent_on_exposure_level_steps(command):
     assert '--tiles' not in _help(CliRunner(), command)
 
 
-def test_run_rejects_tiles_without_combine_phase():
-    # --tiles scopes resample, which only runs in the combine phase.
-    res = CliRunner().invoke(
-        nircam_cli.main,
-        ['run', '--field', 'x', '--process', '--tiles', 'A1'],
-    )
-    assert res.exit_code == 2  # click.UsageError
-    assert 'combine' in res.output.lower()
-
-
 # ---------------------------------------------------------------------------
 # resample_step tile resolution
 # ---------------------------------------------------------------------------

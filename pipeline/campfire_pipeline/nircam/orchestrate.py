@@ -636,6 +636,12 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False,
     """
     from campfire_pipeline.nircam.prefetch import prefetch_process_references
     filters = _resolve_filters(filters, field)
+    if tiles:
+        # Every step below re-derives the same tile-overlap set via
+        # ``get_exposure_files(tiles=)``; the per-path footprint memo makes that
+        # scan happen once for the whole phase instead of once per step.
+        from campfire_pipeline.nircam.geometry import reset_sregion_cache
+        reset_sregion_cache()
     status = _scan_status(field, filters, overwrite=overwrite)
     log(f"=== Process phase: field={field.name}, filters={filters} ===")
     prefetch_process_references(field, filters, status=status,

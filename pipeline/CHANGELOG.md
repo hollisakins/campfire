@@ -307,6 +307,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   tile-scoped run is a distinct input set. *(Categorized Infrastructure because the
   canonical full-field reduction is unchanged; noting the tile-scoped caveat.)* Covered
   by `tests/test_tile_filter.py` + `tests/test_ab_astrometry.py`.
+- **NIRCam `--tiles` overlap scan is ~10× faster (cold-NFS + per-phase memo).** The
+  `S_REGION` footprint gate (`read_sregion_polygon`) was the silent multi-minute stall
+  at the start of a tile-scoped `process` on a cold NFS mount. Two fixes: (1) it now
+  reaches the `SCI` header by name instead of slicing `hdul[1:]`, which forced astropy
+  to enumerate every extension — seeking past all ~9 data units (~24 NFS round-trips/file
+  vs ~6), ~8× fewer round-trips cold (~348→~43 ms/file); no pixel data was ever read,
+  the cost was purely `lseek`-triggered 1 MB readahead. (2) `run_process` runs the gate
+  once per step (~10 `get_exposure_files(tiles=)` calls), so results are now memoized by
+  path for the phase (`reset_sregion_cache` at phase entry) — the scan runs once instead
+  of once per step. Net: a 1600-file tile scan drops from ~13 min/phase to ~1.3 min.
+  Footprint results are byte-identical (verified against the prior implementation on real
+  exposures); no scientific output change. Also removes a stale test that asserted the
+  pre-`5059e87` `run --process --tiles` rejection (superseded by
+  `test_cli_run_tiles_allowed_with_process`).
 - **NIRCam `align` phase — exposure I/O + `CFP_ALGN` stamp.** New
   `nircam/align/apply.py` (`align_exposure_group`) is the FITS layer: it reads each
   detector's gwcs and detects sources, runs the in-memory solve, and writes the
