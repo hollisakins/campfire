@@ -760,7 +760,9 @@ def run_align(field, config, filters=None, n_processes=1, overwrite=False,
             f"(set [{field.name}.align].enabled = true to run); skipping.")
         return
 
-    from campfire_pipeline.nircam.association import build_exposure_groups
+    from campfire_pipeline.nircam.association import (
+        build_exposure_groups, unsupported_mode_reason,
+    )
     from campfire_pipeline.nircam.refcat.io import read_refcat
 
     refcat_path = _resolve_align_refcat(align_cfg, field.refcat_dir)
@@ -768,11 +770,45 @@ def run_align(field, config, filters=None, n_processes=1, overwrite=False,
     log(f"=== Align phase: field={field.name}, filters={filters}, "
         f"refcat={os.path.basename(refcat_path)} ({len(refcat)} sources) ===")
 
-    status = _scan_status(field, filters, overwrite=overwrite)
-    groups = build_exposure_groups(field, filters, tiles=tiles)
+    # Cross-filter dependency closure (§9.2): pool the FULL physical exposure —
+    # every detector across ALL field filters — even when a filter subset is
+    # requested, so a `--filters f200w` solve still sees its paired LW (F444W)
+    # complement and the tile gate can't split a dither at a tile edge. Status is
+    # scanned over all filters too, since a solved exposure is written across its
+    # whole SW+LW complement (one attitude corrects every detector).
+    all_filters = list(field.filters)
+    status = _scan_status(field, all_filters, overwrite=overwrite)
+    groups = build_exposure_groups(field, all_filters, tiles=tiles)
     if not groups:
         log("align: no exposure groups found; nothing to do.")
         return
+
+    # Restrict the processed set to exposures with a member in the selected
+    # filters; each is then solved and written across its full complement.
+    if set(filters) != set(all_filters):
+        n_all = len(groups)
+        groups = [g for g in groups if g.filters & set(filters)]
+        log(f"align: --filters {filters} selects {len(groups)}/{n_all} "
+            f"exposure(s); each is solved and written across its full SW+LW "
+            f"complement.")
+        if not groups:
+            log("align: no exposures match the selected filters/tiles.")
+            return
+
+    # Observing-mode gating (§9.3): stop before solving if any exposure in scope
+    # is in an unsupported mode (subarray / coronagraph / TSO / WFSS). These need
+    # a separately-validated path, so the user must exclude them explicitly
+    # rather than have align silently feed them through generic imaging logic.
+    unsupported = [(g, r) for g in groups
+                   for r in (unsupported_mode_reason(g.members[0].path),) if r]
+    if unsupported:
+        listing = "\n".join(f"  {g.key}: {reason}" for g, reason in unsupported)
+        raise RuntimeError(
+            f"align: {len(unsupported)} exposure(s) are in an observing mode the "
+            f"align phase does not support:\n{listing}\n\n"
+            f"Exclude them (fields.toml [{field.name}].skip, or the reviewer "
+            f"excluded_exposures list) and re-run, or select a supported subset "
+            f"with --filters / --tiles.")
 
     if overwrite:
         pending = groups

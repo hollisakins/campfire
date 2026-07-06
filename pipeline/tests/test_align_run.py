@@ -169,3 +169,33 @@ def test_run_align_warns_and_reattempts_not_aligned(tmp_path, capsys):
     out2 = capsys.readouterr().out
     assert 're-attempting' in out2
     assert 'FAILED alignment' in out2
+
+
+@pytestmark_e2e
+def test_run_align_cross_filter_closure_writes_all_members(tmp_path):
+    # Cross-filter dependency closure: aligning with --filters f200w still pools
+    # and WRITES the paired f444w (LW) member — one attitude corrects the whole
+    # dither, so both canonicals get a real (dof=...) CFP_ALGN stamp.
+    field, _, xy_by_path = _build_field(tmp_path, enabled=True)
+    run_align(field, {}, filters=['f200w'], n_processes=1)
+    assert len(xy_by_path) == 2                        # one f200w + one f444w member
+    for path in xy_by_path:
+        with fits.open(path) as h:
+            assert h[0].header.get('CFP_ALGN', '').startswith('dof=')
+
+
+@pytestmark_e2e
+def test_run_align_hardstops_unsupported_mode(tmp_path):
+    # An exposure in an unsupported observing mode must stop the whole align run
+    # (the user has to exclude it explicitly), not fall through generic logic.
+    field, _, xy_by_path = _build_field(tmp_path, enabled=True)
+    for path in xy_by_path:
+        with fits.open(path, mode='update') as h:
+            h[0].header['EXP_TYPE'] = 'NRC_CORON'
+            h.flush()
+    with pytest.raises(RuntimeError, match='observing mode'):
+        run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    # nothing was aligned
+    for path in xy_by_path:
+        with fits.open(path) as h:
+            assert 'CFP_ALGN' not in h[0].header

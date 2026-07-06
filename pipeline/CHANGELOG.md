@@ -26,6 +26,20 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Calibration
+- **NIRCam `align` refcat gains an epoch / proper-motion contract** and
+  propagates reference positions to each exposure's mid-time. The refcat schema
+  grows optional columns — `source_id, ref_epoch, pmra, pmdec, parallax` (+
+  `pmra_err`/`pmdec_err`) — alongside the required `RA/DEC/mag/mag_err`;
+  `query_gaia` now populates them (Gaia DR3), while galaxy backends (LS/HSC) omit
+  them. When a refcat carries proper motions, the align worker moves each star to
+  the exposure mid-time (`EXPMID`) via `astropy` `apply_space_motion` **before**
+  the footprint clip and match (`refcat/motion.py`), so a fast Gaia star is
+  matched where it actually was, not where the catalog recorded it years earlier.
+  **Fully backward-compatible**: a catalog without the columns — or a row with a
+  non-finite proper motion — is treated as stationary (the prior zero-motion
+  behavior), so today's galaxy-anchored refcats are a strict no-op. This changes
+  the fitted WCS only when a motion-bearing catalog is used. `refcat/{io,query,
+  motion}.py`, `align/apply.py`; covered by `tests/test_refcat_motion.py`.
 - NIRCam `apply_masks` now reads web-defined masks instead of crashing on them.
   Masks drawn in the web editor materialize (via `campfire deploy pull-masks`)
   as DS9 **image**-coordinate `.reg` files, which `Regions.read` parses back as
@@ -349,6 +363,25 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `align` closes the cross-filter dependency and gates observing mode.**
+  Two correctness fixes to the align orchestration (opt-in, default-off):
+    - *Cross-filter closure.* `run_align` now pools each physical exposure across
+      **all** field filters, even when `--filters`/`--tiles` selects a subset — so
+      `align --filters f200w` still sees its paired F444W (LW) complement for the
+      shared solve, and a tile gate can't split a dither at a tile edge. The
+      selection then just chooses **which** exposures to process; each is solved
+      and its corrected gwcs written across its full SW+LW complement (one
+      attitude corrects the whole dither), so `--filters f200w` now also stamps
+      the paired f444w canonicals — a deliberate behavior change that keeps an
+      exposure from ending up half-aligned. Status is scanned over all filters to
+      match.
+    - *Observing-mode gating.* Align now reads `EXP_TYPE`/`SUBARRAY` per exposure
+      and **hard-stops** with a clear, listed error if any exposure in scope is in
+      an unsupported mode (subarray / coronagraph / TSO / WFSS), rather than
+      silently feeding it through generic full-frame-imaging logic. The user must
+      exclude it (fields.toml `skip` / reviewer exclusions) or select a supported
+      subset. Missing metadata is treated leniently. `orchestrate.py`,
+      `association.py`; covered by `tests/test_align_run.py`, `test_association.py`.
 - **NIRCam `--tiles` now pre-filters the exposure set for `process`/`align`/`combine`,
   not just `resample`.** Previously `--tiles` scoped only which mosaics were drizzled;
   every earlier step ran over the whole field, so building one tile meant processing

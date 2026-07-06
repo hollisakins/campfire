@@ -90,6 +90,52 @@ def _format_algn_value(det):
     return f'dof={det.dof} res={det.residual_arcsec:.3g} n={det.n_matched}'
 
 
+def _exposure_mid_mjd(path):
+    """Exposure mid-time as MJD from the primary header, or ``None``.
+
+    Prefers ``EXPMID`` / ``MJD-AVG``; falls back to the mean of
+    ``EXPSTART``/``EXPEND``. Read cheaply from the primary header (all detectors
+    of one exposure share the same time), used to propagate refcat proper
+    motions to the epoch the shutter was actually open.
+    """
+    with fits.open(path, memmap=False) as hdul:
+        h = hdul[0].header
+        for card in ('EXPMID', 'MJD-AVG'):
+            if h.get(card) is not None:
+                return float(h[card])
+        start, end = h.get('EXPSTART'), h.get('EXPEND')
+        if start is not None and end is not None:
+            return 0.5 * (float(start) + float(end))
+    return None
+
+
+def _propagate_refcat(refcat, path, key):
+    """Return *refcat* with positions moved to this exposure's mid-time.
+
+    A no-op for a stationary (galaxy) refcat with no proper-motion columns.
+    Fails open — aligns against catalog positions rather than rejecting the
+    exposure — if the epoch can't be read or propagation errors.
+    """
+    from campfire_pipeline.nircam.refcat.io import has_proper_motion
+
+    if not has_proper_motion(refcat):
+        return refcat
+    try:
+        epoch = _exposure_mid_mjd(path)
+        if epoch is None:
+            log(f"align[{key}]: no exposure mid-time in header; using catalog "
+                f"positions (no proper-motion propagation).")
+            return refcat
+        from campfire_pipeline.nircam.refcat.motion import propagate_to_epoch
+        out = propagate_to_epoch(refcat, epoch)
+        log(f"align[{key}]: propagated refcat proper motions to MJD {epoch:.4f}.")
+        return out
+    except Exception as e:  # noqa: BLE001 — align without propagation, don't reject
+        log(f"align[{key}]: refcat epoch propagation failed "
+            f"({type(e).__name__}: {e}); using catalog positions.")
+        return refcat
+
+
 def _detect_mask(model):
     mask = ~np.isfinite(np.asarray(model.data, dtype=float))
     if getattr(model, 'err', None) is not None:
@@ -231,6 +277,7 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
                                                    default_fwhm)
             detectors.append(_load_detector(m.path, m.detector, member_cfg,
                                             ImageModel))
+        refcat = _propagate_refcat(refcat, members[0].path, key)
         solution = solve_exposure_group(detectors, refcat, key=key, **solve_cfg)
     except Exception as e:  # noqa: BLE001 — one bad exposure must not abort the field
         log(f"align[{key}]: FAILED — {type(e).__name__}: {e}; "
