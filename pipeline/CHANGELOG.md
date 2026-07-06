@@ -95,6 +95,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- **NIRCam field-level astrometric `align` phase is now runnable** (`cfpipe nircam
+  align` / `run --align`), **opt-in and default-off** so existing reductions are
+  unchanged. When a field sets `[<field>.align].enabled = true` (and names its
+  Gaia-tied `campfire-refcat-v1` catalog via `[<field>.align].refcat`), a bespoke
+  field-level phase runs between `process` and `combine`: it groups all detectors of
+  each exposure across the SW+LW filter dirs, triangle-matches a pooled source catalog
+  to the reference (no prior on the offset), fits one shared shift+rotation per exposure
+  via `tweakwcs` (`fitgeom='rshift'`, SIAF distortion fixed) with an adaptive
+  per-detector shift, and writes the corrected gwcs back with a `CFP_ALGN` stamp
+  (or a `NOT_ALIGNED` sentinel). The process phase then skips `jhat`+`wcs_shift` for that
+  field — exactly one alignment path. Replaces the JHAT-based alignment for opt-in
+  fields; JHAT remains the default and coexists during validation. New `[nircam.align]`
+  config block; covered by `tests/test_align_run.py`.
 - NIRCam `combine` now honors per-exposure reviewer exclusions (epic #261, N6 /
   D10). `Field.setup_workspace` reads `reference/<field>/exposures.json`
   (materialized by `campfire deploy nircam pull` from the portal's
