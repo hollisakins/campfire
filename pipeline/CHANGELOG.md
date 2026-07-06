@@ -123,6 +123,51 @@ Release procedure: edit the `## Unreleased` section below, then run
   field — exactly one alignment path. Replaces the JHAT-based alignment for opt-in
   fields; JHAT remains the default and coexists during validation. New `[nircam.align]`
   config block; covered by `tests/test_align_run.py`.
+- **NIRCam field-level `align` phase — matcher / solve / detection / combine
+  hardening (S1–S3a).** Opt-in and default-off, so no existing (JHAT) reduction
+  changes; for align-enabled fields it changes which sources match and thus the
+  fitted WCS. One PR, four parts:
+    - *Refcat footprint + all-source refine.* The full field refcat (~550k rows
+      for COSMOS) used to reach the matcher, so the brightest-N vertex cap kept
+      globally-brightest, mostly off-frame sources — and that same cap gated the
+      final fit (~17–30 pairs). The shared solve now clips the refcat to the
+      exposure's detector-union footprint + `ref_border_arcmin` margin (default
+      0.5′, local gnomonic tangent plane, `align/footprint.py`), runs
+      `TriangleMatch` as a bounded **bootstrap** only (`brightest` →
+      `bootstrap_max`), then refines on **all** sources with a one-to-one
+      `tweakwcs.XYXYMatch` pass (`fitgeom='rshift'`, σ-clip, `refine_niter`, no
+      2-D-histogram re-acquisition) — the fit rests on every matched source, not
+      the capped vertices. Per-detector residuals and the reject gate use
+      mutual-NN (one-to-one) matching; the translation-invariant matcher still
+      drives the adaptive per-detector refit (recovers offsets up to
+      `match_radius`). Also folds in the earlier pooled-catalog starvation fix
+      (the `create_group_catalog` `mag`-strip bug): the bootstrap cap spreads
+      vertices evenly across the pooled catalog when the ranking column is absent.
+    - *Quality-selected detection.* `detect.py` adds a peak-SNR floor (`snr_min`)
+      and an (uncalibrated) DAO-magnitude range trim (`objmag_lim`), masks
+      `SATURATED` + `NO_LIN_CORR` DQ (not only `DO_NOT_USE`), keys the detection
+      PSF FWHM per filter (`psf_fwhm_by_filter`, F070W→F480M), and drops the fixed
+      `brightest` count cap so the whole quality-cut catalog reaches the refine.
+    - *`NOT_ALIGNED` is never silent.* An exposure the solve can't tie to the
+      reference — **or any solver/refine/detection exception, which now degrades
+      instead of crashing the align worker** — is stamped `CFP_ALGN = NOT_ALIGNED`
+      (raw WCS preserved) and quarantined from combine by `Field.materialize_work`
+      (the single ensemble gate; the outlier pre-scan now also re-runs a visit
+      whose membership shrank, so surviving frames don't reuse CR masks computed
+      with the dropped exposure). For an align-enabled field, combine likewise
+      quarantines exposures carrying **no** `CFP_ALGN` at all (align enabled but
+      never solved them → raw WCS), each surfaced with its own fix rather than
+      silently drizzled. `run_align` reports every failure in a loud
+      end-of-command banner (failed files + how to fix) and **re-attempts**
+      `NOT_ALIGNED` exposures on a normal re-run (no `--overwrite`), while
+      already-solved exposures are skipped. `--include-unaligned` forces
+      inclusion. Sentinel centralized as `cfp.NOT_ALIGNED`; new `cfp.step_value`.
+  New `[nircam.align]` knobs (`ref_border_arcmin`, `bootstrap_max`,
+  `refine_searchrad`/`refine_tolerance`/`refine_niter`, `snr_min`,
+  `psf_fwhm_by_filter`); `brightest` removed. Touches
+  `align/{footprint,solve,matcher,detect,apply}.py`, `field.py`, `orchestrate.py`,
+  `cli.py`, `common/cfp.py`; covered by `tests/test_align_*`,
+  `tests/test_nircam_work_tree.py`, `tests/test_cfp.py`.
 - NIRCam `combine` now honors per-exposure reviewer exclusions (epic #261, N6 /
   D10). `Field.setup_workspace` reads `reference/<field>/exposures.json`
   (materialized by `campfire deploy nircam pull` from the portal's

@@ -149,6 +149,34 @@ def test_idempotent_skip(tmp_path):
     assert all(os.path.getmtime(m.path) == mtimes[m.path] for m in members)
 
 
+def test_not_aligned_reattempted_without_overwrite(tmp_path):
+    # A rejected exposure is re-attempted on a normal re-run (no --overwrite) —
+    # unlike a solved one, which is skipped — so the user can retune params and
+    # try again without force-re-solving everything that already succeeded.
+    members, _, _ = _make_exposure(tmp_path, n_det=2, seed=3)
+    rng = np.random.default_rng(99)
+    badref = Table({'RA': 80.0 + rng.uniform(-0.05, 0.05, 30),
+                    'DEC': -30.0 + rng.uniform(-0.05, 0.05, 30)})
+    assert align_exposure_group(members, badref, config={}).status == 'NOT_ALIGNED'
+    # Re-run without overwrite: re-attempted (fails again here), NOT skipped.
+    sol2 = align_exposure_group(members, badref, config={}, overwrite=False)
+    assert sol2.status == 'NOT_ALIGNED'
+
+
+def test_worker_survives_solve_crash(tmp_path, monkeypatch):
+    # An unexpected solver error on one exposure must degrade it to NOT_ALIGNED
+    # (surfaced + quarantined), never abort the whole field's align worker.
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2)
+    import campfire_pipeline.nircam.align.apply as _a
+    monkeypatch.setattr(_a, 'solve_exposure_group',
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("unexpected solver error")))
+    sol = align_exposure_group(members, refcat, config={}, overwrite=True)
+    assert sol.status == 'NOT_ALIGNED'
+    for m in members:
+        assert _cfp_algn(m.path) == 'NOT_ALIGNED'
+
+
 def test_overwrite_does_not_double_correct(tmp_path):
     members, refcat, xy = _make_exposure(tmp_path, n_det=2, offset=(2.0, 0.0))
     align_exposure_group(members, refcat, config={})
@@ -161,9 +189,15 @@ def test_overwrite_does_not_double_correct(tmp_path):
 # --- adaptive end-to-end ----------------------------------------------------
 
 def test_adaptive_dof_recorded(tmp_path):
+    # Detector 4 carries a 0.6" per-detector offset — large enough that the
+    # all-source shared refine sigma-clips it (rather than tilting the whole
+    # exposure to absorb it), so its residual survives above tolerance and the
+    # adaptive shift-only refit frees it. match_radius=0.8 keeps its sources
+    # matchable at that offset.
     members, refcat, _ = _make_exposure(
-        tmp_path, n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.3)})
-    align_exposure_group(members, refcat, config={'tolerance': 0.15})
+        tmp_path, n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.6)})
+    align_exposure_group(members, refcat,
+                         config={'tolerance': 0.15, 'match_radius': 0.8})
     # detectors 0-3 stay on the shared solution; detector 4 (nrcb1) is freed
     for m in members[:4]:
         assert 'dof=shared' in _cfp_algn(m.path)

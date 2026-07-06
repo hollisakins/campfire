@@ -202,7 +202,11 @@ def align(config, field, filters, processes, overwrite, tiles):
 @processing_options
 @tile_option
 @epoch_option
-def combine(config, field, filters, processes, overwrite, tiles, epoch):
+@click.option('--include-unaligned', is_flag=True,
+              help='Include exposures the align phase left NOT_ALIGNED in the '
+                   'combine (default: quarantine them for align-enabled fields).')
+def combine(config, field, filters, processes, overwrite, tiles, epoch,
+            include_unaligned):
     """Run the ensemble combine phase (apply_mask → resample).
 
     ``--epoch`` scopes the whole phase to one named epoch's exposure subset and
@@ -213,7 +217,8 @@ def combine(config, field, filters, processes, overwrite, tiles, epoch):
                 filters=_resolve_filters(filters, field_obj),
                 n_processes=processes, overwrite=overwrite,
                 tiles=list(tiles) if tiles else None,
-                epoch=epoch)
+                epoch=epoch,
+                include_unaligned=include_unaligned)
 
 
 @main.command()
@@ -230,8 +235,11 @@ def combine(config, field, filters, processes, overwrite, tiles, epoch):
               help='Run the combine phase.')
 @click.option('--all', 'do_all', is_flag=True,
               help='Run all phases (process, align, combine).')
+@click.option('--include-unaligned', is_flag=True,
+              help='Include NOT_ALIGNED exposures in the combine (default: '
+                   'quarantine them for align-enabled fields).')
 def run(config, field, filters, processes, overwrite, tiles, epoch,
-        do_process, do_align, do_combine, do_all):
+        do_process, do_align, do_combine, do_all, include_unaligned):
     """Run process, align, and/or combine in one invocation.
 
     ``--epoch`` applies only to the combine phase (process/align produce the
@@ -260,7 +268,8 @@ def run(config, field, filters, processes, overwrite, tiles, epoch,
     if do_combine:
         run_combine(field_obj, cfg, filters=filter_list,
                     n_processes=processes, overwrite=overwrite,
-                    tiles=tile_list, epoch=epoch)
+                    tiles=tile_list, epoch=epoch,
+                    include_unaligned=include_unaligned)
 
 
 # ---------------------------------------------------------------------------
