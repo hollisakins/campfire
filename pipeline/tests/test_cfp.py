@@ -128,6 +128,24 @@ def test_has_step_accepts_header_object():
     assert cfp.has_step(hdr, 'CFP_BKG', keyset=cfp.NIRSPEC) is True
 
 
+def test_step_value_returns_card_value(tmp_path):
+    # step_value returns the recorded VALUE (unlike has_step's presence-only) —
+    # the combine quarantine reads it to tell NOT_ALIGNED apart from a solution.
+    path = _write_header(tmp_path / 'a.fits', CFP_ALGN='NOT_ALIGNED')
+    assert cfp.step_value(path, 'CFP_ALGN') == 'NOT_ALIGNED'
+    # absent key -> None
+    assert cfp.step_value(path, 'CFP_MASK') is None
+    # accepts a Header too
+    hdr = fits.Header()
+    hdr['CFP_ALGN'] = 'dof=shared res=0.01 n=30'
+    assert cfp.step_value(hdr, 'CFP_ALGN') == 'dof=shared res=0.01 n=30'
+
+
+def test_step_value_rejects_unknown_key():
+    with pytest.raises(ValueError):
+        cfp.step_value(fits.Header(), 'CFP_CAL', keyset=cfp.NIRCAM)
+
+
 def test_has_step_rejects_unknown_key():
     with pytest.raises(ValueError):
         cfp.has_step(fits.Header(), 'CFP_CAL', keyset=cfp.NIRCAM)

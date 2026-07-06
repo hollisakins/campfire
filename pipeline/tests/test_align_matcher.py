@@ -106,17 +106,17 @@ def test_missing_tp_columns_raises():
         TriangleMatch()(rt, it)
 
 
-# --- brightest-N cap + index remapping --------------------------------------
+# --- bootstrap-N cap + index remapping --------------------------------------
 
-def test_brightest_cap_remaps_to_original_rows():
-    # n_true=160 > brightest=150. Rank magnitude so the SURVIVING rows are the
-    # LAST 150 (mag[k] = 159-k => row 159 brightest), not the first — proving
-    # both that the cap fires and that returned indices are original rows.
+def test_bootstrap_cap_remaps_to_original_rows():
+    # n_true=160 > bootstrap_max=150. Rank magnitude so the SURVIVING rows are
+    # the LAST 150 (mag[k] = 159-k => row 159 brightest), not the first —
+    # proving both that the cap fires and that returned indices are original rows.
     ref, im, R, shift, n_true = _synthetic(n=160, n_spurious=0)
     mag = (n_true - 1) - np.arange(n_true)
     rt, it = _tables(ref, im, mag_ref=mag, mag_im=mag)
 
-    ri, ii = TriangleMatch(brightest=150)(rt, it)
+    ri, ii = TriangleMatch(bootstrap_max=150)(rt, it)
     assert len(ri) >= 6
     # Only rows [10, 159] survive the brightest-150 cut on both sides.
     assert ri.min() >= 10 and ri.max() <= 159
@@ -125,12 +125,25 @@ def test_brightest_cap_remaps_to_original_rows():
     assert int(np.sum(ri == ii)) >= 6
 
 
-def test_brightest_cap_without_mag_col_warns_and_matches(capsys):
+def test_bootstrap_cap_without_mag_col_spreads_and_matches(capsys):
+    # tweakwcs' create_group_catalog strips every brightness column from the
+    # pooled image catalog, so the cap can't rank by magnitude. It must then
+    # spread the surviving vertices EVENLY across the whole catalog rather than
+    # slice a contiguous head: a multi-detector pooled catalog is vstacked
+    # head-to-tail, so a head-slice would keep only the first detector's block
+    # and starve the rest (collapsing the pooled geometry to one detector).
+    import campfire_pipeline.nircam.align.matcher as _m
+    _m._UNRANKED_WARNED = False                     # warn-once is per-process
     ref, im, R, shift, n_true = _synthetic(n=200, n_spurious=0)
-    rt, it = _tables(ref, im)                       # no 'mag' column
-    ri, ii = TriangleMatch(brightest=150)(rt, it)
+    rt, it = _tables(ref, im)                       # no 'mag' column either side
+    ri, ii = TriangleMatch(bootstrap_max=150)(rt, it)
     assert len(ri) >= 6
-    assert ri.max() < 150 and ii.max() < 150        # capped to first 150
+    # Vertices are drawn from across the full [0, 200) range, not confined to
+    # the first 150 — the old head-slice would cap both maxima below 150.
+    assert ri.max() >= 150 and ii.max() >= 150
+    # Remapping still lands original ref rows on their original image rows.
+    assert int(np.sum(ri == ii)) >= 6
+    assert np.all(_residuals(ref, im, R, shift, ri, ii)[ri == ii] < 0.2)
     assert "no 'mag' column" in capsys.readouterr().out
 
 

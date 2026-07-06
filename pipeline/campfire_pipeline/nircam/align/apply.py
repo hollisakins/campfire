@@ -27,7 +27,10 @@ from astropy.io import fits
 
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import atomic_save, log
-from campfire_pipeline.nircam.align.detect import detect_star_centroids
+from campfire_pipeline.nircam.align.detect import (
+    DETECT_DQ_BITS,
+    detect_star_centroids,
+)
 from campfire_pipeline.nircam.align.solve import (
     DetectorInput,
     GroupSolution,
@@ -36,16 +39,20 @@ from campfire_pipeline.nircam.align.solve import (
 from campfire_pipeline.nircam.association import exposure_key
 
 WCS_BAK_EXTNAME = 'WCS_BAK'
-NOT_ALIGNED_SENTINEL = 'NOT_ALIGNED'
-
-# jwst.datamodels.dqflags.pixel['DO_NOT_USE'] == 1 (bit 0).
-_DO_NOT_USE = np.uint32(1)
+NOT_ALIGNED_SENTINEL = cfp.NOT_ALIGNED
 
 # Solve/detection knobs threaded from [<field>.align]; the orchestration passes
-# a resolved dict, these are the fallbacks.
+# a resolved dict, these are the fallbacks. Per-filter PSF FWHM
+# (``psf_fwhm_by_filter``) is resolved per member below, not passed through
+# these keys. ``bootstrap_max`` and the ``refine_*`` knobs are solve keys (the
+# triangle-vertex cap moved to the bootstrap; detection is no longer count-
+# capped, so ``brightest`` is gone from the align path).
 _SOLVE_KEYS = ('fitgeom', 'minobj', 'nclip', 'sigma', 'tolerance', 'adaptive',
-               'adaptive_min_matches', 'match_radius', 'min_matched')
-_DETECT_KEYS = ('fwhm', 'nsigma', 'edge', 'brightest')
+               'adaptive_min_matches', 'match_radius', 'min_matched',
+               'ref_border_arcmin', 'bootstrap_max', 'refine_searchrad',
+               'refine_tolerance', 'refine_niter')
+_DETECT_KEYS = ('fwhm', 'nsigma', 'edge', 'snr_min', 'objmag_lim',
+                'sharplo', 'sharphi', 'roundlo', 'roundhi')
 
 
 # --- WCS_BAK gwcs <-> ASDF-in-FITS (replicated from steps/wcs_shift.py) ------
@@ -88,7 +95,7 @@ def _detect_mask(model):
     if getattr(model, 'err', None) is not None:
         mask |= ~np.isfinite(np.asarray(model.err, dtype=float))
     if getattr(model, 'dq', None) is not None:
-        mask |= (np.asarray(model.dq).astype(np.uint32) & _DO_NOT_USE) != 0
+        mask |= (np.asarray(model.dq).astype(np.uint32) & DETECT_DQ_BITS) != 0
     return mask
 
 
@@ -183,27 +190,58 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
         key = exposure_key(members[0].path)
     config = dict(config or {})
 
-    def _done(path):
-        return (status.has(path, 'CFP_ALGN') if status is not None
-                else cfp.has_step(path, 'CFP_ALGN'))
+    def _aligned_ok(path):
+        # A detector counts as done only if it carries a *completed, non-rejected*
+        # alignment. A NOT_ALIGNED exposure is re-attempted on a normal re-run
+        # (no --overwrite) so the user can retune [<field>.align] params and try
+        # again without force-re-solving everything that already succeeded.
+        stamped = (status.has(path, 'CFP_ALGN') if status is not None
+                   else cfp.has_step(path, 'CFP_ALGN'))
+        return stamped and cfp.step_value(path, 'CFP_ALGN') != NOT_ALIGNED_SENTINEL
 
-    if not overwrite and all(_done(m.path) for m in members):
-        log(f"align[{key}]: all {len(members)} detectors already stamped "
-            f"CFP_ALGN; skipping.")
+    if not overwrite and all(_aligned_ok(m.path) for m in members):
+        log(f"align[{key}]: all {len(members)} detectors already aligned; "
+            f"skipping (use --overwrite to re-solve).")
         return GroupSolution(key, 'SKIPPED', None, None, None, 0, [])
 
     solve_cfg = {k: config[k] for k in _SOLVE_KEYS if k in config}
     detect_cfg = {k: config[k] for k in _DETECT_KEYS if k in config}
+
+    # Per-filter detection PSF FWHM: NIRCam's core width runs from ~F070W to
+    # ~F480M, so a single fwhm is wrong across the exposure's SW+LW channels.
+    # Key it off each member's filter, falling back to the scalar `fwhm`.
+    psf_by_filter = {str(k).lower(): float(v)
+                     for k, v in (config.get('psf_fwhm_by_filter') or {}).items()}
+    default_fwhm = detect_cfg.get('fwhm', 2.5)
 
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         from jwst.datamodels import ImageModel
         from jwst.assign_wcs.util import update_fits_wcsinfo
 
-    detectors = [_load_detector(m.path, m.detector, detect_cfg, ImageModel)
-                 for m in members]
-
-    solution = solve_exposure_group(detectors, refcat, key=key, **solve_cfg)
+    # Reading + solving one exposure must never abort a whole field's align. Any
+    # unexpected failure (a corrupt canonical, an unforeseen solver error the
+    # in-solve guards missed) degrades this exposure to NOT_ALIGNED — surfaced
+    # loudly by run_align and quarantined from combine — rather than crashing.
+    try:
+        detectors = []
+        for m in members:
+            member_cfg = dict(detect_cfg)
+            member_cfg['fwhm'] = psf_by_filter.get(m.filter_name.lower(),
+                                                   default_fwhm)
+            detectors.append(_load_detector(m.path, m.detector, member_cfg,
+                                            ImageModel))
+        solution = solve_exposure_group(detectors, refcat, key=key, **solve_cfg)
+    except Exception as e:  # noqa: BLE001 — one bad exposure must not abort the field
+        log(f"align[{key}]: FAILED — {type(e).__name__}: {e}; "
+            f"stamping NOT_ALIGNED (WCS preserved, excluded from combine).")
+        for m in members:
+            try:
+                _stamp_algn(m.path, NOT_ALIGNED_SENTINEL)
+            except Exception as se:  # noqa: BLE001 — best-effort stamp
+                log(f"align[{key}]: could not stamp NOT_ALIGNED on "
+                    f"{os.path.basename(m.path)} ({type(se).__name__}).")
+        return GroupSolution(key, 'NOT_ALIGNED', None, None, None, 0, [])
 
     by_detector = {d.detector: d for d in solution.detectors}
     for m in members:

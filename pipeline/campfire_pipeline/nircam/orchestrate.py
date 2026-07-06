@@ -20,6 +20,7 @@ from importlib import import_module
 
 from astropy.io import fits
 
+from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
 from campfire_pipeline.common.parallel import dispatch
 from campfire_pipeline.config import get_nircam_step_config
@@ -137,6 +138,24 @@ def _group_by_visit(exposure_files):
         visit = os.path.basename(f).split('_')[0]
         visits.setdefault(visit, []).append(f)
     return visits
+
+
+def _visit_membership_matches(manifest, visit, visit_files):
+    """True iff an outlier *manifest* recorded exactly the current *visit_files*
+    as this visit's own inputs.
+
+    Catches a member dropped from the visit (a NOT_ALIGNED quarantine, a new
+    skip/exclusion, a tile re-scope) that the per-file hash check alone would
+    miss — the survivors' hashes still match the larger manifest, so outlier
+    would be skipped and resample would reuse CR masks computed with the
+    now-absent exposure still pooled. A manifest input belongs to this visit iff
+    its filename's leading ``jw...`` token is the visit; cross-visit overlap
+    inputs (a different token) are excluded here and validated by
+    ``outlier_step``'s full input-set check on the slow path.
+    """
+    manifest_this_visit = {inp['filename'] for inp in manifest.get('inputs', [])
+                           if inp['filename'].split('_')[0] == visit}
+    return manifest_this_visit == {os.path.basename(f) for f in visit_files}
 
 
 def _read_sregions(exposure_files):
@@ -469,10 +488,12 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
         manifest = load_manifest(manifest_path)
         if manifest is None:
             return False
+        # A member dropped from this visit (e.g. a NOT_ALIGNED quarantine) must
+        # force outlier to re-run, else resample reuses CR masks computed with
+        # the now-absent exposure still pooled (see _visit_membership_matches).
+        if not _visit_membership_matches(manifest, visit, visit_files):
+            return False
         # Check that visit_files (a subset of all_inputs) hashes still match.
-        # Cross-visit overlaps are validated inside outlier_step on the slow
-        # path; here we only confirm the visit's own files are unchanged so
-        # we can cheaply skip the obvious no-op case.
         old_hashes = {
             inp['filename']: inp['file_hash']
             for inp in manifest['inputs']
@@ -676,6 +697,39 @@ def _align_group_worker(key, members, *, refcat, config, overwrite, status):
                                 overwrite=overwrite, status=status)
 
 
+def _warn_not_aligned(field, failed_groups):
+    """Loudly report exposures that failed alignment, and how to resolve them.
+
+    Excluding data from the mosaic is never an automatic decision — a NOT_ALIGNED
+    exposure is quarantined from every future combine (its raw WCS would double
+    sources). Surface the full list at the end of the command and hand the user
+    the two levers: retune + re-run (re-attempted automatically), or force-include.
+    """
+    bar = '!' * 72
+    log('')
+    log(bar)
+    log(f"align: WARNING — {len(failed_groups)} exposure(s) FAILED alignment "
+        f"(CFP_ALGN = {cfp.NOT_ALIGNED}).")
+    log("These are EXCLUDED from all future mosaics by default (the combine")
+    log("quarantine). Omitting data is not automatic — review and resolve first:")
+    log('')
+    for g in failed_groups:
+        log(f"  {g.key}  ({g.n_members} detector(s)):")
+        for m in g.members:
+            log(f"      {m.path}")
+    log('')
+    log("To retry: retune [<field>.align] in fields.toml (e.g. widen "
+        "ref_border_arcmin,")
+    log("  lower snr_min, raise match_radius / refine_searchrad), then re-run")
+    log("  `cfpipe nircam align` — NOT_ALIGNED exposures are re-attempted "
+        "automatically")
+    log("  (no --overwrite needed; already-aligned exposures are left alone).")
+    log("To include them as-is (raw WCS, not recommended): "
+        "`cfpipe nircam combine --include-unaligned`.")
+    log(bar)
+    log('')
+
+
 def run_align(field, config, filters=None, n_processes=1, overwrite=False,
               tiles=None):
     """Field-level astrometric align phase (runs between process and combine).
@@ -715,13 +769,29 @@ def run_align(field, config, filters=None, n_processes=1, overwrite=False,
     if overwrite:
         pending = groups
     else:
-        pending = [g for g in groups
-                   if not all(status.has(m.path, 'CFP_ALGN')
-                              for m in g.members)]
+        # A group is "done" (skippable) only if every detector carries a
+        # completed, non-rejected alignment. NOT_ALIGNED exposures are
+        # re-attempted on a normal re-run — the user may have retuned
+        # [<field>.align] params and wants another try without force-re-solving
+        # everything that already succeeded. Groups are homogeneous (a whole
+        # exposure solves or rejects together), so one stamped member classifies
+        # a fully-stamped group.
+        pending, retry = [], 0
+        for g in groups:
+            stamped = all(status.has(m.path, 'CFP_ALGN') for m in g.members)
+            if stamped and (cfp.step_value(g.members[0].path, 'CFP_ALGN')
+                            != cfp.NOT_ALIGNED):
+                continue                        # already solved -> skip
+            pending.append(g)
+            if stamped:
+                retry += 1                      # stamped but NOT_ALIGNED -> retry
         skipped = len(groups) - len(pending)
         if skipped:
             log(f"align: {skipped}/{len(groups)} exposures already aligned; "
-                f"skipping those")
+                f"skipping those (--overwrite to re-solve)")
+        if retry:
+            log(f"align: re-attempting {retry} previously NOT_ALIGNED "
+                f"exposure(s)")
     if not pending:
         return
 
@@ -743,9 +813,19 @@ def run_align(field, config, filters=None, n_processes=1, overwrite=False,
     log(f"=== Align phase done for {field.name}: "
         f"{dict(sorted(counts.items()))} ===")
 
+    # Failing to align an exposure quietly drops it from every future mosaic
+    # (the combine quarantine). That must never be silent: surface it loudly at
+    # the end of the command and hand the user the tools to resolve it.
+    pending_by_key = {g.key: g for g in pending}
+    failed = [pending_by_key[r.key] for r in results
+              if r is not None and getattr(r, 'status', None) == 'NOT_ALIGNED'
+              and getattr(r, 'key', None) in pending_by_key]
+    if failed:
+        _warn_not_aligned(field, failed)
+
 
 def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
-                tiles=None):
+                tiles=None, include_unaligned=False):
     """Run all combine-phase steps in order across each filter.
 
     ``tiles`` scopes the *whole* combine phase to exposures overlapping the
@@ -763,6 +843,12 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
     reduction_version = _resolve_reduction_version(config)
     status = _scan_status(field, filters, overwrite=overwrite)
 
+    # For an align-enabled field, quarantine NOT_ALIGNED exposures from the
+    # ensemble (they'd drizzle with a raw WCS). --include-unaligned overrides.
+    align_enabled = get_nircam_step_config('align', config, field).get(
+        'enabled', False)
+    exclude_not_aligned = align_enabled and not include_unaligned
+
     log(f"=== Combine phase: field={field.name}, filters={filters} ===")
     for filt in filters:
         log(f"--- Combine: {filt} ---")
@@ -775,7 +861,8 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
                 # DO_NOT_USE) and rescan them into the status cache.
                 _RUNNERS[step_name](field, config, filt, n_processes,
                                     overwrite, status, tiles=tiles)
-                field.materialize_work(filt, status=status, overwrite=overwrite)
+                field.materialize_work(filt, status=status, overwrite=overwrite,
+                                       exclude_not_aligned=exclude_not_aligned)
             elif step_name == 'resample':
                 _run_resample(field, config, filt, n_processes, overwrite,
                               status, reduction_version, tiles=tiles)
@@ -807,11 +894,18 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
         prefetch_process_references(field, filters, status=status,
                                     overwrite=overwrite)
 
+    # A standalone ensemble step honours the same NOT_ALIGNED quarantine as the
+    # full combine phase for align-enabled fields (no --include-unaligned escape
+    # hatch on the per-step CLI — the full `combine` command is where you opt in).
+    exclude_not_aligned = get_nircam_step_config('align', config, field).get(
+        'enabled', False)
+
     for filt in filters:
         # A standalone combine ensemble step needs the working copies present
         # and primed (canonical -> work, CFMASK -> DO_NOT_USE) before it runs.
         if step_name in _COMBINE_WORK_STEPS:
-            field.materialize_work(filt, status=status, overwrite=overwrite)
+            field.materialize_work(filt, status=status, overwrite=overwrite,
+                                   exclude_not_aligned=exclude_not_aligned)
         if step_name == 'resample':
             reduction_version = _resolve_reduction_version(config)
             _run_resample(field, config, filt, n_processes, overwrite,

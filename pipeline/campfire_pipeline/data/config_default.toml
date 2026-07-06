@@ -362,11 +362,39 @@
     adaptive = true             # adaptive per-detector shift when over tolerance
     adaptive_min_matches = 3
     match_radius = 0.5          # arcsec; NN radius for per-detector residuals
-    min_matched = 4             # reject-to-identity below this many matches
-    nsigma = 5.0                # source-detection threshold (background sigma)
-    fwhm = 2.5                  # detection PSF FWHM (pixels)
+    min_matched = 4             # reject-to-identity below this many 1-to-1 matches
+    # Shared fit: footprint-clip the refcat, then bootstrap (triangle matcher,
+    # capped) -> all-source robust refine (XYXYMatch). The cap bounds only the
+    # bootstrap; the fit rests on the uncapped refine.
+    ref_border_arcmin = 0.5     # refcat footprint margin (sized for acquisition
+                                # pointing error); arcmin
+    bootstrap_max = 150         # brightest-N vertex cap, triangle BOOTSTRAP only
+    refine_searchrad = 2.0      # arcsec; XYXYMatch search radius (refine passes)
+    refine_tolerance = 0.5      # arcsec; XYXYMatch match tolerance (refine passes)
+    refine_niter = 3            # max refine match->fit iterations (converges early)
+    # Detection quality selection (per detector, no count cap):
+    nsigma = 5.0                # detection threshold (convolved background sigma)
+    snr_min = 5.0               # drop detections below this peak SNR (peak/bkg-rms)
+    fwhm = 2.5                  # fallback detection PSF FWHM (px); per-filter
+                                # override below
     edge = 8                    # drop detections within this many px of a border
-    brightest = 150             # cap detections per detector (triangle vertices)
+
+    # Per-filter detection PSF FWHM (detector pixels). NIRCam's PSF core runs
+    # from ~F070W to ~F480M, so one fwhm is wrong across the SW+LW channels; the
+    # align worker keys detection off each member's filter, falling back to the
+    # scalar `fwhm` above for any filter not listed. Values ≈ PSF-core FWHM /
+    # pixel-scale — approximate; tune per field on real data.
+    [nircam.align.psf_fwhm_by_filter]
+        f070w = 1.5
+        f090w = 1.6
+        f115w = 1.7
+        f150w = 1.8
+        f200w = 2.1
+        f277w = 1.6
+        f356w = 1.9
+        f410m = 2.1
+        f444w = 2.3
+        f480m = 2.6
 
 # --- combine phase (ensemble) ---
 
