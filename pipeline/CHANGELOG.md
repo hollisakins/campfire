@@ -95,6 +95,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- **NIRCam epoch mosaics** — `cfpipe nircam combine`/`resample`/`run`/`check` take
+  a new `--epoch <name>` flag that builds a mosaic from a *subset* of a field's
+  exposures (e.g. one program or one observing season), **additive and default-off**
+  so a run without `--epoch` is byte-for-byte unchanged. Epochs are defined per
+  field in fields.toml under `[<field>.epochs.<name>]` by an optional `files` glob
+  list and/or an inclusive `date_range` (matched against `DATE-OBS`); the subset
+  scopes the *whole* combine phase (apply_mask → bad_pixel → outlier → resample,
+  like `--tiles`), so the epoch mosaic is a distinct reduction from only those
+  exposures. The epoch name is appended as a trailing filename segment
+  (`mosaic_nircam_<filter>_<field>_<scale>_<tile>_<epoch>_i2d.fits`), stamped as
+  `CFEPOCH` in the mosaic header, and recorded in the manifest; deploy indexes
+  epoch mosaics on the portal as a new `epoch` axis (`nircam_images.epoch`, `''` =
+  full field) alongside full-field mosaics. Category is Algorithm (new science
+  product / naming), though it's arguably Infrastructure since it changes no
+  existing output.
 - **NIRCam field-level astrometric `align` phase is now runnable** (`cfpipe nircam
   align` / `run --align`), **opt-in and default-off** so existing reductions are
   unchanged. When a field sets `[<field>.align].enabled = true` (and names its

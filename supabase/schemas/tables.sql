@@ -690,9 +690,13 @@ CREATE TABLE IF NOT EXISTS "public"."programs" (
 ALTER TABLE "public"."programs" OWNER TO "postgres";
 
 
--- One logical mosaic per (field, tile, filter, pixel_scale, extension). The
--- `version` axis is retired (epic #261, N2 / D3): the pipeline emits a single
--- canonical mosaic name per slot and re-combine overwrites it in place.
+-- One logical mosaic per (field, tile, filter, pixel_scale, extension, epoch).
+-- The `version` axis is retired (epic #261, N2 / D3): the pipeline emits a
+-- single canonical mosaic name per slot and re-combine overwrites it in place.
+-- `epoch` names an exposure subset (fields.toml [<field>.epochs.<name>]) built
+-- into its own mosaic; `''` is the full-field mosaic. It is NOT NULL DEFAULT ''
+-- (never NULL) so the unique constraint still dedups full-field mosaics —
+-- Postgres treats NULLs as distinct, which would defeat the upsert.
 CREATE TABLE IF NOT EXISTS "public"."nircam_images" (
     "id" integer NOT NULL,
     "field" "text" NOT NULL,
@@ -700,6 +704,7 @@ CREATE TABLE IF NOT EXISTS "public"."nircam_images" (
     "filter" "text" NOT NULL,
     "pixel_scale" "text" NOT NULL,
     "extension" "text" NOT NULL,
+    "epoch" "text" NOT NULL DEFAULT '',
     "file_path" "text" NOT NULL,
     "created_at" timestamp without time zone DEFAULT "now"(),
     "file_size" bigint,
@@ -1568,9 +1573,11 @@ ALTER TABLE ONLY "public"."nircam_images"
 
 -- Single version-free uniqueness (epic #261, N2 / D3). The former redundant
 -- twin `nircam_images_field_tile_filter_pixel_scale_version_extensi_key` is
--- dropped alongside the `version` axis.
+-- dropped alongside the `version` axis. `epoch` ('' = full field) is part of the
+-- key so a subset mosaic gets its own row instead of colliding with the
+-- full-field mosaic of the same (field, tile, filter, pixel_scale, extension).
 ALTER TABLE ONLY "public"."nircam_images"
-    ADD CONSTRAINT "nircam_images_unique" UNIQUE ("field", "tile", "filter", "pixel_scale", "extension");
+    ADD CONSTRAINT "nircam_images_unique" UNIQUE ("field", "tile", "filter", "pixel_scale", "extension", "epoch");
 
 
 ALTER TABLE ONLY "public"."nircam_exposures"

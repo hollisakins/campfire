@@ -10,6 +10,7 @@ export interface NircamFilterOptions {
   filters: string[];
   pixel_scales: string[];
   extensions: string[];
+  epochs: string[];
 }
 
 export const DEFAULT_NIRCAM_FILTERS: NircamFilterOptions = {
@@ -18,7 +19,11 @@ export const DEFAULT_NIRCAM_FILTERS: NircamFilterOptions = {
   filters: [],
   pixel_scales: [],
   extensions: [],
+  epochs: [],
 };
+
+// Label for a raw epoch value: '' (the full-field mosaic) reads as "Full field".
+const epochLabel = (e: string) => (e === '' ? 'Full field' : e);
 
 interface NircamFilterBarProps {
   filterState: NircamFilterOptions;
@@ -28,6 +33,7 @@ interface NircamFilterBarProps {
   availableFilters: string[];
   availablePixelScales: string[];
   availableExtensions: string[];
+  availableEpochs: string[];
   className?: string;
 }
 
@@ -39,6 +45,7 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
   availableFilters,
   availablePixelScales,
   availableExtensions,
+  availableEpochs,
   className = '',
 }) => {
   const updateFilter = <K extends keyof NircamFilterOptions>(
@@ -74,13 +81,23 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
     label: e.toUpperCase(),
   }));
 
+  const epochOptions: FilterOption[] = availableEpochs.map((e) => ({
+    value: e,
+    label: epochLabel(e),
+  }));
+
+  // Only surface the Epoch facet when the data actually has a named epoch
+  // (something other than the full-field ''); otherwise it's noise.
+  const hasEpochFacet = availableEpochs.some((e) => e !== '');
+
   // Check if any filters are active
   const hasActiveFilters =
     filterState.fields.length > 0 ||
     filterState.tiles.length > 0 ||
     filterState.filters.length > 0 ||
     filterState.pixel_scales.length > 0 ||
-    filterState.extensions.length > 0;
+    filterState.extensions.length > 0 ||
+    filterState.epochs.length > 0;
 
   const handleClearAll = () => {
     onFiltersChange(DEFAULT_NIRCAM_FILTERS);
@@ -132,6 +149,16 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
           selected={filterState.extensions}
           onChange={(selected) => updateFilter('extensions', selected as string[])}
         />
+
+        {/* Epoch filter (only when named epochs exist) */}
+        {hasEpochFacet && (
+          <FilterChip
+            label="Epoch"
+            options={epochOptions}
+            selected={filterState.epochs}
+            onChange={(selected) => updateFilter('epochs', selected as string[])}
+          />
+        )}
 
         {/* Clear all button */}
         {hasActiveFilters && (
