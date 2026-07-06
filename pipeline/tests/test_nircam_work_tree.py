@@ -124,27 +124,34 @@ def _stamp_algn(path, value):
 
 
 def test_materialize_quarantines_not_aligned(tmp_path):
-    # An align-enabled combine must keep NOT_ALIGNED exposures out of the working
-    # tree (they'd drizzle with a raw WCS). exclude_not_aligned is the gate.
+    # An align-enabled combine only admits exposures with a completed alignment.
+    # BOTH failure modes are dropped (they'd drizzle with a raw WCS): a
+    # CFP_ALGN=NOT_ALIGNED reject, and an exposure with no CFP_ALGN stamp at all
+    # (align never solved it). Only the dof=... solution survives.
     f = _make_field(tmp_path)
     d = f.filter_dir('f444w')
     solved = os.path.join(d, f'{_ROOT}.fits')
     rej_root = 'jw01727028001_04101_00004_nrcalong'
+    unstamped_root = 'jw01727028001_04101_00005_nrcalong'
     rejected = os.path.join(d, f'{rej_root}.fits')
+    unstamped = os.path.join(d, f'{unstamped_root}.fits')
     _write_canonical(solved, stamps=())
     _write_canonical(rejected, stamps=())
+    _write_canonical(unstamped, stamps=())            # no CFP_ALGN written
     _stamp_algn(solved, 'dof=shared res=0.01 n=30')
     _stamp_algn(rejected, 'NOT_ALIGNED')
 
-    # Default: no quarantine -> both exposures materialized.
+    # Default: no quarantine -> all three exposures materialized.
     both = f.materialize_work('f444w', overwrite=True)
-    assert len(both) == 2
+    assert len(both) == 3
 
-    # With the quarantine, the NOT_ALIGNED exposure is dropped AND its stale work
-    # copy (left by the call above) is removed, so the ensemble glob can't see it.
+    # With the quarantine, only the solved exposure survives; the rejected and
+    # unstamped ones are dropped AND their stale work copies removed, so the
+    # ensemble glob can't see them.
     kept = f.materialize_work('f444w', overwrite=True, exclude_not_aligned=True)
     assert len(kept) == 1
     assert os.path.basename(kept[0]) == f'{_ROOT}.fits'
     work_dir = f.filter_dir('f444w', work=True)
     assert not os.path.exists(os.path.join(work_dir, f'{rej_root}.fits'))
+    assert not os.path.exists(os.path.join(work_dir, f'{unstamped_root}.fits'))
     assert os.path.exists(os.path.join(work_dir, f'{_ROOT}.fits'))

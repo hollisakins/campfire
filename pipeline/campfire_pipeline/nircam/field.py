@@ -631,9 +631,11 @@ class Field:
         the combine steps' skip checks reflect the working tree's current state.
 
         With ``exclude_not_aligned`` (set by the combine phase for align-enabled
-        fields), reject-to-identity exposures (``CFP_ALGN = NOT_ALIGNED``) are
+        fields), exposures without a completed alignment — both ``CFP_ALGN =
+        NOT_ALIGNED`` rejects and exposures with no ``CFP_ALGN`` at all — are
         quarantined from the working tree so they never drizzle or pollute the
-        ensemble — this is the single gate into the tree every combine step reads.
+        ensemble with a raw WCS. This is the single gate into the tree every
+        combine step reads (see :meth:`_quarantine_not_aligned`).
         """
         import shutil
 
@@ -665,30 +667,51 @@ class Field:
         return sorted(work_paths)
 
     def _quarantine_not_aligned(self, canon, work_dir):
-        """Drop reject-to-identity exposures from the combine input.
+        """Drop exposures without a completed alignment from the combine input.
 
-        For an align-enabled field an exposure the align phase could not tie to
-        the reference is stamped ``CFP_ALGN = NOT_ALIGNED`` with its raw WCS
-        preserved; drizzling it doubles sources and defeats CR rejection. We
-        exclude it here — the one gate into the working tree — and delete any
-        stale working copy left from a run before it became NOT_ALIGNED, so a
-        lingering copy can't sneak into the work-tree glob the ensemble steps
-        enumerate. Returns the kept canonical paths.
+        For an align-enabled field, only exposures carrying a real align
+        solution (``CFP_ALGN`` set to a ``dof=…`` value) may enter the ensemble.
+        Two failure modes are excluded — both would otherwise drizzle with a raw
+        (unaligned) WCS, doubling sources and defeating CR rejection — and each
+        is surfaced with its own fix, because silently omitting data is never
+        acceptable:
+
+        * ``CFP_ALGN = NOT_ALIGNED`` — the align phase tried and could not tie
+          the exposure to the reference. Retune ``[<field>.align]`` and re-run
+          ``cfpipe nircam align`` (NOT_ALIGNED exposures are re-attempted), or
+          force it in with ``combine --include-unaligned``.
+        * **no ``CFP_ALGN`` at all** — align has not solved this exposure (it was
+          never run, was run over a different filter/tile subset, or its worker
+          died). Since an align-enabled field skips ``jhat``/``wcs_shift``, this
+          exposure has *no* astrometric correction. Run ``cfpipe nircam align``.
+
+        This is the one gate into the working tree; we also delete any stale
+        working copy so a lingering copy can't sneak into the work-tree glob the
+        ensemble steps enumerate. Returns the kept canonical paths.
         """
         from campfire_pipeline.common import cfp
 
-        kept, dropped = [], 0
+        kept, rejected, unstamped = [], [], []
         for src in canon:
-            if cfp.step_value(src, 'CFP_ALGN') == cfp.NOT_ALIGNED:
-                dropped += 1
-                dst = os.path.join(work_dir, os.path.basename(src))
-                if os.path.exists(dst):
-                    os.remove(dst)
-            else:
-                kept.append(src)
-        if dropped:
-            log(f"combine: quarantined {dropped} NOT_ALIGNED exposure(s) from "
-                f"the ensemble (use --include-unaligned to override).")
+            value = cfp.step_value(src, 'CFP_ALGN')
+            if value is not None and value != cfp.NOT_ALIGNED:
+                kept.append(src)                      # a real align solution
+                continue
+            (rejected if value == cfp.NOT_ALIGNED else unstamped).append(src)
+            dst = os.path.join(work_dir, os.path.basename(src))
+            if os.path.exists(dst):
+                os.remove(dst)
+
+        if rejected:
+            log(f"combine: quarantined {len(rejected)} NOT_ALIGNED exposure(s) "
+                f"from the ensemble — failed alignment. Retune [<field>.align] "
+                f"and re-run `cfpipe nircam align`, or `combine "
+                f"--include-unaligned`.")
+        if unstamped:
+            log(f"combine: quarantined {len(unstamped)} exposure(s) with NO "
+                f"alignment stamp — align is enabled but has not solved them "
+                f"(raw WCS). Run `cfpipe nircam align`, or `combine "
+                f"--include-unaligned`.")
         return kept
 
     def get_tile_wcs(self, tile_name, pixel_scale='30mas'):

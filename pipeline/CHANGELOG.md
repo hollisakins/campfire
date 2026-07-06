@@ -139,7 +139,10 @@ Release procedure: edit the `## Unreleased` section below, then run
       (raw WCS preserved) and quarantined from combine by `Field.materialize_work`
       (the single ensemble gate; the outlier pre-scan now also re-runs a visit
       whose membership shrank, so surviving frames don't reuse CR masks computed
-      with the dropped exposure). `run_align` reports every failure in a loud
+      with the dropped exposure). For an align-enabled field, combine likewise
+      quarantines exposures carrying **no** `CFP_ALGN` at all (align enabled but
+      never solved them → raw WCS), each surfaced with its own fix rather than
+      silently drizzled. `run_align` reports every failure in a loud
       end-of-command banner (failed files + how to fix) and **re-attempts**
       `NOT_ALIGNED` exposures on a normal re-run (no `--overwrite`), while
       already-solved exposures are skipped. `--include-unaligned` forces
