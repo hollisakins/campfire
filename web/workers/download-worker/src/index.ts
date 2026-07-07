@@ -34,6 +34,13 @@ export default {
     }
 
     try {
+      // Fail loudly on a misconfigured proxy. Without the shared secret,
+      // verifyUrlSignature's HMAC importKey gets a zero-length key and throws a
+      // DataError, which would otherwise surface as an opaque 500 on every file.
+      if (!env.JWT_SECRET) {
+        return corsError('Proxy misconfigured: JWT_SECRET is not set', 503, request, env);
+      }
+
       const target = url.searchParams.get('url');
       const sig = url.searchParams.get('sig');
       if (!target || !sig) {
