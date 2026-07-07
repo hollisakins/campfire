@@ -650,6 +650,39 @@ def _active_process_steps(config, field):
     return [(n, k) for n, k in PROCESS_STEPS if n not in ('wcs_shift', 'jhat')]
 
 
+def _prefetch_wisp_templates(field, filters):
+    """Fetch every wisp template the pending work needs, before the fan-out.
+
+    A single-process warm-up so the parallel per-exposure workers read templates
+    from ``$CAMPFIRE_ROOT/cache/wisps/`` instead of racing to download the same
+    ~16 MB files. The ``(detector, filter)`` set is derived straight from uncal
+    filenames (no header reads), matching the ``rootname.split('_')[3]`` detector
+    convention the wisp step itself uses.
+
+    A template the manifest says should exist but that can't be fetched raises
+    ``WispTemplateError`` here and aborts the phase — 'wisp enabled + template
+    missing' must never degrade to a silently unsubtracted mosaic, which is the
+    exact failure this whole cache path exists to kill.
+    """
+    from campfire_pipeline.nircam import wisp_cache
+    pairs = set()
+    for filt in filters:
+        try:
+            uncals = field.get_uncal_files(filt)
+        except RuntimeError:
+            # Workspace not set up for this filter — nothing to warm.
+            continue
+        for f in uncals:
+            parts = os.path.basename(f).removesuffix('_uncal.fits').split('_')
+            if len(parts) > 3 and parts[3].lower() in wisp_cache.WISP_DETECTORS:
+                pairs.add((parts[3], filt))
+    if not pairs:
+        return
+    n = wisp_cache.ensure_for_pairs(pairs, legacy_dir=field.wisp_dir)
+    if n:
+        log(f"Fetched {n} wisp template(s) into the cache")
+
+
 def run_process(field, config, filters=None, n_processes=1, overwrite=False,
                 tiles=None):
     """Run all process-phase steps in order across each filter.
@@ -676,6 +709,8 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False,
     prefetch_process_references(field, filters, status=status,
                                overwrite=overwrite)
     active_steps = _active_process_steps(config, field)
+    if any(name == 'wisp' for name, _ in active_steps):
+        _prefetch_wisp_templates(field, filters)
     for filt in filters:
         log(f"--- Process: {filt} ---")
         for step_name, _ in active_steps:
