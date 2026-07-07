@@ -25,6 +25,29 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- NIRCam wisp templates are now fetched from a public HTTPS host into
+  `$CAMPFIRE_ROOT/cache/wisps/` against a checksummed manifest shipped with the
+  package (`data/wisp_manifest.toml`), instead of being manually copied into the
+  user-supplied `reference/nircam/shared/wisps/` tree. A single-process preflight
+  in `run_process` warms every needed template before the parallel fan-out
+  (`nircam/wisp_cache.py`, `orchestrate._prefetch_wisp_templates`), downloads are
+  sha256-verified and written atomically, and the fetch path is fully independent
+  of the campfire CLI/auth (plain `urllib`, no login, no cloud credentials). The
+  step now resolves templates cache→legacy-dir→fetch, so machines that already
+  have templates in the legacy dir are unaffected. Manifests are (re)generated
+  with `scripts/build_wisp_manifest.py`; hosting is documented in
+  `WISP_TEMPLATE_HOSTING.md`.
+  **Behavioral change / categorization note:** the wisp step no longer *silently*
+  skips when a template is absent. A `(detector, filter)` the manifest lists but
+  that can't be found or fetched is now a hard error; one the manifest does not
+  list stamps `CFP_WISP='skipped (no template)'` (visible, not silent). This
+  fixes the failure mode where a machine missing templates produced mosaics with
+  no wisp subtraction and no record of it. Output on a correctly-provisioned
+  machine is unchanged (Infrastructure/PATCH); a machine that was previously
+  *silently* skipping will now subtract (different pixels) or fail — a releaser
+  may judge that worth escalating to Calibration/MINOR.
+
 ### Calibration
 - NIRCam `apply_masks` now reads web-defined masks instead of crashing on them.
   Masks drawn in the web editor materialize (via `campfire deploy pull-masks`)

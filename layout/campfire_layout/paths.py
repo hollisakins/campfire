@@ -169,6 +169,7 @@ def raw_path(instrument, scope: Scope, filename: str, *, root: Optional[Path] = 
 _CACHE_KINDS = {
     "crds": "crds",
     "templates": "templates",
+    "wisps": "wisps",
 }
 
 
