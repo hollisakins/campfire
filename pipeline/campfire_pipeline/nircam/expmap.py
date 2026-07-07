@@ -14,11 +14,14 @@ pixel-registered for direct stacking/comparison. No tile dependency —
 works on fields without a ``[tiles]`` block, suitable for full-field
 diagnostics.
 
-Outputs (per invocation, rooted at ``{products_dir}`` = ``products/nircam/<field>/``):
+Outputs (per invocation, rooted at ``{products_dir}`` = ``products/nircam/<field>/``).
+The fiducial ``canonical`` map is undecorated — to a user it is simply *the*
+exposure map — while the reducer-only ``uncal`` quick-look keeps an explicit
+``_uncal`` suffix (shown below as ``[_uncal]``):
 
-    <filter>/expmap_{field}_{filter}_{stage}.fits   float32, ``BUNIT='s'``, WCS in header
-    <filter>/expmap_{field}_{filter}_{stage}.pdf    diagnostic with RA/Dec gridlines + colorbar
-    footprints_{stage}.reg                          ds9 fk5 polygons across all filters
+    <filter>/expmap_{field}_{filter}[_uncal].fits   float32, ``BUNIT='s'``, WCS in header
+    <filter>/expmap_{field}_{filter}[_uncal].pdf    diagnostic with RA/Dec gridlines + colorbar
+    footprints[_uncal].reg                          ds9 fk5 polygons across all filters
 
 The per-filter FITS sits in the canonical filter directory alongside the
 mosaics/exposures so the deployed coverage map carries a real filter in the
@@ -390,16 +393,32 @@ def _collect_metas(field, filter_name, stage, *,
     return metas
 
 
+def _expmap_stem(field_name, filter_name, stage):
+    """Filename stem for a per-filter expmap.
+
+    The ``canonical`` map is the fiducial, deployable coverage map and carries no
+    stage decoration (``expmap_<field>_<filter>``) — to a user it is simply *the*
+    exposure map, the default rather than one option among several. The ``uncal``
+    map is a reducer-only quick-look and keeps an explicit ``_uncal`` suffix so it
+    never collides with the fiducial map and the deploy step can pick up only the
+    undecorated one.
+    """
+    stem = f'expmap_{field_name}_{filter_name}'
+    if stage != 'canonical':
+        stem += f'_{stage}'
+    return stem
+
+
 def _expmap_paths(base_dir, field_name, filter_name, stage):
-    """Canonical per-filter FITS + PDF paths.
+    """Per-filter FITS + PDF paths.
 
     Expmaps live in the filter directory alongside the mosaics/exposures
-    (``<base_dir>/<filter>/expmap_<field>_<filter>_<stage>.{fits,pdf}``) so the
-    deployed FITS carries a real filter in the registry — same key shape as every
-    other per-filter NIRCam product. ``base_dir`` is the per-field products dir.
+    (``<base_dir>/<filter>/``) so the deployed FITS carries a real filter in the
+    registry — same key shape as every other per-filter NIRCam product.
+    ``base_dir`` is the per-field products dir.
     """
-    d = os.path.join(base_dir, filter_name)
-    base = os.path.join(d, f'expmap_{field_name}_{filter_name}_{stage}')
+    base = os.path.join(base_dir, filter_name,
+                        _expmap_stem(field_name, filter_name, stage))
     return base + '.fits', base + '.pdf'
 
 
@@ -488,7 +507,7 @@ def run_expmap(
         Sky padding in arcsec around the union footprint.
     out_dir
         Base products directory. Per-filter FITS + PDFs land in
-        ``<out_dir>/<filter>/``; the combined ``footprints_<stage>.reg`` and the
+        ``<out_dir>/<filter>/``; the combined footprints ``.reg`` and the
         metadata cache land at its root. Defaults to ``field.products_dir``
         (``products/nircam/<field>/``).
     n_processes
@@ -582,7 +601,10 @@ def run_expmap(
     reg_metas = [(name, metas)
                  for name, metas, *_ in results if metas]
     if reg_metas:
-        reg_path = os.path.join(out_dir, f'footprints_{stage}.reg')
+        # Fiducial canonical footprints are undecorated (footprints.reg); the
+        # uncal quick-look keeps its stage suffix so the two don't overwrite.
+        reg_name = 'footprints.reg' if stage == 'canonical' else f'footprints_{stage}.reg'
+        reg_path = os.path.join(out_dir, reg_name)
         _write_region_file(reg_path, reg_metas)
         n_poly = sum(len(m) for _, m in reg_metas)
         log(f'wrote {os.path.basename(reg_path)} '

@@ -114,19 +114,34 @@ def test_build_fits_upload_tasks_refuses_combine_stamped(tmp_path):
         nc.build_fits_upload_tasks("cosmos", exposures)
 
 
-def test_discover_expmap_tasks_canonical_keys(tmp_path):
-    # Expmaps now live in the canonical per-filter dir (alongside mosaics), keyed
-    # off an ``expmap_`` filename prefix so they carry a real filter.
+def test_discover_expmap_tasks_deploys_only_fiducial(tmp_path):
+    # Expmaps live in the canonical per-filter dir (alongside mosaics), keyed off an
+    # ``expmap_`` filename prefix so they carry a real filter. Only the fiducial map
+    # (undecorated ``expmap_<field>_<filter>.fits``) deploys.
     products = tmp_path / "products" / "nircam" / "cosmos"
     (products / "f444w").mkdir(parents=True)
-    (products / "f444w" / "expmap_cosmos_f444w_canonical.fits").write_bytes(b"\x00")
+    (products / "f444w" / "expmap_cosmos_f444w.fits").write_bytes(b"\x00")
     # A non-expmap FITS in the same dir must not be picked up by the expmap glob.
     (products / "f444w" / "jw01_00001_nrcalong.fits").write_bytes(b"\x00")
     dirs = {"products": products}
     tasks = nc.discover_expmap_tasks(dirs, "cosmos", ["f444w"])
     assert len(tasks) == 1
     assert tasks[0].r2_key == \
-        "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w_canonical.fits"
+        "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w.fits"
+
+
+def test_discover_expmap_tasks_excludes_nonfiducial_stages(tmp_path):
+    # The reducer-only ``_uncal`` quick-look and any pre-rename ``_canonical``
+    # leftover must NOT deploy — only the undecorated fiducial map ships.
+    products = tmp_path / "products" / "nircam" / "cosmos"
+    (products / "f444w").mkdir(parents=True)
+    (products / "f444w" / "expmap_cosmos_f444w.fits").write_bytes(b"\x00")
+    (products / "f444w" / "expmap_cosmos_f444w_uncal.fits").write_bytes(b"\x00")
+    (products / "f444w" / "expmap_cosmos_f444w_canonical.fits").write_bytes(b"\x00")
+    dirs = {"products": products}
+    tasks = nc.discover_expmap_tasks(dirs, "cosmos", ["f444w"])
+    assert [t.r2_key for t in tasks] == \
+        ["data/products/nircam/cosmos/f444w/expmap_cosmos_f444w.fits"]
 
 
 def test_discover_expmap_tasks_empty_when_absent(tmp_path):
@@ -164,7 +179,7 @@ def test_row_sci_dq_hash_none_by_default():
     # An expmap (and every non-exposure product) carries no science digest, but
     # does carry its per-filter scope column now that it lives in the filter dir.
     row = reg.row_for_key(
-        "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w_canonical.fits",
+        "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w.fits",
         backend="osn", content_hash="sha256:" + "a" * 64, size_bytes=1,
         content_type="application/fits")
     assert row["product_type"] == "nircam_expmap"
