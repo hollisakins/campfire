@@ -778,11 +778,14 @@ def discover_mosaics(dirs, field, filters):
     """Discover deployable mosaic products via their manifests.
 
     Each ``mosaic_*_manifest.json`` (written by the resample step) carries the
-    authoritative ``(mosaic_name, filter, tile, pixel_scale)`` — read from the
-    manifest rather than parsed from the filename, so a multi-underscore field
-    name can't break a positional split. Returns one dict per existing mosaic
-    file: ``{path, filter, tile, pixel_scale, extension, storage_key}`` under the
-    version-free canonical key (epic #261, N2 / D3).
+    authoritative ``(mosaic_name, filter, tile, pixel_scale, epoch)`` — read from
+    the manifest rather than parsed from the filename, so a multi-underscore
+    field name can't break a positional split. Returns one dict per existing
+    mosaic file:
+    ``{path, filter, tile, pixel_scale, epoch, extension, storage_key}`` under
+    the version-free canonical key (epic #261, N2 / D3). ``epoch`` is ``''`` for
+    a full-field mosaic and the epoch name for a subset mosaic; it rides in the
+    filename so the storage key is unique without any layout change.
     """
     import json
     products = dirs['products']
@@ -801,6 +804,7 @@ def discover_mosaics(dirs, field, filters):
             pixel_scale = m.get('pixel_scale')
             mfilter = m.get('filter') or filtname
             mfield = m.get('field') or field
+            epoch = m.get('epoch') or ''
             if not (base and tile and pixel_scale):
                 continue
             # Skip stale pre-N2 versioned / `_latest_` manifests: only the
@@ -809,10 +813,15 @@ def discover_mosaics(dirs, field, filters):
             # disk after re-combine; without this guard that stale slot would
             # both re-upload a version-bearing key to OSN AND collide with the
             # version-free row on the nircam_images (field,tile,filter,scale,
-            # extension) conflict key, crashing the batch upsert. Reconstruct the
-            # expected name deploy-side (deploy must not import the pipeline) —
-            # the same version-free contract rgb._find_mosaic enforces.
-            if base != f'mosaic_nircam_{mfilter}_{mfield}_{pixel_scale}_{tile}':
+            # extension,epoch) conflict key, crashing the batch upsert. Reconstruct
+            # the expected name deploy-side (deploy must not import the pipeline) —
+            # the same version-free contract rgb._find_mosaic enforces. An epoch
+            # mosaic appends a trailing ``_<epoch>`` segment (see
+            # manifest.build_mosaic_name), so fold it into the expected name.
+            expected = f'mosaic_nircam_{mfilter}_{mfield}_{pixel_scale}_{tile}'
+            if epoch:
+                expected += f'_{epoch}'
+            if base != expected:
                 continue
             for suffix, ext in _MOSAIC_EXTENSIONS:
                 fpath = filter_dir / f'{base}{suffix}'
@@ -822,7 +831,8 @@ def discover_mosaics(dirs, field, filters):
                                   fpath.name, scheme=KeyScheme.CANONICAL)
                 out.append({
                     'path': fpath, 'filter': mfilter, 'tile': tile,
-                    'pixel_scale': pixel_scale, 'extension': ext, 'storage_key': key,
+                    'pixel_scale': pixel_scale, 'epoch': epoch,
+                    'extension': ext, 'storage_key': key,
                 })
     return out
 
@@ -890,6 +900,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     img_rows = [{
         'field': field, 'tile': m['tile'], 'filter': m['filter'],
         'pixel_scale': m['pixel_scale'], 'extension': m['extension'],
+        'epoch': m.get('epoch', ''),
         'file_path': m['storage_key'], 'file_size': m['size'],
         'deploy_status': img_status, 'deployment_id': deployment_id,
     } for m in mosaics if m['storage_key'] in indexable]
@@ -925,12 +936,13 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
 
 
 def _upsert_nircam_images(client, rows, batch_size=500):
-    """Upsert nircam_images rows keyed on (field, tile, filter, pixel_scale, extension)."""
+    """Upsert nircam_images rows keyed on
+    (field, tile, filter, pixel_scale, extension, epoch)."""
     if not rows:
         return 0
     for i in range(0, len(rows), batch_size):
         batch = rows[i:i + batch_size]
         client.table('nircam_images').upsert(
-            batch, on_conflict='field,tile,filter,pixel_scale,extension',
+            batch, on_conflict='field,tile,filter,pixel_scale,extension,epoch',
         ).execute()
     return len(rows)

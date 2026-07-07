@@ -152,6 +152,48 @@ def test_no_geometric_match_not_aligned():
     assert all(ds.dof == 'identity' for ds in sol.detectors)
 
 
+# --- footprint clip ---------------------------------------------------------
+
+def test_footprint_clip_survives_refcat_decoys():
+    # refcat = in-frame truth + a large pile of far (~1 deg) decoys. Without the
+    # footprint clip the bootstrap cap would keep mostly decoys and starve; with
+    # it, only the in-frame sources reach the matcher and the solve succeeds.
+    from astropy.table import vstack
+    detectors, refcat = _build_group(n_det=2, offset=(2.0, 0.0))
+    rng = np.random.default_rng(11)
+    decoy = Table({'RA': _BASE_RA + 1.0 + rng.uniform(-0.05, 0.05, 500),
+                   'DEC': _BASE_DEC + 1.0 + rng.uniform(-0.05, 0.05, 500)})
+    big = vstack([refcat, decoy], metadata_conflicts='silent')
+
+    sol = solve_exposure_group(detectors, big, key='exp', bootstrap_max=150)
+    assert sol.status == 'SOLVED'
+    assert all(ds.within_tolerance for ds in sol.detectors)
+    assert abs(np.hypot(*sol.shift) - 2.0) < 0.1
+
+
+# --- robustness: exceptions never crash the worker --------------------------
+
+def test_refine_exception_keeps_bootstrap(monkeypatch):
+    # A crowded field can make XYXYMatch raise (source confusion). The refine
+    # crash must be swallowed and the good bootstrap solution retained, not
+    # propagated out of the solve (which would abort the align worker).
+    from tweakwcs.matchutils import MatchCatalogs
+    import campfire_pipeline.nircam.align.solve as _s
+
+    class _BoomMatch(MatchCatalogs):
+        def __init__(self, *a, **k):
+            pass
+
+        def __call__(self, refcat, imcat, **k):
+            raise RuntimeError("simulated source confusion")
+
+    monkeypatch.setattr(_s, 'XYXYMatch', _BoomMatch)
+    detectors, refcat = _build_group(n_det=2, offset=(2.0, 0.0))
+    sol = solve_exposure_group(detectors, refcat, key='exp')
+    assert sol.status == 'SOLVED'                       # bootstrap survived
+    assert abs(np.hypot(*sol.shift) - 2.0) < 0.1
+
+
 # --- residual helper --------------------------------------------------------
 
 def test_match_measures_small_offset():

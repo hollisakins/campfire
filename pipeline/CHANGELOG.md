@@ -26,6 +26,20 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Calibration
+- **NIRCam `align` refcat gains an epoch / proper-motion contract** and
+  propagates reference positions to each exposure's mid-time. The refcat schema
+  grows optional columns — `source_id, ref_epoch, pmra, pmdec, parallax` (+
+  `pmra_err`/`pmdec_err`) — alongside the required `RA/DEC/mag/mag_err`;
+  `query_gaia` now populates them (Gaia DR3), while galaxy backends (LS/HSC) omit
+  them. When a refcat carries proper motions, the align worker moves each star to
+  the exposure mid-time (`EXPMID`) via `astropy` `apply_space_motion` **before**
+  the footprint clip and match (`refcat/motion.py`), so a fast Gaia star is
+  matched where it actually was, not where the catalog recorded it years earlier.
+  **Fully backward-compatible**: a catalog without the columns — or a row with a
+  non-finite proper motion — is treated as stationary (the prior zero-motion
+  behavior), so today's galaxy-anchored refcats are a strict no-op. This changes
+  the fitted WCS only when a motion-bearing catalog is used. `refcat/{io,query,
+  motion}.py`, `align/apply.py`; covered by `tests/test_refcat_motion.py`.
 - NIRCam `apply_masks` now reads web-defined masks instead of crashing on them.
   Masks drawn in the web editor materialize (via `campfire deploy pull-masks`)
   as DS9 **image**-coordinate `.reg` files, which `Regions.read` parses back as
@@ -119,6 +133,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   `docs/design-nircam-unified-background.md`. (Note: the offline research scripts
   under `pipeline/experiments/oneoverf_gp/` still import the retired striping
   internals and need updating before they run again.)
+- **NIRCam epoch mosaics** — `cfpipe nircam combine`/`resample`/`run`/`check` take
+  a new `--epoch <name>` flag that builds a mosaic from a *subset* of a field's
+  exposures (e.g. one program or one observing season), **additive and default-off**
+  so a run without `--epoch` is byte-for-byte unchanged. Epochs are defined per
+  field in fields.toml under `[<field>.epochs.<name>]` by an optional `files` glob
+  list and/or an inclusive `date_range` (matched against `DATE-OBS`); the subset
+  scopes the *whole* combine phase (apply_mask → bad_pixel → outlier → resample,
+  like `--tiles`), so the epoch mosaic is a distinct reduction from only those
+  exposures. The epoch name is appended as a trailing filename segment
+  (`mosaic_nircam_<filter>_<field>_<scale>_<tile>_<epoch>_i2d.fits`), stamped as
+  `CFEPOCH` in the mosaic header, and recorded in the manifest; deploy indexes
+  epoch mosaics on the portal as a new `epoch` axis (`nircam_images.epoch`, `''` =
+  full field) alongside full-field mosaics. Category is Algorithm (new science
+  product / naming), though it's arguably Infrastructure since it changes no
+  existing output.
 - **NIRCam field-level astrometric `align` phase is now runnable** (`cfpipe nircam
   align` / `run --align`), **opt-in and default-off** so existing reductions are
   unchanged. When a field sets `[<field>.align].enabled = true` (and names its
@@ -132,6 +161,51 @@ Release procedure: edit the `## Unreleased` section below, then run
   field — exactly one alignment path. Replaces the JHAT-based alignment for opt-in
   fields; JHAT remains the default and coexists during validation. New `[nircam.align]`
   config block; covered by `tests/test_align_run.py`.
+- **NIRCam field-level `align` phase — matcher / solve / detection / combine
+  hardening (S1–S3a).** Opt-in and default-off, so no existing (JHAT) reduction
+  changes; for align-enabled fields it changes which sources match and thus the
+  fitted WCS. One PR, four parts:
+    - *Refcat footprint + all-source refine.* The full field refcat (~550k rows
+      for COSMOS) used to reach the matcher, so the brightest-N vertex cap kept
+      globally-brightest, mostly off-frame sources — and that same cap gated the
+      final fit (~17–30 pairs). The shared solve now clips the refcat to the
+      exposure's detector-union footprint + `ref_border_arcmin` margin (default
+      0.5′, local gnomonic tangent plane, `align/footprint.py`), runs
+      `TriangleMatch` as a bounded **bootstrap** only (`brightest` →
+      `bootstrap_max`), then refines on **all** sources with a one-to-one
+      `tweakwcs.XYXYMatch` pass (`fitgeom='rshift'`, σ-clip, `refine_niter`, no
+      2-D-histogram re-acquisition) — the fit rests on every matched source, not
+      the capped vertices. Per-detector residuals and the reject gate use
+      mutual-NN (one-to-one) matching; the translation-invariant matcher still
+      drives the adaptive per-detector refit (recovers offsets up to
+      `match_radius`). Also folds in the earlier pooled-catalog starvation fix
+      (the `create_group_catalog` `mag`-strip bug): the bootstrap cap spreads
+      vertices evenly across the pooled catalog when the ranking column is absent.
+    - *Quality-selected detection.* `detect.py` adds a peak-SNR floor (`snr_min`)
+      and an (uncalibrated) DAO-magnitude range trim (`objmag_lim`), masks
+      `SATURATED` + `NO_LIN_CORR` DQ (not only `DO_NOT_USE`), keys the detection
+      PSF FWHM per filter (`psf_fwhm_by_filter`, F070W→F480M), and drops the fixed
+      `brightest` count cap so the whole quality-cut catalog reaches the refine.
+    - *`NOT_ALIGNED` is never silent.* An exposure the solve can't tie to the
+      reference — **or any solver/refine/detection exception, which now degrades
+      instead of crashing the align worker** — is stamped `CFP_ALGN = NOT_ALIGNED`
+      (raw WCS preserved) and quarantined from combine by `Field.materialize_work`
+      (the single ensemble gate; the outlier pre-scan now also re-runs a visit
+      whose membership shrank, so surviving frames don't reuse CR masks computed
+      with the dropped exposure). For an align-enabled field, combine likewise
+      quarantines exposures carrying **no** `CFP_ALGN` at all (align enabled but
+      never solved them → raw WCS), each surfaced with its own fix rather than
+      silently drizzled. `run_align` reports every failure in a loud
+      end-of-command banner (failed files + how to fix) and **re-attempts**
+      `NOT_ALIGNED` exposures on a normal re-run (no `--overwrite`), while
+      already-solved exposures are skipped. `--include-unaligned` forces
+      inclusion. Sentinel centralized as `cfp.NOT_ALIGNED`; new `cfp.step_value`.
+  New `[nircam.align]` knobs (`ref_border_arcmin`, `bootstrap_max`,
+  `refine_searchrad`/`refine_tolerance`/`refine_niter`, `snr_min`,
+  `psf_fwhm_by_filter`); `brightest` removed. Touches
+  `align/{footprint,solve,matcher,detect,apply}.py`, `field.py`, `orchestrate.py`,
+  `cli.py`, `common/cfp.py`; covered by `tests/test_align_*`,
+  `tests/test_nircam_work_tree.py`, `tests/test_cfp.py`.
 - NIRCam `combine` now honors per-exposure reviewer exclusions (epic #261, N6 /
   D10). `Field.setup_workspace` reads `reference/<field>/exposures.json`
   (materialized by `campfire deploy nircam pull` from the portal's
@@ -313,6 +387,25 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `align` closes the cross-filter dependency and gates observing mode.**
+  Two correctness fixes to the align orchestration (opt-in, default-off):
+    - *Cross-filter closure.* `run_align` now pools each physical exposure across
+      **all** field filters, even when `--filters`/`--tiles` selects a subset — so
+      `align --filters f200w` still sees its paired F444W (LW) complement for the
+      shared solve, and a tile gate can't split a dither at a tile edge. The
+      selection then just chooses **which** exposures to process; each is solved
+      and its corrected gwcs written across its full SW+LW complement (one
+      attitude corrects the whole dither), so `--filters f200w` now also stamps
+      the paired f444w canonicals — a deliberate behavior change that keeps an
+      exposure from ending up half-aligned. Status is scanned over all filters to
+      match.
+    - *Observing-mode gating.* Align now reads `EXP_TYPE`/`SUBARRAY` per exposure
+      and **hard-stops** with a clear, listed error if any exposure in scope is in
+      an unsupported mode (subarray / coronagraph / TSO / WFSS), rather than
+      silently feeding it through generic full-frame-imaging logic. The user must
+      exclude it (fields.toml `skip` / reviewer exclusions) or select a supported
+      subset. Missing metadata is treated leniently. `orchestrate.py`,
+      `association.py`; covered by `tests/test_align_run.py`, `test_association.py`.
 - **NIRCam `--tiles` now pre-filters the exposure set for `process`/`align`/`combine`,
   not just `resample`.** Previously `--tiles` scoped only which mosaics were drizzled;
   every earlier step ran over the whole field, so building one tile meant processing
@@ -331,6 +424,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   tile-scoped run is a distinct input set. *(Categorized Infrastructure because the
   canonical full-field reduction is unchanged; noting the tile-scoped caveat.)* Covered
   by `tests/test_tile_filter.py` + `tests/test_ab_astrometry.py`.
+- **NIRCam `--tiles` overlap scan is ~10× faster (cold-NFS + per-phase memo).** The
+  `S_REGION` footprint gate (`read_sregion_polygon`) was the silent multi-minute stall
+  at the start of a tile-scoped `process` on a cold NFS mount. Two fixes: (1) it now
+  reaches the `SCI` header by name instead of slicing `hdul[1:]`, which forced astropy
+  to enumerate every extension — seeking past all ~9 data units (~24 NFS round-trips/file
+  vs ~6), ~8× fewer round-trips cold (~348→~43 ms/file); no pixel data was ever read,
+  the cost was purely `lseek`-triggered 1 MB readahead. (2) `run_process` runs the gate
+  once per step (~10 `get_exposure_files(tiles=)` calls), so results are now memoized by
+  path for the phase (`reset_sregion_cache` at phase entry) — the scan runs once instead
+  of once per step. Net: a 1600-file tile scan drops from ~13 min/phase to ~1.3 min.
+  Footprint results are byte-identical (verified against the prior implementation on real
+  exposures); no scientific output change. Also removes a stale test that asserted the
+  pre-`5059e87` `run --process --tiles` rejection (superseded by
+  `test_cli_run_tiles_allowed_with_process`).
 - **NIRCam `align` phase — exposure I/O + `CFP_ALGN` stamp.** New
   `nircam/align/apply.py` (`align_exposure_group`) is the FITS layer: it reads each
   detector's gwcs and detects sources, runs the in-memory solve, and writes the

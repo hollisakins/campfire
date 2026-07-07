@@ -15,7 +15,7 @@ subtracted aperture.
 Coordinates are **0-indexed** detector pixels (the ``DAOStarFinder`` and gwcs
 convention — what the ``tweakwcs`` corrector's ``det_to_world`` / ``det_to_tanp``
 expect). ``mag = -2.5·log10(flux)`` (smaller = brighter) rides along **only**
-for downstream brightest-N triangle-vertex selection, never as a match
+to rank the bootstrap triangle-vertex cap (``matcher.py``), never as a match
 constraint.
 
 Import-light and ``jwst``-free: detection is WCS-free (works in detector
@@ -34,9 +34,16 @@ from photutils.utils.exceptions import NoDetectionsWarning
 
 from campfire_pipeline.common.io import log
 
-# jwst.datamodels.dqflags.pixel['DO_NOT_USE'] == 1 (bit 0). Hardcoded to keep
-# this module free of the jwst/CRDS import chain (cf. field.py's _DO_NOT_USE).
+# jwst.datamodels.dqflags.pixel bit values, hardcoded to keep this module free
+# of the jwst/CRDS import chain (cf. field.py's _DO_NOT_USE). Centroiding must
+# skip pixels that are unusable (DO_NOT_USE), saturated (a saturated core
+# corrupts both the centroid and the kernel flux), or lack a valid nonlinearity
+# correction (NO_LIN_CORR) — the latter two are exactly the bright-star failure
+# modes a magnitude cut can't catch because the measured flux is already wrong.
 _DO_NOT_USE = np.uint32(1)
+_SATURATED = np.uint32(2)
+_NO_LIN_CORR = np.uint32(1 << 20)          # 1048576
+DETECT_DQ_BITS = _DO_NOT_USE | _SATURATED | _NO_LIN_CORR
 
 _FLOAT_COLUMNS = ('x', 'y', 'flux', 'mag', 'sharpness',
                   'roundness1', 'roundness2', 'peak')
@@ -50,7 +57,8 @@ def _empty_catalog():
 
 def detect_star_centroids(data, *, mask=None, fwhm=2.5, nsigma=5.0,
                           sharplo=0.2, sharphi=1.0, roundlo=-1.0, roundhi=1.0,
-                          edge=8, brightest=None, sigma=3.0, maxiters=5):
+                          edge=8, snr_min=None, objmag_lim=None, brightest=None,
+                          sigma=3.0, maxiters=5):
     """Detect point-source centroids on a detector image.
 
     Returns an astropy ``Table`` with columns ``x, y, flux, mag, sharpness,
@@ -67,14 +75,29 @@ def detect_star_centroids(data, *, mask=None, fwhm=2.5, nsigma=5.0,
         Pixels to ignore (bad pixels, off-detector). Non-finite ``data`` pixels
         are always added to the mask.
     fwhm : float
-        PSF FWHM in pixels (NIRCam ≈ 2–2.5 px near native scale; tune per
-        channel when the solve worker calls this).
+        PSF FWHM in pixels. NIRCam's PSF core is filter-dependent (F070W→F480M),
+        so the align worker keys this off the exposure's filter
+        (``psf_fwhm_by_filter``) rather than using one value.
     nsigma : float
         Detection threshold in units of the sigma-clipped background RMS.
     edge : int
         Reject centroids within this many pixels of any border (unreliable).
+    snr_min : float, optional
+        Drop detections below this peak SNR (``peak / background_rms``). Raises
+        the effective floor above the kernel ``nsigma`` threshold; a matched-
+        filter detection can trip ``nsigma`` on a noise peak whose real SNR is
+        marginal.
+    objmag_lim : (float, float), optional
+        Keep only ``bright <= mag <= faint``. ``mag = -2.5·log10(flux)`` is the
+        DAOStarFinder kernel estimate — **uncalibrated** (no zeropoint), so this
+        is a coarse per-run trim (drop the saturated-bright and the faint junk),
+        not a physical magnitude cut; prefer ``snr_min`` + DQ saturation masking
+        for physically meaningful cuts.
     brightest : int, optional
-        Keep only the ``brightest`` sources (by flux) after edge rejection.
+        Keep only the ``brightest`` sources (by flux) after all cuts. The align
+        path leaves this unset — the triangle-vertex cap is applied later, on
+        the bootstrap only (see ``matcher.py``) — so the full quality-selected
+        catalog reaches the all-source refine.
     """
     data = np.asarray(data, dtype=float)
     mask = np.zeros(data.shape, dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
@@ -115,6 +138,20 @@ def detect_star_centroids(data, *, mask=None, fwhm=2.5, nsigma=5.0,
     })
     if len(out) == 0:
         return _empty_catalog()
+
+    # Quality cuts. sharpness/roundness are already applied inside DAOStarFinder;
+    # snr_min and objmag_lim trim what the kernel threshold alone can't.
+    quality = np.ones(len(out), dtype=bool)
+    if snr_min is not None:
+        quality &= (np.asarray(out['peak'], dtype=float) / std) >= float(snr_min)
+    if objmag_lim is not None:
+        bright, faint = float(objmag_lim[0]), float(objmag_lim[1])
+        mag = np.asarray(out['mag'], dtype=float)
+        quality &= np.isfinite(mag) & (mag >= bright) & (mag <= faint)
+    out = out[quality]
+    if len(out) == 0:
+        return _empty_catalog()
+
     out.sort('flux', reverse=True)
     if brightest is not None and len(out) > brightest:
         out = out[:int(brightest)]
@@ -126,10 +163,11 @@ def detect_in_exposure(path, *, fwhm=2.5, nsigma=5.0, **kwargs):
 
     Reads SCI/ERR/DQ via ``astropy.io.fits`` (no jwst datamodel needed —
     detection is WCS-free and works in detector pixels). Masks off-detector
-    pixels (non-finite ERR) and ``DO_NOT_USE`` DQ pixels (only that flag —
-    JUMP_DET etc. are already-corrected and kept, matching ``sky.py``). ERR/DQ
-    are read defensively (skipped if absent). Extra keyword arguments pass
-    through to :func:`detect_star_centroids`.
+    pixels (non-finite ERR) and the ``DETECT_DQ_BITS`` DQ pixels (DO_NOT_USE +
+    SATURATED + NO_LIN_CORR — unusable, saturated, or nonlinearity-uncorrected;
+    JUMP_DET etc. are already-corrected and kept). ERR/DQ are read defensively
+    (skipped if absent). Extra keyword arguments pass through to
+    :func:`detect_star_centroids`.
     """
     with fits.open(path, memmap=False) as hdul:
         sci = np.asarray(hdul['SCI'].data, dtype=float)
@@ -138,6 +176,6 @@ def detect_in_exposure(path, *, fwhm=2.5, nsigma=5.0, **kwargs):
             mask |= ~np.isfinite(np.asarray(hdul['ERR'].data, dtype=float))
         if 'DQ' in hdul and hdul['DQ'].data is not None:
             dq = np.asarray(hdul['DQ'].data).astype(np.uint32)
-            mask |= (dq & _DO_NOT_USE) != 0
+            mask |= (dq & DETECT_DQ_BITS) != 0
     return detect_star_centroids(sci, mask=mask, fwhm=fwhm, nsigma=nsigma,
                                  **kwargs)

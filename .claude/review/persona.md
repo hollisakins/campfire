@@ -71,7 +71,7 @@ produces wrong science:
 ## Respect intentional decisions
 
 Before flagging something as broken, check whether it's a *known, deliberate*
-choice. Read `CLAUDE.md`, `pipeline/CHANGELOG.md`, and the versioning policy.
+choice. Read `AGENTS.md`, `pipeline/CHANGELOG.md`, and the versioning policy.
 Examples of things that are NOT bugs:
 
 - `deploy/` is deprecated on purpose (merged into `python/campfire/deploy/`).

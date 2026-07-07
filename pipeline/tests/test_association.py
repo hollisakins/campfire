@@ -19,6 +19,7 @@ from campfire_pipeline.nircam.association import (
     detector_of,
     exposure_key,
     module_of,
+    unsupported_mode_reason,
 )
 
 _TOKEN = 'jw01727028001_04101_00003'
@@ -267,3 +268,29 @@ def test_group_is_frozen_and_hashable(tmp_path):
     with pytest.raises(Exception):
         g.key = 'mutated'  # frozen
     _ = {g}  # hashable (frozen dataclass of hashable fields)
+
+
+# --- observing-mode gating --------------------------------------------------
+
+def _write_header_fits(path, **cards):
+    from astropy.io import fits
+    hdu = fits.PrimaryHDU()
+    for k, v in cards.items():
+        hdu.header[k] = v
+    fits.HDUList([hdu, fits.ImageHDU(name='SCI')]).writeto(path, overwrite=True)
+    return str(path)
+
+
+def test_unsupported_mode_reason(tmp_path):
+    # Supported: full-frame direct imaging.
+    ok = _write_header_fits(tmp_path / 'ok.fits',
+                            EXP_TYPE='NRC_IMAGE', SUBARRAY='FULL')
+    assert unsupported_mode_reason(ok) is None
+    # Missing metadata is lenient (not assumed bad).
+    assert unsupported_mode_reason(_write_header_fits(tmp_path / 'bare.fits')) is None
+    # Unsupported EXP_TYPE (coronagraph) and non-FULL subarray are rejected.
+    coron = _write_header_fits(tmp_path / 'coron.fits', EXP_TYPE='NRC_CORON')
+    assert 'NRC_CORON' in unsupported_mode_reason(coron)
+    sub = _write_header_fits(tmp_path / 'sub.fits',
+                             EXP_TYPE='NRC_IMAGE', SUBARRAY='SUB320')
+    assert 'SUB320' in unsupported_mode_reason(sub)

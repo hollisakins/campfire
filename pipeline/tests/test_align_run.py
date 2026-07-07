@@ -32,6 +32,26 @@ def _field(enabled, **kw):
                  step_overrides={'align': {'enabled': enabled, **kw}})
 
 
+def test_visit_membership_detects_dropped_member():
+    # The cheap outlier pre-scan must re-run a visit whose membership changed
+    # (e.g. a NOT_ALIGNED quarantine dropped an exposure) — otherwise resample
+    # reuses CR masks computed with the now-absent exposure still pooled.
+    from campfire_pipeline.nircam.orchestrate import _visit_membership_matches
+    manifest = {'inputs': [
+        {'filename': 'jw001_001_001_nrca1.fits'},
+        {'filename': 'jw001_001_002_nrca1.fits'},
+        {'filename': 'jw002_001_001_nrca1.fits'},     # cross-visit overlap
+    ]}
+    all_members = ['/w/jw001_001_001_nrca1.fits', '/w/jw001_001_002_nrca1.fits']
+    assert _visit_membership_matches(manifest, 'jw001', all_members)  # unchanged
+    # a member dropped (quarantined) -> mismatch -> force re-run
+    assert not _visit_membership_matches(manifest, 'jw001',
+                                         all_members[:1])
+    # a member added -> mismatch too
+    assert not _visit_membership_matches(
+        manifest, 'jw001', all_members + ['/w/jw001_001_003_nrca1.fits'])
+
+
 def test_active_process_steps_gates_jhat_and_wcs_shift():
     off = [n for n, _ in _active_process_steps({}, _field(False))]
     on = [n for n, _ in _active_process_steps({}, _field(True))]
@@ -123,3 +143,59 @@ def test_run_align_idempotent(tmp_path):
     mtimes = {p: os.path.getmtime(p) for p in xy_by_path}
     run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
     assert all(os.path.getmtime(p) == mtimes[p] for p in xy_by_path)
+
+
+@pytestmark_e2e
+def test_run_align_warns_and_reattempts_not_aligned(tmp_path, capsys):
+    field, _, xy_by_path = _build_field(tmp_path, enabled=True)
+    # Clobber the refcat with too few sources -> every exposure rejects to
+    # NOT_ALIGNED (the solve's <3-source guard).
+    tiny = Table({'RA': [80.0, 80.001], 'DEC': [-30.0, -30.001]})
+    tiny['mag'] = np.zeros(2, 'float32')
+    tiny['mag_err'] = np.ones(2, 'float32')
+    write_refcat(tiny, os.path.join(field.refcat_dir, 'test.ecsv'), overwrite=True)
+
+    run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    out1 = capsys.readouterr().out
+    for path in xy_by_path:
+        with fits.open(path) as h:
+            assert h[0].header.get('CFP_ALGN') == 'NOT_ALIGNED'
+    assert 'FAILED alignment' in out1                 # loud end-of-command warning
+    assert _TOKEN in out1                              # lists the failed exposure
+
+    # Re-run WITHOUT --overwrite: the NOT_ALIGNED exposure is re-attempted (the
+    # user may have retuned params), not silently skipped, and warned about again.
+    run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    out2 = capsys.readouterr().out
+    assert 're-attempting' in out2
+    assert 'FAILED alignment' in out2
+
+
+@pytestmark_e2e
+def test_run_align_cross_filter_closure_writes_all_members(tmp_path):
+    # Cross-filter dependency closure: aligning with --filters f200w still pools
+    # and WRITES the paired f444w (LW) member — one attitude corrects the whole
+    # dither, so both canonicals get a real (dof=...) CFP_ALGN stamp.
+    field, _, xy_by_path = _build_field(tmp_path, enabled=True)
+    run_align(field, {}, filters=['f200w'], n_processes=1)
+    assert len(xy_by_path) == 2                        # one f200w + one f444w member
+    for path in xy_by_path:
+        with fits.open(path) as h:
+            assert h[0].header.get('CFP_ALGN', '').startswith('dof=')
+
+
+@pytestmark_e2e
+def test_run_align_hardstops_unsupported_mode(tmp_path):
+    # An exposure in an unsupported observing mode must stop the whole align run
+    # (the user has to exclude it explicitly), not fall through generic logic.
+    field, _, xy_by_path = _build_field(tmp_path, enabled=True)
+    for path in xy_by_path:
+        with fits.open(path, mode='update') as h:
+            h[0].header['EXP_TYPE'] = 'NRC_CORON'
+            h.flush()
+    with pytest.raises(RuntimeError, match='observing mode'):
+        run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    # nothing was aligned
+    for path in xy_by_path:
+        with fits.open(path) as h:
+            assert 'CFP_ALGN' not in h[0].header

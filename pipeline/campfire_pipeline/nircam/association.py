@@ -206,6 +206,39 @@ def _make_member(field, path, filter_name) -> ExposureMember:
                           rootname=rootname, detector=detector)
 
 
+# Observing mode the align phase supports: full-frame direct imaging. Subarray,
+# coronagraphic, TSO, and grism/WFSS exposures need separately-validated paths
+# and must not fall through the generic per-detector imaging solve.
+_SUPPORTED_EXP_TYPE = 'NRC_IMAGE'
+
+
+def unsupported_mode_reason(path):
+    """Short reason string if *path*'s observing mode is unsupported, else None.
+
+    Reads the primary header only (``EXP_TYPE``, ``SUBARRAY``) — this is the one
+    place the association layer opens a FITS, called by ``run_align`` to gate a
+    physical exposure, not on the filename-only grouping path. Align supports
+    full-frame ``NRC_IMAGE``; a coronagraph / TSO / WFSS ``EXP_TYPE`` or a
+    non-``FULL`` ``SUBARRAY`` is rejected. Missing metadata is treated leniently
+    (returns None) — a header that doesn't declare a mode is not assumed bad.
+    """
+    from astropy.io import fits
+
+    try:
+        with fits.open(path, memmap=False) as hdul:
+            header = hdul[0].header
+            exp_type = str(header.get('EXP_TYPE', '') or '').upper()
+            subarray = str(header.get('SUBARRAY', '') or '').upper()
+    except (OSError, IndexError) as e:
+        return f"unreadable header ({type(e).__name__})"
+    if exp_type and exp_type != _SUPPORTED_EXP_TYPE:
+        return (f"EXP_TYPE={exp_type} (align supports full-frame "
+                f"{_SUPPORTED_EXP_TYPE} only)")
+    if subarray and subarray != 'FULL':
+        return f"SUBARRAY={subarray} (align supports SUBARRAY=FULL only)"
+    return None
+
+
 def build_exposure_groups(field, filters=None, *, skip=None, with_step=None,
                           status=None, work=False,
                           tiles=None) -> List[ExposureGroup]:

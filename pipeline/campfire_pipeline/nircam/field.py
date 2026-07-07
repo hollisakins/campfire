@@ -13,7 +13,9 @@ import json
 import os
 import re
 from glob import glob
+from datetime import date
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from typing import List, Optional
 
 import toml
@@ -69,6 +71,41 @@ def _expand_braces(pattern):
     for opt in options:
         result.extend(_expand_braces(prefix + opt + suffix))
     return result
+
+
+# Cache of path → observation date (or None) so a date-range epoch doesn't
+# reopen the same FITS header on every combine step. Mirrors the S_REGION cache
+# in geometry.py; a miss (unreadable / missing keyword) is cached as None so a
+# later readable pass can still resolve it — matching the S_REGION fail-open.
+_DATE_OBS_CACHE = {}
+
+
+def _read_date_obs(path):
+    """Observation date of an exposure as a ``datetime.date``, or ``None``.
+
+    Reads ``DATE-OBS`` (``YYYY-MM-DD``) from the primary header, falling back to
+    the date part of ``DATE-BEG`` (``YYYY-MM-DDThh:mm:ss``). Returns ``None`` for
+    an unreadable file or a missing/malformed keyword; callers fail open (keep
+    the file) so a bad header never silently drops an exposure.
+    """
+    if path in _DATE_OBS_CACHE:
+        return _DATE_OBS_CACHE[path]
+    d = None
+    try:
+        with fits.open(path, memmap=False) as hdul:
+            hdr = hdul[0].header
+            raw = hdr.get('DATE-OBS') or hdr.get('DATE-BEG')
+        if raw:
+            try:
+                d = date.fromisoformat(str(raw)[:10])
+            except ValueError:
+                d = None
+    except (OSError, KeyError):
+        # Unreadable / transient — fail open (kept by callers) but do NOT cache,
+        # so a later readable pass on the same path can still resolve it.
+        return None
+    _DATE_OBS_CACHE[path] = d
+    return d
 
 
 # DO_NOT_USE == 1 (jwst.datamodels.dqflags.pixel['DO_NOT_USE']). Hardcoded so
@@ -197,6 +234,92 @@ def _parse_wcs_shift_rules(field_name, raw, field_filters):
     return rules
 
 
+_EPOCH_ALLOWED = {'files', 'date_range'}
+
+
+def _parse_epochs(field_name, raw):
+    """Normalize the ``[<field>.epochs.<name>]`` tables into a dict.
+
+    Each epoch names a *subset* of the field's exposures, defined by an optional
+    ``files`` glob list (same ``jwNNNNN`` validation + brace expansion as the
+    field's ``files``/``skip``) and/or an optional ``date_range = [start, end]``
+    (inclusive ISO dates matched against each exposure's ``DATE-OBS``). At least
+    one of the two must be present. The epoch name becomes an extra segment on
+    the mosaic filename (see :func:`manifest.build_mosaic_name`).
+
+    Returns
+    -------
+    dict
+        ``{name: {'files': [globs] | None, 'date_range': (start, end) | None}}``.
+        Empty dict when ``raw`` is None or empty.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"Field '{field_name}': [{field_name}.epochs] must be a table of "
+            f"named epochs, got {type(raw).__name__}"
+        )
+
+    epochs = {}
+    for name, entry in raw.items():
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Field '{field_name}': epoch '{name}' must be a table"
+            )
+        unknown = set(entry) - _EPOCH_ALLOWED
+        if unknown:
+            raise ValueError(
+                f"Field '{field_name}': epoch '{name}' has unknown keys "
+                f"{sorted(unknown)}. Allowed: {sorted(_EPOCH_ALLOWED)}"
+            )
+
+        files = entry.get('files')
+        if files is not None:
+            if isinstance(files, str):
+                files = [files]
+            files = [p for raw_p in files for p in _expand_braces(raw_p)]
+            files = list(np.unique(files))
+            bad = [p for p in files if _extract_pid(p) is None]
+            if bad:
+                raise ValueError(
+                    f"Field '{field_name}': epoch '{name}' `files` patterns "
+                    f"must start with 'jwNNNNN' (5-digit PID). Offending: {bad}"
+                )
+
+        date_range = entry.get('date_range')
+        if date_range is not None:
+            if (not isinstance(date_range, (list, tuple))
+                    or len(date_range) != 2):
+                raise ValueError(
+                    f"Field '{field_name}': epoch '{name}' `date_range` must be "
+                    f"a two-element [start, end] list of ISO dates"
+                )
+            try:
+                start = date.fromisoformat(str(date_range[0]))
+                end = date.fromisoformat(str(date_range[1]))
+            except ValueError as e:
+                raise ValueError(
+                    f"Field '{field_name}': epoch '{name}' `date_range` values "
+                    f"must be ISO dates (YYYY-MM-DD): {e}"
+                )
+            if start > end:
+                raise ValueError(
+                    f"Field '{field_name}': epoch '{name}' `date_range` start "
+                    f"{start} is after end {end}"
+                )
+            date_range = (start, end)
+
+        if files is None and date_range is None:
+            raise ValueError(
+                f"Field '{field_name}': epoch '{name}' must define at least one "
+                f"of `files` or `date_range`"
+            )
+
+        epochs[name] = {'files': files, 'date_range': date_range}
+    return epochs
+
+
 @dataclass
 class Field:
     name: str
@@ -211,6 +334,9 @@ class Field:
     # Each entry: {files: [globs], filters: [filtnames] | None,
     #              delta_ra, delta_dec, delta_roll, scale}.
     wcs_shift_rules: List[dict] = field(default_factory=list)
+    # Parsed [<field>.epochs.<name>] tables (combine-time exposure subsets).
+    # {name: {files: [globs] | None, date_range: (start, end) | None}}.
+    epochs: dict = field(default_factory=dict)
 
     # Populated by setup_workspace()
     campfire_root: Optional[str] = None
@@ -311,7 +437,8 @@ class Field:
         # provides at least one `<scale>mas` subsection with `crpix`+`naxis`
         # — in the latter case corners are derived on demand from the WCS.
         tiles = {}
-        reserved_keys = ({'filters', 'files', 'skip', 'tangent_point', 'rgb'} | known_steps)
+        reserved_keys = ({'filters', 'files', 'skip', 'tangent_point', 'rgb',
+                          'epochs'} | known_steps)
         for key, value in fc.items():
             if key in reserved_keys:
                 continue
@@ -340,6 +467,9 @@ class Field:
         wcs_shift_rules = _parse_wcs_shift_rules(name, fc.get('wcs_shift'),
                                                  filters)
 
+        # Parse [<field>.epochs.<name>] tables (combine-time exposure subsets).
+        epochs = _parse_epochs(name, fc.get('epochs'))
+
         return cls(
             name=name,
             filters=filters,
@@ -350,6 +480,7 @@ class Field:
             skip=skip_patterns,
             rgb=rgb_cfg,
             wcs_shift_rules=wcs_shift_rules,
+            epochs=epochs,
         )
 
     @property
@@ -458,7 +589,45 @@ class Field:
             log(f"Warning: could not read {path}: {e}; ignoring exclusions.")
             return {}
 
-    def get_uncal_files(self, filter_name, skip=None, tiles=None):
+    def filter_files_to_epoch(self, files, epoch):
+        """Restrict *files* to the named epoch's exposure subset.
+
+        A no-op when *epoch* is falsy. An epoch is defined in fields.toml by an
+        optional ``files`` glob list and/or an optional ``date_range`` — both are
+        applied as an AND. File globs are matched against each path's basename
+        (so this works on both the canonical and combine working-copy trees);
+        the date range is matched against ``DATE-OBS`` (fail-open: a file whose
+        date can't be read is kept). Raises ``ValueError`` for an unknown epoch.
+        """
+        if not epoch:
+            return files
+        if epoch not in self.epochs:
+            raise ValueError(
+                f"Field '{self.name}': unknown epoch '{epoch}'. "
+                f"Available: {sorted(self.epochs)}"
+            )
+        edef = self.epochs[epoch]
+        result = list(files)
+
+        globs = edef.get('files')
+        if globs:
+            result = [f for f in result
+                      if any(fnmatch(os.path.basename(f), pat + '*')
+                             for pat in globs)]
+
+        date_range = edef.get('date_range')
+        if date_range:
+            start, end = date_range
+            kept = []
+            for f in result:
+                d = _read_date_obs(f)
+                if d is None or start <= d <= end:  # fail open on unknown date
+                    kept.append(f)
+            result = kept
+
+        return result
+
+    def get_uncal_files(self, filter_name, skip=None, tiles=None, epoch=None):
         """Get uncal files from PID-organized raw directories.
 
         Globs across ``$CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/`` for every PID
@@ -502,10 +671,12 @@ class Field:
         if tiles:
             from campfire_pipeline.nircam.geometry import filter_exposures_to_tiles
             result = filter_exposures_to_tiles(self, result, tiles)
+        if epoch:
+            result = self.filter_files_to_epoch(result, epoch)
         return result
 
     def get_exposure_files(self, filter_name, skip=None, with_step=None,
-                           status=None, work=False, tiles=None):
+                           status=None, work=False, tiles=None, epoch=None):
         """Get canonical per-exposure files from the filter's flat dir.
 
         These are the files that the process phase writes — one FITS file per
@@ -547,6 +718,10 @@ class Field:
             :func:`geometry.filter_exposures_to_tiles` (exposure-union: a whole
             dither is kept when any of its detectors overlaps). ``None`` (the
             default) applies no tile restriction.
+        epoch : str, optional
+            Restrict the result to the named epoch's exposure subset (see
+            :meth:`filter_files_to_epoch`). ``None`` (the default) applies no
+            epoch restriction. Composes with ``tiles`` as an AND.
 
         Returns
         -------
@@ -590,6 +765,8 @@ class Field:
         if tiles:
             from campfire_pipeline.nircam.geometry import filter_exposures_to_tiles
             result = filter_exposures_to_tiles(self, result, tiles)
+        if epoch:
+            result = self.filter_files_to_epoch(result, epoch)
         return result
 
     def get_exposure_path(self, rootname, filter_name, work=False):
@@ -602,7 +779,8 @@ class Field:
         return os.path.join(self.filter_dir(filter_name, work=work),
                             f'{rootname}.fits')
 
-    def materialize_work(self, filter_name, status=None, overwrite=False):
+    def materialize_work(self, filter_name, status=None, overwrite=False,
+                         exclude_not_aligned=False):
         """Refresh the combine working copies for a filter; return their paths.
 
         The combine phase must not mutate the canonical per-exposure FITS (those
@@ -628,12 +806,22 @@ class Field:
 
         If a ``StepStatus`` is passed, the working paths are rescanned into it so
         the combine steps' skip checks reflect the working tree's current state.
+
+        With ``exclude_not_aligned`` (set by the combine phase for align-enabled
+        fields), exposures without a completed alignment — both ``CFP_ALGN =
+        NOT_ALIGNED`` rejects and exposures with no ``CFP_ALGN`` at all — are
+        quarantined from the working tree so they never drizzle or pollute the
+        ensemble with a raw WCS. This is the single gate into the tree every
+        combine step reads (see :meth:`_quarantine_not_aligned`).
         """
         import shutil
 
         canon = self.get_exposure_files(filter_name)          # frozen process outputs
         work_dir = self.filter_dir(filter_name, work=True)
         os.makedirs(work_dir, exist_ok=True)
+
+        if exclude_not_aligned:
+            canon = self._quarantine_not_aligned(canon, work_dir)
 
         work_paths = []
         for src in canon:
@@ -654,6 +842,54 @@ class Field:
         if status is not None:
             status.rescan(work_paths)
         return sorted(work_paths)
+
+    def _quarantine_not_aligned(self, canon, work_dir):
+        """Drop exposures without a completed alignment from the combine input.
+
+        For an align-enabled field, only exposures carrying a real align
+        solution (``CFP_ALGN`` set to a ``dof=…`` value) may enter the ensemble.
+        Two failure modes are excluded — both would otherwise drizzle with a raw
+        (unaligned) WCS, doubling sources and defeating CR rejection — and each
+        is surfaced with its own fix, because silently omitting data is never
+        acceptable:
+
+        * ``CFP_ALGN = NOT_ALIGNED`` — the align phase tried and could not tie
+          the exposure to the reference. Retune ``[<field>.align]`` and re-run
+          ``cfpipe nircam align`` (NOT_ALIGNED exposures are re-attempted), or
+          force it in with ``combine --include-unaligned``.
+        * **no ``CFP_ALGN`` at all** — align has not solved this exposure (it was
+          never run, was run over a different filter/tile subset, or its worker
+          died). Since an align-enabled field skips ``jhat``/``wcs_shift``, this
+          exposure has *no* astrometric correction. Run ``cfpipe nircam align``.
+
+        This is the one gate into the working tree; we also delete any stale
+        working copy so a lingering copy can't sneak into the work-tree glob the
+        ensemble steps enumerate. Returns the kept canonical paths.
+        """
+        from campfire_pipeline.common import cfp
+
+        kept, rejected, unstamped = [], [], []
+        for src in canon:
+            value = cfp.step_value(src, 'CFP_ALGN')
+            if value is not None and value != cfp.NOT_ALIGNED:
+                kept.append(src)                      # a real align solution
+                continue
+            (rejected if value == cfp.NOT_ALIGNED else unstamped).append(src)
+            dst = os.path.join(work_dir, os.path.basename(src))
+            if os.path.exists(dst):
+                os.remove(dst)
+
+        if rejected:
+            log(f"combine: quarantined {len(rejected)} NOT_ALIGNED exposure(s) "
+                f"from the ensemble — failed alignment. Retune [<field>.align] "
+                f"and re-run `cfpipe nircam align`, or `combine "
+                f"--include-unaligned`.")
+        if unstamped:
+            log(f"combine: quarantined {len(unstamped)} exposure(s) with NO "
+                f"alignment stamp — align is enabled but has not solved them "
+                f"(raw WCS). Run `cfpipe nircam align`, or `combine "
+                f"--include-unaligned`.")
+        return kept
 
     def get_tile_wcs(self, tile_name, pixel_scale='30mas'):
         """Get WCS parameters for a tile at the requested pixel scale.

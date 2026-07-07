@@ -16,6 +16,7 @@ export interface NircamFilterOptionsResult {
   filters: string[];
   pixel_scales: string[];
   extensions: string[];
+  epochs: string[];  // exposure-subset names ('' = full field)
   error?: string;
 }
 
@@ -88,17 +89,18 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
       filters: [],
       pixel_scales: [],
       extensions: [],
+      epochs: [],
     };
   }
 
   try {
     const { data: images, error } = await paginateQuery<{
       field: string; tile: string; filter: string;
-      pixel_scale: string; extension: string;
+      pixel_scale: string; extension: string; epoch: string | null;
     }>(
       () => supabase
         .from('nircam_images')
-        .select('field, tile, filter, pixel_scale, extension')
+        .select('field, tile, filter, pixel_scale, extension, epoch')
         .order('field')
         .order('filter')
         .order('tile'),
@@ -112,6 +114,7 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
         filters: [],
         pixel_scales: [],
         extensions: [],
+        epochs: [],
         error: error.message,
       };
     }
@@ -119,6 +122,9 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
     const fields = [...new Set(images.map(i => i.field))].sort();
     const filters = [...new Set(images.map(i => i.filter))].sort();
     const pixel_scales = [...new Set(images.map(i => i.pixel_scale))].sort();
+    // Epoch '' = full-field mosaic; keep it (sorts first) so the "Full field"
+    // option is always available alongside any named subset epochs.
+    const epochs = [...new Set(images.map(i => i.epoch ?? ''))].sort();
     const extensions = [...new Set(images.map(i => i.extension))].sort((a, b) => {
       // Sort extensions by priority: sci > err > rms > srcmask
       const order = ['sci', 'err', 'rms', 'srcmask'];
@@ -154,6 +160,7 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
       filters,
       pixel_scales,
       extensions,
+      epochs,
     };
   } catch (err) {
     console.error('Unexpected error fetching NIRCam filter options:', err);
@@ -163,6 +170,7 @@ export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResul
       filters: [],
       pixel_scales: [],
       extensions: [],
+      epochs: [],
       error: 'An unexpected error occurred',
     };
   }

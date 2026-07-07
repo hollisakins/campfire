@@ -78,6 +78,22 @@ def polygon_from_sregion(s_region):
     return Polygon(zip(ra, dec))
 
 
+# Per-phase memo of ``read_sregion_polygon`` keyed by absolute path. A single
+# ``process``/``align``/``combine`` invocation calls the tile pre-filter once per
+# step (~10 ``get_exposure_files(tiles=)`` calls in ``run_process`` alone), each
+# re-deriving the same footprints. ``S_REGION`` is a ground-system keyword that
+# never changes for a given file within a run, so memoizing by path collapses
+# those N scans into one. Reset at each phase entry (see ``reset_sregion_cache``)
+# to bound growth and stay robust to re-invocation in a long-lived process.
+_SREGION_CACHE = {}
+_CACHE_MISS = object()
+
+
+def reset_sregion_cache():
+    """Clear the per-phase ``S_REGION`` footprint memo. Called at phase entry."""
+    _SREGION_CACHE.clear()
+
+
 def read_sregion_polygon(path):
     """Footprint ``Polygon`` from a file's ``S_REGION`` keyword, or ``None``.
 
@@ -87,22 +103,32 @@ def read_sregion_polygon(path):
     any WCS is assigned — as well as on canonical exposures, so this is the one
     overlap source usable at every pipeline phase. ``None`` when the keyword is
     missing/blank or the file can't be opened.
+
+    Results are memoized by path for the current phase (see
+    ``reset_sregion_cache``). Reads reach the SCI header by name so astropy
+    stops after the first extension: slicing ``hdul[1:]`` would enumerate every
+    HDU, seeking past all ~9 data units — ~4x more NFS round-trips on a cold
+    mount for a keyword that lives in the first extension.
     """
+    hit = _SREGION_CACHE.get(path, _CACHE_MISS)
+    if hit is not _CACHE_MISS:
+        return hit
     try:
         with fits.open(path, memmap=False) as hdul:
-            sci_hdr = None
-            for hdu in hdul[1:]:
-                if hdu.header.get('EXTNAME', '').upper() == 'SCI':
-                    sci_hdr = hdu.header
-                    break
-            if sci_hdr is None and len(hdul) > 1:
-                sci_hdr = hdul[1].header
+            try:
+                sci_hdr = hdul['SCI'].header
+            except KeyError:
+                sci_hdr = hdul[1].header if len(hdul) > 1 else None
             s_region = sci_hdr.get('S_REGION') if sci_hdr is not None else None
             if s_region is None:
                 s_region = hdul[0].header.get('S_REGION')
     except (OSError, KeyError):
+        # Unreadable / transient — fail open (kept by callers) but do NOT cache,
+        # so a later readable pass on the same path can still resolve it.
         return None
-    return polygon_from_sregion(s_region)
+    poly = polygon_from_sregion(s_region)
+    _SREGION_CACHE[path] = poly
+    return poly
 
 
 def select_overlapping_by_sregion(files, tile_polygon, *, key_fn=None):

@@ -165,14 +165,16 @@ def _drizzle_tile_via_jwst(
 
 
 def resample_step(filtname, exposure_files, field, step_config,
-                  reduction_version, overwrite=False, tiles=None):
+                  reduction_version, overwrite=False, tiles=None, epoch=None):
     """Drizzle-combine canonical exposure files into mosaic tiles.
 
     Parameters
     ----------
     filtname : str
     exposure_files : list of str
-        Canonical exposure paths (``CFP_OUT`` already stamped).
+        Canonical exposure paths (``CFP_OUT`` already stamped). When ``epoch``
+        is set these have already been narrowed to the epoch's subset by the
+        caller (see :meth:`Field.get_exposure_files`).
     field : Field
     step_config : dict
         ``[nircam.resample]`` (legacy ``[nircam.stage3.resample]``).
@@ -186,6 +188,11 @@ def resample_step(filtname, exposure_files, field, step_config,
         not a config key — passing a subset only limits which mosaics are
         built; each tile is drizzled from the same exposure set it would use
         in a whole-field run.
+    epoch : str, optional
+        Epoch name (fields.toml ``[<field>.epochs.<name>]``) for a subset
+        mosaic. Appended as a trailing filename segment and recorded in the
+        manifest. ``None`` (the default) builds the full-field mosaics with no
+        epoch segment.
     """
     from campfire_pipeline.nircam.manifest import (
         build_mosaic_name, check_config_changed, check_inputs_changed,
@@ -208,7 +215,7 @@ def resample_step(filtname, exposure_files, field, step_config,
         log(f"resample: tile {tile}, {filtname}, {pixel_scale_str}")
 
         mosaic_name = build_mosaic_name(
-            filtname, field.name, pixel_scale_str, tile,
+            filtname, field.name, pixel_scale_str, tile, epoch=epoch,
             template=step_config.get('mosaic_name'),
         )
         mosaic_outdir = field.filter_dir(filtname)
@@ -277,9 +284,18 @@ def resample_step(filtname, exposure_files, field, step_config,
                 reduction_version=reduction_version,
             )
 
+            # Stamp epoch provenance onto the drizzled i2d (both drizzle
+            # implementations already stamp CMPFRVER/CMPFRTIM). Empty for a
+            # full-field mosaic so normal outputs are unaffected.
+            if epoch:
+                with fits.open(mosaic_file, mode='update') as hdul:
+                    hdul[0].header['CFEPOCH'] = (
+                        epoch, 'CAMPFIRE epoch (exposure subset) name',
+                    )
+
             manifest = create_manifest(
                 mosaic_name, field, filtname, tile, pixel_scale_str,
-                selected, {'resample': step_config},
+                selected, {'resample': step_config}, epoch=epoch,
             )
             write_manifest(manifest, manifest_path)
 

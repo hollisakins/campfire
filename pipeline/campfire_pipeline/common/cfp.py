@@ -133,6 +133,13 @@ def iso_now():
     return datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
 
 
+# Sentinel the NIRCam align phase writes to CFP_ALGN when it cannot tie an
+# exposure to the reference catalog (its WCS is preserved). Distinct from a real
+# solution value (``dof=... res=... n=...``); read via :func:`step_value`. The
+# combine phase quarantines these exposures, and an align re-run re-attempts them.
+NOT_ALIGNED = 'NOT_ALIGNED'
+
+
 def format(*, keyset=NIRCAM, **updates):
     """Validate CFP keyword updates and pair them with their comments.
 
@@ -166,6 +173,21 @@ def has_step(path_or_header, key, *, keyset=NIRCAM):
         return key in path_or_header
     with fits.open(path_or_header, memmap=False) as hdul:
         return key in hdul[0].header
+
+
+def step_value(path_or_header, key, *, keyset=NIRCAM):
+    """Return the recorded value of ``key`` on a canonical file/header, or None.
+
+    Like :func:`has_step`, but returns the card's value rather than just its
+    presence — used to tell a ``NOT_ALIGNED`` sentinel apart from a real align
+    solution when the combine phase quarantines un-aligned exposures. Accepts a
+    path or an already-open ``fits.Header``.
+    """
+    keyset.validate(key)
+    if isinstance(path_or_header, fits.Header):
+        return path_or_header.get(key)
+    with fits.open(path_or_header, memmap=False) as hdul:
+        return hdul[0].header.get(key)
 
 
 def should_skip(exposure_file, key, rootname, step_name, status, overwrite,

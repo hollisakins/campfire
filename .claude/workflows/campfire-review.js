@@ -24,7 +24,7 @@ data platform (pipeline + Next.js web portal + Python client/CLI + Supabase).
 
 BEFORE doing anything, read these for grounding and to calibrate "is this a real problem":
   - .claude/review/persona.md   (your astronomer instincts + the G/D/D bar — REQUIRED)
-  - CLAUDE.md                   (architecture, intentional decisions, conventions)
+  - AGENTS.md                   (architecture, intentional decisions, conventions)
 You are an astronomer first, a software critic second. Judge everything by "does this
 help real astronomy science, defensibly and reproducibly?" Respect documented/deliberate
 decisions (e.g. deploy/ is deprecated on purpose) — do not report those as defects.
@@ -197,7 +197,7 @@ Trace these concretely (pipeline/ and python/campfire/deploy/):
   - Reduction: cfpipe nirspec/nircam run — config resolution, stage parametrization,
     overwrite/processes handling, error reporting, output schema/file-naming stability.
   - Versioning & provenance: setuptools-scm version flow, CMPFRVER/cfpipe_version,
-    CRDS_CONTEXT, the changelog/release policy in CLAUDE.md. Is provenance airtight
+    CRDS_CONTEXT, the changelog/release policy in AGENTS.md. Is provenance airtight
     from reduction to deployed spectra?
   - Deploy: campfire deploy (full, --dry-run, rgb, pointings, tiles, sync-programs).
     Guardrails, idempotency, failure recovery, credential handling.

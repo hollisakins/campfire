@@ -284,6 +284,7 @@ export interface NircamImage {
   filter: string;
   pixel_scale: string;
   extension: string;  // sci, err, rms, srcmask
+  epoch?: string;     // exposure-subset name ('' = full field)
   file_path: string;
   file_size?: number; // in bytes, if available
 }
