@@ -364,12 +364,10 @@ export interface ReductionProgress {
   at_detector1: number;
   at_persistence: number;
   at_wisp: number;
-  at_striping: number;
   at_image2: number;
   at_edge: number;
-  at_sky: number;
+  at_bkg: number;
   at_diag_striping: number;
-  at_variance: number;
   at_wcs_shift: number;
   at_preview: number;
   at_jhat: number;

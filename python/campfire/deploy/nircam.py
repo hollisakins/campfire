@@ -66,12 +66,10 @@ _CFP_TO_STAGE = [
     ('CFP_DET1', 'detector1'),
     ('CFP_PERS', 'persistence'),
     ('CFP_WISP', 'wisp'),
-    ('CFP_1F',   'striping'),
     ('CFP_IMG2', 'image2'),
     ('CFP_EDGE', 'edge'),
-    ('CFP_SKY',  'sky'),
+    ('CFP_BKG',  'bkg'),  # unified striping + sky + variance
     ('CFP_DIAG', 'diag_striping'),
-    ('CFP_VAR',  'variance'),
     ('CFP_SHFT', 'wcs_shift'),
     ('CFP_PREV', 'preview'),
     ('CFP_JHAT', 'jhat'),
