@@ -47,6 +47,15 @@
   --header-border: #38304a;         /* dividers / hover underline on the bar */
   --header-hover: rgba(255, 255, 255, 0.07); /* item hover wash */
 
+  /* Logo (<Logo /> mark). Flame + halo ride the existing tokens so they flip
+     automatically with the theme; only the mirror needs bespoke values.
+     The halo is a knock-out ring and MUST equal the surface behind the mark.
+     See web/components/brand/Logo.tsx. */
+  --logo-flame:          var(--primary);         /* #c63f0c ember */
+  --logo-halo:           var(--background);       /* #fffefb — matches the page */
+  --logo-segment-stroke: rgb(198, 182, 156);      /* warm-sand segment line */
+  --logo-segment-fill:   rgba(209, 184, 142, 0.18);
+
   /* Plotly chart colors (read via JavaScript) — chart chrome, follows theme.
      The data region (--plot-bg) uses the near-white base so data stays
      maximally legible; the paper/edges (--plot-paper) sit a warm step darker
@@ -86,6 +95,15 @@
   --primary-soft: rgba(251, 146, 60, 0.14); /* active-chip / selected background */
   --background-start-rgb: 22, 19, 28;
   --background-end-rgb: 22, 19, 28;
+
+  /* Logo — RESTATE the token-derived vars here. A custom property that
+     references another (--logo-flame: var(--primary)) resolves at the level
+     it's declared, so a :root declaration would freeze light-mode --primary
+     even under .dark. Re-declaring re-resolves against the dusk tokens. */
+  --logo-flame:          var(--primary);         /* → #fb923c in dusk */
+  --logo-halo:           var(--background);       /* → #16131c */
+  --logo-segment-stroke: #5b5470;                /* dusk warm-grey line */
+  --logo-segment-fill:   rgba(184, 174, 198, 0.12);
 
   /* Theme colors — dusk (deep warm-violet) */
   --background: #16131c;
@@ -127,6 +145,21 @@
   --code-addition-bg: #1b4721;
   --code-deletion: #ffd8d3;
   --code-deletion-bg: #78191b;
+}
+
+/* -------------------------------------------------------------------------
+   Always-dark header bar (--header: #1b1722, identical in both modes).
+   The page accent (--primary) is the DARK paper-ember in light mode and would
+   read muddy on the bar, so pin the logo to the dusk palette here regardless
+   of theme, and pin the halo to the bar surface. Because these are declared on
+   the header element (a nearer ancestor than <html>.dark), the <Logo /> inside
+   the bar resolves against them in both light and dark mode.
+   Marker lives on the top <nav> in components/layout/Navigation.tsx. */
+[data-slot="app-header"] {
+  --logo-flame:          #fb923c;                /* bright ember on the bar */
+  --logo-halo:           var(--header);           /* #1b1722 — the bar itself */
+  --logo-segment-stroke: #5b5470;
+  --logo-segment-fill:   rgba(184, 174, 198, 0.12);
 }
 
 body {

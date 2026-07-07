@@ -3,7 +3,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Flame, LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown, Github } from 'lucide-react';
+import { LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown, Github } from 'lucide-react';
+import { Logo } from '@/components/brand/Logo';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 
@@ -94,12 +95,12 @@ export const Navigation: React.FC = () => {
   };
 
   return (
-    <nav className="bg-header text-header-foreground shadow-md">
+    <nav data-slot="app-header" className="bg-header text-header-foreground shadow-md">
       <div className="container mx-auto px-4 py-4">
         <div className="flex items-center justify-between">
-          {/* Logo */}
+          {/* Logo — mark is decorative; the CAMPFIRE wordmark names the link */}
           <Link href="/" className="flex items-center space-x-2 hover:opacity-80 transition-opacity">
-            <Flame className="w-8 h-8 text-primary" />
+            <Logo size={32} title="" aria-hidden />
             <span className="text-xl font-bold">CAMPFIRE</span>
           </Link>
 
