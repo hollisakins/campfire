@@ -16,8 +16,8 @@ keyword-only ``keyset`` argument that defaults to :data:`NIRCAM`, so existing
 NIRCam call sites are unchanged; NIRSpec callers pass ``keyset=cfp.NIRSPEC``.
 
 The order of a key set's ``keys`` matters: it defines the dependency chain used
-by :func:`clear_from` (e.g. ``cfpipe nircam reset --from sky`` clears
-``CFP_SKY`` and every later key, since the SCI mutations are not independent).
+by :func:`clear_from` (e.g. ``cfpipe nircam reset --from bkg`` clears
+``CFP_BKG`` and every later key, since the SCI mutations are not independent).
 ``clear_from`` only ever slices within the selected key set, so a reset on one
 instrument never touches the other's keywords.
 """
@@ -62,19 +62,17 @@ class Keyset:
 # One canonical FITS per exposure, mutated in place; the order is the process
 # order (detector1 -> persistence -> wisp -> image2 -> ... -> outlier).
 # (FITS limits keyword names to 8 characters, hence the abbreviated forms —
-# CFP_BPIX for bad_pixel, CFP_1F for striping, etc.)
+# CFP_BPIX for bad_pixel, CFP_BKG for background, etc.)
 NIRCAM = Keyset(
     name='nircam',
     keys=[
         'CFP_DET1',  # detector1
         'CFP_PERS',  # snowblind persistence
         'CFP_WISP',  # wisp template subtraction
-        'CFP_1F',    # 1/f striping
         'CFP_IMG2',  # image2
         'CFP_EDGE',  # edge flagging
-        'CFP_SKY',   # sky pedestal subtraction
+        'CFP_BKG',   # unified background: per-amp pedestal + 1/f + variance
         'CFP_DIAG',  # diagonal scattered-light striping (opt-in)
-        'CFP_VAR',   # variance rescaling
         'CFP_SHFT',  # pre-jhat astrometric WCS shift (opt-in, rule-driven)
         'CFP_PREV',  # per-exposure preview PNG for web admin triage
         'CFP_JHAT',  # WCS alignment
@@ -87,12 +85,10 @@ NIRCAM = Keyset(
         'CFP_DET1': 'campfire: detector1 done',
         'CFP_PERS': 'campfire: persistence flagged',
         'CFP_WISP': 'campfire: wisp template, scale',
-        'CFP_1F':   'campfire: 1/f striping params',
         'CFP_IMG2': 'campfire: image2 done',
         'CFP_EDGE': 'campfire: edges flagged',
-        'CFP_SKY':  'campfire: sky pedestal value',
+        'CFP_BKG':  'campfire: background (pedestal, 1/f, variance)',
         'CFP_DIAG': 'campfire: diagonal stripe theta and search range',
-        'CFP_VAR':  'campfire: variance correction factor',
         'CFP_SHFT': 'campfire: pre-jhat WCS shift (dra,ddec,droll,scale)',
         'CFP_PREV': 'campfire: preview PNG rendered',
         'CFP_JHAT': 'campfire: jhat refcat used',

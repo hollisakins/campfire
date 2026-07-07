@@ -95,6 +95,30 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- **NIRCam `striping` + `sky` + `variance` are unified into one `bkg` step**
+  (`CFP_BKG`), replacing three per-exposure steps and their two independent
+  source maskers with one. Process order is now detector1 → persistence → wisp →
+  image2 → **edge → bkg** → diag_striping → … (`edge` moved before `bkg` so edge
+  DQ feeds the mask). The step builds a single source mask via
+  `SubtractBackground` (mask only — **no** 2-D background subtraction; the
+  astrophysical sky is left for the mosaic) at mosaic-like depth with per-channel
+  pixel-scaling (LW ×0.5), then runs an iterative per-amp chain — **per-amp
+  pedestal → column median → amp-row GP ρ≈5 → amp-row GP ρ≈20** — that removes
+  the per-amp DC steps and the amp-*dependent* ~100 px banding the old chain left
+  behind (the striping fit-only 2-D background, which was restored into the
+  output, is dropped). The per-amp pedestal owns the per-exposure DC, preserving
+  the no-skymatch invariant (masked-background median ≈ 0 per exposure). Pixel
+  and flux values change; `VAR_RNOISE` rescaling is folded in and now uses the
+  shared, deeper mask (correction factor shifts slightly). New `[nircam.bkg]`
+  config replaces `[nircam.striping]` / `[nircam.sky]` / `[nircam.variance]`.
+  Provenance keys `CFP_1F` / `CFP_SKY` / `CFP_VAR` are retired in favor of
+  `CFP_BKG` (deploy stage tracking + the `nircam_reduction_progress` view and web
+  columns updated in lockstep). `diag_striping` now rebuilds its source mask via
+  `SubtractBackground`. The shared 1/f/pedestal/variance numerics move to a new
+  `campfire_pipeline.nircam.oneoverf` module. See
+  `docs/design-nircam-unified-background.md`. (Note: the offline research scripts
+  under `pipeline/experiments/oneoverf_gp/` still import the retired striping
+  internals and need updating before they run again.)
 - **NIRCam field-level astrometric `align` phase is now runnable** (`cfpipe nircam
   align` / `run --align`), **opt-in and default-off** so existing reductions are
   unchanged. When a field sets `[<field>.align].enabled = true` (and names its

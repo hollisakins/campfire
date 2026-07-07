@@ -80,14 +80,20 @@ def _exposure_sequences(exposure_file, sigma_clip_sigma=2.0, maxiters=3,
     """
     from scipy.ndimage import median_filter
     from jwst.datamodels import ImageModel, dqflags
-    from campfire_pipeline.nircam.steps.striping import _build_srcmask
+    from campfire_pipeline.nircam.bkgsub import SubtractBackground
 
     model = ImageModel(exposure_file, memmap=False)
     channel = (getattr(model.meta.instrument, 'channel', None) or '').upper()
     channel = 'sw' if channel == 'SHORT' else 'lw'
 
     data = model.data.astype(np.float64)
-    seg = _build_srcmask(model)
+    # Exposure-level tiered source mask (replaces the retired _build_srcmask).
+    _sb = SubtractBackground(
+        ring_radius_in=40, ring_width=3, tier_kernel_size=[25, 15, 5, 2],
+        tier_npixels=[15, 15, 5, 2], tier_nsigma=[3, 3, 3, 3],
+        tier_dilate_size=[0, 0, 0, 3])
+    seg, _ = _sb.mask_from_arrays(
+        model.data.astype(np.float32), model.err, model.dq)
     mask = (np.bitwise_and(model.dq, dqflags.pixel['DO_NOT_USE']) != 0)
     mask[seg > 0] = True
     model.close()

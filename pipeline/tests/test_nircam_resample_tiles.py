@@ -36,7 +36,7 @@ def test_tiles_flag_present(command):
     assert '--tiles' in _help(CliRunner(), command)
 
 
-@pytest.mark.parametrize('command', ['sky', 'outlier', 'jhat', 'apply_mask'])
+@pytest.mark.parametrize('command', ['bkg', 'outlier', 'jhat', 'apply_mask'])
 def test_tiles_flag_absent_on_exposure_level_steps(command):
     # Only resample is per-tile; the exposure/visit-level steps must not
     # advertise a flag they ignore.

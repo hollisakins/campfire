@@ -1,7 +1,8 @@
 """
-Shared flat-field helpers used by ``wisp_step`` and ``striping_step``.
+Shared flat-field helpers used by ``wisp_step`` (and other in-memory flat
+callers).
 
-Both steps need to apply a NIRCam flat in-memory (without writing a
+Callers need to apply a NIRCam flat in-memory (without writing a
 flat-fielded copy to disk). The CRDS lookup falls back to a custom-flat
 override when present. The ``crds.getreferences`` call is taken under the
 global CRDS cache lock (the same lock stpipe holds for its own lookups),

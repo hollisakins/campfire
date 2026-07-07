@@ -1,0 +1,161 @@
+"""Tests for the unified ``bkg`` numerics (oneoverf + bkgsub mask-only path).
+
+The step's I/O wrapper (``steps.bkg.bkg_step``) needs a JWST datamodel and is
+exercised end-to-end in the pipeline; here we test the pure numerics it calls
+and the skymatch invariant of its chain.
+"""
+import os
+import tempfile
+
+import numpy as np
+import pytest
+
+from astropy.io import fits
+
+from campfire_pipeline.nircam import oneoverf
+from campfire_pipeline.nircam.bkgsub import SubtractBackground
+from campfire_pipeline.nircam.constants import NIR_AMPS
+
+# amp geometry is 2048-column-specific; rows are free
+COLS = 2048
+
+
+def _amp_cols(amp):
+    _, _, c0, c1 = NIR_AMPS[amp]['data']
+    return c0, c1
+
+
+def test_peramp_pedestal_recovers_dc():
+    rng = np.random.default_rng(0)
+    data = rng.normal(0.0, 1.0, (256, COLS))
+    dcs = {'A': 5.0, 'B': -3.0, 'C': 2.0, 'D': -1.0}
+    for amp, dc in dcs.items():
+        c0, c1 = _amp_cols(amp)
+        data[:, c0:c1] += dc
+    mask = np.zeros_like(data, dtype=bool)
+    ped, per_amp = oneoverf.peramp_pedestal(data, mask)
+    for amp, dc in dcs.items():
+        assert per_amp[amp] == pytest.approx(dc, abs=0.05)
+    # residual per-amp median ~ 0 after subtracting the pedestal
+    resid = data - ped
+    for amp in 'ABCD':
+        c0, c1 = _amp_cols(amp)
+        assert abs(np.median(resid[:, c0:c1])) < 0.05
+
+
+def test_peramp_pedestal_ignores_masked_sources():
+    rng = np.random.default_rng(1)
+    data = rng.normal(0.0, 1.0, (256, COLS))
+    # a bright source in amp B that would bias an unmasked median
+    c0, c1 = _amp_cols('B')
+    data[100:150, c0 + 10:c0 + 60] += 500.0
+    mask = np.zeros_like(data, dtype=bool)
+    mask[100:150, c0 + 10:c0 + 60] = True
+    _, per_amp = oneoverf.peramp_pedestal(data, mask)
+    assert abs(per_amp['B']) < 0.1  # source masked -> DC ~ 0
+
+
+def test_column_pattern_shape_and_finite():
+    rng = np.random.default_rng(2)
+    data = rng.normal(0.0, 1.0, (128, COLS))
+    mask = np.zeros_like(data, dtype=bool)
+    v = oneoverf.column_pattern(data, mask, maxiters=3)
+    assert v.shape == data.shape
+    assert np.isfinite(v).all()
+    # constant along rows (it is a per-column pattern broadcast over rows)
+    assert np.allclose(v[0], v[-1])
+
+
+def test_variance_rescale_returns_positive_factor():
+    rng = np.random.default_rng(3)
+    sci = rng.normal(0.0, 2.0, (256, COLS))          # sky variance ~ 4
+    var_rnoise = np.full_like(sci, 1.0)              # under-estimated
+    mask = np.zeros_like(sci, dtype=bool)
+    factor = oneoverf.variance_rescale(sci, var_rnoise, mask, block_size=7)
+    assert factor > 0
+    assert factor == pytest.approx(4.0, rel=0.3)     # recovers ~sky/rnoise
+
+
+def test_mask_from_arrays_matches_compute():
+    rng = np.random.default_rng(4)
+    sci = (1.0 + rng.normal(0, 0.05, (256, 256))).astype(np.float32)
+    sci[120:130, 120:140] += 2.0
+    err = np.full((256, 256), 0.05, np.float32)
+    dq = np.zeros((256, 256), np.int32)
+    dq[0, 0] = 1
+    cfg = dict(ring_radius_in=40, ring_width=3, ring_downsample=1,
+               tier_kernel_size=[15, 5, 2], tier_npixels=[10, 5, 3],
+               tier_nsigma=[3, 3, 3], tier_dilate_size=[0, 0, 2])
+    tmp = tempfile.NamedTemporaryFile(suffix='.fits', delete=False).name
+    try:
+        fits.HDUList([fits.PrimaryHDU(),
+                      fits.ImageHDU(sci, name='SCI'),
+                      fits.ImageHDU(err, name='ERR'),
+                      fits.ImageHDU(dq, name='DQ')]).writeto(tmp, overwrite=True)
+        _, mask_compute, bit_compute = SubtractBackground(**cfg).compute(tmp)
+        mask_direct, bit_direct = SubtractBackground(**cfg).mask_from_arrays(
+            sci, err, dq)
+    finally:
+        os.unlink(tmp)
+    assert np.array_equal(mask_compute, mask_direct)
+    assert np.array_equal(bit_compute, bit_direct)
+
+
+def test_skymatch_invariant_and_banding_removal():
+    """The full chain zeroes the masked background (skymatch) and removes the
+    per-amp DC + amp-dependent banding, using the unchanged two-scale GP."""
+    pytest.importorskip('celerite2')
+    from campfire_pipeline.nircam.gp_striping import gp_amprow_offsets
+
+    rng = np.random.default_rng(5)
+    H = 512
+    rows = np.arange(H)
+    sci = rng.normal(0.0, 1.0, (H, COLS))
+    dcs = {'A': 6.0, 'B': -4.0, 'C': 3.0, 'D': -2.0}
+    band = {'A': 1.5, 'B': 1.0, 'C': 2.0, 'D': 0.5}   # amp-DEPENDENT banding
+    for amp in 'ABCD':
+        c0, c1 = _amp_cols(amp)
+        b = band[amp] * np.sin(2 * np.pi * rows / 100.0) + 0.3 * rng.normal(0, 1, H)
+        sci[:, c0:c1] += dcs[amp] + b[:, None]
+    sci = sci.astype(np.float32)
+    err = np.full((H, COLS), 1.0, np.float32)
+    dq = np.zeros((H, COLS), np.int32)
+
+    sb = SubtractBackground(ring_radius_in=80, ring_width=4, ring_downsample=4,
+                            tier_kernel_size=[25, 15, 5, 2],
+                            tier_npixels=[15, 10, 3, 1],
+                            tier_nsigma=[1.5, 1.5, 1.5, 1.5],
+                            tier_dilate_size=[33, 25, 21, 19])
+
+    resid = sci.astype(np.float64).copy()
+    correction = np.zeros_like(resid)
+    srcmask, _ = sb.mask_from_arrays(resid, err, dq)
+    ped, _ = oneoverf.peramp_pedestal(resid, srcmask)
+    vcol = oneoverf.column_pattern(resid - ped, srcmask, 3)
+    base = resid - ped - vcol
+    h5, _, _ = gp_amprow_offsets(base, srcmask, rho=5.0, maxiters=3)
+    h20, _, _ = gp_amprow_offsets(base - h5, srcmask, rho=20.0, maxiters=3)
+    correction = ped + vcol + h5 + h20
+    out = sci - correction
+    bg = ~srcmask
+
+    # skymatch invariant: masked-background median ~ 0
+    assert abs(np.median(out[bg])) < 0.05
+    # per-amp DC removed
+    for amp in 'ABCD':
+        c0, c1 = _amp_cols(amp)
+        m = bg[:, c0:c1]
+        assert abs(np.median(out[:, c0:c1][m])) < 0.1
+    # amp-dependent banding knocked down (row-median std drops sharply)
+    def band_std(img):
+        s = {}
+        for amp in 'ABCD':
+            c0, c1 = _amp_cols(amp)
+            strip, m = img[:, c0:c1], bg[:, c0:c1]
+            rowmed = np.array([np.median(strip[i][m[i]]) if m[i].any() else np.nan
+                               for i in range(H)])
+            s[amp] = np.nanstd(rowmed)
+        return s
+    before, after = band_std(sci), band_std(out)
+    for amp in 'ABCD':
+        assert after[amp] < 0.3 * before[amp]

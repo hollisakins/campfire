@@ -64,7 +64,7 @@ from astropy.io import fits
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
-from campfire_pipeline.nircam.steps.striping import fit_residual_striping
+from campfire_pipeline.nircam.oneoverf import fit_residual_striping
 
 
 @lru_cache(maxsize=4)
@@ -649,7 +649,7 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
     # Rebuild SRCMASK on the running residual between iterations so stripe
     # pixels that source detection masked at full amplitude (and biased the
     # per-bin median low) are released as the residual cleans up. Heavy: each
-    # rebuild calls the four-tier ``striping._build_srcmask`` (FFT convs).
+    # rebuild builds a tiered ``SubtractBackground`` source mask.
     rebuild_srcmask = bool(step_config.get('rebuild_srcmask',
                                             n_iterations > 1))
     # Filter the SRCMASK to release connected components that are elongated
@@ -754,13 +754,15 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
         # walks toward whichever edge has more residual sky/source slope
         # rather than toward a real angular optimum.
         if it > 0 and rebuild_srcmask:
-            from campfire_pipeline.nircam.steps.striping import _build_srcmask
-            stub = ImageModel()
-            stub.data = working.astype(np.float32)
-            stub.err = err_before
-            stub.dq = dq_before
-            seg = _build_srcmask(stub).astype(bool)
-            stub.close()
+            from campfire_pipeline.nircam.bkgsub import SubtractBackground
+            # Exposure-level tiered source mask (replaces the retired
+            # striping._build_srcmask; standardized on SubtractBackground).
+            _sb = SubtractBackground(
+                ring_radius_in=40, ring_width=3,
+                tier_kernel_size=[25, 15, 5, 2], tier_npixels=[15, 15, 5, 2],
+                tier_nsigma=[3, 3, 3, 3], tier_dilate_size=[0, 0, 0, 3])
+            seg, _ = _sb.mask_from_arrays(
+                working.astype(np.float32), err_before, dq_before)
             if unmask_stripe_aligned and seg.any():
                 seg = filter_srcmask_stripes(
                     seg, opt_theta,
