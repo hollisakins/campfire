@@ -16,11 +16,6 @@ export const UPDATE_CATEGORIES: UpdateCategory[] = [
   'release',
 ];
 
-export interface UpdateLink {
-  label: string;
-  href: string;
-}
-
 export interface UpdateEntry {
   /** Derived from the filename (date-prefixed), used as the `/updates` anchor. */
   slug: string;
@@ -32,7 +27,6 @@ export interface UpdateEntry {
   summary: string;
   /** Full markdown body, rendered on the `/updates` page. */
   body: string;
-  links: UpdateLink[];
   /** Pinned entries sort to the top regardless of date. */
   pinned: boolean;
   /** Program slugs this update is restricted to. Empty = public (everyone).

@@ -3,8 +3,6 @@ title: "Python client & CLI for programmatic access"
 date: 2026-04-28
 category: client
 summary: "The `campfire` Python package and CLI lets you query the catalog, download spectra, and script workflows outside of the web UI."
-links:
-  - { label: "Programmatic access guide", href: "/docs/api" }
 ---
 
 The unified `campfire` Python package provides an API client and CLI for working

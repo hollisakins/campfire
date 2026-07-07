@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import type { Metadata } from 'next';
 import { Lock, Megaphone } from 'lucide-react';
 import { getVisibleUpdates } from '@/lib/updates/visibility';
@@ -93,20 +92,6 @@ export default async function UpdatesPage() {
                 <div className="[&_p]:leading-6 [&_li]:leading-6">
                   <MarkdownRenderer content={entry.body} />
                 </div>
-
-                {entry.links.length > 0 && (
-                  <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1">
-                    {entry.links.map((link) => (
-                      <Link
-                        key={link.href}
-                        href={link.href}
-                        className="text-sm text-primary hover:underline"
-                      >
-                        {link.label} →
-                      </Link>
-                    ))}
-                  </div>
-                )}
               </article>
             ))}
           </div>

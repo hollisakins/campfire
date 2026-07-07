@@ -26,8 +26,6 @@ title: "Concise, specific headline"
 date: <YYYY-MM-DD>
 category: <data | pipeline | client | release>
 summary: "One or two sentences shown in the landing-page feed."
-links:
-  - { label: "Reduction docs", href: "/docs/reduction/nirspec" }
 pinned: false
 # Optional: restrict this update to specific program(s). Omit for a public
 # (everyone) update. When set, the update is only shown to viewers who can
@@ -50,8 +48,10 @@ rendered in full on /updates; the landing feed shows the `summary` instead.
     emphasis; use sparingly.
 - **summary** — required-ish: if omitted, the loader falls back to the first
   paragraph of the body, but an explicit one-liner reads better in the feed.
-- **links** — optional list of `{ label, href }`. Prefer internal links
-  (`/docs/...`, `/nirspec`, `/profile`); external `http(s)` links open in a new tab.
+- **body links** — there is no separate `links` field. Weave any relevant links
+  (docs, catalog pages, program pages) directly into the markdown body as inline
+  links. Prefer internal links (`/docs/...`, `/nirspec`, `/profile`); external
+  `http(s)` links open in a new tab.
 - **pinned** — optional; `true` floats the entry to the top regardless of date.
   Default `false`.
 - **programs** — optional list of program slugs (or a single `program: slug`).
@@ -62,8 +62,9 @@ rendered in full on /updates; the landing feed shows the `summary` instead.
 
 ## Steps
 
-1. Infer `title`, `category`, `slug`, `summary`, and `links` from the description.
-   Ask the user only if the category or a key link is genuinely ambiguous.
+1. Infer `title`, `category`, `slug`, and `summary` from the description, and
+   weave any relevant links into the body. Ask the user only if the category or
+   a key link is genuinely ambiguous.
 2. Write the file with today's date in both the filename and `date` frontmatter.
 3. Confirm the path you created and show the rendered frontmatter so the user can
    eyeball it. No build step is required — the file is picked up automatically.

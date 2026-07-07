@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
-import type { UpdateEntry, UpdateCategory, UpdateLink } from './types';
+import type { UpdateEntry, UpdateCategory } from './types';
 import { UPDATE_CATEGORIES } from './types';
 
 const CONTENT_DIR = path.join(process.cwd(), 'lib/updates/content');
@@ -39,17 +39,6 @@ function normalizePrograms(value: unknown, single: unknown): string[] {
       .map((s) => s.trim());
   }
   return [];
-}
-
-function normalizeLinks(value: unknown): UpdateLink[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter(
-    (l): l is UpdateLink =>
-      !!l &&
-      typeof l === 'object' &&
-      typeof (l as UpdateLink).label === 'string' &&
-      typeof (l as UpdateLink).href === 'string'
-  );
 }
 
 /** First non-empty paragraph of the body, with markdown markup stripped. */
@@ -88,7 +77,6 @@ export function getAllUpdates(): UpdateEntry[] {
       category: normalizeCategory(data.category),
       summary,
       body,
-      links: normalizeLinks(data.links),
       pinned: Boolean(data.pinned),
       programs: normalizePrograms(data.programs, data.program),
     };
