@@ -11,16 +11,12 @@ then the client (editable):
 ```bash
 pip install -e ./layout      # campfire-layout — not on PyPI, must come first
 cd python
-pip install -e .
+pip install -e .             # base: client, CLI, cutouts, calibration, stacking
 
-# With interactive plotting (plotly)
+# With interactive Plotly figures
 pip install -e ".[plotting]"
 
-# With calibration, stacking, and NIRCam cutouts
-# (pulls in scipy, matplotlib, photutils, reproject, Pillow)
-pip install -e ".[deploy]"
-
-# Everything
+# Everything (Plotly + specutils)
 pip install -e ".[all]"
 ```
 
@@ -244,7 +240,7 @@ plot_cutout(path, shutters=data, object_id='obj_id', fov=3.2, ax=ax)
 ### Calibration & stacking
 
 Flux-calibrate spectra against broadband photometry and stack multiple
-spectra onto a common wavelength grid. Requires the `[deploy]` extra.
+spectra onto a common wavelength grid.
 
 ```python
 from campfire import calibrate_to_photometry, stack_spectra, calibrate_and_stack

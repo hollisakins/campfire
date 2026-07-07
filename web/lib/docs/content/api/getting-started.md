@@ -16,15 +16,13 @@ pip install \
   "campfire @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
-For the figures and stacking shown later in this guide, add the optional extras:
+Everything in this guide — spectrum plotting, NIRCam cutouts, calibration, and stacking — works with that base install. The only optional extra is interactive Plotly figures:
 
 ```bash
 pip install \
   "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
-  "campfire[deploy] @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
+  "campfire[plotting] @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
-
-This pulls in `matplotlib`, `scipy`, `photutils`, `reproject`, and `Pillow` — used by NIRCam cutouts, calibration, and stacking. If you only need querying and quick-look plotting, the base install is enough.
 
 ---
 

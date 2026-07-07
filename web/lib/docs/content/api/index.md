@@ -18,7 +18,7 @@ pip install \
   "campfire @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
-Optional extras (add the extra to `campfire` (`[plotting]`, `[deploy]`, or `[all]`):
+The base install covers the CLI, the Python client, NIRCam cutouts, calibration, and stacking. Optional extras add to the `campfire` requirement:
 
 ```bash
 pip install \
@@ -27,8 +27,8 @@ pip install \
 ```
 
 - `[plotting]` — interactive Plotly figures
-- `[deploy]` — NIRCam cutouts, calibration, stacking
-- `[all]` — everything
+- `[specutils]` — `specutils` interoperability
+- `[all]` — both of the above
 
 ## First five minutes
 
