@@ -165,25 +165,26 @@ dependency on each side, with a local override for iteration.
   — `subdirectory=` required because the package is not at the repo root).
 - Call it as a library (no shelling out): `build_dataset`, `build_pyramid`, `deploy_dataset`.
 
-### TypeScript: `web` → `@fitsgl/core` — DECIDED: pinned public git dependency
-`web/package.json` depends on the fitsgl repo pinned to a commit, e.g.
-`"@fitsgl/core": "github:hollisakins/fitsgl#<commit>"` (public repo ⇒ **Vercel fetches it
-with no auth token**). Prerequisites before the first render:
-1. **Add a `prepare` build hook to `fitsgl-core/package.json`** (runs `tsc` → `dist/`).
-   `dist/` is gitignored and there is no build hook today, so a git dependency would arrive
-   with nothing consumable; `prepare` runs automatically on `npm install` from git. *(This
-   is a change in the fitsgl repo — Phase 1 issue there.)*
-2. **Worker in Next.js.** The default decode worker uses the Vite pattern
-   `new Worker(new URL('../worker.js', import.meta.url), {type:'module'})`. Next
-   (webpack/Turbopack) differs — CAMPFIRE must inject `tileOptions.workerFactory`
-   (importing `@fitsgl/core/worker`) or run `useWorker:false` (inline main-thread decode)
-   initially.
-3. **Local iteration:** `npm link ../fitsgl/fitsgl-core` (or a temporary `file:` override)
-   on the dev machine when co-editing; the committed manifest keeps the git pin so Vercel
-   builds cleanly. Bumping the pin (commit + push in fitsgl → update the SHA in
-   `web/package.json`) is the "release" step during this phase.
-4. **Later:** publish `@fitsgl/core` to npm and switch to a version range once the API
-   settles — removes the pin-bump step.
+### TypeScript: `web` → `@fitsgl/core` — DECIDED: published npm package
+`@fitsgl/core` **is published to npm** (public). `web/package.json` depends on a normal
+version range (`"@fitsgl/core": "^<version>"`) and Vercel installs it like any dependency —
+no git URL, no build hook, no auth token.
+
+> A git dependency was considered and **rejected**: `@fitsgl/core` lives in the
+> `fitsgl-core/` *subdirectory* of the repo, and npm's `github:owner/repo#commit` form has
+> no subdirectory mechanism (unlike pip's `#subdirectory=`), so it would resolve the repo
+> root — which has no `package.json` — and never build the package. Publishing sidesteps
+> this entirely and removes the pin-bump churn.
+
+Remaining prerequisite before the first render:
+- **Worker in Next.js.** The default decode worker uses the Vite pattern
+  `new Worker(new URL('../worker.js', import.meta.url), {type:'module'})`. Next
+  (webpack/Turbopack) differs — CAMPFIRE must inject `tileOptions.workerFactory`
+  (importing `@fitsgl/core/worker`) or run `useWorker:false` (inline main-thread decode)
+  initially.
+- **Local iteration:** `npm link` (or a `file:` override) against a local `fitsgl-core`
+  checkout when co-editing; the committed manifest keeps the published version so Vercel
+  builds cleanly. Cutting a new `@fitsgl/core` release is the "publish" step.
 
 ---
 
@@ -252,11 +253,26 @@ different tangent point / rotation cannot be composited into one pyramid.
 - One-time Cloudflare setup on the tiles domain: a **Cache Rule for `.fits.fz`** (not on
   Cloudflare's default cacheable-extension list; `fitsgl verify --origin <web origin>`
   flags its absence) and CORS `viewer_origin = <CAMPFIRE web origin>`.
-- **Creds:** FitsGL tile deploy is a direct-key / service-role operation (it needs
-  LIST/HEAD/DELETE/PutBucketCors and cannot ride presigned uploads). This is consistent
-  with CAMPFIRE today — `clean_tiles` already requires direct `r2_tiles` creds. When
-  driving `deploy_dataset` as a library, map `CAMPFIRE_S3_TILES_*` into FitsGL's
-  `R2Target`/`DeployConfig` rather than setting `R2_*`.
+- **Creds — DECIDED: `campfire login` fetches the tiles creds.** FitsGL's `deploy_dataset`
+  needs a real boto3 S3 client, not presigned URLs: beyond PUTing tiles it does GET (the
+  prior `deploy-manifest.json` ledger), DELETE (orphaned supertiles from the ledger diff),
+  and PutBucketCors — operations a presigned PutObject URL cannot express. (This is *why*
+  it can't ride the presigned path; it is **not** justified by the `clean_tiles` delete
+  precedent, which only covers deletes.) Rather than have operators hand-manage `R2_*`
+  keys, the CLI obtains them through auth: **after `campfire login`, an admin-gated web-API
+  endpoint returns the R2 *tiles* credentials** (the web app already holds them as Vercel
+  env vars) and the CLI passes them to FitsGL's `R2Target`/`DeployConfig`.
+  - **Scope caveat (conscious, bounded):** this does place raw *tiles-bucket* write keys on
+    the admin machine (in memory), softening issue #250's "no write keys on admin machines"
+    for this one bucket. Acceptable because the **tiles bucket is public, derived data**
+    (never the science `data` bucket) and tile *deletion* already requires direct `r2_tiles`
+    creds today. It would **not** be acceptable for the `data` bucket.
+  - **Unattended/CI:** `service-role` mode still works — creds live in that environment;
+    nothing transits a laptop.
+  - **Purist future (not now):** a presigned/remote backend in FitsGL would remove even the
+    tiles keys from the client. Feasible because every op is on a *known* (ledger-driven)
+    key and CORS is a one-time bucket setup — but it's a FitsGL feature spanning both repos,
+    deferred until the bounded relaxation above actually matters.
 - Cache-busting: FitsGL serves tiles cacheable + purges the edge on change, pointers
   `no-cache`, and namespaces its client disk cache by a manifest content-hash (auto-invalidates
   on rebuild). No `tile_version` equivalent needed.
@@ -284,6 +300,14 @@ fitsgl_datasets(
 The web **map** view selects the field's `kind='field'` (fiducial composite) row; a
 **single-tile viewer** selects a `kind='tile'` row. `source_hashes` still drives
 mosaic-level sha-dedup (§ below); for the composite it maps each fiducial tile→filter mosaic.
+
+**Visibility — DECIDED: derive from `nircam_images`, no lifecycle columns here.** The table
+carries *no* `deploy_status`/`deployment_id`; a `campfire fitsgl deploy` run against draft
+mosaics must not expose a public manifest through this row. Instead the map query **joins
+the source mosaics' `nircam_images.deploy_status`** (on field/tile/filter) and only surfaces
+a dataset whose backing mosaics are `published` — the source deployment stays the single
+lifecycle authority (mirrors how today's map only shows deliberately-published tiles). RLS
+on `fitsgl_datasets` reads through that same derivation.
 
 - **Sha dedup at the mosaic level:** `source_hashes` records the mosaic content hashes
   (from `storage_objects.content_hash`) the dataset was built from. On a (re)build request,
@@ -352,11 +376,17 @@ regions later. Proposed scope:
 
 ## 8. Open questions
 
-- **A. Dependency sourcing / packaging** — **RESOLVED.** fitsgl repo is public; changes
-  occasional ⇒ no submodule/workspace. Python: editable/local install, git-pin fallback.
-  TypeScript: pinned public git dependency (`github:hollisakins/fitsgl#<commit>`) + a
-  `prepare` hook in fitsgl-core + `npm link` for local iteration; publish to npm later.
-  See §4.
+- **A. Dependency sourcing / packaging** — **RESOLVED.** Python: editable/local install,
+  git-pin fallback. TypeScript: **`@fitsgl/core` is published to npm** — depend on a version
+  range (the earlier `github:` git-dependency idea was rejected: npm can't install a
+  subdirectory package). `npm link` for local iteration. See §4.
+- **PR-review follow-ups (from #345 bots) — RESOLVED:**
+  - *Deploy creds:* FitsGL deploy needs real boto3 (GET-ledger/DELETE/PutBucketCors, not
+    just PUT); the `clean_tiles` justification was a non-sequitur. Resolution: `campfire
+    login` fetches the *tiles* creds from an admin-gated web endpoint (bounded relaxation,
+    tiles bucket only); service-role for CI. See §6 R2.
+  - *Draft visibility:* `fitsgl_datasets` has no lifecycle columns; the map derives
+    visibility from the source `nircam_images.deploy_status`. See §6 DB.
 - **B. Shutters / region overlays** — **RESOLVED: build a generic region primitive in
   FitsGL** (not the CAMPFIRE-canvas seam). Rationale: reusable well beyond shutters —
   NIRSpec pointing footprints, NIRCam tile boundaries, arbitrary DS9-style regions — which
@@ -381,7 +411,7 @@ regions later. Proposed scope:
 
 ## 9. Phased plan
 
-1. **Packaging unblock.** `@fitsgl/core` `prepare` hook + Next worker-factory shim; wire
+1. **Packaging unblock.** Depend on the published `@fitsgl/core` + Next worker-factory shim; wire
    `fitsgl[deploy]` into CAMPFIRE Python. *(Resolves Open Question A first.)*
 2. **One field, native, end-to-end.** `campfire fitsgl build` (no reproject) →
    `fitsgl serve` → render in a throwaway Next page. Validates the pixel-scale assumption
