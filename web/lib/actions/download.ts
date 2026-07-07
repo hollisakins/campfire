@@ -549,6 +549,63 @@ export async function generateNircamMosaicDownloadUrls(
 }
 
 /**
+ * Authorize NIRCam exposure-map downloads and return ready-to-fetch Worker proxy
+ * URLs, keyed by canonical storage key.
+ *
+ * Same trust model as `generateNircamMosaicDownloadUrls`: client-supplied keys are
+ * never trusted. The authorized set is re-derived server-side from `storage_objects`
+ * (product_type `nircam_expmap`, active) under the caller's RLS session, so
+ * `select_storage_objects_by_access` returns only published (or, for admins, all)
+ * rows — a draft/revoked or forged key is simply never presigned. Each authorized
+ * key is presigned against its home backend (dual-read: OSN or R2) and HMAC-signed
+ * so the credential-free proxy Worker only fetches URLs we authorized.
+ */
+export async function generateNircamExpmapDownloadUrls(
+  storageKeys: string[]
+): Promise<{ urls: Record<string, string>; error: string | null }> {
+  try {
+    if (!JWT_SECRET) {
+      return { urls: {}, error: 'Server configuration error: JWT secret not set' };
+    }
+    if (storageKeys.length === 0) {
+      return { urls: {}, error: null };
+    }
+
+    const supabase = await createClient();
+    const { data: rows, error: queryError } = await supabase
+      .from('storage_objects')
+      .select('storage_key')
+      .eq('product_type', 'nircam_expmap')
+      .eq('status', 'active')
+      .in('storage_key', storageKeys);
+
+    if (queryError) {
+      console.error('Error authorizing NIRCam expmap download:', queryError);
+      return { urls: {}, error: 'Failed to authorize download' };
+    }
+
+    const authorizedKeys = [...new Set((rows || []).map((r) => r.storage_key as string))];
+    if (authorizedKeys.length === 0) {
+      return { urls: {}, error: null };
+    }
+
+    const signed = await generateDownloadUrls(authorizedKeys, PRESIGN_TTL_SECONDS);
+    const urls: Record<string, string> = {};
+    await Promise.all(
+      authorizedKeys.map(async (key, i) => {
+        const sig = await signUrlSignature(signed[i], JWT_SECRET);
+        urls[key] = `${WORKER_URL}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
+      })
+    );
+
+    return { urls, error: null };
+  } catch (error) {
+    console.error('Error generating NIRCam expmap download URLs:', error);
+    return { urls: {}, error: 'Failed to generate download URLs' };
+  }
+}
+
+/**
  * HMAC-SHA256(secret, url), base64url-encoded — the per-URL signature the proxy
  * Worker verifies. Web Crypto API (same primitive both ends).
  */

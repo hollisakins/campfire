@@ -357,14 +357,25 @@ def build_fits_upload_tasks(field, exposures):
     return tasks
 
 
+# Stage-decorated expmap variants that are NOT deployed. The fiducial coverage map
+# is the undecorated ``expmap_<field>_<filter>.fits``; ``_uncal`` is a reducer-only
+# raw quick-look, and ``_canonical`` is the pre-rename legacy name for what is now
+# the undecorated fiducial (a stale copy may still sit on a reducer's disk). Deploy
+# ships only the fiducial map so users download a single, unqualified exposure map.
+_EXPMAP_NONFIDUCIAL_SUFFIXES = ('_uncal.fits', '_canonical.fits')
+
+
 def discover_expmap_tasks(dirs, field, filters):
-    """Build canonical-key OSN upload tasks for any per-filter expmap coverage files.
+    """Build canonical-key OSN upload tasks for the per-filter fiducial expmap files.
 
     Expmaps are per-``(field, filter)`` coverage maps written into the canonical
     filter directory (``products/nircam/<field>/<filter>/expmap_*.fits``),
-    alongside the mosaics/exposures. They are produced at combine time, so a
-    process-only field may have none yet — deploy is idempotent and picks them up
-    on a later run. Returns a list of ``UploadTask`` (empty if none found).
+    alongside the mosaics/exposures. Only the **fiducial** map
+    (``expmap_<field>_<filter>.fits``, no stage suffix) is deployed; the reducer-only
+    ``_uncal`` quick-look (and any pre-rename ``_canonical`` leftover) is skipped so a
+    user downloads a single, unqualified exposure map. They are produced at combine
+    time, so a process-only field may have none yet — deploy is idempotent and picks
+    them up on a later run. Returns a list of ``UploadTask`` (empty if none found).
     """
     products = dirs['products']
     tasks = []
@@ -373,6 +384,8 @@ def discover_expmap_tasks(dirs, field, filters):
         if not filter_dir.exists():
             continue
         for path in sorted(filter_dir.glob('expmap_*.fits')):
+            if path.name.endswith(_EXPMAP_NONFIDUCIAL_SUFFIXES):
+                continue
             key = storage_key('nircam_expmap', Scope(field=field, filt=filtname),
                               path.name, scheme=KeyScheme.CANONICAL)
             tasks.append(UploadTask(local_path=path, r2_key=key,

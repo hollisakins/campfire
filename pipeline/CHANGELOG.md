@@ -26,6 +26,17 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- NIRCam exposure maps: the fiducial (`canonical`-stage) per-filter map is now
+  written with an **undecorated filename** — `expmap_<field>_<filter>.fits`
+  (previously `expmap_<field>_<filter>_canonical.fits`) — so it presents to users
+  simply as *the* exposure map rather than one stage among several. The
+  reducer-only `uncal` quick-look keeps its explicit `_uncal` suffix (and its
+  matching PDF / `footprints.reg` follow the same rule), so the two never collide.
+  The FITS `STAGE` header keyword is unchanged (kept as provenance). `cfpipe nircam
+  expmap` and its `--stage` options are otherwise unchanged. Deploy ships only the
+  fiducial map (the `_uncal`/legacy `_canonical` variants are skipped) and it is now
+  surfaced for download on the web NIRCam page. Pure output-file naming change with
+  no effect on pixel values (`nircam/expmap.py`).
 - NIRCam wisp templates are now fetched from a public HTTPS host into
   `$CAMPFIRE_ROOT/cache/wisps/` against a checksummed manifest shipped with the
   package (`data/wisp_manifest.toml`), instead of being manually copied into the

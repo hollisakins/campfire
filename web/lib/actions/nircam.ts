@@ -2,10 +2,16 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { paginateQuery } from '@/lib/supabase/paginate';
-import type { NircamImage } from '@/lib/types';
+import type { NircamImage, NircamExpmap } from '@/lib/types';
 
 export interface NircamImagesResult {
   images: NircamImage[];
+  error?: string;
+  isAuthenticated: boolean;
+}
+
+export interface NircamExpmapsResult {
+  expmaps: NircamExpmap[];
   error?: string;
   isAuthenticated: boolean;
 }
@@ -69,6 +75,58 @@ export async function getNircamImages(): Promise<NircamImagesResult> {
       error: 'An unexpected error occurred',
       isAuthenticated: true,
     };
+  }
+}
+
+/**
+ * Fetch the per-(field, filter) exposure-coverage maps a user may see.
+ *
+ * Expmaps are registered in `storage_objects` (product_type `nircam_expmap`) and
+ * their visibility rides the owning field deployment via RLS: a published field
+ * deployment is public to everyone, drafts stay admin-only. We simply select
+ * active rows and let `select_storage_objects_by_access` do the gating — no
+ * bespoke access logic here, mirroring how mosaics rely on `nircam_images` RLS.
+ */
+export async function getNircamExpmaps(): Promise<NircamExpmapsResult> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return { expmaps: [], isAuthenticated: false };
+  }
+
+  try {
+    const { data, error } = await paginateQuery<{
+      field: string; filter: string | null; storage_key: string;
+      size_bytes: number | null;
+    }>(
+      () => supabase
+        .from('storage_objects')
+        .select('field, filter, storage_key, size_bytes')
+        .eq('product_type', 'nircam_expmap')
+        .eq('status', 'active')
+        .order('field', { ascending: true })
+        .order('filter', { ascending: true }),
+    );
+
+    if (error) {
+      console.error('Error fetching NIRCam expmaps:', error);
+      return { expmaps: [], error: error.message, isAuthenticated: true };
+    }
+
+    const expmaps: NircamExpmap[] = data
+      .filter((r) => r.filter)  // per-filter product; skip any unscoped row
+      .map((r) => ({
+        field: r.field,
+        filter: r.filter as string,
+        storage_key: r.storage_key,
+        file_size: r.size_bytes ?? undefined,
+      }));
+
+    return { expmaps, isAuthenticated: true };
+  } catch (err) {
+    console.error('Unexpected error fetching NIRCam expmaps:', err);
+    return { expmaps: [], error: 'An unexpected error occurred', isAuthenticated: true };
   }
 }
 
