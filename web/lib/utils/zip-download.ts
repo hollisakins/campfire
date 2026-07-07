@@ -53,7 +53,12 @@ export async function downloadFilesAsZip(
         // proxyUrl is a ready-to-fetch Worker link (?url=<presigned>&sig=<hmac>);
         // the Worker supplies CORS so the browser can read the bytes to zip them.
         const resp = await fetch(file.proxyUrl);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        if (!resp.ok) {
+          // Include the proxy's own message (e.g. "Proxy misconfigured: …") so a
+          // config/auth failure is legible instead of a bare status code.
+          const detail = await resp.text().catch(() => '');
+          throw new Error(detail ? `HTTP ${resp.status}: ${detail.slice(0, 200)}` : `HTTP ${resp.status}`);
+        }
         const buf = await resp.arrayBuffer();
         fileData.push({ filename: file.filename, data: new Uint8Array(buf) });
       } catch (err) {
