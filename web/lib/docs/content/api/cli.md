@@ -246,10 +246,9 @@ Tags are not denormalized into `objects.csv` — use `cf.query_objects(tags=[...
 
 ## Admin Commands
 
-The `campfire deploy` subgroup provides archive-maintainer tooling — deploying reduced products to Supabase + R2, generating RGB cutouts and map tiles, and reconciling object associations. These commands are intended for archive maintainers only and are gated behind the `deploy` extra:
+The `campfire deploy` subgroup provides archive-maintainer tooling — deploying reduced products to Supabase + R2, generating RGB cutouts and map tiles, and reconciling object associations. These commands are intended for archive maintainers only:
 
 ```bash
-pip install -e ".[deploy]"
 campfire deploy --help
 ```
 

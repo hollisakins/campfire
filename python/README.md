@@ -4,20 +4,24 @@ Python package for querying, downloading, and analyzing NIRSpec spectroscopic da
 
 ## Installation
 
-```bash
-cd python
-pip install -e .
+`campfire` depends on `campfire-layout` — a zero-dependency sibling package in
+the same repository that isn't on PyPI. From the repo root, install it first,
+then the client (editable):
 
-# With interactive plotting (plotly)
+```bash
+pip install -e ./layout      # campfire-layout — not on PyPI, must come first
+cd python
+pip install -e .             # base: client, CLI, cutouts, calibration, stacking
+
+# With interactive Plotly figures
 pip install -e ".[plotting]"
 
-# With calibration, stacking, and NIRCam cutouts
-# (pulls in scipy, matplotlib, photutils, reproject, Pillow)
-pip install -e ".[deploy]"
-
-# Everything
+# Everything (Plotly + specutils)
 pip install -e ".[all]"
 ```
+
+To install straight from GitHub without cloning the repo, see
+[Getting Started](https://campfire.hollisakins.com/docs/api/getting-started).
 
 ## Authentication
 
@@ -236,7 +240,7 @@ plot_cutout(path, shutters=data, object_id='obj_id', fov=3.2, ax=ax)
 ### Calibration & stacking
 
 Flux-calibrate spectra against broadband photometry and stack multiple
-spectra onto a common wavelength grid. Requires the `[deploy]` extra.
+spectra onto a common wavelength grid.
 
 ```python
 from campfire import calibrate_to_photometry, stack_spectra, calibrate_and_stack

@@ -1,6 +1,6 @@
 # Getting Started
 
-A walkthrough from `pip install` to your first plotted spectrum and NIRCam cutout. Running example throughout: **RUBIES-EGS-49140** (`J141934.14+525238.7`) — a Little Red Dot at z=6.69 with public data from RUBIES, CAPERS, EGS-BUBBLES, OCEANS, C3PO, and THRILS.
+A walkthrough from `pip install` to your first plotted spectrum and NIRCam cutout. Running example throughout is the object **RUBIES-EGS-49140** (`J141934.14+525238.7`), a bright Little Red Dot at z=6.69 with public data from RUBIES, CAPERS, EGS-BUBBLES, OCEANS, C3PO, and THRILS.
 
 If you'd rather click "run all" and read the output, the same flow lives in `python/examples/quickstart.ipynb`.
 
@@ -8,17 +8,21 @@ If you'd rather click "run all" and read the output, the same flow lives in `pyt
 
 ## 1. Install
 
-```bash
-pip install "git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
-```
-
-For the figures and stacking shown later in this guide, install the optional extras:
+You can install the CLI directly from Github: 
 
 ```bash
-pip install "campfire[deploy] @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
+pip install \
+  "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
+  "campfire @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
-This pulls in `matplotlib`, `scipy`, `photutils`, `reproject`, and `Pillow` — used by NIRCam cutouts, calibration, and stacking. If you only need querying and quick-look plotting, the base install is enough.
+Everything in this guide — spectrum plotting, NIRCam cutouts, calibration, and stacking — works with that base install. The only optional extra is interactive Plotly figures:
+
+```bash
+pip install \
+  "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
+  "campfire[plotting] @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
+```
 
 ---
 

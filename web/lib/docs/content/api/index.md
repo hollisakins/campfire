@@ -13,16 +13,22 @@ The CLI and Python client are siblings — same install, same credentials, same 
 ## Install
 
 ```bash
-pip install "git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
+pip install \
+  "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
+  "campfire @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
-Optional extras:
+The base install covers the CLI, the Python client, NIRCam cutouts, calibration, and stacking. Optional extras add to the `campfire` requirement:
 
 ```bash
-pip install "campfire[plotting] @ git+..."   # interactive Plotly figures
-pip install "campfire[deploy]   @ git+..."   # NIRCam cutouts, calibration, stacking
-pip install "campfire[all]      @ git+..."   # everything
+pip install \
+  "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
+  "campfire[all] @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
+
+- `[plotting]` — interactive Plotly figures
+- `[specutils]` — `specutils` interoperability
+- `[all]` — both of the above
 
 ## First five minutes
 

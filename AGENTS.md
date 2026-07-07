@@ -8,7 +8,7 @@ Monorepo with several main components — see each directory's README for detail
 - **`layout/`** — `campfire-layout`: the single, zero-dependency authority for the directory/key contract (local paths, storage keys, key↔path bijection, tree lifecycle). Pure-python core depended on by both `pipeline/` and `python/`; mirrored in TypeScript at `web/lib/layout.ts`. **Install this first** (it's not on PyPI).
 - **`pipeline/`** — JWST data reduction (NIRSpec + NIRCam). Local-only, no cloud dependencies.
 - **`web/`** — Next.js web portal. Deployed on Vercel.
-- **`python/`** — Unified Python package: API client, CLI, and deployment tools (including the `campfire deploy` CLI). Install with `pip install -e ".[deploy]"` for full functionality.
+- **`python/`** — Unified Python package: API client, CLI, and deployment tools (including the `campfire deploy` CLI). Install with `pip install -e .` for full functionality — the base install carries the science stack (matplotlib, scipy, photutils, reproject, Pillow); interactive Plotly figures (`[plotting]`) and `specutils` are optional extras.
 
 Supporting: `supabase/` (migrations), `scripts/` (one-off utilities)
 
@@ -166,7 +166,7 @@ cd web && npm run build && cd ..
 Deploy commands are part of the unified `campfire` CLI (install from `python/`):
 
 ```bash
-cd python && pip install -e ".[deploy]"
+cd python && pip install -e .
 campfire deploy --obs <obs_name>                         # full deploy
 campfire deploy --obs <obs_name> --dry-run               # validate only
 campfire deploy rgb --obs <obs_name>                     # RGB cutouts only

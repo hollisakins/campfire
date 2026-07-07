@@ -24,7 +24,10 @@ classifiers = [
 ]
 
 dependencies = [
-    # Shared directory/key contract (#213); install from ./layout (not on PyPI)
+    # Shared directory/key contract (#213). Not on PyPI: kept as a plain name so
+    # the editable dev workflow (pip install -e ./layout) resolves it locally.
+    # Installing this package from git therefore needs campfire-layout supplied
+    # alongside it — see the install snippet in python/README.md / the docs.
     "campfire-layout",
     # Core (auth, API client, CLI)
     "click>=8.0",
@@ -34,6 +37,15 @@ dependencies = [
     "tqdm>=4.65.0",
     "packaging",
     "toml>=0.10",
+    # Local science stack — spectrum plotting, NIRCam cutouts, calibration &
+    # stacking, plus the deploy CLI's RGB/tile/SED generation. Standard in an
+    # astronomer's environment, so kept in the base install; only interactive
+    # Plotly figures ([plotting]) stay an opt-in extra.
+    "scipy>=1.13",
+    "matplotlib>=3.9",
+    "photutils>=1.13",
+    "reproject",
+    "Pillow>=10.0",
     # Deploy DB operations
     "supabase>=2.0",
     # Deploy R2 uploads (will be replaced by presigned URLs in future)
@@ -44,13 +56,6 @@ dependencies = [
 campfire = "campfire.cli:main"
 
 [project.optional-dependencies]
-deploy = [
-    "scipy>=1.13",
-    "matplotlib>=3.9",
-    "photutils>=1.13",
-    "reproject",
-    "Pillow>=10.0",
-]
 plotting = [
     "plotly>=5.18.0",
 ]
@@ -66,7 +71,7 @@ dev = [
     "specutils>=1.13",
 ]
 all = [
-    "campfire[deploy,plotting,specutils]",
+    "campfire[plotting,specutils]",
 ]
 
 [project.urls]

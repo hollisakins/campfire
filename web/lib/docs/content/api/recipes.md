@@ -93,8 +93,6 @@ For very small catalogs, `cf.query_objects(cone_search=(ra, dec, radius))` per s
 
 `calibrate_and_stack` fits a per-spectrum correction (Chebyshev or scalar) so synthetic photometry from each spectrum matches the object's broadband photometry, then resamples and combines them. Useful for combining repeated visits or low-SNR exposures.
 
-Requires the `[deploy]` extra: `pip install -e ".[deploy]"`.
-
 ```python
 from campfire import Campfire, calibrate_and_stack
 

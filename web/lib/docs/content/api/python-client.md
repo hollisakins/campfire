@@ -403,7 +403,7 @@ plot_cutout(path, shutters=data, object_id='obj_id', fov=3.2, ax=ax)
 
 ## Calibration and stacking
 
-`campfire.calibration` flux-calibrates spectra against broadband photometry and combines multiple spectra onto a common wavelength grid. Requires the extras from `pip install "campfire[deploy]"` (scipy, matplotlib).
+`campfire.calibration` flux-calibrates spectra against broadband photometry and combines multiple spectra onto a common wavelength grid.
 
 ### `calibrate_to_photometry()`
 
