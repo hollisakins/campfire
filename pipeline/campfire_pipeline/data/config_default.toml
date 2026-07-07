@@ -156,71 +156,76 @@
     use_custom_flat = false
     plot = true
 
-[nircam.striping]
-    # Runs after image2 on cal-stage data (no flat applied here): the 1/f
-    # correction is fit and subtracted in the same flat-fielded frame, so it
-    # no longer leaks a per-amp DC offset through the flat re-division (the
-    # old "fit on a flat copy, subtract from the un-flat rate SCI" round-trip).
-    mask_sources = true
-    # 2D-background pre-subtraction (fit-only — it detrends the working copy so
-    # the per-amp-row/per-column medians estimate the 1/f, NOT the field's
-    # large-scale structure; the bkgd is never subtracted from the output SCI).
-    # Required on fields with real large-scale background (e.g. cluster ICL /
-    # scattered light): without it, a smooth gradient can't be represented by
-    # per-amp-row constants, so the striping imprints amp-boundary steps. The
-    # box/filter sizes below set the smoothing scale; being fit-only +
-    # median-based it cannot put negative wings in the output (unlike the
-    # fine-box mosaic bkgsub, which is applied to the output and relies on its
-    # aggressive mask).
-    subtract_background = true
-    # 2D-background box / filter sizes (fit-only). Effective smoothing scale
-    # ~box*filter px; smaller removes the field's large-scale structure
-    # (cluster ICL) from the 1/f fit more completely, but too small absorbs
-    # the 1/f. 32/3 chosen on rj0911 f444w (cluster) as the ICL-removal vs
-    # 1/f-fidelity sweet spot; filter_size must be odd.
-    subtract_background_box = 32
-    subtract_background_filter = 3
-    maxiters = 3
+[nircam.bkg]
+    # Unified background step (replaces striping + sky + variance). Builds ONE
+    # source mask (SubtractBackground, mask-only — NO 2-D background subtraction;
+    # the astrophysical sky is left for the mosaic) and shares it across an
+    # iterative per-amp chain: per-amp pedestal (owns the per-exposure DC) ->
+    # column median -> amp-row GP rho~5 (fine 1/f) -> amp-row GP rho~20 (amp-row
+    # banding). See docs/design-nircam-unified-background.md.
+    n_iterations = 3
     plot = true
-    # Per-amp-row 1/f offset estimator. "median" (default) is the
-    # production 2σ-clipped median with full-row fallback. "gp" fits a 1-D
-    # Gaussian Process along the slow axis per amplifier, interpolating the
-    # offset across masked source rows within the same amp instead of
-    # substituting the full-row median (which mixes the four amps' distinct
-    # offsets and produces the "box" of amp-row artifacts around bright
-    # sources). The per-column (vertical) step is unchanged either way.
-    estimator = "median"
-    # Aggressive masking for the GP path: grow the source mask and fold in
-    # JUMP/SATURATED/PERSISTENCE DQ. Over-masking only inflates the GP's
-    # per-row sigma_r (interpolated across); under-masking biases the median
-    # and the GP oversubtracts a trough around the source.
-    mask_aggressive = false
-    mask_extra_dilation = 4
 
-    [nircam.striping.gp]
-        # rho is the ONLY frozen SHOTerm hyperparameter — the 1/f correlation
-        # length in *rows*. It is a detector readout/clocking property (the
-        # filter sits upstream in the optical path and does not enter the
-        # readout), so it is independent of filter and of flux units. Measured
-        # stable across 5 filters spanning both channels on rj0911 (detrended
-        # MLE; scripts/calibrate_gp_striping.py): LW f277w/f356w/f444w =
-        # 4.51/4.44/5.03, SW f200w/f150w = 4.10/4.11 — one tight cluster, all
-        # inside rho's broad flat optimum. So a single channel-agnostic rho is
-        # used (no SW/LW split). Set rho_lw / rho_sw to override per channel if
-        # a future detector/readout ever needs it.
-        rho = 5.0
-        # The kernel amplitude is NOT frozen: it self-adapts per exposure to
-        # the marginal mad_std of the clean per-amp-row medians (~ the true
-        # 1/f amplitude) — a deterministic robust statistic, not a fit — so it
-        # tracks each exposure's cal-stage flux units (filter / detector /
-        # photometric calibration) instead of a frozen absolute number.
-        # kernel_sigma_factor is a frozen O(1) multiplier on that; set an
-        # explicit kernel_sigma_lw/_sw only as an escape hatch (overrides the
-        # self-adaptation). See gp_striping.gp_amprow_offsets.
-        kernel_sigma_factor = 1.0
-        q = 0.70710678
-        sigma_clip = 2.0
-        weak_frac = 0.5
+    [nircam.bkg.mask]
+        # SubtractBackground mask config (mask only). Mosaic-like depth: the
+        # aggressive tier/dilation preserves detected-source flux while the deep
+        # threshold masks the source wings that would bias the pedestal / 1/f.
+        ring_radius_in = 80
+        ring_width = 4
+        ring_downsample = 4
+        ring_clip_max_sigma = 5.0
+        ring_clip_box_size = 100
+        ring_clip_filter_size = 3
+        tier_kernel_size = [25, 15, 5, 2]
+        tier_npixels = [15, 10, 3, 1]
+        tier_nsigma = [1.5, 1.5, 1.5, 1.5]
+        tier_dilate_size = [33, 25, 21, 19]
+        # Fold JUMP_DET/SATURATED/PERSISTENCE DQ into the *fit* mask (not
+        # detection): they carry residual signal that would bias the per-amp
+        # estimate; the GP tolerates the extra masking.
+        mask_aggressive_dq = true
+
+        [nircam.bkg.mask.pixel_scale_factor]
+            # Mask length params are angular scales in px, tuned at 30 mas.
+            # Rescale per channel to hold the angular scale fixed: SW native
+            # ~31 mas -> 1.0; LW native ~63 mas -> 30/63 ~ 0.5 (halve the px).
+            sw = 1.0
+            lw = 0.5
+
+    [nircam.bkg.pedestal]
+        # Per-amp DC pedestal owns the per-exposure DC (skymatch): there is no
+        # inter-exposure SkyMatchStep, so this term zeroes each frame to a
+        # common level before drizzle. Its frame mean is meta.background.level.
+        scope = "per_amp"
+        sigma = 3.0
+
+    [nircam.bkg.striping]
+        # Amp-row 1/f estimator. "gp" (default) is the two-scale per-amp GP;
+        # "median" is the legacy 2σ-clipped-median reference arm; "none" is
+        # cfn-only (no campfire 1/f, mask + pedestal only).
+        estimator = "gp"
+        maxiters = 3
+        # Rebuild the source mask each iteration on the running residual (it
+        # sharpens as the frame flattens). Set false to mask once (cheaper).
+        remask_each_iter = true
+
+        [nircam.bkg.striping.gp]
+            # rho = SHOTerm correlation length in *rows* (frozen; a detector
+            # readout property, channel/filter-independent). Two scales:
+            # rho_short = fast 1/f, rho_long = amp-row banding (the ρ-sweep
+            # sweet spot; validated on real data). The GP self-adapts its
+            # amplitude per exposure (kernel_sigma_factor is a frozen O(1)
+            # multiplier). See gp_striping.gp_amprow_offsets.
+            rho_short = 5.0
+            rho_long = 20.0
+            kernel_sigma_factor = 1.0
+            q = 0.70710678
+            sigma_clip = 2.0
+            weak_frac = 0.5
+
+    [nircam.bkg.variance]
+        # VAR_RNOISE rescale (folded in; uses the shared final source mask).
+        block_size = 7
 
 [nircam.image2]
     use_custom_flat = false
@@ -280,27 +285,6 @@
 
 [nircam.edge]
     # No tunable parameters.
-
-[nircam.sky]
-    plot = true
-
-[nircam.variance]
-    plot = true
-    ring_radius_in = 40
-    ring_width = 3
-    ring_clip_max_sigma = 5.0
-    ring_clip_box_size = 100
-    ring_clip_filter_size = 3
-    tier_kernel_size = [25, 15, 5, 2]
-    tier_npixels = [15, 15, 5, 2]
-    tier_nsigma = [3, 3, 3, 3]
-    tier_dilate_size = [0, 0, 0, 3]
-    bg_box_size = 10
-    bg_filter_size = 5
-    bg_exclude_percentile = 90
-    bg_sigma = 3
-    bg_interpolator = "zoom"
-    block_size = 7
 
 [nircam.wcs_shift]
     # Opt-in pre-JHAT astrometric shift. Some exposures land far enough off

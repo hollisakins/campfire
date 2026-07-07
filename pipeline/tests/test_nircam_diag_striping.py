@@ -26,7 +26,7 @@ from campfire_pipeline.nircam.steps.diag_striping import (
     filter_srcmask_stripes,
     regularize_strip_deltas,
 )
-from campfire_pipeline.nircam.steps.striping import fit_residual_striping
+from campfire_pipeline.nircam.oneoverf import fit_residual_striping
 
 
 def _planted_diagonal_stripe(shape, theta_deg, bin_width, rng, smoothing=5.0):

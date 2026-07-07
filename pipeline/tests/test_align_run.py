@@ -60,7 +60,7 @@ def test_active_process_steps_gates_jhat_and_wcs_shift():
     # align on: the JHAT path is removed (exactly one alignment path)
     assert 'jhat' not in on and 'wcs_shift' not in on
     # everything else is untouched
-    assert 'variance' in on and 'sky' in on and 'detector1' in on
+    assert 'bkg' in on and 'detector1' in on
 
 
 # --- end-to-end -------------------------------------------------------------
