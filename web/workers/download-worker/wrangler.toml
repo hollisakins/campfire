@@ -1,6 +1,11 @@
 name = "campfire-download"
 main = "src/index.ts"
 compatibility_date = "2025-06-01"
+# Cloudflare account that homes this Worker. Kept here (not a CI secret) because
+# it is not sensitive and is already published in DEPLOYMENT_GUIDE.md and the R2
+# host below; this lets `wrangler deploy` run unattended in CI with only an API
+# token. JWT_SECRET stays a Worker secret and is preserved across deploys.
+account_id = "2d136e3d61aca8a4ae08a2ea760f6d23"
 
 # No R2 binding: the Worker fetches presigned URLs (R2 or OSN) that Vercel mints,
 # so it holds no object-store credentials and works for either backend. This is

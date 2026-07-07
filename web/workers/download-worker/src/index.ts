@@ -60,9 +60,14 @@ export default {
         return corsError(`Target not allowed: ${check.reason}`, 403, request, env);
       }
 
-      // redirect: 'error' — an allowlisted host must not be able to bounce us
-      // to an arbitrary host after the allowlist check.
-      const upstream = await fetch(target, { redirect: 'error' });
+      // Never follow redirects: an allowlisted host must not be able to bounce
+      // us to an arbitrary host after the allowlist check. The Workers runtime
+      // does not implement redirect: 'error' (it throws a TypeError), so request
+      // 'manual' and reject any redirect ourselves — same guarantee, edge-safe.
+      const upstream = await fetch(target, { redirect: 'manual' });
+      if (upstream.type === 'opaqueredirect' || (upstream.status >= 300 && upstream.status < 400)) {
+        return corsError(`Upstream redirect refused (${upstream.status})`, 502, request, env);
+      }
       if (!upstream.ok || !upstream.body) {
         return corsError(`Upstream fetch failed (${upstream.status})`, 502, request, env);
       }

@@ -1,0 +1,77 @@
+name: Download worker
+
+# Test and deploy the credential-free download proxy Worker.
+#
+# The Worker is NOT covered by the Vercel (web) or Supabase deploy
+# integrations, so it previously shipped only via a manual `wrangler deploy`.
+# A merged fix could therefore sit undeployed (as happened with the
+# redirect:'error' outage). This workflow closes that gap: worker tests run on
+# every PR that touches it, and a merge to main test-gates then deploys it.
+#
+# Required repository secret:
+#   CLOUDFLARE_API_TOKEN — scoped to "Edit Cloudflare Workers" on the account in
+#   wrangler.toml. The Worker's JWT_SECRET is a Worker secret set once via
+#   `wrangler secret put` and is preserved across deploys — it is NOT needed here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/workers/download-worker/**"
+      - ".github/workflows/download-worker.yml"
+  pull_request:
+    paths:
+      - "web/workers/download-worker/**"
+      - ".github/workflows/download-worker.yml"
+
+# Cancel superseded runs on the same ref to save Actions minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # vitest lives in the web workspace; the worker's test script runs from there.
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Run worker tests
+        run: npx vitest run workers/download-worker/src
+        working-directory: web
+
+  deploy:
+    # Only after a merge to main, and only if the worker tests pass.
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: web/workers/download-worker
+          command: deploy

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { isAllowedFetchUrl } from './index';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import worker, { isAllowedFetchUrl } from './index';
 import { verifyUrlSignature } from './auth';
 
 const ALLOWED = 'uaz1.osn.mghpcc.org,abc123.r2.cloudflarestorage.com';
@@ -66,5 +66,51 @@ describe('verifyUrlSignature', () => {
 
   it('rejects a malformed signature', async () => {
     expect(await verifyUrlSignature(URL_, 'not-base64!!', SECRET)).toBe(false);
+  });
+});
+
+describe('proxy handler upstream fetch', () => {
+  const SECRET = 'test-shared-secret';
+  const ORIGIN = 'https://campfire.hollisakins.com';
+  const TARGET =
+    'https://uaz1.osn.mghpcc.org/campfire-jwst/data/products/nirspec/obs/x_spec.fits?X-Amz-Signature=deadbeef';
+
+  const ENV = {
+    JWT_SECRET: SECRET,
+    ALLOWED_ORIGINS: ORIGIN,
+    ALLOWED_FETCH_HOSTS: 'uaz1.osn.mghpcc.org',
+  };
+
+  async function proxyRequest(): Promise<Request> {
+    const sig = await sign(TARGET, SECRET);
+    const u = `https://worker.example/proxy?url=${encodeURIComponent(TARGET)}&sig=${sig}`;
+    return new Request(u, { headers: { Origin: ORIGIN } });
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('streams a 200 upstream and never requests redirect:"error" (Workers has no such mode)', async () => {
+    const seen: (RequestInit | undefined)[] = [];
+    vi.stubGlobal('fetch', async (_input: unknown, init?: RequestInit) => {
+      seen.push(init);
+      return new Response('FITSDATA', { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
+    });
+
+    const res = await worker.fetch(await proxyRequest(), ENV);
+
+    expect(res.status).toBe(200);
+    // The regression: redirect:'error' throws a TypeError at the edge → 500 on every file.
+    expect(seen[0]?.redirect).not.toBe('error');
+    expect(seen[0]?.redirect).toBe('manual');
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(ORIGIN);
+  });
+
+  it('refuses an upstream redirect instead of following it (allowlist-escape guard)', async () => {
+    vi.stubGlobal('fetch', async () =>
+      new Response(null, { status: 302, headers: { Location: 'https://evil.example/x' } }));
+
+    const res = await worker.fetch(await proxyRequest(), ENV);
+
+    expect(res.status).toBe(502);
   });
 });
