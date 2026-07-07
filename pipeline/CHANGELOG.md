@@ -387,6 +387,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- NIRCam combine no longer crashes on interrupted-save debris. A killed
+  `atomic_save` (e.g. a combine worker that dies mid-write) stages to
+  `<name>.tmp.fits` — `.tmp` inserted *before* the extension so the datamodel's
+  format dispatch still sees `.fits`. `Field.get_exposure_files` filtered
+  sidecars with `base.endswith('.tmp')`, which never matches that name, so the
+  truncated fragment (no ASDF/WCS extension) was pulled in as a phantom input
+  and blew up outlier detection with `AttributeError: No attribute 'wcs'` plus
+  an astropy truncation warning. The enumeration guard now also drops
+  `*.tmp.fits`, and `atomic_save` removes its staging file if the save raises so
+  it doesn't leave debris in the first place. No scientific-output change.
 - **NIRCam `align` closes the cross-filter dependency and gates observing mode.**
   Two correctness fixes to the align orchestration (opt-in, default-off):
     - *Cross-filter closure.* `run_align` now pools each physical exposure across
