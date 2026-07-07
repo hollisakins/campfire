@@ -127,8 +127,10 @@ if $PUSH; then
   echo
   info "Released pipeline-v${NEW_VERSION}."
   echo
-  echo "Install with:"
-  echo "  pip install \"git+https://github.com/hollisakins/campfire.git@${TAG}#subdirectory=pipeline\""
+  echo "Install with (campfire-layout is a monorepo sibling, not on PyPI):"
+  echo "  pip install \\"
+  echo "    \"campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout\" \\"
+  echo "    \"git+https://github.com/hollisakins/campfire.git@${TAG}#subdirectory=pipeline\""
 else
   echo
   echo "Tag created locally only. To publish:"

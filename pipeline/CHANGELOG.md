@@ -32,8 +32,10 @@ Release procedure: edit the `## Unreleased` section below, then run
 - Install docs: `pip install` instructions now pull the unpublished
   `campfire-layout` sibling package from the monorepo alongside the pipeline, so
   a fresh `pip install "git+…#subdirectory=pipeline"` (and `conda env create`)
-  resolves instead of failing on the missing `campfire-layout` dependency. Docs
-  only — no code or output change (`CHANGELOG.md`, `README.md`, `environment.yml`).
+  resolves instead of failing on the missing `campfire-layout` dependency. The
+  post-release "Install with" hint printed by `scripts/release-pipeline.sh` is
+  fixed the same way. Docs only — no code or output change (`CHANGELOG.md`,
+  `README.md`, `environment.yml`, `scripts/release-pipeline.sh`).
 - NIRCam exposure maps: the fiducial (`canonical`-stage) per-filter map is now
   written with an **undecorated filename** — `expmap_<field>_<filter>.fits`
   (previously `expmap_<field>_<filter>_canonical.fits`) — so it presents to users
