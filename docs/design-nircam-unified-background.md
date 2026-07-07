@@ -38,8 +38,8 @@ the sections it changed.
   subtract its 2-D background.**
 - Replace striping's 1/f **and** sky's pedestal with a **sequential per-amp
   chain**: per-amp pedestal (owns the DC) → col median → amp-row GP ρ≈5 (fine
-  1/f) → amp-row GP ρ≈20 (amp-row banding), the two GPs **de-meaned**. See
-  §4.5–§4.6.
+  1/f) → amp-row GP ρ≈20 (amp-row banding). The GP code is unchanged; the
+  pedestal owns the DC. See §4.5–§4.6.
 - Preserve the **no-skymatch invariant**: the per-exposure DC (the per-amp
   pedestal's frame mean) is the only thing zeroing frames before drizzle, so
   `bkg` must emit and subtract it and leave each exposure's masked background at
@@ -190,12 +190,12 @@ def bkg_step(exposure_file, field, cfg, ...):
             resid, model.err, model.dq)            # §4.3, new method
         fitmask = edge_dq | srcmask                # + aggressive DQ if configured
 
-        # (2) SEQUENTIAL per-amp chain (§4.6). Pedestal owns the DC (§4.5);
-        #     the two GPs are DE-MEANED per amp (AC only).
+        # (2) SEQUENTIAL per-amp chain (§4.6). Pedestal owns the DC (§4.5); the
+        #     GP is unchanged (fits a ~zero-per-amp-mean residual, carries ~0 DC).
         ped = peramp_pedestal(resid, fitmask)                  # (H,W): per-amp DC, broadcast
         v   = column_pattern(resid - ped, fitmask)             # vertical (col median)
-        h5  = gp_amprow(resid - ped - v, fitmask, rho=5,  demean=True)
-        h20 = gp_amprow(resid - ped - v - h5, fitmask, rho=20, demean=True)
+        h5  = gp_amprow(resid - ped - v, fitmask, rho=5)
+        h20 = gp_amprow(resid - ped - v - h5, fitmask, rho=20)
 
         step = ped + v + h5 + h20
         resid -= step
@@ -217,7 +217,7 @@ def bkg_step(exposure_file, field, cfg, ...):
                 extra_hdus=[fits.ImageHDU(srcmask.astype('uint8'), name='SRCMASK')])
 ```
 
-The DC is owned by `peramp_pedestal`; the GPs are de-meaned (§4.5). Convergence:
+The DC is owned by `peramp_pedestal`; the GP is unchanged (§4.5). Convergence:
 iteration 2+ fits the *residual* pedestal/1/f/banding (near-zero once the first
 pass removed the bulk) while the mask sharpens as the frame flattens.
 `n_iterations=3` matches the NIRSpec background loop; 1 is a resume/debug escape
@@ -294,15 +294,19 @@ from dropping the detection area below a few px.
 Each iteration subtracts a robust masked median **per amp** (4 values), which
 removes both the per-amp DC steps (the first surviving residual, §1) and — via
 its area-weighted frame mean — the frame pedestal. `sky_step`'s single *global*
-scalar `fit_sky_tot` is retired in favor of this per-amp version. The two GPs
-(§4.6) are then **de-meaned** per amp, so exactly one operation owns the DC.
+scalar `fit_sky_tot` is retired in favor of this per-amp version. The GP (§4.6)
+is left **unchanged**: because the pedestal has already zeroed each amp, the
+residual the GP fits has ~zero per-amp mean, so the GP's own DC term is ~0 and
+there is nothing left for it to own.
 
 Why per-amp-pedestal rather than "let the GP carry its means" (the handoff's
 phrasing): the DC is the quantity the (absent) skymatch depends on, so it should
 be a robust, transparent statistic — a masked median — not a number entangled in
-a GP posterior mean with edge/extrapolation behavior. Same invariant, cleaner
-allocation; it also keeps the ρ≈20 GP strictly zero-mean, so it cannot carry an
-astrophysical DC offset.
+a GP posterior mean with edge/extrapolation behavior. It also leaves the GP code
+(`gp_amprow_offsets`) untouched — exactly the validated ρ≈20 behavior. The GP is
+**not** de-meaned: with the pedestal upstream that would be a no-op, and the
+skymatch record is the frame mean of the *total* correction, so it stays exact
+even if the GP carries a hair of residual DC.
 
 This DC handling is a hard requirement, not a convenience — **there is no
 skymatch downstream.** JWST `SkyMatchStep` is disabled everywhere
@@ -319,13 +323,13 @@ per-exposure DC zeroing each frame to a common level before drizzle. So:
   exposure must be ≈ 0. Recorded as `meta.background.level` = summed per-amp
   pedestal (frame mean) over the iterations (§4.2).
 
-### 4.6 The sequential per-amp chain (1/f + banding), GPs de-meaned
+### 4.6 The sequential per-amp chain (1/f + banding); GP unchanged
 
 Each iteration runs a **sequential** per-amp chain on the masked residual:
 
 ```
 per-amp pedestal (DC, §4.5)  →  col median (vertical)  →
-  amp-row GP ρ≈5 (de-meaned)  →  amp-row GP ρ≈20 (de-meaned)
+  amp-row GP ρ≈5  →  amp-row GP ρ≈20     (gp_amprow_offsets unchanged)
 ```
 
 The two GPs extend the **existing** per-amp GP (`gp_striping.gp_amprow_offsets`,
@@ -341,7 +345,8 @@ in *rows*, frozen hyperparameter):
 Because the fit is **per amp**, the ρ≈20 term captures the amp-*dependent*
 banding a single common-row term cannot. Sequential (rather than a joint
 two-SHOTerm kernel) is chosen for simplicity and because we already iterate;
-each GP self-adapts its amplitude to the residual it sees.
+each GP self-adapts its amplitude to the residual it sees. `gp_amprow_offsets`
+is unchanged from today's `estimator='gp'` path — no `demean` flag.
 
 > **Sequential order (ρ5→ρ20) — why it's fine.** ρ≈20's main added value is
 > **bridging masked source gaps**: a ρ≈5 GP reverts to the mean across a gap
@@ -368,8 +373,8 @@ steps don't reappear.
 
 > **Detector-shaped vs astrophysical.** A per-amp-row GP would absorb the
 > row-direction projection of a smooth gradient *if* ρ were unbounded. It is
-> bounded at ρ≈20 and de-meaned, so it cannot follow a whole-field celestial
-> gradient or carry its DC — that stays for the mosaic (§4.0). HA's testing
+> bounded at ρ≈20 and per-amp, and the pedestal owns the DC, so it cannot follow
+> a whole-field celestial gradient — that stays for the mosaic (§4.0). HA's testing
 > confirms it behaves; §9.4 keeps a known-background spot-check.
 
 The `estimator` knob survives for A/B work: `gp` (the two-scale default),
@@ -417,7 +422,7 @@ New `[nircam.bkg]` block; retire `[nircam.striping]`, `[nircam.sky]`,
   [nircam.bkg.striping]                 # sequential per-amp chain (§4.6)
     estimator = "gp"                    # gp (default) | median (legacy ref) | none (cfn-only)
     maxiters = 3
-    demean_gp = true                    # §4.5 — GPs carry NO DC; the pedestal owns it
+    # (no demean flag — the pedestal owns the DC upstream, §4.5)
     [nircam.bkg.striping.gp]
       rho_short = 5.0                   # fast 1/f
       rho_long  = 20.0                  # amp-row banding (sweep sweet spot; validated)
@@ -438,9 +443,9 @@ resolution wrinkle.
 - `nircam/steps/bkg.py`: new `bkg_step` — the loop (§4.2). Imports
   `peramp_pedestal` + `column_pattern` + `gp_amprow` (from `oneoverf`/
   `gp_striping`), `SubtractBackground`, and `association.channel_of`.
-- `nircam/gp_striping.py`: `gp_amprow_offsets` gains a `demean=True` path
-  (subtract the per-amp mean of the posterior offset so the GP carries no DC —
-  §4.5). Called twice, `rho=5` then `rho=20`, sequentially on the residual.
+- `nircam/gp_striping.py`: **unchanged.** `gp_amprow_offsets` is called twice
+  (`rho=5` then `rho=20`) on the running residual; the upstream pedestal means it
+  fits a ~zero-per-amp-mean residual, so no `demean` path is needed (§4.5).
 - `nircam/oneoverf.py` (new shared helper): `peramp_pedestal` (per-amp masked
   median) and `column_pattern` (vertical), factored out of the old
   `fit_residual_striping`; the variance math moves here too.
@@ -457,13 +462,13 @@ image2 out (cal SCI) ──► edge (DQ) ──► bkg:
    ┌─ loop ×N ─────────────────────────────────────────────────────────┐
    │ resid ─► SubtractBackground.mask_from_arrays ─► srcmask             │
    │ resid ─► per-amp pedestal (DC) ─► col median ─► GP ρ5 ─► GP ρ20     │
-   │         (pedestal owns DC; GPs de-meaned);  resid -= Σsteps         │
+   │         (pedestal owns DC; GP unchanged);  resid -= Σsteps          │
    └───────────────────────────────────────────────────────────────────┘
    VAR_RNOISE rescale(final mask)
    write: SCI = sci0 - correction ; SRCMASK ext ; CFP_BKG ;
           meta.background.level = Σ(per-amp pedestal frame DC)
 ```
-The per-amp pedestal owns the DC (§4.5); the ρ5/ρ20 GPs are de-meaned.
+The per-amp pedestal owns the DC (§4.5); the ρ5/ρ20 GP is unchanged.
 
 ## 7. Provenance, outputs, back-compat
 
@@ -502,7 +507,7 @@ plus real-frame regression:
    exposures should enter the drizzle at matched sky levels (no per-frame DC
    drift). This is the constraint that replaces `SkyMatchStep`.
 4. **Long component vs astrophysical background (spot-check, de-risked):** inject
-   a known smooth gradient + extended source; confirm the de-meaned ρ≈20 per-amp
+   a known smooth gradient + extended source; confirm the ρ≈20 per-amp
    term removes detector banding but leaves the smooth celestial gradient for the
    mosaic (§4.6). HA's real-data testing already indicates it behaves; this
    confirms it under a controlled gradient. Optional companion: ρ5→ρ20 vs
@@ -519,15 +524,17 @@ plus real-frame regression:
 ## 10. Open questions / decisions
 
 1. **~~Sky pedestal~~ — resolved.** Explicit per-amp pedestal owns the DC; the
-   GPs are de-meaned (§4.5). The ρ≈20 long term stays a **full per-amp row
-   profile** (validated on real data, HA) — not DC-only.
+   GP is left unchanged (§4.5 — the pedestal makes de-meaning a no-op). The ρ≈20
+   long term stays a **full per-amp row profile** (validated on real data, HA) —
+   not DC-only.
 2. **~~LW pixel-scale direction~~ — resolved: ×0.5** (angular-invariant, §4.4).
 3. **~~Two-component GP: joint vs sequential~~ — resolved: sequential**
    (§4.6). Chain ρ5→ρ20, each GP self-adapts to the residual it sees. Retained
    spot-check (not a gate): ρ5→ρ20 vs ρ20→ρ5 order on the §9.2 exposure.
 4. **Long-GP vs astrophysical background — residual check, de-risked.** ρ≈20 is
-   bounded and now **de-meaned**, so it carries no DC and can't follow a
-   whole-field gradient (§4.0/§4.6); HA's testing confirms it behaves. §9.4 keeps
+   bounded and per-amp, and the pedestal owns the DC, so it carries no net DC and
+   can't follow a whole-field gradient (§4.0/§4.6); HA's testing confirms it
+   behaves. §9.4 keeps
    a known-background spot-check rather than treating this as a live risk.
 5. **Legacy CFP keys:** retire vs keep-stamping `CFP_1F`/`CFP_SKY`/`CFP_VAR`.
    §4.1/§7.
