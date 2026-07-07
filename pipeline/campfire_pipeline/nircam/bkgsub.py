@@ -378,6 +378,45 @@ class SubtractBackground:
     # Main entry points
     # ------------------------------------------------------------------
 
+    def mask_from_arrays(
+        self,
+        sci: np.ndarray,
+        err: np.ndarray,
+        dq: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Build the source-rejection mask + bitmask from in-memory arrays.
+
+        The mask-only core of :meth:`compute` — off-detector/DQ/NaN seed,
+        clipped ring-median filter, then tiered source detection — with **no**
+        ``estimate_background`` call and no file I/O. Used by the unified
+        ``bkg`` step (which holds the datamodel arrays in memory and only needs
+        the mask), and by :meth:`compute` so the two share one code path.
+
+        Returns ``(mask_final, bitmask)`` with the same semantics as the 2nd/3rd
+        elements of :meth:`compute`.
+        """
+        if dq is not None:
+            self.has_dq = True
+            self.dq = dq
+        else:
+            self.has_dq = False
+
+        bitmask = np.zeros(sci.shape, np.uint32)
+
+        off_detector_mask = self.off_detector(sci, err)
+        if self.has_dq:
+            self.mask_by_dq()
+            mask = off_detector_mask | self.dqmask
+        else:
+            mask = off_detector_mask
+        mask = np.logical_or(mask, np.isnan(sci))
+        bitmask = np.bitwise_or(bitmask, np.left_shift(mask, 0))
+
+        filtered = self.clipped_ring_median_filter(sci, mask)
+        bitmask = self.mask_sources(filtered, bitmask, starting_bit=1)
+        mask_final = bitmask != 0
+        return mask_final, bitmask
+
     def compute(
         self, filepath: str
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -400,20 +439,11 @@ class SubtractBackground:
         log(f"Running background subtraction on {os.path.basename(filepath)}")
         sci, err = self.open_file(filepath)
 
-        bitmask = np.zeros(sci.shape, np.uint32)
-
-        off_detector_mask = self.off_detector(sci, err)
-        if self.has_dq:
-            self.mask_by_dq()
-            mask = off_detector_mask | self.dqmask
-        else:
-            mask = off_detector_mask
-        mask = np.logical_or(mask, np.isnan(sci))
-        bitmask = np.bitwise_or(bitmask, np.left_shift(mask, 0))
-
-        filtered = self.clipped_ring_median_filter(sci, mask)
-        bitmask = self.mask_sources(filtered, bitmask, starting_bit=1)
-        mask_final = bitmask != 0
+        # open_file set self.has_dq / self.dq; hand the DQ array (or None) to
+        # the shared mask builder.
+        mask_final, bitmask = self.mask_from_arrays(
+            sci, err, self.dq if self.has_dq else None
+        )
 
         bkg = self.estimate_background(sci, mask_final)
         bkgd_subtracted = sci - bkg.background

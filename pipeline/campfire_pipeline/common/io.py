@@ -44,25 +44,33 @@ def atomic_save(model_or_hdul, path, header_updates=None, extra_hdus=None):
     # with "unknown filetype .tmp".
     base, ext = os.path.splitext(path)
     tmp = f'{base}.tmp{ext}' if ext else f'{path}.tmp'
-    if hasattr(model_or_hdul, 'save'):
-        model_or_hdul.save(tmp)
-    else:
-        model_or_hdul.writeto(tmp, overwrite=True)
-    if header_updates or extra_hdus:
-        from astropy.io import fits
-        with fits.open(tmp, mode='update') as hdul:
-            if header_updates:
-                for key, val in header_updates.items():
-                    hdul[0].header[key] = val
-            if extra_hdus:
-                for hdu in extra_hdus:
-                    name = hdu.name
-                    # Drop any existing extension of the same name first.
-                    existing = [i for i, h in enumerate(hdul) if h.name == name]
-                    for i in reversed(existing):
-                        del hdul[i]
-                    hdul.append(hdu)
-    os.replace(tmp, path)
+    # Clean up the staging file if anything below fails, so an interrupted save
+    # never leaves a truncated '<name>.tmp<ext>' behind for a later glob to pick
+    # up as a phantom input (a truncated copy has no ASDF/WCS extension).
+    try:
+        if hasattr(model_or_hdul, 'save'):
+            model_or_hdul.save(tmp)
+        else:
+            model_or_hdul.writeto(tmp, overwrite=True)
+        if header_updates or extra_hdus:
+            from astropy.io import fits
+            with fits.open(tmp, mode='update') as hdul:
+                if header_updates:
+                    for key, val in header_updates.items():
+                        hdul[0].header[key] = val
+                if extra_hdus:
+                    for hdu in extra_hdus:
+                        name = hdu.name
+                        # Drop any existing extension of the same name first.
+                        existing = [i for i, h in enumerate(hdul) if h.name == name]
+                        for i in reversed(existing):
+                            del hdul[i]
+                        hdul.append(hdu)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 def files_to_glob(filenames):

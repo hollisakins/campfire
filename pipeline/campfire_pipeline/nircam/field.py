@@ -426,8 +426,8 @@ class Field:
         # to recognize per-field step overrides and to exclude them from the
         # tile-detection loop below.
         known_steps = {
-            'detector1', 'persistence', 'wisp', 'striping',
-            'image2', 'diag_striping', 'edge', 'sky', 'variance',
+            'detector1', 'persistence', 'wisp', 'image2',
+            'edge', 'bkg', 'diag_striping',
             'wcs_shift', 'jhat', 'align',
             'apply_mask', 'bad_pixel', 'outlier', 'resample',
         }
@@ -737,7 +737,14 @@ class Field:
             # diagnostic outputs that share the directory.
             for path in glob(full_pattern):
                 base = os.path.basename(path)
-                if base.endswith('.tmp'):
+                # Skip transient staging sidecars sharing the directory:
+                # materialize_work stages as '<name>.fits.tmp'; atomic_save
+                # stages as '<name>.tmp.fits' ('.tmp' before the extension so
+                # the datamodel format dispatch still sees '.fits'). An
+                # interrupted atomic_save leaves a truncated, WCS-less
+                # '.tmp.fits' that the plain '*.fits' glob would otherwise pull
+                # in as a phantom input (missing meta.wcs blows up outlier).
+                if base.endswith('.tmp') or base.removesuffix('.fits').endswith('.tmp'):
                     continue
                 if base.endswith('_jump.fits'):
                     continue

@@ -55,8 +55,8 @@ def test_format_defaults_to_nircam():
 
 
 def test_format_passes_through_explicit_value():
-    out = cfp.format(CFP_SKY='1.23e-04')
-    assert out['CFP_SKY'][0] == '1.23e-04'
+    out = cfp.format(CFP_BKG='1.23e-04')
+    assert out['CFP_BKG'][0] == '1.23e-04'
 
 
 def test_format_rejects_unknown_key_for_nircam():

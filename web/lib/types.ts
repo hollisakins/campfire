@@ -289,6 +289,16 @@ export interface NircamImage {
   file_size?: number; // in bytes, if available
 }
 
+// A per-(field, filter) exposure-coverage map (product_type 'nircam_expmap',
+// sourced from the storage_objects registry). Unlike mosaics there is one
+// fiducial map per field/filter — no tile/scale/extension axes.
+export interface NircamExpmap {
+  field: string;
+  filter: string;
+  storage_key: string;
+  file_size?: number; // size_bytes from the registry, if available
+}
+
 // NIRCam pipeline step names. Matches campfire_pipeline.common.cfp.CFP_KEYS
 // order: 'uncal' means raw exists but no canonical file yet; each subsequent
 // value is the name of the highest-completed step (process phase →
@@ -298,12 +308,10 @@ export const NIRCAM_STAGES = [
   'detector1',
   'persistence',
   'wisp',
-  'striping',
   'image2',
   'edge',
-  'sky',
+  'bkg',
   'diag_striping',
-  'variance',
   'wcs_shift',
   'preview',
   'jhat',

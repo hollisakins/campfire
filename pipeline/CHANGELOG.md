@@ -26,6 +26,17 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- NIRCam exposure maps: the fiducial (`canonical`-stage) per-filter map is now
+  written with an **undecorated filename** — `expmap_<field>_<filter>.fits`
+  (previously `expmap_<field>_<filter>_canonical.fits`) — so it presents to users
+  simply as *the* exposure map rather than one stage among several. The
+  reducer-only `uncal` quick-look keeps its explicit `_uncal` suffix (and its
+  matching PDF / `footprints.reg` follow the same rule), so the two never collide.
+  The FITS `STAGE` header keyword is unchanged (kept as provenance). `cfpipe nircam
+  expmap` and its `--stage` options are otherwise unchanged. Deploy ships only the
+  fiducial map (the `_uncal`/legacy `_canonical` variants are skipped) and it is now
+  surfaced for download on the web NIRCam page. Pure output-file naming change with
+  no effect on pixel values (`nircam/expmap.py`).
 - NIRCam wisp templates are now fetched from a public HTTPS host into
   `$CAMPFIRE_ROOT/cache/wisps/` against a checksummed manifest shipped with the
   package (`data/wisp_manifest.toml`), instead of being manually copied into the
@@ -132,6 +143,30 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- **NIRCam `striping` + `sky` + `variance` are unified into one `bkg` step**
+  (`CFP_BKG`), replacing three per-exposure steps and their two independent
+  source maskers with one. Process order is now detector1 → persistence → wisp →
+  image2 → **edge → bkg** → diag_striping → … (`edge` moved before `bkg` so edge
+  DQ feeds the mask). The step builds a single source mask via
+  `SubtractBackground` (mask only — **no** 2-D background subtraction; the
+  astrophysical sky is left for the mosaic) at mosaic-like depth with per-channel
+  pixel-scaling (LW ×0.5), then runs an iterative per-amp chain — **per-amp
+  pedestal → column median → amp-row GP ρ≈5 → amp-row GP ρ≈20** — that removes
+  the per-amp DC steps and the amp-*dependent* ~100 px banding the old chain left
+  behind (the striping fit-only 2-D background, which was restored into the
+  output, is dropped). The per-amp pedestal owns the per-exposure DC, preserving
+  the no-skymatch invariant (masked-background median ≈ 0 per exposure). Pixel
+  and flux values change; `VAR_RNOISE` rescaling is folded in and now uses the
+  shared, deeper mask (correction factor shifts slightly). New `[nircam.bkg]`
+  config replaces `[nircam.striping]` / `[nircam.sky]` / `[nircam.variance]`.
+  Provenance keys `CFP_1F` / `CFP_SKY` / `CFP_VAR` are retired in favor of
+  `CFP_BKG` (deploy stage tracking + the `nircam_reduction_progress` view and web
+  columns updated in lockstep). `diag_striping` now rebuilds its source mask via
+  `SubtractBackground`. The shared 1/f/pedestal/variance numerics move to a new
+  `campfire_pipeline.nircam.oneoverf` module. See
+  `docs/design-nircam-unified-background.md`. (Note: the offline research scripts
+  under `pipeline/experiments/oneoverf_gp/` still import the retired striping
+  internals and need updating before they run again.)
 - **NIRCam epoch mosaics** — `cfpipe nircam combine`/`resample`/`run`/`check` take
   a new `--epoch <name>` flag that builds a mosaic from a *subset* of a field's
   exposures (e.g. one program or one observing season), **additive and default-off**
@@ -386,6 +421,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- NIRCam combine no longer crashes on interrupted-save debris. A killed
+  `atomic_save` (e.g. a combine worker that dies mid-write) stages to
+  `<name>.tmp.fits` — `.tmp` inserted *before* the extension so the datamodel's
+  format dispatch still sees `.fits`. `Field.get_exposure_files` filtered
+  sidecars with `base.endswith('.tmp')`, which never matches that name, so the
+  truncated fragment (no ASDF/WCS extension) was pulled in as a phantom input
+  and blew up outlier detection with `AttributeError: No attribute 'wcs'` plus
+  an astropy truncation warning. The enumeration guard now also drops
+  `*.tmp.fits`, and `atomic_save` removes its staging file if the save raises so
+  it doesn't leave debris in the first place. No scientific-output change.
 - **NIRCam `align` closes the cross-filter dependency and gates observing mode.**
   Two correctness fixes to the align orchestration (opt-in, default-off):
     - *Cross-filter closure.* `run_align` now pools each physical exposure across

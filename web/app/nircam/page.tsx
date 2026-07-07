@@ -1,20 +1,22 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { NircamTable } from '@/components/nircam/NircamTable';
+import { NircamExpmapTable } from '@/components/nircam/NircamExpmapTable';
 import { NircamFilterBar, NircamFilterOptions, DEFAULT_NIRCAM_FILTERS } from '@/components/nircam/NircamFilterBar';
 import { CurlScriptGenerator } from '@/components/nircam/CurlScriptGenerator';
-import { getNircamImages, getNircamFilterOptions } from '@/lib/actions/nircam';
-import type { NircamImage } from '@/lib/types';
-import { LogIn, Loader2, ImageIcon } from 'lucide-react';
+import { getNircamImages, getNircamFilterOptions, getNircamExpmaps } from '@/lib/actions/nircam';
+import type { NircamImage, NircamExpmap } from '@/lib/types';
+import { LogIn, Loader2, ImageIcon, Layers } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
 export default function NircamPage() {
   const { user, loading: authLoading } = useAuth();
 
   const [images, setImages] = useState<NircamImage[]>([]);
+  const [expmaps, setExpmaps] = useState<NircamExpmap[]>([]);
   const [filters, setFilters] = useState<NircamFilterOptions>(DEFAULT_NIRCAM_FILTERS);
   const [selectedImages, setSelectedImages] = useState<NircamImage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,9 +38,10 @@ export default function NircamPage() {
     setError(null);
 
     try {
-      // Fetch images and filter options in parallel
-      const [imagesResult, filterOptionsResult] = await Promise.all([
+      // Fetch images, expmaps, and filter options in parallel
+      const [imagesResult, expmapsResult, filterOptionsResult] = await Promise.all([
         getNircamImages(),
+        getNircamExpmaps(),
         getNircamFilterOptions(),
       ]);
 
@@ -47,6 +50,10 @@ export default function NircamPage() {
       } else {
         setImages(imagesResult.images);
       }
+
+      // Expmaps are a secondary product; a fetch error there shouldn't blank the
+      // whole page — just leave the section empty (it renders nothing when empty).
+      setExpmaps(expmapsResult.error ? [] : expmapsResult.expmaps);
 
       if (!filterOptionsResult.error) {
         setAvailableFields(filterOptionsResult.fields);
@@ -76,6 +83,16 @@ export default function NircamPage() {
   const handleSelectionChange = (selected: NircamImage[]) => {
     setSelectedImages(selected);
   };
+
+  // Expmaps share the field + filter axes with mosaics, so honor those two
+  // filter-bar selections here too (tile/scale/extension/epoch don't apply).
+  const filteredExpmaps = useMemo(() => {
+    return expmaps.filter((e) => {
+      if (filters.fields.length > 0 && !filters.fields.includes(e.field)) return false;
+      if (filters.filters.length > 0 && !filters.filters.includes(e.filter)) return false;
+      return true;
+    });
+  }, [expmaps, filters.fields, filters.filters]);
 
   // Show login prompt if not authenticated
   if (!authLoading && !user) {
@@ -195,6 +212,21 @@ export default function NircamPage() {
               filters={filters}
               onSelectionChange={handleSelectionChange}
             />
+          )}
+
+          {/* Exposure maps — per-(field, filter) coverage maps (seconds of
+              exposure per pixel), one fiducial map per field/filter. */}
+          {filteredExpmaps.length > 0 && (
+            <div className="mt-10">
+              <div className="flex items-center gap-2 mb-2">
+                <Layers className="w-5 h-5 text-primary" />
+                <h2 className="text-lg font-semibold text-text-primary">Exposure maps</h2>
+              </div>
+              <p className="text-text-secondary text-sm mb-4">
+                Per-filter exposure-time coverage maps (pixel values in seconds).
+              </p>
+              <NircamExpmapTable expmaps={filteredExpmaps} />
+            </div>
           )}
         </>
       )}

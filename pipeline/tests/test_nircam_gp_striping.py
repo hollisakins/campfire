@@ -27,7 +27,7 @@ from campfire_pipeline.nircam.gp_striping import (
     _amprow_statistics,
     gp_amprow_offsets,
 )
-from campfire_pipeline.nircam.steps.striping import (
+from campfire_pipeline.nircam.oneoverf import (
     _median_amprow_offsets,
     fit_residual_striping,
 )

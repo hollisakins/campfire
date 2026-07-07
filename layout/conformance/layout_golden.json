@@ -114,10 +114,10 @@
     {
       "product_type": "nircam_expmap",
       "scope": {"field": "cosmos", "filt": "f444w"},
-      "filename": "expmap_cosmos_f444w_canonical.fits",
-      "relpath": "products/nircam/cosmos/f444w/expmap_cosmos_f444w_canonical.fits",
+      "filename": "expmap_cosmos_f444w.fits",
+      "relpath": "products/nircam/cosmos/f444w/expmap_cosmos_f444w.fits",
       "key_legacy": null,
-      "key_canonical": "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w_canonical.fits",
+      "key_canonical": "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w.fits",
       "bucket": "data",
       "tree_class": "cloud-backed-product"
     },
