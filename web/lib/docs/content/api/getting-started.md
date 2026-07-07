@@ -1,6 +1,6 @@
 # Getting Started
 
-A walkthrough from `pip install` to your first plotted spectrum and NIRCam cutout. Running example throughout: **RUBIES-EGS-49140** (`J141934.14+525238.7`) — a Little Red Dot at z=6.69 with public data from RUBIES, CAPERS, EGS-BUBBLES, OCEANS, C3PO, and THRILS.
+A walkthrough from `pip install` to your first plotted spectrum and NIRCam cutout. Running example throughout is the object **RUBIES-EGS-49140** (`J141934.14+525238.7`), a bright Little Red Dot at z=6.69 with public data from RUBIES, CAPERS, EGS-BUBBLES, OCEANS, C3PO, and THRILS.
 
 If you'd rather click "run all" and read the output, the same flow lives in `python/examples/quickstart.ipynb`.
 
@@ -8,10 +8,7 @@ If you'd rather click "run all" and read the output, the same flow lives in `pyt
 
 ## 1. Install
 
-`campfire` depends on `campfire-layout` — a small, zero-dependency sibling
-package in the same repository that carries the shared directory/key contract.
-It isn't published to PyPI, so install both from the monorepo in a single
-command:
+You can install the CLI directly from Github: 
 
 ```bash
 pip install \
@@ -19,8 +16,7 @@ pip install \
   "campfire @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
-For the figures and stacking shown later in this guide, add the optional extras
-to the `campfire` requirement — keep the `campfire-layout` line:
+For the figures and stacking shown later in this guide, add the optional extras:
 
 ```bash
 pip install \
