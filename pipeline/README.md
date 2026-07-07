@@ -6,10 +6,18 @@ but with several custom stages for improved background subtraction, 1/f noise su
 
 ## Installation
 
+`campfire-pipeline` depends on `campfire-layout` — a zero-dependency sibling
+package in the same repository that isn't on PyPI. From the repo root, install
+it first, then the pipeline (editable):
+
 ```bash
+pip install -e ./layout      # campfire-layout — not on PyPI, must come first
 cd pipeline
 pip install -e .
 ```
+
+To install a tagged release straight from GitHub without cloning, see the
+install snippet at the top of [`CHANGELOG.md`](./CHANGELOG.md).
 
 Requires Python 3.12+ and the following environment:
 - A [CRDS](https://jwst-crds.stsci.edu/) cache (`CRDS_PATH` and `CRDS_SERVER_URL` env vars)

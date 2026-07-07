@@ -7,5 +7,6 @@ dependencies:
   - pip
   - pip:
     - jwst>=1.20,<1.21
+    - -e ./layout      # campfire-layout: not on PyPI; must precede the packages that depend on it
     - -e ./pipeline
     - -e ./python

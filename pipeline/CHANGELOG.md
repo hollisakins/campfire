@@ -14,10 +14,13 @@ by scientific impact:
   internal refactors, tests). Triggers a **PATCH** bump.
 
 Versions are git tags of the form `pipeline-vX.Y.Z` (resolved by
-`setuptools-scm`). Install a specific release:
+`setuptools-scm`). Install a specific release — `campfire-layout` is a sibling
+package in the same repository that isn't on PyPI, so install it alongside:
 
 ```
-pip install "git+https://github.com/hollisakins/campfire.git@pipeline-vX.Y.Z#subdirectory=pipeline"
+pip install \
+  "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
+  "git+https://github.com/hollisakins/campfire.git@pipeline-vX.Y.Z#subdirectory=pipeline"
 ```
 
 Release procedure: edit the `## Unreleased` section below, then run
@@ -26,6 +29,11 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- Install docs: `pip install` instructions now pull the unpublished
+  `campfire-layout` sibling package from the monorepo alongside the pipeline, so
+  a fresh `pip install "git+…#subdirectory=pipeline"` (and `conda env create`)
+  resolves instead of failing on the missing `campfire-layout` dependency. Docs
+  only — no code or output change (`CHANGELOG.md`, `README.md`, `environment.yml`).
 - NIRCam exposure maps: the fiducial (`canonical`-stage) per-filter map is now
   written with an **undecorated filename** — `expmap_<field>_<filter>.fits`
   (previously `expmap_<field>_<filter>_canonical.fits`) — so it presents to users

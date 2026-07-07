@@ -12,17 +12,27 @@ The CLI and Python client are siblings — same install, same credentials, same 
 
 ## Install
 
-```bash
-pip install "git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
-```
-
-Optional extras:
+`campfire` depends on `campfire-layout`, a sibling package in the same repository
+that isn't on PyPI. Install both from the monorepo in one command:
 
 ```bash
-pip install "campfire[plotting] @ git+..."   # interactive Plotly figures
-pip install "campfire[deploy]   @ git+..."   # NIRCam cutouts, calibration, stacking
-pip install "campfire[all]      @ git+..."   # everything
+pip install \
+  "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
+  "git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
+
+Optional extras — keep the `campfire-layout` line and add the extra to the
+`campfire` requirement (`[plotting]`, `[deploy]`, or `[all]`):
+
+```bash
+pip install \
+  "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
+  "campfire[all] @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
+```
+
+- `[plotting]` — interactive Plotly figures
+- `[deploy]` — NIRCam cutouts, calibration, stacking
+- `[all]` — everything
 
 ## First five minutes
 

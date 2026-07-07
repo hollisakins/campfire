@@ -4,7 +4,12 @@ Python package for querying, downloading, and analyzing NIRSpec spectroscopic da
 
 ## Installation
 
+`campfire` depends on `campfire-layout` — a zero-dependency sibling package in
+the same repository that isn't on PyPI. From the repo root, install it first,
+then the client (editable):
+
 ```bash
+pip install -e ./layout      # campfire-layout — not on PyPI, must come first
 cd python
 pip install -e .
 
@@ -18,6 +23,9 @@ pip install -e ".[deploy]"
 # Everything
 pip install -e ".[all]"
 ```
+
+To install straight from GitHub without cloning the repo, see
+[Getting Started](https://campfire.hollisakins.com/docs/api/getting-started).
 
 ## Authentication
 

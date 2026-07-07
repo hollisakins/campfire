@@ -8,14 +8,24 @@ If you'd rather click "run all" and read the output, the same flow lives in `pyt
 
 ## 1. Install
 
+`campfire` depends on `campfire-layout` — a small, zero-dependency sibling
+package in the same repository that carries the shared directory/key contract.
+It isn't published to PyPI, so install both from the monorepo in a single
+command:
+
 ```bash
-pip install "git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
+pip install \
+  "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
+  "git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
-For the figures and stacking shown later in this guide, install the optional extras:
+For the figures and stacking shown later in this guide, add the optional extras
+to the `campfire` requirement — keep the `campfire-layout` line:
 
 ```bash
-pip install "campfire[deploy] @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
+pip install \
+  "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
+  "campfire[deploy] @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
 This pulls in `matplotlib`, `scipy`, `photutils`, `reproject`, and `Pillow` — used by NIRCam cutouts, calibration, and stacking. If you only need querying and quick-look plotting, the base install is enough.
