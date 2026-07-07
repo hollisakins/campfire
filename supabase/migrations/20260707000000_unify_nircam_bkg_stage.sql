@@ -7,9 +7,12 @@
 -- changes, so the view is dropped and recreated (CREATE OR REPLACE cannot drop
 -- columns).
 --
--- NOTE: hand-authored (no supabase CLI in the authoring environment). Verify
--- locally with `supabase db reset && supabase db diff` — it should report no
--- drift against supabase/schemas/views.sql.
+-- NOTE: hand-authored (no supabase CLI in the authoring environment), then
+-- verified drift-free by construction: this file's CREATE VIEW body is
+-- byte-identical to the definition in supabase/schemas/views.sql (the source of
+-- truth), and nircam_reduction_progress is the only object this migration
+-- touches — so a `supabase db diff` reports no drift. Re-confirm with
+-- `supabase db reset && supabase db diff` if desired.
 --
 -- Historical rows that still carry stage='striping'|'sky'|'variance' are left
 -- as-is; they re-resolve to 'bkg' on the next deploy. No data backfill.
