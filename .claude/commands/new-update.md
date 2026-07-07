@@ -68,5 +68,6 @@ rendered in full on /updates; the landing feed shows the `summary` instead.
 2. Write the file with today's date in both the filename and `date` frontmatter.
 3. Confirm the path you created and show the rendered frontmatter so the user can
    eyeball it. No build step is required — the file is picked up automatically.
-4. For a `release` entry, also remind the user to update
-   `web/lib/updates/versions.ts` (pipeline / client versions, data-release label).
+4. For a `release` entry, also remind the user to set the data-release label
+   (`DATA_RELEASE`) in `web/lib/updates/versions.ts`. The pipeline and client
+   version badges update themselves from GitHub, so they don't need touching.

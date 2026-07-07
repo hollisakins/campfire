@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { Lock, Megaphone } from 'lucide-react';
 import { getVisibleUpdates } from '@/lib/updates/visibility';
-import { CURRENT_VERSIONS } from '@/lib/updates/versions';
+import { STATUS_BADGES, DATA_RELEASE, GITHUB_REPO_URL } from '@/lib/updates/versions';
 import { formatUpdateDate } from '@/lib/updates/format';
 import { CategoryChip } from '@/components/updates/CategoryChip';
 import { MarkdownRenderer } from '@/components/docs';
@@ -31,25 +31,45 @@ export default async function UpdatesPage() {
           Python client changes.
         </p>
 
-        {/* Current versions */}
+        {/* Current versions — badges read live from GitHub (see lib/updates/versions). */}
         <div className="rounded-card border border-border bg-card p-5 mb-10">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-text-tertiary mb-3">
-            Current versions
-          </h2>
-          <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
-            <div>
-              <dt className="text-text-secondary">Pipeline</dt>
-              <dd className="font-mono text-text-primary">{CURRENT_VERSIONS.pipeline}</dd>
-            </div>
-            <div>
-              <dt className="text-text-secondary">CLI / Python client</dt>
-              <dd className="font-mono text-text-primary">{CURRENT_VERSIONS.client}</dd>
-            </div>
-            <div>
-              <dt className="text-text-secondary">Data release</dt>
-              <dd className="text-text-primary">{CURRENT_VERSIONS.dataRelease}</dd>
-            </div>
-          </dl>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-text-tertiary">
+              Current versions
+            </h2>
+            <a
+              href={GITHUB_REPO_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="shrink-0 text-xs text-primary hover:underline"
+            >
+              View on GitHub →
+            </a>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {STATUS_BADGES.map((badge) => (
+              <a
+                key={badge.key}
+                href={badge.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex"
+                title={badge.alt}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element -- external shields.io badge, not a Next-optimizable asset */}
+                <img src={badge.src} alt={badge.alt} className="h-5" />
+              </a>
+            ))}
+            {DATA_RELEASE && (
+              <span className="inline-flex items-center rounded-full border border-border bg-card px-2 py-0.5 text-xs font-medium text-text-secondary">
+                Data release: {DATA_RELEASE}
+              </span>
+            )}
+          </div>
+          <p className="mt-3 text-xs text-text-tertiary">
+            These packages are in active development — badges track the latest
+            state on GitHub.
+          </p>
         </div>
 
         {/* Entries */}
