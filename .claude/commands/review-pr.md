@@ -11,7 +11,7 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(npm:*), Bash(pnpm:*), Bash(ruff:*),
 - Issue comments: !`gh pr view $ARGUMENTS --json comments 2>/dev/null || echo '[]'`
 - Reviews: !`gh pr view $ARGUMENTS --json reviews 2>/dev/null || echo '[]'`
 - Inline review comments: !`PR_NUM=$(gh pr view $ARGUMENTS --json number -q .number 2>/dev/null); if [ -n "$PR_NUM" ]; then REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner); gh api "repos/$REPO/pulls/$PR_NUM/comments"; else echo '[]'; fi`
-- Repo guide: @CLAUDE.md
+- Repo guide: @AGENTS.md
 
 ## Task
 
