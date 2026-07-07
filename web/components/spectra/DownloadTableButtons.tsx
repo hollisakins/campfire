@@ -5,6 +5,7 @@ import { Download, FileText, Package, Loader2, ChevronDown } from 'lucide-react'
 import { generateCSV, generateCsvFilename, generateFitsDownloadUrl } from '@/lib/actions/download';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
 import { FITS_DOWNLOAD_FILE_LIMIT } from '@/lib/actions/spectra-types';
+import { downloadFilesAsZip } from '@/lib/utils/zip-download';
 import { AdvancedFilterOptions } from './SpectraFilterBar';
 
 interface DownloadDropdownProps {
@@ -99,73 +100,19 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
       const { files, zipFilename } = result;
       setFitsProgress({ done: 0, total: files.length });
 
-      // Fetch files in parallel with concurrency limit
-      const CONCURRENCY = 6;
-      const fileData: { filename: string; data: Uint8Array }[] = [];
-      const errors: string[] = [];
-      let completed = 0;
-      const queue = [...files];
+      // Fetch each file through the proxy and bundle into a single ZIP client-side.
+      const res = await downloadFilesAsZip(
+        files,
+        zipFilename || 'campfire_download.zip',
+        (done, total) => setFitsProgress({ done, total }),
+      );
 
-      async function fetchWorker() {
-        while (queue.length > 0) {
-          const file = queue.shift()!;
-          try {
-            // proxyUrl is a ready-to-fetch Worker link (?url=<presigned>&sig=<hmac>);
-            // the Worker supplies CORS so the browser can read the bytes to zip them.
-            const resp = await fetch(file.proxyUrl);
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const buf = await resp.arrayBuffer();
-            fileData.push({ filename: file.filename, data: new Uint8Array(buf) });
-          } catch {
-            errors.push(file.filename);
-          }
-          completed++;
-          setFitsProgress({ done: completed, total: files.length });
-        }
-      }
-
-      await Promise.all(Array.from({ length: CONCURRENCY }, () => fetchWorker()));
-
-      if (fileData.length === 0) {
-        setError('All file downloads failed');
+      if (!res.ok) {
+        setError(res.error || 'Failed to download FITS files');
         return;
       }
-
-      // Build ZIP in browser
-      const { zipSync } = await import('fflate');
-
-      // Deduplicate filenames
-      const zipInput: Record<string, [Uint8Array, { level: 0 }]> = {};
-      const seenNames = new Set<string>();
-      for (const { filename, data } of fileData) {
-        let name = filename;
-        if (seenNames.has(name)) {
-          const dot = name.lastIndexOf('.');
-          const base = dot > 0 ? name.substring(0, dot) : name;
-          const ext = dot > 0 ? name.substring(dot) : '';
-          let counter = 2;
-          while (seenNames.has(`${base}_${counter}${ext}`)) counter++;
-          name = `${base}_${counter}${ext}`;
-        }
-        seenNames.add(name);
-        zipInput[name] = [data, { level: 0 }];
-      }
-
-      const zipped = zipSync(zipInput);
-
-      // Trigger browser download
-      const blob = new Blob([zipped.buffer as ArrayBuffer], { type: 'application/zip' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = zipFilename || 'campfire_download.zip';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      if (errors.length > 0) {
-        setError(`${errors.length} file(s) failed to download`);
+      if (res.failed.length > 0) {
+        setError(`${res.failed.length} file(s) failed to download`);
       }
     } catch (err) {
       console.error('FITS download error:', err);

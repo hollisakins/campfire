@@ -487,6 +487,89 @@ export async function generateFitsDownloadUrl(
 }
 
 /**
+ * Authorize a single object's spectra for bulk download and return ready-to-fetch
+ * Worker proxy URLs plus a ZIP filename.
+ *
+ * Client-supplied paths are never trusted: the authorized set is re-derived
+ * server-side by querying `spectra` under the caller's RLS session, so a path the
+ * user can't see (private program, forged) is simply never presigned. Each
+ * authorized key is presigned against its home backend (dual-read: R2 or OSN) and
+ * HMAC-signed so the credential-free proxy Worker only fetches URLs we authorized.
+ * The browser fetches each proxy URL (which supplies CORS) and zips the results
+ * client-side — the same path the results-table bulk download uses.
+ */
+export async function generateObjectFitsDownloadUrls(
+  fitsPaths: string[],
+  targetId: string,
+): Promise<{
+  files: DownloadFile[] | null;
+  zipFilename: string | null;
+  error: string | null;
+}> {
+  try {
+    if (!JWT_SECRET) {
+      return { files: null, zipFilename: null, error: 'Server configuration error: JWT secret not set' };
+    }
+
+    if (!fitsPaths || fitsPaths.length === 0) {
+      return { files: null, zipFilename: null, error: 'No FITS files provided' };
+    }
+
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return { files: null, zipFilename: null, error: 'Not authenticated' };
+    }
+
+    // Re-derive the authorized key set under the caller's RLS session. Never
+    // presign a client-supplied path the DB won't return for this user.
+    const { data: rows, error: queryError } = await supabase
+      .from('spectra')
+      .select('fits_path')
+      .in('fits_path', fitsPaths);
+
+    if (queryError) {
+      console.error('Error authorizing object FITS download:', queryError);
+      return { files: null, zipFilename: null, error: 'Failed to authorize download' };
+    }
+
+    const keys = [...new Set((rows || []).map((r) => r.fits_path as string))];
+    if (keys.length === 0) {
+      return { files: null, zipFilename: null, error: 'No FITS files found or access denied' };
+    }
+
+    const filenames = keys.map((k) => k.split('/').pop() || k);
+
+    // Presign each authorized key against its home backend (dual-read), then
+    // HMAC-sign the presigned URL so the proxy only fetches URLs we authorized.
+    const urls = await generateDownloadUrls(keys, PRESIGN_TTL_SECONDS);
+    const files: DownloadFile[] = await Promise.all(
+      urls.map(async (signedUrl, i) => {
+        const sig = await signUrlSignature(signedUrl, JWT_SECRET);
+        const proxyUrl = `${WORKER_URL}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
+        return { proxyUrl, filename: filenames[i] };
+      })
+    );
+
+    const zipFilename = `${targetId}_spectra.zip`;
+
+    // Track object-detail bulk download (fire-and-forget)
+    trackDownload({
+      userId: user.id,
+      downloadType: 'fits_object',
+      targetIds: [targetId],
+      targetCount: 1,
+      fileCount: files.length,
+    });
+
+    return { files, zipFilename, error: null };
+  } catch (error) {
+    console.error('Error generating object FITS download URLs:', error);
+    return { files: null, zipFilename: null, error: 'Failed to generate download URLs' };
+  }
+}
+
+/**
  * Authorize NIRCam mosaic downloads and return ready-to-fetch Worker proxy URLs,
  * keyed by canonical storage key (file_path).
  *
