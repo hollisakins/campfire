@@ -515,6 +515,17 @@ export async function generateObjectFitsDownloadUrls(
       return { files: null, zipFilename: null, error: 'No FITS files provided' };
     }
 
+    // Enforce the same cap the results-table ZIP path uses. A real object never
+    // has this many spectra, but this action is a POST endpoint any authenticated
+    // client can call directly, so bound the request server-side before the DB
+    // query / presign / oversized in-browser ZIP.
+    if (fitsPaths.length > FITS_DOWNLOAD_FILE_LIMIT) {
+      return {
+        files: null, zipFilename: null,
+        error: `Too many files requested (${fitsPaths.length.toLocaleString()}); the ${FITS_DOWNLOAD_FILE_LIMIT}-file ZIP limit applies here too.`,
+      };
+    }
+
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
@@ -522,10 +533,12 @@ export async function generateObjectFitsDownloadUrls(
     }
 
     // Re-derive the authorized key set under the caller's RLS session. Never
-    // presign a client-supplied path the DB won't return for this user.
+    // presign a client-supplied path the DB won't return for this user. Pull
+    // target_id too so download tracking records the real member targets (a
+    // merged object spans several) rather than the display object id.
     const { data: rows, error: queryError } = await supabase
       .from('spectra')
-      .select('fits_path')
+      .select('fits_path, target_id')
       .in('fits_path', fitsPaths);
 
     if (queryError) {
@@ -553,12 +566,14 @@ export async function generateObjectFitsDownloadUrls(
 
     const zipFilename = `${targetId}_spectra.zip`;
 
-    // Track object-detail bulk download (fire-and-forget)
+    // Track object-detail bulk download (fire-and-forget). Log the actual member
+    // target ids of the downloaded spectra — a merged object fans out to several.
+    const targetIds = [...new Set((rows || []).map((r) => r.target_id as string).filter(Boolean))];
     trackDownload({
       userId: user.id,
       downloadType: 'fits_object',
-      targetIds: [targetId],
-      targetCount: 1,
+      targetIds: targetIds.length > 0 ? targetIds : [targetId],
+      targetCount: targetIds.length || 1,
       fileCount: files.length,
     });
 
