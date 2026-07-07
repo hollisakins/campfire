@@ -33,7 +33,7 @@ function generateSpectra(objectId: string, gratingSet: string[], baseSNR: number
     target_id: objectId,
     grating,
     fits_path: `s3://campfire-data/${objectId}/${grating.toLowerCase()}_spec.fits`,
-    reduction_version: 'v0.3',
+    cfpipe_version: 'v0.3',
     signal_to_noise: baseSNR + Math.random() * 10 - 5,
     exposure_time: grating === 'PRISM' ? 2500 + Math.random() * 1000 : 5000 + Math.random() * 2000,
     created_at: '2024-06-15T12:00:00Z',

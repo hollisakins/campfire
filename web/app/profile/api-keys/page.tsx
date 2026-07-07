@@ -263,11 +263,11 @@ export default function ApiKeysPage() {
                       type={showKey ? 'text' : 'password'}
                       value={newlyCreatedKey}
                       readOnly
-                      className="w-full px-4 py-3 pr-24 border-2 border-green-300 rounded-lg font-mono text-sm bg-green-50 text-green-900 focus:outline-none"
+                      className="w-full px-4 py-3 pr-24 border-2 border-success rounded-lg font-mono text-sm bg-primary-soft text-text-primary focus:outline-none"
                     />
                     <button
                       onClick={() => setShowKey(!showKey)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-2 hover:bg-green-100 rounded"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-2 hover:bg-card-hover rounded"
                       title={showKey ? 'Hide key' : 'Show key'}
                     >
                       {showKey ? (
@@ -451,7 +451,7 @@ export default function ApiKeysPage() {
                     value={newKeyName}
                     onChange={(e) => setNewKeyName(e.target.value)}
                     placeholder="e.g., My Laptop, Production Server"
-                    className="w-full px-4 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="w-full px-4 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
                     disabled={creating}
                   />
                   <p className="text-sm text-text-secondary mt-1">

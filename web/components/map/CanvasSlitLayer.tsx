@@ -173,8 +173,6 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
       if (widthPx < 1.5) return;
 
       const items = preparedRef.current;
-      const halfW = widthPx / 2;
-      const halfH = heightPx / 2;
       const pitchPx = SHUTTER_PITCH_ARCSEC * pxPerArcsec;
 
       // Group shutters by slitlet so we can compute aligned positions
@@ -195,9 +193,14 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
         paRad: number;
         color: string;
         isStuck: boolean;
+        widthPx: number;
+        heightPx: number;
       }
       const drawItems: DrawItem[] = [];
-      const margin = Math.max(widthPx, heightPx) + 4;
+      // Cull margin generous enough for the tallest fixed slit (~3.8") so an
+      // elongated aperture extending into view isn't dropped when its center is
+      // just off-screen.
+      const margin = Math.max(widthPx, heightPx, 4 * pxPerArcsec) + 4;
 
       for (const slitlet of slitletMap.values()) {
         // Use source shutter (idx=0) as reference, fall back to first
@@ -228,11 +231,16 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
           if (pt.x < boundsMin.x - margin || pt.x > boundsMax.x + margin ||
               pt.y < boundsMin.y - margin || pt.y > boundsMax.y + margin) continue;
 
+          // Per-aperture dimensions: fixed slits carry their own size; MSA
+          // shutters (and legacy rows without the columns) use the defaults.
+          const sh = item.slit as Shutter;
           drawItems.push({
             pt,
             paRad: item.paRad,
             color: item.color,
             isStuck: item.isStuck || false,
+            widthPx: (sh.aperture_width_arcsec ?? SHUTTER_WIDTH_ARCSEC) * pxPerArcsec,
+            heightPx: (sh.aperture_height_arcsec ?? SHUTTER_HEIGHT_ARCSEC) * pxPerArcsec,
           });
         }
       }
@@ -258,7 +266,7 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
           ctx!.save();
           ctx!.translate(item.pt.x, item.pt.y);
           ctx!.rotate(-item.paRad);
-          ctx!.fillRect(-halfW, -halfH, widthPx, heightPx);
+          ctx!.fillRect(-item.widthPx / 2, -item.heightPx / 2, item.widthPx, item.heightPx);
           ctx!.restore();
         }
 
@@ -272,7 +280,7 @@ export function CanvasSlitLayer(props: CanvasSlitLayerProps) {
           ctx!.lineWidth = item.isStuck ? 1.5 : 1;
           if (item.isStuck) ctx!.setLineDash([3, 2]);
           else ctx!.setLineDash([]);
-          ctx!.strokeRect(-halfW, -halfH, widthPx, heightPx);
+          ctx!.strokeRect(-item.widthPx / 2, -item.heightPx / 2, item.widthPx, item.heightPx);
           ctx!.restore();
         }
       }

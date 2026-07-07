@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
-from glob import glob
 
 import numpy as np
 from astropy.io import fits
@@ -49,28 +48,18 @@ def _resolve_pixel_scale_str(value):
 
 
 def _find_mosaic(filter_dir, field_name, filtname, pixel_scale_str, tile):
-    """Find the i2d cube for a (filter, tile) pair, agnostic to ``version``.
+    """Find the i2d cube for a (filter, tile) pair.
 
-    The resample step bakes ``version`` into the filename as ``v0_1``
-    (or whatever override is configured); we glob it out so the RGB
-    command works against existing reductions without having to know
-    the reduction version. If multiple versions are present, the
-    lexicographically last (typically the newest) is used and a warning
-    is logged.
+    The mosaic basename is version-free (epic #261, N2 / D3): one canonical
+    ``mosaic_nircam_<filter>_<field>_<scale>_<tile>_i2d.fits`` per slot, so this
+    resolves it directly. A stray pre-N2 ``_v0_1_``/``_latest_`` file (from a
+    reduction that predates the retirement) is intentionally NOT matched — that
+    slot is re-reduced fresh (D6).
     """
-    pattern = os.path.join(
-        filter_dir,
-        f'mosaic_nircam_{filtname}_{field_name}_{pixel_scale_str}_*_{tile}_i2d.fits',
-    )
-    matches = sorted(glob(pattern))
-    if not matches:
-        return None
-    if len(matches) > 1:
-        log(
-            f"  [{tile}/{filtname}] multiple mosaic versions found, "
-            f"using {os.path.basename(matches[-1])}"
-        )
-    return matches[-1]
+    from campfire_pipeline.nircam.manifest import build_mosaic_name
+    name = build_mosaic_name(filtname, field_name, pixel_scale_str, tile)
+    path = os.path.join(filter_dir, f'{name}_i2d.fits')
+    return path if os.path.exists(path) else None
 
 
 def _load_sci_wht(path):

@@ -18,7 +18,18 @@ from astropy.io import fits
 from astropy.table import Table
 
 from campfire_pipeline.common.io import log
-from campfire_pipeline.nirspec.slits import compute_slit_centers, get_source_pos
+from campfire_pipeline.nirspec.slits import (
+    compute_slit_centers, compute_fixed_slit_apertures, get_source_pos,
+)
+
+
+def _is_fixed_slit(spec_file):
+    """True if the spec file's EXPOSURES HDU marks it as a fixed-slit source."""
+    try:
+        exp = Table.read(spec_file, hdu=7)
+        return 'fixed_slit' in exp.colnames and bool(exp['fixed_slit'][0])
+    except Exception:
+        return False
 
 
 def generate_shutters_table(obs_name, obs_dir, field):
@@ -80,10 +91,19 @@ def generate_shutters_table(obs_name, obs_dir, field):
             grating = _get_grating(spec_file)
 
             try:
-                slit_data = compute_slit_centers(
-                    [spec_file],
-                    corrected_pos=(source_ra, source_dec),
-                )
+                # Fixed-slit sources (standalone or inside an MSA exposure) are a
+                # single aperture, not a multi-shutter slitlet; MSA shutter
+                # geometry would be wrong for them.
+                if _is_fixed_slit(spec_file):
+                    slit_data = compute_fixed_slit_apertures(
+                        spec_file,
+                        corrected_pos=(source_ra, source_dec),
+                    )
+                else:
+                    slit_data = compute_slit_centers(
+                        [spec_file],
+                        corrected_pos=(source_ra, source_dec),
+                    )
             except Exception as e:
                 log(f"Warning: failed to compute slit centers for "
                     f"source {source_id} ({grating}): {e}")
@@ -102,6 +122,9 @@ def generate_shutters_table(obs_name, obs_dir, field):
                     'shutter_idx': sd['shutter_idx'],
                     'shutter_state': sd['shutter_state'],
                     'v3pa': sd['v3pa'],
+                    'aperture_name': sd['aperture_name'],
+                    'aperture_width_arcsec': sd['aperture_width_arcsec'],
+                    'aperture_height_arcsec': sd['aperture_height_arcsec'],
                 })
 
     if not rows:
@@ -112,6 +135,7 @@ def generate_shutters_table(obs_name, obs_dir, field):
         'object_id', 'source_id', 'observation', 'field', 'grating',
         'center_ra', 'center_dec', 'position_angle',
         'shutter_idx', 'shutter_state', 'v3pa',
+        'aperture_name', 'aperture_width_arcsec', 'aperture_height_arcsec',
     ]
     table_data = {col: [r[col] for r in rows] for col in col_order}
     table = Table(table_data)

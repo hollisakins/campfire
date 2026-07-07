@@ -106,7 +106,7 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
                   window.open(`/nirspec/objects/${encodeURIComponent(objId)}`, '_blank');
                 }
               }}
-              className="w-full text-left px-2 py-1.5 rounded hover:bg-card transition-colors group"
+              className="w-full text-left px-2 py-1.5 rounded hover:bg-card-hover transition-colors group"
             >
               <div className="flex items-center gap-1.5 text-xs">
                 <span className="flex-shrink-0">{getQualityIcon(obj.redshift_quality)}</span>

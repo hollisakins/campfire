@@ -1,0 +1,11 @@
+# Heavy / regenerable artifacts — only the analysis code + README are tracked.
+prestriping/
+figs/
+figs_cfn/
+logs/
+diag_scripts/
+__pycache__/
+*.fits
+*.pkl
+*.pdf
+.DS_Store

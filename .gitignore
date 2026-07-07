@@ -30,6 +30,9 @@ Thumbs.db
 # CAMPFIRE Secrets - DO NOT COMMIT
 campfire/config.toml
 scripts/config.toml
+.env
+.env.*
+!.env.example
 
 # Data directories (large files)
 data/raw/
@@ -63,3 +66,12 @@ logs/
 
 # Claude Code per-user state
 .claude/
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+web/.ds-sync-styles.css
+
+# Periodic /campfire-review output (local triage artifacts)
+reports/

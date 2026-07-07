@@ -70,17 +70,17 @@ export const CommentHistory: React.FC<CommentHistoryProps> = ({
           <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900 rounded-full flex items-center justify-center">
             <MessageSquare className="w-5 h-5 text-blue-600 dark:text-blue-400" />
           </div>
-          <h2 className="text-lg font-semibold text-text-primary dark:text-slate-100">
+          <h2 className="text-lg font-semibold text-text-primary">
             Your Comments
           </h2>
         </div>
-        <span className="text-sm text-text-secondary dark:text-slate-400">
+        <span className="text-sm text-text-secondary">
           {totalCount} total
         </span>
       </div>
 
       {comments.length === 0 ? (
-        <p className="text-text-secondary dark:text-slate-400 text-sm py-4">
+        <p className="text-text-secondary text-sm py-4">
           No comments yet. Comments you leave on objects will appear here.
         </p>
       ) : (
@@ -99,20 +99,20 @@ export const CommentHistory: React.FC<CommentHistoryProps> = ({
               <Link
                 key={comment.id}
                 href={href}
-                className="block p-3 rounded-lg border border-border dark:border-slate-700
-                           hover:bg-card-hover dark:hover:bg-slate-700 transition-colors"
+                className="block p-3 rounded-lg border border-border
+                           hover:bg-card-hover transition-colors"
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm text-text-primary dark:text-slate-100 line-clamp-2">
+                    <p className="text-sm text-text-primary line-clamp-2">
                       {comment.content}
                     </p>
-                    <p className="mt-1 text-xs text-text-secondary dark:text-slate-400">
+                    <p className="mt-1 text-xs text-text-secondary">
                       on <span className="font-mono">{label}</span>
                       {comment.edited_at && ' (edited)'}
                     </p>
                   </div>
-                  <span className="text-xs text-text-secondary dark:text-slate-400 whitespace-nowrap">
+                  <span className="text-xs text-text-secondary whitespace-nowrap">
                     {formatDate(comment.created_at)}
                   </span>
                 </div>

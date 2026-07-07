@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import { generateDownloadUrl } from '@/lib/r2';
+import { deriveSibling } from '@/lib/layout';
 
 export interface SpectrumData {
   wave: number[];
@@ -55,6 +56,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Service-role read bypasses RLS, so gate unpublished spectra here: a
+    // non-admin must never receive flux/wave/2D JSON for an draft/revoked
+    // spectrum, whether resolved by spectrum_id or by fits_path. No-op in B1.
+    const isAdmin = await isAdminUser(userId);
+
     // Parse query parameters
     const searchParams = request.nextUrl.searchParams;
     const spectrumId = searchParams.get('spectrum_id');
@@ -62,11 +68,14 @@ export async function GET(request: NextRequest) {
 
     // If spectrum_id provided, look up the fits_path
     if (spectrumId && !fitsPath) {
-      const { data: spectrumRow, error: spectrumRowError } = await supabase
+      let spectrumRowQuery = supabase
         .from('spectra')
         .select('fits_path, target_id, targets!inner(program_slug)')
-        .eq('spectrum_id', spectrumId)
-        .single();
+        .eq('spectrum_id', spectrumId);
+      if (!isAdmin) {
+        spectrumRowQuery = spectrumRowQuery.eq('deploy_status', 'published');
+      }
+      const { data: spectrumRow, error: spectrumRowError } = await spectrumRowQuery.single();
 
       if (spectrumRowError || !spectrumRow) {
         return NextResponse.json(
@@ -98,11 +107,14 @@ export async function GET(request: NextRequest) {
     }
 
     // Verify user has access to this file via the spectra table
-    const { data: spectrum, error: spectrumError } = await supabase
+    let spectrumQuery = supabase
       .from('spectra')
       .select('id, target_id')
-      .eq('fits_path', fitsPath)
-      .single();
+      .eq('fits_path', fitsPath);
+    if (!isAdmin) {
+      spectrumQuery = spectrumQuery.eq('deploy_status', 'published');
+    }
+    const { data: spectrum, error: spectrumError } = await spectrumQuery.single();
 
     if (spectrumError || !spectrum) {
       return NextResponse.json(
@@ -125,19 +137,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Convert FITS path to JSON path
-    const jsonPath = fitsPath.replace('.fits', '.json');
+    // Derive the spectrum-JSON sibling key via the shared layout contract
+    const jsonPath = deriveSibling(fitsPath, 'spectrum_json');
 
     // Generate signed URL for the JSON file
     const signedUrl = await generateDownloadUrl(jsonPath, 3600);
-
-    // Check if R2 is configured
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return NextResponse.json(
-        { error: 'Download service not configured' },
-        { status: 503 }
-      );
-    }
 
     // Fetch the JSON data from R2
     const response = await fetch(signedUrl);

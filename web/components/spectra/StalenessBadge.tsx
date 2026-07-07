@@ -22,7 +22,7 @@ interface StalenessBadgeProps {
    *  "Mark as reviewed" action. Omit (or pass `compact`) for a static badge. */
   objectId?: number;
   version?: number;
-  /** Current user has can_comment — controls whether the action button is shown. */
+  /** Current user has can_inspect — controls whether the action button is shown. */
   canMarkReviewed?: boolean;
   /** Fired after a successful PATCH so the parent can update local state and
    *  hide the badge without a full refetch. */

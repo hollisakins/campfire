@@ -15,11 +15,17 @@ const config: Config = {
         'primary-text': 'var(--primary-text)',
         'on-primary': 'var(--on-primary)',
         'primary-soft': 'var(--primary-soft)',
-        header: '#475569',       // Dark slate header
+        header: 'var(--header)',
+        'header-elevated': 'var(--header-elevated)',
+        'header-foreground': 'var(--header-foreground)',
+        'header-muted': 'var(--header-muted)',
+        'header-border': 'var(--header-border)',
+        'header-hover': 'var(--header-hover)',
         background: 'var(--background)',
         card: 'var(--card)',
         'card-hover': 'var(--card-hover)',
         'surface-2': 'var(--surface-2)',
+        'table-header': 'var(--table-header)',
         border: 'var(--border)',
         'border-strong': 'var(--border-strong)',
         success: 'var(--success)',
@@ -33,8 +39,8 @@ const config: Config = {
         }
       },
       fontFamily: {
-        sans: ['var(--font-roboto)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-roboto-mono)', 'ui-monospace', 'monospace'],
+        sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
       },
       borderRadius: {
         'card': '0.75rem',
@@ -48,10 +54,24 @@ const config: Config = {
           '0%': { opacity: '0', transform: 'scale(0.95)' },
           '100%': { opacity: '1', transform: 'scale(1)' },
         },
+        // Override Tailwind's default `spin` keyframe, which only defines a
+        // `to: rotate(360deg)` frame. With an implicit `from` (the element's
+        // underlying `none`), Firefox interpolates `none -> rotate(360deg)` via
+        // matrix decomposition instead of component-wise angle interpolation.
+        // Because rotate(360deg) decomposes to the identity matrix, Firefox's
+        // decompose/recompose of the intermediate frames leaks a 3D rotation
+        // component, making `animate-spin` flip around a vertical axis instead
+        // of spinning flat (Chrome/Safari are unaffected). Declaring both
+        // endpoints as matching rotate() functions keeps the interpolation 2D.
+        spin: {
+          from: { transform: 'rotate(0deg)' },
+          to: { transform: 'rotate(360deg)' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 200ms ease-out',
         'zoom-in': 'zoom-in 200ms ease-out',
+        spin: 'spin 1s linear infinite',
       },
     }
   },

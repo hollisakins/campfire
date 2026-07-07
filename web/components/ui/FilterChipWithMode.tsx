@@ -241,7 +241,7 @@ export const FilterChipWithMode: React.FC<FilterChipWithModeProps> = ({
                           : m === 'all'
                             ? 'bg-green-500 text-on-primary'
                             : 'bg-red-500 text-on-primary'
-                        : 'bg-surface-2 text-text-secondary hover:bg-slate-200 dark:hover:bg-slate-600'
+                        : 'bg-surface-2 text-text-secondary hover:bg-card-hover'
                       }
                     `}
                   >

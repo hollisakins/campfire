@@ -9,7 +9,7 @@ const MapViewer = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="flex items-center justify-center h-full bg-surface dark:bg-background">
+      <div className="flex items-center justify-center h-full bg-surface-2">
         <div className="text-text-secondary">Loading map...</div>
       </div>
     ),

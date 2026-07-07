@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { generateDownloadUrl } from '@/lib/r2';
+import { deriveSibling } from '@/lib/layout';
 
 // Grating priority order
 const GRATING_PRIORITY = ['PRISM', 'G395M', 'G235M', 'G140M'];
@@ -217,21 +218,12 @@ export async function GET(request: NextRequest) {
     }
 
     // Fallback to R2 fetch for missing thumbnails (backward compatibility)
-    // Get JSON path from FITS path
-    const jsonPath = selectedSpectrum.fits_path.replace('.fits', '.json');
+    // Derive the spectrum-JSON sibling key via the shared layout contract
+    const jsonPath = deriveSibling(selectedSpectrum.fits_path, 'spectrum_json');
 
     // Generate signed URL for the JSON file
     const signedUrl = await generateDownloadUrl(jsonPath, 3600);
 
-    // Check if R2 is configured
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return new Response(generateSVG([], color, false), {
-        headers: {
-          'Content-Type': 'image/svg+xml',
-          'Cache-Control': 'public, max-age=86400',
-        },
-      });
-    }
 
     // Fetch the JSON data from R2
     const response = await fetch(signedUrl);

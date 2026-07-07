@@ -84,11 +84,14 @@ def _build_tasks(group_files, threshold):
         for source_id in np.unique(root_files['source_id']):
             source_files = root_files[root_files['source_id'] == source_id]
 
+            # Canonical files carry the un-bkgsub rectified view as S2D_* HDUs
+            # (issue #212; was a standalone _s2d.fits).
             s2d_paths = []
             for f in source_files:
-                s2d = f['path'].replace('_cal.fits', '_s2d.fits')
-                if os.path.exists(s2d):
-                    s2d_paths.append(s2d)
+                cano = f['path']
+                with fits.open(cano, memmap=False) as _h:
+                    if any((hh.name or '').upper() == 'S2D_SCI' for hh in _h):
+                        s2d_paths.append(cano)
 
             if not s2d_paths:
                 continue
@@ -116,7 +119,7 @@ def detect_stuck_shutters(obs, files, stage_config, n_processes=1):
     obs : Observation
         The observation object.
     files : Table
-        Grouped file table from discover_files('cal') + group_files(),
+        Grouped file table from discover_files('canonical') + group_files(),
         with columns: path, source_id, root, grating, nod_type, detector, etc.
     stage_config : dict
         Stage2 config. Relevant keys:
@@ -299,10 +302,10 @@ def _analyze_source_shutters(s2d_paths, n_shutters, low_frac_threshold):
     shutter_low_fracs = [[] for _ in range(n_shutters)]
 
     for s2d_path in s2d_paths:
-        data = fits.getdata(s2d_path, ext=1)
+        data = fits.getdata(s2d_path, extname='S2D_SCI')
 
         try:
-            var_rnoise = fits.getdata(s2d_path, extname='VAR_RNOISE')
+            var_rnoise = fits.getdata(s2d_path, extname='S2D_VAR_RNOISE')
         except KeyError:
             continue
 
@@ -426,7 +429,66 @@ def merge_stuck_shutters(existing_toml, detected):
     return merged, updated
 
 
-def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None):
+def load_stuck_shutters_tagged(filepath):
+    """Parse the stuck-shutters TOML raw, recovering each entry's provenance tag.
+
+    ``toml.load`` drops the trailing ``# hand`` / ``# web`` / ``# auto`` comments,
+    but those tags are the ledger that the ``campfire deploy nirspec
+    pull-stuck-shutters`` authority merge (hand > web > auto) reads back on a
+    re-pull. This is a comment-preserving line parser (regex over ``[root]``
+    headers and ``sid = [..]  # tag`` lines), classifying each entry by its
+    comment: containing ``web`` -> ``'web'``; ``auto`` (covers the legacy
+    ``# auto-detected``) -> ``'auto'``; ``hand`` or untagged -> ``'hand'`` (the
+    conservative default — a hand entry is never dropped by the pull).
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the stuck-shutters TOML (may not exist).
+
+    Returns
+    -------
+    dict
+        ``{(root, source_id_str): ([shutters], tag)}``. Empty if the file is
+        absent or has no entries.
+    """
+    import os
+    import re
+
+    result = {}
+    if not os.path.exists(filepath):
+        return result
+
+    header_re = re.compile(r'^\s*\[([^\]]+)\]\s*$')
+    entry_re = re.compile(r'^\s*(\d+)\s*=\s*\[([^\]]*)\]\s*(?:#\s*(.*))?$')
+
+    current_root = None
+    with open(filepath) as f:
+        for line in f:
+            stripped = line.split('#', 1)[0].strip()
+            hm = header_re.match(line if stripped.startswith('[') else stripped)
+            if stripped.startswith('[') and hm:
+                current_root = hm.group(1).strip()
+                continue
+            em = entry_re.match(line)
+            if em and current_root is not None:
+                sid_str = em.group(1)
+                body = em.group(2).strip()
+                shutters = [int(x) for x in body.split(',') if x.strip()]
+                comment = (em.group(3) or '').lower()
+                if 'web' in comment:
+                    tag = 'web'
+                elif 'auto' in comment:
+                    tag = 'auto'
+                else:
+                    tag = 'hand'
+                result[(current_root, sid_str)] = (shutters, tag)
+
+    return result
+
+
+def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None,
+                              provenance=None):
     """Write the stuck shutters TOML file.
 
     Parameters
@@ -438,7 +500,14 @@ def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None):
     obs_name : str
         Observation name for the header comment.
     auto_detected : set, optional
-        Set of (root, source_id) pairs that were auto-detected.
+        Set of (root, source_id) pairs that were auto-detected. Used only when
+        ``provenance`` is not given, preserving the legacy ``# auto-detected``
+        output.
+    provenance : dict, optional
+        ``{(root, source_id_str_or_int): tag}`` giving the ``# hand`` / ``# web``
+        / ``# auto`` tag to emit per entry (the pull-back / auto-detect ledger).
+        When provided it supersedes ``auto_detected``; any entry missing from the
+        map defaults to ``hand``.
     """
     if auto_detected is None:
         auto_detected = set()
@@ -459,7 +528,12 @@ def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None):
             shutters = data[root][sid_str]
             shutter_list = '[' + ', '.join(str(s) for s in shutters) + ']'
             sid_int = int(sid_str)
-            if (root, sid_int) in auto_detected:
+            if provenance is not None:
+                tag = (provenance.get((root, sid_str))
+                       or provenance.get((root, sid_int))
+                       or 'hand')
+                lines.append(f'    {sid_str} = {shutter_list}  # {tag}')
+            elif (root, sid_int) in auto_detected:
                 lines.append(f'    {sid_str} = {shutter_list}  # auto-detected')
             else:
                 lines.append(f'    {sid_str} = {shutter_list}')

@@ -113,18 +113,44 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
             )
         return
 
-    template_files = [
-        f'WISP_{detector.upper()}_{filtname.upper()}_CLEAR_masked.fits',
-        f'WISP_{detector.upper()}_{filtname.upper()}_CLEAR_masked_smoothed_1x1.fits',
-        f'WISP_{detector.upper()}_{filtname.upper()}_CLEAR_masked_smoothed_2x2.fits',
-        f'WISP_{detector.upper()}_{filtname.upper()}_CLEAR_masked_smoothed_3x3.fits',
-    ]
+    from campfire_pipeline.nircam import wisp_cache
+
+    template_files = wisp_cache.required_templates(detector, filtname)
     short_names = ['Masked', 'Masked + smoothed 1x1',
-                   'Masked + smoothed 3x3', 'Masked + smoothed 5x5']
-    if not os.path.exists(os.path.join(field.wisp_dir, template_files[0])):
-        log(f"Wisp templates for {detector}/{filtname} not in "
-            f"{field.wisp_dir}; skipping {rootname}")
+                   'Masked + smoothed 2x2', 'Masked + smoothed 3x3']
+    if not template_files:
+        # No wisp template characterized for this (detector, filter) in the
+        # shipped manifest. This is a legitimate, *visible* n/a — stamp it so a
+        # mosaic can never look wisp-subtracted when no template exists, unlike
+        # the old silent disk-check skip.
+        log(f"No wisp template in manifest for {detector}/{filtname}; "
+            f"stamping skipped for {rootname}")
+        from jwst.datamodels import ImageModel
+        with ImageModel(exposure_file, memmap=False) as m:
+            atomic_save(
+                m, exposure_file,
+                header_updates=cfp.format(CFP_WISP='skipped (no template)'),
+            )
         return
+
+    # Resolve each template to an absolute path (fetch cache -> legacy dir),
+    # fetching any that are missing. Preflight (orchestrate._prefetch_wisp_templates)
+    # normally warms these before the parallel fan-out; this is the
+    # defense-in-depth path for single-step / ad-hoc runs. A manifest-listed
+    # template that still can't be resolved is fatal — 'enabled + missing' must
+    # never be a silent skip.
+    missing = [n for n in template_files
+               if wisp_cache.resolve(n, field.wisp_dir) is None]
+    if missing:
+        wisp_cache.ensure(missing, legacy_dir=field.wisp_dir)
+    template_paths = {}
+    for n in template_files:
+        p = wisp_cache.resolve(n, field.wisp_dir)
+        if p is None:
+            raise wisp_cache.WispTemplateError(
+                f"wisp template {n} for {detector}/{filtname} is listed in the "
+                "manifest but could not be found or fetched")
+        template_paths[n] = p
 
     log(f"Running wisp subtraction on {rootname}")
 
@@ -173,7 +199,7 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     min_x = np.zeros(len(template_files))
     min_y = np.zeros(len(template_files))
     for i, (tname, sname) in enumerate(zip(template_files, short_names)):
-        wisp = _load_template(os.path.join(field.wisp_dir, tname)).copy()
+        wisp = _load_template(template_paths[tname]).copy()
         wisp[sci_before == 0] = 0
         seg_w = wisp[y1:y2, x1:x2]
 
@@ -213,8 +239,7 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
 
     # Subtract from the original (un-flat-fielded) data. Cache hit: the fit
     # loop above already loaded this template.
-    wisp_final = _load_template(
-        os.path.join(field.wisp_dir, template_name)).copy()
+    wisp_final = _load_template(template_paths[template_name]).copy()
     wisp_final[sci_before == 0] = 0
     model.data = sci_before - minval * wisp_final
     sci_after = model.data.copy()

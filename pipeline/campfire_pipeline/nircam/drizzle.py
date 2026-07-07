@@ -70,7 +70,7 @@ scale-invariant, so they ride along unchanged.
 
 import os
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 from astropy.io import fits
@@ -313,8 +313,8 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
 
     with fits.open(output_path, mode='update') as hdul:
         hdul[0].header['CMPFRTIM'] = (
-            str(datetime.now()),
-            'Date/time of CAMPFIRE reduction',
+            datetime.now(timezone.utc).isoformat(),
+            'UTC date/time of CAMPFIRE reduction (ISO 8601)',
         )
         hdul[0].header['CMPFRVER'] = (
             cmpfrver,
@@ -514,9 +514,14 @@ def drizzle_tile(
     n_planes = max(1, (n_inputs + 31) // 32)
     outctx = np.zeros((n_planes, ny, nx), dtype=np.int32)
 
+    # fillval='NaN' leaves every zero-weight output pixel — no coverage OR masked
+    # in all overlapping inputs — as NaN in SCI, which is why the mosaic no longer
+    # needs a post-drizzle "set SCI=NaN where WHT=0" pass. The variance drizzle
+    # keeps 'INDEF' (0): outvarw==0 pixels are turned into NaN by the
+    # outvar/outvarw normalization below, so ERR is already NaN there.
     sci_drizzle = Drizzle(
         out_img=outsci, out_wht=outwht, out_ctx=outctx,
-        kernel=kernel, fillval='INDEF',
+        kernel=kernel, fillval='NaN',
         max_ctx_id=n_inputs,
     )
     var_drizzle = Drizzle(

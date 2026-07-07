@@ -40,7 +40,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
   cardId,
 }) => {
   const { user, userProfile } = useAuth();
-  const canEdit = !!(user && userProfile?.can_comment);
+  const canEdit = !!(user && userProfile?.can_inspect);
 
   // Local DQ bitmask: optimistic state mirrors the server, snapped back on failure.
   const [dqBitmask, setDqBitmask] = useState<number>(spectrum.dq_flags ?? 0);
@@ -108,7 +108,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
       {/* Header row — always visible. Compact summary. */}
       <button
         onClick={onToggle}
-        className="w-full flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-left hover:bg-card-hover dark:hover:bg-slate-700/50 transition-colors"
+        className="w-full flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-left hover:bg-card-hover transition-colors"
         aria-expanded={expanded}
       >
         <span className="flex items-center gap-2 text-text-primary">
@@ -172,9 +172,9 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
             </div>
 
             <span className="flex items-center gap-1.5">
-              <span className="opacity-70 uppercase tracking-wide">Version:</span>
+              <span className="opacity-70 uppercase tracking-wide">cfpipe:</span>
               <span className="font-mono text-text-primary">
-                {spectrum.reduction_version || '—'}
+                {spectrum.cfpipe_version || '—'}
               </span>
             </span>
 

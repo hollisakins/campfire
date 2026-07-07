@@ -1,25 +1,51 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient, createServiceClient } from '@/lib/supabase/server';
-import { paginateQuery } from '@/lib/supabase/paginate';
-import type { Activity, CommentActivity, InspectionActivity } from '@/lib/types';
+import { createClient } from '@/lib/supabase/server';
 
 /**
  * GET /api/admin/activity
  *
  * Fetch recent user activity (comments + inspection changes) for admin review.
- * Admin-only endpoint that combines data from comments and flag_audit_log tables.
+ * Backed by the get_activity_feed / get_activity_users RPCs, which filter,
+ * sort, and paginate server-side (single scan + window count) instead of the
+ * previous fetch-every-row-then-sort-in-JS approach.
  *
  * Query params:
  * - page: Page number (default 1)
  * - page_size: Items per page (default 50, max 100)
  * - type: Filter by activity type ('comment', 'inspection', or comma-separated)
- * - user_id: Filter by user ID (comma-separated for multiple)
+ * - user_id: Filter by user ID (comma-separated for multiple; special value
+ *   'system' selects NULL-user system-generated audit rows)
  * - field_name: Filter inspection activities by field name (comma-separated)
  */
+
+interface FeedRow {
+  id: string;
+  type: 'comment' | 'inspection';
+  target_db_id: number;
+  target_display_id: string;
+  user_id: string | null;
+  ts: string;
+  content: string | null;
+  edited_at: string | null;
+  field_name: string | null;
+  old_value: number | null;
+  new_value: number | null;
+  user_full_name: string | null;
+  user_is_group_account: boolean;
+  total_count: number;
+}
+
+interface ActivityUserRow {
+  user_id: string | null;
+  full_name: string | null;
+}
+
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
 
-  // Check authentication
+  // Check authentication. Authorization (is_admin) is enforced inside the
+  // RPCs themselves, which run under the caller's JWT; the profile check here
+  // just gives a clean 403 instead of a 500.
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
@@ -29,11 +55,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // Use service client for admin operations
-  const serviceClient = createServiceClient();
-
-  // Check admin permission
-  const { data: profile } = await serviceClient
+  const { data: profile } = await supabase
     .from('user_profiles')
     .select('is_admin')
     .eq('user_id', user.id)
@@ -51,234 +73,92 @@ export async function GET(request: NextRequest) {
   const page = parseInt(searchParams.get('page') || '1');
   const pageSize = Math.min(parseInt(searchParams.get('page_size') || '50'), 100);
 
-  // Parse filter params
   const typeParam = searchParams.get('type');
   const userIdParam = searchParams.get('user_id');
   const fieldNameParam = searchParams.get('field_name');
 
-  // Determine which types to fetch
   const typeFilters = typeParam ? typeParam.split(',').filter(t => t) : [];
   const includeComments = typeFilters.length === 0 || typeFilters.includes('comment');
   const includeInspections = typeFilters.length === 0 || typeFilters.includes('inspection');
 
-  // Parse user IDs (special "system" value means null user_id)
+  // Special "system" value means NULL user_id (system-generated audit rows)
   const userIdFiltersRaw = userIdParam ? userIdParam.split(',').filter(id => id) : [];
   const includeSystemUser = userIdFiltersRaw.includes('system');
   const userIdFilters = userIdFiltersRaw.filter(id => id !== 'system');
 
-  // Parse field names
   const fieldNameFilters = fieldNameParam ? fieldNameParam.split(',').filter(f => f) : [];
 
   try {
-    let commentActivities: CommentActivity[] = [];
-    let inspectionActivities: InspectionActivity[] = [];
-
-    // Fetch comments if included (paginate to avoid PostgREST max-rows truncation)
-    if (includeComments) {
-      const { data: comments, error: commentsError } = await paginateQuery(
-        () => {
-          let q = serviceClient
-            .from('comments')
-            .select(`
-              id,
-              target_id,
-              user_id,
-              content,
-              created_at,
-              edited_at,
-              targets!inner(target_id)
-            `)
-            .eq('is_deleted', false)
-            .order('created_at', { ascending: false })
-            .order('id', { ascending: false });
-
-          if (userIdFilters.length > 0) {
-            q = q.in('user_id', userIdFilters);
-          }
-          // If only "system" selected, comments have no null user_ids — skip
-          if (includeSystemUser && userIdFilters.length === 0) {
-            q = q.eq('user_id', 'no-match');
-          }
-          return q;
-        },
-      );
-      if (commentsError) throw commentsError;
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      commentActivities = comments.map((c: any) => {
-        const targetData = Array.isArray(c.targets) ? c.targets[0] : c.targets;
-        return {
-          id: `comment-${c.id}`,
-          type: 'comment' as const,
-          target_db_id: c.target_id,
-          target_display_id: targetData?.target_id || '',
-          user_id: c.user_id,
-          timestamp: c.created_at,
-          content: c.content,
-          edited_at: c.edited_at,
-        };
-      });
-    }
-
-    // Fetch audit logs if included (paginate to avoid PostgREST max-rows truncation).
-    // Audit rows attribute changes to a target, object, or spectrum (exactly
-    // one subject FK is set). Spectrum rows borrow their parent target's
-    // display label.
-    if (includeInspections) {
-      const { data: auditLogs, error: auditError } = await paginateQuery(
-        () => {
-          let q = serviceClient
-            .from('flag_audit_log')
-            .select(`
-              id,
-              target_id,
-              object_id,
-              spectrum_id,
-              user_id,
-              field_name,
-              old_value,
-              new_value,
-              changed_at,
-              targets:target_id(target_id),
-              objects:object_id(id, object_id),
-              spectra:spectrum_id(id, target_id, grating)
-            `)
-            .order('changed_at', { ascending: false })
-            .order('id', { ascending: false });
-
-          if (userIdFilters.length > 0 && !includeSystemUser) {
-            q = q.in('user_id', userIdFilters);
-          } else if (userIdFilters.length === 0 && includeSystemUser) {
-            q = q.is('user_id', null);
-          }
-          if (fieldNameFilters.length > 0) {
-            q = q.in('field_name', fieldNameFilters);
-          }
-          return q;
-        },
-      );
-      if (auditError) throw auditError;
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      inspectionActivities = auditLogs.map((a: any) => {
-        const targetRow = Array.isArray(a.targets) ? a.targets[0] : a.targets;
-        const objectRow = Array.isArray(a.objects) ? a.objects[0] : a.objects;
-        const spectrumRow = Array.isArray(a.spectra) ? a.spectra[0] : a.spectra;
-        // Display label preference: explicit target → object IAU name → parent
-        // target of the spectrum → empty string.
-        const display =
-          targetRow?.target_id ||
-          objectRow?.object_id ||
-          (spectrumRow ? `${spectrumRow.target_id}/${spectrumRow.grating}` : '') ||
-          '';
-        const dbId = a.target_id ?? a.object_id ?? a.spectrum_id ?? 0;
-        return {
-          id: `audit-${a.id}`,
-          type: 'inspection' as const,
-          target_db_id: dbId,
-          target_display_id: display,
-          user_id: a.user_id,
-          timestamp: a.changed_at,
-          field_name: a.field_name,
-          old_value: a.old_value,
-          new_value: a.new_value,
-        };
-      });
-    }
-
-    // Merge and sort
-    let allActivities: Activity[] = [
-      ...commentActivities,
-      ...inspectionActivities,
-    ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-    // In-memory filter for combined system + real user selections
-    if (includeSystemUser && userIdFilters.length > 0) {
-      allActivities = allActivities.filter(a =>
-        a.user_id === null || userIdFilters.includes(a.user_id)
-      );
-    }
-
-    // Apply pagination
-    const totalCount = allActivities.length;
-    const startIndex = (page - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
-    const paginatedActivities = allActivities.slice(startIndex, endIndex);
-
-    // Batch fetch user profiles for current page (filter nulls — system-generated entries)
-    const userIdsOnPage = [...new Set(paginatedActivities.map(a => a.user_id).filter(Boolean))];
-    const userProfiles: Record<string, { user_id: string; full_name: string; is_group_account: boolean }> = {};
-
-    if (userIdsOnPage.length > 0) {
-      const { data: profiles } = await serviceClient
-        .from('user_profiles')
-        .select('*')
-        .in('user_id', userIdsOnPage);
-
-      (profiles || []).forEach(p => {
-        userProfiles[p.user_id] = p;
-      });
-    }
-
-    // Join user profiles (null user_id = system propagation)
-    const activitiesWithUsers = paginatedActivities.map(activity => ({
-      ...activity,
-      user_profile: activity.user_id
-        ? (userProfiles[activity.user_id] || null)
-        : { user_id: null, full_name: 'System', is_group_account: false },
-    }));
-
-    // Fetch available users for filter dropdown (users who have activity)
-    // Paginate to avoid PostgREST max-rows truncation
-    const [commentsUsers, auditUsers] = await Promise.all([
-      paginateQuery<{ user_id: string }>(
-        () => serviceClient
-          .from('comments')
-          .select('user_id')
-          .eq('is_deleted', false)
-          .order('user_id'),
-      ),
-      paginateQuery<{ user_id: string }>(
-        () => serviceClient
-          .from('flag_audit_log')
-          .select('user_id')
-          .order('user_id'),
-      ),
+    const [feedRes, usersRes] = await Promise.all([
+      supabase.rpc('get_activity_feed', {
+        p_include_comments: includeComments,
+        p_include_inspections: includeInspections,
+        p_user_ids: userIdFilters.length > 0 ? userIdFilters : null,
+        p_include_system: includeSystemUser,
+        p_field_names: fieldNameFilters.length > 0 ? fieldNameFilters : null,
+        p_page: page,
+        p_page_size: pageSize,
+      }),
+      supabase.rpc('get_activity_users'),
     ]);
 
-    const allActiveUserIdsRaw = [
-      ...commentsUsers.data.map(c => c.user_id),
-      ...auditUsers.data.map(a => a.user_id),
-    ];
-    const hasSystemActivity = allActiveUserIdsRaw.some(id => id === null);
-    const allActiveUserIds = [...new Set(allActiveUserIdsRaw.filter(Boolean))];
+    if (feedRes.error) throw feedRes.error;
+    if (usersRes.error) throw usersRes.error;
 
-    // Fetch profiles for all active users
-    let availableUsers: { user_id: string; full_name: string }[] = [];
-    if (allActiveUserIds.length > 0) {
-      const { data: activeProfiles } = await serviceClient
-        .from('user_profiles')
-        .select('user_id, full_name')
-        .in('user_id', allActiveUserIds)
-        .order('full_name');
+    const feedRows = (feedRes.data ?? []) as FeedRow[];
+    const totalCount = feedRows[0]?.total_count ?? 0;
 
-      availableUsers = (activeProfiles || []).map(p => ({
-        user_id: p.user_id,
-        full_name: p.full_name || 'Unknown User',
+    const activities = feedRows.map((row) => {
+      const base = {
+        id: row.id,
+        target_db_id: row.target_db_id,
+        target_display_id: row.target_display_id,
+        user_id: row.user_id,
+        timestamp: row.ts,
+        user_profile: row.user_id
+          ? {
+              user_id: row.user_id,
+              full_name: row.user_full_name || 'Unknown User',
+              is_group_account: row.user_is_group_account,
+            }
+          : { user_id: null, full_name: 'System', is_group_account: false },
+      };
+      if (row.type === 'comment') {
+        return {
+          ...base,
+          type: 'comment' as const,
+          content: row.content ?? '',
+          edited_at: row.edited_at,
+        };
+      }
+      return {
+        ...base,
+        type: 'inspection' as const,
+        field_name: row.field_name ?? '',
+        old_value: row.old_value,
+        new_value: row.new_value,
+      };
+    });
+
+    // Available users for the filter dropdown. A NULL user_id row from the RPC
+    // signals system activity; surface it as the synthetic "System" entry.
+    const userRows = (usersRes.data ?? []) as ActivityUserRow[];
+    const availableUsers = userRows
+      .filter(u => u.user_id !== null)
+      .map(u => ({
+        user_id: u.user_id as string,
+        full_name: u.full_name || 'Unknown User',
       }));
-    }
-
-    // Add "System" entry for null user_id activities (system propagation)
-    if (hasSystemActivity) {
+    if (userRows.some(u => u.user_id === null)) {
       availableUsers.unshift({ user_id: 'system', full_name: 'System' });
     }
 
     return NextResponse.json({
-      activities: activitiesWithUsers,
+      activities,
       total_count: totalCount,
       page,
       page_size: pageSize,
-      has_next_page: endIndex < totalCount,
+      has_next_page: page * pageSize < totalCount,
       available_users: availableUsers,
     });
   } catch (error) {

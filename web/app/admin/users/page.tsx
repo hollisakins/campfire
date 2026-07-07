@@ -28,6 +28,7 @@ interface PendingInvite {
   program_slugs: string[];
   is_admin: boolean;
   can_comment: boolean;
+  can_inspect: boolean;
   invited_by: string;
   invited_by_name: string | null;
   created_at: string;
@@ -48,6 +49,7 @@ export default function AdminUsersPage() {
   const [inviteProgramSlugs, setInviteProgramSlugs] = useState<string[]>([]);
   const [inviteIsAdmin, setInviteIsAdmin] = useState(false);
   const [inviteCanComment, setInviteCanComment] = useState(true);
+  const [inviteCanInspect, setInviteCanInspect] = useState(false);
   const [sendingInvite, setSendingInvite] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [resendingInvite, setResendingInvite] = useState<number | null>(null);
@@ -108,6 +110,7 @@ export default function AdminUsersPage() {
           program_slugs: inviteProgramSlugs,
           is_admin: inviteIsAdmin,
           can_comment: inviteCanComment,
+          can_inspect: inviteCanInspect,
         }),
       });
 
@@ -122,6 +125,7 @@ export default function AdminUsersPage() {
       setInviteProgramSlugs([]);
       setInviteIsAdmin(false);
       setInviteCanComment(true);
+      setInviteCanInspect(false);
       setShowInviteForm(false);
       fetchInvites();
     } catch (err) {
@@ -200,6 +204,32 @@ export default function AdminUsersPage() {
       fetchUsers();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to update user');
+    } finally {
+      setSavingUser(null);
+    }
+  };
+
+  const togglePermission = async (
+    user: UserWithAccess,
+    field: 'can_comment' | 'can_inspect',
+    value: boolean,
+  ) => {
+    setSavingUser(user.user_id);
+    try {
+      const response = await fetch(`/api/users/${user.user_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: value }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to update permissions');
+      }
+
+      fetchUsers();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to update permissions');
     } finally {
       setSavingUser(null);
     }
@@ -370,7 +400,7 @@ export default function AdminUsersPage() {
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
                 placeholder="user@example.com"
-                className="w-full px-4 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-surface-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full px-4 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
               />
             </div>
 
@@ -391,7 +421,7 @@ export default function AdminUsersPage() {
                         transition-colors
                         ${selected
                           ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
-                          : 'bg-card-hover text-text-secondary hover:bg-gray-200 dark:hover:bg-slate-600'
+                          : 'bg-card-hover text-text-secondary hover:bg-card-hover'
                         }
                       `}
                     >
@@ -420,22 +450,31 @@ export default function AdminUsersPage() {
             </div>
 
             {/* Permissions */}
-            <div className="flex gap-6">
+            <div className="flex flex-wrap gap-6">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={inviteCanComment}
                   onChange={(e) => setInviteCanComment(e.target.checked)}
-                  className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary dark:bg-surface-2"
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
                 />
-                <span className="text-sm text-text-primary">Can comment/inspect</span>
+                <span className="text-sm text-text-primary">Can comment &amp; tag</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={inviteCanInspect}
+                  onChange={(e) => setInviteCanInspect(e.target.checked)}
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                />
+                <span className="text-sm text-text-primary">Can submit inspections</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={inviteIsAdmin}
                   onChange={(e) => setInviteIsAdmin(e.target.checked)}
-                  className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary dark:bg-surface-2"
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
                 />
                 <span className="text-sm text-text-primary">Admin privileges</span>
               </label>
@@ -530,7 +569,7 @@ export default function AdminUsersPage() {
 
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-table-header border-b border-border">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 User
@@ -629,9 +668,38 @@ export default function AdminUsersPage() {
                   {/* Expanded row for program access */}
                   {expandedUser === user.user_id && (
                     <tr>
-                      <td colSpan={5} className="px-6 py-4 bg-surface-2 border-t border-border dark:border-border-strong">
+                      <td colSpan={5} className="px-6 py-4 bg-surface-2 border-t border-border">
                         <div className="space-y-3">
-                          <div className="flex items-center justify-between">
+                          {/* Permissions */}
+                          <div>
+                            <span className="text-sm font-medium text-text-primary">
+                              Permissions
+                            </span>
+                            <div className="flex flex-wrap gap-4 mt-2">
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={!!user.can_comment}
+                                  disabled={savingUser === user.user_id}
+                                  onChange={(e) => togglePermission(user, 'can_comment', e.target.checked)}
+                                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                                />
+                                <span className="text-sm text-text-primary">Can comment &amp; tag</span>
+                              </label>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={!!user.can_inspect}
+                                  disabled={savingUser === user.user_id}
+                                  onChange={(e) => togglePermission(user, 'can_inspect', e.target.checked)}
+                                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                                />
+                                <span className="text-sm text-text-primary">Can submit inspections</span>
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between pt-3 border-t border-border">
                             <span className="text-sm font-medium text-text-primary">
                               Program Access
                             </span>
@@ -673,7 +741,7 @@ export default function AdminUsersPage() {
                                       transition-colors disabled:opacity-50
                                       ${hasAccess
                                         ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
-                                        : 'bg-card-hover text-text-secondary hover:bg-gray-200 dark:hover:bg-slate-600'
+                                        : 'bg-card-hover text-text-secondary hover:bg-card-hover'
                                       }
                                     `}
                                   >

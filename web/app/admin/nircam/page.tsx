@@ -1,19 +1,24 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { Suspense, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useQuery } from '@tanstack/react-query';
+import type { ColumnDef } from '@tanstack/react-table';
 import { Card } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { Loader2, RefreshCw, ChevronRight, Copy, Check } from 'lucide-react';
+import { Loader2, ChevronRight, Copy, Check } from 'lucide-react';
+import { AdminTable } from '@/components/admin/AdminTable';
+import { AdminFilterBar } from '@/components/admin/AdminFilterBar';
+import { flatFilterCodec, useTableUrlState, type SortState } from '@/lib/hooks/useTableUrlState';
+import { useAdminTableQuery } from '@/lib/hooks/useAdminTableQuery';
 import {
   getNircamExposures,
-  getNircamExposureIds,
   getReductionProgress,
   getExposureFilterOptions,
   getExcludedExposures,
   type ReductionProgress,
   type ExcludedExposure,
 } from '@/lib/actions/nircam-exposures';
+import { EXPOSURE_SORT_KEYS } from '@/lib/admin/sort-keys';
 import type { NircamExposure } from '@/lib/types';
 import {
   stageBadgeClasses,
@@ -21,8 +26,7 @@ import {
   NIRCAM_STAGES,
   STAGE_COLUMN_KEYS,
 } from '@/lib/nircam-stages';
-import { setNircamNav } from '@/lib/nircam-nav-cache';
-import { TablePagination } from '@/components/ui/TablePagination';
+import { buildExposureNavQuery } from '@/lib/nircam-exposure-nav';
 
 // ---------------------------------------------------------------------------
 // Status badge helpers
@@ -35,14 +39,14 @@ function ReviewBadge({ status }: { status: string }) {
     excluded: 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-300',
   };
   return (
-    <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${colors[status] || 'bg-surface-2 dark:bg-slate-700 text-text-primary dark:text-slate-300'}`}>
+    <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${colors[status] || 'bg-surface-2 text-text-primary'}`}>
       {status}
     </span>
   );
 }
 
 function ActionBadge({ status, label }: { status: string; label: string }) {
-  if (status === 'none') return <span className="text-xs text-text-secondary dark:text-text-tertiary">&mdash;</span>;
+  if (status === 'none') return <span className="text-xs text-text-secondary">&mdash;</span>;
   const colors: Record<string, string> = {
     needed: 'bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-300',
     done: 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-300',
@@ -75,11 +79,11 @@ function StageDistributionBar({ progress }: { progress: ReductionProgress }) {
     .filter(s => s.count > 0);
 
   if (segments.length === 0) {
-    return <div className="h-3 bg-surface-2 dark:bg-slate-800 rounded" />;
+    return <div className="h-3 bg-surface-2 rounded" />;
   }
 
   return (
-    <div className="flex h-3 rounded overflow-hidden bg-surface-2 dark:bg-slate-800">
+    <div className="flex h-3 rounded overflow-hidden bg-surface-2">
       {segments.map(({ stage, count }) => (
         <div
           key={stage}
@@ -121,7 +125,7 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
         </thead>
         <tbody className="divide-y divide-border">
           {progress.map((row) => (
-            <tr key={`${row.field}-${row.filter}`} className="hover:bg-card/50 dark:hover:bg-slate-700/50">
+            <tr key={`${row.field}-${row.filter}`} className="hover:bg-card-hover">
               <td className="px-3 py-2 font-medium text-text-primary">{row.field}</td>
               <td className="px-3 py-2 text-text-primary">{row.filter}</td>
               <td className="px-3 py-2 text-right text-text-primary">{row.total}</td>
@@ -130,23 +134,38 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
               </td>
               <td className="px-3 py-2 text-right">
                 {row.pending_review > 0 ? (
-                  <span className="text-yellow-600 dark:text-yellow-400 font-medium">{row.pending_review}</span>
+                  <Link
+                    href={`/admin/nircam?field=${encodeURIComponent(row.field)}&filter=${encodeURIComponent(row.filter)}&review=pending`}
+                    className="text-yellow-600 dark:text-yellow-400 font-medium hover:underline"
+                  >
+                    {row.pending_review}
+                  </Link>
                 ) : (
-                  <span className="text-text-secondary dark:text-text-tertiary">0</span>
+                  <span className="text-text-secondary">0</span>
                 )}
               </td>
               <td className="px-3 py-2 text-right">
                 {row.needs_masking > 0 ? (
-                  <span className="text-orange-600 dark:text-orange-400 font-medium">{row.needs_masking}</span>
+                  <Link
+                    href={`/admin/nircam?field=${encodeURIComponent(row.field)}&filter=${encodeURIComponent(row.filter)}&masking=needed`}
+                    className="text-orange-600 dark:text-orange-400 font-medium hover:underline"
+                  >
+                    {row.needs_masking}
+                  </Link>
                 ) : (
-                  <span className="text-text-secondary dark:text-text-tertiary">0</span>
+                  <span className="text-text-secondary">0</span>
                 )}
               </td>
               <td className="px-3 py-2 text-right">
                 {row.needs_correction > 0 ? (
-                  <span className="text-orange-600 dark:text-orange-400 font-medium">{row.needs_correction}</span>
+                  <Link
+                    href={`/admin/nircam?field=${encodeURIComponent(row.field)}&filter=${encodeURIComponent(row.filter)}&correction=needed`}
+                    className="text-orange-600 dark:text-orange-400 font-medium hover:underline"
+                  >
+                    {row.needs_correction}
+                  </Link>
                 ) : (
-                  <span className="text-text-secondary dark:text-text-tertiary">0</span>
+                  <span className="text-text-secondary">0</span>
                 )}
               </td>
             </tr>
@@ -185,7 +204,7 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
 
   return (
     <Card className="mb-6 overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex items-baseline justify-between">
+      <div className="px-4 py-3 border-b border-border flex items-baseline justify-between bg-surface-2">
         <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
           Excluded — copy into <code className="font-mono text-xs">fields.toml</code> <code className="font-mono text-xs">skip = […]</code>
         </h2>
@@ -198,7 +217,7 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
             <div key={heading} className="p-4">
               <div className="flex items-baseline justify-between mb-2">
                 <h3 className="text-xs font-medium text-text-secondary">
-                  {heading} <span className="text-text-secondary dark:text-text-tertiary">({rows.length})</span>
+                  {heading} <span className="text-text-secondary">({rows.length})</span>
                 </h3>
                 <button
                   onClick={() => copy(heading, tomlBlock)}
@@ -211,7 +230,7 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
                   )}
                 </button>
               </div>
-              <pre className="text-xs font-mono bg-card dark:bg-slate-900 p-2 rounded overflow-x-auto text-text-primary dark:text-slate-300">{tomlBlock}</pre>
+              <pre className="text-xs font-mono bg-surface-2 p-2 rounded overflow-x-auto text-text-primary">{tomlBlock}</pre>
               {rows.some(r => r.notes) && (
                 <ul className="mt-2 text-xs text-text-secondary space-y-0.5">
                   {rows.filter(r => r.notes).map(r => (
@@ -230,263 +249,236 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// URL-state config (module-level: codec/whitelist must be stable references).
+// The same param names are what the detail page parses for prev/next nav —
+// see lib/nircam-exposure-nav.ts.
+// ---------------------------------------------------------------------------
+
+const FILTER_KEYS = ['field', 'filter', 'detector', 'review', 'stage', 'masking', 'correction'] as const;
+const codec = flatFilterCodec(FILTER_KEYS);
+const DEFAULT_SORT: SortState = { column: 'filename', direction: 'asc' };
+
+const REVIEW_OPTIONS = [
+  { value: 'pending', label: 'Pending' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'excluded', label: 'Excluded' },
+];
+const ACTION_STATE_OPTIONS = [
+  { value: 'needed', label: 'Needed' },
+  { value: 'done', label: 'Done' },
+  { value: 'none', label: 'None' },
+];
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
-const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
-const DEFAULT_PAGE_SIZE = 50;
-
-export default function AdminNircamPage() {
-  const [progress, setProgress] = useState<ReductionProgress[]>([]);
-  const [exposures, setExposures] = useState<NircamExposure[]>([]);
-  const [total, setTotal] = useState(0);
-  // Full filtered ID list — drives prev/next on the detail page across pages.
-  const [allFilteredIds, setAllFilteredIds] = useState<number[]>([]);
-  const [excluded, setExcluded] = useState<ExcludedExposure[]>([]);
-  const [filterOptions, setFilterOptions] = useState<{ fields: string[]; filters: string[]; detectors: string[]; stages: string[] }>({
-    fields: [], filters: [], detectors: [], stages: [],
+function AdminNircamPageInner() {
+  const state = useTableUrlState({
+    codec,
+    sortWhitelist: EXPOSURE_SORT_KEYS,
+    defaultSort: DEFAULT_SORT,
   });
-  const [loading, setLoading] = useState(true);
-  const [pageLoading, setPageLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // Filters
-  const [selectedField, setSelectedField] = useState<string>('');
-  const [selectedFilter, setSelectedFilter] = useState<string>('');
-  const [selectedDetector, setSelectedDetector] = useState<string>('');
-  const [selectedReview, setSelectedReview] = useState<string>('');
-  const [selectedStage, setSelectedStage] = useState<string>('');
+  const exposures = useAdminTableQuery<NircamExposure>({
+    scope: 'admin-nircam-exposures',
+    filters: state.debouncedFilters,
+    sort: state.sort,
+    page: state.page,
+    pageSize: state.pageSize,
+    fetchPage: async (page) => {
+      const f = state.debouncedFilters;
+      const res = await getNircamExposures({
+        field: f.field || undefined,
+        filter: f.filter || undefined,
+        detector: f.detector || undefined,
+        reviewStatus: f.review || undefined,
+        stage: f.stage || undefined,
+        masking: f.masking || undefined,
+        correction: f.correction || undefined,
+        sortColumn: state.sort.column,
+        sortDirection: state.sort.direction,
+        page,
+        pageSize: state.pageSize,
+      });
+      return { rows: res.exposures, total: res.total, error: res.error };
+    },
+  });
 
-  // Pagination
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const { data: progressResult } = useQuery({
+    queryKey: ['admin-nircam-progress'],
+    queryFn: getReductionProgress,
+    staleTime: 30_000,
+  });
+  const { data: excludedResult } = useQuery({
+    queryKey: ['admin-nircam-excluded'],
+    queryFn: getExcludedExposures,
+    staleTime: 30_000,
+  });
+  const { data: facets } = useQuery({
+    queryKey: ['admin-nircam-facets'],
+    queryFn: getExposureFilterOptions,
+    staleTime: 5 * 60_000,
+  });
 
-  // Build the filter object once per render so dependent effects stabilize.
-  const filters = React.useMemo(() => ({
-    field: selectedField || undefined,
-    filter: selectedFilter || undefined,
-    detector: selectedDetector || undefined,
-    reviewStatus: selectedReview || undefined,
-    stage: selectedStage || undefined,
-  }), [selectedField, selectedFilter, selectedDetector, selectedReview, selectedStage]);
+  // Row links carry the current filter+sort state so the detail page derives
+  // prev/next from the same set (see lib/nircam-exposure-nav.ts).
+  const navQuery = useMemo(
+    () => buildExposureNavQuery(state.filters, state.sort, DEFAULT_SORT),
+    [state.filters, state.sort],
+  );
+  const detailHref = (id: number) => `/admin/nircam/${id}${navQuery ? `?${navQuery}` : ''}`;
 
-  // Reset to first page whenever the filter set changes.
-  useEffect(() => {
-    setPage(0);
-  }, [filters]);
-
-  // One-shot fetch: progress, filter options, excluded list. Don't depend on
-  // page/filters — these are global to the admin view.
-  const refreshGlobal = useCallback(async () => {
-    const [progressResult, optionsResult, excludedResult] = await Promise.all([
-      getReductionProgress(),
-      getExposureFilterOptions(),
-      getExcludedExposures(),
-    ]);
-    if (progressResult.error) throw new Error(progressResult.error);
-    setProgress(progressResult.progress);
-    setExcluded(excludedResult.excluded);
-    if (!optionsResult.error) setFilterOptions(optionsResult);
-  }, []);
-
-  // Fetch the visible page of exposures + the full filtered ID list in
-  // parallel. The ID list is lightweight (one int per row) and feeds the
-  // nav cache so prev/next on the detail page steps through every match.
-  const fetchExposures = useCallback(async () => {
-    setPageLoading(true);
-    setError(null);
-    try {
-      const [exposuresResult, idsResult] = await Promise.all([
-        getNircamExposures({ ...filters, page, pageSize }),
-        getNircamExposureIds(filters),
-      ]);
-      if (exposuresResult.error) throw new Error(exposuresResult.error);
-      if (idsResult.error) throw new Error(idsResult.error);
-      setExposures(exposuresResult.exposures);
-      setTotal(exposuresResult.total);
-      setAllFilteredIds(idsResult.ids);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load exposures');
-    } finally {
-      setPageLoading(false);
-      setLoading(false);
-    }
-  }, [filters, page, pageSize]);
-
-  useEffect(() => { fetchExposures(); }, [fetchExposures]);
-  useEffect(() => {
-    refreshGlobal().catch(err =>
-      setError(err instanceof Error ? err.message : 'Failed to load data'),
-    );
-  }, [refreshGlobal]);
-
-  const handleRefresh = useCallback(() => {
-    fetchExposures();
-    refreshGlobal().catch(err =>
-      setError(err instanceof Error ? err.message : 'Failed to load data'),
-    );
-  }, [fetchExposures, refreshGlobal]);
-
-  if (loading && exposures.length === 0) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
-  }
+  const columns = useMemo<ColumnDef<NircamExposure, unknown>[]>(() => [
+    {
+      id: 'filename',
+      header: 'Filename',
+      cell: ({ row }) => (
+        <Link
+          href={detailHref(row.original.id)}
+          className="text-sm font-mono text-primary hover:underline"
+        >
+          {row.original.filename}
+        </Link>
+      ),
+      meta: { sortKey: 'filename' },
+    },
+    {
+      id: 'field',
+      header: 'Field',
+      cell: ({ row }) => <span className="text-sm text-text-primary">{row.original.field}</span>,
+      meta: { sortKey: 'field' },
+    },
+    {
+      id: 'filter',
+      header: 'Filter',
+      cell: ({ row }) => <span className="text-sm text-text-primary">{row.original.filter}</span>,
+      meta: { sortKey: 'filter' },
+    },
+    {
+      id: 'detector',
+      header: 'Detector',
+      cell: ({ row }) => <span className="text-sm text-text-secondary">{row.original.detector}</span>,
+      meta: { sortKey: 'detector' },
+    },
+    {
+      id: 'stage',
+      header: 'Stage',
+      cell: ({ row }) => <StageBadge stage={row.original.stage} />,
+      meta: { sortKey: 'stage' },
+    },
+    {
+      id: 'review',
+      header: 'Review',
+      cell: ({ row }) => <ReviewBadge status={row.original.review_status} />,
+      meta: { sortKey: 'review_status' },
+    },
+    {
+      id: 'masking',
+      header: 'Masking',
+      cell: ({ row }) => <ActionBadge status={row.original.masking} label="mask" />,
+    },
+    {
+      id: 'correction',
+      header: 'Correction',
+      cell: ({ row }) => <ActionBadge status={row.original.correction} label="corr" />,
+    },
+    {
+      id: 'open',
+      header: '',
+      cell: ({ row }) => (
+        <Link href={detailHref(row.original.id)}>
+          <ChevronRight className="w-4 h-4 text-text-secondary" />
+        </Link>
+      ),
+      meta: { align: 'right' },
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [navQuery]);
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-text-primary">NIRCam Reductions</h1>
-        <Button variant="secondary" size="sm" onClick={handleRefresh} disabled={loading || pageLoading}>
-          <RefreshCw className={`w-4 h-4 mr-2 ${pageLoading ? 'animate-spin' : ''}`} />
-          Refresh
-        </Button>
       </div>
 
-      {error && (
+      {progressResult?.error && (
         <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4 mb-6">
-          <p className="text-red-800 dark:text-red-400">{error}</p>
+          <p className="text-red-800 dark:text-red-400">{progressResult.error}</p>
         </div>
       )}
 
       {/* Progress summary */}
       <Card className="mb-6 overflow-hidden">
-        <div className="px-4 py-3 border-b border-border">
+        <div className="px-4 py-3 border-b border-border bg-surface-2">
           <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
             Reduction Progress
           </h2>
         </div>
-        <ProgressTable progress={progress} />
+        <ProgressTable progress={progressResult?.progress ?? []} />
       </Card>
 
       {/* Excluded exposures (copy-paste source for fields.toml skip=[]) */}
-      <ExcludedPanel excluded={excluded} />
+      <ExcludedPanel excluded={excludedResult?.excluded ?? []} />
 
-      {/* Filter bar */}
-      <div className="flex flex-wrap gap-3 mb-4">
-        <select
-          value={selectedField}
-          onChange={(e) => setSelectedField(e.target.value)}
-          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
-        >
-          <option value="">All fields</option>
-          {filterOptions.fields.map(f => <option key={f} value={f}>{f}</option>)}
-        </select>
-        <select
-          value={selectedFilter}
-          onChange={(e) => setSelectedFilter(e.target.value)}
-          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
-        >
-          <option value="">All filters</option>
-          {filterOptions.filters.map(f => <option key={f} value={f}>{f}</option>)}
-        </select>
-        <select
-          value={selectedDetector}
-          onChange={(e) => setSelectedDetector(e.target.value)}
-          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
-        >
-          <option value="">All detectors</option>
-          {filterOptions.detectors.map(d => <option key={d} value={d}>{d}</option>)}
-        </select>
-        <select
-          value={selectedStage}
-          onChange={(e) => setSelectedStage(e.target.value)}
-          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
-        >
-          <option value="">All stages</option>
-          {NIRCAM_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <select
-          value={selectedReview}
-          onChange={(e) => setSelectedReview(e.target.value)}
-          className="text-sm border border-border dark:border-border-strong rounded-lg px-3 py-1.5 bg-card text-text-primary"
-        >
-          <option value="">All review statuses</option>
-          <option value="pending">Pending</option>
-          <option value="approved">Approved</option>
-          <option value="excluded">Excluded</option>
-        </select>
-        {(selectedField || selectedFilter || selectedDetector || selectedStage || selectedReview) && (
-          <button
-            onClick={() => { setSelectedField(''); setSelectedFilter(''); setSelectedDetector(''); setSelectedStage(''); setSelectedReview(''); }}
-            className="text-sm text-primary hover:underline"
-          >
-            Clear filters
-          </button>
-        )}
-      </div>
+      <AdminFilterBar
+        facets={[
+          {
+            kind: 'select', key: 'field', label: 'Field',
+            options: (facets?.fields ?? []).map((f) => ({ value: f, label: f })),
+          },
+          {
+            kind: 'select', key: 'filter', label: 'Filter',
+            options: (facets?.filters ?? []).map((f) => ({ value: f, label: f })),
+          },
+          {
+            kind: 'select', key: 'detector', label: 'Detector',
+            options: (facets?.detectors ?? []).map((d) => ({ value: d, label: d })),
+          },
+          {
+            kind: 'select', key: 'stage', label: 'Stage',
+            options: NIRCAM_STAGES.map((s) => ({ value: s, label: s })),
+          },
+          { kind: 'select', key: 'review', label: 'Review', options: REVIEW_OPTIONS },
+          { kind: 'select', key: 'masking', label: 'Masking', options: ACTION_STATE_OPTIONS },
+          { kind: 'select', key: 'correction', label: 'Correction', options: ACTION_STATE_OPTIONS },
+        ]}
+        values={state.filters}
+        onChange={(key, value) => state.setFilters({ ...state.filters, [key]: value })}
+        onReset={state.resetFilters}
+      />
 
-      {/* Exposure table */}
-      <Card className="overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-card border-b border-border">
-            <tr>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Filename</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Filter</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Detector</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Stage</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Review</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Masking</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary uppercase">Correction</th>
-              <th className="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody className="bg-card divide-y divide-border">
-            {exposures.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-text-secondary">
-                  No exposures found.
-                </td>
-              </tr>
-            ) : (
-              exposures.map((exp) => {
-                // Saving the cache on every click means the detail page's
-                // prev/next reflects the current filter state at the moment
-                // the user entered it, even if filters change later. We
-                // save the full filtered ID list (not just this page) so
-                // arrow-key navigation walks the entire match set.
-                const onRowEnter = () => setNircamNav(allFilteredIds);
-                return (
-                <tr key={exp.id} className="hover:bg-card/50 dark:hover:bg-slate-700/50">
-                  <td className="px-4 py-3">
-                    <Link
-                      href={`/admin/nircam/${exp.id}`}
-                      onClick={onRowEnter}
-                      className="text-sm font-mono text-primary hover:underline"
-                    >
-                      {exp.filename}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-text-primary">{exp.filter}</td>
-                  <td className="px-4 py-3 text-sm text-text-secondary">{exp.detector}</td>
-                  <td className="px-4 py-3"><StageBadge stage={exp.stage} /></td>
-                  <td className="px-4 py-3"><ReviewBadge status={exp.review_status} /></td>
-                  <td className="px-4 py-3"><ActionBadge status={exp.masking} label="mask" /></td>
-                  <td className="px-4 py-3"><ActionBadge status={exp.correction} label="corr" /></td>
-                  <td className="px-4 py-3 text-right">
-                    <Link href={`/admin/nircam/${exp.id}`} onClick={onRowEnter}>
-                      <ChevronRight className="w-4 h-4 text-text-secondary" />
-                    </Link>
-                  </td>
-                </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-        <TablePagination
-          pageIndex={page}
-          pageSize={pageSize}
-          totalRows={total}
-          onPageChange={setPage}
-          onPageSizeChange={setPageSize}
-          pageSizeOptions={PAGE_SIZE_OPTIONS}
-          loading={pageLoading}
-          className="border-t border-border"
-        />
-      </Card>
+      <AdminTable
+        columns={columns}
+        data={exposures.rows}
+        total={exposures.total}
+        page={state.page}
+        pageSize={state.pageSize}
+        sort={state.sort}
+        loading={exposures.isInitialLoading}
+        fetching={exposures.isFetching || state.isDebouncing}
+        error={exposures.error}
+        emptyTitle="No exposures found."
+        onSortChange={state.setSort}
+        onPageChange={state.setPage}
+        onPageSizeChange={state.setPageSize}
+        getRowKey={(e) => e.id}
+        pageSizeOptions={[25, 50, 100, 200]}
+      />
     </div>
+  );
+}
+
+export default function AdminNircamPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        </div>
+      }
+    >
+      <AdminNircamPageInner />
+    </Suspense>
   );
 }

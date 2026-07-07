@@ -148,40 +148,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signUp = async (email: string, password: string, fullName: string) => {
     try {
-      // Create auth user
-      const { data, error } = await supabase.auth.signUp({
+      // Suggest a username from the email; the handle_new_user DB trigger uses
+      // this (de-duplicating if needed) when it provisions the profile. Email
+      // confirmation is required, so there is no session yet — the profile is
+      // created server-side by the trigger, not here.
+      const username = await generateUniqueUsername(email, async (u) => {
+        const { data: existing } = await supabase
+          .from('user_profiles')
+          .select('user_id')
+          .eq('username', u)
+          .maybeSingle();
+        return !!existing;
+      });
+
+      const { error } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          // self_signup gates the handle_new_user trigger so it only fires for
+          // open registrations (not admin invites). full_name/username seed the
+          // auto-provisioned profile.
+          data: {
+            self_signup: 'true',
+            full_name: fullName,
+            username,
+          },
+          emailRedirectTo:
+            typeof window !== 'undefined'
+              ? `${window.location.origin}/login`
+              : undefined,
+        },
       });
 
       if (error) throw error;
-
-      // Create user profile
-      if (data.user) {
-        const username = await generateUniqueUsername(email, async (u) => {
-          const { data: existing } = await supabase
-            .from('user_profiles')
-            .select('user_id')
-            .eq('username', u)
-            .maybeSingle();
-          return !!existing;
-        });
-        const { error: profileError } = await supabase
-          .from('user_profiles')
-          .insert({
-            user_id: data.user.id,
-            username,
-            full_name: fullName,
-            is_group_account: false,
-            can_comment: true,
-            is_admin: false,
-          });
-
-        if (profileError) {
-          console.error('Error creating user profile:', profileError);
-          // Don't throw - auth user was created successfully
-        }
-      }
 
       return { error: null };
     } catch (error) {

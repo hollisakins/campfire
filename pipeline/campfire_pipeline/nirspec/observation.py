@@ -3,6 +3,7 @@ Observation dataclass: NIRSpec observation configuration and workspace managemen
 """
 
 import os
+import re
 import glob
 import shutil
 import toml
@@ -13,12 +14,24 @@ from textwrap import dedent
 from astropy.io import fits
 from astropy.table import Table
 
+from campfire_layout import (
+    Scope,
+    dir_for,
+    raw_dir as layout_raw_dir,
+    reference_dir as layout_reference_dir,
+)
 from campfire_pipeline.common.io import log
 
 # Default slitlet assumed when a file is missing the NOD_TYPE keyword.
 # Some Cycle 1 programs do not write NOD_TYPE; the canonical format is
 # "N-SHUTTER-SLITLET", so a 3-shutter slitlet is "3-SHUTTER-SLITLET".
 DEFAULT_NOD_TYPE = '3-SHUTTER-SLITLET'
+
+# NIRSpec spectroscopic exposure types the pipeline can reduce. MSA (MOS) is
+# the original mode; standalone fixed-slit (NRS_FIXEDSLIT) is handled via the
+# jwst native fixed-slit path (no MSA metadata file). Used to filter raw uncals
+# in glob(check_exp_type=True).
+SUPPORTED_EXP_TYPES = ('NRS_MSASPEC', 'NRS_FIXEDSLIT')
 
 
 def read_nod_type(hdr, filename):
@@ -42,6 +55,12 @@ def read_nod_type(hdr, filename):
     """
     if 'NOD_TYPE' in hdr:
         return hdr['NOD_TYPE']
+    # Fixed-slit exposures don't use MSA shutter slitlets and routinely omit
+    # NOD_TYPE. Fall back to the dither pattern type (e.g. '3-POINT-NOD')
+    # instead of the MSA slitlet default — and don't warn, since absence is
+    # expected for this mode.
+    if str(hdr.get('EXP_TYPE', '')).upper() == 'NRS_FIXEDSLIT':
+        return hdr.get('PATTTYPE', 'FIXED-SLIT-NOD')
     log(f"WARNING: NOD_TYPE keyword missing from {os.path.basename(filename)}; "
         f"assuming {DEFAULT_NOD_TYPE}")
     return DEFAULT_NOD_TYPE
@@ -148,18 +167,11 @@ class Observation:
             for cfg in group:
                 config_groups[cfg] = label
 
-        # Manual masks: { rate_basename (no _rate.fits suffix): DS9 region string }
-        manual_masks = {}
-        masks_section = obs.get('masks', {})
-        if isinstance(masks_section, dict):
-            for basename, reg_string in masks_section.items():
-                if not isinstance(reg_string, str):
-                    raise TypeError(
-                        f"masks['{basename}'] must be a string in [{name}.masks]; "
-                        f"got {type(reg_string).__name__}"
-                    )
-                manual_masks[basename] = reg_string
-
+        # Manual masks are NOT read from observations.toml anymore (design §3.5):
+        # they live as .reg files under reference/nirspec/<obs>/masks/, populated by
+        # `campfire deploy nirspec pull-rate-masks` (web) or local mask editing, and
+        # loaded into self.manual_masks in setup_workspace_directory (the reference
+        # dir isn't known until then). Left empty here.
         return cls(
             name=name,
             field=field_name,
@@ -170,7 +182,6 @@ class Observation:
             gratings=gratings,
             stage_overrides=stage_overrides,
             config_groups=config_groups,
-            manual_masks=manual_masks,
         )
 
     def setup_workspace_directory(self, data_dir, product_dir, overwrite=False):
@@ -186,7 +197,15 @@ class Observation:
         --------
         str : Path to the workspace directory
         """
-        self.workspace_dir = os.path.join(product_dir, self.name)
+        # Issue #213 (PR-2): the instrument-parity layout (#212 PR-4) is now
+        # resolved through the single shared layout contract (campfire_layout),
+        # the one authority shared with the deploy/download client. ``product_dir``
+        # and ``data_dir`` are ``$CAMPFIRE_ROOT/{products,raw}``; their parent is
+        # the data root the contract anchors on (reference/ shares that root).
+        scope = Scope(obs=self.name)
+        root = os.path.dirname(os.path.abspath(product_dir))
+        self.workspace_dir = str(dir_for('nirspec_spec', scope, root=root))
+        self.reference_dir = str(layout_reference_dir('nirspec', scope, root=root))
 
         # Create workspace directory
         if os.path.exists(self.workspace_dir) and overwrite:
@@ -196,11 +215,31 @@ class Observation:
         if not os.path.exists(self.workspace_dir):
             os.makedirs(self.workspace_dir, exist_ok=True)
             log(f"Created workspace directory: {self.workspace_dir}")
+        os.makedirs(self.reference_dir, exist_ok=True)
 
-        self.raw_dir = os.path.join(data_dir, self.data_subdir)
+        self.raw_dir = str(layout_raw_dir(
+            'nirspec', Scope(data_subdir=self.data_subdir),
+            root=os.path.dirname(os.path.abspath(data_dir))))
         self.rate_files = self.glob('_rate.fits')
 
+        # Manual masks live under reference/nirspec/<obs>/masks/*.reg (design §3.5);
+        # load them now that reference_dir is known. Keyed by rate basename (the
+        # <exposure_root>_<detector> stem = masks._rate_basename), the same key the
+        # stage1/stage2 consumers look up.
+        self.manual_masks = self._load_manual_masks_from_reg()
+
         self.directories_setup = True
+
+    def _load_manual_masks_from_reg(self) -> dict:
+        """Read reference/nirspec/<obs>/masks/*.reg into a {basename: reg_string} dict."""
+        masks_dir = os.path.join(self.reference_dir, "masks")
+        out: dict[str, str] = {}
+        if os.path.isdir(masks_dir):
+            for fname in sorted(os.listdir(masks_dir)):
+                if fname.endswith(".reg"):
+                    with open(os.path.join(masks_dir, fname)) as f:
+                        out[fname[:-len(".reg")]] = f.read()
+        return out
 
     def discover_raw_files(self):
         """Discover raw uncal files and associated MSA metadata.
@@ -266,11 +305,12 @@ class Observation:
 
     @property
     def stuck_closed_shutters_file(self):
-        return os.path.join(self.workspace_dir, f'_{self.name}_stuck_closed_shutters.toml')
+        # reducer-decision state lives under reference/nirspec/<obs>/ (issue #212 PR-4)
+        return os.path.join(self.reference_dir, 'stuck_closed_shutters.toml')
 
     @property
     def bkg_override_file(self):
-        return os.path.join(self.workspace_dir, f'_{self.name}_nodded_background_overrides.toml')
+        return os.path.join(self.reference_dir, 'nodded_background_overrides.toml')
 
     @property
     def stuck_closed_shutters(self):
@@ -389,7 +429,7 @@ class Observation:
             resulti = glob.glob(pattern_path)
 
             if check_exp_type:
-                result += [r for r in resulti if fits.getheader(r)['EXP_TYPE'] == 'NRS_MSASPEC']
+                result += [r for r in resulti if fits.getheader(r)['EXP_TYPE'] in SUPPORTED_EXP_TYPES]
             else:
                 result += resulti
 
@@ -401,13 +441,18 @@ class Observation:
 
         return sorted(result)
 
-    def discover_files(self, ext='cal', source_ids='all'):
+    def discover_files(self, ext='canonical', source_ids='all'):
         """Discover pipeline product files in the workspace directory.
 
         Parameters
         ----------
         ext : str
-            File extension to search for (e.g., 'cal', 'cal_bkgsub').
+            File extension to search for (default ``'canonical'``, issue #212):
+            discovers the bare canonical spectrum-exposure files
+            ``{root}_{config}_{nod}_{detector}_{source}.fits`` (one per
+            exposure x detector x source, replacing the old
+            ``_cal``/``_cal_bkgsub``/``_s2d``/``_s2d_bkgsub`` quartet). Legacy
+            suffix modes (``'cal'``, ``'cal_bkgsub'``) still work for back-compat.
         source_ids : list or 'all'
             Source IDs to filter by, or 'all' for no filtering.
 
@@ -419,13 +464,27 @@ class Observation:
             subpixel_dither_points, total_dither_points, dither_position,
             nod_type, filter_grating, config, nod, root, shutter_id.
         """
-        paths = self.glob(ext=f'_{ext}.fits')
-
-        if source_ids != 'all':
-            new_paths = []
-            for source_id in source_ids:
-                new_paths += [p for p in paths if f'_{source_id}_' in p]
-            paths = new_paths
+        if ext == 'canonical':
+            # Bare canonical files end in ``_nrs[12]_<source>.fits``. Globbing
+            # every matching .fits and filtering on that suffix cleanly excludes
+            # _rate / _spec / _x1d / _msa metafiles and any legacy _cal/_s2d.
+            canon_re = re.compile(r'_nrs[12]_\d+\.fits$')
+            paths = [p for p in self.glob(ext='.fits')
+                     if canon_re.search(os.path.basename(p))]
+            if source_ids != 'all':
+                sids = {str(s) for s in source_ids}
+                paths = [p for p in paths
+                         if os.path.basename(p)[:-len('.fits')].split('_')[-1] in sids]
+            paths = sorted(paths)
+            _source_id = lambda name: int(name[:-len('.fits')].split('_')[-1])
+        else:
+            paths = self.glob(ext=f'_{ext}.fits')
+            if source_ids != 'all':
+                new_paths = []
+                for source_id in source_ids:
+                    new_paths += [p for p in paths if f'_{source_id}_' in p]
+                paths = new_paths
+            _source_id = lambda name: int(name.replace(f'_{ext}.fits', '').split('_')[-1])
 
         filt, grat = [], []
         PATTTYPE, PRIDTPTS, PATT_NUM, NUMDTHPT, NOD_TYPE, SUBPXPTS = [], [], [], [], [], []
@@ -447,7 +506,7 @@ class Observation:
         files = Table()
         files['path'] = paths
         files['name'] = [os.path.basename(f['path']) for f in files]
-        files['source_id'] = [int(os.path.basename(p).replace(f'_{ext}.fits', '').split('_')[-1]) for p in paths]
+        files['source_id'] = [_source_id(os.path.basename(p)) for p in paths]
         files['detector'] = ['nrs'+f['name'].split('nrs')[-1][0] for f in files]
         files['obs'] = [f['name'].split('_')[0] for f in files]
         files['filter'] = filt
@@ -518,6 +577,15 @@ class Observation:
 
                     elif (files3['dither_pattern_type'][0] == '2-POINT-WITH-NIRCAM-SIZE2') and ('SHUTTER-SLITLET' in files3['nod_type'][0]) and (files3['subpixel_dither_points'][0] == 2):
                         subpx_dither = np.where(np.isin(files3['dither_position'], [1,3,5]), 1, 2)
+
+                    elif files3['dither_pattern_type'][0].endswith('-NOD') and files3['subpixel_dither_points'][0] == 1:
+                        # NIRSpec fixed-slit along-slit nodding (e.g. 2-POINT-NOD,
+                        # 3-POINT-NOD). Without sub-pixel dithering, every nod in
+                        # the config is mutually background for the others, so they
+                        # all share one bkg_group per detector (subpx_dither stays
+                        # 1). Leapfrog subtraction happens in stage2b, which
+                        # handles 2/3/5 exposures.
+                        pass
 
                     else:
                         raise NotImplementedError(f"File grouping for dither pattern {files3['dither_pattern_type'][0]} not implemented")

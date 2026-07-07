@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import React, { Suspense, useState, useEffect, useCallback, useMemo, useRef, useReducer } from 'react';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -10,30 +10,46 @@ import {
 } from 'lucide-react';
 import {
   getNircamExposureById,
+  getExposureNeighbors,
   updateExposureReview,
   saveExposureMaskRegions,
+  presignExposurePngs,
+  type ExposureNeighbors,
 } from '@/lib/actions/nircam-exposures';
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 import { stageBadgeClasses } from '@/lib/nircam-stages';
 import MaskEditor from '@/components/nircam/MaskEditor';
-import { lookupNircamNav, type NircamNavLookup } from '@/lib/nircam-nav-cache';
+import { storageKey } from '@/lib/layout';
+import { parseExposureNavParams } from '@/lib/nircam-exposure-nav';
 import {
   getCachedExposure,
   setCachedExposure,
-  prefetchPreviewPng,
+  prefetchPng,
+  getCachedPngUrls,
+  setCachedPngUrls,
 } from '@/lib/nircam-exposure-cache';
 
-// PNGs live in R2 under nircam/exposures/<field>/<filter>/...; the
-// /api/nircam-preview proxy handles auth and streams them same-origin.
-function previewUrl(r2Key: string | null): string | null {
-  if (!r2Key) return null;
-  return `/api/nircam-preview?key=${encodeURIComponent(r2Key)}`;
-}
+// Eager PNG prefetch window: warm the full-res mask surface (~5.7 MB) the
+// editor actually renders for a few exposures ahead + one back, so stepping
+// through the queue paints instantly. Falls back to the preview (~1.3 MB) for
+// exposures that have no full PNG (the thumbnail-only view).
+const PREFETCH_AHEAD = 3;
+const PREFETCH_BEHIND = 1;
 
-export default function ExposureDetailPage() {
+function ExposureDetailPageInner() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const id = Number(params.id);
+
+  // The list page's filter+sort state, carried in the URL (see
+  // lib/nircam-exposure-nav.ts). Defines the ordered set prev/next walks;
+  // empty params (direct entry) = the full unfiltered set, so nav always works.
+  const navFilters = useMemo(
+    () => parseExposureNavParams(new URLSearchParams(searchParams.toString())),
+    [searchParams],
+  );
+  const navQuery = searchParams.toString();
 
   const [exposure, setExposure] = useState<NircamExposure | null>(null);
   const [exposureForId, setExposureForId] = useState<number | null>(null);
@@ -48,11 +64,29 @@ export default function ExposureDetailPage() {
   const [correction, setCorrection] = useState<string>('none');
   const [notes, setNotes] = useState<string>('');
 
-  // Sibling-exposure nav (from sessionStorage cache populated by the list).
-  // Re-derived on every id change; null when there's no cache (direct entry).
-  const [nav, setNav] = useState<NircamNavLookup | null>(null);
+  // Sibling-exposure nav: the ±window neighbors + absolute position within
+  // the filtered, ordered set, from get_admin_exposure_neighbors. Survives
+  // refresh and direct entry because the filter context lives in the URL.
+  const [nav, setNav] = useState<ExposureNeighbors | null>(null);
   const [showHelp, setShowHelp] = useState(false);
-  useEffect(() => { setNav(lookupNircamNav(id)); }, [id]);
+  // N4 (epic #261): live FITS render vs the legacy pre-generated PNG. Defaults
+  // to PNG; the toggle doubles as the pixel-parity check during the rollout.
+  const [viewMode, setViewMode] = useState<'png' | 'fits'>('png');
+  // Presigned OSN GET URLs (epic #261, N5) live in a MODULE-level cache
+  // (getCachedPngUrls) — NOT React state — because this page remounts on every
+  // prev/next, which would otherwise wipe them and force a fresh presign (new
+  // signature) on each step, flashing the spinner and missing the retained PNG.
+  // This reducer just forces a re-render when a presign lands so the pending
+  // spinner clears and the <img> picks up the freshly-cached URL.
+  const [, bumpPngUrls] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    let cancelled = false;
+    getExposureNeighbors(id, { ...navFilters, window: PREFETCH_AHEAD }).then((res) => {
+      if (cancelled) return;
+      setNav(res.error || res.total === 0 ? null : res);
+    });
+    return () => { cancelled = true; };
+  }, [id, navFilters]);
 
   // When the route id changes, reset state synchronously from the in-memory
   // cache so the new exposure paints in the same frame as the URL change —
@@ -98,29 +132,64 @@ export default function ExposureDetailPage() {
     return () => { cancelled = true; };
   }, [id]);
 
-  // Prefetch sibling exposures (data + warm PNG cache) so prev/next paints
-  // instantly. Fires after both `exposure` and `nav` are known. PNG fetches
-  // go through the same /api/nircam-preview proxy the editor uses, so they
-  // populate the same browser-cache bucket.
+  // Warm the sibling exposure *data* cache (prev/next) so navigation paints in
+  // the same frame — independent of PNG bytes.
   useEffect(() => {
     if (!nav) return;
-    for (const sibId of [nav.next, nav.prev]) {
-      if (sibId == null) continue;
-      const cached = getCachedExposure(sibId);
-      if (cached) {
-        prefetchPreviewPng(previewUrl(cached.full_png_path));
-        prefetchPreviewPng(previewUrl(cached.png_path));
-        continue;
-      }
+    for (const sibId of [nav.nextId, nav.prevId]) {
+      if (sibId == null || getCachedExposure(sibId)) continue;
       getNircamExposureById(sibId).then((res) => {
-        if (res.exposure) {
-          setCachedExposure(res.exposure);
-          prefetchPreviewPng(previewUrl(res.exposure.full_png_path));
-          prefetchPreviewPng(previewUrl(res.exposure.png_path));
-        }
+        if (res.exposure) setCachedExposure(res.exposure);
       });
     }
-  }, [exposure, nav]);
+  }, [nav]);
+
+  // Presign the current exposure's PNGs + eagerly prefetch a window of upcoming
+  // ones (epic #261, N5). Keys are re-derived server-side; URLs go straight into
+  // <img> (no proxy hop). We warm the full-res mask surface (~5.7 MB) — the byte
+  // the editor actually renders — across the whole window, keyed off the
+  // *persistent* URL map so a sibling presigned by an earlier window is still
+  // warmed on every step. (Previously the warm keyed off only the freshly-signed
+  // ids, so once the next exposure had been presigned by a prior window its full
+  // PNG was never prefetched again — every Next reloaded it cold from OSN.)
+  useEffect(() => {
+    if (!nav) return;
+    // Derive the prefetch window from the neighbors RPC result: ahead-heavy
+    // slice of the ordered window ids around the current exposure.
+    const idx = nav.windowIds.indexOf(id);
+    if (idx < 0) return;
+    const win = [
+      ...nav.windowIds.slice(idx + 1, idx + 1 + PREFETCH_AHEAD),
+      ...nav.windowIds.slice(Math.max(0, idx - PREFETCH_BEHIND), idx),
+    ];
+    // Warm the exact byte the viewer will show for each windowed exposure: the
+    // full-res mask surface the editor renders, or the preview when there's no
+    // full PNG. Re-warming an already-cached URL is a browser cache hit, so the
+    // only new network per step is the frontier exposure entering the window.
+    const warm = () => {
+      for (const sib of win) {
+        const u = getCachedPngUrls(sib);
+        if (u) prefetchPng(u.full ?? u.preview);
+      }
+    };
+    // Only presign ids not already in the module cache (a cached sibling keeps
+    // its URL); when the whole window is already signed, just re-warm.
+    const batch = [id, ...win].filter((x) => getCachedPngUrls(x) === undefined);
+    if (batch.length === 0) {
+      warm();
+      return;
+    }
+    let cancelled = false;
+    presignExposurePngs(batch).then((urls) => {
+      // Populate the module cache even if this instance unmounted mid-flight —
+      // the URLs are valid for whichever instance renders the exposure next.
+      for (const [key, u] of Object.entries(urls)) setCachedPngUrls(Number(key), u);
+      if (cancelled) return;
+      bumpPngUrls();
+      warm();
+    });
+    return () => { cancelled = true; };
+  }, [id, nav]);
 
   const hasChanges = !!(exposure && (
     reviewStatus !== exposure.review_status ||
@@ -166,11 +235,12 @@ export default function ExposureDetailPage() {
       const result = await handleSave();
       if (!result.ok) return; // don't navigate on a save failure
     }
-    router.push(`/admin/nircam/${targetId}`);
-  }, [handleSave, router]);
+    // Carry the filter context so the next exposure's nav walks the same set.
+    router.push(`/admin/nircam/${targetId}${navQuery ? `?${navQuery}` : ''}`);
+  }, [handleSave, router, navQuery]);
 
-  const handleNext = useCallback(() => goTo(nav?.next ?? null), [goTo, nav]);
-  const handlePrev = useCallback(() => goTo(nav?.prev ?? null), [goTo, nav]);
+  const handleNext = useCallback(() => goTo(nav?.nextId ?? null), [goTo, nav]);
+  const handlePrev = useCallback(() => goTo(nav?.prevId ?? null), [goTo, nav]);
 
   // Global keyboard shortcuts (mirrors web/components/spectra/inspection
   // pattern). Skip when an input has focus so users can type in notes etc.
@@ -221,10 +291,35 @@ export default function ExposureDetailPage() {
     );
   }
 
-  const pngUrl = previewUrl(exposure.png_path);
-  const fullPngUrl = previewUrl(exposure.full_png_path);
+  // Presigned OSN URLs for the current exposure (undefined until the presign
+  // round-trip lands; null once resolved if the exposure has no PNG). Read from
+  // the module cache so a prefetched sibling is already resolved on arrival.
+  const currentUrls = getCachedPngUrls(id);
+  const pngUrl = currentUrls?.preview ?? null;
+  const fullPngUrl = currentUrls?.full ?? null;
+  const pngPresignPending = currentUrls === undefined;
   const editorAvailable = Boolean(
     fullPngUrl && exposure.image_width && exposure.image_height
+  );
+
+  // Canonical OSN key for the exposure SCI FITS, for the live N4 renderer.
+  let fitsKey: string | null = null;
+  try {
+    if (exposure.field && exposure.filter && exposure.filename) {
+      const fname = `${exposure.filename.replace(/\.fits$/, '')}.fits`;
+      fitsKey = storageKey(
+        'nircam_exposure',
+        { field: exposure.field, filt: exposure.filter },
+        fname,
+        'canonical',
+      );
+    }
+  } catch {
+    fitsKey = null;
+  }
+  // FITS masking needs the key plus the pixel dims (for the overlay viewBox).
+  const fitsMaskAvailable = Boolean(
+    fitsKey && exposure.image_width && exposure.image_height,
   );
 
   const handleSaveMasks = async (regions: MaskRegionsPayload) => {
@@ -240,7 +335,11 @@ export default function ExposureDetailPage() {
     <div>
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <button onClick={() => router.push('/admin/nircam')} className="text-text-secondary hover:text-text-primary" title="Back to list">
+        <button
+          onClick={() => router.push(`/admin/nircam${navQuery ? `?${navQuery}` : ''}`)}
+          className="text-text-secondary hover:text-text-primary"
+          title="Back to list"
+        >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1 min-w-0">
@@ -255,20 +354,20 @@ export default function ExposureDetailPage() {
           <div className="flex items-center gap-1 text-sm text-text-secondary">
             <button
               onClick={handlePrev}
-              disabled={nav.prev == null}
+              disabled={nav.prevId == null}
               title="Previous (← / P)"
-              className="p-1.5 rounded hover:bg-surface-hover dark:hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
+              className="p-1.5 rounded hover:bg-card-hover disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <ChevronLeft className="w-5 h-5" />
             </button>
             <span className="font-mono tabular-nums text-xs px-1">
-              {nav.index} / {nav.total}
+              {nav.position} / {nav.total}
             </span>
             <button
               onClick={handleNext}
-              disabled={nav.next == null}
+              disabled={nav.nextId == null}
               title="Next (→ / N)"
-              className="p-1.5 rounded hover:bg-surface-hover dark:hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
+              className="p-1.5 rounded hover:bg-card-hover disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <ChevronRight className="w-5 h-5" />
             </button>
@@ -277,14 +376,14 @@ export default function ExposureDetailPage() {
         <button
           onClick={() => setShowHelp(prev => !prev)}
           title="Keyboard shortcuts (?)"
-          className="p-1.5 rounded text-text-secondary hover:bg-surface-hover dark:hover:bg-slate-800"
+          className="p-1.5 rounded text-text-secondary hover:bg-card-hover"
         >
           <Keyboard className="w-5 h-5" />
         </button>
       </div>
 
       {showHelp && (
-        <div className="mb-6 rounded-lg border border-border bg-card dark:bg-slate-900 p-4">
+        <div className="mb-6 rounded-lg border border-border bg-card p-4">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-semibold text-text-primary">Keyboard shortcuts</h2>
             <button onClick={() => setShowHelp(false)} className="text-xs text-text-secondary hover:underline">close</button>
@@ -311,10 +410,42 @@ export default function ExposureDetailPage() {
       )}
 
       <div className="flex gap-6">
-        {/* PNG viewer / mask editor */}
+        {/* Image viewer: live FITS render (N4) or the legacy PNG / mask editor */}
         <div className="flex-1 min-w-0">
+          <div className="mb-2 inline-flex rounded-lg border border-border p-0.5 text-xs">
+            <button
+              onClick={() => setViewMode('png')}
+              className={`rounded-md px-3 py-1 ${viewMode === 'png' ? 'bg-card-hover text-text-primary' : 'text-text-secondary'}`}
+            >
+              PNG
+            </button>
+            <button
+              onClick={() => setViewMode('fits')}
+              disabled={!fitsMaskAvailable}
+              title={fitsMaskAvailable ? 'Live FITS render (SCI) + masking' : 'FITS unavailable for this exposure'}
+              className={`rounded-md px-3 py-1 disabled:opacity-40 ${viewMode === 'fits' ? 'bg-card-hover text-text-primary' : 'text-text-secondary'}`}
+            >
+              FITS <span className="text-text-tertiary">beta</span>
+            </button>
+          </div>
           <Card className="overflow-hidden">
-            {editorAvailable ? (
+            {viewMode === 'fits' && fitsMaskAvailable ? (
+              <div className="h-[80vh]">
+                <MaskEditor
+                  fitsKey={fitsKey!}
+                  imageWidth={exposure.image_width!}
+                  imageHeight={exposure.image_height!}
+                  initialRegions={exposure.mask_regions}
+                  onSave={handleSaveMasks}
+                />
+              </div>
+            ) : pngPresignPending ? (
+              // Presign round-trip for the PNG hasn't landed yet — don't flash
+              // "No PNG" before we know whether one exists.
+              <div className="flex items-center justify-center py-24">
+                <Loader2 className="w-8 h-8 animate-spin text-text-secondary" />
+              </div>
+            ) : editorAvailable ? (
               <div className="h-[80vh]">
                 <MaskEditor
                   pngUrl={fullPngUrl!}
@@ -399,7 +530,7 @@ export default function ExposureDetailPage() {
                 <select
                   value={reviewStatus}
                   onChange={(e) => setReviewStatus(e.target.value)}
-                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary"
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="pending">Pending</option>
                   <option value="approved">Approved</option>
@@ -414,7 +545,7 @@ export default function ExposureDetailPage() {
                 <select
                   value={masking}
                   onChange={(e) => setMasking(e.target.value)}
-                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary"
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="none">None</option>
                   <option value="needed">Needed</option>
@@ -429,7 +560,7 @@ export default function ExposureDetailPage() {
                 <select
                   value={correction}
                   onChange={(e) => setCorrection(e.target.value)}
-                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary"
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="none">None</option>
                   <option value="needed">Needed</option>
@@ -446,7 +577,7 @@ export default function ExposureDetailPage() {
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Describe artifacts, masking needs, etc."
                   rows={4}
-                  className="w-full text-sm border border-border dark:border-border-strong rounded-lg px-3 py-2 bg-card text-text-primary resize-none"
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary placeholder:text-text-tertiary resize-none"
                 />
               </div>
 
@@ -468,5 +599,19 @@ export default function ExposureDetailPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ExposureDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        </div>
+      }
+    >
+      <ExposureDetailPageInner />
+    </Suspense>
   );
 }

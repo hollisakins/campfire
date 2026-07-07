@@ -463,7 +463,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       // Per-axis uirevision instead of top-level — xaxis3 (rest-frame overlay)
       // must NOT inherit a constant uirevision, otherwise Plotly.react() caches
       // stale tickvals when redshift changes.
-      font: { family: 'Roboto, sans-serif', color: plotColors.text },
+      font: { family: 'Inter, system-ui, sans-serif', color: plotColors.text },
       title: {
         text: `${grating} Spectrum`,
         font: { size: 16 },
@@ -612,7 +612,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           text: `Redshift fit · z = ${fitData.redshift.toFixed(4)}, χ²_min = ${fitData.chi2_min.toFixed(2)}, conf = ${fitData.confidence.toFixed(1)}%`,
           font: { size: 12, color: plotColors.text },
         },
-        font: { family: 'Roboto, sans-serif', color: plotColors.text },
+        font: { family: 'Inter, system-ui, sans-serif', color: plotColors.text },
         xaxis: {
           title: { text: 'Redshift', font: { color: plotColors.text } },
           tickfont: { color: plotColors.textSecondary },
@@ -625,6 +625,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           type: 'log' as const,
           gridcolor: plotColors.grid,
           zerolinecolor: plotColors.grid,
+          range: [Math.log10(chi2Min * 0.9), Math.log10(chi2Max * 1.1)],
+          autorange: false,
         },
         margin: { l: 80, r: 20, t: 40, b: 40 },
         paper_bgcolor: plotColors.paper,
@@ -693,7 +695,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   return (
     <div className={bare ? '' : 'bg-card border border-border rounded-lg overflow-hidden'}>
       {/* Controls */}
-      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-gray-50 dark:bg-slate-900">
+      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-surface-2">
         {/* Flux unit toggle */}
         <div className="flex items-center gap-2">
           <span className="text-sm text-text-secondary">Units:</span>
@@ -732,7 +734,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
             value={colorMin}
             onChange={(e) => setColorMin(parseFloat(e.target.value) || 0)}
             step={1}
-            className="w-16 px-2 py-1 text-sm border border-border dark:border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-16 px-2 py-1 text-sm border border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
             title="Color minimum (S/N)"
           />
           <span className="text-sm text-text-secondary">to</span>
@@ -741,7 +743,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
             value={colorMax}
             onChange={(e) => setColorMax(parseFloat(e.target.value) || 0)}
             step={1}
-            className="w-16 px-2 py-1 text-sm border border-border dark:border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-16 px-2 py-1 text-sm border border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
             title="Color maximum (S/N)"
           />
           <button
@@ -754,7 +756,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           <select
             value={colorscale}
             onChange={(e) => setColorscale(e.target.value as Colorscale2D)}
-            className="px-2 py-1 text-sm border border-border dark:border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            className="px-2 py-1 text-sm border border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
             title="Colormap"
           >
             {COLORSCALE_OPTIONS.map((scale) => (

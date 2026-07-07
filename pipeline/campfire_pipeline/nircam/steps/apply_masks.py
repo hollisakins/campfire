@@ -1,18 +1,24 @@
 """
-apply_masks: paint user region-file masks into the canonical exposure DQ.
+apply_masks: record user region-file masks on the canonical exposure.
 
-First step of the mosaic phase. Reads ``.reg`` files from
+First step of the combine phase. Reads ``.reg`` files from
 ``mask_dir/<filter>/<rootname>.reg``, rasterizes each region to a pixel mask
-using the exposure WCS, and writes the result to a ``CFMASK`` extension on
-the canonical file. Then OR's ``CFMASK`` into ``DQ`` (with the user-chosen
-flag bit, default ``1024``) so downstream JWST steps (outlier detection,
-resample) honor it through their ``dqbits`` parameters.
+using the exposure WCS, and writes the union as a ``CFMASK`` extension on the
+canonical file. The canonical's SCI and DQ are left untouched — the mask is a
+per-exposure property recorded *alongside* the science data, not baked into it.
 
-CFMASK is rebuilt from scratch every run, replacing any existing CFMASK
-extension on the canonical file. This gives the user a clean way to *add*
-mask regions iteratively (re-running with ``--overwrite`` widens DQ
-correctly). Mask *removal* requires ``--reset-from apply_masks`` because
-DQ updates are cumulative — the orchestrator enforces this.
+The mask's actual effect on the mosaic (exclusion from outlier detection and
+resample, via ``good_bits='~DO_NOT_USE'``) happens later, on the disposable
+combine working copy, where ``Field.materialize_work`` fuses CFMASK into the
+working DQ as ``DO_NOT_USE``. Keeping the canonical DQ mask-free means (a) the
+canonical stays byte-identical to the process output apart from the added
+CFMASK extension — so it deploys and re-reviews cleanly — and (b) mask edits
+are non-destructive and fully reversible, since CFMASK is rebuilt from scratch
+every run.
+
+Because ``apply_masks`` short-circuits when the canonical already carries
+``CFP_MASK``, re-run with ``--reset-from apply_masks`` (or ``--overwrite``) to
+pick up an edited ``.reg`` file.
 
 If there is no ``.reg`` file for an exposure, the step still stamps
 ``CFP_MASK = 'no .reg file'`` so the status command can distinguish
@@ -29,6 +35,37 @@ from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 
 
+def _rasterize_regions(regs, wcs, shape, reg_file=''):
+    """Union a list of DS9 regions into a 0/1 ``uint8`` mask of ``shape``.
+
+    Regions already in image/pixel coordinates (``PixelRegion`` — what
+    ``campfire deploy pull-masks`` writes, since the web canvas is
+    pixel-native) are rasterized directly; only sky regions (legacy
+    FK5/ICRS hand-drawn masks) are projected through the exposure ``wcs``
+    via ``to_pixel``. Calling ``to_pixel`` on a region that is *already*
+    pixel raises ``AttributeError`` — the crash this guards against.
+
+    A region that fails to project, or whose footprint falls entirely off
+    the frame (``to_image`` → ``None``), is skipped with a warning rather
+    than aborting the whole exposure.
+    """
+    from regions import PixelRegion
+
+    cfmask = np.zeros(shape, np.uint8)
+    for reg in regs:
+        try:
+            reg_pix = reg if isinstance(reg, PixelRegion) else reg.to_pixel(wcs)
+            mask_arr = reg_pix.to_mask(mode='center').to_image(shape)
+        except (ValueError, TypeError, AttributeError) as e:
+            log(f"Warning: skipping region in {reg_file}: {e}")
+            continue
+        if mask_arr is None:
+            # Region footprint doesn't overlap the frame — nothing to mask.
+            continue
+        cfmask |= mask_arr.astype(bool).astype(np.uint8)
+    return cfmask
+
+
 def apply_masks_step(exposure_file, field, step_config, overwrite=False,
                      status=None):
     """Apply region-file masks to a single canonical exposure.
@@ -38,9 +75,9 @@ def apply_masks_step(exposure_file, field, step_config, overwrite=False,
     exposure_file : str
     field : Field
     step_config : dict
-        ``[nircam.apply_mask]`` (legacy ``[nircam.stage2.apply_mask]``).
-        Keys: ``mask_flag`` (DQ bit, default 1024), ``mask_set_nan``
-        (boolean, default False — also write NaN to SCI for masked pixels).
+        ``[nircam.apply_mask]`` (legacy ``[nircam.stage2.apply_mask]``). No
+        tunable keys — the mask is recorded as a CFMASK extension and honored
+        via DO_NOT_USE on the combine working copy (``Field.materialize_work``).
     overwrite : bool
     status : StepStatus, optional
         Pre-scanned CFP_* status cache.
@@ -64,9 +101,6 @@ def apply_masks_step(exposure_file, field, step_config, overwrite=False,
             )
         return
 
-    flag = step_config.get('mask_flag', 1024)
-    set_to_nan = step_config.get('mask_set_nan', False)
-
     log(f"Applying masks from {os.path.basename(reg_file)} to {rootname}")
 
     from regions import Regions
@@ -78,26 +112,12 @@ def apply_masks_step(exposure_file, field, step_config, overwrite=False,
             wcs = model.get_fits_wcs()
         shape = model.data.shape
 
-        cfmask = np.zeros(shape, np.uint32)
+        # CFMASK is a plain 0/1 union of the user regions, rebuilt from scratch
+        # each run. It records *what* is masked; the DO_NOT_USE fuse (how the
+        # mask is honored) happens on the combine working copy, so the canonical
+        # SCI/DQ are never touched here.
         regs = Regions.read(reg_file)
-        for reg in regs:
-            try:
-                reg_pix = reg.to_pixel(wcs)
-                mask_obj = reg_pix.to_mask(mode='center')
-                mask_arr = mask_obj.to_image(shape)
-                mask_arr = mask_arr.astype(bool)
-            except (ValueError, TypeError) as e:
-                log(f"Warning: skipping region in {reg_file}: {e}")
-                continue
-
-            cfmask |= (mask_arr * flag).astype(np.uint32)
-            if set_to_nan:
-                model.data[mask_arr] = np.nan
-
-        # OR user mask into DQ. Note: DQ updates are cumulative — re-running
-        # with a smaller .reg does not unflag previously masked pixels.
-        # Use --reset-from apply_masks for clean removal.
-        model.dq |= cfmask
+        cfmask = _rasterize_regions(regs, wcs, shape, reg_file=reg_file)
 
         cfmask_hdu = fits.ImageHDU(cfmask, name='CFMASK')
         atomic_save(

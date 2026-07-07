@@ -30,10 +30,10 @@ Multiple observations are processed serially:
     campfire deploy rgb --obs ember_uds_p4 ember_uds_p5
 """
 
+import os
 import sys
 
 import click
-import requests
 
 from campfire.deploy.config import load_config, load_programs, resolve_imaging_config, resolve_photometry_config, resolve_tiles_dir
 
@@ -82,38 +82,53 @@ from campfire.deploy.deploy import (
     deploy_thumbnails,
     deploy_zfit,
 )
-from campfire.deploy.supabase import get_supabase_client, upsert_programs, refresh_filter_options, refresh_programs_overview
+from campfire.deploy.supabase import (
+    get_supabase_client, upsert_programs, refresh_filter_options,
+    refresh_programs_overview, get_latest_deployment_id,
+    get_field_deployment_ids, set_deployment_status, get_user_id_from_token,
+)
 
 
-def _check_admin() -> None:
-    """Verify the logged-in user has admin privileges. Exits on failure."""
-    from campfire.api.session import resolve_base_url
-    from campfire.auth.tokens import TokenManager
+def _gate_admin(config: dict) -> None:
+    """Verify the deployer is an admin THROUGH the actual write client.
 
-    base_url = resolve_base_url()
+    Calls ``is_admin()`` via the same Supabase client the deploy will write
+    with, so the gate and the writes share one identity + target + token — a
+    gate pass therefore guarantees the writes pass. (The old gate hit
+    ``/auth/whoami`` with a separately-resolved token, which could pass while
+    the writes were rejected.)
+
+    Skipped for service-role / local clients: they bypass RLS (god-mode), and
+    ``is_admin()`` would falsely return false there because ``auth.uid()`` is
+    NULL under the service role.
+    """
+    from postgrest.exceptions import APIError
+    from campfire.deploy.supabase import get_supabase_client
+
+    mode = config.get('supabase', {}).get('_auth_mode')
+    if mode in ('service_role', 'local'):
+        return
+
+    client = get_supabase_client(config)
     try:
-        tm = TokenManager(base_url=base_url)
-        token = tm.get_valid_token(auto_refresh=True)
-    except Exception:
-        print("Error: Not logged in. Run: campfire login")
+        resp = client.rpc('is_admin').execute()
+    except APIError as e:
+        code = getattr(e, 'code', '') or ''
+        message = getattr(e, 'message', None) or str(e)
+        if code in ('PGRST301', 'PGRST303') or 'jwt' in message.lower():
+            print("Error: Your login session is invalid or expired. "
+                  "Run: campfire login")
+        else:
+            print(f"Error: Failed to verify admin status: {message}")
         sys.exit(1)
 
-    try:
-        resp = requests.get(
-            f"{base_url}/auth/whoami",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        print(f"Error: Failed to verify admin status: {e}")
-        sys.exit(1)
-
-    if not data.get("is_admin"):
-        print(f"Error: Deploy requires admin privileges.")
-        print(f"  Logged in as: {data.get('email', 'unknown')}")
-        print(f"  Contact an administrator to request access.")
+    if not resp.data:
+        tm = config.get('supabase', {}).get('_token_manager')
+        email = tm.get_user_email() if tm else None
+        print("Error: Deploy requires admin privileges.")
+        if email:
+            print(f"  Logged in as: {email}")
+        print("  Contact an administrator to request access.")
         sys.exit(1)
 
 
@@ -144,6 +159,41 @@ def _resolve_local(ctx, local: bool) -> bool:
     return bool(local) or bool((ctx.obj or {}).get('local', False))
 
 
+def _resolve_service_role(ctx) -> bool:
+    """Whether the explicit service-role escape hatch is engaged.
+
+    True when the top-level ``--service-role`` flag was passed (stored in ctx.obj)
+    or ``CAMPFIRE_DEPLOY_MODE=service-role`` is set. The env var is the universal
+    switch (works for every subcommand); the flag is convenience sugar for the
+    main deploy command. Either way it is an explicit opt-in — a service-role key
+    merely present in the environment does NOT engage it (issue #250).
+    """
+    if (ctx.obj or {}).get('service_role', False):
+        return True
+    raw = (os.environ.get('CAMPFIRE_DEPLOY_MODE') or '').strip().lower().replace('-', '_')
+    return raw in ('service_role', 'servicerole')
+
+
+def _announce_auth_mode(config: dict) -> None:
+    """Print the resolved deploy auth mode + where uploads land (issue #250 #4).
+
+    Makes the login/presigned vs service-role/direct choice obvious and
+    non-surprising up front, instead of silently inferring it from ambient creds.
+    """
+    sb = config.get('supabase', {})
+    mode = sb.get('_auth_mode')
+    if mode == 'login':
+        tm = sb.get('_token_manager')
+        email = tm.get_user_email() if tm else None
+        who = f" as {email}" if email else ""
+        print(f"Deploy auth: login{who} → presigned uploads (no local write keys).")
+    elif mode == 'service_role':
+        print("Deploy auth: service-role → direct uploads via local S3 creds "
+              "(RLS bypassed).")
+    elif mode == 'local':
+        print("Deploy auth: local Supabase → direct uploads via local S3 creds.")
+
+
 def source_ids_option(f):
     """Decorator: --source-ids."""
     f = click.option('--source-ids', multiple=True, type=str, default=None,
@@ -159,7 +209,12 @@ def source_ids_option(f):
 @click.group(invoke_without_command=True)
 @click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
 @click.option('--obs', default=None, multiple=True, type=str, cls=_VariadicOption,
-              help='Observation name(s) (e.g. ember_uds_p4).')
+              help='NIRSpec observation name(s) (e.g. ember_uds_p4).')
+@click.option('--field', default=None, type=str,
+              help='NIRCam field name (e.g. cosmos). Deploys exposures/mosaics for '
+                   'the field; mutually exclusive with --obs.')
+@click.option('--filter', 'filter_names', multiple=True, cls=_VariadicOption,
+              help='NIRCam filter(s) to deploy with --field (default: all).')
 @click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
 @click.option('--source-ids', multiple=True, type=str, default=None,
               cls=_VariadicOption, callback=_parse_source_ids,
@@ -174,27 +229,72 @@ def source_ids_option(f):
               help='Skip photometry upsert after objects reconcile.')
 @click.option('--skip-astrometry', is_flag=True,
               help='Skip astrometric correction for shutters (deploy raw MSA positions).')
+@click.option('--draft', 'draft', is_flag=True,
+              help='Deploy as an admin-only draft: spectra land deploy_status=draft '
+                   '(invisible to users) until published via the admin UI. Requires the '
+                   'B1 lifecycle to be applied to the target DB (checked up front).')
 @click.option('--local', is_flag=True,
               help='Use local Supabase (127.0.0.1:54321).')
+@click.option('--service-role', 'service_role', is_flag=True,
+              help='Explicit escape hatch: authenticate to Supabase with a '
+                   'service-role key and upload directly with local S3 creds '
+                   '(bypasses RLS + presigned URLs). For unattended / CI deploys. '
+                   'Equivalent to CAMPFIRE_DEPLOY_MODE=service-role.')
 @click.pass_context
-def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
-                 force_overwrite, auto_approve, rgb, no_sed, no_shutters,
-                 no_photometry, skip_astrometry, local):
-    """Deploy CAMPFIRE pipeline products to Supabase + R2."""
+def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids,
+                 supabase_only, force_overwrite, auto_approve, rgb, no_sed,
+                 no_shutters, no_photometry, skip_astrometry, draft, local,
+                 service_role):
+    """Deploy CAMPFIRE pipeline products to Supabase + object storage.
+
+    NIRSpec: `campfire deploy --obs <obs>`.  NIRCam:
+    `campfire deploy --field <field> [--filter f1 --filter f2] [--draft]` —
+    first-class parity, recording a field-scoped deployment (published by default;
+    --draft holds it admin-only for review, then `deploy publish --field`).
+    """
     ctx.ensure_object(dict)
     ctx.obj['local'] = local
+    # Propagate the flag to subcommands via the env switch load_config reads, so
+    # ``campfire deploy --service-role <sub>`` behaves like the env var everywhere.
+    if service_role:
+        os.environ['CAMPFIRE_DEPLOY_MODE'] = 'service-role'
+    ctx.obj['service_role'] = _resolve_service_role(ctx)
     if not local:
-        _check_admin()
+        # Gate once here (the group callback runs before every subcommand and
+        # subgroup), through the actual write client. Skipped for service-role
+        # (it bypasses RLS; the gate no-ops for that mode anyway).
+        _gate_admin(load_config(config_path, local=local,
+                                service_role=ctx.obj['service_role']))
 
-    # When invoked without a subcommand, --obs is required
+    # When invoked without a subcommand: NIRCam field deploy (--field) or NIRSpec
+    # observation deploy (--obs).
     if ctx.invoked_subcommand is None:
+        if field and obs:
+            print("Error: --field (NIRCam) and --obs (NIRSpec) are mutually exclusive.")
+            sys.exit(1)
+        if field:
+            config = load_config(config_path, local=local,
+                                 service_role=ctx.obj['service_role'])
+            _announce_auth_mode(config)
+            from campfire.deploy.nircam import deploy_nircam
+            deploy_nircam(field, config,
+                          filters=list(filter_names) if filter_names else None,
+                          dry_run=dry_run, draft=draft)
+            return
         if not obs:
-            print("Error: --obs is required for full deployment.")
+            print("Error: --obs (NIRSpec) or --field (NIRCam) is required for full deployment.")
             print("Usage: campfire deploy --obs <observation_name>")
+            print("       campfire deploy --field <field> [--filter <f> ...] [--draft]")
             sys.exit(1)
 
-        config = load_config(config_path, local=local)
+        config = load_config(config_path, local=local,
+                             service_role=ctx.obj['service_role'])
+        _announce_auth_mode(config)
         multi = len(obs) > 1
+        if multi and config.get('supabase', {}).get('_auth_mode') == 'login':
+            print(f"  Note: deploying {len(obs)} observations on a user login "
+                  f"(the token auto-refreshes, so long batches are fine). For "
+                  f"unattended batches, --service-role is available.")
         fields_needing_rebuild: set[str] = set()
 
         for obs_name in obs:
@@ -212,6 +312,7 @@ def deploy_group(ctx, config_path, obs, dry_run, source_ids, supabase_only,
                 source_ids=list(source_ids) if source_ids else None,
                 auto_approve=auto_approve,
                 defer_rebuild=multi,
+                draft=draft,
             )
             if result and result.get('needs_reconcile'):
                 fields_needing_rebuild.add(result['field'])
@@ -345,6 +446,142 @@ def slits(ctx, config_path, obs, dry_run, local):
     config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
         deploy_slits(obs_name, config, dry_run=dry_run)
+
+
+def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, verb,
+                          field=None):
+    """Shared body for the publish/revoke subcommands (epic #210, B2 / #261).
+
+    Resolves each observation's (or a NIRCam field's) latest deployment and calls
+    set_deployment_status, which flips the deployment + its spectra / nircam_images
+    + writes audit rows server-side.
+    """
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    sb = get_supabase_client(config)
+    actor = get_user_id_from_token(config)
+    if field:
+        # Flip EVERY deployment the field has, not just the latest: a --filter
+        # subset re-deploy spreads a field's objects across deployments, so flipping
+        # only the newest would partially publish (or leave part of a revoked field
+        # public). set_deployment_status per deployment also flips its nircam_images.
+        dep_ids = get_field_deployment_ids(sb, field)
+        if not dep_ids:
+            print(f"  field {field}: no deployment found, skipping")
+            return
+        if dry_run:
+            print(f"  [dry-run] {verb} field {field} ({len(dep_ids)} deployment(s): "
+                  f"{', '.join('#'+str(d) for d in dep_ids)})")
+            return
+        n_ok = 0
+        for dep_id in dep_ids:
+            if set_deployment_status(sb, dep_id, to_status, actor=actor) is not None:
+                n_ok += 1
+        print(f"  {verb}ed field {field}: {n_ok}/{len(dep_ids)} deployment(s) -> {to_status}")
+        return
+    for obs_name in obs:
+        dep_id = get_latest_deployment_id(sb, obs_name)
+        if dep_id is None:
+            print(f"  {obs_name}: no deployment found, skipping")
+            continue
+        if dry_run:
+            print(f"  [dry-run] {verb} {obs_name} (deployment #{dep_id})")
+            continue
+        result = set_deployment_status(sb, dep_id, to_status, actor=actor)
+        if result is None:
+            print(f"  {obs_name}: {verb.lower()} failed")
+            continue
+        spectra = (result.get('spectra') or {})
+        print(f"  {verb}ed {obs_name} (deployment #{dep_id}): "
+              f"{spectra.get('updated', 0)} spectra -> {to_status}")
+
+
+@deploy_group.command()
+@shared_options
+@click.option('--field', default=None, help='NIRCam field to publish (instead of --obs).')
+@click.pass_context
+def publish(ctx, config_path, obs, dry_run, local, field):
+    """Publish draft observation(s) or a NIRCam field: make products public."""
+    _lifecycle_transition(ctx, config_path, obs, dry_run, local,
+                          to_status='published', verb='Publish', field=field)
+
+
+@deploy_group.command()
+@shared_options
+@click.option('--field', default=None, help='NIRCam field to revoke (instead of --obs).')
+@click.pass_context
+def revoke(ctx, config_path, obs, dry_run, local, field):
+    """Revoke published observation(s) or a NIRCam field: hide products (bytes retained)."""
+    _lifecycle_transition(ctx, config_path, obs, dry_run, local,
+                          to_status='revoked', verb='Revoke', field=field)
+
+
+@deploy_group.command('delete-local')
+@click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
+@click.option('--obs', multiple=True, cls=_VariadicOption,
+              help='NIRSpec observation name(s) whose local product files to delete.')
+@click.option('--field', 'fields', multiple=True, cls=_VariadicOption,
+              help='NIRCam field name(s) whose local product files to delete.')
+@click.option('--verify', is_flag=True,
+              help='Hash each local file and require it to match the registry sha256 '
+                   'before deleting (default: trust the registry row exists + has a hash).')
+@click.option('--yes', is_flag=True, help='Actually delete (default is a dry-run preview).')
+@click.option('--local', is_flag=True, help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def delete_local(ctx, config_path, obs, fields, verify, yes, local):
+    """Delete local product files that are verified-present in cloud storage (B4).
+
+    Scope by NIRSpec `--obs` and/or NIRCam `--field`. The verified-in-cloud
+    interlock: only files that have an *active registry row carrying a sha256
+    hash* are candidates, so a local file is never deleted unless a verified cloud
+    copy exists. --verify additionally requires the local file to hash-match the
+    cloud copy. Files with no registry row are never touched. Dry-run by default —
+    pass --yes to unlink. The delete half of the reduce -> deploy -> delete-local
+    -> re-download restore loop.
+    """
+    from campfire.deploy import registry as reg
+    from campfire.config import products_dir
+
+    if not obs and not fields:
+        raise click.UsageError("Pass --obs <observation> and/or --field <field>.")
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+    proot = products_dir()
+
+    grand_deleted = 0
+    grand_bytes = 0
+    scopes = [('obs', o) for o in obs] + [('field', f) for f in fields]
+    for kind, name in scopes:
+        plan = (reg.plan_delete_local(sb, None, proot, field=name, verify=verify)
+                if kind == 'field'
+                else reg.plan_delete_local(sb, name, proot, verify=verify))
+        print(f"\n{name}: {len(plan.deletable)} deletable "
+              f"({_fmt_bytes(plan.total_bytes)}), {len(plan.skipped)} skipped, "
+              f"{len(plan.absent)} registered-but-absent")
+        for local_path, _key, reason in plan.skipped:
+            print(f"  skip {local_path.name}: {reason}")
+        if not yes:
+            for local_path, _key, _size in plan.deletable[:10]:
+                print(f"  [dry-run] would delete {local_path}")
+            if len(plan.deletable) > 10:
+                print(f"  ... and {len(plan.deletable) - 10} more")
+            continue
+        for local_path, _key, size in plan.deletable:
+            try:
+                local_path.unlink()
+                grand_deleted += 1
+                grand_bytes += size
+            except OSError as e:
+                print(f"  ! failed to delete {local_path}: {e}")
+
+    if yes:
+        print(f"\nDeleted {grand_deleted} files ({_fmt_bytes(grand_bytes)} freed). "
+              f"Restore with: campfire download --obs <name> "
+              f"(or --field <name> --intermediate for NIRCam).")
+    else:
+        print(f"\nDry run — pass --yes to delete. Interlock: only registered, "
+              f"sha256-hashed{'+verified' if verify else ''} files are candidates.")
 
 
 @deploy_group.command()
@@ -629,6 +866,378 @@ def objects_rebuild(ctx, config_path, field, all_fields, dry_run, radius, force,
 
 
 # ---------------------------------------------------------------------------
+# registry subgroup (storage_objects shadow index, #214)
+# ---------------------------------------------------------------------------
+
+@deploy_group.group(invoke_without_command=True)
+@click.pass_context
+def registry(ctx):
+    """Manage the storage_objects registry (backfill / reconcile / budget).
+
+    Bare `campfire deploy registry` defaults to `reconcile`.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(registry_reconcile)
+
+
+def _fmt_bytes(n: int | float) -> str:
+    """Human-readable byte count."""
+    n = float(n)
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB', 'PB'):
+        if abs(n) < 1024 or unit == 'PB':
+            return f"{n:.2f} {unit}" if unit != 'B' else f"{int(n)} B"
+        n /= 1024
+    return f"{n:.2f} PB"
+
+
+@registry.command('backfill')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--dry-run', is_flag=True,
+              help='Compute rows without writing them.')
+@click.option('--orphans/--no-orphans', default=True,
+              help='Adopt data-bucket objects with no DB pointer via LIST (needs storage creds).')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def registry_backfill(ctx, config_path, dry_run, orphans, local):
+    """Backfill storage_objects from existing pointers + bucket orphans.
+
+    spectra rows reuse the stored sha256 (file_hash) + size — no bucket access.
+    NIRCam pointers and orphans are HEAD'd for size + a provisional 'etag:' hash.
+    Idempotent (upsert by key); safe to re-run.
+    """
+    from campfire_layout import is_known_key, parse_key, LayoutError
+    from campfire.deploy import registry as reg
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+    backend = reg.resolve_backend_label(config)
+
+    # Already-migrated objects (canonical keys on OSN). Backfill must NOT re-register
+    # their retained R2 legacy keys as duplicate r2 rows.
+    migrated = reg.active_osn_canonical_keys(sb)
+
+    def _registerable_orphan(k: str) -> bool:
+        """A bucket orphan worth adopting: known, not a dead product, not migrated."""
+        if not is_known_key(k):
+            return False
+        try:
+            pk = parse_key(k)
+        except LayoutError:
+            return False
+        if pk.product_type in reg.UNREGISTERED_PRODUCT_TYPES:
+            return False  # dead rgb/sed — never registered
+        try:
+            if reg.canonical_key_for(k) in migrated:
+                return False  # already on OSN — don't resurrect a legacy duplicate
+        except LayoutError:
+            return False
+        return True
+
+    # 1. spectra finals — authoritative sha256 from the DB (skips already-migrated).
+    n_spec, skipped, already = reg.backfill_spectra(
+        sb, backend=backend, dry_run=dry_run, migrated_keys=migrated)
+    print(f"spectra: {n_spec} rows{' (dry-run)' if dry_run else ''}"
+          + (f", {skipped} skipped (no stored hash/size)" if skipped else "")
+          + (f", {already} already on OSN" if already else ""))
+
+    # 2. NIRCam pointers — no stored hash; HEAD for size + etag.
+    try:
+        pointers = reg.live_pointers(sb)
+        nircam = pointers['nircam_images'] + pointers['nircam_exposures']
+        if nircam:
+            n_nc, failed_nc = reg.backfill_via_head(
+                sb, config, nircam, backend=backend,
+                content_type='image/png', dry_run=dry_run,
+            )
+            print(f"nircam: {n_nc} rows"
+                  + (f", {failed_nc} failed (HEAD error / unknown key)" if failed_nc else ""))
+    except Exception as e:
+        print(f"nircam backfill skipped (no storage credentials for HEAD?): {e}")
+
+    # 3. Orphans — bucket objects with no registry row, adopted via LIST. Excludes
+    #    dead products (rgb/sed) and objects already migrated to OSN.
+    if orphans:
+        try:
+            existing = set(reg.registry_keys(sb))
+            orphan_keys = [k for k in reg.list_bucket_keys(config) if k not in existing]
+            adoptable = [k for k in orphan_keys if _registerable_orphan(k)]
+            unadoptable = len(orphan_keys) - len(adoptable)
+            if adoptable:
+                n_orph, failed_orph = reg.backfill_via_head(
+                    sb, config, adoptable, backend=backend, dry_run=dry_run,
+                )
+                print(f"orphans: {n_orph} adopted"
+                      + (f", {failed_orph} failed" if failed_orph else "")
+                      + (f", {unadoptable} skipped (unknown/dead/already-migrated)" if unadoptable else ""))
+            else:
+                print(f"orphans: none adoptable"
+                      + (f" ({unadoptable} skipped)" if unadoptable else ""))
+        except Exception as e:
+            print(f"orphan adoption skipped (no storage credentials for LIST?): {e}")
+
+    print("Backfill complete.")
+
+
+@registry.command('reconcile')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--no-bucket', is_flag=True,
+              help='Skip the bucket LIST (coverage only; no dangling/orphan detection).')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def registry_reconcile(ctx, config_path, no_bucket, local):
+    """Report coverage: live pointers vs registry vs bucket (read-only).
+
+    The F1 gate: every live fits_path/file_path/png_path must have a registry
+    row (missing == 0) before any consumer may treat the registry as
+    authoritative. Also reports dangling rows and unadopted bucket orphans.
+    """
+    from campfire.deploy import registry as reg
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+
+    pointers = reg.live_pointers(sb)
+    live = pointers['spectra'] + pointers['nircam_images'] + pointers['nircam_exposures']
+    reg_keys = reg.registry_keys(sb)
+
+    bucket_keys = None
+    danglable_keys = None
+    if not no_bucket:
+        try:
+            bucket_keys = list(reg.list_bucket_keys(config))
+            # The bucket LIST only enumerates the data backend (R2 in F1); an
+            # OSN-native object (NIRCam FITS/expmaps, #261/N1) has no R2 twin, so
+            # scope dangling to registry rows homed on the LISTed backend, else
+            # every deployed NIRCam object is reported spuriously dangling.
+            danglable_keys = reg.registry_keys(sb, backend=reg.resolve_backend_label(config))
+        except Exception as e:
+            print(f"(bucket LIST unavailable — coverage only: {e})")
+
+    report = reg.compute_reconcile(live, reg_keys, bucket_keys, danglable_keys=danglable_keys)
+    print(f"live pointers: {len(set(live))}  registry rows: {len(set(reg_keys))}")
+    print(report.summary())
+    if report.missing:
+        print(f"\n  COVERAGE GAP — {len(report.missing)} live pointer(s) have no registry row.")
+        for k in sorted(report.missing)[:10]:
+            print(f"    missing: {k}")
+        if len(report.missing) > 10:
+            print(f"    ... and {len(report.missing) - 10} more")
+    if report.dangling:
+        for k in sorted(report.dangling)[:10]:
+            print(f"    dangling: {k}")
+    if report.orphans:
+        print(f"  {len(report.orphans)} orphan bucket object(s) "
+              f"({len(report.adoptable)} adoptable) — run `registry backfill`.")
+    if report.covered and not report.dangling:
+        print("\n  Coverage gate: PASS (registry covers all live pointers).")
+
+
+@registry.command('budget')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def registry_budget(ctx, config_path, local):
+    """Show bytes-at-rest against the 20 TB cap (via get_storage_budget RPC)."""
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+
+    resp = sb.rpc('get_storage_budget').execute()
+    b = resp.data or {}
+    total = b.get('total_bytes', 0)
+    cap = b.get('cap_bytes', 0)
+    print(f"Storage budget: {_fmt_bytes(total)} / {_fmt_bytes(cap)} "
+          f"({b.get('pct_used', 0)}%)")
+    print(f"  registry (data): {_fmt_bytes(b.get('registry_bytes', 0))}")
+    print(f"  tiles (map_layers): {_fmt_bytes(b.get('tile_bytes', 0))}")
+    by_pt = b.get('by_product_type') or {}
+    if by_pt:
+        print("  by product_type:")
+        for pt, n in sorted(by_pt.items(), key=lambda kv: -kv[1]):
+            print(f"    {pt:28} {_fmt_bytes(n)}")
+
+
+@registry.command('copy')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--obs', 'observations', default=None, multiple=True, type=str,
+              cls=_VariadicOption, help='Limit to these observation(s).')
+@click.option('--field', 'fields', default=None, multiple=True, type=str,
+              cls=_VariadicOption, help='Limit to these field(s).')
+@click.option('--product-type', 'product_types', default=None, multiple=True, type=str,
+              cls=_VariadicOption,
+              help='Override the migrated product types (default excludes dead rgb/sed).')
+@click.option('--limit', type=int, default=None,
+              help='Migrate at most N objects (piloting).')
+@click.option('--execute', is_flag=True,
+              help='Actually copy + relocate. Without this, only a dry-run plan is printed.')
+@click.option('--verify-readback/--no-verify-readback', default=True,
+              help='Re-download from OSN and re-hash to verify (default on). '
+                   '--no-verify-readback only checks the uploaded size.')
+@click.option('--tmp-dir', default=None,
+              help='Scratch dir for streamed copies (default: system temp).')
+@click.option('--max-workers', type=int, default=8,
+              help='Parallel copy workers (default 8). Each does GET+PUT+readback.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def registry_copy(ctx, config_path, observations, fields, product_types, limit,
+                  execute, verify_readback, tmp_dir, max_workers, local):
+    """Copy data objects R2->OSN, re-key legacy->canonical, verify, relocate (#215).
+
+    Reads each active backend='r2' registry row, GETs it from R2, PUTs it to OSN
+    under its canonical key, verifies by sha256 (upgrading provisional 'etag:'
+    hashes), then flips the registry row in place to osn+canonical+sha256. R2 bytes
+    are retained (rollback = read R2). Idempotent/resumable: already-migrated rows
+    are skipped. Dry-run by default; pass --execute to transfer.
+    """
+    from campfire.deploy import registry as reg
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+
+    obs = list(observations) or None
+    flds = list(fields) or None
+    types = list(product_types) or None
+
+    # Size the S3 connection pools for the worker fan-out (each worker does a GET
+    # from R2 + a PUT and a readback GET to OSN concurrently).
+    pool = max(max_workers * 2, 8)
+
+    # Resolve the OSN destination client up front so a missing [r2_osn] section
+    # fails fast with a clear message (not mid-transfer).
+    try:
+        dst_client, dst_bucket, dst_backend = reg._osn_client_and_bucket(
+            config, max_pool_connections=pool)
+    except Exception as e:
+        raise click.UsageError(
+            f"OSN destination not configured: {e}\n"
+            f"Set CAMPFIRE_S3_OSN_* env vars (or a [r2_osn] block in deploy.toml)."
+        )
+    src_client, src_bucket, _ = reg._data_client_and_bucket(
+        config, max_pool_connections=pool)
+
+    # G1 freeze guard: warn if any selected obs already has osn-canonical rows that
+    # collide with fresh r2-legacy rows (a re-deploy during the shadow window).
+    conflicts = reg.find_migration_conflicts(sb, observations=obs)
+    if conflicts:
+        print(f"  WARNING: {len(conflicts)} object(s) already have an active OSN copy "
+              f"but a fresh R2-legacy row exists (re-deploy during shadow?).")
+        for k in conflicts[:5]:
+            print(f"    conflict: {k}")
+        print("    These would create duplicate active rows — resolve before --execute.\n")
+
+    if not execute:
+        report = reg.copy_objects(
+            sb, src_client=src_client, src_bucket=src_bucket,
+            dst_client=dst_client, dst_bucket=dst_bucket, dst_backend=dst_backend,
+            observations=obs, fields=flds, product_types=types, limit=limit,
+            dry_run=True,
+        )
+        print(f"DRY RUN — {report.summary()}")
+        for legacy, canonical, _sz in report.planned[:10]:
+            print(f"    {legacy}  ->  {canonical}")
+        if len(report.planned) > 10:
+            print(f"    ... and {len(report.planned) - 10} more")
+        if report.skipped:
+            print(f"  {len(report.skipped)} unmappable key(s) would be skipped:")
+            for legacy, reason in report.skipped[:5]:
+                print(f"    skip: {legacy} ({reason})")
+        print(f"\n  Plan: {len(report.planned)} object(s), {_fmt_bytes(report.bytes_planned)}. "
+              f"Re-run with --execute to copy.")
+        return
+
+    print(f"Copying R2 -> OSN ({dst_backend}, bucket {dst_bucket})"
+          + (f", readback verify" if verify_readback else ", size-check only")
+          + f", {max_workers} workers ...")
+    report = reg.copy_objects(
+        sb, src_client=src_client, src_bucket=src_bucket,
+        dst_client=dst_client, dst_bucket=dst_bucket, dst_backend=dst_backend,
+        observations=obs, fields=flds, product_types=types, limit=limit,
+        dry_run=False, verify_readback=verify_readback, tmp_dir=tmp_dir,
+        progress=True, max_workers=max_workers,
+    )
+    print(f"\n{report.summary()}  ({_fmt_bytes(report.bytes_copied)} copied)")
+    if report.skipped:
+        print(f"  {len(report.skipped)} skipped (unmappable key):")
+        for legacy, reason in report.skipped[:5]:
+            print(f"    skip: {legacy} ({reason})")
+    if report.failed:
+        print(f"  {len(report.failed)} FAILED (left on R2, not relocated):")
+        for legacy, reason in report.failed[:10]:
+            print(f"    fail: {legacy} ({reason})")
+        ctx.exit(1)
+    print("Copy complete.")
+
+
+@registry.command('prune')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--duplicates/--no-duplicates', default=True,
+              help='Delete active r2 rows whose canonical key is already on OSN '
+                   '(duplicates left by a migration-unaware backfill). Default on.')
+@click.option('--dead-products/--no-dead-products', default=True,
+              help='Delete rgb/sed rows (dead products, never served). Default on.')
+@click.option('--execute', is_flag=True,
+              help='Actually delete. Without this, only a dry-run count is printed.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def registry_prune(ctx, config_path, duplicates, dead_products, execute, local):
+    """Delete registry rows that should never exist (#215 cleanup).
+
+    Two categories: (1) r2 duplicates of already-migrated objects — the OSN row is
+    authoritative and R2 retains the bytes, so these stale legacy rows are safe to
+    delete; (2) dead rgb/sed products that are no longer served. Hard delete.
+    Dry-run by default; pass --execute to delete.
+    """
+    from campfire.deploy import registry as reg
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    _gate_admin(config)
+    sb = get_supabase_client(config)
+
+    ids: set[int] = set()
+    if duplicates:
+        dup = reg.find_r2_duplicate_ids(sb)
+        print(f"r2 duplicates of migrated objects: {len(dup)}")
+        ids.update(dup)
+    if dead_products:
+        dead = reg.find_dead_product_ids(sb)
+        print(f"dead-product rows (rgb/sed):       {len(dead)}")
+        ids.update(dead)
+
+    if not ids:
+        print("Nothing to prune.")
+        return
+    if not execute:
+        print(f"\nDRY RUN — would delete {len(ids)} row(s). Re-run with --execute.")
+        return
+    n = reg.delete_objects(sb, list(ids))
+    print(f"\nDeleted {n} row(s).")
+
+    # Audit the registry prune (audit B3): registry-row deletion was silent.
+    from campfire.deploy.supabase import (
+        deploy_event_metadata, get_user_id_from_token, log_deploy_event,
+    )
+    log_deploy_event(
+        sb, action='delete', actor=get_user_id_from_token(config),
+        affected_count=n,
+        metadata=deploy_event_metadata(
+            'registry', items=n, prune=True,
+            duplicates=bool(duplicates), dead_products=bool(dead_products)))
+
+
+# ---------------------------------------------------------------------------
 # photometry subcommand
 # ---------------------------------------------------------------------------
 
@@ -739,7 +1348,8 @@ def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
 
     Retrieves the latest deployment record for the observation and writes:
     - {obs}_config.toml (effective pipeline config)
-    - _{obs}_stuck_closed_shutters.toml (stuck shutter definitions)
+    - {obs}_stuck_closed_shutters.toml (stuck shutter definitions; place at
+      reference/nirspec/<obs>/stuck_closed_shutters.toml to re-reduce)
     - observations.toml (observation definition fragment)
     """
     from pathlib import Path
@@ -754,30 +1364,21 @@ def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
 # NIRCam subcommand group (exposure tracking)
 # ---------------------------------------------------------------------------
 
-@deploy_group.command()
-@click.option('--config', 'config_path', default=None,
-              help='Path to deploy config TOML.')
-@click.option('--field', required=True,
-              help='Field name (e.g. cosmos).')
-@click.option('--filter', 'filter_names', multiple=True, cls=_VariadicOption,
-              help='Filter(s) to process (default: all).')
-@click.option('--dry-run', is_flag=True,
-              help='Show what would be deployed without making changes.')
-def nircam(config_path, field, filter_names, dry_run):
-    """Push NIRCam exposure state (preview PNGs + metadata) to Supabase.
+@deploy_group.group('nircam')
+def nircam():
+    """NIRCam inspection round-trip utilities (epic #261).
 
-    Reviewer-set exclusions (review_status='excluded') are surfaced in the
-    web admin UI for copy-paste into the field's skip=[] block in
-    fields.toml — there is no longer a pull/contract-file workflow.
+    Field deploy is the top-level `campfire deploy --field <field>` (parity with
+    `--obs`). These subcommands round-trip the portal's DB-resident inspection
+    state with the reduction workspace: `pull` (masks + exclusions + drift
+    report, the reducer's one-shot after inspecting), `pull-masks` / `import-masks`
+    (region masks ↔ reference/.../masks/*.reg), and `import-skip` (seed DB
+    exclusions from a field's fields.toml `skip` globs).
     """
-    from campfire.deploy.nircam import deploy_nircam
-    config = load_config(config_path)
-    deploy_nircam(field, config,
-                  filters=list(filter_names) if filter_names else None,
-                  dry_run=dry_run)
+    pass
 
 
-@deploy_group.command('import-masks')
+@nircam.command('import-masks')
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', required=True, help='Field name (e.g. cosmos).')
@@ -798,7 +1399,7 @@ def nircam_import_masks(ctx, config_path, field, dry_run, local):
     import_masks(field, config, dry_run=dry_run)
 
 
-@deploy_group.command('pull-masks')
+@nircam.command('pull-masks')
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', required=True, help='Field name (e.g. cosmos).')
@@ -816,6 +1417,129 @@ def nircam_pull_masks(ctx, config_path, field, dry_run, local):
     from campfire.deploy.nircam_masks import pull_masks
     config = load_config(config_path, local=_resolve_local(ctx, local))
     pull_masks(field, config, dry_run=dry_run)
+
+
+@deploy_group.group('nirspec')
+def nirspec():
+    """NIRSpec inspection round-trip utilities (NIRSpec review loop, design §3.5).
+
+    Observation deploy is the top-level `campfire deploy --obs <obs>`. These
+    subcommands round-trip the portal's DB-resident review state with the reduction
+    workspace: `pull-rate-masks` materializes the web-drawn rate-file masks
+    (nirspec_rate_exposures.mask_regions) to reference/nirspec/<obs>/masks/*.reg;
+    `pull-stuck-shutters` / `pull-bkg-overrides` materialize the nods-view flags
+    (nirspec_source_review) to reference/nirspec/<obs>/stuck_closed_shutters.toml and
+    nodded_background_overrides.toml. The pipeline reads all three before stage 2.
+    """
+    pass
+
+
+@nirspec.command('pull-rate-masks')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
+@click.option('--dry-run', is_flag=True,
+              help='Show what would be written without touching files.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nirspec_pull_rate_masks(ctx, config_path, obs, dry_run, local):
+    """Materialize Supabase rate mask_regions to reference/nirspec/<obs>/masks/*.reg.
+
+    Only writes files for rate exposures with a non-null mask_regions row; the
+    pipeline reads these before stage 2 (masks.py) and ORs DO_NOT_USE into the
+    rate .dq. Filenames match the rate file (<root>_<detector>.reg).
+    """
+    from campfire.deploy.nirspec_masks import pull_rate_masks
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    pull_rate_masks(obs, config, dry_run=dry_run)
+
+
+@nirspec.command('pull-stuck-shutters')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
+@click.option('--dry-run', is_flag=True,
+              help='Show what would be written without touching files.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nirspec_pull_stuck_shutters(ctx, config_path, obs, dry_run, local):
+    """Merge nirspec_source_review.stuck_shutters into stuck_closed_shutters.toml.
+
+    Authority merge hand > web > auto: preserves hand entries, refreshes web entries
+    from the DB (dropping ones the DB no longer flags), and leaves auto-detected
+    entries to fill gaps. The pipeline reads the TOML before stage 2.
+    """
+    from campfire.deploy.nirspec_flags import pull_stuck_shutters
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    pull_stuck_shutters(obs, config, dry_run=dry_run)
+
+
+@nirspec.command('pull-bkg-overrides')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
+@click.option('--dry-run', is_flag=True,
+              help='Show what would be written without touching files.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nirspec_pull_bkg_overrides(ctx, config_path, obs, dry_run, local):
+    """Regenerate nodded_background_overrides.toml from nirspec_source_review.bkg_overrides.
+
+    Clean full-overwrite (no auto-writer to conflict with). The pipeline reads the
+    TOML before stage 2 to pick per-nod background nods (empty list = exclude nod).
+    """
+    from campfire.deploy.nirspec_flags import pull_bkg_overrides
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    pull_bkg_overrides(obs, config, dry_run=dry_run)
+
+
+@nircam.command('pull')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--field', required=True, help='Field name (e.g. cosmos).')
+@click.option('--dry-run', is_flag=True,
+              help='Show what would be written without touching files.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nircam_pull(ctx, config_path, field, dry_run, local):
+    """Pull the full review loop: masks + exclusions + drift report (epic #261).
+
+    Materializes DB masks to reference/.../masks/*.reg, the excluded-exposure
+    list to reference/nircam/<field>/exposures.json (which `cfpipe nircam
+    combine` honors), and prints a drift report of local .reg vs DB masks.
+    """
+    from campfire.deploy.nircam_masks import pull_masks, mask_drift_report
+    from campfire.deploy.nircam_exclusions import pull_exclusions
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    pull_masks(field, config, dry_run=dry_run)
+    pull_exclusions(field, config, dry_run=dry_run)
+    if not dry_run:
+        mask_drift_report(field, config)
+
+
+@nircam.command('import-skip')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--field', required=True, help='Field name (e.g. cosmos).')
+@click.option('--dry-run', is_flag=True,
+              help='List exposures that would be excluded without writing.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nircam_import_skip(ctx, config_path, field, dry_run, local):
+    """Seed DB exclusions from this field's fields.toml `skip` globs.
+
+    Sets review_status='excluded' for every exposure whose rootname matches a
+    skip pattern (same glob semantics as combine). Additive — the portal stays
+    the authority for un-excluding.
+    """
+    from campfire.deploy.nircam_exclusions import import_skip
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    import_skip(field, config, dry_run=dry_run)
 
 
 # ---------------------------------------------------------------------------

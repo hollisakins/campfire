@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import {
   SHUTTER_WIDTH_ARCSEC,
   SHUTTER_HEIGHT_ARCSEC,
@@ -60,12 +60,18 @@ export async function GET(request: NextRequest) {
     }
     const radiusArcsec = Math.min(30, Math.max(1, parsedFov));
 
-    // Look up object
-    const { data: obj, error: objErr } = await supabase
+    // Look up object. Service-role read bypasses RLS, so gate object existence
+    // on has_published_spectrum unless admin — an unpublished object must not be
+    // confirmable via its shutter geometry. No-op in B1.
+    const isAdmin = await isAdminUser(userId);
+    let objQuery = supabase
       .from('objects')
       .select('ra, dec, field, programs')
-      .eq('object_id', objectId)
-      .single();
+      .eq('object_id', objectId);
+    if (!isAdmin) {
+      objQuery = objQuery.eq('has_published_spectrum', true);
+    }
+    const { data: obj, error: objErr } = await objQuery.single();
 
     if (objErr || !obj) {
       return NextResponse.json(

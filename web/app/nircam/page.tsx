@@ -25,8 +25,8 @@ export default function NircamPage() {
   const [availableTiles, setAvailableTiles] = useState<string[]>([]);
   const [availableFilters, setAvailableFilters] = useState<string[]>([]);
   const [availablePixelScales, setAvailablePixelScales] = useState<string[]>([]);
-  const [availableVersions, setAvailableVersions] = useState<string[]>([]);
   const [availableExtensions, setAvailableExtensions] = useState<string[]>([]);
+  const [availableEpochs, setAvailableEpochs] = useState<string[]>([]);
 
   // Fetch data
   const fetchData = useCallback(async () => {
@@ -53,8 +53,8 @@ export default function NircamPage() {
         setAvailableTiles(filterOptionsResult.tiles);
         setAvailableFilters(filterOptionsResult.filters);
         setAvailablePixelScales(filterOptionsResult.pixel_scales);
-        setAvailableVersions(filterOptionsResult.versions);
         setAvailableExtensions(filterOptionsResult.extensions);
+        setAvailableEpochs(filterOptionsResult.epochs);
       }
     } catch (err) {
       setError('Failed to fetch data');
@@ -143,8 +143,8 @@ export default function NircamPage() {
           availableTiles={availableTiles}
           availableFilters={availableFilters}
           availablePixelScales={availablePixelScales}
-          availableVersions={availableVersions}
           availableExtensions={availableExtensions}
+          availableEpochs={availableEpochs}
         />
       </div>
 

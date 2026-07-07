@@ -31,6 +31,29 @@ export async function resolveListIds(
 }
 
 /**
+ * Check whether a user is a CAMPFIRE admin.
+ *
+ * Admin-ness is derived ONLY from user_profiles.is_admin via the service-role
+ * client (mirrors the check in /api/v1/deploy/presign) — it is NEVER inferred
+ * from program slugs. Used to gate visibility of unpublished spectra
+ * (deploy_status != 'published') and their parent objects/targets
+ * (has_published_spectrum = false). Fail-closed: any lookup failure → false.
+ */
+export async function isAdminUser(userId: string): Promise<boolean> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('is_admin')
+    .eq('user_id', userId)
+    .single();
+
+  return profile?.is_admin === true;
+}
+
+/**
  * Get all program slugs accessible to a user (public + explicit access)
  */
 export async function getAccessiblePrograms(userId: string): Promise<string[]> {
@@ -56,6 +79,71 @@ export async function getAccessiblePrograms(userId: string): Promise<string[]> {
 
   // Combine and deduplicate
   return [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+}
+
+// ---------------------------------------------------------------------------
+// Sync auth preamble cache
+// ---------------------------------------------------------------------------
+// A full `campfire sync` fans out hundreds of /sync/* requests that each
+// re-derive the same invariant for the same user: the accessible-program list
+// (2 Supabase queries) and the admin flag (1 query). Recomputing it per page is
+// pure fixed tax. Memoize per user for a short window so warm serverless
+// instances collapse the repeats to a single lookup. Fail-open: a miss just
+// falls back to the uncached query. The TTL bounds staleness if a user's access
+// changes mid-sync (a rare event that a subsequent sync picks up anyway).
+//
+// Scoped to the sync routes on purpose -- other call sites keep the uncached
+// helpers so their behavior is unchanged.
+const SYNC_AUTH_TTL_MS = 60_000;
+const SYNC_AUTH_CACHE_MAX = 1000;
+
+type CacheEntry<T> = { value: T; expiresAt: number };
+
+function cacheGet<T>(cache: Map<string, CacheEntry<T>>, key: string, now: number): T | undefined {
+  const hit = cache.get(key);
+  if (hit && hit.expiresAt > now) return hit.value;
+  if (hit) cache.delete(key);
+  return undefined;
+}
+
+function cacheSet<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, now: number): void {
+  // Opportunistically drop expired entries before growing an unbounded map on a
+  // long-lived warm instance.
+  if (cache.size >= SYNC_AUTH_CACHE_MAX) {
+    for (const [k, v] of cache) {
+      if (v.expiresAt <= now) cache.delete(k);
+    }
+  }
+  cache.set(key, { value, expiresAt: now + SYNC_AUTH_TTL_MS });
+}
+
+const accessibleProgramsCache = new Map<string, CacheEntry<string[]>>();
+const isAdminCache = new Map<string, CacheEntry<boolean>>();
+
+/**
+ * getAccessiblePrograms with a short-TTL per-instance cache. Use ONLY on the
+ * high-fanout /sync/* routes; see the cache note above.
+ */
+export async function getAccessibleProgramsCached(userId: string): Promise<string[]> {
+  const now = Date.now();
+  const cached = cacheGet(accessibleProgramsCache, userId, now);
+  if (cached !== undefined) return cached;
+  const value = await getAccessiblePrograms(userId);
+  cacheSet(accessibleProgramsCache, userId, value, now);
+  return value;
+}
+
+/**
+ * isAdminUser with a short-TTL per-instance cache. Use ONLY on the /sync/*
+ * routes; see the cache note above.
+ */
+export async function isAdminUserCached(userId: string): Promise<boolean> {
+  const now = Date.now();
+  const cached = cacheGet(isAdminCache, userId, now);
+  if (cached !== undefined) return cached;
+  const value = await isAdminUser(userId);
+  cacheSet(isAdminCache, userId, value, now);
+  return value;
 }
 
 /**

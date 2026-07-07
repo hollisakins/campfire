@@ -205,7 +205,7 @@ function CliAuthContent() {
                 This authorization code has expired.
               </p>
               <p className="text-sm text-text-tertiary">
-                Please run <code className="bg-bg-secondary px-2 py-1 rounded">campfire login</code> again to get a new code.
+                Please run <code className="bg-surface-2 px-2 py-1 rounded">campfire login</code> again to get a new code.
               </p>
             </div>
           )}
@@ -250,7 +250,7 @@ function CliAuthContent() {
                       }
                     }
                   }}
-                  className="w-full px-4 py-3 text-2xl text-center font-mono tracking-widest bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-4 py-3 text-2xl text-center font-mono tracking-widest bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
                   placeholder="XXXX-XXXX"
                   maxLength={9}
                   disabled={status === 'validating' || status === 'authorizing'}
@@ -280,7 +280,7 @@ function CliAuthContent() {
 
               {status === 'ready' && (
                 <div className="space-y-3">
-                  <div className="p-4 bg-bg-secondary rounded-lg mb-4">
+                  <div className="p-4 bg-surface-2 rounded-lg mb-4">
                     <p className="text-sm text-text-secondary mb-2">
                       This will allow the Python client to:
                     </p>

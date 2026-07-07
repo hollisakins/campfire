@@ -3,7 +3,10 @@
     "allow": [
       "Bash(*)",
       "WebSearch",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Skill(code-review:code-review *)",
+      "mcp__github_inline_comment",
+      "mcp__github_comment"
     ],
     "deny": [
       "Bash(rm -rf:*)",

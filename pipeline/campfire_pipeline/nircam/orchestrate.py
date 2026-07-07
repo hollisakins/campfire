@@ -20,6 +20,7 @@ from importlib import import_module
 
 from astropy.io import fits
 
+from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
 from campfire_pipeline.common.parallel import dispatch
 from campfire_pipeline.config import get_nircam_step_config
@@ -45,8 +46,8 @@ PROCESS_STEPS = [
     ('detector1',   'CFP_DET1'),
     ('persistence', 'CFP_PERS'),
     ('wisp',        'CFP_WISP'),
-    ('striping',    'CFP_1F'),
     ('image2',      'CFP_IMG2'),
+    ('striping',    'CFP_1F'),
     ('edge',        'CFP_EDGE'),
     ('sky',         'CFP_SKY'),
     ('diag_striping', 'CFP_DIAG'),
@@ -66,9 +67,17 @@ COMBINE_STEPS = [
 ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 STEP_NAMES = [name for name, _ in ALL_STEPS]
 
+# Combine steps that read/write the disposable working copies rather than the
+# frozen canonical (apply_mask is excluded — it writes the canonical's CFMASK).
+# Running any of these standalone via ``run_step`` must materialize the work
+# tree first.
+_COMBINE_WORK_STEPS = {'bad_pixel', 'outlier', 'resample'}
+
 # Steps that hit CRDS — used by run_step() to decide when to pre-fetch
-# reference files before parallel dispatch.
-_CRDS_STEPS = {'detector1', 'wisp', 'striping', 'image2'}
+# reference files before parallel dispatch. striping now runs *after* image2
+# (on flat-fielded, flux-calibrated cal-stage data) so it no longer resolves a
+# flat itself; wisp still runs in the rate frame and resolves its own flat.
+_CRDS_STEPS = {'detector1', 'wisp', 'image2'}
 
 
 def _detector_sorted(paths):
@@ -129,6 +138,24 @@ def _group_by_visit(exposure_files):
         visit = os.path.basename(f).split('_')[0]
         visits.setdefault(visit, []).append(f)
     return visits
+
+
+def _visit_membership_matches(manifest, visit, visit_files):
+    """True iff an outlier *manifest* recorded exactly the current *visit_files*
+    as this visit's own inputs.
+
+    Catches a member dropped from the visit (a NOT_ALIGNED quarantine, a new
+    skip/exclusion, a tile re-scope) that the per-file hash check alone would
+    miss — the survivors' hashes still match the larger manifest, so outlier
+    would be skipped and resample would reuse CR masks computed with the
+    now-absent exposure still pooled. A manifest input belongs to this visit iff
+    its filename's leading ``jw...`` token is the visit; cross-visit overlap
+    inputs (a different token) are excluded here and validated by
+    ``outlier_step``'s full input-set check on the slow path.
+    """
+    manifest_this_visit = {inp['filename'] for inp in manifest.get('inputs', [])
+                           if inp['filename'].split('_')[0] == visit}
+    return manifest_this_visit == {os.path.basename(f) for f in visit_files}
 
 
 def _read_sregions(exposure_files):
@@ -193,8 +220,9 @@ def _filter_imaging_uncals(uncals, step_name):
     return keep
 
 
-def _run_detector1(field, config, filtname, n_processes, overwrite, status):
-    uncals = field.get_uncal_files(filtname)
+def _run_detector1(field, config, filtname, n_processes, overwrite, status,
+                   tiles=None):
+    uncals = field.get_uncal_files(filtname, tiles=tiles)
     if not uncals:
         log(f"detector1: no uncal files for {filtname}")
         return
@@ -228,7 +256,7 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
     log(f"detector1: dispatching {len(pending)} files for {filtname}")
     dispatch(detector1_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
-             status=status)
+             status=status, reduction_version=_resolve_reduction_version(config))
     new_canonical = [
         field.get_exposure_path(
             os.path.basename(u).removesuffix('_uncal.fits'), filtname,
@@ -241,8 +269,9 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status):
     )
 
 
-def _run_persistence(field, config, filtname, n_processes, overwrite, status):
-    exposures = field.get_exposure_files(filtname)
+def _run_persistence(field, config, filtname, n_processes, overwrite, status,
+                     tiles=None):
+    exposures = field.get_exposure_files(filtname, tiles=tiles)
     if not exposures:
         log(f"persistence: no exposures for {filtname}")
         return
@@ -259,16 +288,19 @@ def _run_persistence(field, config, filtname, n_processes, overwrite, status):
 
 
 def _run_per_exposure(step_name, field, config, filtname,
-                      n_processes, overwrite, status):
+                      n_processes, overwrite, status, tiles=None, epoch=None):
     """Generic per-exposure parallel dispatch.
 
     Filters out already-stamped exposures *before* spinning up the worker
     pool — a no-op pass on a finished field skips the Pool entirely. The
     step's worker callable is imported lazily here (after the early-out
     checks), so a no-op pass doesn't import the step's heavy deps at all.
+
+    ``epoch`` restricts to the named epoch's exposure subset (used by the
+    combine-phase ``apply_mask`` step); process-phase steps pass ``None``.
     """
     module_basename, func_name, cfp_key = _PER_EXPOSURE_STEPS[step_name]
-    exposures = field.get_exposure_files(filtname)
+    exposures = field.get_exposure_files(filtname, tiles=tiles, epoch=epoch)
     if not exposures:
         log(f"{step_name}: no exposures for {filtname}")
         return
@@ -286,14 +318,15 @@ def _run_per_exposure(step_name, field, config, filtname,
     status.mark_all(pending, cfp_key)
 
 
-def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
+def _run_diag_striping(field, config, filtname, n_processes, overwrite, status,
+                       tiles=None):
     """Opt-in scattered-light diagonal striping. Disabled unless a field
     sets ``[field.diag_striping].enabled = true``."""
     cfg = get_nircam_step_config('diag_striping', config, field)
     if not cfg.get('enabled', False):
         log(f"diag_striping: disabled by config; skipping {filtname}")
         return
-    exposures = field.get_exposure_files(filtname)
+    exposures = field.get_exposure_files(filtname, tiles=tiles)
     if not exposures:
         log(f"diag_striping: no exposures for {filtname}")
         return
@@ -309,14 +342,15 @@ def _run_diag_striping(field, config, filtname, n_processes, overwrite, status):
     status.mark_all(pending, 'CFP_DIAG')
 
 
-def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
+def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status,
+                   tiles=None):
     """Opt-in pre-JHAT astrometric shift. No-op unless ``[[<field>.wcs_shift]]``
     rules are defined in fields.toml."""
     rules = field.wcs_shift_rules
     if not rules:
         log(f"wcs_shift: no rules; skipping {filtname}")
         return
-    exposures = field.get_exposure_files(filtname)
+    exposures = field.get_exposure_files(filtname, tiles=tiles)
     if not exposures:
         log(f"wcs_shift: no exposures for {filtname}")
         return
@@ -349,8 +383,11 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status):
     status.mark_all(pending, 'CFP_SHFT')
 
 
-def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
-    exposures = field.get_exposure_files(filtname)
+def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status,
+                   tiles=None, epoch=None):
+    # Combine phase: operate on the working copies, never the frozen canonical.
+    exposures = field.get_exposure_files(filtname, work=True, tiles=tiles,
+                                         epoch=epoch)
     if not exposures:
         log(f"bad_pixel: no exposures for {filtname}")
         return
@@ -382,7 +419,8 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status):
     status.mark_all(pending, 'CFP_BPIX')
 
 
-def _run_outlier(field, config, filtname, n_processes, overwrite, status):
+def _run_outlier(field, config, filtname, n_processes, overwrite, status,
+                 tiles=None, epoch=None):
     cfg = get_nircam_step_config('outlier', config, field)
     implementation = cfg.get('implementation', 'jwst')
     if implementation not in ('jwst', 'campfire'):
@@ -391,11 +429,12 @@ def _run_outlier(field, config, filtname, n_processes, overwrite, status):
             f"expected 'jwst' or 'campfire'"
         )
     _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
-                           implementation=implementation)
+                           implementation=implementation, tiles=tiles,
+                           epoch=epoch)
 
 
 def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
-                           implementation='jwst'):
+                           implementation='jwst', tiles=None, epoch=None):
     """Per-visit outlier dispatcher.
 
     Both implementations share the same orchestration (visit grouping,
@@ -411,10 +450,12 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     Parallelization
     ---------------
     Visits are dispatched in parallel across ``n_processes`` workers.
-    Each visit writes only to its own canonical files (via ``atomic_save``)
-    while reading other visits' files as cross-visit overlap padding.
-    Because reads/writes are atomic and outlier_detection only ADDS DQ
-    bits (SCI is unchanged), parallel runs cannot crash; the only
+    Each visit writes only to its own working copies (via ``atomic_save``)
+    while reading other visits' working copies as cross-visit overlap padding.
+    The frozen canonical exposures are never touched (see
+    ``Field.materialize_work``). Because reads/writes are atomic and
+    outlier_detection only ADDS DQ bits (SCI is unchanged), parallel runs
+    cannot crash; the only
     observable difference vs. serial is that a worker may read an overlap
     file's DQ before the visit owning that file has stamped its new
     outlier bits, producing a small median bias in those overlap pixels.
@@ -428,7 +469,9 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
         outlier_step_campfire if implementation == 'campfire' else outlier_step
     )
 
-    exposures = field.get_exposure_files(filtname)
+    # Combine phase: operate on the working copies, never the frozen canonical.
+    exposures = field.get_exposure_files(filtname, work=True, tiles=tiles,
+                                         epoch=epoch)
     if not exposures:
         log(f"outlier: no exposures for {filtname}")
         return
@@ -451,10 +494,12 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
         manifest = load_manifest(manifest_path)
         if manifest is None:
             return False
+        # A member dropped from this visit (e.g. a NOT_ALIGNED quarantine) must
+        # force outlier to re-run, else resample reuses CR masks computed with
+        # the now-absent exposure still pooled (see _visit_membership_matches).
+        if not _visit_membership_matches(manifest, visit, visit_files):
+            return False
         # Check that visit_files (a subset of all_inputs) hashes still match.
-        # Cross-visit overlaps are validated inside outlier_step on the slow
-        # path; here we only confirm the visit's own files are unchanged so
-        # we can cheaply skip the obvious no-op case.
         old_hashes = {
             inp['filename']: inp['file_hash']
             for inp in manifest['inputs']
@@ -497,16 +542,23 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
 
 
 def _run_resample(field, config, filtname, n_processes, overwrite, status,
-                  reduction_version):
+                  reduction_version, tiles=None, epoch=None):
+    # Read the outlier-finished working copies; the mosaic itself is written to
+    # the canonical filter dir (resample_step derives it from field.filter_dir).
+    # ``tiles`` both coarse-filters the input here and tells resample_step which
+    # tiles to drizzle (its own precise per-tile SCI-WCS selection narrows
+    # further within this set). ``epoch`` subsets the drizzle inputs to the
+    # named epoch and labels the mosaics with the epoch name.
     exposures = field.get_exposure_files(filtname, with_step='CFP_OUT',
-                                         status=status)
+                                         status=status, work=True, tiles=tiles,
+                                         epoch=epoch)
     if not exposures:
         log(f"resample: no CFP_OUT-stamped exposures for {filtname}")
         return
     from campfire_pipeline.nircam.steps.resample import resample_step
     cfg = get_nircam_step_config('resample', config, field)
     resample_step(filtname, exposures, field, cfg, reduction_version,
-                  overwrite=overwrite)
+                  overwrite=overwrite, tiles=tiles, epoch=epoch)
 
 
 # Dispatch table: step name → callable that takes (field, config, filtname,
@@ -582,49 +634,342 @@ def _scan_status(field, filters, overwrite=False):
     return StepStatus.scan(paths)
 
 
-def run_process(field, config, filters=None, n_processes=1, overwrite=False):
+def _active_process_steps(config, field):
+    """``PROCESS_STEPS`` with ``jhat``+``wcs_shift`` removed when the field has
+    opted into the astrometric ``align`` phase.
+
+    Decision D6 coexistence: a field that runs ``align``
+    (``[<field>.align].enabled = true``) must NOT also run the JHAT-based
+    ``jhat``/``wcs_shift`` steps — exactly one alignment path per field. When
+    align is off (the default), the full ``PROCESS_STEPS`` list runs unchanged.
+    """
+    align_mode = get_nircam_step_config('align', config, field).get(
+        'enabled', False)
+    if not align_mode:
+        return PROCESS_STEPS
+    return [(n, k) for n, k in PROCESS_STEPS if n not in ('wcs_shift', 'jhat')]
+
+
+def _prefetch_wisp_templates(field, filters):
+    """Fetch every wisp template the pending work needs, before the fan-out.
+
+    A single-process warm-up so the parallel per-exposure workers read templates
+    from ``$CAMPFIRE_ROOT/cache/wisps/`` instead of racing to download the same
+    ~16 MB files. The ``(detector, filter)`` set is derived straight from uncal
+    filenames (no header reads), matching the ``rootname.split('_')[3]`` detector
+    convention the wisp step itself uses.
+
+    A template the manifest says should exist but that can't be fetched raises
+    ``WispTemplateError`` here and aborts the phase — 'wisp enabled + template
+    missing' must never degrade to a silently unsubtracted mosaic, which is the
+    exact failure this whole cache path exists to kill.
+    """
+    from campfire_pipeline.nircam import wisp_cache
+    pairs = set()
+    for filt in filters:
+        try:
+            uncals = field.get_uncal_files(filt)
+        except RuntimeError:
+            # Workspace not set up for this filter — nothing to warm.
+            continue
+        for f in uncals:
+            parts = os.path.basename(f).removesuffix('_uncal.fits').split('_')
+            if len(parts) > 3 and parts[3].lower() in wisp_cache.WISP_DETECTORS:
+                pairs.add((parts[3], filt))
+    if not pairs:
+        return
+    n = wisp_cache.ensure_for_pairs(pairs, legacy_dir=field.wisp_dir)
+    if n:
+        log(f"Fetched {n} wisp template(s) into the cache")
+
+
+def run_process(field, config, filters=None, n_processes=1, overwrite=False,
+                tiles=None):
     """Run all process-phase steps in order across each filter.
 
     Per-exposure steps run in parallel via ``dispatch``; the per-filter
     persistence step runs serially since it operates over the whole filter
     set at once.
+
+    ``tiles`` restricts the phase to exposures overlapping the named tile(s) —
+    ``detector1`` gates on the uncal ``S_REGION`` footprint, and every later
+    step inherits the resulting canonical subset — so a single tile can be
+    reduced without processing the whole field. ``None`` processes everything.
     """
     from campfire_pipeline.nircam.prefetch import prefetch_process_references
     filters = _resolve_filters(filters, field)
+    if tiles:
+        # Every step below re-derives the same tile-overlap set via
+        # ``get_exposure_files(tiles=)``; the per-path footprint memo makes that
+        # scan happen once for the whole phase instead of once per step.
+        from campfire_pipeline.nircam.geometry import reset_sregion_cache
+        reset_sregion_cache()
     status = _scan_status(field, filters, overwrite=overwrite)
     log(f"=== Process phase: field={field.name}, filters={filters} ===")
     prefetch_process_references(field, filters, status=status,
                                overwrite=overwrite)
+    active_steps = _active_process_steps(config, field)
+    if any(name == 'wisp' for name, _ in active_steps):
+        _prefetch_wisp_templates(field, filters)
     for filt in filters:
         log(f"--- Process: {filt} ---")
-        for step_name, _ in PROCESS_STEPS:
+        for step_name, _ in active_steps:
             _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
-                                status)
+                                status, tiles=tiles)
 
 
-def run_combine(field, config, filters=None, n_processes=1, overwrite=False):
-    """Run all combine-phase steps in order across each filter."""
+def _resolve_align_refcat(align_cfg, refcat_dir):
+    """Resolve the single per-field align reference-catalog path.
+
+    Align ties a whole multi-filter exposure to ONE refcat, so — unlike jhat —
+    there is no per-filter mapping; just ``[<field>.align].refcat``.
+    """
+    name = align_cfg.get('refcat')
+    if not name:
+        raise ValueError(
+            "align config missing 'refcat'. Set [<field>.align].refcat = "
+            '"<file>" in fields.toml (a Gaia-tied campfire-refcat-v1 ECSV in '
+            "the field's astrometric-catalog directory).")
+    return os.path.join(refcat_dir, name)
+
+
+def _align_group_worker(key, members, *, refcat, config, overwrite, status):
+    """``dispatch`` worker: align one exposure group. Module-level for pickling."""
+    from campfire_pipeline.nircam.align.apply import align_exposure_group
+    return align_exposure_group(members, refcat, key=key, config=config,
+                                overwrite=overwrite, status=status)
+
+
+def _warn_not_aligned(field, failed_groups):
+    """Loudly report exposures that failed alignment, and how to resolve them.
+
+    Excluding data from the mosaic is never an automatic decision — a NOT_ALIGNED
+    exposure is quarantined from every future combine (its raw WCS would double
+    sources). Surface the full list at the end of the command and hand the user
+    the two levers: retune + re-run (re-attempted automatically), or force-include.
+    """
+    bar = '!' * 72
+    log('')
+    log(bar)
+    log(f"align: WARNING — {len(failed_groups)} exposure(s) FAILED alignment "
+        f"(CFP_ALGN = {cfp.NOT_ALIGNED}).")
+    log("These are EXCLUDED from all future mosaics by default (the combine")
+    log("quarantine). Omitting data is not automatic — review and resolve first:")
+    log('')
+    for g in failed_groups:
+        log(f"  {g.key}  ({g.n_members} detector(s)):")
+        for m in g.members:
+            log(f"      {m.path}")
+    log('')
+    log("To retry: retune [<field>.align] in fields.toml (e.g. widen "
+        "ref_border_arcmin,")
+    log("  lower snr_min, raise match_radius / refine_searchrad), then re-run")
+    log("  `cfpipe nircam align` — NOT_ALIGNED exposures are re-attempted "
+        "automatically")
+    log("  (no --overwrite needed; already-aligned exposures are left alone).")
+    log("To include them as-is (raw WCS, not recommended): "
+        "`cfpipe nircam combine --include-unaligned`.")
+    log(bar)
+    log('')
+
+
+def run_align(field, config, filters=None, n_processes=1, overwrite=False,
+              tiles=None):
+    """Field-level astrometric align phase (runs between process and combine).
+
+    Groups all detectors of each exposure across the SW+LW filter dirs, ties
+    each exposure to the field's Gaia-tied reference catalog with one shared
+    shift+rotation (plus an adaptive per-detector shift), and writes the
+    corrected gwcs back with a ``CFP_ALGN`` stamp. Opt-in per field via
+    ``[<field>.align].enabled`` — a no-op otherwise, so ``run --all`` on a
+    jhat-aligned field skips it and the process phase keeps running
+    ``jhat``/``wcs_shift`` instead (decision D6).
+
+    ``tiles`` restricts to exposure groups overlapping the named tile(s)
+    (exposure-union, so each solved dither keeps its full detector complement).
+    """
+    filters = _resolve_filters(filters, field)
+    align_cfg = get_nircam_step_config('align', config, field)
+    if not align_cfg.get('enabled', False):
+        log(f"align: disabled for field '{field.name}' "
+            f"(set [{field.name}.align].enabled = true to run); skipping.")
+        return
+
+    from campfire_pipeline.nircam.association import (
+        build_exposure_groups, unsupported_mode_reason,
+    )
+    from campfire_pipeline.nircam.refcat.io import read_refcat
+
+    refcat_path = _resolve_align_refcat(align_cfg, field.refcat_dir)
+    refcat = read_refcat(refcat_path)
+    log(f"=== Align phase: field={field.name}, filters={filters}, "
+        f"refcat={os.path.basename(refcat_path)} ({len(refcat)} sources) ===")
+
+    # Cross-filter dependency closure (§9.2): pool the FULL physical exposure —
+    # every detector across ALL field filters — even when a filter subset is
+    # requested, so a `--filters f200w` solve still sees its paired LW (F444W)
+    # complement and the tile gate can't split a dither at a tile edge. Status is
+    # scanned over all filters too, since a solved exposure is written across its
+    # whole SW+LW complement (one attitude corrects every detector).
+    all_filters = list(field.filters)
+    status = _scan_status(field, all_filters, overwrite=overwrite)
+    groups = build_exposure_groups(field, all_filters, tiles=tiles)
+    if not groups:
+        log("align: no exposure groups found; nothing to do.")
+        return
+
+    # Restrict the processed set to exposures with a member in the selected
+    # filters; each is then solved and written across its full complement.
+    if set(filters) != set(all_filters):
+        n_all = len(groups)
+        groups = [g for g in groups if g.filters & set(filters)]
+        log(f"align: --filters {filters} selects {len(groups)}/{n_all} "
+            f"exposure(s); each is solved and written across its full SW+LW "
+            f"complement.")
+        if not groups:
+            log("align: no exposures match the selected filters/tiles.")
+            return
+
+    # Observing-mode gating (§9.3): stop before solving if any exposure in scope
+    # is in an unsupported mode (subarray / coronagraph / TSO / WFSS). These need
+    # a separately-validated path, so the user must exclude them explicitly
+    # rather than have align silently feed them through generic imaging logic.
+    unsupported = [(g, r) for g in groups
+                   for r in (unsupported_mode_reason(g.members[0].path),) if r]
+    if unsupported:
+        listing = "\n".join(f"  {g.key}: {reason}" for g, reason in unsupported)
+        raise RuntimeError(
+            f"align: {len(unsupported)} exposure(s) are in an observing mode the "
+            f"align phase does not support:\n{listing}\n\n"
+            f"Exclude them (fields.toml [{field.name}].skip, or the reviewer "
+            f"excluded_exposures list) and re-run, or select a supported subset "
+            f"with --filters / --tiles.")
+
+    if overwrite:
+        pending = groups
+    else:
+        # A group is "done" (skippable) only if every detector carries a
+        # completed, non-rejected alignment. NOT_ALIGNED exposures are
+        # re-attempted on a normal re-run — the user may have retuned
+        # [<field>.align] params and wants another try without force-re-solving
+        # everything that already succeeded. Groups are homogeneous (a whole
+        # exposure solves or rejects together), so one stamped member classifies
+        # a fully-stamped group.
+        pending, retry = [], 0
+        for g in groups:
+            stamped = all(status.has(m.path, 'CFP_ALGN') for m in g.members)
+            if stamped and (cfp.step_value(g.members[0].path, 'CFP_ALGN')
+                            != cfp.NOT_ALIGNED):
+                continue                        # already solved -> skip
+            pending.append(g)
+            if stamped:
+                retry += 1                      # stamped but NOT_ALIGNED -> retry
+        skipped = len(groups) - len(pending)
+        if skipped:
+            log(f"align: {skipped}/{len(groups)} exposures already aligned; "
+                f"skipping those (--overwrite to re-solve)")
+        if retry:
+            log(f"align: re-attempting {retry} previously NOT_ALIGNED "
+                f"exposure(s)")
+    if not pending:
+        return
+
+    log(f"align: solving {len(pending)} exposure(s)")
+    tasks = [(g.key, list(g.members)) for g in pending]
+    results = dispatch(_align_group_worker, tasks, n_processes=n_processes,
+                       use_starmap=True, refcat=refcat, config=align_cfg,
+                       overwrite=overwrite, status=status)
+
+    # Workers stamped CFP_ALGN on disk in child processes; sync the parent cache
+    # so a later phase in the same run sees the fresh stamps.
+    for g in pending:
+        status.mark_all([m.path for m in g.members], 'CFP_ALGN')
+
+    counts = {}
+    for r in results:
+        st = getattr(r, 'status', 'UNKNOWN')
+        counts[st] = counts.get(st, 0) + 1
+    log(f"=== Align phase done for {field.name}: "
+        f"{dict(sorted(counts.items()))} ===")
+
+    # Failing to align an exposure quietly drops it from every future mosaic
+    # (the combine quarantine). That must never be silent: surface it loudly at
+    # the end of the command and hand the user the tools to resolve it.
+    pending_by_key = {g.key: g for g in pending}
+    failed = [pending_by_key[r.key] for r in results
+              if r is not None and getattr(r, 'status', None) == 'NOT_ALIGNED'
+              and getattr(r, 'key', None) in pending_by_key]
+    if failed:
+        _warn_not_aligned(field, failed)
+
+
+def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
+                tiles=None, epoch=None, include_unaligned=False):
+    """Run all combine-phase steps in order across each filter.
+
+    ``tiles`` scopes the *whole* combine phase to exposures overlapping the
+    named tile(s): apply_mask, bad_pixel, outlier, and resample all see only
+    the overlapping subset. This is what lets a single tile be combined without
+    touching the rest of the field (e.g. an A/B reduction), and it pairs with a
+    tile-scoped ``run_process``/``run_align`` that only ever produced the subset
+    canonicals. **Caveat:** restricting the ensemble steps truncates outlier's
+    cross-visit median pool and bad_pixel's per-detector stacks, so a
+    tile-scoped mosaic may differ at tile boundaries from the same tile built
+    with the whole field — a tile-scoped run is a distinct input set by design.
+    ``None`` (the default) runs the full field and is unchanged.
+
+    ``epoch`` scopes the whole combine phase to one named epoch's exposure
+    subset (fields.toml ``[<field>.epochs.<name>]``) in the same way ``tiles``
+    does, and the resulting mosaics carry the epoch name as a trailing filename
+    segment. The same ensemble-truncation caveat applies: an epoch mosaic is
+    reduced from only the epoch's exposures by design. ``None`` (the default)
+    uses the full field with no epoch segment.
+    """
     filters = _resolve_filters(filters, field)
     reduction_version = _resolve_reduction_version(config)
     status = _scan_status(field, filters, overwrite=overwrite)
 
-    log(f"=== Combine phase: field={field.name}, filters={filters} ===")
+    # For an align-enabled field, quarantine NOT_ALIGNED exposures from the
+    # ensemble (they'd drizzle with a raw WCS). --include-unaligned overrides.
+    align_enabled = get_nircam_step_config('align', config, field).get(
+        'enabled', False)
+    exclude_not_aligned = align_enabled and not include_unaligned
+
+    log(f"=== Combine phase: field={field.name}, filters={filters}"
+        f"{f', epoch={epoch}' if epoch else ''} ===")
     for filt in filters:
         log(f"--- Combine: {filt} ---")
         for step_name, _ in COMBINE_STEPS:
-            if step_name == 'resample':
+            if step_name == 'apply_mask':
+                # apply_mask writes the canonical (CFMASK extension only) — the
+                # last thing to touch the frozen canonical this phase. Then
+                # refresh the disposable working copies the ensemble steps
+                # mutate (copy canonical -> work where stale, fuse CFMASK ->
+                # DO_NOT_USE) and rescan them into the status cache.
+                _RUNNERS[step_name](field, config, filt, n_processes,
+                                    overwrite, status, tiles=tiles, epoch=epoch)
+                field.materialize_work(filt, status=status, overwrite=overwrite,
+                                       exclude_not_aligned=exclude_not_aligned)
+            elif step_name == 'resample':
                 _run_resample(field, config, filt, n_processes, overwrite,
-                              status, reduction_version)
+                              status, reduction_version, tiles=tiles,
+                              epoch=epoch)
             else:
                 _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
-                                    status)
+                                    status, tiles=tiles, epoch=epoch)
 
 
 def run_step(step_name, field, config, filters=None, n_processes=1,
-             overwrite=False):
+             overwrite=False, tiles=None, epoch=None):
     """Run a single named step across the field's filters.
 
-    Used by the per-step CLI commands (``cfpipe nircam <step>``).
+    Used by the per-step CLI commands (``cfpipe nircam <step>``). ``tiles``
+    restricts the step to exposures overlapping the named tile(s); for
+    ``resample`` it additionally scopes which mosaics are built. The per-step
+    CLI commands other than ``resample`` don't expose ``--tiles``, so they pass
+    ``None`` and run over the full field. ``epoch`` is only meaningful for
+    ``resample`` (the only per-step command exposing ``--epoch``): it subsets
+    the drizzle inputs and labels the mosaics.
     """
     if step_name not in STEP_NAMES:
         raise ValueError(
@@ -639,11 +984,22 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
         prefetch_process_references(field, filters, status=status,
                                     overwrite=overwrite)
 
+    # A standalone ensemble step honours the same NOT_ALIGNED quarantine as the
+    # full combine phase for align-enabled fields (no --include-unaligned escape
+    # hatch on the per-step CLI — the full `combine` command is where you opt in).
+    exclude_not_aligned = get_nircam_step_config('align', config, field).get(
+        'enabled', False)
+
     for filt in filters:
+        # A standalone combine ensemble step needs the working copies present
+        # and primed (canonical -> work, CFMASK -> DO_NOT_USE) before it runs.
+        if step_name in _COMBINE_WORK_STEPS:
+            field.materialize_work(filt, status=status, overwrite=overwrite,
+                                   exclude_not_aligned=exclude_not_aligned)
         if step_name == 'resample':
             reduction_version = _resolve_reduction_version(config)
             _run_resample(field, config, filt, n_processes, overwrite,
-                          status, reduction_version)
+                          status, reduction_version, tiles=tiles, epoch=epoch)
         else:
             _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
-                                status)
+                                status, tiles=tiles)

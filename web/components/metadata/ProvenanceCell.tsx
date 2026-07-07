@@ -38,7 +38,6 @@ export const ProvenanceCell: React.FC<ProvenanceCellProps> = ({ provenance, comp
   const [open, setOpen] = useState(false);
 
   const {
-    reduction_version,
     crds_context,
     cfpipe_version,
     jwst_version,
@@ -50,7 +49,7 @@ export const ProvenanceCell: React.FC<ProvenanceCellProps> = ({ provenance, comp
     last_patch_at,
   } = provenance;
 
-  const hasFull = !!reduction_version || !!reduced_at;
+  const hasFull = !!cfpipe_version || !!reduced_at;
   const reducedRel = formatRelative(reduced_at);
 
   return (
@@ -64,7 +63,7 @@ export const ProvenanceCell: React.FC<ProvenanceCellProps> = ({ provenance, comp
           title="Show reduction details"
         >
           <span className={compact ? 'text-sm font-medium text-text-primary' : 'font-semibold'}>
-            {reduction_version ?? '—'}
+            {cfpipe_version ?? '—'}
           </span>
           {reducedRel && (
             <span className="text-xs text-text-secondary">
@@ -96,8 +95,6 @@ export const ProvenanceCell: React.FC<ProvenanceCellProps> = ({ provenance, comp
             Last full reduction
           </div>
           <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-text-secondary">
-            <dt>Version</dt>
-            <dd className="font-mono text-text-primary">{reduction_version ?? '—'}</dd>
             <dt>cfpipe</dt>
             <dd className="font-mono text-text-primary">{cfpipe_version ?? '—'}</dd>
             <dt>jwst</dt>

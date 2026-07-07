@@ -16,9 +16,7 @@ import type { NircamImage } from '@/lib/types';
 import type { NircamFilterOptions } from './NircamFilterBar';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
-
-// CANDIDE server base URL for NIRCam data
-const CDN_BASE_URL = 'https://exchg.calet.org/hakins/data/data/nircam';
+import { generateNircamMosaicDownloadUrls } from '@/lib/actions/download';
 
 interface NircamTableProps {
   images: NircamImage[];
@@ -60,9 +58,44 @@ const formatFileSize = (bytes: number | undefined): string => {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 };
 
-// Helper to construct download URL
-const getDownloadUrl = (image: NircamImage): string => {
-  return `${CDN_BASE_URL}/${image.file_path}`;
+// Per-row download button: authorizes + presigns the mosaic key server-side,
+// then navigates the browser to the credential-free proxy URL to start the
+// download. Kept as a small component so each row owns its loading state.
+const DownloadCell: React.FC<{ image: NircamImage }> = ({ image }) => {
+  const [busy, setBusy] = useState(false);
+
+  const handleDownload = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { urls } = await generateNircamMosaicDownloadUrls([image.file_path]);
+      const proxyUrl = urls[image.file_path];
+      if (proxyUrl) {
+        const link = document.createElement('a');
+        link.href = proxyUrl;
+        link.download = image.file_path.split('/').pop() || image.file_path;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    } catch (err) {
+      console.error('Failed to start NIRCam mosaic download:', err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleDownload}
+      disabled={busy}
+      className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary-hover hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      <Download className="w-4 h-4" />
+      <span>{busy ? 'Preparing…' : 'Download'}</span>
+    </button>
+  );
 };
 
 export const NircamTable: React.FC<NircamTableProps> = ({
@@ -93,10 +126,10 @@ export const NircamTable: React.FC<NircamTableProps> = ({
       if (filters.pixel_scales.length > 0 && !filters.pixel_scales.includes(image.pixel_scale)) {
         return false;
       }
-      if (filters.versions.length > 0 && !filters.versions.includes(image.version)) {
+      if (filters.extensions.length > 0 && !filters.extensions.includes(image.extension)) {
         return false;
       }
-      if (filters.extensions.length > 0 && !filters.extensions.includes(image.extension)) {
+      if (filters.epochs.length > 0 && !filters.epochs.includes(image.epoch ?? '')) {
         return false;
       }
       return true;
@@ -179,18 +212,6 @@ export const NircamTable: React.FC<NircamTableProps> = ({
         sortingFn: 'alphanumeric',
       },
       {
-        accessorKey: 'version',
-        header: ({ column }) => (
-          <SortableHeader column={column}>Version</SortableHeader>
-        ),
-        cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary">
-            {row.original.version}
-          </span>
-        ),
-        sortingFn: 'alphanumeric',
-      },
-      {
         accessorKey: 'extension',
         header: ({ column }) => (
           <SortableHeader column={column}>Extension</SortableHeader>
@@ -214,6 +235,24 @@ export const NircamTable: React.FC<NircamTableProps> = ({
         },
       },
       {
+        accessorKey: 'epoch',
+        header: ({ column }) => (
+          <SortableHeader column={column}>Epoch</SortableHeader>
+        ),
+        cell: ({ row }) => {
+          const epoch = row.original.epoch ?? '';
+          return epoch === '' ? (
+            <span className="text-sm text-text-secondary">Full field</span>
+          ) : (
+            <span className="inline-flex items-center rounded border border-border px-1.5 py-0.5 text-xs font-mono font-medium bg-surface-2 text-text-primary">
+              {epoch}
+            </span>
+          );
+        },
+        sortingFn: (rowA, rowB) =>
+          (rowA.original.epoch ?? '').localeCompare(rowB.original.epoch ?? ''),
+      },
+      {
         accessorKey: 'file_size',
         header: ({ column }) => (
           <SortableHeader column={column}>Size</SortableHeader>
@@ -228,16 +267,7 @@ export const NircamTable: React.FC<NircamTableProps> = ({
       {
         id: 'download',
         header: () => <span>Download</span>,
-        cell: ({ row }) => (
-          <a
-            href={getDownloadUrl(row.original)}
-            className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary-hover hover:underline"
-            download
-          >
-            <Download className="w-4 h-4" />
-            <span>Download</span>
-          </a>
-        ),
+        cell: ({ row }) => <DownloadCell image={row.original} />,
       },
     ],
     []
@@ -262,7 +292,7 @@ export const NircamTable: React.FC<NircamTableProps> = ({
     <Card className="overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-table-header border-b border-border">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (

@@ -12,6 +12,8 @@ from pathlib import Path
 
 from astropy.table import Table
 
+from campfire_layout import Scope, storage_key
+
 
 def _finite_or_none(value) -> float | None:
     """Coerce a scalar to a JSON-safe float, mapping non-finite to None.
@@ -32,14 +34,35 @@ def _finite_or_none(value) -> float | None:
     return val if math.isfinite(val) else None
 
 
-def load_summary(obs_dir: Path, obs_name: str) -> Table:
-    """
-    Load the observation summary ECSV.
+def _clean_str(value) -> str | None:
+    """Coerce a table cell to a clean string, mapping empty/sentinel to None.
 
-    Raises SystemExit with a helpful message if the file is missing.
+    ECSV string columns surface absent cells as ``''`` or a masked value, and a
+    Python ``None`` round-trips as the literal ``'None'``. None of those are
+    real provenance, so they map to None (which deploy then omits from the
+    upsert body, leaving the column NULL).
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s.lower() in ('none', 'nan', '--'):
+        return None
+    return s
+
+
+def load_summary(obs_dir: Path, obs_name: str, required: bool = True) -> Table | None:
+    """
+    Load the observation summary ECSV (the stage3 finals manifest).
+
+    When ``required`` (default), a missing file is a hard error. When
+    ``required=False`` (epic #210, B5), a missing summary returns None instead —
+    the caller then treats the deploy as intermediates-only (no stage3 finals yet),
+    which is automatically a draft.
     """
     ecsv_path = obs_dir / f"{obs_name}_summary.ecsv"
     if not ecsv_path.exists():
+        if not required:
+            return None
         print(f"Error: Summary file not found: {ecsv_path}")
         print(f"Run `cfpipe nirspec summary --obs {obs_name}` first.")
         sys.exit(1)
@@ -107,47 +130,64 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     Build per-spectrum records for Supabase spectra upserts.
 
     Returns list of dicts with keys:
-        target_id, grating, fits_path (R2 key), reduction_version,
+        target_id, grating, fits_path (R2 key),
         signal_to_noise, exposure_time, file_hash, file_size,
-        date_obs, cfpipe_version, jwst_version, crds_context,
+        cfpipe_version, crds_context, jwst_version, date_obs, reduced_at,
         redshift_auto (per-grating zfit; Phase B)
+
+    All provenance fields are carried verbatim from the FITS primary header
+    (via the summary ECSV) — never recomputed — so a flux value traces back to
+    the exact pipeline version, CRDS context, and reduction time.
 
     `dq_flags` is intentionally absent: the pipeline does not produce
     per-spectrum DQ. New rows pick up the column default (0); existing rows
     keep whatever the inspection API has set (PostgREST upsert only updates
     columns present in the request body).
     """
-    # cfpipe_version is a package version, same for all rows
-    cfpipe_version = summary.meta.get('cfpipe_version')
+    # cfpipe_version is the single pipeline-version string. Prefer the per-row
+    # value (read verbatim from each product's CMPFRVER header, so a
+    # [pipeline].version override flows through); fall back to the observation-
+    # level meta for old ECSVs that only carried it there.
+    meta_cfpipe_version = _clean_str(summary.meta.get('cfpipe_version'))
 
     # Check which per-row provenance columns exist (backward compat with old ECSVs)
+    has_cfpipe_version = 'cfpipe_version' in summary.colnames
+    # Pre-collapse ECSVs carried the per-row pipeline version as 'reduction_version'.
+    has_reduction_version = 'reduction_version' in summary.colnames
     has_jwst_version = 'jwst_version' in summary.colnames
     has_crds_context = 'crds_context' in summary.colnames
     has_date_obs = 'date_obs' in summary.colnames
+    has_reduced_at = 'reduced_at' in summary.colnames
     # Phase B: per-grating redshift_auto from zfit. Older ECSVs may not have it.
     has_redshift_auto = 'redshift_auto' in summary.colnames
 
     # Fallback to metadata for old ECSVs that lack per-row columns
-    meta_jwst_version = summary.meta.get('jwst_version')
-    meta_crds_context = summary.meta.get('crds_context')
+    meta_jwst_version = _clean_str(summary.meta.get('jwst_version'))
+    meta_crds_context = _clean_str(summary.meta.get('crds_context'))
+    meta_reduced_at = _clean_str(summary.meta.get('reduced_at'))
 
     records = []
     for row in summary:
-        r2_key = f"spectra/{obs_name}/{row['fits_filename']}"
+        r2_key = storage_key('nirspec_spec', Scope(obs=obs_name), row['fits_filename'])
         rec = {
             'target_id': row['object_id'],
             'grating': row['grating'],
             'fits_path': r2_key,
-            'reduction_version': row['reduction_version'],
             'signal_to_noise': _finite_or_none(row['signal_to_noise']),
             'exposure_time': _finite_or_none(row['exposure_time']),
             'file_hash': row['file_hash'],
             'file_size': int(row['file_size']) if row['file_size'] is not None else None,
         }
         # Per-row provenance from FITS headers (preferred), falling back to metadata
-        jwst_version = str(row['jwst_version']) if has_jwst_version and row['jwst_version'] else meta_jwst_version
-        crds_context = str(row['crds_context']) if has_crds_context and row['crds_context'] else meta_crds_context
-        date_obs = str(row['date_obs']) if has_date_obs and row['date_obs'] else None
+        cfpipe_version = (
+            (_clean_str(row['cfpipe_version']) if has_cfpipe_version else None)
+            or (_clean_str(row['reduction_version']) if has_reduction_version else None)
+            or meta_cfpipe_version
+        )
+        jwst_version = (_clean_str(row['jwst_version']) if has_jwst_version else None) or meta_jwst_version
+        crds_context = (_clean_str(row['crds_context']) if has_crds_context else None) or meta_crds_context
+        date_obs = _clean_str(row['date_obs']) if has_date_obs else None
+        reduced_at = (_clean_str(row['reduced_at']) if has_reduced_at else None) or meta_reduced_at
 
         if cfpipe_version:
             rec['cfpipe_version'] = cfpipe_version
@@ -157,6 +197,8 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
             rec['crds_context'] = crds_context
         if date_obs:
             rec['date_obs'] = date_obs
+        if reduced_at:
+            rec['reduced_at'] = reduced_at
 
         # Phase B: per-grating redshift_auto. Always include (even when null) so
         # the pipeline value is authoritative — a re-fit producing NULL clears

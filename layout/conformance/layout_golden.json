@@ -1,0 +1,316 @@
+{
+  "_comment": "Golden conformance fixture for the CAMPFIRE layout contract (issue #213, PR-2). Single source of truth consumed by BOTH the python test (pipeline/tests/test_layout.py) and the TS test (web/lib/layout.test.ts). A mismatch fails both arms, so python<->TS drift cannot merge. Fields: filename=null => scope-derived; relpath=null => key-only (no local home); key_legacy=null => reserved (no legacy key, adopts canonical form); key_canonical=null/bucket=null => not cloud-backed (no storage key).",
+  "cases": [
+    {
+      "product_type": "nirspec_spec",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": "ember_egs_p1_prism_clear_15182_spec.fits",
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "key_legacy": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "key_canonical": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "spectrum_json",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": "ember_egs_p1_prism_clear_15182_spec.json",
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.json",
+      "key_legacy": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.json",
+      "key_canonical": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.json",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "zfit",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": "ember_egs_p1_prism_clear_15182_zfit.json",
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json",
+      "key_legacy": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json",
+      "key_canonical": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nirspec_spectrum_exposure",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": "jw07076020001_04101_00003_nrs1_15182.fits",
+      "relpath": "products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_15182.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_15182.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nirspec_rate",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": "jw07076020001_04101_00003_nrs1_rate.fits",
+      "relpath": "products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "rgb",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": "ember_egs_p1_15182_rgb.png",
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_15182_rgb.png",
+      "key_legacy": "rgb/ember_egs_p1/ember_egs_p1_15182_rgb.png",
+      "key_canonical": "data/products/nirspec/ember_egs_p1/ember_egs_p1_15182_rgb.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "sed",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": "ember_egs_p1_15182_sed.pdf",
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_15182_sed.pdf",
+      "key_legacy": "sed/ember_egs_p1/ember_egs_p1_15182_sed.pdf",
+      "key_canonical": "data/products/nirspec/ember_egs_p1/ember_egs_p1_15182_sed.pdf",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_exposure",
+      "scope": {"field": "cosmos", "filt": "f444w"},
+      "filename": "jw01727028001_04101_00003_nrcalong.fits",
+      "relpath": "products/nircam/cosmos/f444w/jw01727028001_04101_00003_nrcalong.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/f444w/jw01727028001_04101_00003_nrcalong.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_exposure_preview",
+      "scope": {"field": "cosmos", "filt": "f444w"},
+      "filename": "jw01727028001_04101_00003_nrcalong_preview.png",
+      "relpath": "products/nircam/cosmos/f444w/jw01727028001_04101_00003_nrcalong_preview.png",
+      "key_legacy": "nircam/exposures/cosmos/f444w/jw01727028001_04101_00003_nrcalong_preview.png",
+      "key_canonical": "data/products/nircam/cosmos/f444w/jw01727028001_04101_00003_nrcalong_preview.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_exposure_full",
+      "scope": {"field": "cosmos", "filt": "f444w"},
+      "filename": "jw01727028001_04101_00003_nrcalong_full.png",
+      "relpath": "products/nircam/cosmos/f444w/jw01727028001_04101_00003_nrcalong_full.png",
+      "key_legacy": "nircam/exposures/cosmos/f444w/jw01727028001_04101_00003_nrcalong_full.png",
+      "key_canonical": "data/products/nircam/cosmos/f444w/jw01727028001_04101_00003_nrcalong_full.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_rgb",
+      "scope": {"field": "cosmos"},
+      "filename": "A1_30mas_rgb.png",
+      "relpath": "products/nircam/cosmos/A1_30mas_rgb.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/A1_30mas_rgb.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_expmap",
+      "scope": {"field": "cosmos", "filt": "f444w"},
+      "filename": "expmap_cosmos_f444w_canonical.fits",
+      "relpath": "products/nircam/cosmos/f444w/expmap_cosmos_f444w_canonical.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w_canonical.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_mosaic",
+      "scope": {"field": "cosmos", "filt": "f444w"},
+      "filename": "mosaic_cosmos_f444w_30mas_sci.fits",
+      "relpath": "products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "tile",
+      "scope": {"field": "cosmos", "filt": "f444w", "zoom": 3, "x": 1, "y": 2},
+      "filename": null,
+      "relpath": "tiles/cosmos/f444w/3/1/2.png",
+      "key_legacy": "cosmos/f444w/3/1/2.png",
+      "key_canonical": "cosmos/f444w/3/1/2.png",
+      "bucket": "tiles",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "photometry_pz",
+      "scope": {"field": "cosmos", "object_id": "12345"},
+      "filename": null,
+      "relpath": null,
+      "key_legacy": "photometry/cosmos/12345_pz.json",
+      "key_canonical": "data/photometry/cosmos/12345_pz.json",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nirspec_manual_mask",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": "jw07076020001_04101_00003_nrs1_rate.reg",
+      "relpath": "products/nirspec/ember_egs_p1/manual_masks/jw07076020001_04101_00003_nrs1_rate.reg",
+      "key_legacy": null,
+      "key_canonical": "data/products/nirspec/ember_egs_p1/manual_masks/jw07076020001_04101_00003_nrs1_rate.reg",
+      "bucket": "data",
+      "tree_class": "user-state"
+    },
+    {
+      "product_type": "nirspec_stuck_shutters",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": null,
+      "relpath": "reference/nirspec/ember_egs_p1/stuck_closed_shutters.toml",
+      "key_legacy": null,
+      "key_canonical": "data/reference/nirspec/ember_egs_p1/stuck_closed_shutters.toml",
+      "bucket": "data",
+      "tree_class": "user-state"
+    },
+    {
+      "product_type": "nirspec_bkg_override",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": null,
+      "relpath": "reference/nirspec/ember_egs_p1/nodded_background_overrides.toml",
+      "key_legacy": null,
+      "key_canonical": "data/reference/nirspec/ember_egs_p1/nodded_background_overrides.toml",
+      "bucket": "data",
+      "tree_class": "user-state"
+    },
+    {
+      "product_type": "nircam_flat",
+      "scope": {},
+      "filename": "flat_nircam_f444w_nrcalong_CLEAR.fits",
+      "relpath": "reference/nircam/shared/flats/flat_nircam_f444w_nrcalong_CLEAR.fits",
+      "key_legacy": null,
+      "key_canonical": "data/reference/nircam/shared/flats/flat_nircam_f444w_nrcalong_CLEAR.fits",
+      "bucket": "data",
+      "tree_class": "shared-calibration"
+    },
+    {
+      "product_type": "nircam_wisp",
+      "scope": {},
+      "filename": "WISP_NRCA1_F444W_CLEAR_1.fits",
+      "relpath": "reference/nircam/shared/wisps/WISP_NRCA1_F444W_CLEAR_1.fits",
+      "key_legacy": null,
+      "key_canonical": "data/reference/nircam/shared/wisps/WISP_NRCA1_F444W_CLEAR_1.fits",
+      "bucket": "data",
+      "tree_class": "shared-calibration"
+    },
+    {
+      "product_type": "nircam_mask",
+      "scope": {"field": "cosmos"},
+      "filename": "cosmos_f444w_mask.reg",
+      "relpath": "reference/nircam/cosmos/masks/cosmos_f444w_mask.reg",
+      "key_legacy": null,
+      "key_canonical": "data/reference/nircam/cosmos/masks/cosmos_f444w_mask.reg",
+      "bucket": "data",
+      "tree_class": "user-state"
+    },
+    {
+      "product_type": "nircam_astrom_cat",
+      "scope": {"field": "cosmos"},
+      "filename": "gaia_cosmos.fits",
+      "relpath": "reference/nircam/cosmos/astrom_cats/gaia_cosmos.fits",
+      "key_legacy": null,
+      "key_canonical": "data/reference/nircam/cosmos/astrom_cats/gaia_cosmos.fits",
+      "bucket": "data",
+      "tree_class": "user-state"
+    },
+    {
+      "product_type": "nircam_bad_pixel",
+      "scope": {"field": "cosmos"},
+      "filename": "badpix_nrcalong.fits",
+      "relpath": "reference/nircam/cosmos/bad_pixels/badpix_nrcalong.fits",
+      "key_legacy": null,
+      "key_canonical": "data/reference/nircam/cosmos/bad_pixels/badpix_nrcalong.fits",
+      "bucket": "data",
+      "tree_class": "user-state"
+    },
+    {
+      "product_type": "raw_nirspec",
+      "scope": {"data_subdir": "7076"},
+      "filename": "jw07076020001_04101_00003_nrs1_uncal.fits",
+      "relpath": "raw/nirspec/7076/jw07076020001_04101_00003_nrs1_uncal.fits",
+      "key_legacy": null,
+      "key_canonical": null,
+      "bucket": null,
+      "tree_class": "external-MAST"
+    },
+    {
+      "product_type": "raw_nircam",
+      "scope": {"pid": "1727", "filt": "f444w"},
+      "filename": "jw01727028001_04101_00003_nrcalong_uncal.fits",
+      "relpath": "raw/nircam/1727/f444w/jw01727028001_04101_00003_nrcalong_uncal.fits",
+      "key_legacy": null,
+      "key_canonical": null,
+      "bucket": null,
+      "tree_class": "external-MAST"
+    },
+    {
+      "product_type": "summary",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": null,
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_summary.ecsv",
+      "key_legacy": null,
+      "key_canonical": null,
+      "bucket": null,
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "pointings",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": null,
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_pointings.ecsv",
+      "key_legacy": null,
+      "key_canonical": null,
+      "bucket": null,
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "shutters",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": null,
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_shutters.ecsv",
+      "key_legacy": null,
+      "key_canonical": null,
+      "bucket": null,
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nirspec_config",
+      "scope": {"obs": "ember_egs_p1"},
+      "filename": null,
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_config.toml",
+      "key_legacy": null,
+      "key_canonical": null,
+      "bucket": null,
+      "tree_class": "cloud-backed-product"
+    }
+  ],
+  "siblings": [
+    {"from": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits", "to": "zfit", "expect": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json"},
+    {"from": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits", "to": "spectrum_json", "expect": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.json"},
+    {"from": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits", "to": "zfit", "expect": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json"}
+  ],
+  "known_keys": [
+    "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+    "rgb/ember_egs_p1/ember_egs_p1_15182_rgb.png",
+    "nircam/exposures/cosmos/f444w/jw01727028001_04101_00003_nrcalong_preview.png",
+    "photometry/cosmos/12345_pz.json",
+    "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_15182.fits",
+    "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits"
+  ],
+  "unknown_keys": [
+    "spectra/../etc/passwd",
+    "/spectra/ember_egs_p1/x_spec.fits",
+    "data/raw/nirspec/7076/jw_uncal.fits",
+    "totally/made/up/key.bin",
+    "spectra/ember_egs_p1/",
+    ""
+  ]
+}

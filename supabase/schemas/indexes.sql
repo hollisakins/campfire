@@ -63,6 +63,12 @@ CREATE INDEX IF NOT EXISTS idx_objects_gratings
 CREATE INDEX IF NOT EXISTS idx_objects_object_id_trgm
     ON public.objects USING gin (object_id public.gin_trgm_ops);
 
+-- Unified p_search blob (object_id + member target_ids + programs + observations).
+-- Replaces the cross-table object_id-ILIKE-OR-EXISTS(targets) predicate, which the
+-- planner could not index and which full-scanned the catalog under ORDER BY + LIMIT.
+CREATE INDEX IF NOT EXISTS idx_objects_search_text_trgm
+    ON public.objects USING gin (search_text public.gin_trgm_ops);
+
 -- Phase A: support filtering/sorting by the new object-level inspection fields.
 CREATE INDEX IF NOT EXISTS idx_objects_redshift_quality
     ON public.objects USING btree (redshift_quality);
@@ -159,12 +165,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_spectrum_id
 CREATE INDEX IF NOT EXISTS idx_spectra_spectrum_id_trgm
     ON public.spectra USING gin (spectrum_id public.gin_trgm_ops);
 
+-- Unified p_search blob (target_id + spectrum_id). Replaces the cross-table
+-- target_id-ILIKE-OR-spectrum_id-ILIKE predicate with a single indexable column.
+CREATE INDEX IF NOT EXISTS idx_spectra_search_text_trgm
+    ON public.spectra USING gin (search_text public.gin_trgm_ops);
+
 CREATE INDEX IF NOT EXISTS idx_spectra_grating
     ON public.spectra USING btree (grating);
 
 -- Phase A: filter spectra by DQ flag presence (rare, partial keeps it small).
 CREATE INDEX IF NOT EXISTS idx_spectra_dq_flags
     ON public.spectra USING btree (dq_flags) WHERE (dq_flags != 0);
+
+-- B1 (#217): non-published spectra are the rare case (zero in B1, a minority in
+-- B2); a partial index on the exclusion keeps the admin "show draft/revoked"
+-- triage cheap, mirroring idx_objects_is_active / idx_spectra_dq_flags. The
+-- common published-only path is served as a residual filter while all rows are
+-- published; B2 should add an EXPLAIN-driven partial/covering index on the hot
+-- filter+sort key once real draft volume exists (do NOT guess it here).
+CREATE INDEX IF NOT EXISTS idx_spectra_deploy_status
+    ON public.spectra USING btree (deploy_status) WHERE (deploy_status <> 'published');
 
 -- Phase E: incremental spectra sync keys on updated_at.
 CREATE INDEX IF NOT EXISTS idx_spectra_updated_at
@@ -187,6 +207,16 @@ CREATE INDEX IF NOT EXISTS idx_deployments_deployed_at
 CREATE INDEX IF NOT EXISTS idx_deployments_full_obs_recent
     ON public.deployments USING btree (observation, deployed_at DESC)
     WHERE source_ids_filter IS NULL;
+
+-- NIRCam deployments are field-scoped (observation IS NULL); latest-deployment
+-- and lifecycle lookups by field had no index (admin audit 2026-07-03, B5).
+CREATE INDEX IF NOT EXISTS idx_deployments_field
+    ON public.deployments USING btree (field)
+    WHERE field IS NOT NULL;
+
+-- Admin list: status facet + newest-first sort (get_admin_deployments).
+CREATE INDEX IF NOT EXISTS idx_deployments_status_deployed
+    ON public.deployments USING btree (status, deployed_at DESC);
 
 
 -- =============================================================================
@@ -322,6 +352,117 @@ CREATE INDEX IF NOT EXISTS idx_nircam_exposures_review
 
 
 -- =============================================================================
+-- nirspec_rate_exposures (design §3.2)
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_nirspec_rate_exposures_observation
+    ON public.nirspec_rate_exposures USING btree (observation);
+
+CREATE INDEX IF NOT EXISTS idx_nirspec_rate_exposures_review
+    ON public.nirspec_rate_exposures USING btree (review_status)
+    WHERE review_status != 'approved';
+
+
+-- =============================================================================
+-- spectrum_exposures (nods-renderer grid; review loop P4)
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_observation
+    ON public.spectrum_exposures USING btree (observation);
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_review
+    ON public.spectrum_exposures USING btree (review_status)
+    WHERE review_status != 'approved';
+
+
+-- =============================================================================
+-- deploy_events (epic #210, B2/B3)
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_deploy_events_occurred_at
+    ON public.deploy_events USING btree (occurred_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_deploy_events_deployment_id
+    ON public.deploy_events USING btree (deployment_id)
+    WHERE deployment_id IS NOT NULL;
+
+-- The admin audit log filters by observation (admin audit 2026-07-03, P4).
+CREATE INDEX IF NOT EXISTS idx_deploy_events_observation
+    ON public.deploy_events USING btree (observation)
+    WHERE observation IS NOT NULL;
+
+-- NIRCam events filter by field, now a first-class column (audit B5, Phase 3).
+CREATE INDEX IF NOT EXISTS idx_deploy_events_field
+    ON public.deploy_events USING btree (field)
+    WHERE field IS NOT NULL;
+
+
+-- =============================================================================
+-- storage_objects (epic #210, F1)
+-- =============================================================================
+
+-- One current object per (product_type, exposure_ref). Partial so superseded /
+-- revoked tombstones don't collide with the live object — must be an index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_storage_objects_product_exposure_active
+    ON public.storage_objects USING btree (product_type, exposure_ref)
+    WHERE status = 'active';
+
+-- Copy/verify + budget walks scope by backend and status.
+CREATE INDEX IF NOT EXISTS idx_storage_objects_backend_status
+    ON public.storage_objects USING btree (backend, status);
+
+-- Copy-verify and dedup are by content hash.
+CREATE INDEX IF NOT EXISTS idx_storage_objects_content_hash
+    ON public.storage_objects USING btree (content_hash);
+
+-- Cascade a deployment to its objects (revoke/recover).
+CREATE INDEX IF NOT EXISTS idx_storage_objects_deployment_id
+    ON public.storage_objects USING btree (deployment_id);
+
+-- Reconcile looks objects up by key; scope joins by observation / spectrum_id.
+CREATE INDEX IF NOT EXISTS idx_storage_objects_storage_key
+    ON public.storage_objects USING btree (storage_key);
+
+CREATE INDEX IF NOT EXISTS idx_storage_objects_observation
+    ON public.storage_objects USING btree (observation);
+
+CREATE INDEX IF NOT EXISTS idx_storage_objects_spectrum_id
+    ON public.storage_objects USING btree (spectrum_id);
+
+-- The admin registry browser's default sort is newest-first — the hot path on
+-- the registry's ever-growing table (admin audit 2026-07-03, P4).
+CREATE INDEX IF NOT EXISTS idx_storage_objects_created_at
+    ON public.storage_objects USING btree (created_at DESC);
+
+-- Admin registry browser filtered+sorted shapes (get_admin_storage_objects):
+-- product_type / status facets each combined with the newest-first default.
+CREATE INDEX IF NOT EXISTS idx_storage_objects_product_created
+    ON public.storage_objects USING btree (product_type, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_storage_objects_status_created
+    ON public.storage_objects USING btree (status, created_at DESC);
+
+-- NIRCam-scoped registry lookups (field facet; partial — most rows are NIRSpec).
+CREATE INDEX IF NOT EXISTS idx_storage_objects_field
+    ON public.storage_objects USING btree (field)
+    WHERE field IS NOT NULL;
+
+-- NIRCam download/registry scoping by (field, filter) — the `campfire download
+-- --field <f> --filters <...>` plan and any per-filter aggregate. Partial: only
+-- per-filter NIRCam rows carry a filter (most rows are NIRSpec, filter NULL).
+CREATE INDEX IF NOT EXISTS idx_storage_objects_field_filter
+    ON public.storage_objects USING btree ("field", "filter")
+    WHERE "filter" IS NOT NULL;
+
+-- Substring key search in the admin registry browser (admin audit 2026-07-03,
+-- C2 / Phase 2): operators search by a fragment anywhere in the canonical key,
+-- so a left-anchored btree can't serve it — trigram GIN does. Opclass is
+-- schema-qualified (pg_trgm lives in public, like idx_comments_content_trgm).
+CREATE INDEX IF NOT EXISTS idx_storage_objects_key_trgm
+    ON public.storage_objects USING gin (storage_key public.gin_trgm_ops);
+
+
+-- =============================================================================
 -- access_codes
 -- =============================================================================
 
@@ -330,17 +471,16 @@ CREATE INDEX IF NOT EXISTS idx_access_codes_code
 
 
 -- =============================================================================
--- account_requests
+-- inspection_access_requests
 -- =============================================================================
 
-CREATE INDEX IF NOT EXISTS idx_account_requests_created_at
-    ON public.account_requests USING btree (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inspection_access_requests_status
+    ON public.inspection_access_requests USING btree (status);
 
-CREATE INDEX IF NOT EXISTS idx_account_requests_email
-    ON public.account_requests USING btree (email);
-
-CREATE INDEX IF NOT EXISTS idx_account_requests_status
-    ON public.account_requests USING btree (status);
+-- At most one open ('pending') request per user.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_inspection_access_requests_pending
+    ON public.inspection_access_requests USING btree (user_id)
+    WHERE (status = 'pending');
 
 
 -- =============================================================================

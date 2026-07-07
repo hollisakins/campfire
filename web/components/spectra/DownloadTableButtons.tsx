@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Download, FileText, Package, Loader2, ChevronDown } from 'lucide-react';
 import { generateCSV, generateCsvFilename, generateFitsDownloadUrl } from '@/lib/actions/download';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
+import { FITS_DOWNLOAD_FILE_LIMIT } from '@/lib/actions/spectra-types';
 import { AdvancedFilterOptions } from './SpectraFilterBar';
 
 interface DownloadDropdownProps {
@@ -31,7 +32,13 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
 
   const CSV_LIMIT = 50000;
-  const FITS_LIMIT = 200;
+  // FITS_LIMIT is in spectra/file units. In spectra mode totalCount is already
+  // the spectra count, so this gate is exact. In objects mode totalCount is the
+  // object count — a loose lower bound on the spectra count (one object fans out
+  // to 2-3 gratings), so the gate disables correctly once objects exceed the
+  // limit but may stay enabled below it; the server action backstops that case
+  // by refusing the download with a clear error rather than truncating.
+  const FITS_LIMIT = FITS_DOWNLOAD_FILE_LIMIT;
   const csvWillTruncate = totalCount > CSV_LIMIT;
   const fitsDisabled = totalCount > FITS_LIMIT || loading;
 
@@ -84,12 +91,12 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
     try {
       const result = await generateFitsDownloadUrl(filters, sortColumn, sortDirection, viewMode);
 
-      if (result.error || !result.files || !result.token || !result.workerUrl) {
+      if (result.error || !result.files) {
         setError(result.error || 'Failed to generate download URL');
         return;
       }
 
-      const { files, token, workerUrl, zipFilename } = result;
+      const { files, zipFilename } = result;
       setFitsProgress({ done: 0, total: files.length });
 
       // Fetch files in parallel with concurrency limit
@@ -103,10 +110,9 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
         while (queue.length > 0) {
           const file = queue.shift()!;
           try {
-            const resp = await fetch(
-              `${workerUrl}/file?key=${encodeURIComponent(file.key)}`,
-              { headers: { Authorization: `Bearer ${token}` } }
-            );
+            // proxyUrl is a ready-to-fetch Worker link (?url=<presigned>&sig=<hmac>);
+            // the Worker supplies CORS so the browser can read the bytes to zip them.
+            const resp = await fetch(file.proxyUrl);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const buf = await resp.arrayBuffer();
             fileData.push({ filename: file.filename, data: new Uint8Array(buf) });
@@ -187,7 +193,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
       {isOpen && (
         <div className="absolute right-0 z-50 mt-1 w-[320px] bg-background dark:bg-card border border-border rounded-lg shadow-lg">
           {/* Header */}
-          <div className="px-4 py-3 border-b border-border">
+          <div className="px-4 py-3 border-b border-border bg-surface-2">
             <div className="text-sm font-medium text-text-primary">
               Download Results
             </div>
@@ -235,7 +241,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
                 loading
                   ? 'Please wait while objects are loading'
                   : totalCount > FITS_LIMIT
-                    ? `Limited to ${FITS_LIMIT} objects. Please refine filters.`
+                    ? `Limited to ${FITS_LIMIT} FITS files. Please refine filters.`
                     : 'Download FITS files as ZIP'
               }
             >
@@ -270,7 +276,7 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
               {fitsDisabled && totalCount > FITS_LIMIT && (
                 <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-2">
                   <span className="flex-shrink-0 mt-0.5">⚠️</span>
-                  <span>FITS limited to {FITS_LIMIT} objects</span>
+                  <span>FITS download limited to {FITS_LIMIT} files</span>
                 </div>
               )}
 

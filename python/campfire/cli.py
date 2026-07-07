@@ -65,6 +65,61 @@ def _open_store():
             sys.exit(1)
 
 
+def _maybe_migrate_layout(store, migrate_layout: Optional[bool]) -> None:
+    """Detect a pre-#212 local layout and (optionally) migrate it in place.
+
+    Runs before the metadata sync so the relocated files are at their canonical
+    ``products/nirspec/<obs>/`` paths when ``verify_local_objects`` discovers
+    them — turning "nothing downloaded" back into recognized local files without
+    re-downloading. A ``_meta`` marker short-circuits the scan once migrated.
+    """
+    from .config import resolve_data_dir
+    from . import migrate as _mig
+
+    if store.get_meta(_mig.LAYOUT_MARKER_KEY) == _mig.LAYOUT_MARKER_VALUE:
+        return  # already migrated, or born on the new layout
+
+    root = resolve_data_dir()
+    plan_result = _mig.plan(root)
+    if not plan_result["pending"]:
+        # Fresh or already-migrated tree — stamp so we never scan again.
+        store.set_meta(_mig.LAYOUT_MARKER_KEY, _mig.LAYOUT_MARKER_VALUE)
+        return
+
+    counts = plan_result["counts"]
+    click.echo("\n⚠  Local data uses the old layout (products/<obs>/ instead of "
+               "products/nirspec/<obs>/).")
+    click.echo("   Files there won't be recognized as downloaded until the tree is migrated.")
+    summary = ", ".join(f"{k}:{v}" for k, v in sorted(counts.items()))
+    click.echo(f"   Planned actions (dry-run): {summary}")
+    if plan_result["warnings"]:
+        click.echo(f"   ({len(plan_result['warnings'])} item(s) will need manual review.)")
+
+    if migrate_layout is False:
+        click.echo("   Skipping (--no-migrate-layout). Run it yourself with:")
+        click.echo("     python pipeline/scripts/migrate_layout_212.py --apply")
+        return
+    if migrate_layout is None:
+        if not sys.stdin.isatty():
+            click.echo("   Non-interactive session — not migrating automatically. Re-run with "
+                       "--migrate-layout, or use pipeline/scripts/migrate_layout_212.py --apply.")
+            return
+        if not click.confirm("   Migrate the local layout now?", default=False):
+            click.echo("   Skipped — will be offered again on the next sync.")
+            return
+
+    click.echo("   Migrating…")
+    _mig.apply(root, echo=click.echo)
+    # Only stamp the marker if nothing material remains (an unresolved
+    # "BOTH exist" case needs a human; re-offering next sync is safe + idempotent).
+    if not _mig.plan(root)["pending"]:
+        store.set_meta(_mig.LAYOUT_MARKER_KEY, _mig.LAYOUT_MARKER_VALUE)
+        click.echo("   ✓ Local layout migrated.")
+    else:
+        click.echo("   ⚠ Migration applied; some items still need manual review "
+                   "(see warnings/manifest above).")
+
+
 def _check_client_version(base_url: str) -> None:
     """Check if a newer client version is available. Never raises."""
     from . import __version__
@@ -391,27 +446,40 @@ def status(base_url: Optional[str]):
     else:
         click.echo(f"Catalog: {len(obs_list)} observations")
 
-    # Download stats per observation
-    if obs_list:
+    # Per-observation cloud-vs-local view, from the storage_objects mirror. Each
+    # cell is local/available; intermediates only appear where the cloud has them
+    # (admins reviewing a draft, or after --intermediate). No network call.
+    summary = store.get_object_summary()
+    materialized = [r for r in summary if r["finals_local"] or r["intermediates_local"]]
+    if materialized:
         click.echo()
-        click.echo(f"  {'OBSERVATION':<25} {'DOWNLOADED':<14} {'SIZE':<12}")
+        click.echo(f"  {'OBSERVATION':<25} {'FINALS':<12} {'INTERMEDIATES':<15} {'SIZE':<12}")
+        for r in materialized:
+            finals = f"{r['finals_local']}/{r['finals_available']}"
+            if r["intermediates_available"]:
+                inter = f"{r['intermediates_local']}/{r['intermediates_available']}"
+            else:
+                inter = "—"
+            size = format_size(r["local_bytes"])
+            click.echo(f"  {r['observation']:<25} {finals:<12} {inter:<15} {size:<12}")
+    else:
+        click.echo()
+        click.echo("  No files downloaded yet. Run: campfire download --obs <name>")
 
-        total_downloaded = 0
-        total_bytes = 0
-        for obs in obs_list:
-            stats = store.get_observation_stats(obs)
-            downloaded = stats["synced_count"]
-            size = format_size(stats["total_bytes"])
-            total_downloaded += downloaded
-            total_bytes += stats["total_bytes"]
-            if downloaded > 0:
-                click.echo(f"  {obs:<25} {downloaded:<14} {size:<12}")
+    # Global cloud storage budget (admin-only; best-effort, skipped otherwise).
+    try:
+        api = APIClient(APISession(base_url=base_url))
+        budget = api.get_storage_budget()
+        if budget:
+            used = format_size(int(budget.get("total_bytes", 0)))
+            cap = format_size(int(budget.get("cap_bytes", 0)))
+            pct = budget.get("pct_used", 0)
+            click.echo(f"\nCloud storage: {used} of {cap} ({pct}%)")
+    except Exception:
+        pass
 
-        if total_downloaded == 0:
-            click.echo("  No FITS files downloaded yet. Run: campfire download --obs <name>")
-
-    # Stale files
-    stale = store.get_stale_files()
+    # Stale files (server hash != local hash, via the mirror)
+    stale = store.get_stale_objects()
     if stale:
         click.echo(f"\n⚠ {len(stale)} local file(s) updated on server. Run: campfire download --stale")
 
@@ -436,12 +504,19 @@ def status(base_url: Optional[str]):
 @cli.command(name="sync")
 @click.option("--full", is_flag=True, help="Force full sync (skip incremental)")
 @click.option("--base-url", default=None, help="API base URL")
-def sync_cmd(full: bool, base_url: Optional[str]):
+@click.option("--migrate-layout/--no-migrate-layout", "migrate_layout", default=None,
+              help="Migrate a pre-#212 local layout without prompting (or skip it). "
+                   "Default: prompt when an old layout is detected on a TTY.")
+def sync_cmd(full: bool, base_url: Optional[str], migrate_layout: Optional[bool]):
     """Sync the object catalog from the server (metadata only).
 
     On first run, pulls the full catalog. On subsequent runs, only
     fetches objects modified since the last sync (incremental).
     Use --full to force a complete re-sync.
+
+    If the local data directory still uses the pre-#212 layout, sync detects it
+    and offers to migrate it in place (products/<obs>/ -> products/nirspec/<obs>/,
+    plus raw/ and reference/ when observations.toml is present).
     """
     base_url = base_url or resolve_base_url()
 
@@ -458,6 +533,10 @@ def sync_cmd(full: bool, base_url: Optional[str]):
     store = _open_store()
 
     try:
+        # Migrate a pre-#212 local layout before anything reads the tree, so the
+        # verify step below discovers the relocated files instead of missing them.
+        _maybe_migrate_layout(store, migrate_layout)
+
         is_incremental = not full and store.get_max_objects_updated_at() is not None
         if is_incremental:
             click.echo("Syncing catalog (updating existing)...")
@@ -485,7 +564,7 @@ def sync_cmd(full: bool, base_url: Optional[str]):
         # Verify local files so status reports correct counts immediately
         pd = _products_dir()
         if pd.exists():
-            verify = store.verify_local_files(pd, show_progress=True)
+            verify = store.verify_local_objects(pd, show_progress=True)
             if verify["cleared"]:
                 click.echo(f"  Detected {verify['cleared']} missing local file(s).")
             if verify["rehashed"]:
@@ -538,36 +617,59 @@ class _VariadicOption(click.Option):
 @click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption, help="Download by observation name")
 @click.option("--program", "program_filter", multiple=True, cls=_VariadicOption, help="Download by program slug")
 @click.option("--field", "field_filter", multiple=True, cls=_VariadicOption, help="Download by field name")
-@click.option("--grating", "grating_filter", multiple=True, cls=_VariadicOption, help="Filter by grating type")
+@click.option("--grating", "grating_filter", multiple=True, cls=_VariadicOption,
+              help="NIRSpec: narrow finals to these gratings (e.g. PRISM G395M)")
+@click.option("--filters", "filter_filter", multiple=True, cls=_VariadicOption,
+              help="NIRCam: narrow to these filters (e.g. f277w f356w f444w)")
 @click.option("--stale", is_flag=True, help="Re-download files updated on the server")
+@click.option("--intermediate", "include_intermediate", is_flag=True,
+              help="Also fetch canonical intermediates (NIRSpec spectrum-exposures, NIRCam exposures + expmaps)")
 @click.option("--all", "download_all", is_flag=True, help="Download everything accessible")
 @click.option("--workers", default=4, help="Parallel download workers")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
 @click.option("--dry-run", is_flag=True, help="Show plan without downloading")
 @click.option("--base-url", default=None, help="API base URL")
-def download(obs_filter, program_filter, field_filter, grating_filter,
-             stale, download_all, workers, yes, dry_run, base_url):
-    """Download FITS spectrum files.
+def download(obs_filter, program_filter, field_filter, grating_filter, filter_filter,
+             stale, include_intermediate, download_all, workers, yes, dry_run, base_url):
+    """Download data products (NIRSpec spectra + NIRCam field products).
 
-    Requires a prior 'campfire sync' to populate the local catalog.
-    Use filters to select which observations to download.
+    Requires a prior 'campfire sync' to populate the local catalog. Select what
+    to download with --obs / --program (NIRSpec) or --field (NIRSpec observations
+    in a field, or NIRCam field products), then optionally scope within a
+    selection:
+
+    \b
+      --grating   NIRSpec: narrow finals to these gratings (e.g. PRISM G395M)
+      --filters   NIRCam:  narrow to these filters (e.g. f277w f356w f444w)
+
+    By default only finals are fetched (NIRSpec spectra, NIRCam mosaics);
+    --intermediate also pulls the canonical intermediates (NIRSpec spectrum-
+    exposures, NIRCam exposures + expmaps) so you can restore a deleted-local
+    observation or inspect a stage-1/2 draft.
 
     \b
     Examples:
       campfire download --obs ember_uds_p4
       campfire download --obs ember_uds_p4 ember_uds_p5
       campfire download --program EMBER-UDS --grating PRISM
-      campfire download --field COSMOS
+      campfire download --obs ember_egs_p1 --intermediate
+      campfire download --field egs --filters f277w f356w f444w --intermediate
+      campfire download --field cosmos
       campfire download --stale
       campfire download --all
     """
     from .config import products_dir as _products_dir, meta_dir as _meta_dir
     from .sync import (
-        download_observation,
+        download_objects,
         sync_metadata,
         format_size,
     )
+    from .db.store import FINAL_PRODUCT_TYPES, INTERMEDIATE_PRODUCT_TYPES
     from .api.session import create_download_session
+
+    product_types = list(FINAL_PRODUCT_TYPES)
+    if include_intermediate:
+        product_types += list(INTERMEDIATE_PRODUCT_TYPES)
 
     base_url = base_url or resolve_base_url()
 
@@ -654,15 +756,16 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             click.echo(output)
         return
 
-    # Determine which observations to download
+    # Determine which observations (NIRSpec) + fields (NIRCam) to download
+    target_fields = set()
     if stale:
-        stale_files = store.get_stale_files()
+        stale_files = store.get_stale_objects()
         if not stale_files:
             click.echo("All local files are up to date.")
             store.close()
             return
         # Group stale files by observation
-        stale_obs = set(f["observation"] for f in stale_files)
+        stale_obs = set(f["observation"] for f in stale_files if f.get("observation"))
         target_obs = sorted(stale_obs)
         click.echo(f"Found {len(stale_files)} stale file(s) across {len(target_obs)} observation(s)")
     else:
@@ -693,21 +796,30 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             for fld in field_filter:
                 spectra = store.query_spectra(fields=[fld], limit=999999)
                 obs_for_field = set(s["observation"] for s in spectra if s.get("observation"))
-                if not obs_for_field:
-                    click.echo(f"✗ No observations found for field '{fld}'", err=True)
-                    store.close()
-                    sys.exit(1)
-                target_obs.update(obs_for_field)
+                if obs_for_field:
+                    target_obs.update(obs_for_field)  # NIRSpec field → its observations
+                else:
+                    # NIRCam (or spectra-less) field: field-scoped storage objects
+                    # (observation NULL), selected directly by field below.
+                    target_fields.add(fld)
 
         target_obs = sorted(target_obs)
 
-    if not target_obs:
+    target_fields = sorted(target_fields)
+    if not target_obs and not target_fields:
         click.echo("Nothing to download.")
         store.close()
         return
 
+    filter_list = list(filter_filter) if filter_filter else None
+    if filter_list and not target_fields:
+        click.echo("Note: --filters scopes NIRCam field products; this selection "
+                   "has no NIRCam field, so it has no effect.")
+
     # Reconcile DB with filesystem before planning
-    verify = store.verify_local_files(_products_dir(), show_progress=True)
+    verify = store.verify_local_objects(
+        _products_dir(), product_types=product_types, show_progress=True
+    )
     if verify["cleared"]:
         click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
     if verify.get("rehashed"):
@@ -719,17 +831,20 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
     grating_list = list(grating_filter) if grating_filter else None
     click.echo("Checking files...")
 
-    pending = store.get_pending_downloads(
+    pending = store.get_pending_objects(
         observations=list(target_obs),
+        product_types=product_types,
         gratings=grating_list,
+        fields=list(target_fields),
+        filters=filter_list,
     )
 
-    # Show per-observation status
+    # Show per-scope status (observation for NIRSpec, field for NIRCam)
     obs_with_downloads = []
     total_download = 0
     total_files = 0
 
-    for obs in target_obs:
+    for obs in list(target_obs) + list(target_fields):
         obs_pending = pending.get(obs, [])
         if not obs_pending:
             click.echo(f"  {obs}: up to date")
@@ -737,7 +852,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
 
         new_count = sum(1 for s in obs_pending if s["status"] == "new")
         updated_count = sum(1 for s in obs_pending if s["status"] == "updated")
-        download_bytes = sum(s.get("file_size") or 0 for s in obs_pending)
+        download_bytes = sum(s.get("size_bytes") or 0 for s in obs_pending)
 
         parts = []
         if new_count:
@@ -766,33 +881,32 @@ def download(obs_filter, program_filter, field_filter, grating_filter,
             store.close()
             return
 
-    # Execute downloads — only fetch manifests for observations that need them
+    # Execute downloads — one product-type-agnostic pass over the planned set.
+    # Plan + URLs are computed locally then presigned; the generic engine fetches,
+    # verifies content_hash, and records local state in the storage_objects mirror.
     click.echo()
     dl_session = create_download_session(max_workers=workers)
-    all_stats = []
+    api_session._ensure_valid_token()
 
-    for obs in obs_with_downloads:
-        api_session._ensure_valid_token()
+    stats = download_objects(
+        api,
+        list(target_obs),
+        product_types,
+        store,
+        _products_dir(),
+        max_workers=workers,
+        download_session=dl_session,
+        gratings=grating_list,
+        fields=list(target_fields),
+        filters=filter_list,
+    )
 
-        try:
-            stats = download_observation(
-                api, obs,
-                _products_dir(), store,
-                max_workers=workers,
-                download_session=dl_session,
-                grating_filter=grating_list,
-            )
-            all_stats.append(stats)
-        except Exception as e:
-            click.echo(f"✗ Failed to download {obs}: {e}")
-
-    # Summary
-    total_downloaded = sum(s.get("downloaded", 0) for s in all_stats)
-    total_failed = sum(s.get("failed", 0) for s in all_stats)
     click.echo(f"\n✓ Download complete")
-    click.echo(f"  Files downloaded: {total_downloaded}")
-    if total_failed:
-        click.echo(f"  Files failed: {total_failed}")
+    click.echo(f"  Files downloaded: {stats.get('downloaded', 0)}")
+    if stats.get("failed"):
+        click.echo(f"  Files failed: {stats['failed']}")
+    if stats.get("unauthorized"):
+        click.echo(f"  Files skipped (no access): {stats['unauthorized']}")
     click.echo(f"  Total size: {format_size(total_download)}")
 
     store.close()

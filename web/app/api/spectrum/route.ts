@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { generateDownloadUrl } from '@/lib/r2';
+import { deriveSibling } from '@/lib/layout';
 
 export interface SpectrumData {
   wave: number[];
@@ -60,19 +61,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Convert FITS path to JSON path
-    const jsonPath = fitsPath.replace('.fits', '.json');
+    // Derive the spectrum-JSON sibling key via the shared layout contract
+    const jsonPath = deriveSibling(fitsPath, 'spectrum_json');
 
     // Generate signed URL for the JSON file
     const signedUrl = await generateDownloadUrl(jsonPath, 3600);
-
-    // Check if R2 is configured
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return NextResponse.json(
-        { error: 'Download service not configured' },
-        { status: 503 }
-      );
-    }
 
     // Fetch the JSON data from R2
     const response = await fetch(signedUrl);

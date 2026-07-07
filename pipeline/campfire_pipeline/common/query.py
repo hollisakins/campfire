@@ -23,7 +23,58 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
+from campfire_layout import Scope, raw_dir as layout_raw_dir, raw_path
+
 BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
+
+
+def _looks_like_float(token):
+    """True if ``token`` parses as a Python float (e.g. ``"215.0"``, ``"-3.5"``)."""
+    try:
+        float(token)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalize_target(target):
+    """Normalize one cone-search ``--target`` value for MAST's ``target`` field.
+
+    MAST resolves each entry either as an object name (``"M1"``) or as a
+    *space*-separated ``"RA Dec"`` pair in decimal degrees — matching
+    astroquery's ``MastMissions``, which sends ``f"{ra.deg} {dec.deg}"``. A
+    comma-separated coordinate pair such as ``"215.0,52.9"`` is *not* a valid
+    name, so the server-side resolver raises and the search returns HTTP 500.
+    Users habitually type coordinates with a comma, so fold an exact
+    ``"num,num"`` pair into the space-separated form MAST expects. Anything
+    else (object names, already-spaced coords) is returned unchanged.
+    """
+    s = (target or "").strip()
+    parts = [p.strip() for p in s.split(",")]
+    if len(parts) == 2 and all(_looks_like_float(p) for p in parts):
+        return f"{parts[0]} {parts[1]}"
+    return s
+
+
+def _raise_for_status_verbose(resp, context=""):
+    """Like ``resp.raise_for_status()`` but surface the response body.
+
+    MAST returns an explanatory message in the body on 4xx/5xx; the stock
+    ``raise_for_status`` discards it, which is exactly what turned this
+    endpoint's errors into opaque tracebacks. Preserves the
+    ``requests.HTTPError`` type so existing handlers still catch it.
+    """
+    if resp.ok:
+        return
+    body = (resp.text or "").strip()
+    if len(body) > 500:
+        body = body[:500] + "…"
+    ctx = f" ({context})" if context else ""
+    suffix = f"\n  server said: {body}" if body else ""
+    raise requests.HTTPError(
+        f"{resp.status_code} {resp.reason} for url: {resp.url}{ctx}{suffix}",
+        response=resp,
+    )
 
 
 def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
@@ -51,6 +102,12 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     radius_units : str, optional
         ``"arcminutes"`` (default) or ``"arcseconds"``.
     """
+    # Fold comma-separated coordinate pairs ("215.0,52.9") into the
+    # space-separated "RA Dec" form MAST's resolver requires; a raw comma
+    # 500s server-side. Object names and already-spaced coords pass through.
+    if targets:
+        targets = [_normalize_target(t) for t in targets]
+
     obs_list = list(obs_ids) if obs_ids else [None]
     filt_list = list(filters) if filters else [None]
 
@@ -108,7 +165,8 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
                 json=payload,
                 headers=headers,
             )
-            resp.raise_for_status()
+            _raise_for_status_verbose(
+                resp, context=f"searching program {program_id}")
             data = resp.json()
             for r in data["results"]:
                 key = r["fileSetName"]
@@ -409,15 +467,22 @@ def _build_fileset_index(filesets):
 def _output_path_for(file_info, download_root, instrument):
     """Compute the on-disk path for a downloaded product.
 
-    NIRSpec: ``{download_root}/{PID}/{filename}``  (flat per-PID).
+    NIRSpec: ``{download_root}/nirspec/{PID}/{filename}``  (per-PID).
     NIRCam:  ``{download_root}/nircam/{PID}/{filter}/{filename}``.
+
+    Issue #213 (PR-2): resolved through the shared layout contract, the single
+    authority shared with the reader (``Observation.raw_dir``). For NIRSpec, the
+    PID *is* the raw ``data_subdir`` partition — so the download writer and the
+    reader's glob are now one definition; an observation that sets a non-default
+    ``data_subdir`` must keep it equal to its PID for downloaded files to be found.
     """
     filename = file_info["filename"]
     pid = file_info["program_id"]
+    root = Path(download_root).parent  # download_root == $CAMPFIRE_ROOT/raw
     if instrument == "NIRCAM":
         filt = (file_info.get("filter") or "unknown").lower()
-        return Path(download_root) / "nircam" / pid / filt / filename
-    return Path(download_root) / pid / filename
+        return raw_path("nircam", Scope(pid=pid, filt=filt), filename, root=root)
+    return raw_path("nirspec", Scope(data_subdir=pid), filename, root=root)
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +564,8 @@ def _write_nircam_manifest(download_root, program_id, rows):
     if not rows:
         return
     from astropy.table import Table, vstack
-    manifest_dir = Path(download_root) / "nircam" / program_id
+    manifest_dir = layout_raw_dir("nircam", Scope(pid=program_id),
+                                  root=Path(download_root).parent)
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / "manifest.ecsv"
 
@@ -528,7 +594,7 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     """Download JWST level 1b data for a program.
 
     Layout:
-      NIRSpec → ``{download_dir}/{PID}/{filename}``
+      NIRSpec → ``{download_dir}/nirspec/{PID}/{filename}``
       NIRCam  → ``{download_dir}/nircam/{PID}/{filter}/{filename}`` plus a
                 ``manifest.ecsv`` per PID directory.
 

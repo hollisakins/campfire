@@ -10,6 +10,7 @@ Each row carries pointing geometry, exposure aggregates, and a 4-quadrant
 sky footprint computed via JWST_FOV_plotter.
 """
 
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -43,13 +44,18 @@ def generate_pointings_table(obs_name, obs_dir, field):
         footprint (4 x 4 x 2 array of [RA, Dec] corners).
     """
     obs_dir = Path(obs_dir)
-    cal_files = sorted(obs_dir.glob('*_cal.fits'))
+    # Issue #212: the per-(exposure,detector,source) products are now bare
+    # canonical files ``{root}_{detector}_{srcid}.fits`` (no ``_cal`` suffix),
+    # matching Observation.discover_files(ext='canonical').
+    canon_re = re.compile(r'_nrs[12]_\d+\.fits$')
+    cal_files = sorted(p for p in obs_dir.glob('*.fits')
+                       if canon_re.search(p.name))
     if not cal_files:
-        log(f"No cal files found in {obs_dir}; skipping pointings")
+        log(f"No canonical files found in {obs_dir}; skipping pointings")
         return Table()
 
     # Dedup exposures across per-source copies.
-    # Cal-file naming: jw{visit}_{expspec}_{expnum}_{detector}_{srcid}_cal.fits
+    # Canonical naming: jw{visit}_{expspec}_{expnum}_{detector}_{srcid}.fits
     # The first four parts identify a unique exposure on a unique detector chip.
     seen = {}
     for cal_file in cal_files:

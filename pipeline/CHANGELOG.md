@@ -25,7 +25,91 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- NIRCam wisp templates are now fetched from a public HTTPS host into
+  `$CAMPFIRE_ROOT/cache/wisps/` against a checksummed manifest shipped with the
+  package (`data/wisp_manifest.toml`), instead of being manually copied into the
+  user-supplied `reference/nircam/shared/wisps/` tree. A single-process preflight
+  in `run_process` warms every needed template before the parallel fan-out
+  (`nircam/wisp_cache.py`, `orchestrate._prefetch_wisp_templates`), downloads are
+  sha256-verified and written atomically, and the fetch path is fully independent
+  of the campfire CLI/auth (plain `urllib`, no login, no cloud credentials). The
+  step now resolves templates cache→legacy-dir→fetch, so machines that already
+  have templates in the legacy dir are unaffected. Manifests are (re)generated
+  with `scripts/build_wisp_manifest.py`; hosting is documented in
+  `WISP_TEMPLATE_HOSTING.md`.
+  **Behavioral change / categorization note:** the wisp step no longer *silently*
+  skips when a template is absent. A `(detector, filter)` the manifest lists but
+  that can't be found or fetched is now a hard error; one the manifest does not
+  list stamps `CFP_WISP='skipped (no template)'` (visible, not silent). This
+  fixes the failure mode where a machine missing templates produced mosaics with
+  no wisp subtraction and no record of it. Output on a correctly-provisioned
+  machine is unchanged (Infrastructure/PATCH); a machine that was previously
+  *silently* skipping will now subtract (different pixels) or fail — a releaser
+  may judge that worth escalating to Calibration/MINOR.
+
 ### Calibration
+- **NIRCam `align` refcat gains an epoch / proper-motion contract** and
+  propagates reference positions to each exposure's mid-time. The refcat schema
+  grows optional columns — `source_id, ref_epoch, pmra, pmdec, parallax` (+
+  `pmra_err`/`pmdec_err`) — alongside the required `RA/DEC/mag/mag_err`;
+  `query_gaia` now populates them (Gaia DR3), while galaxy backends (LS/HSC) omit
+  them. When a refcat carries proper motions, the align worker moves each star to
+  the exposure mid-time (`EXPMID`) via `astropy` `apply_space_motion` **before**
+  the footprint clip and match (`refcat/motion.py`), so a fast Gaia star is
+  matched where it actually was, not where the catalog recorded it years earlier.
+  **Fully backward-compatible**: a catalog without the columns — or a row with a
+  non-finite proper motion — is treated as stationary (the prior zero-motion
+  behavior), so today's galaxy-anchored refcats are a strict no-op. This changes
+  the fitted WCS only when a motion-bearing catalog is used. `refcat/{io,query,
+  motion}.py`, `align/apply.py`; covered by `tests/test_refcat_motion.py`.
+- NIRCam `apply_masks` now reads web-defined masks instead of crashing on them.
+  Masks drawn in the web editor materialize (via `campfire deploy pull-masks`)
+  as DS9 **image**-coordinate `.reg` files, which `Regions.read` parses back as
+  `PolygonPixelRegion`s. The step called `reg.to_pixel(wcs)` unconditionally —
+  a method only sky regions have — so every web-defined mask aborted the combine
+  phase with `AttributeError: 'PolygonPixelRegion' object has no attribute
+  'to_pixel'`. Pixel regions are now rasterized directly and only sky regions
+  (legacy FK5/ICRS hand-drawn masks) are projected through the exposure WCS,
+  matching the guard the deploy-side `import-masks` already used. Regions whose
+  footprint falls entirely off the frame (`to_image` → `None`) are now skipped
+  rather than crashing on `None.astype`. Net effect: web-defined masks reach the
+  mosaic (excluding masked pixels) where they previously produced no output.
+- NIRCam manual masks now actually reach the mosaic, and uncovered pixels are
+  `NaN` (epic #261, N7). The `apply_mask` step painted user region masks as DQ
+  bit `1024` (`DEAD`), which `good_bits='~DO_NOT_USE'` **ignores** — so a mask
+  had no effect on the mosaic unless the (default-off) `mask_set_nan` knob was
+  set. Masks are now honored via `DO_NOT_USE` (fused onto the combine working
+  copy), so masked pixels are correctly dropped from outlier detection and
+  resample. Separately, both drizzle backends now use `fillval='NaN'`, so mosaic
+  pixels with no coverage — or masked in every overlapping exposure — read as
+  `NaN` instead of `0`, retiring the post-drizzle "SCI=NaN where WHT=0" pass
+  (`bkgsub` is NaN-safe, so covered pixels are unchanged). Both change mosaic
+  pixel values. The `[nircam.apply_mask]` `mask_flag` / `mask_set_nan` config
+  knobs are removed — the mask now lives purely in the DQ contract.
+- NIRCam `striping` now runs **after** `image2`, on flat-fielded, flux-
+  calibrated cal-stage data, and fits *and applies* the 1/f correction in that
+  same frame. Process order is now detector1 → persistence → wisp → image2 →
+  striping → edge → sky → … Previously striping fit on a flat-fielded *copy*
+  but subtracted the correction from the *un-flat* rate SCI, which image2 then
+  re-divided by the per-amp-structured flat — leaving a coherent per-amp DC
+  step at the amplifier boundaries (`≈ N/g·(1−1/g)`, a ~10–30σ residual
+  amp-to-amp offset in the column background, verified to reproduce at
+  r=0.9997). Fitting and subtracting in the cal frame removes that leak.
+  Consequences: striping measures its pedestal with the scale-free `fit_sky_tot`
+  Gaussian sky-peak fit rather than the rate-tuned `fit_pedestal`;
+  `[nircam.striping]` no longer takes `apply_flat` / `use_custom_flat` and no
+  longer resolves a flat (dropped from CRDS prefetch). `subtract_background` is
+  now a **fit-only** 2D detrend (default **on**, `box=32` / `filter=3`): it
+  removes the field's large-scale structure (e.g. cluster ICL / scattered
+  light) from the working copy so the per-amp-row/per-column medians estimate
+  the 1/f rather than the background, but the model is **never** subtracted from
+  the output SCI — so it cannot leave negative wings around sources (unlike the
+  fine-box mosaic bkgsub) and the ICL is retained for mosaic-level removal.
+  Without it, a smooth gradient that per-amp-row constants cannot represent gets
+  imprinted as amp-boundary steps. `wisp` is unchanged (still rate-frame); its
+  analogous flat round-trip is a separate, SW-only follow-up.
+
 - Opt-in extended-wavelength reduction for G140M/F100LP and G235M/F170LP
   (`[nirspec.stage2].extend_g140m_g235m`, default off). The F100LP/F170LP
   long-pass filters pass light redward of the nominal grating cutoffs; when
@@ -48,6 +132,239 @@ Release procedure: edit the `## Unreleased` section below, then run
   feature failed for fixed-slit sources.
 
 ### Algorithm
+- **NIRCam epoch mosaics** — `cfpipe nircam combine`/`resample`/`run`/`check` take
+  a new `--epoch <name>` flag that builds a mosaic from a *subset* of a field's
+  exposures (e.g. one program or one observing season), **additive and default-off**
+  so a run without `--epoch` is byte-for-byte unchanged. Epochs are defined per
+  field in fields.toml under `[<field>.epochs.<name>]` by an optional `files` glob
+  list and/or an inclusive `date_range` (matched against `DATE-OBS`); the subset
+  scopes the *whole* combine phase (apply_mask → bad_pixel → outlier → resample,
+  like `--tiles`), so the epoch mosaic is a distinct reduction from only those
+  exposures. The epoch name is appended as a trailing filename segment
+  (`mosaic_nircam_<filter>_<field>_<scale>_<tile>_<epoch>_i2d.fits`), stamped as
+  `CFEPOCH` in the mosaic header, and recorded in the manifest; deploy indexes
+  epoch mosaics on the portal as a new `epoch` axis (`nircam_images.epoch`, `''` =
+  full field) alongside full-field mosaics. Category is Algorithm (new science
+  product / naming), though it's arguably Infrastructure since it changes no
+  existing output.
+- **NIRCam field-level astrometric `align` phase is now runnable** (`cfpipe nircam
+  align` / `run --align`), **opt-in and default-off** so existing reductions are
+  unchanged. When a field sets `[<field>.align].enabled = true` (and names its
+  Gaia-tied `campfire-refcat-v1` catalog via `[<field>.align].refcat`), a bespoke
+  field-level phase runs between `process` and `combine`: it groups all detectors of
+  each exposure across the SW+LW filter dirs, triangle-matches a pooled source catalog
+  to the reference (no prior on the offset), fits one shared shift+rotation per exposure
+  via `tweakwcs` (`fitgeom='rshift'`, SIAF distortion fixed) with an adaptive
+  per-detector shift, and writes the corrected gwcs back with a `CFP_ALGN` stamp
+  (or a `NOT_ALIGNED` sentinel). The process phase then skips `jhat`+`wcs_shift` for that
+  field — exactly one alignment path. Replaces the JHAT-based alignment for opt-in
+  fields; JHAT remains the default and coexists during validation. New `[nircam.align]`
+  config block; covered by `tests/test_align_run.py`.
+- **NIRCam field-level `align` phase — matcher / solve / detection / combine
+  hardening (S1–S3a).** Opt-in and default-off, so no existing (JHAT) reduction
+  changes; for align-enabled fields it changes which sources match and thus the
+  fitted WCS. One PR, four parts:
+    - *Refcat footprint + all-source refine.* The full field refcat (~550k rows
+      for COSMOS) used to reach the matcher, so the brightest-N vertex cap kept
+      globally-brightest, mostly off-frame sources — and that same cap gated the
+      final fit (~17–30 pairs). The shared solve now clips the refcat to the
+      exposure's detector-union footprint + `ref_border_arcmin` margin (default
+      0.5′, local gnomonic tangent plane, `align/footprint.py`), runs
+      `TriangleMatch` as a bounded **bootstrap** only (`brightest` →
+      `bootstrap_max`), then refines on **all** sources with a one-to-one
+      `tweakwcs.XYXYMatch` pass (`fitgeom='rshift'`, σ-clip, `refine_niter`, no
+      2-D-histogram re-acquisition) — the fit rests on every matched source, not
+      the capped vertices. Per-detector residuals and the reject gate use
+      mutual-NN (one-to-one) matching; the translation-invariant matcher still
+      drives the adaptive per-detector refit (recovers offsets up to
+      `match_radius`). Also folds in the earlier pooled-catalog starvation fix
+      (the `create_group_catalog` `mag`-strip bug): the bootstrap cap spreads
+      vertices evenly across the pooled catalog when the ranking column is absent.
+    - *Quality-selected detection.* `detect.py` adds a peak-SNR floor (`snr_min`)
+      and an (uncalibrated) DAO-magnitude range trim (`objmag_lim`), masks
+      `SATURATED` + `NO_LIN_CORR` DQ (not only `DO_NOT_USE`), keys the detection
+      PSF FWHM per filter (`psf_fwhm_by_filter`, F070W→F480M), and drops the fixed
+      `brightest` count cap so the whole quality-cut catalog reaches the refine.
+    - *`NOT_ALIGNED` is never silent.* An exposure the solve can't tie to the
+      reference — **or any solver/refine/detection exception, which now degrades
+      instead of crashing the align worker** — is stamped `CFP_ALGN = NOT_ALIGNED`
+      (raw WCS preserved) and quarantined from combine by `Field.materialize_work`
+      (the single ensemble gate; the outlier pre-scan now also re-runs a visit
+      whose membership shrank, so surviving frames don't reuse CR masks computed
+      with the dropped exposure). For an align-enabled field, combine likewise
+      quarantines exposures carrying **no** `CFP_ALGN` at all (align enabled but
+      never solved them → raw WCS), each surfaced with its own fix rather than
+      silently drizzled. `run_align` reports every failure in a loud
+      end-of-command banner (failed files + how to fix) and **re-attempts**
+      `NOT_ALIGNED` exposures on a normal re-run (no `--overwrite`), while
+      already-solved exposures are skipped. `--include-unaligned` forces
+      inclusion. Sentinel centralized as `cfp.NOT_ALIGNED`; new `cfp.step_value`.
+  New `[nircam.align]` knobs (`ref_border_arcmin`, `bootstrap_max`,
+  `refine_searchrad`/`refine_tolerance`/`refine_niter`, `snr_min`,
+  `psf_fwhm_by_filter`); `brightest` removed. Touches
+  `align/{footprint,solve,matcher,detect,apply}.py`, `field.py`, `orchestrate.py`,
+  `cli.py`, `common/cfp.py`; covered by `tests/test_align_*`,
+  `tests/test_nircam_work_tree.py`, `tests/test_cfp.py`.
+- NIRCam `combine` now honors per-exposure reviewer exclusions (epic #261, N6 /
+  D10). `Field.setup_workspace` reads `reference/<field>/exposures.json`
+  (materialized by `campfire deploy nircam pull` from the portal's
+  `review_status='excluded'` flags) and folds the listed rootnames into the skip
+  set in `get_exposure_files` / `get_uncal_files` — so a flagged exposure drops
+  from **both** resample and outlier detection (it can no longer pollute the
+  outlier median for its visit-mates). Additive + reversible: an absent or empty
+  file is exactly today's behavior, and un-excluding in the portal + re-pulling
+  re-includes the exposure on the next combine. No change to any exposure's
+  pixel values.
+- **NIRCam combine no longer mutates the canonical per-exposure FITS** (epic
+  #261, N7). `bad_pixel`, `outlier`, and `resample` now run on disposable
+  working copies under `products/nircam_work/<field>/<filter>/`, materialized
+  from the frozen canonical by `Field.materialize_work` (copy where stale + fuse
+  `CFMASK` → `DO_NOT_USE`). Only `apply_mask` still writes the canonical, and
+  only its `CFMASK` extension — the canonical's SCI/DQ stay byte-identical to the
+  process-phase output. This is what lets a mosaic re-deploy leave the pristine
+  exposure in OSN untouched (instead of overwriting it with outlier-rejected
+  bytes) and lets a restored exposure re-combine from a clean input. The working
+  tree is local-only and never deployed; combine stays incremental because the
+  working copies retain their `CFP_OUT` stamps across runs (re-copied only when
+  the canonical is re-processed or its mask changes). `campfire deploy`
+  additionally hard-refuses to upload a canonical carrying combine-phase CFP
+  stamps (`CFP_BPIX`/`CFP_OUT`) — a field reduced by the old in-place combine
+  must be re-run through `cfpipe nircam process` before it can deploy.
+- **BREAKING (MAJOR):** the NIRCam mosaic `version` axis is retired (epic #261,
+  N2 / D3). Mosaic products are now named `mosaic_nircam_<filter>_<field>_<scale>_<tile>_<ext>.fits`
+  with **no** `_<version>_` segment — one canonical mosaic per
+  `(field, filter, tile, pixel_scale, extension)`, overwritten in place on
+  re-combine. The `[nircam.resample].version` config key and the `--version`
+  option on `cfpipe nircam refcat extract` are removed; the `_latest_` symlink
+  farm is gone (the canonical name *is* the latest). The `version` key is dropped
+  from mosaic manifests. **Consequence:** existing `..._v0_1_..._i2d.fits` mosaics
+  become orphaned vs the new name, so the first post-upgrade `combine` rebuilds
+  every tile fresh — intended (the portal re-serves mosaics from OSN per field/
+  filter as they are re-reduced; see #261 N3). Readers (`rgb`, `refcat`) resolve
+  the direct version-free name and intentionally do **not** fall back to a stale
+  versioned/`_latest_` file.
+- NIRSpec optimal extraction no longer bounds the cross-dispersion profile to
+  the nominal aperture for fixed-slit sources. The aperture bounding in
+  `optext_profile` exists to keep the profile from picking up flux from
+  neighbouring shutters across the bars in MSA slitlets; NIRSpec fixed slits
+  have no such bars, so the full cross-dispersion cut is a valid spatial
+  profile. Fixed-slit sources (detected from the `fixed_slit` column of the
+  s2d `EXPOSURES` table / `CFFXSLT` header, covering both standalone
+  `NRS_FIXEDSLIT` and fixed-slit-in-MSA sources) now extract with
+  `bounded=False`, changing the optimally-extracted `fnu`/`flam` for those
+  sources. MSA sources are unchanged (still bounded), and the boxcar
+  extractions are unaffected.
+- **NIRSpec canonical spectrum-exposure + instrument-parity layout (issue #212).
+  BREAKING file-naming/structure change — a pipeline MAJOR.** The four NIRSpec
+  intermediate files per `(exposure, detector, source)` (`_cal` / `_cal_bkgsub` /
+  `_s2d` / `_s2d_bkgsub`) collapse into **one bare canonical `MultiSlitModel`
+  file** (`{root}_{config}_{nod}_{detector}_{source}.fits`, NIRCam-parity naming),
+  mutated in place across stage2→3: the live slit SCI/ERR/var hold the current
+  state (calibrated → background-subtracted), the pre-bkgsub arrays are stashed as
+  `PRE_BKGSUB_*` extensions (reversible via `restore_pre_bkgsub`), the rectified
+  views are cached as `S2D_*`/`S2D_BKGSUB_*` extensions, and a per-instrument
+  `CFP_CAL→CFP_BKG→CFP_S2D` provenance chain (`common/cfp.py` keysets) records
+  reduction depth. The three stage3 exclusions, previously realized by
+  file-absence, become explicit `CFP_BKG` state markers (`skipped:nods=N` /
+  `excluded:override`) plus the existing `SRCFLUX` filter. **Science is
+  bit-identical** — verified byte-for-byte on a real `ember_egs_p1` reduction
+  (PRISM MOS, 4 sources incl. a `NoDataOnDetector` slit): `_spec`/`_x1d`/`_s2d`
+  arrays `worst|d| = 0.000e+00` vs the four-file flow; the MAJOR is purely the
+  naming/structure break. Layout also moves to instrument parity:
+  `products/nirspec/<obs>/`, `raw/nirspec/<subdir>/`,
+  `reference/nirspec/<obs>/{stuck_shutters, bkg_overrides}`, and NIRCam custom
+  flats / wisp templates hoist to the shared (de-fielded)
+  `reference/nircam/shared/{flats,wisps}`. **Adopting requires a one-time data
+  move** to the new tree (the pipeline reads/writes the new locations only).
+  Path config is collapsed to a single root: `[paths].data_dir` /
+  `products_dir` overrides are removed (they were unused, half-wired — deploy
+  ignored them — and the source of a NIRSpec/NIRCam `reference/` divergence);
+  `raw/`, `products/`, and `reference/` now derive uniformly from
+  `$CAMPFIRE_ROOT`. Relocate the whole tree via `$CAMPFIRE_ROOT`, or symlink an
+  individual subdir. The one-time adoption move is scripted:
+  `pipeline/scripts/migrate_layout_212.py` (dry-run by default; `--apply` to
+  execute; idempotent, never clobbers, writes a JSONL audit manifest).
+- NIRSpec fixed-slit: fixed the summary/deploy source position. Fixed-slit
+  products carry no catalog `SRCRA`/`SRCDEC` in the SCI header (those are
+  MSA-only), so the summary reader recorded `(0, 0)` for every fixed-slit
+  target — which collapsed all of them into a single object at the origin during
+  friends-of-friends clustering at deploy. The reader now falls back to the
+  EXPOSURES-table `source_ra`/`source_dec` (the target position), and stage3
+  writes `SRCRA`/`SRCDEC` into the `_spec.fits` SCI header from that table so the
+  product is self-describing. Existing fixed-slit products only need a `summary`
+  re-run (no re-reduction); MSA products are unaffected.
+- NIRSpec standalone **fixed-slit** (`NRS_FIXEDSLIT`) reduction is now supported
+  end-to-end (stage1→3). Previously only MSA exposures (`NRS_MSASPEC`) and the
+  fixed-slit-in-MSA hybrid were handled, because both describe their slits in the
+  MSA metadata file (`*_msa.fits`); standalone fixed-slit exposures carry no such
+  file. The pipeline now detects `NRS_FIXEDSLIT` from the exposure header and
+  routes around the MSA-metafile machinery, letting jwst's native fixed-slit path
+  (`assign_wcs.get_open_fixed_slits` → `extract_2d` selecting the primary slit by
+  name) build the WCS and extract the spectrum. Specifically: `Observation.glob`
+  accepts `NRS_FIXEDSLIT` uncals; a new `_run_stage2a_fixedslit` runs
+  `Spec2Pipeline` with `extract_2d.slit_names=[FXD_SLIT]` and emits a product keyed
+  on jwst's primary-slit `source_id=1` (`{root}_{nod}_{detector}_1`), so the
+  mode-agnostic nodded background subtraction (2b) and combination (3) consume it
+  unchanged; `group_files` handles fixed-slit along-slit nod patterns
+  (`*-NOD`, e.g. `3-POINT-NOD`); and the stage3 provenance table + Spec3 output
+  renaming tolerate the fixed-slit header set (no MSA `SHUTSTA`; slit-level
+  `SRCRA`/`SRCDEC` fall back to the target position) and slit-name-embedded Spec3
+  product names. stage1 (Detector1 + background subtraction) needed no changes —
+  the science region is already protected by the hardcoded fixed-slit detector
+  band. MSA reductions are byte-for-byte unaffected. Validated on program 1967
+  (z≈6 quasar census, S200A2/G395M-F290LP): full 2.85–5.29 µm spectra recovered.
+- NIRSpec fixed-slit provenance + slit-overlay geometry now propagate to the
+  deliverables. The stage-3 `EXPOSURES` HDU gains `fixed_slit` / `slit_name`
+  columns and the final `_spec.fits` primary header carries `CFFXSLT` /
+  `CFFSSLIT`, so a fixed-slit source is identifiable downstream (this also flags
+  fixed-slit sources observed *inside* MSA exposures, via the metafile
+  `fixed_slit` column). The shutters ECSV becomes self-describing: each row
+  carries `aperture_name`, `aperture_width_arcsec`, and `aperture_height_arcsec`,
+  and fixed-slit sources export a single aperture rectangle sized to the slit
+  (e.g. S200A2 = 0.2"x3.2") instead of MSA shutter geometry — which `slits.py`'s
+  `get_exposure_table` would have rejected outright. MSA rows keep their geometry
+  and now carry the existing 0.22"x0.46" dimensions explicitly. Aperture sizes
+  live in `nirspec/constants.py` (`FIXED_SLIT_SIZE_ARCSEC`,
+  `MSA_SHUTTER_SIZE_ARCSEC`). Consumed by the web/Python slit overlays (DB
+  column, `get_nearby_shutters`/`get_field_shutters` RPCs, deploy, and the
+  SVG/canvas/matplotlib renderers updated in lockstep).
+- NIRCam `striping`: new opt-in per-amp-row 1/f offset estimator selectable via
+  `[nircam.striping].estimator` (default **`"median"`** — the production
+  2σ-clipped median with full-row fallback, byte-for-byte unchanged). The new
+  `"gp"` estimator fits a 1-D Gaussian Process (celerite2 `SHOTerm`,
+  `Q = 1/sqrt(2)`, CPU O(n)) along the slow (row) axis *per amplifier*, with
+  each amp-row weighted by its sampling error `sigma_r ≈ 1.25·MAD/sqrt(N_r)`
+  and carrying its own DC mean term. It interpolates the offset across
+  source-masked rows using clean rows of the *same* amplifier instead of
+  substituting the cross-amp full-row median, removing the amp-boundary +
+  slow-axis "box" of striping artifacts around bright/extended sources. The
+  per-column (vertical) step is untouched. Only the length scale `rho` (in
+  rows) is a frozen hyperparameter — a detector readout property, independent
+  of filter and flux units (calibrate with `scripts/calibrate_gp_striping.py`).
+  A single channel-agnostic `rho = 5.0` is used: it was measured stable across
+  five filters spanning both channels on rj0911 (LW f277w/f356w/f444w =
+  4.51/4.44/5.03, SW f200w/f150w = 4.10/4.11 rows — one cluster inside its
+  broad flat optimum), so no SW/LW split is needed. The kernel **amplitude
+  self-adapts per
+  exposure** (the marginal `mad_std` of the clean per-amp-row medians,
+  measured on the pre-2D-bg frame — a deterministic robust statistic, not a
+  per-exposure fit), so it tracks the cal-stage flux units that vary ~3× by
+  filter instead of carrying a frozen absolute number. Nothing is optimized
+  per exposure. An aggressive
+  masking variant (`mask_aggressive`) dilates the source mask and folds in
+  JUMP/SATURATED/PERSISTENCE DQ — over-masking only inflates `sigma_r` (the GP
+  interpolates across), whereas under-masking biases the median and the GP
+  would oversubtract. A third value, `estimator = "none"`, builds/writes the
+  `SRCMASK` and runs the rest of the pipeline but applies no campfire 1/f
+  (for comparison runs against JWST's own ramp-stage `clean_flicker_noise`).
+  Default config reproduces the current pipeline exactly; no change unless
+  `estimator` is set away from `"median"`. A/B testbed in
+  `experiments/oneoverf_gp/`, which also evaluates `clean_flicker_noise`: on a
+  cluster field the GP beats the median by ~14% on the amp-row 1/f residual
+  (clean *and* source rows, photometry conserved, slightly faster), while
+  `clean_flicker_noise` is not adopted — its `fit_method="fft"` is NIRSpec-only
+  (skipped for `NRC_IMAGE`) and its `"median"` mode underperforms our amp-row
+  estimators and introduces per-amp DC steps.
 - NIRCam campfire-native drizzle (`resample.implementation = "campfire"`): the
   ERR map no longer fills with `inf`/`nan`. The variance pass summed the three
   variance components before drizzling, so a single input pixel with a
@@ -69,6 +386,280 @@ Release procedure: edit the `## Unreleased` section below, then run
   never affected.
 
 ### Infrastructure
+- **NIRCam `align` closes the cross-filter dependency and gates observing mode.**
+  Two correctness fixes to the align orchestration (opt-in, default-off):
+    - *Cross-filter closure.* `run_align` now pools each physical exposure across
+      **all** field filters, even when `--filters`/`--tiles` selects a subset — so
+      `align --filters f200w` still sees its paired F444W (LW) complement for the
+      shared solve, and a tile gate can't split a dither at a tile edge. The
+      selection then just chooses **which** exposures to process; each is solved
+      and its corrected gwcs written across its full SW+LW complement (one
+      attitude corrects the whole dither), so `--filters f200w` now also stamps
+      the paired f444w canonicals — a deliberate behavior change that keeps an
+      exposure from ending up half-aligned. Status is scanned over all filters to
+      match.
+    - *Observing-mode gating.* Align now reads `EXP_TYPE`/`SUBARRAY` per exposure
+      and **hard-stops** with a clear, listed error if any exposure in scope is in
+      an unsupported mode (subarray / coronagraph / TSO / WFSS), rather than
+      silently feeding it through generic full-frame-imaging logic. The user must
+      exclude it (fields.toml `skip` / reviewer exclusions) or select a supported
+      subset. Missing metadata is treated leniently. `orchestrate.py`,
+      `association.py`; covered by `tests/test_align_run.py`, `test_association.py`.
+- **NIRCam `--tiles` now pre-filters the exposure set for `process`/`align`/`combine`,
+  not just `resample`.** Previously `--tiles` scoped only which mosaics were drizzled;
+  every earlier step ran over the whole field, so building one tile meant processing
+  all of it. `--tiles` now restricts each phase to exposures overlapping the named
+  tile(s): `detector1` gates on the uncal `S_REGION` footprint (present before any WCS
+  is assigned), and the canonical-stage steps + `align` groups inherit the subset. The
+  overlap gate lives in `nircam/geometry.py` (`select_overlapping_by_sregion` +
+  `filter_exposures_to_tiles`, exposure-union so a straddling dither keeps its full
+  detector complement; the tile polygon is buffered ~11″ to stay a conservative
+  superset of resample's precise SCI-WCS selection; missing/blank `S_REGION` fails
+  open). This makes a single-tile reduction cheap — e.g. an `align`-vs-`jhat` A/B on one
+  COSMOS tile (`scripts/nircam_ab_astrometry.py` compares the two mosaics' extracted
+  catalogs to each other and to the reference). **Default (no `--tiles`) runs are
+  byte-identical.** A tile-scoped run restricts `outlier`/`bad_pixel` to the overlapping
+  subset, so tile-edge pixels may differ from a full-field pass — expected, since a
+  tile-scoped run is a distinct input set. *(Categorized Infrastructure because the
+  canonical full-field reduction is unchanged; noting the tile-scoped caveat.)* Covered
+  by `tests/test_tile_filter.py` + `tests/test_ab_astrometry.py`.
+- **NIRCam `--tiles` overlap scan is ~10× faster (cold-NFS + per-phase memo).** The
+  `S_REGION` footprint gate (`read_sregion_polygon`) was the silent multi-minute stall
+  at the start of a tile-scoped `process` on a cold NFS mount. Two fixes: (1) it now
+  reaches the `SCI` header by name instead of slicing `hdul[1:]`, which forced astropy
+  to enumerate every extension — seeking past all ~9 data units (~24 NFS round-trips/file
+  vs ~6), ~8× fewer round-trips cold (~348→~43 ms/file); no pixel data was ever read,
+  the cost was purely `lseek`-triggered 1 MB readahead. (2) `run_process` runs the gate
+  once per step (~10 `get_exposure_files(tiles=)` calls), so results are now memoized by
+  path for the phase (`reset_sregion_cache` at phase entry) — the scan runs once instead
+  of once per step. Net: a 1600-file tile scan drops from ~13 min/phase to ~1.3 min.
+  Footprint results are byte-identical (verified against the prior implementation on real
+  exposures); no scientific output change. Also removes a stale test that asserted the
+  pre-`5059e87` `run --process --tiles` rejection (superseded by
+  `test_cli_run_tiles_allowed_with_process`).
+- **NIRCam `align` phase — exposure I/O + `CFP_ALGN` stamp.** New
+  `nircam/align/apply.py` (`align_exposure_group`) is the FITS layer: it reads each
+  detector's gwcs and detects sources, runs the in-memory solve, and writes the
+  corrected gwcs back onto the canonical (`model.meta.wcs` + `update_fits_wcsinfo`,
+  re-attaching `SRCMASK`, via `atomic_save`) with a per-detector `CFP_ALGN` provenance
+  value (`dof`/residual/match-count) — or a `NOT_ALIGNED` sentinel when the exposure
+  can't be tied to the reference (WCS preserved, never retried). The original
+  (un-aligned) gwcs is stashed in a `WCS_BAK` extension so an `overwrite` re-run solves
+  from the original and never double-corrects (mirrors the `wcs_shift` contract).
+  Right-sizes the `CFP_ALGN` card comment set in the earlier scaffolding so the value +
+  comment fit one 80-char FITS card. Still not wired into any run; covered by
+  `tests/test_align_apply.py` (persistable-gwcs canonical round-trip). No behavior change.
+- **NIRCam `align` phase — per-exposure solve core.** New `nircam/align/solve.py`
+  (`solve_exposure_group`) fits ONE shared shift+rotation per exposure via
+  `tweakwcs.align_wcs` (`fitgeom='rshift'`, SIAF distortion untouched) against the
+  static Gaia-tied reference catalog: one `JWSTWCSCorrector` per detector, all sharing
+  the exposure's `group_id` (the pooling constraint made mechanical); distinct
+  per-exposure group_ids + `expand_refcat=False` keep exposures independent (no global
+  collapse). Per-detector residuals are recomputed directly (`det_to_world` vs matched
+  reference positions), and a detector whose residual exceeds tolerance gets an adaptive
+  shift-only refit against a distractor-free local reference subset (accepted only if it
+  improves). A `SUCCESS` fit that matches too few sources is rejected to a NOT_ALIGNED
+  identity fallback (reject-to-identity). Returns corrected gwcs + diagnostics per
+  detector; no FITS I/O yet. Prototype-validated (2″ offset → 0.036 mas); covered by
+  `tests/test_align_solve.py` with a CRDS-free mock gwcs. No behavior change.
+- **NIRCam `align` phase — centroid-only source detection.** New
+  `nircam/align/detect.py` (`detect_star_centroids` / `detect_in_exposure`) finds
+  point-source centroids on a detector's SCI image with `photutils.DAOStarFinder` —
+  **centroids only, no aperture photometry**, so it structurally avoids JHAT's `-99.99`
+  sky-annulus sentinel (which floods the matcher with fake constant-magnitude sources
+  on CAMPFIRE's sky-subtracted frames). Returns `x, y` (0-indexed detector pixels) plus
+  a PSF-fit brightness proxy (`flux`/`mag`), masking `DO_NOT_USE` DQ and off-detector
+  pixels. WCS-free and `jwst`-free (reads SCI/ERR/DQ via `astropy.io.fits`). Standalone
+  library module for the forthcoming align solve — not yet wired in; covered by
+  `tests/test_align_detect.py`. No behavior change.
+- **NIRCam `align` phase — triangle/asterism matcher.** New `nircam/align/` subpackage
+  with `TriangleMatch`, a `tweakwcs` `MatchCatalogs` subclass that matches source
+  catalogs by triangle *shape* (side ratios) — invariant to translation/rotation/scale,
+  so it recovers correspondences with no prior on the WCS offset (the regime where the
+  default 2d-histogram + nearest-neighbour matcher silently mis-aligns). Wraps
+  `tristars.match_catalog_tri` (correspondence path only; the fit stays `tweakwcs`'s
+  job). Color-free — magnitude is used only to cap each catalog to its brightest-N
+  triangle vertices, never as a match constraint. Standalone library module for the
+  forthcoming align solve — not yet wired in; covered by `tests/test_align_matcher.py`.
+  No behavior change.
+- **NIRCam `align` phase — exposure-association layer.** New `nircam/association.py`
+  groups canonical exposure files into per-exposure `ExposureGroup`s keyed on the
+  exposure token (`rootname.rsplit('_',1)[0]`), pooling every detector of one dither
+  across the SW and LW filter directories (they share the token). Reuses
+  `Field.get_exposure_files` so per-filter effective-skip (field `skip` + reviewer
+  `excluded_exposures` + caller skip) is honored; classifies module/channel from the
+  detector token; is imaging-only (grism is gated upstream) and reads filenames only
+  (never opens a FITS). Standalone library module for the forthcoming `align` phase —
+  not yet wired into orchestration; covered by `tests/test_association.py`. No behavior
+  change.
+- **NIRCam `align` phase — foundation scaffolding (no behavior change).** Registers
+  the `CFP_ALGN` provenance keyword in the `NIRCAM` CFP keyset (immediately after
+  `CFP_JHAT`, so `reset --from jhat` / `--from wcs_shift` also clears it — both mutate
+  the WCS), opens the `[<field>.align]` per-field config namespace (`known_steps`), and
+  declares the two dependencies the forthcoming adaptive astrometric align step will
+  import (`tweakwcs>=0.8`, previously only transitive via `jwst`; `tristars==0.1`, the
+  triangle/asterism catalog matcher). Nothing new runs yet — this is the pipeline-side
+  foundation for the field-level `align` phase that will replace the JHAT-based
+  `jhat`/`wcs_shift` alignment. No change to any output values.
+- **NIRCam resample tile selection moved from config to a `--tiles` CLI flag.**
+  Which mosaic tiles get drizzled is a runtime choice, not a processing
+  parameter, so the undocumented `[nircam.resample].tile` config key is retired
+  in favor of `--tiles` on `cfpipe nircam {resample,combine,run,check}` (variadic,
+  e.g. `--tiles A1 A2`; default: all tiles in the field). The flag scopes the
+  resample step *only* — the exposure/visit-level combine steps (`apply_mask`,
+  `bad_pixel`, `outlier`) still run over the full field, so a tile built from a
+  subset run is bit-identical to the same tile from a whole-field run (truncating
+  outlier's cross-visit median pool would change edge pixels). `run` rejects
+  `--tiles` unless the combine phase is selected. Covered by
+  `tests/test_nircam_resample_tiles.py`. CLI ergonomics only; no change to mosaic
+  pixel values.
+- **NIRCam `jhat` accepts a single `refcat` in addition to `refcat_dict`.** A
+  field that aligns every filter to the same reference catalog can now set
+  `[<field>.jhat].refcat = "<file>"` instead of repeating that filename across a
+  `[<field>.jhat.refcat_dict]` block. When both are given, `refcat_dict` entries
+  win per-filter and `refcat` is the fallback for any filter it doesn't list.
+  Resolution moved into a small `_resolve_refcat` helper (covered by
+  `tests/test_nircam_jhat_refcat.py`). Config ergonomics only — for a given
+  configuration the same catalog is passed to JHAT as before, so no change to
+  aligned WCS or pixel values.
+- **NIRSpec `stuck_closed_shutters.toml` entries now carry a `# hand` / `# web` /
+  `# auto` provenance tag.** `write_stuck_shutters_toml` preserves the tag of each
+  existing entry (via a new `provenance` arg) instead of collapsing it to untagged,
+  and a new `load_stuck_shutters_tagged` reads the tags back out (the reader
+  `toml.load` still ignores them). The stage2a / detect-stuck auto-detect callsites
+  now thread tags through the rewrite, tagging freshly auto-detected entries `# auto`.
+  This lets the new `campfire deploy nirspec pull-stuck-shutters` authority merge
+  (`hand > web > auto`) survive an auto-detect rewrite — preserving hand entries,
+  refreshing web entries from the DB, and letting auto fill gaps. Pure provenance
+  plumbing: no change to which shutters are detected or dropped, or to extracted flux.
+  (NIRSpec review loop, P7.)
+- **NIRSpec canonical spectrum-exposure FITS now carry a `CFEXPGRP` primary-header
+  card** recording the pipeline-computed `exp_group` (the sub-pixel-dither grouping
+  id from `Observation.group_files`). Stamped by a final pass at the end of
+  `run_stage2a`/`run_stage2b` (via `canonical.append_extras`, so it's additive and
+  survives stage2b's MultiSlitModel re-save like `CFSCHEMA`). `exp_group` is not
+  derivable from a single filename — it depends on the whole exposure set's dither
+  pattern — so the stamp lets `campfire deploy` populate the web nods-renderer grid
+  (`spectrum_exposures`) with the exact pipeline grouping. Additive provenance only:
+  no change to pixel/flux values or file layout. (NIRSpec review loop, P4.)
+- **NIRSpec rate-mask region strings now come from
+  `reference/nirspec/<obs>/masks/*.reg`, not `observations.toml`.** The NIRSpec
+  web review loop (design §3.5). `Observation.setup_workspace_directory` populates
+  `manual_masks` by reading `.reg` files (one per `<exposure_root>_<detector>.reg`,
+  DS9 image coords) from the observation's reference `masks/` dir, materialized by
+  the new `campfire deploy nirspec pull-rate-masks` from the web editor's DB rows.
+  The `observations.toml [<obs>.masks]` read path and the `workspace_dir/
+  manual_masks/` mirror (`materialize_reg_files`) are removed; the local `mask
+  edit` / `mask clear` writers now target the same reference `.reg` store. Only the
+  *source* of the region string changes — the `apply_mask_dq` / `CFDQMASK`
+  reversible DQ OR, `CFMASKSH` staleness, and `bkgsub_with_masks` / `ensure_fresh`
+  auto-re-apply are unchanged, so a web-edited mask with a changed canonical hash
+  still re-applies before bkg sub. No change to pixel/flux values for the same
+  regions.
+- **NIRCam expmaps now live in the canonical filter directory.** `cfpipe nircam
+  expmap` writes each per-filter coverage map to
+  `products/nircam/<field>/<filter>/expmap_<field>_<filter>_<stage>.fits` (with
+  its diagnostic `.pdf` alongside) instead of a shared `<field>/expmaps/` dir;
+  the combined `footprints_<stage>.reg` and metadata cache now sit at the field
+  products root. This puts the expmap under the same `<field>/<filter>/` key
+  shape as every other per-filter NIRCam product, so the deployed coverage map
+  carries a real `filter` in the storage registry. Breaking file-location change
+  for the expmap product only; pixel/flux values are unchanged (the `--out-dir`
+  override now names the *base* products dir under which `<filter>/` subdirs are
+  created). Categorized Infrastructure — no scientific-output change — though it
+  does move where a product file lands.
+- **NIRCam canonical exposures now carry `CMPFRVER` provenance.** `detector1`
+  stamps the CAMPFIRE reduction version (+ `CMPFRTIM`) on each canonical
+  exposure's primary header at creation, mirroring the mosaic stamp in
+  `resample.py` (jwst already writes `CAL_VER` / `CRDS_CTX`, but not the
+  CAMPFIRE version). This lets `campfire deploy` record real pipeline-version
+  provenance for a mid-reduction `--draft` exposure deploy — before any mosaic
+  exists — instead of leaving `deployments.cfpipe_version` NULL (admin audit
+  2026-07-03, B2). Additive header card only; no pixel/flux change.
+- **`cfpipe download --target` accepts comma-separated coordinates.** MAST's
+  JWST search API resolves the top-level `target` field as either an object
+  name or a *space*-separated `"RA Dec"` pair in decimal degrees (matching
+  astroquery's `MastMissions`, which sends `f"{ra.deg} {dec.deg}"`). A
+  comma-separated pair such as `--target 215.0,52.9` is not a valid name, so
+  the resolver raised server-side and the whole search failed with an opaque
+  `HTTPError: 500 Server Error` traceback. The download tool now folds an exact
+  `"num,num"` coordinate pair into the space-separated form before querying
+  (object names and already-spaced coords are untouched), MAST error bodies are
+  surfaced instead of discarded by `raise_for_status`, and the `download`
+  command catches `HTTPError` to print an actionable `--target`-format hint
+  rather than a stack trace. **No change to scientific output** (download CLI
+  ergonomics only).
+- **`migrate_layout_212.py` now delegates to a shared migrator (#244).** The
+  one-time `$CAMPFIRE_ROOT` re-org logic moved verbatim into the zero-dependency
+  `campfire_layout.migrate` core, so the operator script and `campfire sync` run
+  the exact same code (no drift between the two migration paths). The script is
+  now a thin wrapper that keeps its pipeline-specific parts — root resolution,
+  `observations.toml` loading, and the stale-`[paths]` warning — and its CLI
+  (`--apply` / `--clean-intermediates` / `--root`), dry-run default, crash-safe
+  JSONL manifest, and idempotent no-clobber behavior are unchanged. Enables
+  `campfire sync` to detect the old layout and offer to migrate it in place.
+  **No change to scientific output** (a filesystem/CLI refactor only).
+- **Canonical format-version keyword (`CFSCHEMA`, epic #210 B-track prereq).**
+  Every NIRSpec canonical spectrum-exposure now carries an integer `CFSCHEMA`
+  card (value `1`) stamped at birth in `_finalize_canonical`, self-identifying
+  the on-disk layout so a future format migrator can locate old-layout files. It
+  is deliberately *not* a `CFP_*` provenance card — it tags the file format, not a
+  processing step, so `cfpipe nirspec reset` never strips it, and it rides through
+  stage2b's `MultiSlitModel` re-save via the jwst `extra_fits` round-trip. A file
+  with no `CFSCHEMA` is byte-format identical to a `v1` file, so
+  `canonical.read_schema_version` reads "absent" back as `1`; the keyword only
+  discriminates once it increments. **No change to scientific output** (a header
+  keyword only). Bumped only when the canonical layout itself changes.
+- **Layout & key contract (`campfire_layout`, #213, PR-2 of epic #210).** The
+  `$CAMPFIRE_ROOT/` directory tree — previously a three-way contract re-derived
+  independently in the pipeline, the deploy/download client, and the web portal —
+  is now owned by one tested, zero-dependency package (`layout/campfire_layout/`,
+  mirrored in TypeScript at `web/lib/layout.ts`). It is the single authority for
+  every product's local path, its storage key, the key↔path bijection, and a
+  per-tree lifecycle class; a shared golden fixture
+  (`layout/conformance/layout_golden.json`) keeps the python and TS arms in
+  lockstep. Pipeline workspace/raw/reference/cache path construction
+  (`config.resolve_paths`, `Observation.setup_workspace_directory`,
+  `Field.setup_workspace`, `common.query._output_path_for`) now routes through
+  the module. **No change to scientific output**; the local tree shape is
+  unchanged (it encodes the #212 PR-4 layout). Fixes two latent bugs the swaps
+  surfaced: the download/sync client wrote/read `products/<obs>/` without the
+  PR-4 `nirspec/` segment, and the raw-NIRSpec download writer and the
+  Observation reader are now single-sourced on one partition key. `campfire-layout`
+  is a new dependency — install it first (`pip install -e ./layout`).
+- Provenance is now carried verbatim from the FITS primary header through to the
+  catalog and Python client, fixing four ways it was dropped or distorted
+  (closes #202). (1) `cfpipe_version` is the single pipeline-version string,
+  read from `CMPFRVER` — it replaces the redundant `reduction_version` column
+  (collapsed in both `spectra` and `deployments`), so a `[pipeline].version`
+  override now reaches the catalog instead of being recomputed from a
+  config-less package `__version__`. (2) `CMPFRTIM` is stamped as UTC ISO-8601
+  (was naive local time) and read into a new per-spectrum `spectra.reduced_at`;
+  `deployments.reduced_at` is the **earliest** `CMPFRTIM` across an observation's
+  products, so re-running `summary` on unchanged pixels no longer advances it to
+  "now". (3) `get_spectra_for_sync`, the local SQLite store, and the `Spectrum`
+  model now carry `cfpipe_version` / `crds_context` / `jwst_version` / `date_obs`
+  / `reduced_at`, with new `query_spectra(crds_context=, cfpipe_version=,
+  reduced_after=)` filters and a `SpectrumCollection.provenance()` lens that
+  flags calibration-heterogeneous samples. (4) `deploy` warns when one
+  observation ships mixed CRDS contexts. **Output-format note for the release
+  manager:** the summary ECSV schema changed (`reduction_version` → `cfpipe_version`,
+  new `reduced_at` column; deploy reads old ECSVs via a fallback), and the local
+  client store `SCHEMA_VERSION` bumped 4→5 (forces a one-time delete + re-sync).
+  No pixel/flux values change. Tests: `pipeline/tests/test_provenance_reader.py`,
+  `python/tests/test_provenance.py`, plus store/deploy round-trip coverage.
+- NIRCam `skyfit.fit_sky` now takes `box_size` / `filter_size` (the striping
+  2D-background detrend exposes them via `subtract_background_box` /
+  `subtract_background_filter`), and a byte-order guard prevents a corruption
+  bug: the bottleneck-accelerated path used to `byteswap(inplace=True)` then
+  re-`view` the input, which corrupted native-byte-order arrays in place (the
+  cal-frame `fitdata` is native) and produced garbage background → ±100s in the
+  output SCI. It now casts a copy to native order only when needed. Regression
+  test in `tests/test_nircam_skyfit.py`.
+- NIRCam `detector1` exposes `clean_flicker_noise_opts` — a passthrough merged
+  over the JWST `clean_flicker_noise` step defaults (e.g. `fit_method`,
+  `background_method`), used only when `clean_flicker_noise = true`. Enables the
+  cfn comparison arms; no effect on the default config (cfn off).
 - NFS cache tier for the NIRCam pipeline (PR 1 of
   `docs/design-nircam-exposure-major.md`; findings H4/H5/M2/M9 of
   `docs/nfs_audit.md`). No change to pixel values or reference selection —

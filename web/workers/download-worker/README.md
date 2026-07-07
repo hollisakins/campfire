@@ -1,134 +1,88 @@
 # CAMPFIRE Download Worker
 
-Cloudflare Worker for streaming FITS file downloads from R2 storage.
+Cloudflare Worker: a credential-free CORS proxy for presigned download URLs. It
+lets the browser read FITS bytes from R2 **or** OSN so they can be zipped
+client-side.
 
-## Overview
+## Why it exists
 
-This worker handles bulk downloads of FITS spectroscopic data files from the CAMPFIRE catalog. It:
+Object bytes live in a private bucket on R2 or, after the epic #210 migration, on
+OSN (Open Storage Network). The browser can't `fetch()` those bytes directly:
+neither bucket sends CORS headers (and OSN's are not ours to set). This Worker
+sits on an origin we control, fetches the presigned URL server-to-server, and
+re-serves the bytes with `Access-Control-Allow-Origin` so the browser can read
+and zip them.
 
-1. Receives JWT-signed requests from the Next.js frontend
-2. Verifies token authenticity and expiration
-3. Fetches FITS files from R2 storage
-4. Streams them as a ZIP archive to the user
-5. Handles up to 200 objects (~600 FITS files, ~180MB)
+It holds **no** object-store credentials and **no** R2 binding. All authorization
+and presigning happen in the Next.js app; the Worker only proxies URLs the app
+signed. That also keeps it on the **free** Workers plan: one subrequest and ~0
+CPU per request (a plain passthrough), versus the 1000-subrequest / high-CPU
+profile that server-side zipping would need.
 
 ## Architecture
 
 ```
-Next.js Frontend
-    ↓ (generates JWT token)
-Cloudflare Worker
-    ↓ (fetches files)
-R2 Bucket (campfire)
-    ↓ (streams ZIP)
-User Download
+Next.js server action (RLS authorizes the key set)
+    |  presigns each key via dual-read (R2 or OSN) + HMAC-signs the URL
+Browser  ->  GET /proxy?url=<presigned>&sig=<hmac>   (one request per file)
+    |  Worker verifies the HMAC, host-allowlists the URL, fetches it
+R2 / OSN
+    |  Worker streams the bytes back with CORS headers
+Browser zips the results client-side (fflate) -> single .zip download
 ```
 
-## Features
+## Request
 
-- **JWT Authentication:** Secure token-based access
-- **Streaming ZIP:** No memory buffering, handles large datasets
-- **CORS Support:** Works with multiple origins
-- **Error Handling:** Graceful degradation for missing files
-- **Performance:** <30s for 200 objects
+`GET /proxy?url=<url-encoded presigned URL>&sig=<base64url HMAC-SHA256>`
 
-## Files
-
-- `src/index.ts` - Main worker handler
-- `src/auth.ts` - JWT verification
-- `src/zip.ts` - ZIP streaming logic
-- `wrangler.toml` - Configuration
-- `DEPLOYMENT_GUIDE.md` - Step-by-step deployment instructions
-
-## Quick Start
-
-```bash
-# Install dependencies
-npm install
-
-# Test locally
-wrangler dev
-
-# Deploy to production
-wrangler deploy
-
-# Monitor logs
-wrangler tail
-```
+The Worker:
+1. verifies `sig == HMAC-SHA256(JWT_SECRET, url)` — so it only fetches URLs the
+   app signed (not an open relay);
+2. checks the URL is `https`, has no embedded credentials, and its host is in
+   `ALLOWED_FETCH_HOSTS` (SSRF defense-in-depth);
+3. `fetch(url, { redirect: 'error' })` and streams the body back with CORS.
 
 ## Configuration
 
-### Environment Variables
+`wrangler.toml`:
+- `ALLOWED_ORIGINS` — browser origins allowed to read responses (CORS).
+- `ALLOWED_FETCH_HOSTS` — object-store hosts the proxy may fetch (SSRF guard).
+  Includes both the OSN host (migrated FITS) and the R2 account host (un-migrated
+  / NIRCam), so the proxy is storage-agnostic. Subdomains match, so R2
+  virtual-hosted URLs are covered. A host not in the list fails loudly (403).
 
-Set in `wrangler.toml`:
-- `ALLOWED_ORIGINS` - Comma-separated list of allowed origins
+Secret (via `wrangler secret put`):
+- `JWT_SECRET` — shared with the Next.js app (`WORKER_JWT_SECRET`); used to
+  HMAC-sign (app) and verify (Worker) each presigned URL.
 
-### Secrets
+## Files
 
-Set via Wrangler CLI:
-- `JWT_SECRET` - Shared secret for JWT verification
+- `src/index.ts` — request handler + `isAllowedFetchUrl` host guard
+- `src/auth.ts` — `verifyUrlSignature` (HMAC-SHA256, Web Crypto)
+- `src/proxy.test.ts` — unit tests for the host guard and signature verify
+- `wrangler.toml` — configuration
 
-### Bindings
-
-- `R2_BUCKET` - Bound to `campfire` R2 bucket
-
-## Development
-
-### Local Testing
-
-```bash
-wrangler dev
-```
-
-Worker runs on `http://localhost:8787`
-
-### Deploy
+## Develop / deploy
 
 ```bash
-wrangler deploy
+npm install
+wrangler dev        # local, http://localhost:8787
+wrangler deploy     # production, download.campfire.hollisakins.com
+wrangler tail       # logs
+npm test            # runs the unit tests via the web app's vitest
 ```
 
-Deploys to `download.campfire.hollisakins.com`
+Tests live in `src/proxy.test.ts` and run under the web app's vitest (they are
+also picked up by `npm test` in `web/`, so CI covers them).
 
-### Monitoring
-
-```bash
-wrangler tail
-```
-
-View real-time logs from production.
-
-## Limits
-
-- **Max Objects:** 200 (configurable in Next.js)
-- **Token TTL:** 10 minutes
-- **Worker CPU Time:** 30 seconds (soft limit)
-- **Max ZIP Size:** ~180MB (with current 300KB/file average)
+Runs on the free Workers plan; no paid features are used.
 
 ## Security
 
-- JWT tokens expire after 10 minutes
-- Tokens are single-use (time-limited)
-- R2 bucket is not publicly accessible
-- CORS restricted to allowed origins
-- No sensitive data in tokens (only file paths)
-
-## Future Enhancements
-
-- **Durable Objects:** For downloads >200 objects
-- **Progress Tracking:** WebSocket updates during generation
-- **Resume Support:** Allow interrupted downloads to resume
-- **Caching:** Cache popular download sets
-
-## Troubleshooting
-
-See `DEPLOYMENT_GUIDE.md` for detailed troubleshooting steps.
-
-Common issues:
-- Token expiration → Regenerate token
-- Missing files → Check R2 paths
-- CORS errors → Update ALLOWED_ORIGINS
-
-## License
-
-MIT - CAMPFIRE Project
+- The Worker holds no object-store credentials; presigned URLs (SigV4-scoped to a
+  single object with a TTL) are the only capability, and it fetches one only if
+  the app's HMAC over that exact URL verifies.
+- `ALLOWED_FETCH_HOSTS` + https-only + no-embedded-credentials + `redirect: error`
+  bound the fetch target to our object stores even if the secret leaks.
+- CORS reflection is limited to `ALLOWED_ORIGINS`, so only our portal's JS can
+  read proxied responses.

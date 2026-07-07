@@ -11,10 +11,9 @@
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
     CRDS_CONTEXT = "jwst_1481.pmap"
 
-[paths]
-    # Resolved from $CAMPFIRE_ROOT by default. Uncomment to override:
-    # data_dir = "/custom/path"
-    # products_dir = "/custom/path"
+# All pipeline data lives under a single $CAMPFIRE_ROOT (default ~/campfire):
+# raw/, products/, reference/, cache/. Relocate the whole tree by setting
+# $CAMPFIRE_ROOT; symlink an individual subdir if it must live elsewhere.
 
 [logging]
     level = "INFO"
@@ -158,12 +157,70 @@
     plot = true
 
 [nircam.striping]
-    apply_flat = true
-    use_custom_flat = false
+    # Runs after image2 on cal-stage data (no flat applied here): the 1/f
+    # correction is fit and subtracted in the same flat-fielded frame, so it
+    # no longer leaks a per-amp DC offset through the flat re-division (the
+    # old "fit on a flat copy, subtract from the un-flat rate SCI" round-trip).
     mask_sources = true
+    # 2D-background pre-subtraction (fit-only — it detrends the working copy so
+    # the per-amp-row/per-column medians estimate the 1/f, NOT the field's
+    # large-scale structure; the bkgd is never subtracted from the output SCI).
+    # Required on fields with real large-scale background (e.g. cluster ICL /
+    # scattered light): without it, a smooth gradient can't be represented by
+    # per-amp-row constants, so the striping imprints amp-boundary steps. The
+    # box/filter sizes below set the smoothing scale; being fit-only +
+    # median-based it cannot put negative wings in the output (unlike the
+    # fine-box mosaic bkgsub, which is applied to the output and relies on its
+    # aggressive mask).
     subtract_background = true
+    # 2D-background box / filter sizes (fit-only). Effective smoothing scale
+    # ~box*filter px; smaller removes the field's large-scale structure
+    # (cluster ICL) from the 1/f fit more completely, but too small absorbs
+    # the 1/f. 32/3 chosen on rj0911 f444w (cluster) as the ICL-removal vs
+    # 1/f-fidelity sweet spot; filter_size must be odd.
+    subtract_background_box = 32
+    subtract_background_filter = 3
     maxiters = 3
     plot = true
+    # Per-amp-row 1/f offset estimator. "median" (default) is the
+    # production 2σ-clipped median with full-row fallback. "gp" fits a 1-D
+    # Gaussian Process along the slow axis per amplifier, interpolating the
+    # offset across masked source rows within the same amp instead of
+    # substituting the full-row median (which mixes the four amps' distinct
+    # offsets and produces the "box" of amp-row artifacts around bright
+    # sources). The per-column (vertical) step is unchanged either way.
+    estimator = "median"
+    # Aggressive masking for the GP path: grow the source mask and fold in
+    # JUMP/SATURATED/PERSISTENCE DQ. Over-masking only inflates the GP's
+    # per-row sigma_r (interpolated across); under-masking biases the median
+    # and the GP oversubtracts a trough around the source.
+    mask_aggressive = false
+    mask_extra_dilation = 4
+
+    [nircam.striping.gp]
+        # rho is the ONLY frozen SHOTerm hyperparameter — the 1/f correlation
+        # length in *rows*. It is a detector readout/clocking property (the
+        # filter sits upstream in the optical path and does not enter the
+        # readout), so it is independent of filter and of flux units. Measured
+        # stable across 5 filters spanning both channels on rj0911 (detrended
+        # MLE; scripts/calibrate_gp_striping.py): LW f277w/f356w/f444w =
+        # 4.51/4.44/5.03, SW f200w/f150w = 4.10/4.11 — one tight cluster, all
+        # inside rho's broad flat optimum. So a single channel-agnostic rho is
+        # used (no SW/LW split). Set rho_lw / rho_sw to override per channel if
+        # a future detector/readout ever needs it.
+        rho = 5.0
+        # The kernel amplitude is NOT frozen: it self-adapts per exposure to
+        # the marginal mad_std of the clean per-amp-row medians (~ the true
+        # 1/f amplitude) — a deterministic robust statistic, not a fit — so it
+        # tracks each exposure's cal-stage flux units (filter / detector /
+        # photometric calibration) instead of a frozen absolute number.
+        # kernel_sigma_factor is a frozen O(1) multiplier on that; set an
+        # explicit kernel_sigma_lw/_sw only as an escape hatch (overrides the
+        # self-adaptation). See gp_striping.gp_amprow_offsets.
+        kernel_sigma_factor = 1.0
+        q = 0.70710678
+        sigma_clip = 2.0
+        weak_frac = 0.5
 
 [nircam.image2]
     use_custom_flat = false
@@ -289,11 +346,63 @@
     saveplots = false
     savephottable = true
 
+[nircam.align]
+    # Adaptive astrometric alignment (replaces the JHAT-based jhat/wcs_shift).
+    # Opt-in per field: default OFF so existing reductions are unchanged. A
+    # field enables it — and names its Gaia-tied reference catalog — in
+    # fields.toml:
+    #     [<field>.align]
+    #         enabled = true
+    #         refcat  = "<file>.ecsv"   # in the field's astrom_cats dir
+    # With align enabled the process phase skips jhat + wcs_shift (exactly one
+    # alignment path per field).
+    enabled = false
+    fitgeom = "rshift"          # per-exposure shared shift + rotation (SIAF fixed)
+    tolerance = 0.05            # arcsec; free a per-detector shift above this
+    adaptive = true             # adaptive per-detector shift when over tolerance
+    adaptive_min_matches = 3
+    match_radius = 0.5          # arcsec; NN radius for per-detector residuals
+    min_matched = 4             # reject-to-identity below this many 1-to-1 matches
+    # Shared fit: footprint-clip the refcat, then bootstrap (triangle matcher,
+    # capped) -> all-source robust refine (XYXYMatch). The cap bounds only the
+    # bootstrap; the fit rests on the uncapped refine.
+    ref_border_arcmin = 0.5     # refcat footprint margin (sized for acquisition
+                                # pointing error); arcmin
+    bootstrap_max = 150         # brightest-N vertex cap, triangle BOOTSTRAP only
+    refine_searchrad = 2.0      # arcsec; XYXYMatch search radius (refine passes)
+    refine_tolerance = 0.5      # arcsec; XYXYMatch match tolerance (refine passes)
+    refine_niter = 3            # max refine match->fit iterations (converges early)
+    # Detection quality selection (per detector, no count cap):
+    nsigma = 5.0                # detection threshold (convolved background sigma)
+    snr_min = 5.0               # drop detections below this peak SNR (peak/bkg-rms)
+    fwhm = 2.5                  # fallback detection PSF FWHM (px); per-filter
+                                # override below
+    edge = 8                    # drop detections within this many px of a border
+
+    # Per-filter detection PSF FWHM (detector pixels). NIRCam's PSF core runs
+    # from ~F070W to ~F480M, so one fwhm is wrong across the SW+LW channels; the
+    # align worker keys detection off each member's filter, falling back to the
+    # scalar `fwhm` above for any filter not listed. Values ≈ PSF-core FWHM /
+    # pixel-scale — approximate; tune per field on real data.
+    [nircam.align.psf_fwhm_by_filter]
+        f070w = 1.5
+        f090w = 1.6
+        f115w = 1.7
+        f150w = 1.8
+        f200w = 2.1
+        f277w = 1.6
+        f356w = 1.9
+        f410m = 2.1
+        f444w = 2.3
+        f480m = 2.6
+
 # --- combine phase (ensemble) ---
 
 [nircam.apply_mask]
-    mask_flag = 1024
-    mask_set_nan = false
+    # No tunable keys: the user region masks are recorded as a CFMASK extension
+    # on the canonical exposure and honored via DO_NOT_USE on the combine
+    # working copy (good_bits='~DO_NOT_USE'). The former mask_flag / mask_set_nan
+    # knobs are gone — the mask now lives purely in the DQ contract.
 
 [nircam.bad_pixel]
     # Opt-in "consistently bad" pixel detector: stacks the DO_NOT_USE bit
@@ -349,8 +458,9 @@
     # ERR agrees to ~1%. See issue #138.
     implementation = "jwst"
     pixel_scale = "30mas"
-    version = "v0_1"
-    mosaic_name = "mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[version]_[tile]"
+    # Version-free mosaic naming (epic #261, N2 / D3): one canonical mosaic per
+    # (field, filter, tile, pixel_scale). Do not reintroduce a [version] segment.
+    mosaic_name = "mosaic_nircam_[filter]_[field_name]_[pixel_scale]_[tile]"
     pixfrac = 1
     kernel = "square"
     background_subtract = true

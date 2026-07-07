@@ -88,7 +88,7 @@ $$;
 -- 4. enforce_object_user_update_scope
 --    Non-admin users (via `update_objects_by_access` RLS) can legitimately
 --    write inspection fields. The RLS policy has no WITH CHECK and no
---    column-level filter, so without this trigger a user with can_comment
+--    column-level filter, so without this trigger a user with can_inspect
 --    can hit PostgREST directly and rewrite anything on objects
 --    (programs, is_active, aggregates, etc.). This trigger enforces the
 --    column scope at the DB level: anything except the inspection set
@@ -131,6 +131,7 @@ BEGIN
        OR OLD.inspected_used_auto IS DISTINCT FROM NEW.inspected_used_auto
        OR OLD.is_active IS DISTINCT FROM NEW.is_active
        OR OLD.created_at IS DISTINCT FROM NEW.created_at
+       OR OLD.search_text IS DISTINCT FROM NEW.search_text
     THEN
         RAISE EXCEPTION 'Non-admin updates to objects may only change inspection fields (redshift_inspected, redshift_quality, last_inspected_at, last_inspected_by)'
             USING ERRCODE = '42501';  -- insufficient_privilege
@@ -239,7 +240,6 @@ BEGIN
     -- by bump_spectra_updated_at; allow it through.
     IF OLD.grating IS DISTINCT FROM NEW.grating
        OR OLD.fits_path IS DISTINCT FROM NEW.fits_path
-       OR OLD.reduction_version IS DISTINCT FROM NEW.reduction_version
        OR OLD.signal_to_noise IS DISTINCT FROM NEW.signal_to_noise
        OR OLD.target_id IS DISTINCT FROM NEW.target_id
        OR OLD.thumbnail_svg_fnu IS DISTINCT FROM NEW.thumbnail_svg_fnu
@@ -257,6 +257,78 @@ BEGIN
         RAISE EXCEPTION 'Non-admin updates to spectra may only change dq_flags'
             USING ERRCODE = '42501';  -- insufficient_privilege
     END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+-- 5c. handle_new_user
+--     Auto-provisions a user_profiles row for OPEN self-registrations.
+--
+--     Only fires when the signup carried raw_user_meta_data.self_signup = 'true'
+--     (set by the /signup page). The admin-invite path (inviteUserByEmail) and
+--     seeded/test users do NOT set that flag, so their profiles are still
+--     created by the /welcome accept flow and seed.sql respectively — this
+--     trigger never clobbers them or interferes with the invite /welcome
+--     routing (which keys off profile absence).
+--
+--     New self-signups get the default role: can_comment = true (may comment
+--     and tag), can_inspect = false (must request inspection rights). A unique
+--     username is derived from metadata/email and de-duplicated with a numeric
+--     suffix. SECURITY DEFINER so it can write user_profiles regardless of the
+--     (as yet unconfirmed) caller.
+DROP FUNCTION IF EXISTS public.handle_new_user CASCADE;
+
+CREATE OR REPLACE FUNCTION public.handle_new_user() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_base text;
+    v_username text;
+    v_full_name text;
+    v_suffix integer := 0;
+BEGIN
+    -- Only handle genuine self-service signups.
+    IF NEW.raw_user_meta_data->>'self_signup' IS DISTINCT FROM 'true' THEN
+        RETURN NEW;
+    END IF;
+
+    -- Derive a username candidate from metadata or the email local-part, then
+    -- coerce it to satisfy user_profiles_username_check
+    -- (^[a-z0-9][a-z0-9._-]{0,38}[a-z0-9]$).
+    v_base := lower(coalesce(
+        nullif(NEW.raw_user_meta_data->>'username', ''),
+        split_part(NEW.email, '@', 1)
+    ));
+    v_base := regexp_replace(v_base, '[^a-z0-9._-]', '', 'g');
+    v_base := regexp_replace(v_base, '^[._-]+', '');
+    v_base := regexp_replace(v_base, '[._-]+$', '');
+    IF length(v_base) < 2 THEN
+        v_base := 'user' || v_base;
+    END IF;
+    v_base := left(v_base, 38);
+    v_base := regexp_replace(v_base, '[._-]+$', '');
+
+    v_full_name := coalesce(nullif(NEW.raw_user_meta_data->>'full_name', ''), v_base);
+
+    -- De-duplicate with a numeric suffix if needed.
+    v_username := v_base;
+    WHILE EXISTS (SELECT 1 FROM public.user_profiles WHERE username = v_username) LOOP
+        v_suffix := v_suffix + 1;
+        v_username := left(v_base, 39 - length(v_suffix::text)) || v_suffix::text;
+    END LOOP;
+
+    INSERT INTO public.user_profiles (
+        user_id, username, full_name,
+        is_group_account, can_comment, can_inspect, is_admin
+    )
+    VALUES (
+        NEW.id, v_username, v_full_name,
+        false, true, false, false
+    )
+    ON CONFLICT (user_id) DO NOTHING;
 
     RETURN NEW;
 END;
@@ -356,8 +428,10 @@ CREATE TRIGGER track_spectrum_dq_changes
 -- Keep spectra.updated_at fresh only when user-visible columns change, so
 -- incremental sync (get_spectra_for_sync p_updated_since) doesn't force a
 -- full re-sync on every pipeline provenance touch (crds_context bumps,
--- reduction_version bumps, etc.).  Scope matches what clients actually
+-- cfpipe_version bumps, etc.).  Scope matches what clients actually
 -- need to re-fetch for: flags, redshift, SNR, thumbnails, file identity.
+-- A real re-reduction also changes file_hash, so refreshed provenance rides
+-- along on the next incremental sync without a provenance-only bump.
 DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
 CREATE TRIGGER bump_spectra_updated_at_trigger
   BEFORE UPDATE OF
@@ -389,3 +463,12 @@ DROP TRIGGER IF EXISTS track_list_member_delete ON public.object_list_members;
 CREATE TRIGGER track_list_member_delete
   AFTER DELETE ON public.object_list_members
   FOR EACH ROW EXECUTE FUNCTION public.log_list_membership_change();
+
+
+-- Open self-registration: provision a default-role profile on auth.users
+-- insert. Gated to self_signup signups inside the function so the admin-invite
+-- and seed flows are unaffected.
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();

@@ -29,7 +29,7 @@ from campfire_pipeline.common import cfp as cfp_mod
 from campfire_pipeline.common.cli import VariadicOption
 from campfire_pipeline.nircam.orchestrate import (
     STEP_NAMES, ALL_STEPS, PROCESS_STEPS, COMBINE_STEPS,
-    run_process, run_combine, run_step,
+    run_process, run_align, run_combine, run_step,
 )
 from campfire_pipeline.nircam.refcat.cli import refcat as refcat_group
 
@@ -41,6 +41,11 @@ from campfire_pipeline.nircam.refcat.cli import refcat as refcat_group
 _SCI_MUTATING_STEPS = {
     'wisp', 'striping', 'image2', 'sky', 'variance',
 }
+
+# Combine ensemble steps whose CFP stamp (CFP_BPIX/CFP_OUT) lives on the working
+# copy rather than the frozen canonical — `reset --from` must target the work
+# tree for these. apply_mask is excluded: its CFP_MASK lives on the canonical.
+_COMBINE_WORK_CFP_STEPS = {'bad_pixel', 'outlier'}
 
 # Short labels for the status command's column headers (max 4 chars).
 _STEP_LABELS = {
@@ -83,6 +88,37 @@ def processing_options(f):
     f = click.option('--overwrite', is_flag=True,
                      help='Overwrite existing products.')(f)
     return f
+
+
+def tile_option(f):
+    """``--tiles``: runtime tile selection.
+
+    A runtime parameter, not a config key. On ``process``/``align``/``combine``
+    it pre-filters the exposure set to dithers overlapping the named tile(s)
+    (gated on the ``S_REGION`` footprint), so a single tile can be reduced
+    without processing the whole field; on ``resample`` it additionally scopes
+    which mosaics are drizzled. Default: all tiles / all exposures.
+    """
+    return click.option('--tiles', multiple=True, default=None,
+                        cls=VariadicOption,
+                        help='Tile name(s) to scope the run to '
+                             '(default: all tiles / all exposures).')(f)
+
+
+def epoch_option(f):
+    """``--epoch``: runtime epoch selection.
+
+    A runtime parameter, not a config key. Selects one named epoch from
+    fields.toml (``[<field>.epochs.<name>]``) — a subset of the field's
+    exposures, defined by file globs and/or a date range. It scopes the whole
+    combine phase (apply_mask → resample) to that subset, mirroring ``--tiles``,
+    and adds the epoch name as a trailing segment on the mosaic filename
+    (``mosaic_nircam_<filter>_<field>_<scale>_<tile>_<epoch>``). Default: the
+    full field (no epoch segment).
+    """
+    return click.option('--epoch', default=None,
+                        help='Epoch name from fields.toml (subset of exposures; '
+                             'adds a filename segment). Default: full field.')(f)
 
 
 def _setup(config_path, field_name):
@@ -128,53 +164,112 @@ def main():
 @main.command()
 @common_options
 @processing_options
-def process(config, field, filters, processes, overwrite):
-    """Run the per-exposure process phase (detector1 → jhat)."""
+@tile_option
+def process(config, field, filters, processes, overwrite, tiles):
+    """Run the per-exposure process phase (detector1 → jhat).
+
+    ``--tiles`` restricts the phase to exposures overlapping the named tile(s)
+    (detector1 gates on the uncal S_REGION footprint), so a single tile can be
+    reduced without processing the whole field.
+    """
     cfg, field_obj = _setup(config, field)
     run_process(field_obj, cfg,
                 filters=_resolve_filters(filters, field_obj),
-                n_processes=processes, overwrite=overwrite)
+                n_processes=processes, overwrite=overwrite,
+                tiles=list(tiles) if tiles else None)
 
 
 @main.command()
 @common_options
 @processing_options
-def combine(config, field, filters, processes, overwrite):
-    """Run the ensemble combine phase (apply_mask → resample)."""
+@tile_option
+def align(config, field, filters, processes, overwrite, tiles):
+    """Run the field-level astrometric align phase (between process and combine).
+
+    Opt-in per field via [<field>.align].enabled = true in fields.toml;
+    a no-op for fields that still use jhat. ``--tiles`` restricts to exposures
+    overlapping the named tile(s).
+    """
+    cfg, field_obj = _setup(config, field)
+    run_align(field_obj, cfg,
+              filters=_resolve_filters(filters, field_obj),
+              n_processes=processes, overwrite=overwrite,
+              tiles=list(tiles) if tiles else None)
+
+
+@main.command()
+@common_options
+@processing_options
+@tile_option
+@epoch_option
+@click.option('--include-unaligned', is_flag=True,
+              help='Include exposures the align phase left NOT_ALIGNED in the '
+                   'combine (default: quarantine them for align-enabled fields).')
+def combine(config, field, filters, processes, overwrite, tiles, epoch,
+            include_unaligned):
+    """Run the ensemble combine phase (apply_mask → resample).
+
+    ``--epoch`` scopes the whole phase to one named epoch's exposure subset and
+    labels the mosaics with the epoch name.
+    """
     cfg, field_obj = _setup(config, field)
     run_combine(field_obj, cfg,
                 filters=_resolve_filters(filters, field_obj),
-                n_processes=processes, overwrite=overwrite)
+                n_processes=processes, overwrite=overwrite,
+                tiles=list(tiles) if tiles else None,
+                epoch=epoch,
+                include_unaligned=include_unaligned)
 
 
 @main.command()
 @common_options
 @processing_options
+@tile_option
+@epoch_option
 @click.option('--process', 'do_process', is_flag=True,
               help='Run the process phase.')
+@click.option('--align', 'do_align', is_flag=True,
+              help='Run the astrometric align phase (between process and '
+                   'combine; opt-in via [<field>.align].enabled).')
 @click.option('--combine', 'do_combine', is_flag=True,
               help='Run the combine phase.')
 @click.option('--all', 'do_all', is_flag=True,
-              help='Run both phases.')
-def run(config, field, filters, processes, overwrite,
-        do_process, do_combine, do_all):
-    """Run process and/or combine in one invocation."""
+              help='Run all phases (process, align, combine).')
+@click.option('--include-unaligned', is_flag=True,
+              help='Include NOT_ALIGNED exposures in the combine (default: '
+                   'quarantine them for align-enabled fields).')
+def run(config, field, filters, processes, overwrite, tiles, epoch,
+        do_process, do_align, do_combine, do_all, include_unaligned):
+    """Run process, align, and/or combine in one invocation.
+
+    ``--epoch`` applies only to the combine phase (process/align produce the
+    shared canonical exposures every epoch draws from).
+    """
     if do_all:
-        do_process = do_combine = True
-    if not (do_process or do_combine):
+        do_process = do_align = do_combine = True
+    if not (do_process or do_align or do_combine):
         raise click.UsageError(
-            "Specify --process, --combine, or --all."
+            "Specify --process, --align, --combine, or --all."
         )
+
+    tile_list = list(tiles) if tiles else None
 
     cfg, field_obj = _setup(config, field)
     filter_list = _resolve_filters(filters, field_obj)
 
     if do_process:
         run_process(field_obj, cfg, filters=filter_list,
-                    n_processes=processes, overwrite=overwrite)
+                    n_processes=processes, overwrite=overwrite,
+                    tiles=tile_list)
+    if do_align:
+        run_align(field_obj, cfg, filters=filter_list,
+                  n_processes=processes, overwrite=overwrite,
+                  tiles=tile_list)
     if do_combine:
         run_combine(field_obj, cfg, filters=filter_list,
-                    n_processes=processes, overwrite=overwrite)
+                    n_processes=processes, overwrite=overwrite,
+                    tiles=tile_list, epoch=epoch,
+                    include_unaligned=include_unaligned)
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +290,31 @@ def _make_step_command(step_name):
     return _cmd
 
 
+# resample is the only per-tile step, so it carries the extra --tiles option
+# and is registered explicitly below rather than through _make_step_command.
 for _step_name in STEP_NAMES:
+    if _step_name == 'resample':
+        continue
     main.add_command(_make_step_command(_step_name))
+
+
+@main.command()
+@common_options
+@processing_options
+@tile_option
+@epoch_option
+def resample(config, field, filters, processes, overwrite, tiles, epoch):
+    """Run the resample step.
+
+    ``--epoch`` restricts the drizzle inputs to the named epoch's exposure
+    subset and labels the mosaics with the epoch name.
+    """
+    cfg, field_obj = _setup(config, field)
+    run_step('resample', field_obj, cfg,
+             filters=_resolve_filters(filters, field_obj),
+             n_processes=processes, overwrite=overwrite,
+             tiles=list(tiles) if tiles else None,
+             epoch=epoch)
 
 
 # Refcat utilities: `cfpipe nircam refcat {query,extract,merge,compare}`
@@ -256,7 +374,8 @@ def rgb(config, field, tiles, pixel_scale, preview_max_dim, processes, overwrite
 @click.option('--padding', type=float, default=30.0, show_default=True,
               help='Sky padding around the union footprint, arcsec.')
 @click.option('--out-dir', default=None,
-              help='Output directory (default: {products}/<field>/expmaps/).')
+              help='Base products dir; per-filter FITS/PDFs land in '
+                   '<out-dir>/<filter>/ (default: {products}/nircam/<field>/).')
 @click.option('--processes', '-p', default=1, type=int, show_default=True,
               help='Per-filter parallelism (one filter per worker).')
 @click.option('--overwrite', is_flag=True,
@@ -286,13 +405,20 @@ def expmap(config, field, filters, stage, pixel_scale, padding,
 @common_options
 @click.option('--filters', multiple=True, default=None, cls=VariadicOption,
               help='Filters to check (default: all from field).')
-def check(config, field, filters):
-    """Report which mosaic tiles are stale and need re-mosaicking."""
+@tile_option
+@epoch_option
+def check(config, field, filters, tiles, epoch):
+    """Report which mosaic tiles are stale and need re-mosaicking.
+
+    ``--epoch`` reports staleness for the named epoch's mosaics (matching what
+    ``combine``/``resample --epoch`` would build) instead of the full field.
+    """
     from campfire_pipeline.nircam.manifest import get_stale_tiles
     from campfire_pipeline.config import get_nircam_step_config
 
     cfg, field_obj = _setup(config, field)
     filter_list = _resolve_filters(filters, field_obj)
+    tile_list = list(tiles) if tiles else None
 
     any_stale = False
     for filtname in filter_list:
@@ -305,7 +431,8 @@ def check(config, field, filters):
             'resample': resample_cfg,
             'files_to_skip': files_to_skip,
         }
-        results = get_stale_tiles(field_obj, filtname, wrapped)
+        results = get_stale_tiles(field_obj, filtname, wrapped, tiles=tile_list,
+                                  epoch=epoch)
         if not results:
             log(f'{filtname}: no tiles configured')
             continue
@@ -347,11 +474,21 @@ def status(config, field, filters):
                 f'{field_obj.filter_dir(filt)}')
             continue
 
-        # Read CFP_* once per exposure
-        per_exp = {
-            os.path.basename(f).removesuffix('.fits'): cfp_mod.get_steps(f)
-            for f in sorted(exposures)
-        }
+        # Read CFP_* once per exposure. Process stamps + CFP_MASK live on the
+        # canonical; the combine ensemble stamps (CFP_BPIX/CFP_OUT) live on the
+        # working copy, so overlay those from the work tree when it exists —
+        # otherwise combine steps would always render as "not done".
+        per_exp = {}
+        for f in sorted(exposures):
+            rootname = os.path.basename(f).removesuffix('.fits')
+            steps = cfp_mod.get_steps(f)
+            work = field_obj.get_exposure_path(rootname, filt, work=True)
+            if os.path.exists(work):
+                work_steps = cfp_mod.get_steps(work)
+                for k in ('CFP_BPIX', 'CFP_OUT'):
+                    if k in work_steps:
+                        steps[k] = work_steps[k]
+            per_exp[rootname] = steps
 
         rootname_width = max(len(r) for r in per_exp) + 2
         log('')
@@ -398,8 +535,9 @@ def status(config, field, filters):
               help='Filters to reset (default: all from field).')
 @click.option('--from', 'from_step', default=None,
               type=click.Choice(STEP_NAMES),
-              help='Clear CFP_<step> + every later CFP key on each '
-                   'canonical exposure. Refuses SCI-mutating steps.')
+              help='Clear CFP_<step> + every later CFP key on each exposure '
+                   '(the combine working copies for bad_pixel/outlier, the '
+                   'canonical otherwise). Refuses SCI-mutating steps.')
 @click.option('--uncal', 'uncal', is_flag=True,
               help='Delete every canonical exposure file (and any '
                    '_jump.fits sidecars) for the selected filters.')
@@ -452,16 +590,23 @@ def reset(config, field, filters, from_step, uncal, yes):
             f"across filters {filter_list}"
         )
     else:
+        cfp_key = _step_to_cfp_key(from_step)
+        # CFP_BPIX / CFP_OUT live on the combine working copies, not the frozen
+        # canonical, so resetting those steps must target the work tree.
+        # Resetting a process step or apply_mask clears canonical keys, and the
+        # combine re-run cascades automatically (materialize_work re-copies the
+        # work tree once the canonical is rewritten with a newer mtime).
+        on_work = from_step in _COMBINE_WORK_CFP_STEPS
         affected = []
         for filt in filter_list:
             affected.extend(
-                f for f in field_obj.get_exposure_files(filt)
-                if cfp_mod.has_step(f, _step_to_cfp_key(from_step))
+                f for f in field_obj.get_exposure_files(filt, work=on_work)
+                if cfp_mod.has_step(f, cfp_key)
             )
+        where = 'working copies' if on_work else 'canonical exposures'
         action = (
-            f"CLEAR CFP_{_step_to_cfp_key(from_step)[4:]}+ keys on "
-            f"{len(affected)} canonical exposures across filters "
-            f"{filter_list}"
+            f"CLEAR {cfp_key}+ keys on "
+            f"{len(affected)} {where} across filters {filter_list}"
         )
 
     log(f'Reset action: {action}')

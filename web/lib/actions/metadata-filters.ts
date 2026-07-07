@@ -14,7 +14,7 @@ export interface MetadataFilters {
   is_public: boolean | null;
   // Observations scope
   programs: string[];
-  reduction_version: string[];
+  cfpipe_version: string[];
   crds_context: string[];
   has_patches: boolean | null;
   // Shared
@@ -33,7 +33,7 @@ export const defaultMetadataFilters: MetadataFilters = {
   pi: [],
   is_public: null,
   programs: [],
-  reduction_version: [],
+  cfpipe_version: [],
   crds_context: [],
   has_patches: null,
   fields: [],
@@ -78,7 +78,7 @@ export function parseMetadataFiltersFromURL(searchParams: URLSearchParams): Meta
     pi: parseStringArray(searchParams, 'pi'),
     is_public: parseBoolean(searchParams, 'public'),
     programs: parseStringArray(searchParams, 'programs'),
-    reduction_version: parseStringArray(searchParams, 'rv'),
+    cfpipe_version: parseStringArray(searchParams, 'cv'),
     crds_context: parseStringArray(searchParams, 'crds'),
     has_patches: parseBoolean(searchParams, 'patches'),
     fields: parseStringArray(searchParams, 'fields'),
@@ -95,8 +95,8 @@ export function metadataFiltersToURLParams(filters: MetadataFilters): URLSearchP
   if (filters.pi.length) params.set('pi', filters.pi.join(','));
   if (filters.is_public !== null) params.set('public', String(filters.is_public));
   if (filters.programs.length) params.set('programs', filters.programs.join(','));
-  if (filters.reduction_version.length)
-    params.set('rv', filters.reduction_version.join(','));
+  if (filters.cfpipe_version.length)
+    params.set('cv', filters.cfpipe_version.join(','));
   if (filters.crds_context.length) params.set('crds', filters.crds_context.join(','));
   if (filters.has_patches !== null) params.set('patches', String(filters.has_patches));
   if (filters.fields.length) params.set('fields', filters.fields.join(','));
@@ -112,7 +112,7 @@ export function hasActiveFilters(filters: MetadataFilters): boolean {
     filters.pi.length > 0 ||
     filters.is_public !== null ||
     filters.programs.length > 0 ||
-    filters.reduction_version.length > 0 ||
+    filters.cfpipe_version.length > 0 ||
     filters.crds_context.length > 0 ||
     filters.has_patches !== null ||
     filters.fields.length > 0 ||

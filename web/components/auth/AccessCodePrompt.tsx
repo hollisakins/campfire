@@ -82,7 +82,7 @@ export const AccessCodePrompt: React.FC<AccessCodePromptProps> = ({ onSuccess })
               value={code}
               onChange={(e) => setCode(e.target.value.toUpperCase())}
               placeholder="e.g., CAMPFIRE-2024"
-              className="w-full px-4 py-3 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-center font-mono text-lg uppercase"
+              className="w-full px-4 py-3 bg-background text-text-primary placeholder:text-text-tertiary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-center font-mono text-lg uppercase"
               disabled={loading || !!success}
               autoFocus
             />

@@ -19,7 +19,7 @@ contain any production credentials or sensitive data — just a small stratified
 sample of scientific data and synthetic test user accounts.
 
 Targets are cross-matched into `objects` table entries in-process (per-field
-friends-of-friends via `campfire.deploy.objects`), so no `cfdeploy objects`
+friends-of-friends via `campfire.deploy.objects`), so no `campfire deploy objects`
 follow-up is needed after `supabase db reset`.
 
 Usage:
@@ -142,6 +142,7 @@ TEST_USERS = [
         'full_name': 'Admin User',
         'is_admin': True,
         'can_comment': True,
+        'can_inspect': True,
     },
     {
         'id': USER_UUID,
@@ -150,6 +151,7 @@ TEST_USERS = [
         'full_name': 'Regular User',
         'is_admin': False,
         'can_comment': True,
+        'can_inspect': True,
     },
     {
         'id': VIEWER_UUID,
@@ -158,6 +160,7 @@ TEST_USERS = [
         'full_name': 'Viewer User',
         'is_admin': False,
         'can_comment': False,
+        'can_inspect': False,
     },
 ]
 
@@ -460,8 +463,8 @@ def generate_user_profiles_sql() -> str:
     lines.append('')
 
     for user in TEST_USERS:
-        lines.append(f"""INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment)
-VALUES ({sql_escape(user['id'])}, {sql_escape(user['username'])}, {sql_escape(user['full_name'])}, {sql_escape(user['is_admin'])}, {sql_escape(user['can_comment'])});""")
+        lines.append(f"""INSERT INTO public.user_profiles (user_id, username, full_name, is_admin, can_comment, can_inspect)
+VALUES ({sql_escape(user['id'])}, {sql_escape(user['username'])}, {sql_escape(user['full_name'])}, {sql_escape(user['is_admin'])}, {sql_escape(user['can_comment'])}, {sql_escape(user['can_inspect'])});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -510,7 +513,7 @@ def build_seed_objects(
 ) -> tuple[list[dict], dict[int, int]]:
     """Cluster seed targets into objects (per-field FoF) and assign synthetic ids.
 
-    Mirrors the production `cfdeploy objects` flow so that a fresh
+    Mirrors the production `campfire deploy objects` flow so that a fresh
     `supabase db reset` yields a fully-populated `objects` table with
     target FKs and list members linked.
 
@@ -676,8 +679,45 @@ def generate_spectra_sql(spectra: list[dict]) -> str:
     lines.append('')
 
     for spec in spectra:
-        lines.append(f"""INSERT INTO public.spectra (id, target_id, grating, fits_path, reduction_version, signal_to_noise, exposure_time, thumbnail_svg_fnu, thumbnail_svg_flambda, redshift_auto, dq_flags)
-VALUES ({spec['id']}, {sql_escape(spec.get('target_id') or spec.get('object_id'))}, {sql_escape(spec['grating'])}, {sql_escape(spec['fits_path'])}, {sql_escape(spec.get('reduction_version', 'v0.1'))}, {sql_escape(spec.get('signal_to_noise'))}, {sql_escape(spec.get('exposure_time'))}, {sql_escape(spec.get('thumbnail_svg_fnu'))}, {sql_escape(spec.get('thumbnail_svg_flambda'))}, {sql_escape(spec.get('redshift_auto'))}, {spec.get('dq_flags') or 0});""")
+        lines.append(f"""INSERT INTO public.spectra (id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, thumbnail_svg_fnu, thumbnail_svg_flambda, redshift_auto, dq_flags)
+VALUES ({spec['id']}, {sql_escape(spec.get('target_id') or spec.get('object_id'))}, {sql_escape(spec['grating'])}, {sql_escape(spec['fits_path'])}, {sql_escape(spec.get('cfpipe_version') or spec.get('reduction_version') or 'v0.1')}, {sql_escape(spec.get('signal_to_noise'))}, {sql_escape(spec.get('exposure_time'))}, {sql_escape(spec.get('thumbnail_svg_fnu'))}, {sql_escape(spec.get('thumbnail_svg_flambda'))}, {sql_escape(spec.get('redshift_auto'))}, {spec.get('dq_flags') or 0});""")
+
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def generate_storage_objects_sql(spectra: list[dict]) -> str:
+    """Generate INSERT statements for the storage_objects registry (#214).
+
+    One row per sampled spectrum (a NIRSpec final). Seed spectra carry no real
+    ``file_hash``, so a deterministic synthetic ``sha256:`` token (from the key)
+    + a synthetic size stand in — enough to exercise the admin RLS, the
+    get_storage_budget RPC, and reconcile coverage locally and on preview
+    branches. ``observation`` is left NULL to avoid an FK to a possibly
+    unsampled observations row; ``id`` is omitted so the sequence assigns it.
+    """
+    import hashlib
+
+    lines = ['-- ============================================']
+    lines.append('-- Storage objects registry (synthetic; #214)')
+    lines.append('-- ============================================')
+    lines.append('')
+
+    for spec in spectra:
+        key = spec.get('fits_path')
+        if not key:
+            continue
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        base = key.rsplit('/', 1)[-1]
+        spectrum_id = base[:-len('_spec.fits')] if base.endswith('_spec.fits') else base
+        lines.append(
+            "INSERT INTO public.storage_objects "
+            "(backend, bucket, storage_key, content_hash, size_bytes, content_type, "
+            "product_type, instrument, spectrum_id, status) VALUES "
+            f"('r2', 'data', {sql_escape(key)}, {sql_escape('sha256:' + digest)}, "
+            f"1048576, 'application/fits', 'nirspec_spec', 'nirspec', "
+            f"{sql_escape(spectrum_id)}, 'active');"
+        )
 
     lines.append('')
     return '\n'.join(lines)
@@ -1076,6 +1116,7 @@ SET search_path TO public, auth, extensions;
     sql_parts.append(generate_objects_table_sql(cross_matched_objects))
     sql_parts.append(generate_objects_sql(targets, target_to_object_db_id))
     sql_parts.append(generate_spectra_sql(spectra))
+    sql_parts.append(generate_storage_objects_sql(spectra))
     sql_parts.append(generate_user_program_access_sql(programs))
     sql_parts.append(generate_comments_sql(comments, target_id_map))
     sql_parts.append(generate_flag_audit_log_sql(flag_entries, target_id_map))

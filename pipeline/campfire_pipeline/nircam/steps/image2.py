@@ -1,14 +1,16 @@
 """
 image2: JWST ``Image2Pipeline`` against the canonical exposure file.
 
-Reads the canonical ``<rootname>.fits`` (rate-stage data after striping),
-runs ``Image2Pipeline`` in memory (``save_results=False``), and atomically
-writes the calibrated cal-stage ImageModel back to the same path.
+Reads the canonical ``<rootname>.fits`` (rate-stage data after detector1 /
+persistence / wisp), runs ``Image2Pipeline`` in memory (``save_results=False``),
+and atomically writes the calibrated cal-stage ImageModel back to the same path.
+``striping`` now runs *after* this step, on the cal-stage output, so the 1/f
+correction is fit and applied in the flat-fielded frame (no flat round-trip).
 
-``Image2Pipeline`` returns a fresh model, so the ``SRCMASK`` extension that
-striping wrote to the canonical file is dropped on the round-trip. We pull
-``SRCMASK`` out before the pipeline runs and re-attach it via
-``atomic_save(..., extra_hdus=...)`` after.
+``Image2Pipeline`` returns a fresh model that drops any non-schema extension,
+so the ``SRCMASK`` round-trip protection below is retained as a safety net —
+but in the current ordering SRCMASK is written by ``striping`` *after* image2,
+so ``_extract_srcmask`` typically returns None here (a no-op).
 """
 
 import os

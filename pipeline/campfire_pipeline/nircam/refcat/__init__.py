@@ -13,8 +13,9 @@ Three workflows are supported via ``cfpipe nircam refcat <subcmd>``:
   compare  Sky-residual diagnostic between two catalogs.
 
 All catalogs share the same on-disk schema (ECSV with columns RA, DEC,
-mag, mag_err) so they can be fed straight into JHAT via the
-``[<field>.jhat.refcat_dict]`` mapping in ``fields.toml``.
+mag, mag_err) so they can be fed straight into JHAT via ``[<field>.jhat]``
+in ``fields.toml`` -- either ``refcat`` (one catalog for all filters) or the
+``refcat_dict`` mapping of filter name to filename.
 """
 
 from .io import (

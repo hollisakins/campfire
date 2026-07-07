@@ -313,7 +313,7 @@ export default function AdminDownloadsPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Downloads */}
         <Card className="overflow-hidden">
-          <div className="px-4 py-3 border-b border-border">
+          <div className="px-4 py-3 border-b border-border bg-surface-2">
             <h2 className="text-lg font-medium text-text-primary">Recent Downloads</h2>
           </div>
           {!stats?.recent_downloads || stats.recent_downloads.length === 0 ? (
@@ -351,7 +351,7 @@ export default function AdminDownloadsPage() {
 
         {/* Most Downloaded Objects */}
         <Card className="overflow-hidden">
-          <div className="px-4 py-3 border-b border-border">
+          <div className="px-4 py-3 border-b border-border bg-surface-2">
             <h2 className="text-lg font-medium text-text-primary">Most Downloaded Targets</h2>
           </div>
           {!stats?.most_downloaded_targets || stats.most_downloaded_targets.length === 0 ? (

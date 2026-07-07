@@ -1,22 +1,32 @@
 """
-Cloudflare R2 upload helpers.
+Object-store upload helpers.
 
-Supports two upload modes:
+Two upload modes, selected by the resolved deploy auth mode — NOT by a silent
+fallback (issue #250):
 
-1. **Presigned URLs** (preferred): Requests batch presigned PutObject URLs from
-   the CAMPFIRE web API and uploads directly to R2. No R2 credentials needed
-   on the client — just ``campfire login``.
+1. **Presigned URLs** (``login`` mode, the default): request batch presigned
+   PutObject URLs from the CAMPFIRE web API and upload straight to the store. No
+   object-store write credentials on the client — just ``campfire login``. If the
+   presign endpoint is unavailable the upload FAILS loudly; it never silently
+   drops to direct-boto3 (that silent switch was the footgun #250 removed).
 
-2. **Direct boto3** (legacy fallback): Uses R2 credentials from deploy config.
-   Used when presigned URL generation is not available.
+2. **Direct boto3** (``service_role`` / ``local`` mode): an explicit opt-in that
+   uses object-store credentials from the deploy config. Also the mechanism the
+   maintenance paths (``remove`` / ``reconcile`` / ``registry copy``) use for the
+   LIST / HEAD / DELETE / cross-bucket-COPY operations that presigned PutObject
+   URLs structurally cannot express.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import NamedTuple, Optional
+from urllib.parse import urlparse
 
 import requests as http_requests
 from tqdm import tqdm
+
+# A returned presigned URL on this host means the web route signed R2, not OSN.
+_R2_PRESIGN_HOST_FRAGMENT = 'r2.cloudflarestorage.com'
 
 
 class UploadTask(NamedTuple):
@@ -34,21 +44,27 @@ PRESIGN_BATCH_SIZE = 500  # Max URLs per presign request
 
 
 def _get_presign_headers(config: dict) -> Optional[dict]:
-    """Get auth headers for presign endpoint, or None if not available."""
-    sb = config.get('supabase', {})
-    token = sb.get('supabase_token')
-    if not token:
-        return None
+    """Bearer auth headers for the presign endpoint, straight from the login
+    ``TokenManager``; ``None`` when there is no usable login session.
 
-    # Try to get the access token from stored credentials for API auth
+    Authenticates directly against the stored OAuth session rather than gating on
+    ``config['supabase']['supabase_token']`` (issue #250): the presign route wants
+    the API access token, and coupling it to the Supabase token's presence is what
+    let an ambient service-role key silently disable presigned uploads.
+    """
     try:
         from campfire.api.session import resolve_base_url
         from campfire.auth.tokens import TokenManager
         tm = TokenManager(base_url=resolve_base_url())
+        if not tm.is_oauth():
+            return None
         access_token = tm.get_valid_token()
-        return {'Authorization': f'Bearer {access_token}'}
     except Exception:
         return None
+
+    if not access_token:
+        return None
+    return {'Authorization': f'Bearer {access_token}'}
 
 
 def _get_presign_base_url() -> str:
@@ -62,6 +78,7 @@ def request_presigned_urls(
     tasks: list[UploadTask],
     bucket: str = 'data',
     cache_control: Optional[str] = None,
+    backend: str = 'r2',
 ) -> Optional[dict[str, str]]:
     """
     Request presigned PutObject URLs from the web API in batches.
@@ -76,6 +93,11 @@ def request_presigned_urls(
         Bucket identifier: 'data' or 'tiles'.
     cache_control : str, optional
         Cache-Control header to set on uploaded objects.
+    backend : str
+        Storage backend to sign against: 'r2' (default) or 'osn'. 'osn' signs
+        canonical data keys against the OSN bucket (epic #210 / #216 — deploy →
+        OSN); the web route requires ``backend='osn'`` to be implemented for this
+        to land in OSN rather than R2 (see the host guard in upload_files_parallel).
 
     Returns
     -------
@@ -97,6 +119,7 @@ def request_presigned_urls(
         batch = tasks[i:i + PRESIGN_BATCH_SIZE]
         payload = {
             'bucket': bucket,
+            'backend': backend,
             'uploads': [
                 {'key': t.r2_key, 'content_type': t.content_type}
                 for t in batch
@@ -117,6 +140,28 @@ def request_presigned_urls(
     return all_urls
 
 
+def _assert_presigned_backend_osn(urls: dict[str, str]) -> None:
+    """Fail loudly if OSN was requested but the web route returned R2-host URLs.
+
+    A web deployment that predates OSN upload support ignores the ``backend``
+    field and signs the R2 'data' bucket. Uploading there would land bytes in R2
+    under canonical keys while the deploy registers ``backend='osn'`` — a silent
+    divergence between what the registry points at (OSN) and where bytes live
+    (R2). Refuse before any upload so the operator updates/redeploys the web app.
+    """
+    r2_signed = [
+        key for key, url in urls.items()
+        if _R2_PRESIGN_HOST_FRAGMENT in urlparse(url).netloc
+    ]
+    if r2_signed:
+        raise RuntimeError(
+            "Requested OSN presigned uploads but the deploy API returned R2 URLs "
+            f"(e.g. {r2_signed[0]}). The web deployment predates OSN upload support "
+            "(the /api/v1/deploy/presign route must accept backend='osn'). Update and "
+            "redeploy the web app before deploying NIRSpec products to OSN."
+        )
+
+
 def _upload_to_presigned_url(url: str, local_path: Path, content_type: str) -> None:
     """Upload a single file to a presigned PutObject URL."""
     with open(local_path, 'rb') as f:
@@ -134,6 +179,7 @@ def upload_files_presigned(
     tasks: list[UploadTask],
     max_workers: int = 12,
     desc: str = 'Uploading',
+    succeeded_out: Optional[set[str]] = None,
 ) -> tuple[int, int, list[str]]:
     """
     Upload files using presigned URLs.
@@ -148,6 +194,10 @@ def upload_files_presigned(
         Parallel upload threads.
     desc : str
         Progress bar description.
+    succeeded_out : set[str], optional
+        If given, the ``r2_key`` of each successfully-uploaded object is added to
+        this set. Lets the caller register only objects that actually landed
+        (write-after-success) without changing the return arity.
 
     Returns
     -------
@@ -176,6 +226,8 @@ def upload_files_presigned(
                 try:
                     future.result()
                     success += 1
+                    if succeeded_out is not None:
+                        succeeded_out.add(task.r2_key)
                 except Exception as e:
                     failed += 1
                     failed_files.append(f"{task.local_path.name}: {e}")
@@ -189,19 +241,25 @@ def upload_files_presigned(
 # ---------------------------------------------------------------------------
 
 def get_r2_client(config: dict):
-    """Create boto3 S3 client configured for Cloudflare R2."""
-    import boto3
-    from botocore.config import Config
+    """Create a boto3 S3 client for the ``data`` storage backend.
 
-    r2 = config['r2']
-    return boto3.client(
-        's3',
-        endpoint_url=f"https://{r2['account_id']}.r2.cloudflarestorage.com",
-        aws_access_key_id=r2['access_key_id'],
-        aws_secret_access_key=r2['secret_access_key'],
-        config=Config(signature_version='s3v4'),
-        region_name='auto',
-    )
+    Endpoint/region/addressing-style come from config via the per-purpose
+    backend factory (defaults to Cloudflare R2). Name kept for backward
+    compatibility with existing importers.
+    """
+    from campfire.deploy.backend import make_client_for
+    return make_client_for(config, 'data')
+
+
+def download_to_path(client, bucket: str, key: str, dest_path: Path) -> None:
+    """Download a single object to a local path via boto3 (managed, multipart).
+
+    The backend-agnostic GET counterpart to :func:`upload_to_r2` — used by the
+    R2->OSN copy (epic #210 / #215) to stream a source object to a temp file
+    before hashing and re-uploading. ``client``/``bucket`` are whatever the
+    caller resolved (R2 'data' source for the copy).
+    """
+    client.download_file(bucket, key, str(dest_path))
 
 
 def upload_to_r2(
@@ -233,9 +291,12 @@ def upload_files_direct(
     tasks: list[UploadTask],
     max_workers: int = 12,
     desc: str = 'Uploading',
+    succeeded_out: Optional[set[str]] = None,
 ) -> tuple[int, int, list[str]]:
     """
     Upload multiple files to R2 via boto3 in parallel with progress bar.
+
+    ``succeeded_out``, if given, collects the ``r2_key`` of each landed object.
 
     Returns
     -------
@@ -263,6 +324,8 @@ def upload_files_direct(
                 try:
                     future.result()
                     success += 1
+                    if succeeded_out is not None:
+                        succeeded_out.add(task.r2_key)
                 except Exception as e:
                     failed += 1
                     failed_files.append(f"{task.local_path.name}: {e}")
@@ -282,12 +345,17 @@ def upload_files_parallel(
     max_workers: int = 12,
     desc: str = 'Uploading',
     cache_control: Optional[str] = None,
+    succeeded_out: Optional[set[str]] = None,
+    backend: str = 'r2',
 ) -> tuple[int, int, list[str]]:
     """
-    Upload files to R2, using presigned URLs if available, else direct boto3.
+    Upload files to the data store, dispatching on the resolved deploy auth mode.
 
-    This is the main entry point for all R2 uploads. It tries presigned URLs
-    first (no R2 credentials needed), falling back to direct boto3 upload.
+    This is the main entry point for all uploads. In ``login`` mode (the default)
+    it uploads via presigned URLs ONLY — if presigning is unavailable it raises,
+    rather than silently falling back to direct boto3 (the footgun #250 removed).
+    In the explicit ``service_role`` / ``local`` modes it uploads directly with
+    boto3 using local object-store credentials.
 
     Parameters
     ----------
@@ -303,6 +371,14 @@ def upload_files_parallel(
         Progress bar description.
     cache_control : str, optional
         Cache-Control header for uploaded objects.
+    succeeded_out : set[str], optional
+        If given, collects the ``r2_key`` of each successfully-uploaded object so
+        the caller can register exactly what landed (used for storage_objects).
+    backend : str
+        Destination backend: 'r2' (default) or 'osn'. 'osn' routes NIRSpec
+        canonical products to OSN (epic #210 / #216). The presigned path signs
+        against OSN via the web route; the direct-boto3 fallback resolves the
+        'osn' purpose (CAMPFIRE_S3_OSN_*).
 
     Returns
     -------
@@ -312,32 +388,53 @@ def upload_files_parallel(
     if not tasks:
         return 0, 0, []
 
-    # Try presigned URL mode first
-    urls = request_presigned_urls(config, tasks, bucket=bucket_id, cache_control=cache_control)
-    if urls:
-        return upload_files_presigned(urls, tasks, max_workers=max_workers, desc=desc)
-
-    # Fall back to direct boto3 upload
-    r2_config_key = 'r2_tiles' if bucket_id == 'tiles' else 'r2'
-    if r2_config_key not in config:
-        raise ValueError(
-            f"No R2 credentials available for '{bucket_id}' bucket. "
-            "Run 'campfire login' to use presigned URLs, or provide R2 credentials in deploy config."
+    # Direct boto3 is an EXPLICIT opt-in (service-role / --local), never a silent
+    # fallback. In login mode (default) uploads go only via presigned URLs.
+    mode = config.get('supabase', {}).get('_auth_mode')
+    if mode not in ('service_role', 'local'):
+        urls = request_presigned_urls(
+            config, tasks, bucket=bucket_id, cache_control=cache_control, backend=backend,
+        )
+        if not urls:
+            raise RuntimeError(
+                "Presigned upload URLs are unavailable, and login-mode deploys "
+                "upload only via presigned URLs (no direct-S3 fallback — issue #250). "
+                "This usually means the login session expired or the deploy API is "
+                "unreachable. Re-run `campfire login`; or, for an unattended run, set "
+                "CAMPFIRE_DEPLOY_MODE=service-role with CAMPFIRE_S3_* credentials to "
+                "upload directly."
+            )
+        # Guard against a web deployment that predates OSN upload support: an old
+        # /deploy/presign ignores `backend` and signs R2, which would land bytes in
+        # R2 under canonical keys while the registry records backend='osn' — silent
+        # divergence. Refuse if we asked for OSN but got R2-host URLs.
+        if backend == 'osn':
+            _assert_presigned_backend_osn(urls)
+        return upload_files_presigned(
+            urls, tasks, max_workers=max_workers, desc=desc, succeeded_out=succeeded_out,
         )
 
-    import boto3
-    from botocore.config import Config
-
-    r2 = config[r2_config_key]
-    client = boto3.client(
-        's3',
-        endpoint_url=f"https://{r2['account_id']}.r2.cloudflarestorage.com",
-        aws_access_key_id=r2['access_key_id'],
-        aws_secret_access_key=r2['secret_access_key'],
-        config=Config(signature_version='s3v4'),
-        region_name='auto',
+    # Explicit direct-boto3 upload via the per-purpose backend factory.
+    from campfire.deploy.backend import (
+        PURPOSE_SECTIONS, make_s3_client, resolve_backend,
     )
-    bucket_name = r2['bucket_name']
+
+    if backend == 'osn':
+        purpose = 'osn'
+    else:
+        purpose = 'tiles' if bucket_id == 'tiles' else 'data'
+    if PURPOSE_SECTIONS[purpose] not in config:
+        raise ValueError(
+            f"No storage credentials available for the '{purpose}' backend. "
+            "Run 'campfire login' to use presigned URLs, or provide storage "
+            "credentials in deploy config."
+        )
+
+    # A present-but-incomplete section surfaces resolve_backend's specific
+    # diagnostic (which key/endpoint is missing), not the generic message above.
+    backend_cfg = resolve_backend(config, purpose)
+    client = make_s3_client(backend_cfg)
+    bucket_name = backend_cfg.bucket
 
     # For direct mode, apply cache_control per-file
     if cache_control:
@@ -364,6 +461,8 @@ def upload_files_parallel(
                     try:
                         future.result()
                         success += 1
+                        if succeeded_out is not None:
+                            succeeded_out.add(task.r2_key)
                     except Exception as e:
                         failed += 1
                         failed_files.append(f"{task.local_path.name}: {e}")
@@ -371,4 +470,7 @@ def upload_files_parallel(
 
         return success, failed, failed_files
 
-    return upload_files_direct(client, bucket_name, tasks, max_workers=max_workers, desc=desc)
+    return upload_files_direct(
+        client, bucket_name, tasks, max_workers=max_workers, desc=desc,
+        succeeded_out=succeeded_out,
+    )

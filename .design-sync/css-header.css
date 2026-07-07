@@ -1,0 +1,10 @@
+/* Brand fonts — Campfire web serves Inter (UI) + JetBrains Mono (data/code) via
+   next/font at runtime; design previews load them from Google Fonts so cards
+   render in the real typefaces. The token vars below feed Tailwind's
+   font-sans / font-mono families (set by next/font in the app). */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}

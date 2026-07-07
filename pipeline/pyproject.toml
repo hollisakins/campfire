@@ -4,6 +4,7 @@ description = "JWST data reduction pipeline"
 requires-python = ">=3.12"
 dynamic = ["version"]
 dependencies = [
+    "campfire-layout",  # shared directory/key contract (#213); install from ./layout (not on PyPI)
     "jwst>=1.20,<1.21",
     "astropy>=6.1",
     "numpy>=2.0",
@@ -20,12 +21,15 @@ dependencies = [
     "snowblind",
     "shapely",
     "photutils>=1.13",
+    "celerite2>=0.2",  # CPU O(n) 1-D GP for the NIRCam striping estimator="gp" path
     "regions>=0.6",
     "tomlkit>=0.13",
     "JWST_FOV_plotter>=0.4",
     "sep>=1.4.1",
     "astroquery>=0.4.7",
     "pyvo>=1.5",
+    "tweakwcs>=0.8",  # NIRCam align step: JWSTWCSCorrector/align_wcs (also transitive via jwst)
+    "tristars==0.1",  # NIRCam align step: triangle/asterism matcher (unmaintained v0.1; pin exact)
 ]
 
 [project.scripts]

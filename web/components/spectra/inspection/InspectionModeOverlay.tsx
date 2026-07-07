@@ -89,7 +89,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
 }) => {
   const router = useRouter();
   const { user, userProfile } = useAuth();
-  const canEdit = !!(user && userProfile?.can_comment);
+  const canEdit = !!(user && userProfile?.can_inspect);
   const supabase = useMemo(() => createClient(), []);
 
   const redshiftInputRef = useRef<HTMLInputElement>(null);

@@ -229,14 +229,14 @@ export const FilterChip: React.FC<FilterChipProps> = ({
           {searchable && (
             <div className="p-2 border-b border-border">
               <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary dark:text-text-tertiary" />
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary" />
                 <input
                   ref={searchInputRef}
                   type="text"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder="Search..."
-                  className="w-full pl-8 pr-3 py-1.5 text-sm border border-border rounded-md bg-background text-text-primary placeholder:text-text-secondary dark:placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                  className="w-full pl-8 pr-3 py-1.5 text-sm border border-border rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
                 />
               </div>
             </div>

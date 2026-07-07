@@ -11,16 +11,19 @@ Each public function follows the same pattern:
 
 import re
 import shutil
+import sys
 from pathlib import Path
 
 from tqdm import tqdm
 
-from campfire.deploy.config import load_observations, load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir, validate_program_slug
+from campfire.deploy.config import load_observations, load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir, resolve_reference_obs_dir, validate_program_slug
 from campfire.deploy.discover import (
     discover_pointings_ecsv,
     discover_rgb_images,
     discover_sed_plots,
+    discover_rate_files,
     discover_shutters_ecsv,
+    discover_spectrum_exposures,
     discover_slits_json,
     extract_object_ids_from_files,
     filter_files_by_source_ids,
@@ -33,17 +36,23 @@ from campfire.deploy.generate import (
     generate_thumbnails_from_fits,
     generate_zfit_json,
 )
+from campfire_layout import KeyScheme, Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     batch_upsert_objects,
     batch_upsert_spectra,
     check_existing_objects,
+    deploy_event_metadata,
     deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
     fetch_deployment_config,
+    claim_deploy_scope,
+    get_deploy_scope_version,
+    get_lifecycle_status,
     get_supabase_client,
     get_user_id_from_token,
     insert_deployment,
+    log_deploy_event,
     recompute_target_aggregates,
     refresh_filter_options,
     refresh_programs_overview,
@@ -78,9 +87,14 @@ def _load_config_snapshot(obs_dir: Path, obs_name: str) -> dict | None:
         return None
 
 
-def _load_stuck_shutters(obs_dir: Path, obs_name: str) -> dict | None:
-    """Load the stuck closed shutters TOML, if it exists."""
-    shutters_path = obs_dir / f"_{obs_name}_stuck_closed_shutters.toml"
+def _load_stuck_shutters(reference_obs_dir: Path) -> dict | None:
+    """Load the stuck closed shutters TOML, if it exists.
+
+    Issue #212 (PR-4): the reducer-decision TOML moved to
+    ``reference/nirspec/<obs>/stuck_closed_shutters.toml`` (was
+    ``products/<obs>/_<obs>_stuck_closed_shutters.toml``).
+    """
+    shutters_path = reference_obs_dir / "stuck_closed_shutters.toml"
     if not shutters_path.exists():
         return None
     try:
@@ -108,7 +122,7 @@ def _is_release_version(version: str | None) -> bool:
 def _collect_non_release_versions(summary, spectra) -> list[str]:
     """Return the unique non-release version strings present in *summary* or
     *spectra*. Inspects both ``summary.meta['cfpipe_version']`` and each
-    spectrum's ``reduction_version`` (sourced from the FITS ``CMPFRVER``
+    spectrum's ``cfpipe_version`` (sourced verbatim from the FITS ``CMPFRVER``
     header), since heterogeneous reductions may carry different strings
     per row.
     """
@@ -117,10 +131,263 @@ def _collect_non_release_versions(summary, spectra) -> list[str]:
     if meta_v:
         versions.add(meta_v)
     for s in spectra:
-        v = s.get('reduction_version')
+        v = s.get('cfpipe_version')
         if v:
             versions.add(v)
     return sorted(v for v in versions if not _is_release_version(v))
+
+
+def _collect_crds_contexts(spectra) -> list[str]:
+    """Return the distinct CRDS contexts across *spectra* (deploy records).
+
+    More than one means this single observation mixes calibration contexts —
+    a silent intra-sample drift that can quietly corrupt a stacked measurement,
+    so deploy surfaces it for a conscious decision.
+    """
+    contexts = {s.get('crds_context') for s in spectra if s.get('crds_context')}
+    return sorted(contexts)
+
+
+def _count_published_spectra(sb, spectra: list[dict]) -> int:
+    """How many of these (target_id, grating) spectra are currently 'published'.
+
+    Used by the `--in-prep` guard so a re-draft never silently hides live data.
+    PostgREST can't filter on tuples, so over-fetch by target_id and filter the
+    (target_id, grating) pairs Python-side (gratings per target are few).
+    """
+    wanted = {(s['target_id'], s['grating']) for s in spectra}
+    target_ids = sorted({tid for (tid, _) in wanted})
+    published = 0
+    for i in range(0, len(target_ids), 200):
+        batch = target_ids[i:i + 200]
+        resp = (sb.table('spectra')
+                .select('target_id, grating, deploy_status')
+                .in_('target_id', batch)
+                .eq('deploy_status', 'published')
+                .execute())
+        for row in resp.data or []:
+            if (row['target_id'], row['grating']) in wanted:
+                published += 1
+    return published
+
+
+def _filter_exposures_by_source_ids(files: list, source_ids: list[int]) -> list:
+    """Keep only canonical exposures whose trailing ``_<source_id>.fits`` is selected."""
+    allowed = {str(s) for s in source_ids}
+    out = []
+    for p in files:
+        stem = p.name[:-len('.fits')] if p.name.endswith('.fits') else p.name
+        if stem.rsplit('_', 1)[-1] in allowed:
+            out.append(p)
+    return out
+
+
+def _jwst_pid_from_obs_cfg(obs_cfg: dict) -> int:
+    """Best-effort JWST program id for an intermediates-only deploy (no summary).
+
+    Prefer the numeric ``data_subdir``; else parse ``jw<5 digits>`` from the files
+    glob; else 0 (the observations upsert tolerates it; a later full deploy from the
+    summary corrects it)."""
+    ds = str(obs_cfg.get('data_subdir', '')).strip()
+    if ds.isdigit():
+        return int(ds)
+    files = obs_cfg.get('files', '')
+    files = files if isinstance(files, str) else (files[0] if files else '')
+    m = re.search(r'jw(\d{5})', str(files))
+    return int(m.group(1)) if m else 0
+
+
+def _read_exposure_provenance(exposure_files):
+    """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` from the first
+    spectrum-exposure header (Phase 3).
+
+    Reads whatever provenance cards the reduction stamped
+    (``CMPFRVER`` / ``CAL_VER`` / ``CRDS_CTX``); any absent card is None. Purely
+    additive over the old ``cfpipe_version=None`` on the intermediates-draft
+    path — a missing/unreadable header just yields all-None.
+    """
+    if not exposure_files:
+        return None, None, None
+    try:
+        from astropy.io import fits
+        with fits.open(exposure_files[0], memmap=False) as hdul:
+            hdr = hdul[0].header
+            return hdr.get('CMPFRVER'), hdr.get('CAL_VER'), hdr.get('CRDS_CTX')
+    except Exception:
+        return None, None, None
+
+
+def _deploy_intermediates_only(
+    obs_name: str, obs_dir, config: dict, *,
+    dry_run: bool = False, auto_approve: bool = False,
+    source_ids: list[int] | None = None,
+) -> dict:
+    """Deploy canonical spectrum-exposure intermediates for an observation with no
+    stage3 finals yet (epic #210, B5) — the "reduced through stage2, review before
+    stage3" flow. Uploads + registers the intermediates and records an auto-DRAFT
+    deployment. There is no science to publish; finishing stage3 + a normal deploy
+    publishes it. Scope (field/program/pid) comes from observations.toml since there
+    is no summary to read it from.
+    """
+    exposure_files = discover_spectrum_exposures(obs_dir)
+    if source_ids:
+        total = len(exposure_files)
+        exposure_files = _filter_exposures_by_source_ids(exposure_files, source_ids)
+        print(f"Filtered {total} spectrum-exposures to {len(exposure_files)} "
+              f"matching {len(source_ids)} source IDs")
+    # Detector rate files (P1, design §3.1) — source-INDEPENDENT, never source-filtered.
+    # The rate deploy runs after stage 1 / before stage 2, precisely when no
+    # spectrum-exposures exist yet, so this path must handle rate-only deploys (see
+    # the guard below).
+    rate_files = discover_rate_files(obs_dir)
+    obs_cfg = load_observations().get(obs_name, {})
+    field = obs_cfg.get('field', '')
+    program_slug = obs_cfg.get('program', '')
+    programs_config = load_programs()
+    if program_slug:
+        validate_program_slug(program_slug, programs_config, obs_name)
+
+    # The intermediates deployment row FKs observations(name), whose own
+    # program_slug is NOT NULL with an FK to programs(slug). Without a program we
+    # cannot create that FK target, so insert_deployment would crash *after* the R2
+    # uploads and registry writes have already happened — orphaning cloud objects
+    # with no deployment record. Fail fast before doing any work (#237).
+    if not program_slug:
+        print(f"ERROR: observation '{obs_name}' has no program defined in "
+              f"observations.toml. A program is required to record the deployment "
+              f"(observations.program_slug → programs.slug). Add a 'program' entry "
+              f"for this observation and retry.")
+        sys.exit(1)
+
+    print(f"Observation: {obs_name}  (intermediates-only — no stage3 finals yet)")
+    print(f"  Field: {field}")
+    print(f"  Program: {program_slug}")
+    print(f"  Canonical spectrum-exposures: {len(exposure_files)}")
+    print(f"  Detector rate files: {len(rate_files)}")
+
+    if not exposure_files and not rate_files:
+        print("No canonical spectrum-exposures, rate files, or finals — nothing to deploy.")
+        return {'field': field, 'needs_reconcile': False}
+
+    if dry_run:
+        print("\n=== DRY RUN (intermediates-only → auto-draft) ===")
+        print(f"Would upload {len(exposure_files)} canonical spectrum-exposures "
+              f"and {len(rate_files)} detector rate files, and record a draft "
+              f"deployment for {obs_name}.")
+        return {'field': field, 'needs_reconcile': False}
+
+    sb = get_supabase_client(config)
+
+    # A draft deploy requires the B1 lifecycle on the target DB (same gate as --draft).
+    cap = get_lifecycle_status(sb)
+    if not cap.get('enabled'):
+        print("ERROR: deploying intermediates as a draft requires the B1 lifecycle "
+              "enforcement (#217) on the target database, but it is not enabled.")
+        if cap.get('error'):
+            print(f"  {cap['error']}")
+        sys.exit(1)
+
+    user_id = get_user_id_from_token(config)
+    jwst_program_id = _jwst_pid_from_obs_cfg(obs_cfg)
+
+    # The deployment row FKs observations(name); ensure program + observation exist.
+    # program_slug is guaranteed non-empty by the fail-fast guard above (#237).
+    print("Upserting program + observation...")
+    upsert_programs(sb, [program_slug], programs_config)
+    file_globs_raw = obs_cfg.get('files', [])
+    file_globs = [file_globs_raw] if isinstance(file_globs_raw, str) else list(file_globs_raw)
+    upsert_observation(
+        sb, obs_name, program_slug, jwst_program_id, field,
+        file_globs=file_globs or None,
+        gratings=obs_cfg.get('gratings') or None,
+        data_subdir=obs_cfg.get('data_subdir'),
+    )
+
+    scope = Scope(obs=obs_name)
+    scope_version_at_start = get_deploy_scope_version(sb, 'observation', obs_name)
+    upload_tasks = [
+        UploadTask(p, storage_key('nirspec_spectrum_exposure', scope, p.name,
+                                  scheme=KeyScheme.CANONICAL), 'application/fits')
+        for p in exposure_files
+    ] + [
+        UploadTask(p, storage_key('nirspec_rate', scope, p.name,
+                                  scheme=KeyScheme.CANONICAL), 'application/fits')
+        for p in rate_files
+    ]
+    uploaded_keys: set[str] = set()
+    print(f"Uploading {len(upload_tasks)} intermediates "
+          f"({len(exposure_files)} spectrum-exposures + {len(rate_files)} rate files) to OSN...")
+    success, failed, failed_msgs = upload_files_parallel(
+        config, upload_tasks, desc="OSN uploads", succeeded_out=uploaded_keys,
+        backend='osn')
+    print(f"Uploaded {success}/{len(upload_tasks)} files")
+
+    # Best-effort provenance from the first exposure header (Phase 3): the
+    # intermediates carry whatever cards the reduction stamped. Absent → NULL.
+    # For a rate-only deploy (stage 1 done, stage 2 not yet) there are no
+    # spectrum-exposures, so fall back to a rate header for provenance.
+    cfpipe_version, jwst_version, crds_context = _read_exposure_provenance(
+        exposure_files or rate_files)
+
+    deployment_id = insert_deployment(
+        sb, observation=obs_name, deployed_by=user_id, status='draft',
+        cfpipe_version=cfpipe_version, jwst_version=jwst_version,
+        crds_context=crds_context, n_targets=0, n_spectra=0,
+    )
+    if deployment_id:
+        update_latest_deployment(sb, obs_name, deployment_id)
+        print(f"\nDeployment #{deployment_id} recorded (draft — intermediates only)")
+        log_deploy_event(
+            sb, action='upload', actor=user_id, deployment_id=deployment_id,
+            observation=obs_name, affected_count=success,
+            metadata=deploy_event_metadata(
+                'nirspec', observation=obs_name, planned=len(upload_tasks),
+                succeeded=success, failed=failed, items=len(upload_tasks),
+                draft=True, intermediates_only=True))
+
+    if uploaded_keys:
+        from campfire.deploy.registry import (
+            build_registry_rows, upsert_storage_objects,
+        )
+        # NIRSpec products are homed on OSN under canonical keys (epic #210 / #216).
+        reg_rows = build_registry_rows(
+            upload_tasks, backend='osn',
+            deployment_id=deployment_id, uploaded_by=user_id,
+            cfpipe_version=cfpipe_version, succeeded_keys=uploaded_keys)
+        n_reg = upsert_storage_objects(sb, reg_rows)
+        print(f"Registered {n_reg} storage objects")
+
+    # Rate-mask triage rows (P2, design §3.2): one per (obs, exposure, detector),
+    # split-ownership upsert so re-deploy never clobbers web review state.
+    if rate_files:
+        from campfire.deploy.rate_exposures import (
+            build_rate_exposure_records, upsert_rate_exposures,
+        )
+        n_rate = upsert_rate_exposures(
+            sb, build_rate_exposure_records(rate_files, observation=obs_name, scope=scope))
+        print(f"Upserted {n_rate} rate-exposure triage rows")
+
+    # Nods-renderer grid rows (P4, design §4.2): one per (obs, exposure_root, nod,
+    # detector, source), exp_group from the CFEXPGRP header stamp. Split-ownership
+    # upsert. exposure_files is already source-filtered — correct, the grid is
+    # per-source.
+    if exposure_files:
+        from campfire.deploy.spectrum_grid import (
+            build_spectrum_exposure_records, upsert_spectrum_exposures,
+        )
+        n_grid = upsert_spectrum_exposures(
+            sb, build_spectrum_exposure_records(exposure_files, observation=obs_name, scope=scope))
+        print(f"Upserted {n_grid} spectrum-exposure grid rows")
+
+    claim = claim_deploy_scope(sb, 'observation', obs_name, scope_version_at_start, actor=user_id)
+    if claim.get('conflict'):
+        print(f"⚠  CONCURRENT DEPLOY DETECTED for {obs_name}: another deploy advanced "
+              f"this observation while this one was running.")
+
+    print(f"\nDeployed {len(exposure_files)} canonical spectrum-exposures "
+          f"+ {len(rate_files)} detector rate files (draft — no finals yet). "
+          f"Finish stage3 + re-deploy to publish.")
+    return {'field': field, 'needs_reconcile': False}
 
 
 def deploy_observation(
@@ -138,6 +405,7 @@ def deploy_observation(
     source_ids: list[int] | None = None,
     auto_approve: bool = False,
     defer_rebuild: bool = False,
+    draft: bool = False,
 ) -> dict:
     """Full deployment: ECSV -> generate content -> R2 upload -> Supabase upsert.
 
@@ -145,12 +413,29 @@ def deploy_observation(
     (and materialized-view refresh) is skipped so the caller can batch
     them after processing multiple observations of the same field.
 
+    When *draft* is True (epic #210, B2), the deployed spectra land
+    ``deploy_status='draft'`` (admin-only, invisible to users) and the
+    deployment record is marked ``draft`` — a draft an admin reviews and
+    publishes via the admin UI. Requires the B1 (#217) lifecycle to be applied
+    to the target database; checked up front via ``get_lifecycle_status`` so the
+    deploy aborts cleanly rather than silently shipping unguarded drafts.
+
     Returns a dict with ``field`` and ``needs_reconcile`` (always True
     for completed deploys; the no-op return at the dry-run / nothing-
     to-do branch above sets it False).
     """
     obs_dir = resolve_obs_dir(obs_name)
-    summary = load_summary(obs_dir, obs_name)
+    summary = load_summary(obs_dir, obs_name, required=False)
+
+    # Intermediates-only deploy (epic #210, B5): reduced through stage2 (canonical
+    # spectrum-exposures exist) but no stage3 finals/summary yet. Upload + register
+    # the intermediates and record an auto-draft deployment for portal review, then
+    # return — the finals path below is summary-driven. An incomplete deployment is
+    # always a draft.
+    if summary is None or len(summary) == 0:
+        return _deploy_intermediates_only(
+            obs_name, obs_dir, config, dry_run=dry_run, auto_approve=auto_approve,
+            source_ids=source_ids)
 
     if source_ids:
         total = len(summary)
@@ -201,6 +486,23 @@ def deploy_observation(
                 print("Aborted.")
                 return {'field': field, 'needs_reconcile': False}
 
+    # Warn if this observation mixes CRDS contexts. A single observation should
+    # share one calibration context; >1 means part of the sample was reduced
+    # against a different CRDS pmap, which can silently bias a stacked measurement.
+    crds_contexts = _collect_crds_contexts(spectra)
+    if len(crds_contexts) > 1:
+        print()
+        print("WARNING: this observation mixes CRDS contexts")
+        for c in crds_contexts:
+            print(f"    - {c}")
+        print("  Spectra reduced against different CRDS pmaps are not calibration-")
+        print("  homogeneous; prefer re-reducing the whole observation against one.")
+        if not dry_run and not auto_approve:
+            resp = input("  Continue? [y/N]: ")
+            if resp.lower() != 'y':
+                print("Aborted.")
+                return {'field': field, 'needs_reconcile': False}
+
     # Generate RGB/SED if requested (skips existing files)
     if not dry_run:
         if include_rgb:
@@ -239,15 +541,17 @@ def deploy_observation(
         if force_overwrite:
             print("!! FORCE OVERWRITE: inspection data will be reset")
         if not supabase_only:
-            print(f"Would upload to R2:")
+            print(f"Would upload to OSN (NIRSpec, canonical keys):")
             print(f"  {len(spec_paths)} FITS files")
             print(f"  {len(spec_paths)} spectrum JSON files")
             if zfit_paths:
                 print(f"  {len(zfit_paths)} zfit JSON files")
-            if rgb_files:
-                print(f"  {len(rgb_files)} RGB images")
-            if sed_files:
-                print(f"  {len(sed_files)} SED plots")
+            if rgb_files or sed_files:
+                print(f"Would upload to R2 (dead rgb/sed, legacy keys):")
+                if rgb_files:
+                    print(f"  {len(rgb_files)} RGB images")
+                if sed_files:
+                    print(f"  {len(sed_files)} SED plots")
         print(f"Would upsert to Supabase:")
         print(f"  Program: {program_slug}")
         print(f"  {len(objects)} object(s)")
@@ -288,6 +592,28 @@ def deploy_observation(
 
     # --- Live deployment ---
     sb = get_supabase_client(config)
+
+    # B2 capability gate: `--in-prep` requires the B1 (#217) lifecycle to be live
+    # on the TARGET database, or the drafts would not actually be hidden. Check the
+    # marker up front and abort cleanly if absent (or if the RPC itself is missing,
+    # i.e. this deploy code is newer than the DB).
+    if draft:
+        cap = get_lifecycle_status(sb)
+        if not cap.get('enabled'):
+            print("ERROR: --draft requires the B1 lifecycle enforcement (#217) on "
+                  "the target database, but it is not enabled.")
+            if cap.get('checks'):
+                print(f"  capability checks: {cap['checks']}")
+            if cap.get('error'):
+                print(f"  {cap['error']}")
+            print("  Deploy the B1 migration first, or omit --draft to publish directly.")
+            sys.exit(1)
+        print("Deploying as draft (admin-only until published).")
+
+    # B4 multi-reducer safety: snapshot this observation's deploy-scope version
+    # now; we compare-and-set it at finalize to detect a concurrent deploy of the
+    # same observation (advisory — never blocks).
+    scope_version_at_start = get_deploy_scope_version(sb, 'observation', obs_name)
 
     # Check for existing targets and confirm
     target_ids = [o['object_id'] for o in objects]
@@ -334,33 +660,78 @@ def deploy_observation(
 
     try:
         upload_tasks: list[UploadTask] = []
-        r2_prefix = f"spectra/{obs_name}"
+        uploaded_keys: set[str] = set()  # r2_keys that actually landed (for the registry)
+        rate_files: list = []  # populated in the not-supabase_only block; drives P2 triage upsert
+        exposure_files: list = []  # canonical spectrum-exposures; drives the P4 nods grid
+        scope = Scope(obs=obs_name)
 
+        # NIRSpec science products are homed on OSN under CANONICAL keys (epic #210 /
+        # #216 — deploy → OSN); rgb/sed are dead products that stay on R2 under legacy
+        # keys (unregistered, 404, not migrated). They upload in separate batches.
+        legacy_tasks: list[UploadTask] = []
         if not supabase_only:
             print("Generating content...")
             for spec_path in tqdm(spec_paths, desc="Processing", unit="file"):
                 # FITS file
-                upload_tasks.append(UploadTask(spec_path, f"{r2_prefix}/{spec_path.name}", 'application/fits'))
+                upload_tasks.append(UploadTask(spec_path, storage_key('nirspec_spec', scope, spec_path.name, scheme=KeyScheme.CANONICAL), 'application/fits'))
 
                 # Spectrum JSON
                 json_path = generate_spectrum_json(spec_path, temp_dir)
-                upload_tasks.append(UploadTask(json_path, f"{r2_prefix}/{json_path.name}", 'application/json'))
+                upload_tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
             # Zfit JSONs
             for zfit_path in zfit_paths:
                 zfit_json = generate_zfit_json(zfit_path, temp_dir)
-                upload_tasks.append(UploadTask(zfit_json, f"{r2_prefix}/{zfit_json.name}", 'application/json'))
+                upload_tasks.append(UploadTask(zfit_json, storage_key('zfit', scope, zfit_json.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
-            # RGB images
+            # RGB images / SED plots — dead products (kept on R2/legacy, unchanged).
             for rgb_path in rgb_files:
-                upload_tasks.append(UploadTask(rgb_path, f"rgb/{obs_name}/{rgb_path.name}", 'image/png'))
-
-            # SED plots
+                legacy_tasks.append(UploadTask(rgb_path, storage_key('rgb', scope, rgb_path.name), 'image/png'))
             for sed_path in sed_files:
-                upload_tasks.append(UploadTask(sed_path, f"sed/{obs_name}/{sed_path.name}", 'application/pdf'))
+                legacy_tasks.append(UploadTask(sed_path, storage_key('sed', scope, sed_path.name), 'application/pdf'))
 
-            print(f"Uploading {len(upload_tasks)} files...")
-            success, failed, failed_msgs = upload_files_parallel(config, upload_tasks, desc="R2 uploads")
+            # Canonical spectrum-exposure intermediates (epic #210, B5): uploaded on
+            # EVERY deploy (cloud-as-source-of-truth + delete-local→restore), filtered
+            # to the deployed source_ids when --source-ids is set. Registered as
+            # product_type='nirspec_spectrum_exposure' with a per-exposure exposure_ref.
+            exposure_files = discover_spectrum_exposures(obs_dir)
+            if source_ids:
+                exposure_files = _filter_exposures_by_source_ids(exposure_files, source_ids)
+            for exp_path in exposure_files:
+                upload_tasks.append(UploadTask(
+                    exp_path, storage_key('nirspec_spectrum_exposure', scope, exp_path.name, scheme=KeyScheme.CANONICAL),
+                    'application/fits'))
+            if exposure_files:
+                print(f"  + {len(exposure_files)} canonical spectrum-exposure intermediates")
+
+            # Detector rate-file intermediates (P1, design §3.1). SOURCE-INDEPENDENT:
+            # uploaded on every deploy regardless of --source-ids (rate-level masks are
+            # per-detector, not per-source), so we deliberately do NOT run these
+            # through _filter_exposures_by_source_ids. Registered
+            # product_type='nirspec_rate' with a per-(exposure,detector) exposure_ref;
+            # uploaded uncompressed (the web SCI decoder rejects fpack ZIMAGE).
+            rate_files = discover_rate_files(obs_dir)
+            for rate_path in rate_files:
+                upload_tasks.append(UploadTask(
+                    rate_path, storage_key('nirspec_rate', scope, rate_path.name, scheme=KeyScheme.CANONICAL),
+                    'application/fits'))
+            if rate_files:
+                print(f"  + {len(rate_files)} detector rate files")
+
+            total_tasks = len(upload_tasks) + len(legacy_tasks)
+            print(f"Uploading {total_tasks} files ({len(upload_tasks)} NIRSpec → OSN)...")
+            success, failed, failed_msgs = upload_files_parallel(
+                config, upload_tasks, desc="OSN uploads", succeeded_out=uploaded_keys,
+                backend='osn',
+            )
+            if legacy_tasks:
+                s2, f2, m2 = upload_files_parallel(
+                    config, legacy_tasks, desc="R2 uploads (rgb/sed)",
+                    succeeded_out=uploaded_keys, backend='r2',
+                )
+                success += s2
+                failed += f2
+                failed_msgs = failed_msgs + m2
 
             if failed_msgs:
                 print(f"\n  {failed} uploads failed:")
@@ -368,7 +739,7 @@ def deploy_observation(
                     print(f"    - {msg}")
                 if len(failed_msgs) > 10:
                     print(f"    ... and {len(failed_msgs) - 10} more")
-            print(f"Uploaded {success}/{len(upload_tasks)} files")
+            print(f"Uploaded {success}/{total_tasks} files")
             print()
 
         # Generate thumbnails and enrich spectra records
@@ -391,6 +762,27 @@ def deploy_observation(
         print("Upserting objects...")
         n_obj, new_object_ids, _n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
         print(f"  {n_obj} objects")
+
+        # B2: an draft deploy forces deploy_status='draft' on every spectrum it
+        # writes — the whole observation lands as an admin-only draft. Guard first
+        # against silently hiding data that is already live: warn (and require
+        # confirmation) if any of these (target_id, grating) rows are currently
+        # 'published', since re-drafting them would pull them from users until an
+        # explicit publish. A single spectra row per (target,grating) can't hold a
+        # live + draft version at once, so this is "take the observation back to
+        # draft", not zero-downtime staging of a re-reduction.
+        if draft:
+            already_published = _count_published_spectra(sb, spectra)
+            if already_published and not auto_approve:
+                print()
+                print(f"WARNING: --in-prep will hide {already_published} currently-PUBLISHED "
+                      f"spectrum row(s) until you re-publish them.")
+                resp = input("  Take these back to draft (draft)? [y/N]: ")
+                if resp.lower() != 'y':
+                    print("Aborted.")
+                    return {'field': field, 'needs_reconcile': False}
+            for rec in spectra:
+                rec['deploy_status'] = 'draft'
 
         print("Upserting spectra...")
         n_spec, changed_hashes = batch_upsert_spectra(sb, spectra)
@@ -483,7 +875,7 @@ def deploy_observation(
 
         # Record deployment provenance
         config_snapshot = _load_config_snapshot(obs_dir, obs_name)
-        stuck_shutters = _load_stuck_shutters(obs_dir, obs_name)
+        stuck_shutters = _load_stuck_shutters(resolve_reference_obs_dir(obs_name))
         user_id = get_user_id_from_token(config)
 
         deployment_id = insert_deployment(
@@ -493,20 +885,93 @@ def deploy_observation(
             cfpipe_version=summary.meta.get('cfpipe_version'),
             jwst_version=summary.meta.get('jwst_version'),
             crds_context=summary.meta.get('crds_context'),
-            reduction_version=spectra[0].get('reduction_version') if spectra else None,
             config_snapshot=config_snapshot,
             stuck_shutters=stuck_shutters,
-            reduced_at=summary.meta.get('generated_at'),
+            # Real reduction time (earliest CMPFRTIM across products), not the
+            # summary-build wall-clock — so re-running `summary` on unchanged
+            # pixels no longer advances reduced_at.
+            reduced_at=summary.meta.get('reduced_at'),
             n_targets=len(objects),
             n_spectra=len(spectra),
             n_new_targets=len(new_object_ids),
             force_overwrite=force_overwrite,
             source_ids_filter=source_ids,
             supabase_only=supabase_only,
+            status='draft' if draft else 'published',
         )
         if deployment_id:
             update_latest_deployment(sb, obs_name, deployment_id)
-            print(f"\nDeployment #{deployment_id} recorded")
+            print(f"\nDeployment #{deployment_id} recorded"
+                  f"{' (draft)' if draft else ''}")
+            # B2: record the deploy in the lifecycle audit log (normalized
+            # envelope, Phase 3). `success`/`failed` are the actual OSN+R2 upload
+            # tallies; `affected_count` stays the spectra count for continuity.
+            log_deploy_event(
+                sb,
+                action='upload',
+                actor=user_id,
+                deployment_id=deployment_id,
+                observation=obs_name,
+                affected_count=len(spectra),
+                metadata=deploy_event_metadata(
+                    'nirspec', observation=obs_name, planned=total_tasks,
+                    succeeded=success, failed=failed, items=len(spectra),
+                    draft=draft, n_objects=len(objects)),
+            )
+
+        # B4 multi-reducer safety: compare-and-set the scope version. A conflict
+        # means another reducer deployed this same observation while we were
+        # running — surface it so the operator can re-check (the writes are
+        # idempotent by key, but a concurrent re-reduction may have interleaved).
+        claim = claim_deploy_scope(sb, 'observation', obs_name,
+                                   scope_version_at_start, actor=user_id)
+        if claim.get('conflict'):
+            print()
+            print(f"⚠  CONCURRENT DEPLOY DETECTED for {obs_name}: another deploy "
+                  f"advanced this observation (version {scope_version_at_start} -> "
+                  f"{claim.get('current')}) while this one was running.")
+            print("   Both deploys' writes are present; re-check the result and "
+                  "re-deploy if a re-reduction was clobbered.")
+
+        # Storage registry (#214): index the objects that actually landed in this
+        # deploy. Shadow index — additive, nothing reads it as authoritative yet.
+        if uploaded_keys:
+            from campfire.deploy.registry import (
+                build_registry_rows, upsert_storage_objects,
+            )
+            # upload_tasks are the NIRSpec products, homed on OSN under canonical
+            # keys (rgb/sed are in legacy_tasks and never register). backend='osn'.
+            reg_rows = build_registry_rows(
+                upload_tasks,
+                backend='osn',
+                deployment_id=deployment_id,
+                uploaded_by=user_id,
+                cfpipe_version=summary.meta.get('cfpipe_version'),
+                succeeded_keys=uploaded_keys,
+            )
+            n_reg = upsert_storage_objects(sb, reg_rows)
+            print(f"Registered {n_reg} storage objects")
+
+        # Rate-mask triage rows (P2, design §3.2): split-ownership upsert so a
+        # re-deploy refreshes render columns without clobbering web review state.
+        if rate_files:
+            from campfire.deploy.rate_exposures import (
+                build_rate_exposure_records, upsert_rate_exposures,
+            )
+            n_rate = upsert_rate_exposures(
+                sb, build_rate_exposure_records(rate_files, observation=obs_name, scope=scope))
+            print(f"Upserted {n_rate} rate-exposure triage rows")
+
+        # Nods-renderer grid rows (P4, design §4.2): one per (obs, exposure_root,
+        # nod, detector, source), exp_group from the CFEXPGRP header stamp.
+        # Split-ownership upsert; exposure_files is already source-filtered.
+        if exposure_files:
+            from campfire.deploy.spectrum_grid import (
+                build_spectrum_exposure_records, upsert_spectrum_exposures,
+            )
+            n_grid = upsert_spectrum_exposures(
+                sb, build_spectrum_exposure_records(exposure_files, observation=obs_name, scope=scope))
+            print(f"Upserted {n_grid} spectrum-exposure grid rows")
 
         print()
         msg = f"Deployed {len(spectra)} spectra from {len(objects)} objects"
@@ -568,12 +1033,12 @@ def deploy_rgb(
     if dry_run:
         print("=== DRY RUN ===")
         for path in rgb_files[:5]:
-            print(f"  {path.name} -> rgb/{obs_name}/{path.name}")
+            print(f"  {path.name} -> {storage_key('rgb', Scope(obs=obs_name), path.name)}")
         if len(rgb_files) > 5:
             print(f"  ... and {len(rgb_files) - 5} more")
         return
 
-    tasks = [UploadTask(p, f"rgb/{obs_name}/{p.name}", 'image/png') for p in rgb_files]
+    tasks = [UploadTask(p, storage_key('rgb', Scope(obs=obs_name), p.name), 'image/png') for p in rgb_files]
     success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="RGB images")
 
     if failed_msgs:
@@ -620,13 +1085,13 @@ def deploy_sed(
     if dry_run:
         print("=== DRY RUN ===")
         for path in sed_files[:5]:
-            print(f"  {path.name} -> sed/{obs_name}/{path.name}")
+            print(f"  {path.name} -> {storage_key('sed', Scope(obs=obs_name), path.name)}")
         if len(sed_files) > 5:
             print(f"  ... and {len(sed_files) - 5} more")
         print(f"Would set has_sed_plot=true for {len(objects_with_sed)} objects")
         return
 
-    tasks = [UploadTask(p, f"sed/{obs_name}/{p.name}", 'application/pdf') for p in sed_files]
+    tasks = [UploadTask(p, storage_key('sed', Scope(obs=obs_name), p.name), 'application/pdf') for p in sed_files]
     success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="SED plots")
 
     if failed_msgs:
@@ -667,7 +1132,7 @@ def deploy_json(
     if dry_run:
         print("=== DRY RUN ===")
         for path in spec_paths[:5]:
-            print(f"  {path.name} -> spectra/{obs_name}/{path.stem}.json")
+            print(f"  {path.name} -> {storage_key('spectrum_json', Scope(obs=obs_name), f'{path.stem}.json', scheme=KeyScheme.CANONICAL)}")
         if len(spec_paths) > 5:
             print(f"  ... and {len(spec_paths) - 5} more")
         return
@@ -677,13 +1142,16 @@ def deploy_json(
 
     try:
         print("Generating JSON files...")
+        scope = Scope(obs=obs_name)
         tasks = []
         for path in tqdm(spec_paths, desc="Generating", unit="file"):
             json_path = generate_spectrum_json(path, temp_dir)
-            tasks.append(UploadTask(json_path, f"spectra/{obs_name}/{json_path.name}", 'application/json'))
+            tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
-        print("Uploading...")
-        success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="JSON files")
+        print("Uploading to OSN...")
+        uploaded_keys: set[str] = set()
+        success, failed, failed_msgs = upload_files_parallel(
+            config, tasks, desc="JSON files", succeeded_out=uploaded_keys, backend='osn')
 
         if failed_msgs:
             print(f"\n  {failed} failed:")
@@ -691,6 +1159,17 @@ def deploy_json(
                 print(f"    - {msg}")
 
         print(f"Uploaded {success}/{len(spec_paths)} JSON files")
+
+        # Refresh registry rows for the re-uploaded canonical objects so the served
+        # OSN bytes and the recorded sha256 stay consistent (epic #210 / #216).
+        # deployment_id stays NULL — a content-only refresh records no deployment;
+        # the next full `deploy --obs` re-links provenance.
+        if uploaded_keys:
+            from campfire.deploy.registry import build_registry_rows, upsert_storage_objects
+            sb = get_supabase_client(config)
+            reg_rows = build_registry_rows(tasks, backend='osn', succeeded_keys=uploaded_keys)
+            n_reg = upsert_storage_objects(sb, reg_rows)
+            print(f"Registered {n_reg} storage objects")
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
@@ -736,13 +1215,16 @@ def deploy_zfit(
 
     try:
         print("Generating zfit JSON files...")
+        scope = Scope(obs=obs_name)
         tasks = []
         for path in zfit_paths:
             json_path = generate_zfit_json(path, temp_dir)
-            tasks.append(UploadTask(json_path, f"spectra/{obs_name}/{json_path.name}", 'application/json'))
+            tasks.append(UploadTask(json_path, storage_key('zfit', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
-        print("Uploading...")
-        success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="Zfit JSON")
+        print("Uploading to OSN...")
+        uploaded_keys: set[str] = set()
+        success, failed, failed_msgs = upload_files_parallel(
+            config, tasks, desc="Zfit JSON", succeeded_out=uploaded_keys, backend='osn')
 
         if failed_msgs:
             print(f"\n  {failed} failed:")
@@ -750,6 +1232,16 @@ def deploy_zfit(
                 print(f"    - {msg}")
 
         print(f"Uploaded {success}/{len(zfit_paths)} zfit JSON files")
+
+        # Refresh registry rows for the re-uploaded canonical objects so the served
+        # OSN bytes and the recorded sha256 stay consistent (epic #210 / #216).
+        # Must run before `finally` removes temp_dir (build_registry_rows hashes the
+        # local files). deployment_id stays NULL (content-only refresh).
+        if uploaded_keys:
+            from campfire.deploy.registry import build_registry_rows, upsert_storage_objects
+            reg_rows = build_registry_rows(tasks, backend='osn', succeeded_keys=uploaded_keys)
+            n_reg = upsert_storage_objects(get_supabase_client(config), reg_rows)
+            print(f"Registered {n_reg} storage objects")
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
@@ -972,7 +1464,8 @@ def fetch_config(
 
     Fetches the latest deployment for the observation and writes:
     - {obs}_config.toml from deployments.config_snapshot
-    - _{obs}_stuck_closed_shutters.toml from deployments.stuck_shutters
+    - {obs}_stuck_closed_shutters.toml from deployments.stuck_shutters
+      (place at reference/nirspec/<obs>/stuck_closed_shutters.toml to re-reduce)
     - observations.toml fragment from observations metadata
 
     Parameters
@@ -1007,9 +1500,11 @@ def fetch_config(
             toml.dump(dep_data['config_snapshot'], f)
         files_written.append(config_path)
 
-    # 2. Stuck shutters
+    # 2. Stuck shutters. Issue #212 (PR-4): the pipeline reads this from
+    # reference/nirspec/<obs>/stuck_closed_shutters.toml; reconstitute under that
+    # bare basename (obs-prefixed here so a flat output dir stays unambiguous).
     if dep_data.get('stuck_shutters'):
-        shutters_path = out / f"_{obs_name}_stuck_closed_shutters.toml"
+        shutters_path = out / f"{obs_name}_stuck_closed_shutters.toml"
         with open(shutters_path, 'w') as f:
             toml.dump(dep_data['stuck_shutters'], f)
         files_written.append(shutters_path)

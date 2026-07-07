@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { generateDownloadUrl } from '@/lib/r2';
+import { generateDownloadUrl, generateDownloadUrls } from '@/lib/r2';
 import { trackDownload, extractTargetIdFromFitsPath } from '@/lib/actions/download-tracking';
 
 /**
@@ -57,14 +57,6 @@ export async function GET(request: NextRequest) {
 
     // Generate signed URL (expires in 1 hour)
     const signedUrl = await generateDownloadUrl(fitsPath, 3600);
-
-    // Check if it's a placeholder URL (R2 not configured)
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return NextResponse.json(
-        { error: 'Download service not configured. Please contact administrator.' },
-        { status: 503 }
-      );
-    }
 
     // Track download (fire-and-forget)
     const targetId = await extractTargetIdFromFitsPath(fitsPath);
@@ -148,21 +140,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Generate signed URLs for all files
+    // Generate signed URLs for all files. Batched so dual-read resolves every
+    // backend in a single registry query (not one per file).
     const urls: Record<string, string> = {};
-    for (const path of paths) {
-      const signedUrl = await generateDownloadUrl(path, 3600);
-
-      // Check if R2 is configured
-      if (signedUrl.startsWith('#download-placeholder')) {
-        return NextResponse.json(
-          { error: 'Download service not configured. Please contact administrator.' },
-          { status: 503 }
-        );
-      }
-
-      urls[path] = signedUrl;
-    }
+    const signedUrls = await generateDownloadUrls(paths, 3600);
+    paths.forEach((path: string, i: number) => {
+      urls[path] = signedUrls[i];
+    });
 
     // Track batch download (fire-and-forget)
     const targetIdPromises = paths.map(extractTargetIdFromFitsPath);

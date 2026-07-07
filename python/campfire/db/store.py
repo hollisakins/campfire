@@ -15,7 +15,23 @@ from typing import Dict, List, Optional, Tuple
 
 # Schema version — bump when tables change. Existing DBs at a lower version
 # will raise SchemaMismatchError and must be deleted + re-synced.
-SCHEMA_VERSION = 4
+#   v6 (epic #210): storage_objects is now the single download/availability
+#   layer. The spectra table holds science metadata only; file keys, hashes, and
+#   local-download bookkeeping moved to the storage_objects mirror.
+#   v7: storage_objects.filter — per-filter NIRCam scope column (mirrors the
+#   server registry), so `campfire download --filters` scopes without key parsing.
+SCHEMA_VERSION = 7
+
+
+# Product-type classes the client download engine understands. Finals are the
+# default download set; --intermediate adds the canonical spectrum-exposures.
+# Both are layout-mirrored (have a local relpath), so the same engine places
+# them. Widen these tuples as more product types become client-fetchable.
+FINAL_PRODUCT_TYPES = ("nirspec_spec", "nircam_mosaic")
+INTERMEDIATE_PRODUCT_TYPES = (
+    "nirspec_spectrum_exposure", "nircam_exposure", "nircam_expmap",
+)
+DOWNLOADABLE_PRODUCT_TYPES = FINAL_PRODUCT_TYPES + INTERMEDIATE_PRODUCT_TYPES
 
 
 # Columns exposed on `objects` from `/sync/objects`.
@@ -43,11 +59,15 @@ OBJECT_EXPORT_COLUMNS = [
     "last_data_change_at", "staleness_reason",
 ]
 
-# Columns exposed on `spectra` — flat per-spectrum rows.
+# Columns exposed on `spectra` — flat per-spectrum rows. The provenance block
+# (cfpipe_version, crds_context, jwst_version, date_obs, reduced_at) is carried
+# verbatim from the FITS primary header through the catalog so a flux value can
+# be traced to its exact pipeline version + CRDS context without opening FITS.
 SPECTRA_COLUMNS = [
     "id", "spectrum_id", "target_id", "object_id", "grating", "fits_path",
     "file_hash", "file_size", "signal_to_noise", "exposure_time",
-    "reduction_version", "redshift_auto", "dq_flags",
+    "cfpipe_version", "crds_context", "jwst_version", "date_obs", "reduced_at",
+    "redshift_auto", "dq_flags",
     "program_slug", "observation", "field",
     "local_path", "local_file_hash", "local_file_mtime", "local_file_size",
     "synced_at", "created_at", "updated_at",
@@ -56,7 +76,8 @@ SPECTRA_COLUMNS = [
 SPECTRA_EXPORT_COLUMNS = [
     "spectrum_id", "target_id", "object_id", "grating", "fits_path",
     "file_hash", "file_size", "signal_to_noise", "exposure_time",
-    "reduction_version", "redshift_auto", "dq_flags",
+    "cfpipe_version", "crds_context", "jwst_version", "date_obs", "reduced_at",
+    "redshift_auto", "dq_flags",
     "program_slug", "observation", "field", "local_path",
 ]
 
@@ -120,28 +141,28 @@ CREATE INDEX IF NOT EXISTS idx_objects_redshift ON objects(redshift);
 CREATE INDEX IF NOT EXISTS idx_objects_redshift_quality ON objects(redshift_quality);
 CREATE INDEX IF NOT EXISTS idx_objects_is_active ON objects(is_active);
 
+-- spectra: science metadata only. File keys, hashes, sizes, and local-download
+-- bookkeeping live in storage_objects (the single download/availability layer),
+-- joined on spectrum_id. query_spectra/get_spectrum surface fits_path/local_path/
+-- file_hash via that join for backward compatibility.
 CREATE TABLE IF NOT EXISTS spectra (
     id INTEGER PRIMARY KEY,
     spectrum_id TEXT UNIQUE NOT NULL,
     target_id TEXT,
     object_id TEXT,
     grating TEXT NOT NULL,
-    fits_path TEXT,
-    file_hash TEXT,
-    file_size INTEGER,
     signal_to_noise REAL,
     exposure_time REAL,
-    reduction_version TEXT,
+    cfpipe_version TEXT,
+    crds_context TEXT,
+    jwst_version TEXT,
+    date_obs TEXT,
+    reduced_at TEXT,
     redshift_auto REAL,
     dq_flags INTEGER DEFAULT 0,
     program_slug TEXT,
     observation TEXT,
     field TEXT,
-    local_path TEXT,
-    local_file_hash TEXT,
-    local_file_mtime REAL,
-    local_file_size INTEGER,
-    synced_at TEXT,
     created_at TEXT,
     updated_at TEXT,
     _synced_at TEXT
@@ -153,6 +174,47 @@ CREATE INDEX IF NOT EXISTS idx_spectra_object_id ON spectra(object_id);
 CREATE INDEX IF NOT EXISTS idx_spectra_observation ON spectra(observation);
 CREATE INDEX IF NOT EXISTS idx_spectra_grating ON spectra(grating);
 CREATE INDEX IF NOT EXISTS idx_spectra_dq_flags ON spectra(dq_flags) WHERE dq_flags != 0;
+CREATE INDEX IF NOT EXISTS idx_spectra_crds_context ON spectra(crds_context);
+CREATE INDEX IF NOT EXISTS idx_spectra_cfpipe_version ON spectra(cfpipe_version);
+
+-- storage_objects: local mirror of the server registry (epic #210). The single
+-- download/availability layer for every product type — finals, intermediates,
+-- and future NIRCam share one engine. Server columns mirror /api/v1/sync/storage
+-- (content_hash is the server's authoritative hash); the local_* columns track
+-- what's materialized on disk and are preserved across metadata refreshes.
+CREATE TABLE IF NOT EXISTS storage_objects (
+    storage_key TEXT PRIMARY KEY,
+    id INTEGER,
+    backend TEXT,
+    bucket TEXT,
+    content_hash TEXT,
+    size_bytes INTEGER,
+    content_type TEXT,
+    product_type TEXT,
+    instrument TEXT,
+    status TEXT,
+    observation TEXT,
+    field TEXT,
+    filter TEXT,
+    spectrum_id TEXT,
+    exposure_ref TEXT,
+    deployment_id INTEGER,
+    cfpipe_version TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    local_path TEXT,
+    local_file_hash TEXT,
+    local_file_mtime REAL,
+    local_file_size INTEGER,
+    synced_at TEXT,
+    _synced_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_so_observation ON storage_objects(observation);
+CREATE INDEX IF NOT EXISTS idx_so_product_type ON storage_objects(product_type);
+CREATE INDEX IF NOT EXISTS idx_so_spectrum_id ON storage_objects(spectrum_id);
+CREATE INDEX IF NOT EXISTS idx_so_obs_product ON storage_objects(observation, product_type);
+CREATE INDEX IF NOT EXISTS idx_so_field_filter ON storage_objects(field, filter);
 
 CREATE TABLE IF NOT EXISTS object_photometry (
     id INTEGER PRIMARY KEY,
@@ -264,6 +326,20 @@ class LocalStore:
             return int(row[0]) if row else 0
         except Exception:
             return 0
+
+    def get_meta(self, key: str) -> Optional[str]:
+        """Read a value from the ``_meta`` key/value table (None if absent)."""
+        row = self._conn.execute(
+            "SELECT value FROM _meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Upsert a value into the ``_meta`` key/value table."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)", (key, str(value))
+        )
+        self._conn.commit()
 
     # -------------------------------------------------------------------------
     # Objects
@@ -621,11 +697,10 @@ class LocalStore:
     # Spectra
     # -------------------------------------------------------------------------
     def upsert_spectra(self, spectra_data: List[dict]) -> int:
-        """Insert or update spectra from the /sync/spectra endpoint.
+        """Insert or update spectra (science metadata) from /sync/spectra.
 
-        Preserves ``local_path``, ``local_file_hash``, ``local_file_mtime``,
-        ``local_file_size``, and ``synced_at`` on conflict — those are local
-        download bookkeeping and must not be clobbered by metadata refresh.
+        File keys, hashes, and local-download state live in storage_objects
+        (synced separately); any fits_path/file_hash in the payload is ignored.
         """
         now = datetime.now(timezone.utc).isoformat()
         count = 0
@@ -634,22 +709,24 @@ class LocalStore:
             self._conn.execute(
                 """
                 INSERT INTO spectra
-                    (id, spectrum_id, target_id, object_id, grating, fits_path,
-                     file_hash, file_size, signal_to_noise, exposure_time,
-                     reduction_version, redshift_auto, dq_flags,
+                    (id, spectrum_id, target_id, object_id, grating,
+                     signal_to_noise, exposure_time,
+                     cfpipe_version, crds_context, jwst_version, date_obs, reduced_at,
+                     redshift_auto, dq_flags,
                      program_slug, observation, field,
                      created_at, updated_at, _synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(spectrum_id) DO UPDATE SET
                     target_id=excluded.target_id,
                     object_id=excluded.object_id,
                     grating=excluded.grating,
-                    fits_path=excluded.fits_path,
-                    file_hash=excluded.file_hash,
-                    file_size=COALESCE(excluded.file_size, spectra.file_size),
                     signal_to_noise=excluded.signal_to_noise,
                     exposure_time=excluded.exposure_time,
-                    reduction_version=excluded.reduction_version,
+                    cfpipe_version=excluded.cfpipe_version,
+                    crds_context=excluded.crds_context,
+                    jwst_version=excluded.jwst_version,
+                    date_obs=excluded.date_obs,
+                    reduced_at=excluded.reduced_at,
                     redshift_auto=excluded.redshift_auto,
                     dq_flags=excluded.dq_flags,
                     program_slug=excluded.program_slug,
@@ -664,12 +741,13 @@ class LocalStore:
                     spec.get("target_id"),
                     spec.get("object_id"),
                     spec.get("grating"),
-                    spec.get("fits_path"),
-                    spec.get("file_hash"),
-                    spec.get("file_size"),
                     spec.get("signal_to_noise"),
                     spec.get("exposure_time"),
-                    spec.get("reduction_version"),
+                    spec.get("cfpipe_version"),
+                    spec.get("crds_context"),
+                    spec.get("jwst_version"),
+                    spec.get("date_obs"),
+                    spec.get("reduced_at"),
                     spec.get("redshift_auto"),
                     spec.get("dq_flags", 0),
                     spec.get("program_slug"),
@@ -695,6 +773,9 @@ class LocalStore:
         redshift_quality: Optional[List[int]] = None,
         max_snr_range: Optional[Tuple[float, float]] = None,
         dq_flags: Optional[dict] = None,
+        crds_context: Optional[List[str]] = None,
+        cfpipe_version: Optional[List[str]] = None,
+        reduced_after: Optional[str] = None,
         tags: Optional[List[str]] = None,
         inspected_only: Optional[bool] = None,
         has_photometry: Optional[bool] = None,
@@ -711,6 +792,12 @@ class LocalStore:
         Inspection state (redshift, redshift_quality, inspected_only) is
         resolved through the parent object via ``spectra.object_id =
         objects.object_id``.
+
+        ``crds_context`` / ``cfpipe_version`` restrict to spectra reduced
+        against the given CRDS pmap(s) / pipeline version(s); ``reduced_after``
+        (an ISO-8601 string) keeps only spectra whose ``reduced_at`` is on or
+        after it — letting a user carve a calibration-homogeneous subsample
+        without opening any FITS.
         """
         where = ["(o.is_active IS NULL OR o.is_active = 1)"]
         params: list = []
@@ -747,6 +834,20 @@ class LocalStore:
         if max_snr_range:
             where.append("s.signal_to_noise >= ? AND s.signal_to_noise <= ?")
             params.extend(max_snr_range)
+
+        if crds_context:
+            placeholders = ",".join("?" * len(crds_context))
+            where.append(f"s.crds_context IN ({placeholders})")
+            params.extend(crds_context)
+
+        if cfpipe_version:
+            placeholders = ",".join("?" * len(cfpipe_version))
+            where.append(f"s.cfpipe_version IN ({placeholders})")
+            params.extend(cfpipe_version)
+
+        if reduced_after:
+            where.append("s.reduced_at >= ?")
+            params.append(reduced_after)
 
         if inspected_only is True:
             where.append("o.redshift_quality > 0")
@@ -837,15 +938,26 @@ class LocalStore:
         else:
             distance_expr = "NULL AS distance"
 
+        # File info (key, hash, size, local availability) lives in storage_objects
+        # now; surface it on read via the spectrum's active nirspec_spec row so
+        # callers (export, open_spectrum) keep seeing fits_path/local_path/file_hash.
         sql = f"""
             SELECT s.*,
                    o.redshift AS redshift,
                    o.redshift_quality AS redshift_quality,
                    o.ra AS ra,
                    o.dec AS dec,
+                   so.storage_key AS fits_path,
+                   so.content_hash AS file_hash,
+                   so.size_bytes AS file_size,
+                   so.local_path AS local_path,
                    {distance_expr}
             FROM spectra s
             LEFT JOIN objects o ON o.object_id = s.object_id
+            LEFT JOIN storage_objects so
+                   ON so.spectrum_id = s.spectrum_id
+                  AND so.product_type = 'nirspec_spec'
+                  AND so.status = 'active'
             WHERE {where_sql}
             ORDER BY {order_clause}
         """
@@ -875,9 +987,22 @@ class LocalStore:
         return len(self.query_spectra(**filters))
 
     def get_spectrum(self, spectrum_id: str) -> Optional[dict]:
-        """Single spectrum lookup by spectrum_id."""
+        """Single spectrum lookup by spectrum_id (with file info joined in)."""
         row = self._conn.execute(
-            "SELECT * FROM spectra WHERE spectrum_id = ?", (spectrum_id,)
+            """
+            SELECT s.*,
+                   so.storage_key AS fits_path,
+                   so.content_hash AS file_hash,
+                   so.size_bytes AS file_size,
+                   so.local_path AS local_path
+            FROM spectra s
+            LEFT JOIN storage_objects so
+                   ON so.spectrum_id = s.spectrum_id
+                  AND so.product_type = 'nirspec_spec'
+                  AND so.status = 'active'
+            WHERE s.spectrum_id = ?
+            """,
+            (spectrum_id,),
         ).fetchone()
         if not row:
             return None
@@ -892,24 +1017,18 @@ class LocalStore:
         return row[0] if row and row[0] else None
 
     def purge_stale_spectra(self, sync_timestamp: str) -> dict:
-        """Delete spectra not seen in the latest full sync.
+        """Delete spectra (science rows) not seen in the latest full sync.
 
-        Returns orphaned local files so the caller can clean them up.
+        Orphaned local files are reported by purge_stale_storage_objects now
+        (file/download state lives in storage_objects).
         """
-        orphaned = self._conn.execute(
-            """SELECT local_path FROM spectra
-               WHERE _synced_at < ? AND local_path IS NOT NULL""",
-            (sync_timestamp,),
-        ).fetchall()
-        orphaned_files = [r["local_path"] for r in orphaned]
-
         cursor = self._conn.execute(
             "DELETE FROM spectra WHERE _synced_at < ?",
             (sync_timestamp,),
         )
         purged = cursor.rowcount
         self._conn.commit()
-        return {"purged_spectra": purged, "orphaned_files": orphaned_files}
+        return {"purged_spectra": purged, "orphaned_files": []}
 
     # -------------------------------------------------------------------------
     # Distinct values / observation summaries (read from spectra)
@@ -931,7 +1050,12 @@ class LocalStore:
         return [r[0] for r in rows if r[0]]
 
     def get_observation_summary(self) -> List[dict]:
-        """Per-observation summary with program, field, and download status."""
+        """Per-observation summary with program, field, and finals download status.
+
+        spectrum_count is the science catalog count; downloaded_count is how many
+        of those finals are materialized locally, read from the storage_objects
+        mirror (product_type='nirspec_spec').
+        """
         rows = self._conn.execute(
             """
             SELECT
@@ -940,8 +1064,12 @@ class LocalStore:
                 s.field,
                 COUNT(DISTINCT s.object_id) AS object_count,
                 COUNT(*) AS spectrum_count,
-                COUNT(CASE WHEN s.local_path IS NOT NULL THEN 1 END) AS downloaded_count
+                COUNT(CASE WHEN so.local_path IS NOT NULL THEN 1 END) AS downloaded_count
             FROM spectra s
+            LEFT JOIN storage_objects so
+                   ON so.spectrum_id = s.spectrum_id
+                  AND so.product_type = 'nirspec_spec'
+                  AND so.status = 'active'
             GROUP BY s.observation, s.program_slug, s.field
             ORDER BY s.observation
             """
@@ -955,223 +1083,169 @@ class LocalStore:
         return row[0] if row and row[0] else None
 
     # -------------------------------------------------------------------------
-    # Local-file bookkeeping
+    # storage_objects mirror — the single download/availability layer
     # -------------------------------------------------------------------------
-    def get_synced_files(self, observation: str) -> Dict[int, dict]:
-        """Return {spectrum_id_pk: row_dict} for downloaded files in an observation."""
-        rows = self._conn.execute(
-            """
-            SELECT s.id, s.spectrum_id, s.target_id, s.object_id, s.grating,
-                   s.fits_path, s.local_path, s.local_file_hash, s.file_hash,
-                   s.file_size, s.synced_at
-            FROM spectra s
-            WHERE s.observation = ? AND s.local_path IS NOT NULL
-            """,
-            (observation,),
-        ).fetchall()
+    def upsert_storage_objects(self, rows: List[dict]) -> int:
+        """Insert/update the local storage_objects mirror from /sync/storage.
 
-        result: Dict[int, dict] = {}
-        for row in rows:
-            d = dict(row)
-            d["file_hash"] = d.get("local_file_hash")
-            result[row["id"]] = d
-
-        legacy_rows = self._conn.execute(
-            """SELECT id, spectrum_id, target_id, object_id, grating, fits_path,
-                      local_path, local_file_hash, file_hash, file_size, synced_at
-               FROM spectra
-               WHERE local_path IS NOT NULL AND local_path LIKE ?""",
-            (f"{observation}/%",),
-        ).fetchall()
-        for row in legacy_rows:
-            if row["id"] not in result:
-                d = dict(row)
-                d["file_hash"] = d.get("local_file_hash")
-                result[row["id"]] = d
-
-        return result
-
-    def verify_local_files(
-        self,
-        products_dir: Path,
-        observation: Optional[str] = None,
-        show_progress: bool = False,
-    ) -> dict:
-        """Reconcile DB sync state with the local filesystem."""
-        from ..sync import compute_file_hash
-
-        now = datetime.now(timezone.utc).isoformat()
-        obs_filter = "AND s.observation = ?" if observation else ""
-        obs_params: tuple = (observation,) if observation else ()
-
-        tracked_rows = self._conn.execute(
-            f"""
-            SELECT s.id, s.local_path, s.local_file_mtime,
-                   s.local_file_size, s.local_file_hash
-            FROM spectra s
-            WHERE s.local_path IS NOT NULL {obs_filter}
-            """,
-            obs_params,
-        ).fetchall()
-
-        cleared = 0
-        rehashed = 0
-
-        untracked_rows = self._conn.execute(
-            f"""
-            SELECT s.id, s.fits_path, s.file_hash, s.observation
-            FROM spectra s
-            WHERE s.local_path IS NULL AND s.fits_path IS NOT NULL {obs_filter}
-            """,
-            obs_params,
-        ).fetchall()
-
-        total = len(tracked_rows) + len(untracked_rows)
-        pbar = None
-        if show_progress and total > 0:
-            from tqdm import tqdm
-            pbar = tqdm(total=total, desc="Verifying local files", unit="file")
-
-        for row in tracked_rows:
-            full_path = products_dir / row["local_path"]
-            if not full_path.exists():
-                self._conn.execute(
-                    """UPDATE spectra SET local_path = NULL, local_file_hash = NULL,
-                       local_file_mtime = NULL, local_file_size = NULL, synced_at = NULL
-                       WHERE id = ?""",
-                    (row["id"],),
-                )
-                cleared += 1
-            else:
-                st = full_path.stat()
-                stored_mtime = row["local_file_mtime"]
-                stored_size = row["local_file_size"]
-                if (
-                    stored_mtime is not None
-                    and stored_size is not None
-                    and abs(st.st_mtime - stored_mtime) < 0.001
-                    and st.st_size == stored_size
-                ):
-                    if pbar:
-                        pbar.update(1)
-                    continue
-                new_hash = compute_file_hash(full_path)
-                self._conn.execute(
-                    """UPDATE spectra SET local_file_hash = ?,
-                       local_file_mtime = ?, local_file_size = ?
-                       WHERE id = ?""",
-                    (new_hash, st.st_mtime, st.st_size, row["id"]),
-                )
-                rehashed += 1
-            if pbar:
-                pbar.update(1)
-
-        discovered = 0
-        for row in untracked_rows:
-            filename = Path(row["fits_path"]).name
-            obs_name = row["observation"]
-            local_path = products_dir / obs_name / filename
-            if local_path.exists():
-                rel_path = f"{obs_name}/{filename}"
-                st = local_path.stat()
-                actual_hash = compute_file_hash(local_path)
-                self._conn.execute(
-                    """UPDATE spectra SET local_path = ?, local_file_hash = ?,
-                       local_file_mtime = ?, local_file_size = ?, synced_at = ?
-                       WHERE id = ?""",
-                    (rel_path, actual_hash, st.st_mtime, st.st_size, now, row["id"]),
-                )
-                discovered += 1
-            if pbar:
-                pbar.update(1)
-
-        if pbar:
-            pbar.close()
-
-        if cleared or discovered or rehashed:
-            self._conn.commit()
-        return {"cleared": cleared, "rehashed": rehashed, "discovered": discovered}
-
-    def mark_synced(
-        self,
-        spectrum_id: str,
-        local_path: str,
-        file_hash: Optional[str],
-        file_size: Optional[int],
-        local_file_mtime: Optional[float] = None,
-        local_file_size: Optional[int] = None,
-    ) -> None:
-        """Record that a file has been downloaded locally, keyed by spectrum_id.
-
-        The ``file_hash`` parameter is stored as ``local_file_hash``.
-        Assumes the spectrum row already exists (inserted during sync).
+        Preserves the local_* download bookkeeping on conflict — those track
+        on-disk state and must survive a metadata refresh. ``content_hash`` is
+        the server's authoritative hash (the staleness reference).
         """
         now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            """UPDATE spectra SET local_path = ?, local_file_hash = ?,
-               file_size = COALESCE(?, file_size),
-               local_file_mtime = ?, local_file_size = ?, synced_at = ?
-               WHERE spectrum_id = ?""",
-            (
-                local_path,
-                file_hash,
-                file_size,
-                local_file_mtime,
-                local_file_size,
-                now,
-                spectrum_id,
-            ),
-        )
+        count = 0
+        for r in rows:
+            self._conn.execute(
+                """
+                INSERT INTO storage_objects
+                    (storage_key, id, backend, bucket, content_hash, size_bytes,
+                     content_type, product_type, instrument, status, observation,
+                     field, filter, spectrum_id, exposure_ref, deployment_id, cfpipe_version,
+                     created_at, updated_at, _synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(storage_key) DO UPDATE SET
+                    id=excluded.id,
+                    backend=excluded.backend,
+                    bucket=excluded.bucket,
+                    content_hash=excluded.content_hash,
+                    size_bytes=excluded.size_bytes,
+                    content_type=excluded.content_type,
+                    product_type=excluded.product_type,
+                    instrument=excluded.instrument,
+                    status=excluded.status,
+                    observation=excluded.observation,
+                    field=excluded.field,
+                    filter=excluded.filter,
+                    spectrum_id=excluded.spectrum_id,
+                    exposure_ref=excluded.exposure_ref,
+                    deployment_id=excluded.deployment_id,
+                    cfpipe_version=excluded.cfpipe_version,
+                    created_at=excluded.created_at,
+                    updated_at=excluded.updated_at,
+                    _synced_at=excluded._synced_at
+                """,
+                (
+                    r.get("storage_key"),
+                    r.get("id"),
+                    r.get("backend"),
+                    r.get("bucket"),
+                    r.get("content_hash"),
+                    r.get("size_bytes"),
+                    r.get("content_type"),
+                    r.get("product_type"),
+                    r.get("instrument"),
+                    r.get("status"),
+                    r.get("observation"),
+                    r.get("field"),
+                    r.get("filter"),
+                    r.get("spectrum_id"),
+                    r.get("exposure_ref"),
+                    r.get("deployment_id"),
+                    r.get("cfpipe_version"),
+                    r.get("created_at"),
+                    r.get("updated_at"),
+                    now,
+                ),
+            )
+            count += 1
         self._conn.commit()
+        return count
 
-    def get_stale_files(self) -> List[dict]:
-        """Return locally downloaded files whose server hash differs from local."""
-        rows = self._conn.execute(
-            """
-            SELECT s.id, s.spectrum_id, s.target_id, s.object_id, s.grating,
-                   s.fits_path, s.local_path, s.file_hash AS server_hash,
-                   s.local_file_hash, s.observation
-            FROM spectra s
-            WHERE s.local_path IS NOT NULL
-              AND s.file_hash IS NOT NULL
-              AND s.local_file_hash IS NOT NULL
-              AND s.file_hash != s.local_file_hash
-            """
+    def get_max_storage_updated_at(self) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT MAX(updated_at) FROM storage_objects"
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def purge_stale_storage_objects(self, sync_timestamp: str) -> dict:
+        """Delete mirror rows not seen in the latest full sync.
+
+        Returns local files that are now orphaned (their registry row went away)
+        so the caller can optionally clean them up.
+        """
+        orphaned = self._conn.execute(
+            """SELECT local_path FROM storage_objects
+               WHERE _synced_at < ? AND local_path IS NOT NULL""",
+            (sync_timestamp,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        orphaned_files = [r["local_path"] for r in orphaned]
 
-    def get_pending_downloads(
+        cursor = self._conn.execute(
+            "DELETE FROM storage_objects WHERE _synced_at < ?",
+            (sync_timestamp,),
+        )
+        purged = cursor.rowcount
+        self._conn.commit()
+        return {"purged": purged, "orphaned_files": orphaned_files}
+
+    def get_pending_objects(
         self,
         observations: Optional[List[str]] = None,
+        product_types: Optional[List[str]] = None,
         gratings: Optional[List[str]] = None,
+        fields: Optional[List[str]] = None,
+        filters: Optional[List[str]] = None,
     ) -> Dict[str, List[dict]]:
-        """Find spectra that need downloading, grouped by observation."""
-        where = ["s.fits_path IS NOT NULL"]
+        """Find storage objects that need downloading, grouped by scope.
+
+        A row is pending if it isn't materialized locally, or its local hash no
+        longer matches the server's content_hash. ``gratings`` narrows NIRSpec
+        finals (joined to the science spectrum); the registry has no grating
+        column, so exposure-level intermediates are always included. ``filters``
+        narrows per-filter NIRCam products against the typed ``filter`` scope
+        column; rows without a filter (NIRSpec, field-level) are always included,
+        mirroring the grating rule. ``fields`` selects field-scoped NIRCam rows
+        (``observation IS NULL``); results are grouped by ``observation`` for
+        NIRSpec and by ``field`` for NIRCam.
+        """
+        where = ["so.status = 'active'"]
         params: list = []
 
-        if observations:
-            placeholders = ",".join("?" * len(observations))
-            where.append(f"s.observation IN ({placeholders})")
-            params.extend(observations)
+        if product_types:
+            ph = ",".join("?" * len(product_types))
+            where.append(f"so.product_type IN ({ph})")
+            params.extend(product_types)
 
+        if filters:
+            ph = ",".join("?" * len(filters))
+            where.append(f"(so.filter IS NULL OR UPPER(so.filter) IN ({ph}))")
+            params.extend(f.upper() for f in filters)
+
+        # Scope: observations (NIRSpec) and/or fields (NIRCam, observation NULL).
+        scope = []
+        if observations:
+            ph = ",".join("?" * len(observations))
+            scope.append(f"so.observation IN ({ph})")
+            params.extend(observations)
+        if fields:
+            ph = ",".join("?" * len(fields))
+            scope.append(f"so.field IN ({ph})")
+            params.extend(fields)
+        if scope:
+            where.append("(" + " OR ".join(scope) + ")")
+
+        join = ""
         if gratings:
-            placeholders = ",".join("?" * len(gratings))
-            where.append(f"UPPER(s.grating) IN ({placeholders})")
+            join = "LEFT JOIN spectra sp ON sp.spectrum_id = so.spectrum_id"
+            ph = ",".join("?" * len(gratings))
+            where.append(f"(so.spectrum_id IS NULL OR UPPER(sp.grating) IN ({ph}))")
             params.extend(g.upper() for g in gratings)
 
         where.append(
-            "(s.local_file_hash IS NULL OR (s.file_hash IS NOT NULL AND s.local_file_hash != s.file_hash))"
+            "(so.local_file_hash IS NULL OR "
+            "(so.content_hash IS NOT NULL AND so.local_file_hash != so.content_hash))"
         )
         where_sql = " AND ".join(where)
 
         rows = self._conn.execute(
             f"""
-            SELECT s.id, s.spectrum_id, s.target_id, s.object_id, s.grating,
-                   s.fits_path, s.file_hash, s.file_size, s.local_file_hash,
-                   s.observation
-            FROM spectra s
+            SELECT so.storage_key, so.content_hash, so.size_bytes, so.product_type,
+                   so.observation, so.field, so.filter, so.spectrum_id, so.exposure_ref,
+                   so.local_file_hash
+            FROM storage_objects so
+            {join}
             WHERE {where_sql}
-            ORDER BY s.observation, s.id
+            ORDER BY so.observation, so.field, so.storage_key
             """,
             params,
         ).fetchall()
@@ -1180,38 +1254,204 @@ class LocalStore:
         for row in rows:
             d = dict(row)
             d["status"] = "new" if d["local_file_hash"] is None else "updated"
-            obs = d["observation"]
-            result.setdefault(obs, []).append(d)
-
+            # NIRSpec rows key on observation; field-scoped NIRCam rows
+            # (observation NULL) key on field.
+            result.setdefault(d["observation"] or d.get("field"), []).append(d)
         return result
 
-    def remove_observation(self, observation: str) -> int:
-        """Clear local-download state for all spectra in an observation."""
+    def mark_object_synced(
+        self,
+        storage_key: str,
+        local_path: str,
+        local_file_hash: Optional[str],
+        local_file_size: Optional[int] = None,
+        local_file_mtime: Optional[float] = None,
+    ) -> None:
+        """Record that a storage object has been materialized locally."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """UPDATE storage_objects SET local_path = ?, local_file_hash = ?,
+               local_file_mtime = ?, local_file_size = ?, synced_at = ?
+               WHERE storage_key = ?""",
+            (local_path, local_file_hash, local_file_mtime, local_file_size, now, storage_key),
+        )
+        self._conn.commit()
+
+    def get_stale_objects(self) -> List[dict]:
+        """Locally materialized objects whose server hash differs from local."""
+        rows = self._conn.execute(
+            """
+            SELECT storage_key, observation, product_type, spectrum_id,
+                   local_path, content_hash AS server_hash, local_file_hash
+            FROM storage_objects
+            WHERE local_path IS NOT NULL
+              AND content_hash IS NOT NULL
+              AND local_file_hash IS NOT NULL
+              AND content_hash != local_file_hash
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def verify_local_objects(
+        self,
+        products_dir: Path,
+        observation: Optional[str] = None,
+        product_types: Optional[List[str]] = None,
+        show_progress: bool = False,
+    ) -> dict:
+        """Reconcile the storage_objects mirror's local state with the filesystem.
+
+        Clears rows whose file vanished, re-hashes modified files, and re-discovers
+        already-present files (so a fresh mirror after a schema bump finds existing
+        downloads). Scoped to mirrored, downloadable product types.
+        """
+        from ..config import products_relpath
+        from ..sync import compute_file_hash
+        from campfire_layout import LayoutError
+
+        now = datetime.now(timezone.utc).isoformat()
+        types = list(product_types or DOWNLOADABLE_PRODUCT_TYPES)
+        type_ph = ",".join("?" * len(types))
+        clauses = [f"product_type IN ({type_ph})", "status = 'active'"]
+        params: list = list(types)
+        if observation:
+            clauses.append("observation = ?")
+            params.append(observation)
+        where = " AND ".join(clauses)
+
+        tracked = self._conn.execute(
+            f"""SELECT storage_key, local_path, local_file_mtime, local_file_size
+                FROM storage_objects
+                WHERE local_path IS NOT NULL AND {where}""",
+            params,
+        ).fetchall()
+        untracked = self._conn.execute(
+            f"""SELECT storage_key FROM storage_objects
+                WHERE local_path IS NULL AND {where}""",
+            params,
+        ).fetchall()
+
+        total = len(tracked) + len(untracked)
+        pbar = None
+        if show_progress and total > 0:
+            from tqdm import tqdm
+            pbar = tqdm(total=total, desc="Verifying local files", unit="file")
+
+        cleared = rehashed = discovered = 0
+
+        for row in tracked:
+            full_path = products_dir / row["local_path"]
+            if not full_path.exists():
+                self._conn.execute(
+                    """UPDATE storage_objects SET local_path = NULL, local_file_hash = NULL,
+                       local_file_mtime = NULL, local_file_size = NULL, synced_at = NULL
+                       WHERE storage_key = ?""",
+                    (row["storage_key"],),
+                )
+                cleared += 1
+            else:
+                st = full_path.stat()
+                if (
+                    row["local_file_mtime"] is not None
+                    and row["local_file_size"] is not None
+                    and abs(st.st_mtime - row["local_file_mtime"]) < 0.001
+                    and st.st_size == row["local_file_size"]
+                ):
+                    if pbar:
+                        pbar.update(1)
+                    continue
+                new_hash = compute_file_hash(full_path)
+                self._conn.execute(
+                    """UPDATE storage_objects SET local_file_hash = ?,
+                       local_file_mtime = ?, local_file_size = ? WHERE storage_key = ?""",
+                    (new_hash, st.st_mtime, st.st_size, row["storage_key"]),
+                )
+                rehashed += 1
+            if pbar:
+                pbar.update(1)
+
+        for row in untracked:
+            try:
+                rel_path = products_relpath(row["storage_key"])
+            except (LayoutError, ValueError):
+                if pbar:
+                    pbar.update(1)
+                continue
+            local_path = products_dir / rel_path
+            if local_path.exists():
+                st = local_path.stat()
+                actual_hash = compute_file_hash(local_path)
+                self._conn.execute(
+                    """UPDATE storage_objects SET local_path = ?, local_file_hash = ?,
+                       local_file_mtime = ?, local_file_size = ?, synced_at = ?
+                       WHERE storage_key = ?""",
+                    (rel_path, actual_hash, st.st_mtime, st.st_size, now, row["storage_key"]),
+                )
+                discovered += 1
+            if pbar:
+                pbar.update(1)
+
+        if pbar:
+            pbar.close()
+        if cleared or discovered or rehashed:
+            self._conn.commit()
+        return {"cleared": cleared, "rehashed": rehashed, "discovered": discovered}
+
+    def remove_observation_objects(self, observation: str) -> int:
+        """Clear local-download state for all storage objects in an observation."""
         cursor = self._conn.execute(
-            """UPDATE spectra
+            """UPDATE storage_objects
                SET local_path = NULL, local_file_hash = NULL,
-                   local_file_mtime = NULL, local_file_size = NULL,
-                   synced_at = NULL
-               WHERE observation = ? OR local_path LIKE ?""",
-            (observation, f"{observation}/%"),
+                   local_file_mtime = NULL, local_file_size = NULL, synced_at = NULL
+               WHERE observation = ?""",
+            (observation,),
         )
         count = cursor.rowcount
         self._conn.commit()
         return count
 
-    def get_observation_stats(self, observation: str) -> dict:
+    def get_object_stats(
+        self, observation: str, product_types: Optional[List[str]] = None
+    ) -> dict:
+        """Downloaded count + bytes for an observation's objects (optionally by type)."""
+        clauses = ["local_path IS NOT NULL", "observation = ?", "status = 'active'"]
+        params: list = [observation]
+        if product_types:
+            ph = ",".join("?" * len(product_types))
+            clauses.append(f"product_type IN ({ph})")
+            params.extend(product_types)
         row = self._conn.execute(
-            """
-            SELECT
-                COUNT(*) AS synced_count,
-                COALESCE(SUM(s.file_size), 0) AS total_bytes
-            FROM spectra s
-            WHERE s.local_path IS NOT NULL
-              AND (s.observation = ? OR s.local_path LIKE ?)
-            """,
-            (observation, f"{observation}/%"),
+            f"""SELECT COUNT(*) AS synced_count, COALESCE(SUM(size_bytes), 0) AS total_bytes
+                FROM storage_objects WHERE {' AND '.join(clauses)}""",
+            params,
         ).fetchone()
         return dict(row) if row else {"synced_count": 0, "total_bytes": 0}
+
+    def get_object_summary(self) -> List[dict]:
+        """Per-observation finals/intermediates availability + local materialization.
+
+        Drives `campfire status`. Counts active mirror rows by product class and
+        how many are present on disk. Includes obs that have only intermediates
+        (e.g. an admin's draft with no published finals).
+        """
+        rows = self._conn.execute(
+            """
+            SELECT
+                observation,
+                field,
+                COUNT(CASE WHEN product_type IN ('nirspec_spec') THEN 1 END) AS finals_available,
+                COUNT(CASE WHEN product_type IN ('nirspec_spec') AND local_path IS NOT NULL THEN 1 END) AS finals_local,
+                COUNT(CASE WHEN product_type IN ('nirspec_spectrum_exposure') THEN 1 END) AS intermediates_available,
+                COUNT(CASE WHEN product_type IN ('nirspec_spectrum_exposure') AND local_path IS NOT NULL THEN 1 END) AS intermediates_local,
+                COALESCE(SUM(CASE WHEN local_path IS NOT NULL THEN size_bytes END), 0) AS local_bytes,
+                COALESCE(SUM(size_bytes), 0) AS available_bytes
+            FROM storage_objects
+            WHERE status = 'active'
+            GROUP BY observation, field
+            ORDER BY observation
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_last_sync(self, observation: str) -> Optional[str]:
         row = self._conn.execute(
@@ -1248,9 +1488,11 @@ class LocalStore:
         self._conn.commit()
 
     def find_local_path(self, spectrum_id: str) -> Optional[str]:
-        """Return the relative local_path for a spectrum if downloaded, else None."""
+        """Return the relative local_path for a spectrum's final FITS if downloaded."""
         row = self._conn.execute(
-            "SELECT local_path FROM spectra WHERE spectrum_id = ? AND local_path IS NOT NULL",
+            """SELECT local_path FROM storage_objects
+               WHERE spectrum_id = ? AND product_type = 'nirspec_spec'
+                 AND status = 'active' AND local_path IS NOT NULL""",
             (spectrum_id,),
         ).fetchone()
         return row["local_path"] if row else None

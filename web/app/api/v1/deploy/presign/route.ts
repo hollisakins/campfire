@@ -1,59 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { validateAuth } from '@/lib/api-auth';
 import { createClient } from '@supabase/supabase-js';
+import {
+  getS3Client,
+  getBucketName,
+  getOsnWriteClient,
+  getOsnWriteBucket,
+  type StoragePurpose,
+} from '@/lib/storage';
+import { isKnownKey } from '@/lib/layout';
 
 const MAX_BATCH_SIZE = 500;
 const PRESIGN_EXPIRY_SECONDS = 3600; // 1 hour
-
-type BucketId = 'data' | 'tiles';
-
-interface BucketConfig {
-  client: S3Client;
-  bucket: string;
-}
-
-function getBucketConfig(bucketId: BucketId): BucketConfig {
-  if (bucketId === 'tiles') {
-    const accountId = process.env.R2_TILES_ACCOUNT_ID;
-    const accessKeyId = process.env.R2_TILES_ACCESS_KEY_ID;
-    const secretAccessKey = process.env.R2_TILES_SECRET_ACCESS_KEY;
-    const bucketName = process.env.R2_TILES_BUCKET_NAME;
-
-    if (!accountId || !accessKeyId || !secretAccessKey || !bucketName) {
-      throw new Error('R2 tiles credentials not configured');
-    }
-
-    return {
-      client: new S3Client({
-        region: 'auto',
-        endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-        credentials: { accessKeyId, secretAccessKey },
-      }),
-      bucket: bucketName,
-    };
-  }
-
-  // Default: data bucket (spectra, rgb, sed, etc.)
-  const accountId = process.env.R2_ACCOUNT_ID;
-  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
-  const bucketName = process.env.R2_BUCKET_NAME;
-
-  if (!accountId || !accessKeyId || !secretAccessKey || !bucketName) {
-    throw new Error('R2 data credentials not configured');
-  }
-
-  return {
-    client: new S3Client({
-      region: 'auto',
-      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-      credentials: { accessKeyId, secretAccessKey },
-    }),
-    bucket: bucketName,
-  };
-}
 
 /**
  * POST /api/v1/deploy/presign
@@ -64,6 +24,9 @@ function getBucketConfig(bucketId: BucketId): BucketConfig {
  * Request body:
  * {
  *   bucket: "data" | "tiles",
+ *   backend?: "r2" | "osn",   // default "r2"; "osn" signs against the OSN data
+ *                             // bucket (epic #210 / #216 — deploy → OSN). Only
+ *                             // valid with bucket="data".
  *   uploads: [
  *     { key: "spectra/obs_name/file.fits", content_type: "application/fits" },
  *     ...
@@ -110,7 +73,7 @@ export async function POST(request: NextRequest) {
 
     // Parse request
     const body = await request.json();
-    const { bucket: bucketId = 'data', uploads, cache_control } = body;
+    const { bucket: bucketId = 'data', backend = 'r2', uploads, cache_control } = body;
 
     if (!uploads || !Array.isArray(uploads) || uploads.length === 0) {
       return NextResponse.json(
@@ -133,8 +96,40 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get R2 client for the requested bucket
-    const { client, bucket } = getBucketConfig(bucketId);
+    if (backend !== 'r2' && backend !== 'osn') {
+      return NextResponse.json(
+        { error: 'invalid_request', error_description: 'backend must be "r2" or "osn"' },
+        { status: 400 }
+      );
+    }
+
+    // OSN holds only data-bucket products (tiles stay on R2 permanently).
+    if (backend === 'osn' && bucketId !== 'data') {
+      return NextResponse.json(
+        { error: 'invalid_request', error_description: 'backend "osn" is only valid with bucket "data"' },
+        { status: 400 }
+      );
+    }
+
+    // Allowlist: every key must be a contract-valid key for the requested bucket.
+    // Rejects traversal/unsafe keys and anything outside the layout contract, so
+    // a presign can never sign an arbitrary or out-of-tree object.
+    const badUpload = uploads.find(
+      (u: { key?: string }) => !u.key || !isKnownKey(u.key, { bucket: bucketId })
+    );
+    if (badUpload) {
+      return NextResponse.json(
+        { error: 'invalid_request', error_description: `key not permitted by layout contract: ${badUpload.key}` },
+        { status: 400 }
+      );
+    }
+
+    // Resolve the storage client + bucket. The key allowlist above is keyed on the
+    // logical bucket ('data'/'tiles'); the signing target is chosen by `backend`:
+    // 'osn' signs canonical data keys against the OSN bucket with write creds,
+    // 'r2' keeps today's behavior (R2 'data'/'tiles' purpose).
+    const client = backend === 'osn' ? getOsnWriteClient() : getS3Client(bucketId as StoragePurpose);
+    const bucket = backend === 'osn' ? getOsnWriteBucket() : getBucketName(bucketId as StoragePurpose);
 
     // Generate presigned URLs in parallel
     const urlEntries = await Promise.all(

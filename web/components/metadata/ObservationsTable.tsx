@@ -262,7 +262,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
 
   return (
     <div className="bg-card border border-border rounded-lg">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-surface-2">
         <div className="text-sm text-text-secondary">
           {observations.length.toLocaleString()} observation
           {observations.length === 1 ? '' : 's'}
@@ -278,7 +278,7 @@ export const ObservationsTable: React.FC<ObservationsTableProps> = ({
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-card-hover dark:bg-card-hover/40 sticky top-0">
+          <thead className="bg-table-header border-b border-border sticky top-0">
             {table.getHeaderGroups().map((hg) => (
               <tr key={hg.id}>
                 {hg.headers.map((h) => {

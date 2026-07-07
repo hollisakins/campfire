@@ -228,7 +228,32 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
                     redshift_auto = float(val)
                     break
 
-        reduction_version = primary.get('CMPFRVER', 'v0.1')
+        # cfpipe_version is the single campfire-pipeline version string, read
+        # verbatim from the CMPFRVER card the reduction stamped (config-aware,
+        # so a [pipeline].version override flows through). reduced_at is the
+        # actual reduction time (CMPFRTIM), carried verbatim — new reductions
+        # stamp it as UTC ISO 8601; older products may carry a naive-local
+        # string, tolerated downstream as best-effort provenance.
+        cfpipe_version = primary.get('CMPFRVER', 'v0.1')
+        reduced_at = primary.get('CMPFRTIM') or None
+
+        # Source position. MSA products carry SRCRA/SRCDEC in the SCI header, but
+        # fixed-slit products do not (those are MSA-catalog-derived). Fall back to
+        # the EXPOSURES table source_ra/source_dec (the target position) so a
+        # fixed-slit source gets its real sky position rather than (0, 0) — which
+        # would otherwise collapse every fixed-slit target into one object at the
+        # origin during friends-of-friends clustering at deploy time.
+        ra = float(sci.get('SRCRA', 0) or 0)
+        dec = float(sci.get('SRCDEC', 0) or 0)
+        if ra == 0.0 and dec == 0.0 and 'EXPOSURES' in hdul:
+            ed = hdul['EXPOSURES'].data
+            cols = ed.columns.names
+            if 'source_ra' in cols and 'source_dec' in cols:
+                sra = ed['source_ra'][ed['source_ra'] != 0]
+                sdec = ed['source_dec'][ed['source_dec'] != 0]
+                if len(sra) and len(sdec):
+                    ra = float(np.nanmedian(sra))
+                    dec = float(np.nanmedian(sdec))
 
         return {
             'object_id': object_id,
@@ -242,10 +267,11 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
             'exposure_time': float(primary.get('EFFEXPTM', 0)),
             'jwst_version': primary.get('CAL_VER', ''),
             'crds_context': primary.get('CRDS_CTX', ''),
-            'reduction_version': reduction_version,
+            'cfpipe_version': cfpipe_version,
+            'reduced_at': reduced_at,
 
-            'ra': float(sci.get('SRCRA', 0)),
-            'dec': float(sci.get('SRCDEC', 0)),
+            'ra': ra,
+            'dec': dec,
 
             'redshift_auto': redshift_auto,
 

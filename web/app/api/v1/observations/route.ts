@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 
 /**
  * GET /api/v1/observations
@@ -33,8 +33,14 @@ export async function GET(request: NextRequest) {
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     );
 
+    // Unpublished spectra only count toward observation stats for admins who
+    // explicitly opt in. Fail-closed otherwise; no-op in B1.
+    const includeUnpublished =
+      request.nextUrl.searchParams.get('include_unpublished') === 'true' && (await isAdminUser(userId));
+
     const { data, error } = await supabase.rpc('get_observation_stats', {
       p_program_slugs: accessibleProgramSlugs,
+      p_include_unpublished: includeUnpublished,
     });
 
     if (error) {

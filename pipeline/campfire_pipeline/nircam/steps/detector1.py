@@ -20,7 +20,7 @@ from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
 
 
 def detector1_step(uncal_file, field, step_config, overwrite=False,
-                   status=None):
+                   status=None, reduction_version=None):
     """Run JWST Detector1Pipeline on a single ``_uncal.fits`` exposure.
 
     Parameters
@@ -37,10 +37,21 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
     status : StepStatus, optional
         Pre-scanned CFP_* status cache (consulted instead of reopening the
         FITS for the skip check). Falls back to a live header read when None.
+    reduction_version : str, optional
+        CAMPFIRE reduction version, stamped as ``CMPFRVER`` on the canonical
+        exposure's primary header at creation (mirrors the mosaic stamp in
+        ``resample.py``). This is the only place exposure-level pipeline-version
+        provenance is recorded — jwst already stamps ``CAL_VER`` / ``CRDS_CTX``,
+        but not the CAMPFIRE version. ``None`` (e.g. a bare ``detector1_step``
+        call) leaves it unstamped.
     """
     from jwst.pipeline import calwebb_detector1
 
     clean_flicker_noise = step_config.get('clean_flicker_noise', False)
+    # Optional passthrough to the JWST clean_flicker_noise step (e.g.
+    # fit_method = "fft" | "median", background_method, n_sigma). Only used
+    # when clean_flicker_noise is enabled; merged over the defaults below.
+    cfn_opts = step_config.get('clean_flicker_noise_opts', {})
 
     filtname = uncal_file.split('/')[-2]
     assert (filtname.lower() in SW_FILTERS) or (filtname.lower() in LW_FILTERS)
@@ -149,6 +160,7 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
             'clean_flicker_noise': {
                 'skip': not clean_flicker_noise,
                 'fit_by_channel': True,
+                **cfn_opts,
             },
             'ramp_fit': {
                 'skip': False,
@@ -163,6 +175,14 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
     if result is None:
         return
 
-    atomic_save(result, canonical, header_updates=cfp.format(CFP_DET1=None))
+    header_updates = cfp.format(CFP_DET1=None)
+    if reduction_version:
+        # Stamp the CAMPFIRE version at canonical creation so every exposure
+        # carries pipeline-version provenance (mirrors the mosaic CMPFRVER).
+        header_updates['CMPFRVER'] = (
+            reduction_version, 'CAMPFIRE git commit (or pinned version)')
+        header_updates['CMPFRTIM'] = (
+            cfp.iso_now(), 'UTC date/time of CAMPFIRE reduction (ISO 8601)')
+    atomic_save(result, canonical, header_updates=header_updates)
     result.close()
     log(f"Saved {os.path.basename(canonical)} (CFP_DET1)")

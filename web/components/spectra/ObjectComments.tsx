@@ -179,7 +179,7 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
             value={newComment}
             onChange={e => setNewComment(e.target.value)}
             placeholder="Add a comment..."
-            className="w-full px-4 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-2 focus:ring-primary resize-none text-sm"
+            className="w-full px-4 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-card-hover text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary resize-none text-sm"
             rows={2}
             disabled={submitting}
           />

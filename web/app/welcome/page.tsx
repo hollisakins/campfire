@@ -247,7 +247,7 @@ export default function WelcomePage() {
                 type="text"
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
-                className="w-full px-4 py-2 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full px-4 py-2 bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
                 placeholder="Jane Doe"
                 required
                 disabled={saving}
@@ -269,7 +269,7 @@ export default function WelcomePage() {
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="flex-1 px-2 py-2 bg-transparent text-text-primary focus:outline-none"
+                  className="flex-1 px-2 py-2 bg-transparent text-text-primary placeholder:text-text-tertiary focus:outline-none"
                   placeholder="your-username"
                   required
                   disabled={saving}
@@ -293,7 +293,7 @@ export default function WelcomePage() {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-2 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full px-4 py-2 bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
                 placeholder="Enter a password (min. 6 characters)"
                 minLength={6}
                 required
@@ -314,7 +314,7 @@ export default function WelcomePage() {
                 type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full px-4 py-2 bg-background text-text-primary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full px-4 py-2 bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
                 placeholder="Confirm your password"
                 minLength={6}
                 required

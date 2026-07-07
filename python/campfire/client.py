@@ -218,9 +218,10 @@ class Campfire:
         max_workers: int = 4,
         show_progress: bool = True,
     ) -> dict:
-        """Download FITS files for matching spectra."""
+        """Download FITS files for matching spectra (final products)."""
         from .api.session import create_download_session
-        from .sync import download_observation
+        from .sync import download_objects
+        from .db.store import FINAL_PRODUCT_TYPES
 
         if self._local is None:
             raise ValidationError("No local catalog. Run cf.sync() first.")
@@ -228,8 +229,8 @@ class Campfire:
         target_obs = set()
 
         if stale_only:
-            stale_files = self._local.get_stale_files()
-            target_obs = set(f["observation"] for f in stale_files)
+            stale_files = self._local.get_stale_objects()
+            target_obs = set(f["observation"] for f in stale_files if f.get("observation"))
             if not target_obs:
                 return {"downloaded": 0, "failed": 0, "bytes": 0, "message": "All files up to date"}
         else:
@@ -250,26 +251,21 @@ class Campfire:
                 )
 
         dl_session = create_download_session(max_workers)
-        total_downloaded = 0
-        total_failed = 0
-        total_bytes = 0
-
-        for obs in sorted(target_obs):
-            self._api_session._ensure_valid_token()
-            stats = download_observation(
-                self._api, obs, self._products_dir, self._local,
-                max_workers=max_workers,
-                download_session=dl_session,
-                grating_filter=gratings,
-            )
-            total_downloaded += stats.get("downloaded", 0)
-            total_failed += stats.get("failed", 0)
-            total_bytes += stats.get("download_bytes", 0)
-
+        self._api_session._ensure_valid_token()
+        stats = download_objects(
+            self._api,
+            sorted(target_obs),
+            list(FINAL_PRODUCT_TYPES),
+            self._local,
+            self._products_dir,
+            max_workers=max_workers,
+            download_session=dl_session,
+            gratings=gratings,
+        )
         return {
-            "downloaded": total_downloaded,
-            "failed": total_failed,
-            "bytes": total_bytes,
+            "downloaded": stats.get("downloaded", 0),
+            "failed": stats.get("failed", 0),
+            "bytes": stats.get("download_bytes", 0),
         }
 
     # -------------------------------------------------------------------------
@@ -455,6 +451,9 @@ class Campfire:
         redshift_quality: Optional[List[Union[int, str]]] = None,
         max_snr_range: Optional[Tuple[float, float]] = None,
         dq_flags: Optional[Union[int, str, List[str], DQFlags, FlagQuery]] = None,
+        crds_context: Optional[Union[str, List[str]]] = None,
+        cfpipe_version: Optional[Union[str, List[str]]] = None,
+        reduced_after: Optional[str] = None,
         tags: Optional[List[str]] = None,
         inspected_only: Optional[bool] = None,
         has_photometry: Optional[bool] = None,
@@ -470,7 +469,19 @@ class Campfire:
 
         Inspection state (``redshift_range``, ``redshift_quality``,
         ``inspected_only``) is resolved through the parent object.
+
+        Provenance filters carve a calibration-homogeneous subsample without
+        opening any FITS: ``crds_context`` and ``cfpipe_version`` accept a
+        string or list of strings; ``reduced_after`` is an ISO-8601 string
+        keeping only spectra reduced on or after it. These are evaluated in SQL
+        against a synced local catalog (``cf.sync()``); on a remote query they
+        filter the returned page client-side, so sync locally to filter the
+        full catalog.
         """
+        if isinstance(crds_context, str):
+            crds_context = [crds_context]
+        if isinstance(cfpipe_version, str):
+            cfpipe_version = [cfpipe_version]
         if fields:
             fields = [f.lower() for f in fields]
         if gratings:
@@ -494,6 +505,9 @@ class Campfire:
                 redshift_quality=redshift_quality,
                 max_snr_range=max_snr_range,
                 dq_flags=dq_dict,
+                crds_context=crds_context,
+                cfpipe_version=cfpipe_version,
+                reduced_after=reduced_after,
                 tags=tags,
                 inspected_only=inspected_only,
                 has_photometry=has_photometry,
@@ -525,6 +539,15 @@ class Campfire:
                 sort=sort,
                 sort_dir=sort_dir,
             )
+            # Provenance filters aren't server-side on the remote feed; apply
+            # them to the returned page so the kwargs behave consistently.
+            if crds_context or cfpipe_version or reduced_after:
+                spectra = [
+                    s for s in spectra
+                    if (not crds_context or s.get("crds_context") in crds_context)
+                    and (not cfpipe_version or s.get("cfpipe_version") in cfpipe_version)
+                    and (not reduced_after or (s.get("reduced_at") or "") >= reduced_after)
+                ]
 
         if not use_local and pagination:
             total = pagination.get("total", 0)
@@ -653,10 +676,11 @@ class Campfire:
         filename = Path(fits_path).name
 
         if self._local and self._products_dir:
-            observation = spec_info.get("observation") or ""
-            obs_dir = self._products_dir / observation if observation else self._products_dir
-            obs_dir.mkdir(parents=True, exist_ok=True)
-            dest = obs_dir / filename
+            from .config import products_relpath
+            # Land the file where the pipeline writes and deploy reads it, via the
+            # shared layout contract (products/nirspec/<obs>/…), not products/<obs>/.
+            dest = self._products_dir / products_relpath(fits_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
         else:
             import tempfile
             dest = Path(tempfile.mkdtemp(prefix="campfire_")) / filename
@@ -680,16 +704,17 @@ class Campfire:
             raise DownloadError(f"Failed to download spectrum: {e}")
 
         if self._local and self._products_dir:
-            observation = spec_info.get("observation") or ""
-            local_rel_path = f"{observation}/{filename}" if observation else filename
+            from .config import products_relpath
+            local_rel_path = products_relpath(fits_path)
             st = dest.stat()
-            self._local.mark_synced(
-                spectrum_id=spectrum_id,
+            # fits_path is the storage key for the final product, so record local
+            # state directly on its storage_objects mirror row.
+            self._local.mark_object_synced(
+                storage_key=fits_path,
                 local_path=local_rel_path,
-                file_hash=f"sha256:{sha256.hexdigest()}",
-                file_size=file_size,
-                local_file_mtime=st.st_mtime,
+                local_file_hash=f"sha256:{sha256.hexdigest()}",
                 local_file_size=st.st_size,
+                local_file_mtime=st.st_mtime,
             )
 
         return SpectrumData.from_fits(

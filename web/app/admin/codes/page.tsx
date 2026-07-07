@@ -258,7 +258,7 @@ export default function AdminCodesPage() {
                     value={formData.code}
                     onChange={(e) => setFormData(prev => ({ ...prev, code: e.target.value.toUpperCase() }))}
                     placeholder="CAMPFIRE-2024"
-                    className="flex-1 px-3 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-2 focus:ring-primary font-mono uppercase"
+                    className="flex-1 px-3 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary font-mono uppercase"
                     required
                   />
                   <Button type="button" variant="secondary" size="sm" onClick={generateRandomCode}>
@@ -276,7 +276,7 @@ export default function AdminCodesPage() {
                   value={formData.description}
                   onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
                   placeholder="Core team access"
-                  className="w-full px-3 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-3 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
                 />
               </div>
             </div>
@@ -293,7 +293,7 @@ export default function AdminCodesPage() {
                     setFormData(prev => ({ ...prev, grants_all_programs: isAll }));
                     if (isAll) setSelectedPrograms([]);
                   }}
-                  className="w-full px-3 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-3 py-2 border border-border rounded-lg bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                   <option value="all">All Programs</option>
                   <option value="specific">Specific Programs</option>
@@ -310,7 +310,7 @@ export default function AdminCodesPage() {
                   onChange={(e) => setFormData(prev => ({ ...prev, expires_in_days: e.target.value }))}
                   placeholder="Never"
                   min="1"
-                  className="w-full px-3 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-3 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
                 />
               </div>
 
@@ -324,7 +324,7 @@ export default function AdminCodesPage() {
                   onChange={(e) => setFormData(prev => ({ ...prev, max_uses: e.target.value }))}
                   placeholder="Unlimited"
                   min="1"
-                  className="w-full px-3 py-2 border border-border dark:border-border-strong rounded-lg bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-3 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
                 />
               </div>
             </div>
@@ -370,7 +370,7 @@ export default function AdminCodesPage() {
       {/* Codes List */}
       <Card className="overflow-hidden">
         <table className="w-full">
-          <thead className="bg-card border-b border-border">
+          <thead className="bg-table-header border-b border-border">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
                 Code

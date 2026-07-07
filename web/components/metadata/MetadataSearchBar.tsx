@@ -152,7 +152,7 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
 
   return (
     <div ref={containerRef} className="relative w-full max-w-xl">
-      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary dark:text-text-tertiary" />
+      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary" />
       <input
         type="text"
         value={value}
@@ -163,7 +163,7 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
         onFocus={() => setOpen(true)}
         onKeyDown={handleKey}
         placeholder="Search programs, observations, PIs, or JWST PIDs…"
-        className="w-full pl-9 pr-9 py-2 text-sm border border-border rounded-md bg-background text-text-primary placeholder:text-text-secondary dark:placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-primary"
+        className="w-full pl-9 pr-9 py-2 text-sm border border-border rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-primary"
       />
       {value && (
         <button
@@ -171,7 +171,7 @@ export const MetadataSearchBar: React.FC<MetadataSearchBarProps> = ({
             onChange('');
             setOpen(false);
           }}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary dark:text-text-tertiary hover:text-text-primary"
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary"
           aria-label="Clear search"
         >
           <X className="w-4 h-4" />

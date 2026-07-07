@@ -46,7 +46,7 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
         <select
           value={pageSize}
           onChange={handlePageSizeChange}
-          className="px-2 py-1 border border-border dark:border-border-strong rounded-md bg-card text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+          className="px-2 py-1 border border-border-strong rounded-md bg-card text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary"
         >
           {pageSizeOptions.map((size) => (
             <option key={size} value={size}>
@@ -122,7 +122,7 @@ export const TablePagination: React.FC<TablePaginationProps> = ({
             }}
             min={1}
             max={pageCount || 1}
-            className="w-12 px-2 py-1 text-sm text-center border border-border dark:border-border-strong rounded-md bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+            className="w-12 px-2 py-1 text-sm text-center border border-border-strong rounded-md bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
           />
           <span className="text-sm text-text-secondary">of {pageCount || 1}</span>
         </div>

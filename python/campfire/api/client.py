@@ -4,6 +4,7 @@ Centralizes all URL construction and response parsing. Used by both the
 ``Campfire`` client class and the CLI.
 """
 
+import os
 from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 from ..exceptions import (
@@ -17,6 +18,57 @@ from ..flags import (
     parse_flag_input,
 )
 from .session import APISession
+
+#: Default page size for the /sync/* paginators. Overridable per run via the
+#: ``CAMPFIRE_SYNC_PAGE_SIZE`` env var — larger pages cut the per-page fixed cost
+#: (HTTP round-trip + server auth preamble + count-gating) at the price of wider
+#: responses and higher peak memory. Clamped to a sane range.
+DEFAULT_SYNC_PAGE_SIZE = 1000
+
+#: storage_objects is the largest sync catalog: every spectrum fans out into
+#: finals plus intermediate-lifecycle products, and NIRCam exposures pile on top,
+#: so its row count runs several times that of objects/spectra. It therefore
+#: paginates with a larger default page to cut the per-page round-trips. Override
+#: with ``CAMPFIRE_SYNC_STORAGE_PAGE_SIZE``; absent that, it tracks the shared
+#: ``CAMPFIRE_SYNC_PAGE_SIZE`` but never drops below this floor.
+DEFAULT_STORAGE_SYNC_PAGE_SIZE = 5000
+
+_MAX_SYNC_PAGE_SIZE = 50000
+
+
+def _resolve_page_size(env_var: str, default: int) -> int:
+    """Resolve a sync page size from ``env_var`` (or ``default``), clamped to range."""
+    raw = os.environ.get(env_var)
+    if not raw:
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if val < 1:
+        return default
+    return min(val, _MAX_SYNC_PAGE_SIZE)
+
+
+def _resolve_sync_page_size() -> int:
+    """Resolve the shared /sync/* page size from ``CAMPFIRE_SYNC_PAGE_SIZE``."""
+    return _resolve_page_size("CAMPFIRE_SYNC_PAGE_SIZE", DEFAULT_SYNC_PAGE_SIZE)
+
+
+def _resolve_storage_sync_page_size() -> int:
+    """Resolve the /sync/storage page size.
+
+    ``CAMPFIRE_SYNC_STORAGE_PAGE_SIZE`` pins storage precisely when set. Absent
+    that, storage tracks the shared ``CAMPFIRE_SYNC_PAGE_SIZE`` but is floored at
+    ``DEFAULT_STORAGE_SYNC_PAGE_SIZE`` — so it is always at least as large as the
+    other streams, and larger by default.
+    """
+    raw = os.environ.get("CAMPFIRE_SYNC_STORAGE_PAGE_SIZE")
+    if raw:
+        return _resolve_page_size(
+            "CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", DEFAULT_STORAGE_SYNC_PAGE_SIZE
+        )
+    return max(_resolve_sync_page_size(), DEFAULT_STORAGE_SYNC_PAGE_SIZE)
 
 
 def _build_query_params(
@@ -110,6 +162,8 @@ class APIClient:
 
     def __init__(self, session: APISession):
         self._session = session
+        self._page_size = _resolve_sync_page_size()
+        self._storage_page_size = _resolve_storage_sync_page_size()
 
     # ------------------------------------------------------------------
     # Objects
@@ -224,16 +278,64 @@ class APIClient:
         _handle_response_error(response)
         return response.json()
 
+    # ------------------------------------------------------------------
+    # Storage registry (the client download/availability layer)
+    # ------------------------------------------------------------------
+    def fetch_all_storage(
+        self,
+        updated_since: Optional[str] = None,
+        on_page_complete: Optional[Callable[[int, int], None]] = None,
+    ) -> Tuple[List[dict], int]:
+        """Fetch the storage_objects mirror via /sync/storage (program-scoped).
+
+        Paginates with the larger storage page size (``_storage_page_size``) since
+        storage_objects is the biggest sync catalog.
+        """
+        return self._paginate_sync_endpoint(
+            "/sync/storage", updated_since, on_page_complete,
+            page_size=self._storage_page_size,
+        )
+
+    def presign_keys(self, keys: List[str]) -> Dict[str, str]:
+        """Get signed download URLs for storage keys the caller may access.
+
+        Returns ``{key: url}``; keys the server declines to authorize are simply
+        absent from the result. Batches of up to 200 keys per request.
+        """
+        urls: Dict[str, str] = {}
+        for start in range(0, len(keys), 200):
+            batch = keys[start:start + 200]
+            response = self._session.post(
+                "/storage/presign", json={"keys": batch}, timeout=60
+            )
+            _handle_response_error(response, "presigning storage keys")
+            urls.update(response.json().get("urls", {}))
+        return urls
+
+    def get_storage_budget(self) -> Optional[dict]:
+        """Fetch the global storage budget (admin-only). Returns None if forbidden."""
+        response = self._session.get("/storage/budget", timeout=30)
+        if response.status_code == 403:
+            return None
+        _handle_response_error(response, "fetching storage budget")
+        return response.json()
+
     def _paginate_sync_endpoint(
         self,
         path: str,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
+        page_size: Optional[int] = None,
     ) -> Tuple[List[dict], int]:
         """Paginate through a /sync/* endpoint.
 
+        ``page_size`` overrides the shared per-client page size for endpoints that
+        want a different one (e.g. the larger storage page); defaults to
+        ``self._page_size``.
+
         Returns (items, total_accessible_count).
         """
+        page_size = page_size or self._page_size
         all_items: List[dict] = []
         total_accessible_count = 0
         total = 0
@@ -245,7 +347,7 @@ class APIClient:
             # count CTEs when include_counts=false, saving a full scan per
             # subsequent page.
             params: dict = {
-                "limit": 1000,
+                "limit": page_size,
                 "offset": offset,
                 "include_counts": "true" if first_page else "false",
             }
@@ -340,7 +442,7 @@ class APIClient:
         total_count = 0
         while True:
             self._session._ensure_valid_token()
-            params: dict = {"limit": 1000, "offset": offset}
+            params: dict = {"limit": self._page_size, "offset": offset}
             if updated_since:
                 params["updated_since"] = updated_since
             response = self._session.get("/sync/photometry", params=params, timeout=60)

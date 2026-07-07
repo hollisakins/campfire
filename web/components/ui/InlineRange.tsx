@@ -76,7 +76,7 @@ export function InlineRange({
             step={step}
             className={`
               w-full px-3 py-2 text-sm border rounded-lg bg-background
-              text-text-primary transition-all duration-200
+              text-text-primary placeholder:text-text-tertiary transition-all duration-200
               focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary
               ${isActive ? 'border-primary/50' : 'border-border'}
             `}
@@ -94,7 +94,7 @@ export function InlineRange({
             step={step}
             className={`
               w-full px-3 py-2 text-sm border rounded-lg bg-background
-              text-text-primary transition-all duration-200
+              text-text-primary placeholder:text-text-tertiary transition-all duration-200
               focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary
               ${isActive ? 'border-primary/50' : 'border-border'}
             `}

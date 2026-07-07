@@ -337,10 +337,19 @@ def classify(
         for tidx in indices:
             target_to_cluster[targets[tidx]['id']] = ci
 
-    # Existing object FK on each target row (may be None for new targets).
-    target_to_obj: dict[int, int | None] = {
-        t['id']: t.get('object_id') for t in targets
-    }
+    obj_by_id = {o['id']: o for o in existing_objects}
+
+    # Existing object FK on each target row (None for new targets). An
+    # object_id that isn't among this field's existing objects is a stale or
+    # cross-field membership — e.g. left behind when a prior deploy mis-placed
+    # targets onto an object in another field (the (0,0) coordinate collision
+    # incident, where every fixed-slit target collapsed onto one ghost object).
+    # Treat it as unassigned so the cluster is classified as an insert, instead
+    # of KeyError-ing on an obj_by_id lookup further down.
+    target_to_obj: dict[int, int | None] = {}
+    for t in targets:
+        oid = t.get('object_id')
+        target_to_obj[t['id']] = oid if oid in obj_by_id else None
 
     # For each existing object: the clusters its members went to.
     obj_clusters: dict[int, set[int]] = defaultdict(set)
@@ -358,8 +367,6 @@ def classify(
             oid = target_to_obj.get(tid)
             if oid is not None:
                 cluster_objects[ci].add(oid)
-
-    obj_by_id = {o['id']: o for o in existing_objects}
 
     # Pre-compute aggregates for every cluster.
     aggs: list[ClusterAggregates] = [
@@ -734,6 +741,13 @@ def apply_proposals(
         plus daughters), or merged (survivor). Soft-deleted orphans and
         merge losers are excluded — downstream consumers (e.g. photometry)
         don't need to re-process them.
+
+    Dispatch: the deploy path (inserts / revivals / updates / orphans — no
+    splits or merges, which are blocked pre-apply by abort_on_split_merge)
+    goes through the atomic ``apply_object_reconciliation`` RPC so the entire
+    apply is one transaction and can never strand ghost objects (GitHub #184).
+    The operator-only split/merge path keeps the legacy per-call apply, which
+    also migrates photometry and list membership in Python.
     """
     if proposals.complex_overlaps:
         raise RuntimeError(
@@ -742,6 +756,110 @@ def apply_proposals(
             "aborted before reaching this point."
         )
     now = datetime.now(timezone.utc).isoformat()
+    if proposals.splits or proposals.merges:
+        return _apply_proposals_legacy(client, field, proposals, now)
+    if not (
+        proposals.inserts or proposals.revivals
+        or proposals.updates or proposals.orphans
+    ):
+        return {}, set()
+    return _apply_proposals_rpc(client, field, proposals, now)
+
+
+def _agg_payload(agg: ClusterAggregates) -> dict:
+    """Serialize a ClusterAggregates to a JSON-safe dict for the apply RPC.
+
+    member_target_db_ids rides inside the element so the RPC can set FKs in
+    the same transaction as the insert. member_target_ids (a set) is dropped:
+    not JSON-serializable and not needed server-side.
+    """
+    return {
+        'object_id': agg.object_id,
+        'ra': agg.ra,
+        'dec': agg.dec,
+        'n_targets': agg.n_targets,
+        'n_spectra': agg.n_spectra,
+        'programs': agg.programs,
+        'gratings': agg.gratings,
+        'observations': agg.observations,
+        'max_snr': agg.max_snr,
+        'max_exposure_time': agg.max_exposure_time,
+        'member_target_db_ids': list(agg.member_target_db_ids),
+    }
+
+
+def _apply_proposals_rpc(
+    client: Client, field: str, proposals: Proposals, now: str,
+) -> tuple[dict[str, int], set[int]]:
+    """Atomic deploy-path apply via the apply_object_reconciliation RPC.
+
+    Builds the JSON-safe payload, makes a single RPC call (one transaction:
+    inserts + revivals + updates + orphan soft-deletes + all target FK
+    assignment), and parses the returned id maps back into the
+    (stats, changed_ids) contract.
+    """
+    inserts = [_agg_payload(p.aggregates) for p in proposals.inserts]
+    revivals = [
+        {**_agg_payload(r.aggregates), 'object_db_id': r.object['id']}
+        for r in proposals.revivals
+    ]
+    updates = [
+        {
+            **_agg_payload(u.aggregates),
+            'object_db_id': u.object['id'],
+            'staleness_reason': u.staleness_reason,
+            'reactivate': not u.object.get('is_active'),
+        }
+        for u in proposals.updates
+    ]
+    orphan_ids = [o.object['id'] for o in proposals.orphans]
+
+    resp = client.rpc('apply_object_reconciliation', {
+        'p_field': field,
+        'p_inserts': inserts,
+        'p_revivals': revivals,
+        'p_updates': updates,
+        'p_orphan_ids': orphan_ids,
+        'p_updated_at': now,
+    }).execute()
+
+    data = resp.data
+    if isinstance(data, list):  # defensive: some clients wrap scalar returns
+        data = data[0] if data else {}
+    data = data or {}
+
+    insert_id_map = data.get('insert_id_map') or {}
+    inserted_ids = [int(v) for v in insert_id_map.values()]
+    revived_ids = [int(x) for x in (data.get('revived_ids') or [])]
+    updated_ids = [int(x) for x in (data.get('updated_ids') or [])]
+
+    stats: dict[str, int] = defaultdict(int)
+    stats['inserted'] = len(inserted_ids)
+    stats['revived'] = len(revived_ids)
+    stats['updated'] = len(updated_ids)
+    stats['reactivated'] = int(data.get('reactivated_count') or 0)
+    stats['soft_deleted'] = int(data.get('orphaned_count') or 0)
+    stats['target_fks_set'] = int(data.get('target_fks_set') or 0)
+    # Per-staleness breakdown — computed Python-side to preserve the legacy
+    # stat keys (the RPC doesn't need them).
+    for u in proposals.updates:
+        if u.staleness_reason:
+            stats[f'staleness_{u.staleness_reason}'] += 1
+
+    changed_ids = set(inserted_ids) | set(revived_ids) | set(updated_ids)
+    return dict(stats), changed_ids
+
+
+def _apply_proposals_legacy(
+    client: Client, field: str, proposals: Proposals, now: str,
+) -> tuple[dict[str, int], set[int]]:
+    """Per-call apply for the operator split/merge path.
+
+    NOT atomic — retained for the interactive path because splits/merges also
+    migrate photometry and object_list_members in Python. Splits/merges never
+    reach this on the deploy path (abort_on_split_merge), where the atomic
+    _apply_proposals_rpc is used instead.
+    """
     stats = defaultdict(int)
 
     # The order matters: inserts must run before target FK updates that

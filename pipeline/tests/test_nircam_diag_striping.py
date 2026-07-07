@@ -148,7 +148,7 @@ def test_residual_helper_composes_with_diagonal():
     )
     after_diag = data - diag_model
 
-    h, v, _ = fit_residual_striping(after_diag, mask, maxiters=3)
+    h, v, _, _ = fit_residual_striping(after_diag, mask, maxiters=3)
     cleaned = after_diag - h - v
 
     noise_sigma = 0.02

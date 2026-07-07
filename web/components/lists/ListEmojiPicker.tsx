@@ -29,7 +29,7 @@ export function ListEmojiPicker({ value, onChange }: ListEmojiPickerProps) {
         <button
           type="button"
           onClick={() => setOpen(!open)}
-          className="w-10 h-10 rounded-md border border-border dark:border-border-strong bg-background dark:bg-slate-700 flex items-center justify-center text-lg hover:bg-gray-50 dark:hover:bg-slate-600 transition-colors"
+          className="w-10 h-10 rounded-md border border-border-strong bg-background flex items-center justify-center text-lg hover:bg-card-hover transition-colors"
         >
           {value || <span className="text-text-secondary dark:text-text-tertiary text-sm">+</span>}
         </button>
@@ -54,7 +54,7 @@ export function ListEmojiPicker({ value, onChange }: ListEmojiPickerProps) {
             className="flex flex-col h-full"
           >
             <EmojiPicker.Search
-              className="w-full px-3 py-2 text-sm border-b border-border dark:border-border-strong bg-background dark:bg-slate-700 text-text-primary outline-none placeholder:text-text-secondary dark:placeholder:text-slate-500"
+              className="w-full px-3 py-2 text-sm border-b border-border-strong bg-background text-text-primary outline-none placeholder:text-text-tertiary"
               placeholder="Search emoji..."
               autoFocus
             />
@@ -84,7 +84,7 @@ export function ListEmojiPicker({ value, onChange }: ListEmojiPickerProps) {
                     <button
                       type="button"
                       className={`w-8 h-8 flex items-center justify-center rounded cursor-pointer text-lg ${
-                        emoji.isActive ? 'bg-gray-200 dark:bg-slate-500' : 'hover:bg-gray-100 dark:hover:bg-slate-600'
+                        emoji.isActive ? 'bg-primary-soft' : 'hover:bg-card-hover'
                       }`}
                       {...props}
                     >

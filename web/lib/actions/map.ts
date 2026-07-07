@@ -96,6 +96,12 @@ export interface Shutter {
   dither_id: number;
   shutter_state: 'source' | 'open' | 'stuck_closed';
   observation: string;
+  /** Aperture name (e.g. 'MSA', 'S200A2'). May be absent on legacy rows. */
+  aperture_name?: string;
+  /** Across-slit (dispersion) extent in arcsec; falls back to the MSA shutter width. */
+  aperture_width_arcsec?: number;
+  /** Along-slit (spatial) extent in arcsec; falls back to the MSA shutter height. */
+  aperture_height_arcsec?: number;
 }
 
 export interface ShuttersResult {

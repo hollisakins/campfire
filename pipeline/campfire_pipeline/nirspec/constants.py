@@ -16,6 +16,30 @@ GRATINGS = [k.upper() for k in GRATING_LIMITS]
 
 
 # ---------------------------------------------------------------------------
+# Aperture geometry for slit/shutter sky overlays (shutters ECSV → web frontend)
+# ---------------------------------------------------------------------------
+# On-sky aperture dimensions in arcsec as (width, height), where width is the
+# across-slit (dispersion) direction and height is the along-slit (spatial)
+# direction. These are the single source of truth for the rectangles the web
+# frontend draws over imaging cutouts; the pipeline writes them per row into the
+# shutters ECSV so the frontend no longer hardcodes them.
+
+# MSA micro-shutter open area. Matches the value the web overlay historically
+# hardcoded (0.22 x 0.46), so MSA rendering is unchanged once the frontend reads
+# dimensions from the data.
+MSA_SHUTTER_SIZE_ARCSEC = (0.22, 0.46)
+
+# NIRSpec fixed-slit apertures (SIAF nominal open sizes), one rectangle each.
+FIXED_SLIT_SIZE_ARCSEC = {
+    "S200A1": (0.20, 3.20),
+    "S200A2": (0.20, 3.20),
+    "S400A1": (0.40, 3.65),
+    "S1600A1": (1.60, 1.60),
+    "S200B1": (0.20, 3.20),
+}
+
+
+# ---------------------------------------------------------------------------
 # Extended-wavelength reduction (G140M/F100LP, G235M/F170LP)
 # ---------------------------------------------------------------------------
 # Constants for the opt-in extended-wavelength feature

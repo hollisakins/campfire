@@ -291,8 +291,8 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     # Flatten source IDs from all workers
     source_ids_processed = list(set(sid for result in results for sid in result))
 
-    # Discover cal files and fix units
-    files = obs.discover_files(ext='cal', source_ids=source_ids_processed)
+    # Discover canonical files and fix units
+    files = obs.discover_files(ext='canonical', source_ids=source_ids_processed)
     files = Observation.group_files(files)
 
     dispatch(fix_units, list(files), n_processes=n_processes)
@@ -314,7 +314,8 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     if detect_enabled:
         from campfire_pipeline.nirspec.stuck_shutters import (
             detect_stuck_shutters, merge_stuck_shutters,
-            write_stuck_shutters_toml, _get_n_shutters,
+            write_stuck_shutters_toml, load_stuck_shutters_tagged,
+            _get_n_shutters,
         )
         from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
         import toml as _toml
@@ -323,12 +324,18 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
                                         n_processes=n_processes)
 
         if detected:
-            # Merge with existing TOML entries
+            # Merge with existing TOML entries, preserving each entry's
+            # provenance tag (hand/web/auto) through the rewrite so a later
+            # `pull-stuck-shutters` authority merge still tells web from hand.
+            prior_tags = load_stuck_shutters_tagged(obs.stuck_closed_shutters_file)
             existing = _toml.load(obs.stuck_closed_shutters_file)
             merged, updated = merge_stuck_shutters(existing, detected)
+            provenance = {k: tag for k, (_sh, tag) in prior_tags.items()}
+            for (root, sid) in updated:
+                provenance[(root, str(sid))] = 'auto'
             write_stuck_shutters_toml(
                 merged, obs.stuck_closed_shutters_file, obs.name,
-                auto_detected=updated,
+                provenance=provenance,
             )
 
             # Generate diagnostic plots
@@ -361,6 +368,12 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
                 _skip_stuck_detection=True,
             )
 
+    # Stamp the pipeline-computed exp_group (CFEXPGRP) on each canonical's primary
+    # header (§4.2) so deploy populates the nods grid with the exact grouping. Runs
+    # on every run_stage2a invocation (incl. the stuck-shutter re-run above, which
+    # regenerates its canonicals), so all files end up stamped.
+    dispatch(stamp_exp_group_single, list(files), n_processes=n_processes)
+
 
 def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
                 n_processes=1, data_dir=None, products_dir=None):
@@ -388,10 +401,10 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=False)
 
-    # Discover and group cal files
-    files = obs.discover_files(ext='cal', source_ids=source_ids)
+    # Discover and group canonical files
+    files = obs.discover_files(ext='canonical', source_ids=source_ids)
     if len(files) == 0:
-        log(f"No cal files found for {obs.name}")
+        log(f"No canonical files found for {obs.name}")
         return
     files = Observation.group_files(files)
 
@@ -420,19 +433,14 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
         if source_id in skip_sources:
             continue
 
-        # Skip check: do products already exist?
-        all_bkgsub_exist = all(
-            os.path.exists(f['path'].replace('_cal.fits', '_cal_bkgsub.fits'))
-            for f in bg_files
+        # Skip check: has stage2b fully processed every canonical in the group?
+        # Gating on CFP_BKG presence alone is wrong when rectify is requested:
+        # CFP_BKG is stamped unconditionally, but the rectified S2D_BKGSUB_* view
+        # (CFP_S2D) is only produced under rectify, so a rectify=False -> True
+        # re-run would skip and silently never produce the s2d views (#225 review).
+        skip = (not overwrite) and all(
+            _bkgsub_group_done(f['path'], rectify) for f in bg_files
         )
-        if rectify:
-            all_s2d_exist = all(
-                os.path.exists(f['path'].replace('_cal.fits', '_s2d_bkgsub.fits'))
-                for f in bg_files
-            )
-            skip = all_bkgsub_exist and all_s2d_exist and not overwrite
-        else:
-            skip = all_bkgsub_exist and not overwrite
 
         if skip:
             log(f'ID{source_id}: bkgsub products exist for {root}_*_{detector}_{source_id}, skipping (overwrite=False)')
@@ -454,9 +462,13 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
         rectify=rectify,
     )
 
+    # Re-stamp exp_group (CFEXPGRP) after bkgsub's canonical re-saves — this is the
+    # final on-disk state deploy reads (§4.2). Idempotent with the stage2a stamp.
+    dispatch(stamp_exp_group_single, list(files), n_processes=n_processes)
+
     # Optional: plot background-subtracted 2D cutouts
     if plot_bkgsub and rectify:
-        bkgsub_files = obs.discover_files(ext='cal_bkgsub', source_ids=source_ids)
+        bkgsub_files = obs.discover_files(ext='canonical', source_ids=source_ids)
         if len(bkgsub_files) > 0:
             bkgsub_files = Observation.group_files(bkgsub_files)
             source_ids_done = np.unique(bkgsub_files['source_id'])
@@ -474,6 +486,132 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
             )
 
 
+def _run_stage2a_fixedslit(
+        rate_file,
+        obs: Observation,
+        overwrite: bool = False,
+        wavecorr_override=None,
+        extended_refs=None,
+    ):
+    """Stage 2a for standalone NIRSpec fixed-slit (NRS_FIXEDSLIT) exposures.
+
+    Unlike MSA mode, fixed-slit exposures have no MSA metadata file: jwst's
+    ``assign_wcs`` builds the fixed-slit WCS from the instrument model and
+    ``extract_2d`` selects slits by name. We extract only the primary slit
+    (the ``FXD_SLIT`` header keyword), which jwst assigns ``source_id = 1``, and
+    emit a product keyed on ``source_id = 1`` so the mode-agnostic downstream
+    stages — nodded background subtraction (2b) and combination (3) — pick it up
+    unchanged. The product filename matches the MSA convention
+    ``{root}_{nod}_{detector}_{source_id}`` so :meth:`Observation.discover_files`
+    parses it identically.
+    """
+    from jwst.pipeline import Spec2Pipeline
+    from jwst.associations import asn_from_list
+    from jwst.assign_wcs.util import NoDataOnDetectorError
+
+    prev_cwd = os.getcwd()
+    os.chdir(obs.workspace_dir)
+
+    source_ids_processed = []
+    asn_file = None
+    try:
+        hdr = fits.getheader(rate_file)
+        primary_slit = str(hdr.get('FXD_SLIT', '')).strip()
+        if not primary_slit or primary_slit.upper() == 'NONE':
+            log(f'No FXD_SLIT primary slit defined for '
+                f'{os.path.basename(rate_file)}, skipping')
+            return []
+
+        # jwst hard-wires source_id=1 to the primary fixed slit; reuse that as
+        # the product key so the existing {..._source_id} naming carries through.
+        source_id = 1
+        prod_name = os.path.basename(rate_file).replace('_rate.fits', f'_{source_id}')
+
+        nodata_marker = f'{prod_name}_nodata'
+        if (os.path.exists(f'{prod_name}.fits') or os.path.exists(nodata_marker)) and not overwrite:
+            log(f'Skipping stage2a for {prod_name}, overwrite=False')
+            return [source_id]
+        if os.path.exists(nodata_marker):
+            os.remove(nodata_marker)
+
+        # Extended-wavelength override for this config (grating-gated; typically
+        # None for fixed-slit gratings, but supported for consistency with MSA).
+        extended_override = None
+        if extended_refs:
+            extended_override = extended_refs.get((
+                str(hdr.get('DETECTOR', '')).strip(),
+                str(hdr.get('GRATING', '')).strip(),
+                str(hdr.get('FILTER', '')).strip(),
+            ))
+
+        cards = [
+            ('CFEXTWAV', extended_override is not None, 'Extended wavelength reduction applied'),
+            ('CFFXSLT', True, 'NIRSpec fixed-slit source'),
+            ('CFFSSLIT', primary_slit, 'NIRSpec fixed-slit aperture'),
+            ('STKSHTRS', 'N/A', 'Stuck shutters masked'),
+        ]
+
+        association = [(os.path.basename(rate_file), 'science')]
+        asn = asn_from_list.asn_from_list(association, with_exptype=True, product_name=prod_name)
+        suggested_name, serialization = asn.dump()
+        asn_file = f'{prod_name}.json'
+        with open(asn_file, 'w') as asn_out:
+            asn_out.write(serialization)
+
+        steps = {
+            # Extract only the primary fixed slit; the WCS exposes all open
+            # slits on a FULL-frame readout but only this one holds the target.
+            'extract_2d': {'slit_names': [primary_slit]},
+            'extract_1d': {'skip': True},
+            'barshadow': {'skip': True},
+            'bkg_subtract': {'skip': True},
+            'resample_spec': {'skip': True},
+        }
+        if wavecorr_override:
+            steps['wavecorr'] = {'override_wavecorr': wavecorr_override}
+        if extended_override:
+            from campfire_pipeline.config import get_extended_photom_path
+            steps['flat_field'] = {
+                'override_fflat': extended_override['fflat'],
+                'override_sflat': extended_override['sflat'],
+            }
+            steps['assign_wcs'] = {
+                'override_wavelengthrange': extended_override['wavelengthrange'],
+            }
+            steps['photom'] = {
+                'override_photom': get_extended_photom_path(fixed_slit=True),
+            }
+            log(f"Applying extended-wavelength overrides for {prod_name}")
+
+        log(f"Running Spec2Pipeline for {prod_name} (fixed slit {primary_slit})")
+        try:
+            Spec2Pipeline.call(asn_file, save_results=True, steps=steps)
+            log(f'Completed Spec2Pipeline for {prod_name}')
+            source_ids_processed.append(source_id)
+        except NoDataOnDetectorError:
+            log(f'No data on detector for {prod_name}')
+            with open(nodata_marker, 'w') as f:
+                f.write('NoDataOnDetectorError\n')
+
+        # Promote the cal product to the bare canonical file + stamp cards + CFP_CAL.
+        _finalize_canonical(prod_name, cards)
+
+    except KeyboardInterrupt:
+        return source_ids_processed
+
+    except Exception as e:
+        log(f"ERROR in fixed-slit stage2a for {os.path.basename(rate_file)}", e)
+        raise
+
+    finally:
+        # Clean up any ASN files for this rate file (matches the MSA path).
+        for stale in glob.glob(rate_file.replace('_rate.fits', '*.json')):
+            os.remove(stale)
+        os.chdir(prev_cwd)
+
+    return source_ids_processed
+
+
 def run_stage2a_single_rate(
         rate_file,
         obs: Observation,
@@ -486,6 +624,16 @@ def run_stage2a_single_rate(
     ):
 
     log(f'Starting stage2a for {os.path.basename(rate_file)}')
+
+    # Standalone fixed-slit exposures carry no MSA metadata file. jwst builds
+    # the fixed-slit WCS natively and extract_2d selects slits by name, so the
+    # whole MSAMETFL/per-source-metafile machinery below does not apply —
+    # dispatch to the dedicated fixed-slit path. The MSA branch is unchanged.
+    if str(fits.getheader(rate_file).get('EXP_TYPE', '')).upper() == 'NRS_FIXEDSLIT':
+        return _run_stage2a_fixedslit(
+            rate_file, obs, overwrite=overwrite,
+            wavecorr_override=wavecorr_override, extended_refs=extended_refs,
+        )
 
     from jwst.pipeline import Spec2Pipeline
     from jwst.associations import asn_from_list
@@ -560,7 +708,7 @@ def run_stage2a_single_rate(
             prod_name = os.path.basename(rate_file).replace('_rate.fits', f'_{source_id}')
 
             nodata_marker = f'{prod_name}_nodata'
-            if (os.path.exists(f'{prod_name}_cal.fits') or os.path.exists(nodata_marker)) and not overwrite:
+            if (os.path.exists(f'{prod_name}.fits') or os.path.exists(nodata_marker)) and not overwrite:
                 log(f'Skipping stage2a for {prod_name}, overwrite=False')
                 source_ids_processed.append(source_id)
                 continue
@@ -588,6 +736,9 @@ def run_stage2a_single_rate(
             # metadata so downstream stages can branch on it.
             source_is_fixed_slit = main_metafile.is_fixed_slit(source_id)
             cards.append(('CFFXSLT', source_is_fixed_slit, 'NIRSpec fixed-slit source'))
+            if source_is_fixed_slit:
+                cards.append(('CFFSSLIT', main_metafile.fixed_slit_name(source_id),
+                              'NIRSpec fixed-slit aperture'))
             if len(stuck) > 0:
                 cards.append(('STKSHTRS', str(stuck['shutters'][0]), 'Stuck shutters masked'))
                 for stuck_shutter in np.sort(stuck['shutters'][0])[::-1]:
@@ -672,14 +823,8 @@ def run_stage2a_single_rate(
                 with open(nodata_marker, 'w') as f:
                     f.write('NoDataOnDetectorError\n')
 
-            for ext in ['cal','s2d']:
-                if os.path.exists(f'{prod_name}_{ext}.fits'):
-                    with fits.open(f'{prod_name}_{ext}.fits', mode='update') as hdul:
-
-                        for card in cards:
-                            hdul['PRIMARY'].header[card[0]] = card[1:3]
-
-                        hdul.flush()
+            # Promote the cal product to the bare canonical file + stamp cards + CFP_CAL.
+            _finalize_canonical(prod_name, cards)
 
             if os.path.exists(asn_file):
                 os.remove(asn_file)
@@ -713,6 +858,68 @@ def run_stage2a_single_rate(
         os.chdir(prev_cwd)
 
     return source_ids_processed
+
+
+def _finalize_canonical(prod_name, cards):
+    """Promote Spec2's ``{prod_name}_cal.fits`` to the bare canonical
+    ``{prod_name}.fits`` (issue #212): rename in place, stamp the provenance
+    ``cards`` and the ``CFP_CAL`` state keyword. Must run with cwd in the
+    workspace (relative paths). Returns the canonical path, or None if the cal
+    product is absent (NoDataOnDetectorError)."""
+    from campfire_pipeline.common import cfp
+    from campfire_pipeline.nirspec import canonical as C
+    cal_out = f'{prod_name}_cal.fits'
+    canonical = f'{prod_name}.fits'
+    if not os.path.exists(cal_out):
+        return None
+    os.replace(cal_out, canonical)
+    cfp_cards = cfp.format(keyset=cfp.NIRSPEC, CFP_CAL=None)
+    # Stamp the canonical format version at birth. It rides through stage2b's
+    # MultiSlitModel re-save via the jwst datamodel's extra_fits round-trip (same
+    # path the CFP_* / provenance cards rely on), and is intentionally not a CFP_*
+    # card so `nirspec reset` never strips it (a reset doesn't change the format).
+    schema_card = C.schema_version_card()
+    with fits.open(canonical, mode='update') as hdul:
+        for card in cards:
+            hdul['PRIMARY'].header[card[0]] = card[1:3]
+        for key, (val, comment) in cfp_cards.items():
+            hdul['PRIMARY'].header[key] = (val, comment)
+        for key, (val, comment) in schema_card.items():
+            hdul['PRIMARY'].header[key] = (val, comment)
+        hdul.flush()
+    return canonical
+
+
+def _bkgsub_group_done(canonical_path, rectify):
+    """True if stage2b has fully processed this canonical (issue #212).
+
+    A canonical is done when ``CFP_BKG`` is set; for an actually-subtracted nod
+    (timestamp value) the rectified ``S2D_BKGSUB_*`` view (``CFP_S2D``) must also
+    be present when ``rectify`` is requested. The ``skipped:`` / ``excluded:``
+    ``CFP_BKG`` markers are terminal — those canonicals stay calibrated and never
+    receive a bkgsub s2d view — so they don't require ``CFP_S2D``.
+    """
+    hdr = fits.getheader(canonical_path)
+    cfp_bkg = hdr.get('CFP_BKG')
+    if not cfp_bkg:
+        return False
+    if str(cfp_bkg).startswith(('skipped', 'excluded')):
+        return True
+    return (not rectify) or ('CFP_S2D' in hdr)
+
+
+def stamp_exp_group_single(file):
+    """Stamp ``CFEXPGRP`` (the pipeline-computed exp_group) on one canonical's
+    primary header (NIRSpec review loop §4.2).
+
+    Dispatched over the grouped ``files`` table at the end of stage2a/2b so deploy
+    can populate the web nods-renderer grid with the exact pipeline grouping. Uses
+    ``append_extras`` (which copies the existing header) — additive and idempotent,
+    surviving stage2b's re-save the same way ``CFSCHEMA`` does. Mirrors the
+    per-file ``fix_units`` dispatch shape.
+    """
+    from campfire_pipeline.nirspec import canonical as C
+    C.append_extras(file['path'], header_updates=C.exp_group_card(file['exp_group']))
 
 
 def fix_units(file):
@@ -751,30 +958,32 @@ def fix_units(file):
 
 
 def resample_single_exposure(file: Table, overwrite=False):
+    """Rectify the canonical (cal-state) file and cache the resampled view as
+    ``S2D_{SCI,DQ,VAR_RNOISE}`` HDUs on it (issue #212; was a standalone
+    ``_s2d.fits``). Consumed by plots.py / stuck_shutters.py."""
+    from campfire_pipeline.nirspec import canonical as C
 
-    cal_file = file['path']
-    s2d_file_out = cal_file.replace('_cal.fits', '_s2d.fits')
+    canonical_file = file['path']
+    workspace_dir = os.path.dirname(canonical_file)
 
-    if os.path.exists(s2d_file_out) and not overwrite:
-        return
-
-    workspace_dir = os.path.dirname(cal_file)
+    # Skip if the (un-bkgsub) s2d view is already cached on the canonical.
+    if not overwrite:
+        with fits.open(canonical_file, memmap=False) as _h:
+            if any((hh.name or '').upper() == 'S2D_SCI' for hh in _h):
+                return
 
     # Handle directory changes
     prev_cwd = os.getcwd()
-
     os.chdir(workspace_dir)
 
-
     try:
-        # from jwst.assign_wcs import AssignWcsStep
-        from jwst.datamodels import MultiSlitModel, ImageModel
+        from jwst.datamodels import MultiSlitModel
         from jwst.pixel_replace import PixelReplaceStep
         from jwst.resample import ResampleSpecStep
         pixel_replace = PixelReplaceStep()
-        resample_spec = ResampleSpecStep() # do these need args?
+        resample_spec = ResampleSpecStep()
 
-        model = MultiSlitModel(cal_file)
+        model = MultiSlitModel(canonical_file)
 
         resampled = model.copy()
         if resampled.meta.cal_step.pathloss == 'COMPLETE':
@@ -783,9 +992,15 @@ def resample_single_exposure(file: Table, overwrite=False):
             resampled = pathloss.call(resampled, inverse=True)
         resampled = pixel_replace.call(resampled)
         resampled = resample_spec.call(resampled)
-        resampled.save(s2d_file_out)
+
+        slit = resampled.slits[0]
+        extras = C.make_prefixed_hdus(
+            {'SCI': slit.data, 'DQ': slit.dq, 'VAR_RNOISE': slit.var_rnoise},
+            C.S2D_PREFIX)
         resampled.close()
         model.close()
+
+        C.append_extras(os.path.basename(canonical_file), extra_hdus=extras)
 
     except Exception as e:
         log("ERROR", e)
@@ -893,11 +1108,11 @@ def run_stage2b_single_slitlet(
     os.chdir(workspace_dir)
 
     try:
-        # from jwst.assign_wcs import AssignWcsStep
+        from campfire_pipeline.common import cfp
+        from campfire_pipeline.nirspec import canonical as C
         from jwst.pathloss import PathLossStep
         from jwst.background import BackgroundStep
         from jwst.datamodels import MultiSlitModel, ImageModel
-        # assign_wcs = AssignWcsStep()
         bkg_subtract = BackgroundStep()
         pathloss = PathLossStep()
 
@@ -905,13 +1120,25 @@ def run_stage2b_single_slitlet(
             from jwst.pixel_replace import PixelReplaceStep
             from jwst.resample import ResampleSpecStep
             pixel_replace = PixelReplaceStep()
-            resample_spec = ResampleSpecStep() # do these need args?
+            resample_spec = ResampleSpecStep()
 
         if len(cal_files)==1:
             log(f"Single exposure only ({os.path.basename(cal_files[0])}), no background subtraction to be done!")
+            # Canonical stays calibrated; mark it excluded from the stage3 science
+            # combination (was: no _cal_bkgsub file written for it).
+            C.append_extras(cal_files[0], header_updates=cfp.format(
+                keyset=cfp.NIRSPEC, CFP_BKG='skipped:nods=1'))
             return
 
         elif len(cal_files) in [2, 3, 5]:
+            # Re-run safety: restore any canonical already subtracted in place back
+            # to the calibrated frame (the leapfrog backgrounds must be clean cal
+            # slits), then capture the cal arrays for the revert (PRE_BKGSUB_*) HDUs.
+            for cf in cal_files:
+                if C.has_pre_bkgsub(cf):
+                    C.restore_pre_bkgsub(cf)
+            pre_arrays = [C.read_slit_arrays(cf) for cf in cal_files]
+
             # Load cal files as MultiSlitModels, but undo any pathloss corrections
             models = []
             do_pathloss = []
@@ -950,12 +1177,10 @@ def run_stage2b_single_slitlet(
                     if str(nods[i]) in bkg_overrides:
                         nods_to_use = bkg_overrides[str(nods[i])]
                         if len(nods_to_use) == 0:
-                            log(f'{os.path.basename(cal_files[i])}: Override empty for nod {nods[i]}, skipping bkgsub output (nod excluded from science combination)')
-                            cal_file_out = cal_files[i].replace('_cal.fits', '_cal_bkgsub.fits')
-                            s2d_file_out = cal_file_out.replace('_cal_bkgsub.fits', '_s2d_bkgsub.fits')
-                            for stale in (cal_file_out, s2d_file_out):
-                                if os.path.exists(stale):
-                                    os.remove(stale)
+                            log(f'{os.path.basename(cal_files[i])}: Override empty for nod {nods[i]}, excluding nod from science combination')
+                            # Canonical stays calibrated; mark it excluded for stage3.
+                            C.append_extras(cal_files[i], header_updates=cfp.format(
+                                keyset=cfp.NIRSPEC, CFP_BKG='excluded:override'))
                             continue
                         log(f'{os.path.basename(cal_files[i])}: Only using nods {nods_to_use} for bkg subtraction for nod {nods[i]}')
                         bkg = [b[0] for n,b in zip(nods,models) if n in nods_to_use]
@@ -985,18 +1210,24 @@ def run_stage2b_single_slitlet(
 
 
 
-                cal_file_out = cal_files[i].replace('_cal.fits', '_cal_bkgsub.fits')
-                result.save(cal_file_out)
-
+                # Write the bkgsub state into the canonical in place: live SCI =
+                # bkgsub'd, stash the cal arrays as PRE_BKGSUB_* (reversible),
+                # cache the rectified view as S2D_BKGSUB_*, stamp CFP_BKG/CFP_S2D.
+                extras = C.make_prefixed_hdus(pre_arrays[i], C.PRE_BKGSUB_PREFIX)
+                header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG=None)
                 if rectify:
-                    # Call pixel replace, followed by resample_spec for 2D slit data
                     resampled = result.copy()
                     resampled = pixel_replace.call(resampled)
                     resampled = resample_spec.call(resampled)
-                    s2d_file_out = cal_file_out.replace('_cal_bkgsub.fits', '_s2d_bkgsub.fits')
-                    resampled.save(s2d_file_out)
+                    rslit = resampled.slits[0]
+                    extras += C.make_prefixed_hdus(
+                        {'SCI': rslit.data, 'DQ': rslit.dq, 'VAR_RNOISE': rslit.var_rnoise},
+                        C.S2D_BKGSUB_PREFIX)
+                    header_updates.update(cfp.format(keyset=cfp.NIRSPEC, CFP_S2D=None))
                     resampled.close()
 
+                C.save_canonical(result, cal_files[i], extra_hdus=extras,
+                                 header_updates=header_updates)
                 result.close()
 
         else:

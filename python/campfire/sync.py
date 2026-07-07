@@ -5,6 +5,7 @@ Session creation and manifest fetching are delegated to the ``api`` subpackage.
 """
 
 import hashlib
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,41 +27,36 @@ def compute_file_hash(path: Path) -> str:
     return f"sha256:{hasher.hexdigest()}"
 
 
-def _make_progress(show, unit, desc):
-    """Create a tqdm progress bar and page-complete callback."""
+def _make_progress(show, unit, desc, position=None):
+    """Create a tqdm progress bar and page-complete callback.
+
+    ``position`` pins the bar to a fixed terminal row so the four sync streams
+    render as a stable stacked group while they fetch concurrently. When
+    ``show`` is False, returns ``(None, None)`` and the paginator skips progress
+    reporting entirely.
+    """
     if not show:
         return None, None
-    pbar = tqdm(unit=unit, desc=desc)
+    pbar = tqdm(unit=unit, desc=desc, position=position, leave=True)
 
     def callback(fetched, total):
-        pbar.total = total
+        # total is only known once the first page returns (include_counts); until
+        # then the bar renders indeterminate, then snaps to a percentage.
+        if total:
+            pbar.total = total
         pbar.n = fetched
         pbar.refresh()
 
     return pbar, callback
 
 
-def _sync_objects(api, store, full, show_progress):
-    """Sync objects from the server.
+def _apply_objects(store, fetched, updated_since, sync_ts):
+    """Apply fetched objects to the local store (main-thread write phase).
 
-    Returns (object_count, purged_count, incremental, needs_full_sync,
-    server_total, sync_timestamp).
+    Returns (object_count, purged_count, incremental, needs_full_sync).
     """
-    updated_since = None
-    if not full:
-        updated_since = store.get_max_objects_updated_at()
+    all_objects, server_total = fetched
     incremental = updated_since is not None
-
-    sync_timestamp = datetime.now(timezone.utc).isoformat()
-
-    pbar, callback = _make_progress(show_progress, "obj", "Objects")
-
-    all_objects, server_total = api.fetch_all_objects(
-        updated_since=updated_since,
-        on_page_complete=callback,
-    )
-    if pbar:
-        pbar.close()
 
     obj_count = store.upsert_objects(all_objects)
 
@@ -72,66 +68,40 @@ def _sync_objects(api, store, full, show_progress):
 
     purged = 0
     if not incremental:
-        purged = store.purge_stale_objects(sync_timestamp)
+        purged = store.purge_stale_objects(sync_ts)
 
-    return obj_count, purged, incremental, needs_full_sync, server_total, sync_timestamp
+    return obj_count, purged, incremental, needs_full_sync
 
 
-def _sync_spectra(api, store, full, show_progress):
-    """Sync spectra from the server.
+def _apply_spectra(store, fetched, updated_since, sync_ts):
+    """Apply fetched spectra to the local store.
 
-    Returns (spectra_count, purge_result, incremental, sync_timestamp).
+    Returns (spectra_count, purge_result, incremental).
     """
-    updated_since = None
-    if not full:
-        updated_since = store.get_max_spectra_updated_at()
+    all_spectra, _server_total = fetched
     incremental = updated_since is not None
-
-    sync_timestamp = datetime.now(timezone.utc).isoformat()
-
-    pbar, callback = _make_progress(show_progress, "spec", "Spectra")
-
-    all_spectra, _server_total = api.fetch_all_spectra(
-        updated_since=updated_since,
-        on_page_complete=callback,
-    )
-    if pbar:
-        pbar.close()
 
     spec_count = store.upsert_spectra(all_spectra)
 
     purge_result = None
     if not incremental:
-        purge_result = store.purge_stale_spectra(sync_timestamp)
+        purge_result = store.purge_stale_spectra(sync_ts)
 
-    return spec_count, purge_result, incremental, sync_timestamp
+    return spec_count, purge_result, incremental
 
 
-def _sync_photometry(api, store, full, show_progress):
-    """Sync object photometry from the server.
+def _apply_photometry(store, fetched, updated_since, sync_ts):
+    """Apply fetched photometry to the local store.
 
     Returns (record_count, purged_count).
     """
-    updated_since = None
-    if not full:
-        updated_since = store.get_max_photometry_updated_at()
-
-    sync_timestamp = datetime.now(timezone.utc).isoformat()
-
-    pbar, callback = _make_progress(show_progress, "rec", "Photometry")
-
-    all_records, _total_count = api.fetch_all_photometry(
-        updated_since=updated_since,
-        on_page_complete=callback,
-    )
-    if pbar:
-        pbar.close()
+    all_records, _total_count = fetched
 
     rec_count = store.upsert_photometry(all_records)
 
     purged = 0
     if updated_since is None:
-        purged = store.purge_stale_photometry(sync_timestamp)
+        purged = store.purge_stale_photometry(sync_ts)
 
     return rec_count, purged
 
@@ -143,6 +113,82 @@ def _sync_tags(api, store, show_progress):
         return store.upsert_tags(tags_data)
     except requests.RequestException:
         return 0
+
+
+def _apply_storage(store, fetched, updated_since, sync_ts):
+    """Apply the fetched storage_objects mirror to the local store.
+
+    Returns (row_count, purged, orphaned).
+    """
+    all_rows, _server_total = fetched
+    incremental = updated_since is not None
+
+    n = store.upsert_storage_objects(all_rows)
+
+    purged = 0
+    orphaned: List[str] = []
+    if not incremental:
+        res = store.purge_stale_storage_objects(sync_ts)
+        purged = res["purged"]
+        orphaned = res["orphaned_files"]
+
+    return n, purged, orphaned
+
+
+# The four independent /sync/* catalogs, each pinned to a fixed progress row
+# (option A): a stable stacked group so every count stays anchored to a real
+# per-entity total instead of a meaningless catalog-wide sum. Fields:
+# (result key, APIClient method name, tqdm unit, padded bar label).
+_FETCH_STREAMS = (
+    ("objects", "fetch_all_objects", "obj", "Objects   "),
+    ("spectra", "fetch_all_spectra", "spec", "Spectra   "),
+    ("storage", "fetch_all_storage", "obj", "Storage   "),
+    ("photometry", "fetch_all_photometry", "rec", "Photometry"),
+)
+
+
+def _fetch_all_concurrent(api, cursors, use_bars, show_progress):
+    """Fetch the four independent /sync/* catalogs concurrently.
+
+    Each stream is network-bound and independent, so wall time collapses from the
+    sum of the four fetches toward the slowest single one. The SQLite store is
+    single-threaded, so workers only touch the network here; every write happens
+    on the caller's thread afterwards. Returns ``{key: (rows, server_total)}``.
+    """
+    bars = []
+    results: Dict[str, Tuple[List[dict], int]] = {}
+    try:
+        with ThreadPoolExecutor(max_workers=len(_FETCH_STREAMS)) as executor:
+            future_to_key = {}
+            for position, (key, method_name, unit, desc) in enumerate(_FETCH_STREAMS):
+                pbar, callback = _make_progress(use_bars, unit, desc, position=position)
+                bars.append(pbar)
+                method = getattr(api, method_name)
+                future = executor.submit(
+                    method, updated_since=cursors[key], on_page_complete=callback
+                )
+                future_to_key[future] = key
+            # Surfaces the first failing stream's exception once the pool drains.
+            for future in as_completed(future_to_key):
+                results[future_to_key[future]] = future.result()
+    finally:
+        for pbar in bars:
+            if pbar is not None:
+                pbar.close()
+        if use_bars:
+            # Drop the cursor below the (leave=True) stacked bars so whatever the
+            # caller prints next doesn't overwrite them.
+            sys.stderr.write("\n" * len(_FETCH_STREAMS))
+            sys.stderr.flush()
+
+    if show_progress and not use_bars:
+        # Non-TTY (CI, redirected logs): no live bars, so emit one completion
+        # line per stream instead.
+        for key, _method_name, _unit, desc in _FETCH_STREAMS:
+            rows = results.get(key, ([], 0))[0]
+            print(f"  {desc.strip()}: {len(rows):,}", file=sys.stderr)
+
+    return results
 
 
 def sync_metadata(
@@ -164,26 +210,47 @@ def sync_metadata(
     """
     from .db.export import export_catalogs
 
-    # 1. Sync objects
-    (obj_count, obj_purged, incremental, needs_full_sync,
-     server_total, _obj_ts) = _sync_objects(api, store, full, show_progress)
+    use_bars = show_progress and sys.stderr.isatty()
 
-    # 2. Sync spectra
-    spec_count, spec_purge, spec_incremental, _spec_ts = _sync_spectra(
-        api, store, full, show_progress
+    # One timestamp captured before any fetch. Purge removes rows whose
+    # _synced_at predates it; every upsert below stamps a strictly later time, so
+    # only rows the server no longer returns get purged.
+    sync_ts = datetime.now(timezone.utc).isoformat()
+
+    # Incremental cursors are store reads, so resolve them here on the main thread
+    # before the workers start (workers must not touch the single-threaded
+    # SQLite connection).
+    cursors = {
+        "objects": None if full else store.get_max_objects_updated_at(),
+        "spectra": None if full else store.get_max_spectra_updated_at(),
+        "storage": None if full else store.get_max_storage_updated_at(),
+        "photometry": None if full else store.get_max_photometry_updated_at(),
+    }
+
+    # 1. Fetch all four catalogs concurrently (network only).
+    fetched = _fetch_all_concurrent(api, cursors, use_bars, show_progress)
+
+    # 2. Apply to the local store serially (single-threaded SQLite connection).
+    obj_count, obj_purged, incremental, needs_full_sync = _apply_objects(
+        store, fetched["objects"], cursors["objects"], sync_ts
+    )
+    spec_count, spec_purge, spec_incremental = _apply_spectra(
+        store, fetched["spectra"], cursors["spectra"], sync_ts
+    )
+    storage_count, storage_purged, storage_orphaned = _apply_storage(
+        store, fetched["storage"], cursors["storage"], sync_ts
+    )
+    phot_count, phot_purged = _apply_photometry(
+        store, fetched["photometry"], cursors["photometry"], sync_ts
     )
 
-    # 3. Sync photometry
-    phot_count, phot_purged = _sync_photometry(api, store, full, show_progress)
-
-    # 4. Sync tag metadata
+    # 3. Sync tag metadata (single request), then export CSVs.
     tags_count = _sync_tags(api, store, show_progress)
 
-    # 5. Export CSVs
     export_catalogs(store, meta_dir)
 
-    # 6. Detect stale local files
-    stale = store.get_stale_files()
+    # 4. Detect stale local files (server hash != local hash, via the mirror)
+    stale = store.get_stale_objects()
 
     obs_set = set(store.get_synced_observations())
 
@@ -192,6 +259,8 @@ def sync_metadata(
         "objects": obj_count,
         "objects_purged": obj_purged,
         "spectra": spec_count,
+        "storage_objects": storage_count,
+        "storage_purged": storage_purged,
         "photometry": phot_count,
         "photometry_purged": phot_purged,
         "tags": tags_count,
@@ -202,56 +271,38 @@ def sync_metadata(
     }
     if spec_purge:
         result["purged_spectra"] = spec_purge["purged_spectra"]
-        result["orphaned_files"] = spec_purge["orphaned_files"]
+    if storage_orphaned:
+        result["orphaned_files"] = storage_orphaned
 
     return result
 
 
-def compute_download_plan(
-    manifest: dict,
-    synced_files: Dict[int, dict],
-) -> Tuple[List[dict], List[dict], List[dict]]:
-    """Compare manifest against local state to determine what needs downloading.
-
-    The ``synced_files`` dict is keyed by the integer PK (``spectra_id``);
-    ``synced_files[id]["file_hash"]`` is the locally hashed value (the server
-    hash lives in the manifest entry).
-    """
-    new_files = []
-    updated_files = []
-    up_to_date = []
-
-    for spec in manifest.get("spectra", []):
-        spectra_id = spec["spectra_id"]
-        local = synced_files.get(spectra_id)
-
-        if local is None:
-            new_files.append(spec)
-        elif spec.get("file_hash") and local.get("file_hash") != spec["file_hash"]:
-            updated_files.append(spec)
-        else:
-            up_to_date.append(spec)
-
-    return new_files, updated_files, up_to_date
-
-
-def download_and_verify(
-    spec: dict,
-    obs_dir: Path,
+def _download_and_verify_key(
+    obj: dict,
+    download_url: str,
     products_dir: Path,
     download_session: requests.Session,
 ) -> dict:
-    """Download a single file, verify checksum, return result dict."""
-    filename = Path(spec["fits_path"]).name
-    local_path = obs_dir / filename
-    tmp_path = local_path.with_suffix(".tmp")
+    """Download one storage object, verify its hash, return local-state dict.
 
+    The destination is derived from the object's storage key via the shared
+    layout contract (``products_relpath``), so every product type lands in the
+    same tree the pipeline writes and deploy reads (``products/nirspec/<obs>/…``).
+    """
+    from .config import products_relpath
+
+    key = obj["storage_key"]
+    rel = products_relpath(key)
+    local_path = products_dir / rel
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = local_path.with_name(local_path.name + ".tmp")
+
+    expected = obj.get("content_hash")
     try:
-        response = download_session.get(spec["download_url"], stream=True, timeout=300)
+        response = download_session.get(download_url, stream=True, timeout=300)
         response.raise_for_status()
 
         hasher = hashlib.sha256()
-
         with open(tmp_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=65536):
                 f.write(chunk)
@@ -259,116 +310,107 @@ def download_and_verify(
 
         computed_hash = f"sha256:{hasher.hexdigest()}"
 
-        if spec.get("file_hash") and computed_hash != spec["file_hash"]:
+        # Only verify against authoritative sha256: hashes (etag: rows are
+        # provisional bucket metadata, not a content digest).
+        if expected and expected.startswith("sha256:") and computed_hash != expected:
             tmp_path.unlink()
             raise DownloadError(
-                f"Hash mismatch for {spec['fits_path']}: "
-                f"expected {spec['file_hash']}, got {computed_hash}"
+                f"Hash mismatch for {key}: expected {expected}, got {computed_hash}"
             )
 
         tmp_path.rename(local_path)
-
         st = local_path.stat()
         return {
-            "id": spec.get("spectra_id"),
-            "spectrum_id": spec.get("spectrum_id"),
-            "target_id": spec.get("target_id"),
-            "observation": spec.get("observation", obs_dir.name),
-            "grating": spec["grating"],
-            "fits_path": spec["fits_path"],
+            "storage_key": key,
             "local_path": str(local_path.relative_to(products_dir)),
-            "file_hash": computed_hash,
-            "file_size": st.st_size,
-            "local_file_mtime": st.st_mtime,
+            "local_file_hash": computed_hash,
             "local_file_size": st.st_size,
+            "local_file_mtime": st.st_mtime,
         }
-
     except DownloadError:
         raise
     except requests.RequestException as e:
         if tmp_path.exists():
             tmp_path.unlink()
-        raise DownloadError(f"Failed to download {spec['fits_path']}: {e}")
+        raise DownloadError(f"Failed to download {key}: {e}")
 
 
-def download_observation(
+def download_objects(
     api_client,
-    obs_name: str,
-    products_dir: Path,
+    observations: List[str],
+    product_types: List[str],
     store,
+    products_dir: Path,
     max_workers: int = 4,
     dry_run: bool = False,
     download_session: Optional[requests.Session] = None,
-    manifest: Optional[dict] = None,
-    grating_filter: Optional[List[str]] = None,
+    gratings: Optional[List[str]] = None,
+    fields: Optional[List[str]] = None,
+    filters: Optional[List[str]] = None,
 ) -> dict:
-    """Download FITS files for a single observation."""
-    if manifest is None:
-        manifest = api_client.fetch_manifest(obs_name)
+    """Download storage objects for the given observations/fields + product types.
 
-    if grating_filter:
-        grating_set = set(g.upper() for g in grating_filter)
-        manifest = dict(manifest)
-        manifest["spectra"] = [
-            s for s in manifest.get("spectra", [])
-            if s.get("grating", "").upper() in grating_set
-        ]
-
-    synced = store.get_synced_files(obs_name)
-    new_files, updated_files, up_to_date = compute_download_plan(manifest, synced)
-
-    to_download = new_files + updated_files
-    total_bytes = sum(s.get("file_size") or 0 for s in to_download)
+    The single, product-type-agnostic download engine: plan locally from the
+    storage_objects mirror, presign the to-download set, fetch in parallel,
+    verify ``content_hash``, and record local state. ``fields`` selects
+    field-scoped NIRCam rows (``observation IS NULL``); ``filters`` narrows those
+    to specific NIRCam filters. Used for NIRSpec finals, intermediates, and
+    NIRCam alike.
+    """
+    pending = store.get_pending_objects(
+        observations=list(observations),
+        product_types=list(product_types),
+        gratings=gratings,
+        fields=list(fields) if fields else None,
+        filters=list(filters) if filters else None,
+    )
+    to_download = [row for rows in pending.values() for row in rows]
 
     stats = {
-        "observation": obs_name,
-        "new_count": len(new_files),
-        "updated_count": len(updated_files),
-        "up_to_date_count": len(up_to_date),
-        "download_bytes": total_bytes,
+        "to_download": len(to_download),
+        "download_bytes": sum(r.get("size_bytes") or 0 for r in to_download),
         "downloaded": 0,
         "failed": 0,
-        "skipped": len(up_to_date),
+        "unauthorized": 0,
+        "by_observation": {obs: len(rows) for obs, rows in pending.items()},
     }
 
     if dry_run or not to_download:
         return stats
 
-    obs_dir = products_dir / obs_name
-    obs_dir.mkdir(parents=True, exist_ok=True)
+    products_dir.mkdir(parents=True, exist_ok=True)
+
+    urls = api_client.presign_keys([r["storage_key"] for r in to_download])
+    fetchable = [r for r in to_download if r["storage_key"] in urls]
+    stats["unauthorized"] = len(to_download) - len(fetchable)
 
     dl_session = download_session or create_download_session(max_workers)
 
-    log_id = store.log_sync_start(obs_name)
-    bytes_downloaded = 0
-
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_spec = {
-            executor.submit(download_and_verify, spec, obs_dir, products_dir, dl_session): spec
-            for spec in to_download
+        future_to_obj = {
+            executor.submit(
+                _download_and_verify_key, r, urls[r["storage_key"]], products_dir, dl_session
+            ): r
+            for r in fetchable
         }
-
-        with tqdm(total=len(to_download), desc=obs_name, unit="file") as pbar:
-            for future in as_completed(future_to_spec):
-                spec = future_to_spec[future]
+        with tqdm(total=len(fetchable), desc="Downloading", unit="file") as pbar:
+            for future in as_completed(future_to_obj):
+                obj = future_to_obj[future]
                 try:
                     result = future.result()
-                    store.mark_synced(
-                        spectrum_id=result["spectrum_id"],
+                    store.mark_object_synced(
+                        storage_key=result["storage_key"],
                         local_path=result["local_path"],
-                        file_hash=result["file_hash"],
-                        file_size=result["file_size"],
-                        local_file_mtime=result.get("local_file_mtime"),
-                        local_file_size=result.get("local_file_size"),
+                        local_file_hash=result["local_file_hash"],
+                        local_file_size=result["local_file_size"],
+                        local_file_mtime=result["local_file_mtime"],
                     )
                     stats["downloaded"] += 1
-                    bytes_downloaded += result.get("file_size") or 0
                 except Exception as e:
                     stats["failed"] += 1
-                    tqdm.write(f"  Failed: {spec['fits_path']}: {e}")
+                    tqdm.write(f"  Failed: {obj['storage_key']}: {e}")
                 pbar.update(1)
 
-    store.log_sync_complete(log_id, stats["downloaded"], stats["skipped"], bytes_downloaded)
     return stats
 
 

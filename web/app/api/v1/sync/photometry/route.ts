@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms } from '@/lib/api-helpers';
+import { getAccessibleProgramsCached, isAdminUserCached } from '@/lib/api-helpers';
 
 /**
  * GET /api/v1/sync/photometry
@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
+    const accessibleProgramSlugs = await getAccessibleProgramsCached(userId);
 
     if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json({
@@ -45,11 +45,17 @@ export async function GET(request: NextRequest) {
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // Photometry for objects with no published spectrum is admin-only and
+    // gated behind explicit opt-in. Fail-closed otherwise; no-op in B1.
+    const includeUnpublished =
+      searchParams.get('include_unpublished') === 'true' && (await isAdminUserCached(userId));
+
     const { data, error } = await supabase.rpc('get_photometry_for_sync', {
       p_program_slugs: accessibleProgramSlugs,
       p_updated_since: updatedSince,
       p_limit: limit,
       p_offset: offset,
+      p_include_unpublished: includeUnpublished,
     });
 
     if (error) {

@@ -25,6 +25,9 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import type { MaskPolygon, MaskRegionsPayload } from '@/lib/types';
+import FitsCanvas, { type FitsCanvasLoad } from './FitsCanvas';
+import { STRETCH_MODES, COLORMAP_NAMES, type StretchMode, type ColormapName } from '@/lib/fits';
+import { isPngCached } from '@/lib/nircam-exposure-cache';
 
 type Mode = 'inspect' | 'draw' | 'edit';
 
@@ -44,9 +47,12 @@ interface SvgPolygon {
 }
 
 interface Props {
-  pngUrl: string;
-  imageWidth: number;        // PNG width in pixels (= exposure NAXIS1)
-  imageHeight: number;       // PNG height in pixels (= exposure NAXIS2)
+  /** Legacy PNG source. Provide this OR `fitsKey`. */
+  pngUrl?: string;
+  /** Canonical exposure key for the live FITS render (epic #261, N5). */
+  fitsKey?: string;
+  imageWidth: number;        // image width in pixels (= exposure NAXIS1)
+  imageHeight: number;       // image height in pixels (= exposure NAXIS2)
   initialRegions: MaskRegionsPayload | null;
   onSave: (regions: MaskRegionsPayload) => Promise<{ error?: string }>;
 }
@@ -57,6 +63,13 @@ function uuid() {
     return crypto.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function fmtNum(n: number): string {
+  if (!Number.isFinite(n)) return '0';
+  const a = Math.abs(n);
+  if (a !== 0 && (a < 1e-3 || a >= 1e5)) return n.toExponential(3);
+  return n.toPrecision(5);
 }
 
 function ds9ToSvg(v: [number, number], h: number): SvgVertex {
@@ -97,7 +110,7 @@ function toPayload(polys: SvgPolygon[], h: number): MaskRegionsPayload {
 }
 
 export default function MaskEditor({
-  pngUrl, imageWidth, imageHeight, initialRegions, onSave,
+  pngUrl, fitsKey, imageWidth, imageHeight, initialRegions, onSave,
 }: Props) {
   const [polygons, setPolygons] = useState<SvgPolygon[]>(
     () => fromPayload(initialRegions, imageHeight)
@@ -114,6 +127,48 @@ export default function MaskEditor({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // The PNG actually painted. Swapped by the effect below: held across a warm
+  // navigation (seamless) but cleared to a loading state on a cold one, so we
+  // never show a stale exposure under the next one's metadata + mask.
+  const [shownUrl, setShownUrl] = useState<string | undefined>(pngUrl);
+  const swappedOnceRef = useRef(false);
+
+  // FITS render controls (only used when `fitsKey` is set). vmin/vmax drive the
+  // display interval; 0/0 means "unset" so FitsCanvas keeps its on-load ZScale
+  // until the range flows back in from `handleFitsLoad`.
+  const [stretch, setStretch] = useState<StretchMode>('linear');
+  const [colormap, setColormap] = useState<ColormapName>('gray');
+  const [vmin, setVmin] = useState(0);
+  const [vmax, setVmax] = useState(0);
+  const [rangeText, setRangeText] = useState<{ lo: string; hi: string }>({ lo: '', hi: '' });
+  const zbase = useRef<{ lo: number; hi: number } | null>(null); // on-load ZScale, for "Auto"
+  const [fitsError, setFitsError] = useState<string | null>(null);
+
+  const handleFitsLoad = useCallback((info: FitsCanvasLoad) => {
+    zbase.current = { lo: info.vmin, hi: info.vmax };
+    setVmin(info.vmin);
+    setVmax(info.vmax);
+    setRangeText({ lo: fmtNum(info.vmin), hi: fmtNum(info.vmax) });
+    setFitsError(null);
+  }, []);
+
+  const autoStretch = useCallback(() => {
+    const z = zbase.current;
+    if (!z) return;
+    setVmin(z.lo);
+    setVmax(z.hi);
+    setRangeText({ lo: fmtNum(z.lo), hi: fmtNum(z.hi) });
+  }, []);
+
+  const commitRange = useCallback((lo: string, hi: string) => {
+    const nlo = Number(lo);
+    const nhi = Number(hi);
+    if (Number.isFinite(nlo) && Number.isFinite(nhi) && nhi > nlo) {
+      setVmin(nlo);
+      setVmax(nhi);
+    }
+  }, []);
 
   // View transform: PNG pixel coords → screen
   const containerRef = useRef<HTMLDivElement>(null);
@@ -141,6 +196,27 @@ export default function MaskEditor({
     setSelectedId(null);
     setDraftVertices([]);
   }, [initialRegions, imageHeight]);
+
+  // Image swap on prev/next. The initial mount already shows `pngUrl`, so skip
+  // the first run and let that image load natively. On later navigations:
+  //   - Warm (already decoded in the retained cache): keep the current frame
+  //     and swap on the ~instant decode, so the step never flashes.
+  //   - Cold: blank to a loading state immediately rather than lingering on the
+  //     previous exposure's pixels (misleading beside the new metadata + mask),
+  //     then swap once the incoming image has decoded.
+  useEffect(() => {
+    if (!swappedOnceRef.current) { swappedOnceRef.current = true; return; }
+    if (pngUrl === undefined) { setShownUrl(undefined); return; }
+    if (!isPngCached(pngUrl)) setShownUrl(undefined);
+    let cancelled = false;
+    const swap = () => { if (!cancelled) setShownUrl(pngUrl); };
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = pngUrl;
+    // Swap on decode-error too, so a bad frame never wedges us on a blank panel.
+    img.decode().then(swap).catch(swap);
+    return () => { cancelled = true; };
+  }, [pngUrl]);
 
   const markDirty = useCallback(() => { setDirty(true); setSavedAt(null); }, []);
 
@@ -306,7 +382,7 @@ export default function MaskEditor({
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center justify-between p-2 border-b border-border bg-surface dark:bg-slate-900 flex-shrink-0">
+      <div className="flex items-center justify-between p-2 border-b border-border bg-surface-2 flex-shrink-0">
         <div className="flex items-center gap-1">
           <ToolButton active={mode === 'inspect'} onClick={() => { setMode('inspect'); setDraftVertices([]); }}
             label="Inspect (pan/zoom)"><Hand className="w-4 h-4" /></ToolButton>
@@ -336,6 +412,47 @@ export default function MaskEditor({
         </div>
       </div>
 
+      {/* FITS render controls (live SCI render only) */}
+      {fitsKey && (
+        <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 border-b border-border bg-surface-2 text-xs flex-shrink-0">
+          <label className="flex items-center gap-1">
+            <span className="text-text-secondary">Stretch</span>
+            <select value={stretch} onChange={(e) => setStretch(e.target.value as StretchMode)}
+              className="rounded border border-border bg-card px-1.5 py-0.5 text-text-primary">
+              {STRETCH_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            <span className="text-text-secondary">Colormap</span>
+            <select value={colormap} onChange={(e) => setColormap(e.target.value as ColormapName)}
+              className="rounded border border-border bg-card px-1.5 py-0.5 text-text-primary">
+              {COLORMAP_NAMES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            <span className="text-text-secondary">Min</span>
+            <input type="text" inputMode="decimal" value={rangeText.lo}
+              onChange={(e) => setRangeText((r) => ({ ...r, lo: e.target.value }))}
+              onBlur={() => commitRange(rangeText.lo, rangeText.hi)}
+              onKeyDown={(e) => e.key === 'Enter' && commitRange(rangeText.lo, rangeText.hi)}
+              className="w-20 rounded border border-border bg-card px-1.5 py-0.5 font-mono text-text-primary" />
+          </label>
+          <label className="flex items-center gap-1">
+            <span className="text-text-secondary">Max</span>
+            <input type="text" inputMode="decimal" value={rangeText.hi}
+              onChange={(e) => setRangeText((r) => ({ ...r, hi: e.target.value }))}
+              onBlur={() => commitRange(rangeText.lo, rangeText.hi)}
+              onKeyDown={(e) => e.key === 'Enter' && commitRange(rangeText.lo, rangeText.hi)}
+              className="w-20 rounded border border-border bg-card px-1.5 py-0.5 font-mono text-text-primary" />
+          </label>
+          <button type="button" onClick={autoStretch}
+            className="rounded border border-border px-2 py-0.5 text-text-secondary hover:bg-card-hover">
+            Auto
+          </button>
+          {fitsError && <span className="text-red-500">{fitsError}</span>}
+        </div>
+      )}
+
       {/* Canvas */}
       <div
         ref={containerRef}
@@ -353,16 +470,33 @@ export default function MaskEditor({
             height: imageHeight,
           }}
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={pngUrl}
-            width={imageWidth}
-            height={imageHeight}
-            alt="exposure preview"
-            draggable={false}
-            className="absolute inset-0 pointer-events-none"
-            style={{ imageRendering: 'pixelated' }}
-          />
+          {fitsKey ? (
+            <FitsCanvas
+              fitsKey={fitsKey}
+              width={imageWidth}
+              height={imageHeight}
+              stretch={stretch}
+              colormap={colormap}
+              vmin={vmin}
+              vmax={vmax}
+              onLoad={handleFitsLoad}
+              onError={setFitsError}
+            />
+          ) : shownUrl ? (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={shownUrl}
+              width={imageWidth}
+              height={imageHeight}
+              alt="exposure preview"
+              draggable={false}
+              className="absolute inset-0 pointer-events-none"
+              style={{ imageRendering: 'pixelated' }}
+            />
+          ) : null}
+          {/* Overlay only when an image is present — during a cold-load blank
+              there's nothing to draw masks against. */}
+          {(shownUrl || fitsKey) && (
           <svg
             ref={svgRef}
             width={imageWidth}
@@ -413,7 +547,17 @@ export default function MaskEditor({
               </g>
             )}
           </svg>
+          )}
         </div>
+
+        {/* Cold-load indicator: the incoming PNG isn't cached yet, so the panel
+            stays blank (rather than showing the previous exposure) until it's
+            fetched and decoded. */}
+        {!fitsKey && pngUrl && !shownUrl && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <Loader2 className="w-8 h-8 animate-spin text-white/40" />
+          </div>
+        )}
 
         {/* Help footer */}
         <div className="absolute bottom-2 left-2 right-2 text-[11px] text-white/70 pointer-events-none font-mono">
@@ -488,7 +632,7 @@ function ToolButton({
       className={`p-1.5 rounded text-sm ${
         active
           ? 'bg-primary/15 text-primary'
-          : 'text-text-secondary hover:bg-surface-hover dark:hover:bg-slate-800'
+          : 'text-text-secondary hover:bg-card-hover'
       }`}
     >
       {children}

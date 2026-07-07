@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { generateDownloadUrl } from '@/lib/r2';
+import { deriveSibling } from '@/lib/layout';
 
 export interface RedshiftFitData {
   redshift: number;
@@ -57,21 +58,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Convert FITS path to zfit JSON path
-    // spectra/{obs_name}/{obs_name}_{grating}_{filter}_{source_id}_spec.fits
-    // → spectra/{obs_name}/{obs_name}_{grating}_{filter}_{source_id}_zfit.json
-    const zfitJsonPath = fitsPath.replace('_spec.fits', '_zfit.json');
+    // Derive the zfit-JSON sibling key via the shared layout contract
+    const zfitJsonPath = deriveSibling(fitsPath, 'zfit');
 
     // Generate signed URL for the zfit JSON file
     const signedUrl = await generateDownloadUrl(zfitJsonPath, 3600);
-
-    // Check if R2 is configured
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return NextResponse.json(
-        { error: 'Download service not configured' },
-        { status: 503 }
-      );
-    }
 
     // Fetch the zfit JSON data from R2
     const response = await fetch(signedUrl);

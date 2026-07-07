@@ -2,6 +2,7 @@
 
 import { getSpectra } from './spectra';
 import type { SortColumn, SortDirection, ViewMode } from './spectra-types';
+import { FITS_DOWNLOAD_FILE_LIMIT } from './spectra-types';
 import type { FilterOptions } from './filter-params';
 import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
@@ -9,20 +10,19 @@ import { paginateRpc } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
 import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
+import { generateDownloadUrls } from '@/lib/r2';
 
-// JWT signing using Web Crypto API
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_DOWNLOAD_URL || 'http://localhost:8787';
 const JWT_SECRET = process.env.WORKER_JWT_SECRET;
 
-interface DownloadFile {
-  key: string;
-  filename: string;
-}
+// Presigned-URL lifetime. Must outlive the WHOLE client-side download (the browser
+// fetches every file through the proxy, then zips), so keep it generous — 6h, the
+// same value the observation manifest / storage-presign routes use.
+const PRESIGN_TTL_SECONDS = 21600;
 
-interface DownloadPayload {
-  files: DownloadFile[];
-  exp: number;
-  zipFilename: string;
+interface DownloadFile {
+  proxyUrl: string; // ready-to-fetch Worker proxy URL (?url=<presigned>&sig=<hmac>)
+  filename: string;
 }
 
 interface PhotometryBands {
@@ -379,8 +379,13 @@ export async function generateCsvFilename(viewMode: string = 'objects'): Promise
 }
 
 /**
- * Generate download URL for FITS files
- * Creates a JWT token with file list and returns Worker URL
+ * Authorize a bulk FITS download and return ready-to-fetch Worker proxy URLs.
+ *
+ * The key set is derived server-side under the user's RLS session, each key is
+ * presigned against whichever backend homes it (dual-read: R2 or OSN), and each
+ * presigned URL is HMAC-signed so the credential-free proxy Worker will fetch
+ * only URLs we authorized. The browser fetches each proxy URL (which supplies
+ * CORS) and zips the results client-side.
  */
 export async function generateFitsDownloadUrl(
   filters: FilterOptions,
@@ -389,64 +394,77 @@ export async function generateFitsDownloadUrl(
   viewMode: ViewMode = 'objects'
 ): Promise<{
   files: DownloadFile[] | null;
-  token: string | null;
-  workerUrl: string | null;
   zipFilename: string | null;
   error: string | null;
 }> {
   try {
     if (!JWT_SECRET) {
-      return { files: null, token: null, workerUrl: null, zipFilename: null, error: 'Server configuration error: JWT secret not set' };
+      return { files: null, zipFilename: null, error: 'Server configuration error: JWT secret not set' };
     }
 
     // Get user for tracking
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    // Fetch filtered results (limit to 200 items) via spectra mode — that RPC
-    // returns one row per (target, grating) with the FITS path attached.
+    // Fetch filtered results via spectra mode — that RPC returns one row per
+    // (target, grating) with the FITS path attached, and result.total is the
+    // count over spectra (the same unit this download acts on).
     const result = await getSpectra(
       filters,
       1, // page
-      200, // pageSize
+      FITS_DOWNLOAD_FILE_LIMIT, // pageSize
       sortColumn === 'object_id' ? 'target_id' : sortColumn,
       sortDirection,
       'spectra'
     );
 
     if (result.error) {
-      return { files: null, token: null, workerUrl: null, zipFilename: null, error: result.error };
+      return { files: null, zipFilename: null, error: result.error };
+    }
+
+    // Guard against silent truncation. The UI gate is computed from the current
+    // view's count — in the default objects view that is the OBJECT count, but
+    // one object commonly fans out to 2-3 spectra, so the gate can stay enabled
+    // while the spectra total exceeds the page we fetched. result.total is the
+    // authoritative spectra count from the same RPC; if it exceeds what we
+    // pulled, refuse with a clear, actionable error rather than handing back a
+    // biased first-N-of-M ZIP that looks complete (a reproducibility hazard).
+    if (result.total > result.spectra.length) {
+      return {
+        files: null, zipFilename: null,
+        error: `This filter set has ${result.total.toLocaleString()} spectra, which exceeds the ${FITS_DOWNLOAD_FILE_LIMIT.toLocaleString()}-file ZIP limit. Refine your filters, or use the CSV export (which includes every fits_path) to fetch the full set.`,
+      };
     }
 
     // Extract all FITS file paths from spectra on each target
-    const files: DownloadFile[] = [];
+    const keys: string[] = [];
+    const filenames: string[] = [];
     for (const obj of result.spectra) {
       for (const spec of obj.spectra) {
-        files.push({
-          key: spec.fits_path, // R2 object key
-          filename: spec.fits_path.split('/').pop() || spec.fits_path, // Just the filename
-        });
+        keys.push(spec.fits_path);
+        filenames.push(spec.fits_path.split('/').pop() || spec.fits_path);
       }
     }
 
-    if (files.length === 0) {
-      return { files: null, token: null, workerUrl: null, zipFilename: null, error: 'No FITS files found for selected objects' };
+    if (keys.length === 0) {
+      return { files: null, zipFilename: null, error: 'No FITS files found for selected objects' };
     }
+
+    // Presign each key against its home backend (dual-read), then HMAC-sign the
+    // presigned URL so the proxy only fetches URLs we authorized.
+    const urls = await generateDownloadUrls(keys, PRESIGN_TTL_SECONDS);
+    const files: DownloadFile[] = await Promise.all(
+      urls.map(async (signedUrl, i) => {
+        const sig = await signUrlSignature(signedUrl, JWT_SECRET);
+        const proxyUrl = `${WORKER_URL}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
+        return { proxyUrl, filename: filenames[i] };
+      })
+    );
 
     // Generate ZIP filename with date
     const now = new Date();
     const dateStr = now.toISOString().split('T')[0].replace(/-/g, ''); // YYYYMMDD
     const zipFilename = `campfire_download_${dateStr}.zip`;
-
-    // Create JWT payload
-    const payload: DownloadPayload = {
-      files,
-      exp: Date.now() + 10 * 60 * 1000, // Expire in 10 minutes
-      zipFilename,
-    };
-
-    // Sign JWT
-    const token = await signJWT(payload, JWT_SECRET);
 
     // Track ZIP download (fire-and-forget)
     if (user) {
@@ -461,64 +479,95 @@ export async function generateFitsDownloadUrl(
       });
     }
 
-    return { files, token, workerUrl: WORKER_URL, zipFilename, error: null };
+    return { files, zipFilename, error: null };
   } catch (error) {
     console.error('Error generating FITS download URL:', error);
-    return { files: null, token: null, workerUrl: null, zipFilename: null, error: 'Failed to generate download URL' };
+    return { files: null, zipFilename: null, error: 'Failed to generate download URL' };
   }
 }
 
 /**
- * Sign JWT using HMAC SHA-256 (Web Crypto API)
+ * Authorize NIRCam mosaic downloads and return ready-to-fetch Worker proxy URLs,
+ * keyed by canonical storage key (file_path).
+ *
+ * Client-supplied keys are never trusted: the authorized set is re-derived
+ * server-side by querying `nircam_images` under the caller's RLS session. Because
+ * the table's RLS returns only published mosaics to non-admins (and all rows to
+ * admins), the intersection of the requested paths with what the query returns is
+ * exactly the set the caller may download — a draft/revoked or forged key simply
+ * never gets presigned. Each authorized key is presigned against its home backend
+ * (dual-read: OSN or R2) and HMAC-signed so the credential-free proxy Worker will
+ * fetch only URLs we authorized. Requested keys that aren't authorized are absent
+ * from the returned map.
  */
-async function signJWT(payload: DownloadPayload, secret: string): Promise<string> {
-  // Create header
-  const header = {
-    alg: 'HS256',
-    typ: 'JWT',
-  };
+export async function generateNircamMosaicDownloadUrls(
+  filePaths: string[]
+): Promise<{ urls: Record<string, string>; error: string | null }> {
+  try {
+    if (!JWT_SECRET) {
+      return { urls: {}, error: 'Server configuration error: JWT secret not set' };
+    }
 
-  // Encode header and payload
-  const headerB64 = base64UrlEncode(JSON.stringify(header));
-  const payloadB64 = base64UrlEncode(JSON.stringify(payload));
+    if (filePaths.length === 0) {
+      return { urls: {}, error: null };
+    }
 
-  // Create signature
-  const data = `${headerB64}.${payloadB64}`;
+    // Re-derive the authorized key set server-side under the caller's RLS
+    // session. Never presign a client-supplied path we can't see in the DB.
+    const supabase = await createClient();
+    const { data: rows, error: queryError } = await supabase
+      .from('nircam_images')
+      .select('file_path')
+      .in('file_path', filePaths);
+
+    if (queryError) {
+      console.error('Error authorizing NIRCam mosaic download:', queryError);
+      return { urls: {}, error: 'Failed to authorize download' };
+    }
+
+    const authorizedKeys = [...new Set((rows || []).map((r) => r.file_path as string))];
+    if (authorizedKeys.length === 0) {
+      return { urls: {}, error: null };
+    }
+
+    // Presign each authorized key against its home backend (dual-read), then
+    // HMAC-sign the presigned URL so the proxy only fetches URLs we authorized.
+    const signed = await generateDownloadUrls(authorizedKeys, PRESIGN_TTL_SECONDS);
+    const urls: Record<string, string> = {};
+    await Promise.all(
+      authorizedKeys.map(async (key, i) => {
+        const sig = await signUrlSignature(signed[i], JWT_SECRET);
+        urls[key] = `${WORKER_URL}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
+      })
+    );
+
+    return { urls, error: null };
+  } catch (error) {
+    console.error('Error generating NIRCam mosaic download URLs:', error);
+    return { urls: {}, error: 'Failed to generate download URLs' };
+  }
+}
+
+/**
+ * HMAC-SHA256(secret, url), base64url-encoded — the per-URL signature the proxy
+ * Worker verifies. Web Crypto API (same primitive both ends).
+ */
+async function signUrlSignature(url: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
-
-  // Import key
   const key = await crypto.subtle.importKey(
     'raw',
-    keyData,
+    encoder.encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']
   );
-
-  // Sign
-  const signature = await crypto.subtle.sign('HMAC', key, messageData);
-  const signatureB64 = base64UrlEncode(signature);
-
-  // Return JWT
-  return `${data}.${signatureB64}`;
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(url));
+  return base64UrlEncode(signature);
 }
 
 /**
- * Base64URL encode (for JWT)
+ * Base64URL-encode the HMAC signature (ArrayBuffer).
  */
-function base64UrlEncode(data: string | ArrayBuffer): string {
-  let base64: string;
-
-  if (typeof data === 'string') {
-    // String to base64
-    base64 = Buffer.from(data).toString('base64');
-  } else {
-    // ArrayBuffer to base64
-    base64 = Buffer.from(data).toString('base64');
-  }
-
-  // Convert to base64url
-  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+function base64UrlEncode(data: ArrayBuffer): string {
+  return Buffer.from(data).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }

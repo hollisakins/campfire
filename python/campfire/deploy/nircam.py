@@ -1,30 +1,59 @@
 """
-NIRCam exposure deployment — push canonical exposure state to Supabase + R2.
+NIRCam exposure deployment — push canonical exposure state to OSN + Supabase.
 
-Scans the per-filter flat directories (the new canonical layout where each
-exposure is a single ``{rootname}.fits`` mutated in place through the
-``CFP_*`` provenance keys), derives a ``stage`` value from the highest
-completed CFP key, uploads ``*_preview.png`` thumbnails to R2, and upserts
-``nircam_exposures`` while preserving any web-triage fields
-(``review_status``, ``correction``, ``notes``).
+Scans the per-filter flat directories (the canonical layout where each exposure
+is a single ``{rootname}.fits`` mutated in place through the ``CFP_*`` provenance
+keys), derives a ``stage`` value from the highest completed CFP key, and:
 
-Excluded exposures flagged by reviewers in the admin UI are surfaced for
-copy-paste into the field's ``skip = [...]`` block in ``fields.toml``; we no
-longer maintain a local ``exposures.json`` contract since nothing in the
-pipeline consumes it.
+* uploads the **canonical exposure FITS** (and any field ``expmap`` coverage
+  files) to **OSN** under ``campfire-layout`` canonical keys, content-hash-
+  deduped so an unchanged exposure is not re-uploaded (epic #261, N1 / D1);
+* records a **field-scoped deployment** (provenance + lifecycle anchor) and
+  registers those objects in ``storage_objects`` (``nircam_exposure`` /
+  ``nircam_expmap``) tagged with its ``deployment_id`` — visibility rides
+  ``deployment.status`` via the storage gate: ``published`` is public to everyone
+  (NIRCam fields span multiple programs, so there is no per-program scope),
+  ``draft`` is admin-only for review;
+* uploads ``*_preview.png`` (grid thumbnail) / ``*_full.png`` (native-res mask
+  surface) to **OSN** under canonical keys and registers them too (epic #261,
+  N5) — the admin UI serves both via short-lived presigned OSN GET URLs, so the
+  R2 legacy keys + the ``/api/nircam-preview`` proxy are retired;
+* upserts ``nircam_exposures`` while preserving web-triage fields
+  (``review_status``, ``correction``, ``notes``).
+
+A normal deploy publishes immediately; ``--draft`` holds the field admin-only for
+portal inspection, then ``campfire deploy publish --field`` makes it public.
+
+Excluded exposures flagged by reviewers in the admin UI round-trip back to the
+pipeline via ``campfire deploy nircam pull`` (epic #261, N6): it materializes
+``review_status='excluded'`` rows into
+``$CAMPFIRE_ROOT/reference/nircam/<field>/exposures.json``
+(``nircam_exclusions.pull_exclusions``), which ``combine`` reads to drop those
+rootnames. The DB is the source of truth; the JSON file is a generated,
+fully-overwritten artifact — don't hand-edit it.
 """
 
+import hashlib
 import os
 import sys
 from collections import Counter
 from datetime import datetime, timezone
-from glob import glob
 from pathlib import Path
 
 from astropy.io import fits
 
+from campfire_layout import KeyScheme, Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
-from campfire.deploy.supabase import get_supabase_client
+from campfire.deploy.supabase import (
+    claim_deploy_scope, deploy_event_metadata, get_deploy_scope_version,
+    get_supabase_client, get_user_id_from_token, insert_deployment, log_deploy_event,
+)
+
+# The OSN data backend NIRCam canonical intermediates are homed on (epic #210/#216,
+# same as NIRSpec canonical spectrum-exposures). As of N5 the preview/full PNGs
+# also land here under canonical keys (served via presigned OSN GET URLs).
+_CANONICAL_BACKEND = 'osn'
+_FITS_CONTENT_TYPE = 'application/fits'
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +94,41 @@ def _stage_from_header(header):
     return stage
 
 
+def _sci_dq_hash(path):
+    """Return ``'sha256:<hex>'`` over the SCI+DQ+CFMASK arrays, or None.
+
+    The science-only change-detection digest for the deploy dedup (epic #261, D1).
+    Reproduces ``campfire_pipeline.nircam.manifest.compute_file_hash`` deploy-side
+    (deploy must not import the pipeline): ``do_not_scale_image_data=True`` hashes
+    the raw stored bytes regardless of BZERO/BSCALE, ``memmap=False`` forces a real
+    read. Whole-file hashes churn on every pipeline re-save (header timestamps), so
+    they can't drive dedup; the SCI+DQ+CFMASK digest is stable across a
+    science-identical re-save.
+
+    CFMASK (the user manual-mask extension) is included so a mask edit — which the
+    N7 freeze records as CFMASK on the canonical without touching SCI/DQ — still
+    re-uploads the exposure. It is hashed *last*, and the ``not in hdul`` guard
+    skips it when absent, so an un-masked exposure hashes byte-identically to the
+    old SCI+DQ-only digest (no spurious re-upload on the first post-N7 deploy).
+
+    Returns None if none of the arrays are present (never dedup on an empty hash).
+    """
+    h = hashlib.sha256()
+    hashed_any = False
+    try:
+        with fits.open(path, memmap=False, do_not_scale_image_data=True) as hdul:
+            for extname in ('SCI', 'DQ', 'CFMASK'):
+                if extname not in hdul:
+                    continue
+                data = hdul[extname].data
+                if data is not None:
+                    h.update(data.tobytes())
+                    hashed_any = True
+    except Exception:
+        return None
+    return f'sha256:{h.hexdigest()}' if hashed_any else None
+
+
 # ---------------------------------------------------------------------------
 # Path resolution
 # ---------------------------------------------------------------------------
@@ -91,13 +155,18 @@ def _resolve_nircam_dirs(field):
 
 
 def _discover_filters(dirs):
-    """List available filters by scanning the products directory."""
+    """List available filters by scanning the products directory.
+
+    Each real filter is a subdirectory (``<field>/<filter>/``). A stray legacy
+    ``expmaps/`` dir (expmaps now live per-filter) is skipped so it is never
+    treated as a filter.
+    """
     products = dirs['products']
     if not products.exists():
         return []
     return sorted(
         d.name for d in products.iterdir()
-        if d.is_dir() and not d.name.startswith('.')
+        if d.is_dir() and not d.name.startswith('.') and d.name != 'expmaps'
     )
 
 
@@ -117,8 +186,8 @@ def discover_exposures(dirs, filters):
     -------
     dict
         ``{(filter, basename): info}`` where info has keys ``basename``,
-        ``filter``, ``stage``, ``visit``, ``detector``, ``date_obs``,
-        ``ra_center``, ``dec_center``.
+        ``filter``, ``path`` (the canonical FITS Path), ``stage``, ``visit``,
+        ``detector``, ``date_obs``, ``ra_center``, ``dec_center``.
     """
     exposures = {}
     for filtname in filters:
@@ -133,6 +202,7 @@ def discover_exposures(dirs, filters):
             info = _read_exposure_metadata(path)
             info['basename'] = basename
             info['filter'] = filtname
+            info['path'] = path
             exposures[(filtname, basename)] = info
     return exposures
 
@@ -146,6 +216,7 @@ def _read_exposure_metadata(path):
         'date_obs': None,
         'ra_center': None,
         'dec_center': None,
+        'combine_stamped': False,
     }
     # JWST naming convention: {visit}_{activity}_{exposure}_{detector}.fits
     parts = path.stem.split('_')
@@ -158,6 +229,9 @@ def _read_exposure_metadata(path):
         with fits.open(path, memmap=True) as hdul:
             hdr0 = hdul[0].header
             info['stage'] = _stage_from_header(hdr0)
+            # A canonical exposure must be the frozen process output; a
+            # combine-phase stamp means it was mutated in place (old pipeline).
+            info['combine_stamped'] = ('CFP_BPIX' in hdr0 or 'CFP_OUT' in hdr0)
             info['date_obs'] = hdr0.get('DATE-OBS')
             info['detector'] = hdr0.get('DETECTOR', info['detector'])
             if len(hdul) > 1:
@@ -187,13 +261,19 @@ def _detect_masking(dirs, basename, filtname):
 # ---------------------------------------------------------------------------
 
 def build_upload_tasks(dirs, field, filters):
-    """Build R2 upload tasks for per-exposure preview PNGs.
+    """Build OSN upload tasks for per-exposure preview PNGs.
 
     The ``preview`` pipeline step writes two PNGs per exposure:
     ``{rootname}_preview.png`` (downsampled thumbnail) and
     ``{rootname}_full.png`` (native resolution, used by the in-browser mask
     editor). Both are uploaded so the table view stays fast while the
     editor renders at exposure-pixel resolution.
+
+    Keyed under the ``campfire-layout`` CANONICAL scheme (OSN,
+    ``data/products/nircam/<field>/<filter>/<rootname>_{preview,full}.png``) —
+    the same tier as the canonical FITS. The admin UI serves them via
+    short-lived presigned OSN GET URLs (epic #261, N5), retiring the R2 legacy
+    keys + the ``/api/nircam-preview`` proxy hop.
 
     Returns list of (UploadTask, basename, filter, kind) tuples where
     ``kind`` is ``'thumb'`` or ``'full'``.
@@ -205,17 +285,19 @@ def build_upload_tasks(dirs, field, filters):
             continue
         for png_path in sorted(png_dir.glob('jw*_preview.png')):
             basename = png_path.name.removesuffix('_preview.png')
-            r2_key = f'nircam/exposures/{field}/{filtname}/{png_path.name}'
+            key = storage_key('nircam_exposure_preview', Scope(field=field, filt=filtname),
+                              png_path.name, scheme=KeyScheme.CANONICAL)
             tasks.append((
-                UploadTask(local_path=png_path, r2_key=r2_key,
+                UploadTask(local_path=png_path, r2_key=key,
                            content_type='image/png'),
                 basename, filtname, 'thumb',
             ))
         for png_path in sorted(png_dir.glob('jw*_full.png')):
             basename = png_path.name.removesuffix('_full.png')
-            r2_key = f'nircam/exposures/{field}/{filtname}/{png_path.name}'
+            key = storage_key('nircam_exposure_full', Scope(field=field, filt=filtname),
+                              png_path.name, scheme=KeyScheme.CANONICAL)
             tasks.append((
-                UploadTask(local_path=png_path, r2_key=r2_key,
+                UploadTask(local_path=png_path, r2_key=key,
                            content_type='image/png'),
                 basename, filtname, 'full',
             ))
@@ -234,23 +316,149 @@ def _read_full_png_dimensions(png_path):
 
 
 # ---------------------------------------------------------------------------
+# Canonical FITS + expmap discovery (epic #261, N1)
+# ---------------------------------------------------------------------------
+
+def build_fits_upload_tasks(field, exposures):
+    """Build canonical-key OSN upload tasks for the exposure FITS.
+
+    One ``nircam_exposure`` task per discovered exposure, keyed under the
+    ``campfire-layout`` CANONICAL scheme (``data/products/nircam/<field>/<filter>/
+    <rootname>.fits``). Returns a list of ``UploadTask``; content-hash dedup is
+    applied by the caller (unchanged exposures are dropped before upload).
+
+    Freeze guard (epic #261, N7): the canonical ``nircam_exposure`` must be the
+    frozen process-phase output. An exposure carrying a combine-phase CFP stamp
+    (``CFP_BPIX`` / ``CFP_OUT``) was mutated in place by an old-pipeline combine;
+    uploading it would overwrite the pristine canonical in OSN with
+    outlier-rejected bytes and poison a later restore. Refuse loudly rather than
+    silently clobber — the fix is to regenerate the canonical with
+    ``cfpipe nircam process``. ``CFP_MASK`` is allowed: apply_mask legitimately
+    records the manual mask on the canonical.
+    """
+    stamped = sorted(
+        f'{filtname}/{basename}'
+        for (filtname, basename), info in exposures.items()
+        if info.get('combine_stamped')
+    )
+    if stamped:
+        raise RuntimeError(
+            "Refusing to deploy combine-mutated canonical exposures — these carry "
+            "CFP_BPIX/CFP_OUT (bad-pixel/outlier flags baked into the canonical by "
+            "an old-pipeline combine). Re-run `cfpipe nircam process` to regenerate "
+            "the frozen canonical, then redeploy:\n  " + "\n  ".join(stamped)
+        )
+
+    tasks = []
+    for (filtname, basename), info in sorted(exposures.items()):
+        path = info['path']
+        key = storage_key('nircam_exposure', Scope(field=field, filt=filtname),
+                          path.name, scheme=KeyScheme.CANONICAL)
+        tasks.append(UploadTask(local_path=path, r2_key=key,
+                                content_type=_FITS_CONTENT_TYPE))
+    return tasks
+
+
+def discover_expmap_tasks(dirs, field, filters):
+    """Build canonical-key OSN upload tasks for any per-filter expmap coverage files.
+
+    Expmaps are per-``(field, filter)`` coverage maps written into the canonical
+    filter directory (``products/nircam/<field>/<filter>/expmap_*.fits``),
+    alongside the mosaics/exposures. They are produced at combine time, so a
+    process-only field may have none yet — deploy is idempotent and picks them up
+    on a later run. Returns a list of ``UploadTask`` (empty if none found).
+    """
+    products = dirs['products']
+    tasks = []
+    for filtname in filters:
+        filter_dir = products / filtname
+        if not filter_dir.exists():
+            continue
+        for path in sorted(filter_dir.glob('expmap_*.fits')):
+            key = storage_key('nircam_expmap', Scope(field=field, filt=filtname),
+                              path.name, scheme=KeyScheme.CANONICAL)
+            tasks.append(UploadTask(local_path=path, r2_key=key,
+                                    content_type=_FITS_CONTENT_TYPE))
+    return tasks
+
+
+# ---------------------------------------------------------------------------
 # Deploy (push)
 # ---------------------------------------------------------------------------
 
-def deploy_nircam(field, config, filters=None, dry_run=False):
-    """Push NIRCam exposure state: upload PNGs to R2, upsert nircam_exposures.
+def _provenance_from_header(path):
+    """``(CMPFRVER, CAL_VER, CRDS_CTX)`` from a FITS primary header, or a None
+    triple on any read failure."""
+    try:
+        with fits.open(path, memmap=False) as hdul:
+            hdr = hdul[0].header
+            return hdr.get('CMPFRVER'), hdr.get('CAL_VER'), hdr.get('CRDS_CTX')
+    except Exception:
+        return None, None, None
+
+
+def _read_field_provenance(dirs, field, filters):
+    """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` for a field.
+
+    Prefer a deployed mosaic's ``i2d`` header (the combined science product);
+    fall back to any canonical exposure header. Both now carry the CAMPFIRE
+    ``CMPFRVER`` — the mosaic from ``resample.py``, the exposure from
+    ``detector1`` at creation — plus the jwst-native ``CAL_VER`` / ``CRDS_CTX``.
+    So a mid-reduction ``--draft`` exposure deploy (no mosaic yet) now records
+    real provenance instead of NULL (audit B2). Returns ``(None, None, None)``
+    only when the field has neither a mosaic nor a readable exposure.
+    """
+    try:
+        mosaics = discover_mosaics(dirs, field, filters)
+    except Exception:
+        mosaics = []
+    if mosaics:
+        chosen = next((m for m in mosaics if m.get('extension') == 'i2d'), mosaics[0])
+        prov = _provenance_from_header(chosen['path'])
+        if any(prov):
+            return prov
+
+    # No mosaic (or an unstamped one): read a representative exposure header.
+    try:
+        exposures = discover_exposures(dirs, filters)
+    except Exception:
+        return None, None, None
+    for info in exposures.values():
+        prov = _provenance_from_header(info['path'])
+        if any(prov):
+            return prov
+    return None, None, None
+
+
+def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
+    """Push NIRCam exposure state to OSN + Supabase (epic #261, N1).
+
+    Records a **field-scoped deployment** (provenance + the draft->published
+    lifecycle), uploads the canonical exposure FITS (+ any field expmaps) to OSN
+    under ``campfire-layout`` canonical keys (content-hash deduped on
+    ``sha256(SCI+DQ+CFMASK)``), uploads preview PNGs to OSN, upserts ``nircam_exposures``,
+    and registers every landed object in ``storage_objects`` tagged with that
+    ``deployment_id``.
+
+    Visibility rides the deployment (not a bespoke admin-only special case): a
+    ``published`` field deployment is public to everyone (NIRCam fields span
+    multiple programs, so there is no per-program scope); ``--draft`` keeps it
+    admin-only for portal inspection until ``campfire deploy publish --field``.
 
     Parameters
     ----------
     field : str
         Field name.
     config : dict
-        Deploy config (Supabase + R2 credentials).
+        Deploy config (Supabase + R2/OSN credentials).
     filters : list of str, optional
         Filters to deploy. If None, discovers every directory under
         ``products/nircam/{field}/``.
     dry_run : bool
         If True, print what would be done without making changes.
+    draft : bool
+        If True, record the deployment as ``draft`` (admin-only) for review;
+        otherwise ``published`` (public) immediately.
     """
     dirs = _resolve_nircam_dirs(field)
 
@@ -275,8 +483,15 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
     print(f"Filters: {', '.join(filters)}")
 
     exposures = discover_exposures(dirs, filters)
-    print(f"Discovered {len(exposures)} canonical exposures")
-    if not exposures:
+    expmap_tasks = discover_expmap_tasks(dirs, field, filters)
+    n_mosaics = len(discover_mosaics(dirs, field, filters))
+    print(f"Discovered {len(exposures)} canonical exposure(s), "
+          f"{len(expmap_tasks)} expmap(s), {n_mosaics} mosaic(s)")
+    # Deploy whatever the field has — mosaics/expmaps are independent of the
+    # per-exposure FITS (a field can keep its science mosaics after the large cal
+    # exposures are pruned). Only bail if there is genuinely nothing to ship.
+    if not exposures and not expmap_tasks and not n_mosaics:
+        print("Nothing to deploy for this field.")
         return
 
     png_tasks = build_upload_tasks(dirs, field, filters)
@@ -297,6 +512,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
     }
     print(f"Preview PNGs to upload: {len(png_tasks)} "
           f"({len(thumb_r2_keys)} thumb, {len(full_r2_keys)} full)")
+
+    fits_tasks = build_fits_upload_tasks(field, exposures)
+    print(f"→ OSN: {len(fits_tasks)} exposure(s), {len(expmap_tasks)} expmap(s), "
+          f"{n_mosaics} mosaic(s)")
 
     records = []
     for (filtname, basename), info in sorted(exposures.items()):
@@ -330,24 +549,135 @@ def deploy_nircam(field, config, filters=None, dry_run=False):
         mask_count = sum(1 for r in records if r.get('masking') == 'done')
         if mask_count:
             print(f"  with masks: {mask_count}")
-        print("\nDry run — no changes made.")
+        print(f"\nWould record a {'draft' if draft else 'published'} field "
+              f"deployment and upload {len(fits_tasks)} canonical FITS + "
+              f"{len(expmap_tasks)} expmap(s) + {n_mosaics} mosaic(s) to OSN "
+              f"(subject to content-hash dedup), and {len(png_tasks)} preview PNG(s) to OSN.")
+        print("Dry run — no changes made.")
         return
 
-    if png_tasks:
-        print("\nUploading PNGs to R2...")
-        upload_task_list = [t[0] for t in png_tasks]
+    from campfire.deploy.registry import (
+        build_registry_rows, fetch_active_sci_dq_hashes,
+        set_active_deployment, upsert_storage_objects,
+    )
+
+    client = get_supabase_client(config)
+    user_id = get_user_id_from_token(config)
+
+    # Read the field's optimistic-concurrency version BEFORE any work so a
+    # concurrent same-field deploy is detected at finalize (epic #210, B4 / D12).
+    scope_version = get_deploy_scope_version(client, 'field', field)
+
+    # Batch-level provenance (audit B2, Phase 3). Best-effort: only mosaics carry
+    # the version cards, so an exposure-only --draft deploy (no mosaic yet)
+    # records NULL provenance — the pipeline version that produced the exposures
+    # is not stamped on exposure headers.
+    cfpipe_version, jwst_version, crds_context = _read_field_provenance(dirs, field, filters)
+
+    # Record the field-scoped deployment up front — it is the provenance anchor and
+    # the draft/published visibility gate every registered object hangs off.
+    deployment_id = insert_deployment(
+        client, field=field, deployed_by=user_id,
+        status='draft' if draft else 'published', n_targets=len(records),
+        cfpipe_version=cfpipe_version, jwst_version=jwst_version, crds_context=crds_context)
+    print(f"Deployment #{deployment_id} recorded "
+          f"({'draft — admin-only' if draft else 'published — public'})")
+
+    # --- Content-hash dedup for the canonical FITS (D1) ---------------------
+    # Compare each exposure's local sha256(SCI+DQ) to the digest already stored in
+    # the registry; skip the upload when the science is unchanged (a pipeline
+    # re-save with fresh header timestamps shifts the whole-file hash but not this).
+    local_sci_dq = {t.r2_key: _sci_dq_hash(t.local_path) for t in fits_tasks}
+    existing_sci_dq = fetch_active_sci_dq_hashes(client, [t.r2_key for t in fits_tasks])
+    fits_to_upload = [
+        t for t in fits_tasks
+        if not (local_sci_dq.get(t.r2_key)
+                and existing_sci_dq.get(t.r2_key) == local_sci_dq[t.r2_key])
+    ]
+    n_skipped = len(fits_tasks) - len(fits_to_upload)
+    if n_skipped:
+        print(f"\nSkipping {n_skipped} unchanged exposure(s) (SCI+DQ hash match)")
+
+    # --- Upload canonical FITS + expmaps to OSN ----------------------------
+    n_failed = 0
+    osn_tasks = fits_to_upload + expmap_tasks
+    osn_uploaded: set[str] = set()
+    if osn_tasks:
+        print(f"\nUploading {len(osn_tasks)} canonical FITS/expmap(s) to OSN...")
         success, failed, failures = upload_files_parallel(
-            config, upload_task_list,
-            desc='Uploading PNGs',
-        )
+            config, osn_tasks, desc='OSN uploads',
+            succeeded_out=osn_uploaded, backend=_CANONICAL_BACKEND)
+        n_failed += failed
+        print(f"  Uploaded: {success}, Failed: {failed}")
+        for msg in failures:
+            print(f"  Error: {msg}")
+
+    # --- Upload preview PNGs to OSN (canonical keys, epic #261 N5) ----------
+    png_upload_list = [t[0] for t in png_tasks]
+    png_uploaded: set[str] = set()
+    if png_upload_list:
+        print("\nUploading preview PNGs to OSN...")
+        success, failed, failures = upload_files_parallel(
+            config, png_upload_list, desc='Uploading PNGs',
+            succeeded_out=png_uploaded, backend=_CANONICAL_BACKEND)
+        n_failed += failed
         print(f"  Uploaded: {success}, Failed: {failed}")
         for msg in failures:
             print(f"  Error: {msg}")
 
     print("\nUpserting exposures to Supabase...")
-    client = get_supabase_client(config)
     _upsert_exposures(client, records)
     print(f"  Upserted {len(records)} exposures")
+
+    # --- Register storage objects, tagged with the field deployment ---------
+    # Visibility rides deployment.status via the storage_objects gate: published ->
+    # public to everyone, draft -> admin-only. The FITS carry a science-only
+    # sci_dq_hash for change detection; content_hash stays the authoritative
+    # whole-file digest for download/copy verification.
+    n_reg = 0
+    if osn_uploaded:
+        reg_rows = build_registry_rows(
+            osn_tasks, backend=_CANONICAL_BACKEND, deployment_id=deployment_id,
+            uploaded_by=user_id, cfpipe_version=cfpipe_version,
+            succeeded_keys=osn_uploaded, sci_dq_hashes=local_sci_dq)
+        n_reg += upsert_storage_objects(client, reg_rows)
+    if png_uploaded:
+        reg_rows = build_registry_rows(
+            png_upload_list, backend=_CANONICAL_BACKEND, cfpipe_version=cfpipe_version,
+            deployment_id=deployment_id, uploaded_by=user_id, succeeded_keys=png_uploaded)
+        n_reg += upsert_storage_objects(client, reg_rows)
+    if n_reg:
+        print(f"  Registered {n_reg} storage object(s)")
+
+    # Re-point dedup-skipped exposures (unchanged bytes, not re-registered) to this
+    # deployment so a PUBLISHED re-deploy flips the whole field consistently. NOT on
+    # a --draft re-deploy: draft is staging — leave already-published unchanged
+    # objects on their published deployment (only the new/changed ones stage as
+    # draft), else the whole live field goes dark.
+    skipped_keys = ([t.r2_key for t in fits_tasks if t.r2_key not in osn_uploaded]
+                    if (deployment_id and not draft) else [])
+    if skipped_keys:
+        n_moved = set_active_deployment(client, skipped_keys, deployment_id)
+        if n_moved:
+            print(f"  Re-pointed {n_moved} unchanged exposure(s) to deployment #{deployment_id}")
+
+    # --- Mosaics: deploy under the same field deployment (epic #261, N2) ----
+    _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
+                          draft, user_id)
+
+    # --- Multi-reducer scope claim + audit (epic #210, B4 / D12) -----------
+    claim = claim_deploy_scope(client, 'field', field, scope_version, actor=user_id)
+    if claim.get('conflict'):
+        print(f"⚠  CONCURRENT DEPLOY DETECTED for field '{field}': another reducer "
+              f"advanced this field while this deploy was running. Re-run to reconcile.")
+    log_deploy_event(
+        client, action='upload', actor=user_id, deployment_id=deployment_id,
+        observation=None, field=field, affected_count=len(osn_uploaded),
+        metadata=deploy_event_metadata(
+            'nircam', field=field, filters=filters, planned=len(records),
+            succeeded=len(osn_uploaded), failed=n_failed, skipped=n_skipped,
+            items=len(records), draft=draft,
+            fits_uploaded=len(osn_uploaded), fits_skipped=n_skipped))
 
 
 def _upsert_exposures(client, records, batch_size=500):
@@ -429,3 +759,192 @@ def _upsert_exposures(client, records, batch_size=500):
             batch,
             on_conflict='field,filter,filename',
         ).execute()
+
+
+# ---------------------------------------------------------------------------
+# Mosaic deploy (epic #261, N2) — combined mosaics → OSN + nircam_images index
+# ---------------------------------------------------------------------------
+
+# Split-extension products the resample step emits, mapped to the nircam_images
+# `extension` value. A slot deploys only the files that exist on disk.
+_MOSAIC_EXTENSIONS = (
+    ('_i2d.fits', 'i2d'),
+    ('_sci.fits', 'sci'),
+    ('_err.fits', 'err'),
+    ('_wht.fits', 'wht'),
+    ('_srcmask.fits', 'srcmask'),
+)
+
+
+def discover_mosaics(dirs, field, filters):
+    """Discover deployable mosaic products via their manifests.
+
+    Each ``mosaic_*_manifest.json`` (written by the resample step) carries the
+    authoritative ``(mosaic_name, filter, tile, pixel_scale, epoch)`` — read from
+    the manifest rather than parsed from the filename, so a multi-underscore
+    field name can't break a positional split. Returns one dict per existing
+    mosaic file:
+    ``{path, filter, tile, pixel_scale, epoch, extension, storage_key}`` under
+    the version-free canonical key (epic #261, N2 / D3). ``epoch`` is ``''`` for
+    a full-field mosaic and the epoch name for a subset mosaic; it rides in the
+    filename so the storage key is unique without any layout change.
+    """
+    import json
+    products = dirs['products']
+    out = []
+    for filtname in filters:
+        filter_dir = products / filtname
+        if not filter_dir.exists():
+            continue
+        for manifest_path in sorted(filter_dir.glob('mosaic_*_manifest.json')):
+            try:
+                m = json.loads(manifest_path.read_text())
+            except Exception:
+                continue
+            base = m.get('mosaic_name')
+            tile = m.get('tile')
+            pixel_scale = m.get('pixel_scale')
+            mfilter = m.get('filter') or filtname
+            mfield = m.get('field') or field
+            epoch = m.get('epoch') or ''
+            if not (base and tile and pixel_scale):
+                continue
+            # Skip stale pre-N2 versioned / `_latest_` manifests: only the
+            # canonical version-free name is deployable (epic #261, D3). A field
+            # reduced before N2 keeps its old `..._v0_1_..._manifest.json` on
+            # disk after re-combine; without this guard that stale slot would
+            # both re-upload a version-bearing key to OSN AND collide with the
+            # version-free row on the nircam_images (field,tile,filter,scale,
+            # extension,epoch) conflict key, crashing the batch upsert. Reconstruct
+            # the expected name deploy-side (deploy must not import the pipeline) —
+            # the same version-free contract rgb._find_mosaic enforces. An epoch
+            # mosaic appends a trailing ``_<epoch>`` segment (see
+            # manifest.build_mosaic_name), so fold it into the expected name.
+            expected = f'mosaic_nircam_{mfilter}_{mfield}_{pixel_scale}_{tile}'
+            if epoch:
+                expected += f'_{epoch}'
+            if base != expected:
+                continue
+            for suffix, ext in _MOSAIC_EXTENSIONS:
+                fpath = filter_dir / f'{base}{suffix}'
+                if not fpath.exists():
+                    continue
+                key = storage_key('nircam_mosaic', Scope(field=field, filt=filtname),
+                                  fpath.name, scheme=KeyScheme.CANONICAL)
+                out.append({
+                    'path': fpath, 'filter': mfilter, 'tile': tile,
+                    'pixel_scale': pixel_scale, 'epoch': epoch,
+                    'extension': ext, 'storage_key': key,
+                })
+    return out
+
+
+def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
+                          draft, user_id):
+    """Deploy this field's mosaics under the field deployment (epic #261, N2).
+
+    Called from :func:`deploy_nircam` so ``campfire deploy --field`` ships exposures
+    and mosaics as one field deployment. Uploads each mosaic product (the ``_i2d``
+    cube + any split ``_sci/_err/_wht/_srcmask`` extensions) to OSN under canonical
+    keys — whole-file content-hash deduped — upserts one ``nircam_images`` row per
+    ``(field, tile, filter, pixel_scale, extension)`` carrying ``deploy_status``
+    (draft/published to match the deployment) + ``deployment_id``, and registers
+    ``nircam_mosaic`` storage objects tagged with the deployment. Re-combine
+    overwrites the same key in place (stable, version-free — D3/D4); visibility
+    rides the deployment (published => public to everyone).
+    """
+    from campfire.deploy.registry import (
+        fetch_active_content_hashes, hash_file, row_for_key,
+        set_active_deployment, upsert_storage_objects,
+    )
+    mosaics = discover_mosaics(dirs, field, filters)
+    if not mosaics:
+        return
+    print(f"\nMosaics: {len(mosaics)} product(s)")
+
+    # Whole-file content-hash dedup: skip re-uploading a byte-identical mosaic.
+    existing = fetch_active_content_hashes(client, [m['storage_key'] for m in mosaics])
+    upload_tasks = []
+    for m in mosaics:
+        local_hash, local_size = hash_file(m['path'])
+        m['content_hash'] = local_hash
+        m['size'] = local_size
+        if existing.get(m['storage_key']) != local_hash:
+            upload_tasks.append(UploadTask(local_path=m['path'],
+                                           r2_key=m['storage_key'],
+                                           content_type=_FITS_CONTENT_TYPE))
+    n_skipped = len(mosaics) - len(upload_tasks)
+    if n_skipped:
+        print(f"  Skipping {n_skipped} unchanged mosaic file(s)")
+
+    uploaded: set[str] = set()
+    if upload_tasks:
+        print(f"  Uploading {len(upload_tasks)} mosaic file(s) to OSN...")
+        success, failed, failures = upload_files_parallel(
+            config, upload_tasks, desc='OSN mosaic uploads',
+            succeeded_out=uploaded, backend=_CANONICAL_BACKEND)
+        print(f"    Uploaded: {success}, Failed: {failed}")
+        for msg in failures:
+            print(f"    Error: {msg}")
+
+    # A failed upload must NOT get a nircam_images row (it would advertise a
+    # file_path with no object + no registry row; the slot 404s). A re-run heals.
+    present = set(uploaded) | {
+        m['storage_key'] for m in mosaics
+        if existing.get(m['storage_key']) == m['content_hash']
+    }
+    # PUBLISHED: (re-)index every present mosaic under this deployment. DRAFT is
+    # staging — only index the NEW/CHANGED (uploaded) mosaics as draft; leave
+    # unchanged, already-published mosaics on their live deployment so the field
+    # doesn't go dark. (A first-time deploy has uploaded == present anyway.)
+    img_status = 'draft' if draft else 'published'
+    indexable = uploaded if draft else present
+    img_rows = [{
+        'field': field, 'tile': m['tile'], 'filter': m['filter'],
+        'pixel_scale': m['pixel_scale'], 'extension': m['extension'],
+        'epoch': m.get('epoch', ''),
+        'file_path': m['storage_key'], 'file_size': m['size'],
+        'deploy_status': img_status, 'deployment_id': deployment_id,
+    } for m in mosaics if m['storage_key'] in indexable]
+    n_img = _upsert_nircam_images(client, img_rows)
+    print(f"  Indexed {n_img} nircam_images row(s) ({img_status})")
+    n_failed = len(present) - len(img_rows) if not draft else 0
+    if n_failed:
+        print(f"  ({n_failed} mosaic(s) not indexed — upload failed; re-run to retry)")
+
+    # Register landed objects, reusing the dedup hash (no re-hash of multi-GB files).
+    reg_rows = []
+    for m in mosaics:
+        if m['storage_key'] not in uploaded:
+            continue
+        row = row_for_key(
+            m['storage_key'], backend=_CANONICAL_BACKEND,
+            content_hash=m['content_hash'], size_bytes=m['size'],
+            content_type=_FITS_CONTENT_TYPE, deployment_id=deployment_id,
+            uploaded_by=user_id)
+        if row is not None:
+            reg_rows.append(row)
+    if reg_rows:
+        print(f"  Registered {upsert_storage_objects(client, reg_rows)} mosaic storage object(s)")
+
+    # Re-point unchanged (skipped) mosaics to the current deployment — only on a
+    # PUBLISHED deploy. On --draft, leave unchanged mosaics on their live deployment
+    # (staging: don't take the published field dark).
+    if not draft:
+        skipped_keys = [m['storage_key'] for m in mosaics
+                        if m['storage_key'] in present and m['storage_key'] not in uploaded]
+        if skipped_keys:
+            set_active_deployment(client, skipped_keys, deployment_id)
+
+
+def _upsert_nircam_images(client, rows, batch_size=500):
+    """Upsert nircam_images rows keyed on
+    (field, tile, filter, pixel_scale, extension, epoch)."""
+    if not rows:
+        return 0
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i:i + batch_size]
+        client.table('nircam_images').upsert(
+            batch, on_conflict='field,tile,filter,pixel_scale,extension,epoch',
+        ).execute()
+    return len(rows)

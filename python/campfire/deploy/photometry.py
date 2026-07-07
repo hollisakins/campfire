@@ -26,6 +26,7 @@ from astropy.table import Table
 import astropy.units as u
 from supabase import Client
 
+from campfire_layout import KeyScheme, Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 
 
@@ -689,7 +690,7 @@ def deploy_field_photometry(
                 if sidecar is not None:
                     has_pz = True
                     n_pz += 1
-                    r2_key = f"photometry/{field}/{obj['object_id']}_pz.json"
+                    r2_key = storage_key('photometry_pz', Scope(field=field, object_id=obj['object_id']), scheme=KeyScheme.CANONICAL)
                     local_path = Path(tmpdir) / f"{obj['object_id']}_pz.json"
                     local_path.write_text(
                         json.dumps(sidecar, separators=(',', ':')),
@@ -713,16 +714,35 @@ def deploy_field_photometry(
         }
         records.append(record)
 
-    # Upload P(z) sidecars to R2
+    # Upload P(z) sidecars to OSN (epic #210 / #216 — deploy → OSN). photometry_pz
+    # is a migrated data-bucket product, so it writes CANONICAL keys to OSN with
+    # backend='osn', matching the migrated registry row in place (see the NIRSpec
+    # paths in deploy.py).
     if upload_tasks:
-        print(f"  Uploading {len(upload_tasks)} P(z) sidecars to R2...")
+        print(f"  Uploading {len(upload_tasks)} P(z) sidecars to OSN...")
+        uploaded_keys: set[str] = set()
         success, failed, errors = upload_files_parallel(
             deploy_config, upload_tasks, desc="P(z) sidecars",
+            succeeded_out=uploaded_keys, backend='osn',
         )
         if failed:
             print(f"    WARNING: {failed} sidecar uploads failed")
             for err in errors[:5]:
                 print(f"      {err}")
+
+        # Storage registry (#214): index the P(z) sidecars that landed.
+        if uploaded_keys:
+            from campfire.deploy.registry import (
+                build_registry_rows, upsert_storage_objects,
+            )
+            from campfire.deploy.supabase import get_user_id_from_token
+            reg_rows = build_registry_rows(
+                upload_tasks,
+                backend='osn',
+                uploaded_by=get_user_id_from_token(deploy_config),
+                succeeded_keys=uploaded_keys,
+            )
+            upsert_storage_objects(client, reg_rows)
 
     # Build a (catalog_name, catalog_id) → (obj_db_id, ra, dec) map from the
     # *full* deduped match set. Used both for existing-row reconciliation

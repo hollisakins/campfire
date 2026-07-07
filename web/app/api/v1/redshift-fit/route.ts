@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import { generateDownloadUrl } from '@/lib/r2';
+import { deriveSibling } from '@/lib/layout';
 
 export interface RedshiftFitData {
   redshift: number;
@@ -54,6 +55,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Service-role read bypasses RLS, so gate unpublished spectra here: a
+    // non-admin must never receive zfit JSON for an draft/revoked spectrum,
+    // whether resolved by (target_id, grating) or by fits_path. No-op in B1.
+    const isAdmin = await isAdminUser(userId);
+
     // Parse query parameters
     const searchParams = request.nextUrl.searchParams;
     const targetId = searchParams.get('target_id');
@@ -84,12 +90,15 @@ export async function GET(request: NextRequest) {
       }
 
       // Look up the spectrum
-      const { data: spectrumData, error: spectrumError } = await supabase
+      let spectrumLookup = supabase
         .from('spectra')
         .select('fits_path')
         .eq('target_id', targetId)
-        .eq('grating', grating)
-        .single();
+        .eq('grating', grating);
+      if (!isAdmin) {
+        spectrumLookup = spectrumLookup.eq('deploy_status', 'published');
+      }
+      const { data: spectrumData, error: spectrumError } = await spectrumLookup.single();
 
       if (spectrumError || !spectrumData) {
         return NextResponse.json(
@@ -109,11 +118,14 @@ export async function GET(request: NextRequest) {
     }
 
     // Verify user has access to this file via the spectra table
-    const { data: spectrum, error: spectrumError } = await supabase
+    let spectrumQuery = supabase
       .from('spectra')
       .select('id, target_id')
-      .eq('fits_path', fitsPath)
-      .single();
+      .eq('fits_path', fitsPath);
+    if (!isAdmin) {
+      spectrumQuery = spectrumQuery.eq('deploy_status', 'published');
+    }
+    const { data: spectrum, error: spectrumError } = await spectrumQuery.single();
 
     if (spectrumError || !spectrum) {
       return NextResponse.json(
@@ -136,21 +148,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Convert FITS path to zfit JSON path
-    // spectra/{obs_name}/{obs_name}_{grating}_{filter}_{source_id}_spec.fits
-    // -> spectra/{obs_name}/{obs_name}_{grating}_{filter}_{source_id}_zfit.json
-    const zfitJsonPath = fitsPath.replace('_spec.fits', '_zfit.json');
+    // Derive the zfit-JSON sibling key via the shared layout contract
+    const zfitJsonPath = deriveSibling(fitsPath, 'zfit');
 
     // Generate signed URL for the zfit JSON file
     const signedUrl = await generateDownloadUrl(zfitJsonPath, 3600);
-
-    // Check if R2 is configured
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return NextResponse.json(
-        { error: 'Download service not configured' },
-        { status: 503 }
-      );
-    }
 
     // Fetch the zfit JSON data from R2
     const response = await fetch(signedUrl);

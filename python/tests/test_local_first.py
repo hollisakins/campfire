@@ -72,7 +72,7 @@ def local_store(tmp_path):
             "target_id": "test_obj_100",
             "object_id": "TEST-OBJ-100",
             "grating": "PRISM",
-            "fits_path": "test_obs/test_obs_prism_100_spec.fits",
+            "fits_path": "spectra/test_obs/test_obs_prism_100_spec.fits",
             "file_hash": "sha256:abc",
             "file_size": 1024,
             "signal_to_noise": 15.0,
@@ -86,13 +86,34 @@ def local_store(tmp_path):
             "target_id": "test_obj_200",
             "object_id": "TEST-OBJ-200",
             "grating": "PRISM",
-            "fits_path": "test_obs/test_obs_prism_200_spec.fits",
+            "fits_path": "spectra/test_obs/test_obs_prism_200_spec.fits",
             "file_hash": "sha256:def",
             "file_size": 1024,
             "signal_to_noise": 5.0,
             "program_slug": "test-prog",
             "observation": "test_obs",
             "field": "cosmos",
+        },
+    ])
+
+    # File/availability layer: the spectra above resolve their fits_path via the
+    # storage_objects mirror join, so seed matching rows.
+    store.upsert_storage_objects([
+        {
+            "storage_key": "spectra/test_obs/test_obs_prism_100_spec.fits",
+            "content_hash": "sha256:abc", "size_bytes": 1024,
+            "content_type": "application/fits", "product_type": "nirspec_spec",
+            "instrument": "nirspec", "status": "active", "observation": "test_obs",
+            "field": "cosmos", "spectrum_id": "test_obs_prism_100", "backend": "r2",
+            "bucket": "data", "deployment_id": 1,
+        },
+        {
+            "storage_key": "spectra/test_obs/test_obs_prism_200_spec.fits",
+            "content_hash": "sha256:def", "size_bytes": 1024,
+            "content_type": "application/fits", "product_type": "nirspec_spec",
+            "instrument": "nirspec", "status": "active", "observation": "test_obs",
+            "field": "cosmos", "spectrum_id": "test_obs_prism_200", "backend": "r2",
+            "bucket": "data", "deployment_id": 1,
         },
     ])
 
@@ -224,16 +245,16 @@ class TestOpenSpectrum:
     def test_returns_local_file(self, local_client):
         client, mock_session, store, tmp_path = local_client
 
-        obs_dir = tmp_path / "products" / "test_obs"
+        obs_dir = tmp_path / "products" / "nirspec" / "test_obs"
         obs_dir.mkdir(parents=True, exist_ok=True)
         fits_file = obs_dir / "test_obs_prism_100_spec.fits"
         fits_file.write_bytes(self._make_fits_bytes(50))
 
-        store.mark_synced(
-            spectrum_id="test_obs_prism_100",
-            local_path="test_obs/test_obs_prism_100_spec.fits",
-            file_hash="sha256:abc",
-            file_size=fits_file.stat().st_size,
+        store.mark_object_synced(
+            storage_key="spectra/test_obs/test_obs_prism_100_spec.fits",
+            local_path="nirspec/test_obs/test_obs_prism_100_spec.fits",
+            local_file_hash="sha256:abc",
+            local_file_size=fits_file.stat().st_size,
         )
 
         spec = client.open_spectrum("test_obs_prism_100")
@@ -260,7 +281,7 @@ class TestOpenSpectrum:
         assert isinstance(spec, SpectrumData)
         assert spec.wavelength.shape == (30,)
 
-        cached = tmp_path / "products" / "test_obs" / "test_obs_prism_100_spec.fits"
+        cached = tmp_path / "products" / "nirspec" / "test_obs" / "test_obs_prism_100_spec.fits"
         assert cached.exists()
         assert store.find_local_path("test_obs_prism_100") is not None
 

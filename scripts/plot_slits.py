@@ -439,9 +439,9 @@ def main():
 
     if not skip_shifts:
         # Search for MSA catalog file
-        msacat_file = f'products/{obs}/{obs}_msacat.csv'
+        msacat_file = f'products/nirspec/{obs}/{obs}_msacat.csv'
         if not os.path.exists(msacat_file):
-            raise FileNotFoundError(f"No MSA catalog file found! Probably need to retrieve from APT. Save to products/{obs}/{obs}_msacat.csv")
+            raise FileNotFoundError(f"No MSA catalog file found! Probably need to retrieve from APT. Save to products/nirspec/{obs}/{obs}_msacat.csv")
 
         msa_cat = Table.read(msacat_file)[1:]
         msa_coords = SkyCoord(msa_cat['RA'], msa_cat['DEC'], unit='deg')
@@ -463,12 +463,12 @@ def main():
                 raise NotImplementedError
 
         # Discover *_spec.fits files 
-        srcids = sorted(list(set([int(f.split('_')[-2]) for f in glob.glob(f'products/{obs}/{obs}_*_spec.fits')])))
+        srcids = sorted(list(set([int(f.split('_')[-2]) for f in glob.glob(f'products/nirspec/{obs}/{obs}_*_spec.fits')])))
         object_ids = [f'{obs}_{i}' for i in srcids]
         obs_ra, obs_dec = [], []
         for i in range(len(object_ids)):
             srcid = srcids[i]
-            spec_files = glob.glob(f'products/{obs}/{obs}_*_{srcid}_spec.fits')
+            spec_files = glob.glob(f'products/nirspec/{obs}/{obs}_*_{srcid}_spec.fits')
             ra, dec = get_source_pos(spec_files[0])
             obs_ra.append(ra)
             obs_dec.append(dec)
@@ -488,7 +488,7 @@ def main():
         else:
             dra_interp, ddec_interp = fit_offsets(msa_coords, ref_coords, method='poly2d', smoothing=0.01, plot=False)
     else:
-        srcids = sorted(list(set([int(f.split('_')[-2]) for f in glob.glob(f'products/{obs}/{obs}_*_spec.fits')])))
+        srcids = sorted(list(set([int(f.split('_')[-2]) for f in glob.glob(f'products/nirspec/{obs}/{obs}_*_spec.fits')])))
         object_ids = [f'{obs}_{i}' for i in srcids]
     
 
@@ -500,7 +500,7 @@ def main():
         #     continue
         print(object_id)
         
-        spec_files = glob.glob(f'products/{obs}/{obs}_*_{srcid}_spec.fits')
+        spec_files = glob.glob(f'products/nirspec/{obs}/{obs}_*_{srcid}_spec.fits')
         
         ra, dec = get_source_pos(spec_files[0])
         
@@ -512,7 +512,7 @@ def main():
             
             ra += drai
             dec += ddeci
-        out = f'products/{obs}/{obs}_{srcid}_rgb.png'
+        out = f'products/nirspec/{obs}/{obs}_{srcid}_rgb.png'
         if os.path.exists(out) and not args.overwrite: 
             continue
         plot_single_object(spec_files, field, output=out, override_pos=(ra,dec))

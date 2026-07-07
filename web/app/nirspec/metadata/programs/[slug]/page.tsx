@@ -248,7 +248,7 @@ export default function ProgramDetailPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-border bg-gray-50 dark:bg-slate-800/50">
+                  <tr className="border-b border-border bg-surface-2">
                     <th className="px-2 py-3 w-8"></th>
                     <th className="text-left px-4 py-3 font-medium text-text-secondary">Observation</th>
                     <th className="text-left px-4 py-3 font-medium text-text-secondary">Field</th>
@@ -268,7 +268,7 @@ export default function ProgramDetailPage() {
                       <React.Fragment key={obs.observation}>
                         <tr
                           id={obs.observation}
-                          className="border-b border-border last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-800/30 transition-colors"
+                          className="border-b border-border last:border-b-0 hover:bg-card-hover transition-colors"
                         >
                           <td className="px-2 py-3 text-center">
                             {hasPointings ? (
@@ -319,7 +319,7 @@ export default function ProgramDetailPage() {
                           </td>
                         </tr>
                         {isExpanded && hasPointings && (
-                          <tr className="border-b border-border bg-gray-50/50 dark:bg-slate-800/20">
+                          <tr className="border-b border-border bg-surface-2">
                             <td colSpan={9} className="px-4 py-3">
                               <PointingsSubtable
                                 obsName={obs.observation}
@@ -344,7 +344,7 @@ export default function ProgramDetailPage() {
       <div className="text-center">
         <Link
           href={`/nirspec?programs=${program.slug}`}
-          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
         >
           View all spectra from this program
           <ArrowRight className="w-4 h-4" />
@@ -390,7 +390,7 @@ function PointingsSubtable({ pointings, onDownloadCsv, onDownloadDs9 }: Pointing
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="border-b border-border/60 dark:border-slate-700/60 text-text-secondary">
+            <tr className="border-b border-border/60 text-text-secondary">
               <th className="text-left px-2 py-2 font-medium">MSA Design</th>
               <th className="text-right px-2 py-2 font-medium">RA</th>
               <th className="text-right px-2 py-2 font-medium">Dec</th>
@@ -403,7 +403,7 @@ function PointingsSubtable({ pointings, onDownloadCsv, onDownloadDs9 }: Pointing
           </thead>
           <tbody>
             {pointings.map((p) => (
-              <tr key={p.msametid} className="border-b border-border/30 dark:border-slate-700/30 last:border-b-0">
+              <tr key={p.msametid} className="border-b border-border/30 last:border-b-0">
                 <td className="px-2 py-1.5 text-text-primary font-mono">
                   {p.msametid}
                 </td>

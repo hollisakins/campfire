@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms } from '@/lib/api-helpers';
-import { generateDownloadUrl } from '@/lib/r2';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
+import { generateDownloadUrls } from '@/lib/r2';
 
 /**
  * GET /api/v1/observations/{obs_name}/manifest
@@ -41,10 +41,15 @@ export async function GET(
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     );
 
+    // Admins syncing an observation need its full manifest, including
+    // draft spectra; non-admins only ever see published rows. No-op in B1.
+    const includeUnpublished = await isAdminUser(userId);
+
     // Get all spectra for this observation (the main payload)
     const { data: spectra, error: spectraError } = await supabase.rpc('get_observation_manifest', {
       p_obs_name: obs_name,
       p_program_slugs: accessibleProgramSlugs,
+      p_include_unpublished: includeUnpublished,
     });
 
     if (spectraError) {
@@ -77,10 +82,12 @@ export async function GET(
       .limit(1)
       .single();
 
-    // Generate signed URLs (6-hour expiry = 21600 seconds)
+    // Generate signed URLs (6-hour expiry = 21600 seconds). Batched so dual-read
+    // resolves every backend in a single registry query (not one per spectrum).
     const urlExpiresAt = new Date(Date.now() + 21600 * 1000).toISOString();
-    const signedUrls = await Promise.all(
-      spectraList.map((s: { fits_path: string }) => generateDownloadUrl(s.fits_path, 21600))
+    const signedUrls = await generateDownloadUrls(
+      spectraList.map((s: { fits_path: string }) => s.fits_path),
+      21600
     );
 
     // Build response with download URLs
@@ -94,7 +101,7 @@ export async function GET(
         file_hash: string | null;
         file_size: number | null;
         signal_to_noise: number | null;
-        reduction_version: string;
+        cfpipe_version: string | null;
       }, i: number) => ({
         spectra_id: s.spectra_id,
         spectrum_id: s.spectrum_id,
@@ -104,7 +111,7 @@ export async function GET(
         file_hash: s.file_hash,
         file_size: s.file_size,
         signal_to_noise: s.signal_to_noise,
-        reduction_version: s.reduction_version,
+        cfpipe_version: s.cfpipe_version,
         download_url: signedUrls[i],
       })
     );

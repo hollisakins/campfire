@@ -12,7 +12,7 @@ interface EnterInspectionModeButtonProps {
 
 export const EnterInspectionModeButton: React.FC<EnterInspectionModeButtonProps> = ({ targetId, filterStr }) => {
   const { user, userProfile } = useAuth();
-  const canInspect = user && userProfile?.can_comment;
+  const canInspect = user && userProfile?.can_inspect;
 
   if (!canInspect) return null;
 

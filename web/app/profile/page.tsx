@@ -27,6 +27,7 @@ import {
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ProfileStats as ProfileStatsCard } from '@/components/profile/ProfileStats';
 import { CommentHistory } from '@/components/profile/CommentHistory';
+import { RolePermissionsCard } from '@/components/profile/RolePermissionsCard';
 
 interface ProgramWithAccess extends Program {
   has_access: boolean;
@@ -357,6 +358,9 @@ export default function ProfilePage() {
           </div>
         </Card>
 
+        {/* Role & Permissions */}
+        <RolePermissionsCard />
+
         {/* Activity Stats */}
         <ProfileStatsCard stats={profileData.stats} />
 
@@ -368,7 +372,7 @@ export default function ProfilePage() {
 
         {/* My Lists */}
         <Link href="/profile/tags" className="block">
-          <Card className="p-6 hover:bg-background-hover dark:hover:bg-card-hover transition-colors cursor-pointer">
+          <Card className="p-6 hover:bg-card-hover transition-colors cursor-pointer">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center">
@@ -502,7 +506,7 @@ export default function ProfilePage() {
         {/* CLI & API Access */}
         {!profileData.profile.is_group_account && (
           <Link href="/profile/api-keys" className="block">
-          <Card className="p-6 hover:bg-background-hover dark:hover:bg-card-hover transition-colors cursor-pointer">
+          <Card className="p-6 hover:bg-card-hover transition-colors cursor-pointer">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center">

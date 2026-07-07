@@ -11,6 +11,17 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 import numpy as np
 
+from campfire_pipeline.nirspec.constants import (
+    FIXED_SLIT_SIZE_ARCSEC, MSA_SHUTTER_SIZE_ARCSEC,
+)
+
+# Sky-frame rotation applied to V3PA to get the aperture position angle
+# (V3IdlYAngle for NRS_FULL_MSA). The fixed slits share the focal-plane
+# orientation closely enough that this is reused for them; the residual
+# per-aperture SIAF difference is <~1 deg and below the visual tolerance of the
+# cutout overlay.
+_V3IDL_Y_ANGLE_DEG = 138.5
+
 
 def get_source_pos(spec_file):
     """Extract median source RA/Dec from HDU 7 exposure table."""
@@ -123,6 +134,65 @@ def compute_slit_centers(spec_files, corrected_pos=None):
                 'shutter_idx': shutter_idx,
                 'shutter_state': 'source' if char == 'x' else 'open',
                 'v3pa': float(t['v3pa']),
+                'aperture_name': 'MSA',
+                'aperture_width_arcsec': float(MSA_SHUTTER_SIZE_ARCSEC[0]),
+                'aperture_height_arcsec': float(MSA_SHUTTER_SIZE_ARCSEC[1]),
             })
+
+    return results
+
+
+def compute_fixed_slit_apertures(spec_file, corrected_pos=None):
+    """Compute the on-sky aperture rectangle(s) for a fixed-slit exposure set.
+
+    Fixed-slit exposures place the target in a single rectangular aperture
+    (e.g. S200A2), not a multi-shutter MSA slitlet, so there is one rectangle per
+    exposure row — centered on the source, sized by the slit's SIAF dimensions,
+    at the slit position angle. (Identical rows across nods are collapsed at
+    deploy time, the same way MSA dither positions are.)
+
+    Parameters
+    ----------
+    spec_file : str
+        Path to a ``*_spec.fits`` file whose EXPOSURES HDU carries the
+        ``fixed_slit`` / ``slit_name`` columns written by stage 3.
+    corrected_pos : tuple of (ra, dec), optional
+        Astrometrically-corrected source position. If None, reads from FITS.
+
+    Returns
+    -------
+    list of dict
+        Same keys as :func:`compute_slit_centers` plus ``aperture_name`` and the
+        per-slit ``aperture_width_arcsec`` / ``aperture_height_arcsec``.
+        ``shutter_idx`` is 0 and ``shutter_state`` is ``'source'`` for every row.
+    """
+    exp = Table.read(spec_file, hdu=7)
+
+    if corrected_pos is not None:
+        source_ra, source_dec = corrected_pos
+    else:
+        source_ra, source_dec = get_source_pos(spec_file)
+    source_c = SkyCoord(source_ra, source_dec, unit='deg')
+
+    results = []
+    for t in exp:
+        slit_name = (str(t['slit_name']).strip().upper()
+                     if 'slit_name' in exp.colnames else '')
+        width, height = FIXED_SLIT_SIZE_ARCSEC.get(
+            slit_name, (0.20, 3.20))  # default to the common 0.2x3.2 slit
+
+        pa = (t['v3pa'] - 360 + _V3IDL_Y_ANGLE_DEG) * u.deg
+
+        results.append({
+            'center_ra': float(source_c.ra.deg),
+            'center_dec': float(source_c.dec.deg),
+            'position_angle': float(pa.to('deg').value) % 360,
+            'shutter_idx': 0,
+            'shutter_state': 'source',
+            'v3pa': float(t['v3pa']),
+            'aperture_name': slit_name or 'FIXEDSLIT',
+            'aperture_width_arcsec': float(width),
+            'aperture_height_arcsec': float(height),
+        })
 
     return results

@@ -6,7 +6,7 @@ from unittest import mock
 
 from campfire_pipeline.config import (
     _get_campfire_root,
-    _resolve_path,
+    resolve_paths,
     setup_environment,
 )
 
@@ -21,14 +21,24 @@ class TestGetCampfireRoot:
             assert _get_campfire_root() == str(Path.home() / "campfire")
 
 
-class TestResolvePath:
-    def test_config_value_takes_priority(self):
-        result = _resolve_path("/explicit/path", "/root", "raw")
-        assert result == "/explicit/path"
+class TestResolvePaths:
+    def test_all_roots_derived_from_campfire_root(self, tmp_path):
+        with mock.patch.dict(os.environ, {"CAMPFIRE_ROOT": str(tmp_path)}, clear=True):
+            paths = resolve_paths()
+        assert paths == {
+            "data_dir": str(tmp_path / "raw"),
+            "products_dir": str(tmp_path / "products"),
+            "reference_dir": str(tmp_path / "reference"),
+        }
 
-    def test_campfire_root_used_when_no_config(self):
-        result = _resolve_path(None, "/root", "raw")
-        assert result == "/root/raw"
+    def test_config_paths_override_is_ignored(self, tmp_path):
+        # [paths] overrides were removed (issue #212): a stray config value must
+        # not relocate any root — everything follows $CAMPFIRE_ROOT.
+        cfg = {"paths": {"data_dir": "/custom/raw", "products_dir": "/custom/prod"}}
+        with mock.patch.dict(os.environ, {"CAMPFIRE_ROOT": str(tmp_path)}, clear=True):
+            paths = resolve_paths(cfg)
+        assert paths["data_dir"] == str(tmp_path / "raw")
+        assert paths["products_dir"] == str(tmp_path / "products")
 
 
 class TestSetupEnvironmentCrdsPath:

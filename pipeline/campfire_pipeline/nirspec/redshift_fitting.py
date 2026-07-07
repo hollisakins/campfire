@@ -519,7 +519,8 @@ def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
     paths = resolve_paths(config)
 
     if workspace_dir is None:
-        workspace_dir = paths['products_dir'] + f'/{obs_name}/'
+        # Issue #212 (PR-4): NIRSpec products live under products/nirspec/<obs>/.
+        workspace_dir = paths['products_dir'] + f'/nirspec/{obs_name}/'
 
     if gratings is None:
         gratings = _discover_gratings(workspace_dir)

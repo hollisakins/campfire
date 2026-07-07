@@ -54,7 +54,7 @@ export function CodeBlock({ children }: CodeBlockProps) {
   return (
     <div className="relative mb-4 rounded-lg border border-border overflow-hidden">
       {/* Header with language label and copy button */}
-      <div className="flex justify-between items-center px-4 py-1.5 bg-surface-2 dark:bg-slate-800/50 border-b border-border">
+      <div className="flex justify-between items-center px-4 py-1.5 bg-surface-2 border-b border-border">
         <span className="text-xs font-medium text-text-secondary uppercase tracking-wide">
           {language || 'code'}
         </span>

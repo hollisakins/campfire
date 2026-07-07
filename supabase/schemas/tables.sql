@@ -74,41 +74,6 @@ CREATE TABLE IF NOT EXISTS "public"."access_codes" (
 ALTER TABLE "public"."access_codes" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."account_requests" (
-    "id" integer NOT NULL,
-    "email" "text" NOT NULL,
-    "full_name" "text" NOT NULL,
-    "status" "text" DEFAULT 'pending'::"text" NOT NULL,
-    "is_admin" boolean DEFAULT false,
-    "can_comment" boolean DEFAULT true,
-    "created_at" timestamp with time zone DEFAULT "now"(),
-    "reviewed_at" timestamp with time zone,
-    "reviewed_by" "uuid",
-    "rejection_reason" "text",
-    "program_slugs" "text"[],
-    CONSTRAINT "account_requests_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'rejected'::"text"])))
-);
-
-
-ALTER TABLE "public"."account_requests" OWNER TO "postgres";
-
-
-CREATE SEQUENCE IF NOT EXISTS "public"."account_requests_id_seq"
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE "public"."account_requests_id_seq" OWNER TO "postgres";
-
-
-ALTER SEQUENCE "public"."account_requests_id_seq" OWNED BY "public"."account_requests"."id";
-
-
-
 CREATE TABLE IF NOT EXISTS "public"."api_keys" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "user_id" "uuid" NOT NULL,
@@ -315,7 +280,6 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "id" integer NOT NULL,
     "grating" "text" NOT NULL,
     "fits_path" "text" NOT NULL,
-    "reduction_version" "text" DEFAULT 'v1.0'::"text",
     "signal_to_noise" double precision,
     "created_at" timestamp without time zone DEFAULT "now"(),
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
@@ -325,19 +289,42 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "file_hash" "text",
     "file_size" bigint,
     "exposure_time" double precision,
+    -- Provenance, carried verbatim from the FITS primary header. cfpipe_version
+    -- (CMPFRVER) is the single pipeline-version string; reduced_at (CMPFRTIM)
+    -- is the actual reduction time, distinct from the row's created_at/updated_at.
     "crds_context" "text",
     "jwst_version" "text",
     "cfpipe_version" "text",
     "date_obs" "text",
+    "reduced_at" timestamp with time zone,
     -- Phase A: per-spectrum auto-fit and DQ (populated in Phase B by deploy pipeline; backfilled in Phase D)
     "redshift_auto" double precision,
     "dq_flags" integer NOT NULL DEFAULT 0,
+    -- B1 (#217): deploy lifecycle. 'published' is the only status visible to
+    -- non-admins; 'draft' (admin-only draft, written by B2) and 'revoked'
+    -- (soft-deleted, recoverable) are hidden by the status predicate threaded
+    -- through every reader. Default 'published' so existing rows and any deploy
+    -- path that omits the column stay visible (fail-closed: forgetting to mark a
+    -- row keeps it published; forgetting to *filter* a reader is the hazard the
+    -- predicate guards). Mirrors storage_objects.status.
+    "deploy_status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "spectra_deploy_status_check" CHECK (("deploy_status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
     -- Stable per-spectrum identifier derived from fits_path: strips the leading
     -- directory and the trailing "_spec.fits" suffix (e.g. ember_cosmos_p1_prism_clear_12345).
     -- Generated/stored so it stays in sync with fits_path with no application code path.
     "spectrum_id" "text" GENERATED ALWAYS AS (
       regexp_replace(
         regexp_replace("fits_path", '^.*/', ''),
+        '_spec\.fits$', '', 'i'
+      )
+    ) STORED,
+    -- Denormalized search blob for the spectra-list p_search path: target_id plus
+    -- the spectrum_id derivation. A generated column may not reference another
+    -- generated column (spectrum_id), so the fits_path regexp is mirrored here —
+    -- keep in sync with the spectrum_id expression above. trgm-indexed.
+    "search_text" "text" GENERATED ALWAYS AS (
+      "target_id" || ' ' ||
+      regexp_replace(
+        regexp_replace(COALESCE("fits_path", ''), '^.*/', ''),
         '_spec\.fits$', '', 'i'
       )
     ) STORED
@@ -400,7 +387,14 @@ END) STORED,
     "max_exposure_time" double precision,
     "program_slug" "text" NOT NULL,
     "observation" "text" NOT NULL,
-    "object_id" integer
+    "object_id" integer,
+    -- B1 (#217): true iff this target has >= 1 published member spectrum.
+    -- Object/target-derived readers (map markers, sed-plot, /api/targets/[id],
+    -- tile-thumbnail) gate on this rather than on per-spectrum deploy_status,
+    -- since they never join spectra. Recomputed from member spectra by
+    -- recompute_target_aggregates / deploy; always true in B1 (all published),
+    -- the wiring is what B2 needs. Default true = fail-closed visible.
+    "has_published_spectrum" boolean NOT NULL DEFAULT true
 );
 
 
@@ -477,7 +471,19 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "last_data_change_at" timestamp with time zone,
     "staleness_reason" "text",
     "version" integer NOT NULL DEFAULT 1,
-    "is_active" boolean NOT NULL DEFAULT true
+    "is_active" boolean NOT NULL DEFAULT true,
+    -- B1 (#217): true iff this object has >= 1 published member spectrum.
+    -- Object-derived readers (filter/markers/lists/photometry) gate on this
+    -- rather than per-spectrum deploy_status. Recomputed by reconcile alongside
+    -- is_active; always true in B1, the wiring is what B2 needs. Default true =
+    -- fail-closed visible. Distinct from is_active (reconciliation soft-delete).
+    "has_published_spectrum" boolean NOT NULL DEFAULT true,
+    -- Denormalized search blob: object_id + member target_ids + program_slugs +
+    -- observations. Cross-table (member targets), so it cannot be a generated
+    -- column; maintained by recompute_object_search_text() at the end of
+    -- apply_object_reconciliation (and the legacy objects.py rebuild). Backs the
+    -- trgm-indexed p_search path in get_filtered_objects_paginated / _object_ids.
+    "search_text" "text"
 );
 
 
@@ -616,13 +622,19 @@ ALTER TABLE "public"."observations" OWNER TO "postgres";
 
 CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "id" integer NOT NULL,
-    "observation" "text" NOT NULL,
-    "deployed_by" "uuid" NOT NULL,
+    -- A deployment is anchored to EITHER a NIRSpec observation OR a NIRCam field
+    -- (epic #261, N1): exactly one is non-null. `observation` was NOT NULL before
+    -- NIRCam deploy became first-class; it is now nullable so a field-scoped deploy
+    -- can record the same provenance (deployed_by/at, cfpipe_version, crds_context,
+    -- config_snapshot) and drive the same draft->published->revoked lifecycle. The
+    -- observation FK still holds (NULL references nothing).
+    "observation" "text",
+    "field" "text",
+    "deployed_by" "uuid",
     "deployed_at" timestamp with time zone DEFAULT "now"(),
     "cfpipe_version" "text",
     "jwst_version" "text",
     "crds_context" "text",
-    "reduction_version" "text",
     "config_snapshot" "jsonb",
     "n_targets" integer,
     "n_spectra" integer,
@@ -631,7 +643,18 @@ CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "source_ids_filter" integer[],
     "supabase_only" boolean DEFAULT false,
     "stuck_shutters" "jsonb",
-    "reduced_at" timestamp with time zone
+    "reduced_at" timestamp with time zone,
+    -- B2 (#218): deployment lifecycle. A deployment is the batch anchor for the
+    -- draft -> published -> revoked flow. 'published' is the default so existing
+    -- rows (and ordinary deploys) stay published; `deploy --in-prep` inserts with
+    -- 'draft'. published_at/revoked_at stamp the transitions (set by the
+    -- set_deployment_status RPC). The user-facing visibility gate lives on
+    -- spectra.deploy_status; this column is the provenance/audit record.
+    "status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "deployments_status_check" CHECK (("status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
+    "published_at" timestamp with time zone,
+    "revoked_at" timestamp with time zone,
+    -- Exactly one scope: a NIRSpec observation or a NIRCam field (epic #261, N1).
+    CONSTRAINT "deployments_scope_check" CHECK (("num_nonnulls"("observation", "field") = 1))
 );
 
 
@@ -667,17 +690,31 @@ CREATE TABLE IF NOT EXISTS "public"."programs" (
 ALTER TABLE "public"."programs" OWNER TO "postgres";
 
 
+-- One logical mosaic per (field, tile, filter, pixel_scale, extension, epoch).
+-- The `version` axis is retired (epic #261, N2 / D3): the pipeline emits a
+-- single canonical mosaic name per slot and re-combine overwrites it in place.
+-- `epoch` names an exposure subset (fields.toml [<field>.epochs.<name>]) built
+-- into its own mosaic; `''` is the full-field mosaic. It is NOT NULL DEFAULT ''
+-- (never NULL) so the unique constraint still dedups full-field mosaics —
+-- Postgres treats NULLs as distinct, which would defeat the upsert.
 CREATE TABLE IF NOT EXISTS "public"."nircam_images" (
     "id" integer NOT NULL,
     "field" "text" NOT NULL,
     "tile" "text" NOT NULL,
     "filter" "text" NOT NULL,
     "pixel_scale" "text" NOT NULL,
-    "version" "text" NOT NULL,
     "extension" "text" NOT NULL,
+    "epoch" "text" NOT NULL DEFAULT '',
     "file_path" "text" NOT NULL,
     "created_at" timestamp without time zone DEFAULT "now"(),
-    "file_size" bigint
+    "file_size" bigint,
+    -- Lifecycle (epic #261, N2): mosaics are public science with the same
+    -- draft->published->revoked gate as spectra, flipped by set_deployment_status.
+    -- `deployment_id` links the mosaic to its NIRCam field deployment (provenance +
+    -- the batch the lifecycle transition acts on). `deploy_status` is the public
+    -- visibility gate the RLS reads (published => everyone; draft/revoked => admin).
+    "deploy_status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "nircam_images_deploy_status_check" CHECK (("deploy_status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
+    "deployment_id" integer
 );
 
 
@@ -742,6 +779,302 @@ ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNED BY "public"."nircam_exposures"."id";
 
 
+-- NIRSpec rate-mask triage (P2, design §3.2). Detector-grain analogue of
+-- nircam_exposures, keyed on (observation, exposure_root, detector). Admin-only
+-- (RLS); deploy-populated (split-ownership upsert preserves web review state).
+CREATE TABLE IF NOT EXISTS "public"."nirspec_rate_exposures" (
+    "id" integer NOT NULL,
+    "observation" "text" NOT NULL,
+    "exposure_root" "text" NOT NULL,
+    "detector" "text" NOT NULL,
+    "filename" "text" NOT NULL,
+    "grating" "text",
+    "image_width" integer,
+    "image_height" integer,
+    "storage_key" "text",
+    "stage" "text" NOT NULL DEFAULT 'rate'::"text",
+    "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
+    "masking" "text" NOT NULL DEFAULT 'none'::"text",
+    "mask_regions" "jsonb",
+    "notes" "text",
+    "created_at" timestamp with time zone NOT NULL DEFAULT "now"(),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."nirspec_rate_exposures" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."nirspec_rate_exposures_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."nirspec_rate_exposures_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."nirspec_rate_exposures_id_seq" OWNED BY "public"."nirspec_rate_exposures"."id";
+
+
+-- spectrum_exposures: NIRSpec nods-renderer grid (NIRSpec review loop, P4, design
+-- §2c/§4.2). One row per canonical per-source spectrum-exposure
+-- (observation, exposure_root, nod, detector, source_id) — the render backbone the
+-- web nods renderer groups as rows=(exp_group, nod) × cols=detector per source.
+-- REVIVED + REVISED from the epic-#210-B2 dead scaffold: the old spectrum_id NOT
+-- NULL FK to spectra was unsatisfiable for an intermediates-only deploy (which runs
+-- BEFORE stage-3 combine makes any spectrum row), so it is dropped and the table is
+-- re-keyed to observations.name (no FK). Deploy-populated (split-ownership upsert,
+-- campfire.deploy.spectrum_grid) — exp_group comes from the pipeline's CFEXPGRP
+-- header stamp. Admin-only: reduction intermediates, never user-facing science. The
+-- physical object (key/hash/size/backend) lives in storage_objects (product_type
+-- 'nirspec_spectrum_exposure'); this table owns render columns + reviewer lifecycle
+-- state (review_status, masking, notes — the last two set by the web, not deploy).
+CREATE TABLE IF NOT EXISTS "public"."spectrum_exposures" (
+    "id" integer NOT NULL,
+    "observation" "text" NOT NULL,
+    "exposure_root" "text" NOT NULL,
+    "nod" "text" NOT NULL,
+    "detector" "text" NOT NULL,
+    "source_id" integer NOT NULL,
+    "exp_group" integer,
+    "grating" "text",
+    "filename" "text" NOT NULL,
+    "storage_key" "text",
+    "image_width" integer,
+    "image_height" integer,
+    "stage" "text" NOT NULL DEFAULT 'cal'::"text",
+    "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
+    "masking" "text" NOT NULL DEFAULT 'none'::"text",
+    "notes" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."spectrum_exposures" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."spectrum_exposures_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."spectrum_exposures_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."spectrum_exposures_id_seq" OWNED BY "public"."spectrum_exposures"."id";
+
+
+COMMENT ON TABLE "public"."spectrum_exposures" IS 'NIRSpec nods-renderer grid (review loop P4). One row per canonical per-source spectrum-exposure (observation, exposure_root, nod, detector, source_id); deploy-populated, admin-only. exp_group is the pipeline CFEXPGRP grouping. Revived+revised from the epic-#210-B2 scaffold (dropped the spectra FK; re-keyed to observations.name).';
+
+COMMENT ON COLUMN "public"."spectrum_exposures"."exposure_root" IS 'Pipeline 2-token root (e.g. jw07076020001_04101), with the exposure token broken out as `nod`. NB: DIFFERENT semantics from nirspec_rate_exposures.exposure_root (3 tokens, detector-stripped) — deliberate, matching observation.group_files and the nods grid key.';
+
+COMMENT ON COLUMN "public"."spectrum_exposures"."exp_group" IS 'Pipeline-computed exposure-group id (subpixel-dither), read from the canonical FITS CFEXPGRP header card. One value per group, spanning nods+detectors; a render/grouping attribute, NOT part of the unique key. Nullable (files predating the P4 stamp).';
+
+
+-- nirspec_source_review: the editable flag channel for the NIRSpec nods review
+-- loop (P6, design §4.3). One row per (observation, exposure_root, source_id) — a
+-- SOURCE-scoped grain, coarser than the spectrum_exposures render grid (which is
+-- per nod×detector), so the two flag channels live here rather than duplicating
+-- across every nod/detector row. Both channels are jsonb mirroring the local
+-- reference/nirspec/<obs>/ TOMLs 1:1, so P7's pull serializes without transform:
+--   stuck_shutters  = [1,2,3]     ordinal list   (mirrors stuck_closed_shutters.toml)
+--   bkg_overrides   = {"3":[1]}   {nod: [nods]}  (mirrors nodded_background_overrides.toml;
+--                                  keys/values are exposure-sequence numbers, not indices)
+-- Admin-only (RLS); web-editable; NOT deployed to OSN (deployments.stuck_shutters is a
+-- per-deploy snapshot, this is the live editable record). exposure_root is the 2-token
+-- root (jw07076020001_04101), same semantics as spectrum_exposures.exposure_root.
+CREATE TABLE IF NOT EXISTS "public"."nirspec_source_review" (
+    "id" integer NOT NULL,
+    "observation" "text" NOT NULL,
+    "exposure_root" "text" NOT NULL,
+    "source_id" integer NOT NULL,
+    "stuck_shutters" "jsonb",
+    "bkg_overrides" "jsonb",
+    "notes" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."nirspec_source_review" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."nirspec_source_review_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."nirspec_source_review_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."nirspec_source_review_id_seq" OWNED BY "public"."nirspec_source_review"."id";
+
+
+COMMENT ON TABLE "public"."nirspec_source_review" IS 'Editable flag channel for the NIRSpec nods review loop (P6). One row per (observation, exposure_root, source_id); admin-only, web-editable, NOT deployed. stuck_shutters/bkg_overrides jsonb mirror the reference/nirspec/<obs>/ TOMLs 1:1 for the P7 pull-back.';
+
+
+-- storage_objects: the keystone shadow index of every object in cloud storage
+-- (epic #210, F1). Deploy writes one row per uploaded object using canonical keys
+-- from the campfire_layout contract; a backfill/reconcile pass covers historical
+-- pointers and adopts bucket orphans. Additive + inert: nothing reads it as
+-- authoritative until a coverage gate proves 100% of live pointers have rows.
+CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
+    "id" bigint NOT NULL,
+    "backend" "text" NOT NULL,
+    "bucket" "text" NOT NULL,
+    "storage_key" "text" NOT NULL,
+    "content_hash" "text" NOT NULL,
+    -- Secondary, science-only content digest (epic #261, N1 / D1). For products
+    -- that re-save identical science with volatile bytes (a NIRCam canonical
+    -- exposure re-written by the pipeline gets fresh header timestamps, so its
+    -- whole-file sha256 changes even when SCI+DQ do not), deploy compares this
+    -- stable sha256(SCI+DQ) to skip re-uploading unchanged exposures. content_hash
+    -- stays the authoritative whole-file hash that download/copy verification
+    -- checks; sci_dq_hash is only a change-detection key. NULL for products with
+    -- no partial digest (everything except nircam_exposure today).
+    "sci_dq_hash" "text",
+    "size_bytes" bigint NOT NULL,
+    "content_type" "text" NOT NULL,
+    "product_type" "text" NOT NULL,
+    "instrument" "text",
+    "status" "text" NOT NULL DEFAULT 'active'::"text",
+    "observation" "text",
+    "field" "text",
+    "filter" "text",
+    "spectrum_id" "text",
+    "exposure_ref" "text",
+    "deployment_id" integer,
+    "cfpipe_version" "text",
+    "uploaded_by" "uuid",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "storage_objects_backend_check" CHECK (("backend" = ANY (ARRAY['r2'::"text", 'osn'::"text"]))),
+    CONSTRAINT "storage_objects_bucket_check" CHECK (("bucket" = ANY (ARRAY['data'::"text", 'tiles'::"text"]))),
+    CONSTRAINT "storage_objects_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'superseded'::"text", 'revoked'::"text"]))),
+    CONSTRAINT "storage_objects_instrument_check" CHECK (("instrument" IS NULL OR "instrument" = ANY (ARRAY['nirspec'::"text", 'nircam'::"text"]))),
+    -- content_hash is scheme-prefixed: 'sha256:<hex>' is authoritative (deploy hashes
+    -- the local file; spectra backfill reuses spectra.file_hash); 'etag:<hex>' is
+    -- provisional from an S3 LIST/HEAD (no GET) for backfilled objects with no stored
+    -- sha256, upgraded to sha256 by the A1 copy+verify pass (#215). No raw/bare hex.
+    CONSTRAINT "storage_objects_content_hash_check" CHECK (("content_hash" ~ '^(sha256|etag):'::"text")),
+    -- sci_dq_hash, when present, is always an authoritative sha256 (no provisional
+    -- etag form — it is computed from the local FITS arrays, never a HEAD).
+    CONSTRAINT "storage_objects_sci_dq_hash_check" CHECK (("sci_dq_hash" IS NULL OR "sci_dq_hash" ~ '^sha256:'::"text")),
+    -- product_type tracks the campfire_layout PRODUCTS registry (every entry with a
+    -- non-null bucket). A new cloud-backed product type requires a migration here.
+    CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
+        'nirspec_spec'::"text", 'spectrum_json'::"text", 'zfit'::"text",
+        'nirspec_spectrum_exposure'::"text", 'nirspec_rate'::"text",
+        'rgb'::"text", 'sed'::"text",
+        'nircam_exposure'::"text", 'nircam_exposure_preview'::"text",
+        'nircam_exposure_full'::"text", 'nircam_mosaic'::"text", 'nircam_rgb'::"text",
+        'nircam_expmap'::"text", 'tile'::"text", 'photometry_pz'::"text",
+        'nirspec_manual_mask'::"text", 'nirspec_stuck_shutters'::"text",
+        'nirspec_bkg_override'::"text", 'nircam_mask'::"text", 'nircam_astrom_cat'::"text",
+        'nircam_bad_pixel'::"text", 'nircam_flat'::"text", 'nircam_wisp'::"text"
+    ])))
+);
+
+
+ALTER TABLE "public"."storage_objects" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."storage_objects_id_seq"
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."storage_objects_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."storage_objects_id_seq" OWNED BY "public"."storage_objects"."id";
+
+
+COMMENT ON TABLE "public"."storage_objects" IS 'Shadow index of every object in cloud storage (epic #210, F1). One row per data-bucket object; written by deploy and a backfill/reconcile pass. Tiles are intentionally NOT indexed per-object (kept on R2, aggregated in map_layers.total_size_bytes); the budget RPC unions both. Additive and inert until a coverage gate proves it complete.';
+
+COMMENT ON COLUMN "public"."storage_objects"."content_hash" IS 'Scheme-prefixed integrity token. ''sha256:<hex>'' is authoritative (deploy hashes the local file; spectra backfill reuses spectra.file_hash). ''etag:<hex>'' is provisional from an S3 LIST/HEAD (no GET) for backfilled objects with no stored sha256; the A1 copy+verify pass (#215) upgrades it to sha256.';
+
+COMMENT ON COLUMN "public"."storage_objects"."filter" IS 'Typed, indexed scope column for per-filter NIRCam products (nircam_exposure/_preview/_full, nircam_mosaic, nircam_expmap), denormalized from the campfire_layout key''s <field>/<filter>/ segment by deploy/row_for_key. NULL for NIRSpec and field-level products (no filter concept). Mirrors observation/field/spectrum_id — lets the registry filter/aggregate by filter without parsing keys.';
+
+COMMENT ON COLUMN "public"."storage_objects"."exposure_ref" IS 'Stable per-exposure reference for intermediate products (nircam rootname; nirspec (root,nod,detector,source) tuple). Backs the partial unique (product_type, exposure_ref) WHERE status=''active'' — one current object per product/exposure.';
+
+COMMENT ON COLUMN "public"."storage_objects"."sci_dq_hash" IS 'Science-only sha256(SCI+DQ) change-detection digest (epic #261, N1). Lets deploy skip re-uploading a NIRCam canonical exposure whose science is unchanged even though its whole-file content_hash shifted (pipeline re-save bumps header timestamps). content_hash remains the authoritative whole-file integrity token; this is never used for download/copy verification. NULL for products without a partial digest.';
+
+COMMENT ON COLUMN "public"."storage_objects"."status" IS 'active = current object; superseded = replaced by a newer hash (tombstone, GC-eligible later); revoked = un-published. Only active rows count toward the budget and the partial-unique constraint.';
+
+
+-- deploy_events: append-only audit log for the intermediate-product lifecycle
+-- (epic #210, B2/B3). One row per lifecycle action (upload/publish/revoke/
+-- recover/supersede/delete). Mirrors download_log's shape. Written only by the
+-- lifecycle RPCs (SECURITY DEFINER, service_role/admin) — never by a direct
+-- client insert — so the action record is trustworthy. Admin-readable.
+CREATE TABLE IF NOT EXISTS "public"."deploy_events" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "actor" "uuid",
+    "action" "text" NOT NULL,
+    "deployment_id" integer,
+    "observation" "text",
+    -- NIRCam field scope (audit B5, Phase 3). Mirrors deployments.field; first-
+    -- class column (was buried in metadata->>'field'). NULL for NIRSpec events.
+    "field" "text",
+    "spectrum_id" "text",
+    "object_id" integer,
+    "status_from" "text",
+    "status_to" "text",
+    "affected_count" integer,
+    "host" "text",
+    "metadata" "jsonb",
+    "occurred_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text"])))
+);
+
+
+ALTER TABLE "public"."deploy_events" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."deploy_events" IS 'Append-only audit log for the intermediate-product lifecycle (epic #210, B2/B3). One row per action (upload/publish/revoke/recover/supersede/delete), written only by the lifecycle RPCs (SECURITY DEFINER). deployment_id is nullable (some events are not tied to a deployment). Admin-readable; never client-inserted.';
+
+
+-- deploy_scope_state: optimistic concurrency for multi-reducer safety (epic #210,
+-- B4). One row per deploy scope ((observation|field), key). A deploy reads the
+-- scope version when it starts and compare-and-sets it at finalize via
+-- claim_deploy_scope; a mismatch means another reducer deployed the same scope
+-- concurrently, so the clobber is DETECTED (and surfaced) rather than silent.
+-- Deliberately the simplest mechanism that satisfies the gate: no leases, no
+-- heartbeats — concurrent same-scope deploys are rare.
+CREATE TABLE IF NOT EXISTS "public"."deploy_scope_state" (
+    "scope_type" "text" NOT NULL,
+    "scope_key" "text" NOT NULL,
+    "version" integer NOT NULL DEFAULT 0,
+    "last_actor" "uuid",
+    "last_deploy_at" timestamp with time zone,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "deploy_scope_state_scope_type_check" CHECK (("scope_type" = ANY (ARRAY['observation'::"text", 'field'::"text"])))
+);
+
+
+ALTER TABLE "public"."deploy_scope_state" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."deploy_scope_state" IS 'Optimistic-concurrency version per deploy scope (epic #210, B4). claim_deploy_scope does the compare-and-set so concurrent same-scope deploys are detected, not silently clobbered. Admin/internal.';
+
 
 CREATE TABLE IF NOT EXISTS "public"."password_reset_log" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
@@ -780,6 +1113,7 @@ CREATE TABLE IF NOT EXISTS "public"."pending_invites" (
     "email" "text" NOT NULL,
     "is_admin" boolean DEFAULT false,
     "can_comment" boolean DEFAULT true,
+    "can_inspect" boolean DEFAULT false,
     "invited_by" "uuid",
     "created_at" timestamp with time zone DEFAULT "now"(),
     "accepted_at" timestamp with time zone,
@@ -804,6 +1138,41 @@ ALTER SEQUENCE "public"."pending_invites_id_seq" OWNER TO "postgres";
 
 
 ALTER SEQUENCE "public"."pending_invites_id_seq" OWNED BY "public"."pending_invites"."id";
+
+
+
+-- Inspection-access requests. A signed-in user without can_inspect can ask an
+-- admin to grant inspection privileges. Admins review these in the admin UI;
+-- approving flips user_profiles.can_inspect. One open ('pending') row per user
+-- is enforced by a partial unique index (see indexes.sql).
+CREATE TABLE IF NOT EXISTS "public"."inspection_access_requests" (
+    "id" integer NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "status" "text" DEFAULT 'pending'::"text" NOT NULL,
+    "message" "text",
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "reviewed_at" timestamp with time zone,
+    "reviewed_by" "uuid",
+    CONSTRAINT "inspection_access_requests_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'rejected'::"text"])))
+);
+
+
+ALTER TABLE "public"."inspection_access_requests" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."inspection_access_requests_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."inspection_access_requests_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."inspection_access_requests_id_seq" OWNED BY "public"."inspection_access_requests"."id";
 
 
 
@@ -838,6 +1207,9 @@ CREATE TABLE IF NOT EXISTS "public"."shutters" (
     "shutter_idx" smallint NOT NULL,
     "dither_id" smallint DEFAULT 0 NOT NULL,
     "shutter_state" "text" DEFAULT 'open'::"text" NOT NULL,
+    "aperture_name" "text" DEFAULT 'MSA'::"text" NOT NULL,
+    "aperture_width_arcsec" double precision DEFAULT 0.22 NOT NULL,
+    "aperture_height_arcsec" double precision DEFAULT 0.46 NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"()
 );
 
@@ -1011,6 +1383,7 @@ CREATE TABLE IF NOT EXISTS "public"."user_profiles" (
     "created_at" timestamp without time zone DEFAULT "now"(),
     "is_group_account" boolean DEFAULT false,
     "can_comment" boolean DEFAULT true,
+    "can_inspect" boolean DEFAULT false,
     "is_admin" boolean DEFAULT false,
     "preferences" "jsonb" DEFAULT '{}'::"jsonb",
     CONSTRAINT "user_profiles_username_check" CHECK (("username" ~ '^[a-z0-9][a-z0-9._-]{0,38}[a-z0-9]$'::"text"))
@@ -1039,10 +1412,6 @@ ALTER TABLE "public"."user_program_access" OWNER TO "postgres";
 -- Sequence defaults (SET DEFAULT for serial columns)
 -- ---------------------------------------------------------------------------
 
-ALTER TABLE ONLY "public"."account_requests" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."account_requests_id_seq"'::"regclass");
-
-
-
 ALTER TABLE ONLY "public"."comments" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."comments_id_seq"'::"regclass");
 
 
@@ -1062,8 +1431,25 @@ ALTER TABLE ONLY "public"."nircam_images" ALTER COLUMN "id" SET DEFAULT "nextval
 ALTER TABLE ONLY "public"."nircam_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nircam_exposures_id_seq"'::"regclass");
 
 
+ALTER TABLE ONLY "public"."nirspec_rate_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nirspec_rate_exposures_id_seq"'::"regclass");
+
+
+
+ALTER TABLE ONLY "public"."spectrum_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."spectrum_exposures_id_seq"'::"regclass");
+
+ALTER TABLE ONLY "public"."nirspec_source_review" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nirspec_source_review_id_seq"'::"regclass");
+
+
+
+ALTER TABLE ONLY "public"."storage_objects" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."storage_objects_id_seq"'::"regclass");
+
+
 
 ALTER TABLE ONLY "public"."pending_invites" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."pending_invites_id_seq"'::"regclass");
+
+
+
+ALTER TABLE ONLY "public"."inspection_access_requests" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."inspection_access_requests_id_seq"'::"regclass");
 
 
 
@@ -1112,16 +1498,6 @@ ALTER TABLE ONLY "public"."access_codes"
 
 ALTER TABLE ONLY "public"."access_codes"
     ADD CONSTRAINT "access_codes_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."account_requests"
-    ADD CONSTRAINT "account_requests_email_key" UNIQUE ("email");
-
-
-
-ALTER TABLE ONLY "public"."account_requests"
-    ADD CONSTRAINT "account_requests_pkey" PRIMARY KEY ("id");
 
 
 
@@ -1191,17 +1567,17 @@ ALTER TABLE ONLY "public"."map_layers"
 
 
 ALTER TABLE ONLY "public"."nircam_images"
-    ADD CONSTRAINT "nircam_images_field_tile_filter_pixel_scale_version_extensi_key" UNIQUE ("field", "tile", "filter", "pixel_scale", "version", "extension");
-
-
-
-ALTER TABLE ONLY "public"."nircam_images"
     ADD CONSTRAINT "nircam_images_pkey" PRIMARY KEY ("id");
 
 
 
+-- Single version-free uniqueness (epic #261, N2 / D3). The former redundant
+-- twin `nircam_images_field_tile_filter_pixel_scale_version_extensi_key` is
+-- dropped alongside the `version` axis. `epoch` ('' = full field) is part of the
+-- key so a subset mosaic gets its own row instead of colliding with the
+-- full-field mosaic of the same (field, tile, filter, pixel_scale, extension).
 ALTER TABLE ONLY "public"."nircam_images"
-    ADD CONSTRAINT "nircam_images_unique" UNIQUE ("field", "tile", "filter", "pixel_scale", "version", "extension");
+    ADD CONSTRAINT "nircam_images_unique" UNIQUE ("field", "tile", "filter", "pixel_scale", "extension", "epoch");
 
 
 ALTER TABLE ONLY "public"."nircam_exposures"
@@ -1209,6 +1585,41 @@ ALTER TABLE ONLY "public"."nircam_exposures"
 
 ALTER TABLE ONLY "public"."nircam_exposures"
     ADD CONSTRAINT "nircam_exposures_unique" UNIQUE ("field", "filter", "filename");
+
+ALTER TABLE ONLY "public"."nirspec_rate_exposures"
+    ADD CONSTRAINT "nirspec_rate_exposures_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."nirspec_rate_exposures"
+    ADD CONSTRAINT "nirspec_rate_exposures_unique" UNIQUE ("observation", "exposure_root", "detector");
+
+ALTER TABLE ONLY "public"."spectrum_exposures"
+    ADD CONSTRAINT "spectrum_exposures_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."spectrum_exposures"
+    ADD CONSTRAINT "spectrum_exposures_unique" UNIQUE ("observation", "exposure_root", "nod", "detector", "source_id");
+
+ALTER TABLE ONLY "public"."nirspec_source_review"
+    ADD CONSTRAINT "nirspec_source_review_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."nirspec_source_review"
+    ADD CONSTRAINT "nirspec_source_review_unique" UNIQUE ("observation", "exposure_root", "source_id");
+
+ALTER TABLE ONLY "public"."deploy_events"
+    ADD CONSTRAINT "deploy_events_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."deploy_scope_state"
+    ADD CONSTRAINT "deploy_scope_state_pkey" PRIMARY KEY ("scope_type", "scope_key");
+-- (FK constraints for spectrum_exposures/deploy_events are added below, after
+-- their referenced PKs (spectra_pkey, deployments_pkey) exist in the build order.)
+
+
+ALTER TABLE ONLY "public"."storage_objects"
+    ADD CONSTRAINT "storage_objects_pkey" PRIMARY KEY ("id");
+
+-- A logical key can coexist across backends during the OSN cutover window, so
+-- uniqueness is (backend, bucket, storage_key) — not storage_key alone.
+ALTER TABLE ONLY "public"."storage_objects"
+    ADD CONSTRAINT "storage_objects_backend_bucket_key_unique" UNIQUE ("backend", "bucket", "storage_key");
 
 
 
@@ -1229,6 +1640,11 @@ ALTER TABLE ONLY "public"."pending_invites"
 
 ALTER TABLE ONLY "public"."pending_invites"
     ADD CONSTRAINT "pending_invites_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."inspection_access_requests"
+    ADD CONSTRAINT "inspection_access_requests_pkey" PRIMARY KEY ("id");
 
 
 
@@ -1264,6 +1680,16 @@ ALTER TABLE ONLY "public"."deployments"
 
 ALTER TABLE ONLY "public"."spectra"
     ADD CONSTRAINT "spectra_pkey" PRIMARY KEY ("id");
+
+-- B2 (#218) cross-table FKs, placed after the referenced PKs (spectra_pkey above,
+-- deployments_pkey earlier) so the declarative build order resolves them.
+-- (spectrum_exposures no longer FKs to spectra — the review loop P4 revive re-keyed
+-- it to observations.name so intermediates-only deploys, which precede stage-3
+-- combine, can populate it before any spectrum row exists.)
+-- deploy_events -> deployments.id, SET NULL: audit rows outlive the deployment
+-- they reference (don't cascade-delete history), matching storage_objects.deployment_id.
+ALTER TABLE ONLY "public"."deploy_events"
+    ADD CONSTRAINT "deploy_events_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
 
 
 
@@ -1344,11 +1770,6 @@ ALTER TABLE ONLY "public"."access_codes"
 
 
 
-ALTER TABLE ONLY "public"."account_requests"
-    ADD CONSTRAINT "account_requests_reviewed_by_fkey" FOREIGN KEY ("reviewed_by") REFERENCES "auth"."users"("id");
-
-
-
 ALTER TABLE ONLY "public"."api_keys"
     ADD CONSTRAINT "api_keys_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
 
@@ -1389,6 +1810,21 @@ ALTER TABLE ONLY "public"."deployments"
 
 ALTER TABLE ONLY "public"."deployments"
     ADD CONSTRAINT "deployments_deployed_by_fkey" FOREIGN KEY ("deployed_by") REFERENCES "public"."user_profiles"("user_id");
+
+
+-- observation and deployment_id reference PK columns, so they are real FKs.
+-- spectrum_id / field / exposure_ref are typed, indexed scope columns (not FKs):
+-- spectra.spectrum_id is GENERATED from fits_path and not uniquely constrained,
+-- so an FK would over-constrain and force tight insert ordering — an index gives
+-- the joinability without those hazards.
+ALTER TABLE ONLY "public"."storage_objects"
+    ADD CONSTRAINT "storage_objects_observation_fkey" FOREIGN KEY ("observation") REFERENCES "public"."observations"("name");
+
+ALTER TABLE ONLY "public"."storage_objects"
+    ADD CONSTRAINT "storage_objects_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
+
+ALTER TABLE ONLY "public"."nircam_images"
+    ADD CONSTRAINT "nircam_images_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
 
 
 
@@ -1504,6 +1940,16 @@ ALTER TABLE ONLY "public"."pending_invites"
 
 
 
+ALTER TABLE ONLY "public"."inspection_access_requests"
+    ADD CONSTRAINT "inspection_access_requests_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."inspection_access_requests"
+    ADD CONSTRAINT "inspection_access_requests_reviewed_by_fkey" FOREIGN KEY ("reviewed_by") REFERENCES "auth"."users"("id");
+
+
+
 ALTER TABLE ONLY "public"."refresh_tokens"
     ADD CONSTRAINT "refresh_tokens_replaced_by_fkey" FOREIGN KEY ("replaced_by") REFERENCES "public"."refresh_tokens"("id");
 
@@ -1568,12 +2014,6 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 GRANT ALL ON TABLE "public"."access_codes" TO "anon";
 GRANT ALL ON TABLE "public"."access_codes" TO "authenticated";
 GRANT ALL ON TABLE "public"."access_codes" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."account_requests" TO "anon";
-GRANT ALL ON TABLE "public"."account_requests" TO "authenticated";
-GRANT ALL ON TABLE "public"."account_requests" TO "service_role";
 
 
 
@@ -1694,6 +2134,35 @@ GRANT ALL ON TABLE "public"."nircam_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."nircam_exposures" TO "service_role";
 
 
+-- nirspec_rate_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
+GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "authenticated";
+GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "service_role";
+
+
+-- spectrum_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
+GRANT ALL ON TABLE "public"."spectrum_exposures" TO "authenticated";
+GRANT ALL ON TABLE "public"."spectrum_exposures" TO "service_role";
+
+-- nirspec_source_review is admin-only (RLS); not granted to anon.
+GRANT ALL ON TABLE "public"."nirspec_source_review" TO "authenticated";
+GRANT ALL ON TABLE "public"."nirspec_source_review" TO "service_role";
+
+
+-- deploy_events is an admin/internal audit log (RLS admin-only); not granted to anon.
+GRANT ALL ON TABLE "public"."deploy_events" TO "authenticated";
+GRANT ALL ON TABLE "public"."deploy_events" TO "service_role";
+
+
+-- deploy_scope_state is admin/internal concurrency state (RLS admin-only); not anon.
+GRANT ALL ON TABLE "public"."deploy_scope_state" TO "authenticated";
+GRANT ALL ON TABLE "public"."deploy_scope_state" TO "service_role";
+
+
+-- storage_objects is an admin/internal registry (RLS admin-only); not granted to anon.
+GRANT ALL ON TABLE "public"."storage_objects" TO "authenticated";
+GRANT ALL ON TABLE "public"."storage_objects" TO "service_role";
+
+
 
 GRANT ALL ON TABLE "public"."password_reset_log" TO "anon";
 GRANT ALL ON TABLE "public"."password_reset_log" TO "authenticated";
@@ -1704,6 +2173,12 @@ GRANT ALL ON TABLE "public"."password_reset_log" TO "service_role";
 GRANT ALL ON TABLE "public"."pending_invites" TO "anon";
 GRANT ALL ON TABLE "public"."pending_invites" TO "authenticated";
 GRANT ALL ON TABLE "public"."pending_invites" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."inspection_access_requests" TO "anon";
+GRANT ALL ON TABLE "public"."inspection_access_requests" TO "authenticated";
+GRANT ALL ON TABLE "public"."inspection_access_requests" TO "service_role";
 
 
 
@@ -1741,9 +2216,9 @@ GRANT ALL ON TABLE "public"."user_program_access" TO "service_role";
 -- Sequence grants
 -- ---------------------------------------------------------------------------
 
-GRANT ALL ON SEQUENCE "public"."account_requests_id_seq" TO "anon";
-GRANT ALL ON SEQUENCE "public"."account_requests_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."account_requests_id_seq" TO "service_role";
+GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "service_role";
 
 
 
@@ -1778,6 +2253,21 @@ GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "service_role";
 
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "service_role";
+
+
+GRANT ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" TO "service_role";
+
+
+GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "service_role";
+
+GRANT ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" TO "service_role";
+
+
+GRANT ALL ON SEQUENCE "public"."storage_objects_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."storage_objects_id_seq" TO "service_role";
 
 
 

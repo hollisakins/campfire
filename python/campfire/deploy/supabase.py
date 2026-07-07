@@ -6,6 +6,35 @@ slit geometry deployment and filter cache refresh.
 """
 
 from supabase import create_client, Client
+from supabase.client import ClientOptions
+
+from campfire.auth._jwt import get_sub
+
+
+def _make_user_client(url: str, anon_key: str, supabase_token: str) -> Client:
+    """Build a Supabase client authenticated as a user (JWT) for RLS writes.
+
+    The user JWT **must** be baked into the client options headers at
+    construction. Authenticating via ``client.postgrest.auth(token)`` *after*
+    construction is unreliable in supabase-py 2.x: ``Client.postgrest`` is a
+    lazily-built, cached client constructed from ``options.headers``, and the
+    GoTrue auth-state listener resets that cache (``self._postgrest = None``)
+    and rewrites ``Authorization`` back to the anon key. When that race is
+    lost the user JWT silently never reaches the wire — requests go out as
+    role ``anon`` -> ``auth.uid()`` is NULL -> ``is_admin()`` is false -> admin
+    writes (e.g. the ``observations`` upsert) fail intermittently with a 42501
+    RLS error. Passing the token through ``options.headers`` makes every
+    (re)build of the postgrest client carry the user JWT.
+    """
+    if not supabase_token:
+        # A falsy token yields "Bearer None" — i.e. an effectively anon request.
+        # Refuse rather than silently deploy as anon and fail later with 42501.
+        raise ValueError(
+            "Refusing to build a user Supabase client without a Supabase token "
+            "(would authenticate as anon). Run 'campfire login' again."
+        )
+    options = ClientOptions(headers={"Authorization": f"Bearer {supabase_token}"})
+    return create_client(url, anon_key, options=options)
 
 
 class AutoRefreshClient:
@@ -13,18 +42,26 @@ class AutoRefreshClient:
 
     Deployments can run for hours, but Supabase JWTs expire after ~1 hour.
     This wrapper checks token expiry before every ``table()`` or ``rpc()``
-    call and transparently refreshes via the stored ``TokenManager``.
+    call and, when a refresh is needed, **rebuilds** the underlying client
+    with the fresh token baked into its options headers (see
+    ``_make_user_client`` for why a fresh build rather than
+    ``postgrest.auth()``).
     """
 
-    def __init__(self, client: Client, token_manager):
-        self._client = client
+    def __init__(self, url: str, anon_key: str, supabase_token: str, token_manager):
+        self._url = url
+        self._anon_key = anon_key
         self._token_manager = token_manager
+        self._client = _make_user_client(url, anon_key, supabase_token)
 
     def _ensure_valid_token(self):
-        if self._token_manager and self._token_manager.needs_refresh():
-            new_token = self._token_manager.get_supabase_token(auto_refresh=True)
+        # Decide on the Supabase JWT's OWN expiry, not the access token's, then
+        # force a refresh and rebuild the client so the fresh token is actually
+        # carried on the wire (a plain refresh leaves the old client in place).
+        if self._token_manager and self._token_manager.supabase_token_needs_refresh():
+            new_token = self._token_manager.force_refresh_supabase_token()
             if new_token:
-                self._client.postgrest.auth(new_token)
+                self._client = _make_user_client(self._url, self._anon_key, new_token)
 
     def table(self, *args, **kwargs):
         self._ensure_valid_token()
@@ -38,34 +75,51 @@ class AutoRefreshClient:
 def get_supabase_client(config: dict):
     """Create a Supabase client from deploy config.
 
-    Two authentication paths:
+    Dispatches on the auth mode resolved by ``load_config`` and tagged on
+    ``config['supabase']['_auth_mode']`` (one of ``service_role``, ``local``,
+    ``login``). When the tag is absent (e.g. a hand-built config in a test),
+    the mode is inferred from which keys are present.
 
-    1. **Service role** (``config['supabase']['service_role_key']``) — used
-       for ``--local`` deploys and env-var-driven CI. Bypasses RLS; no
-       refresh needed.
-    2. **User JWT** (``config['supabase']['supabase_token']`` +
-       ``anon_key``) — used for remote deploys authenticated via
-       ``campfire login``. Operates through RLS policies. When a
-       ``_token_manager`` is present, wraps the client in
-       ``AutoRefreshClient`` so long-running deploys survive the ~1 hour
-       JWT expiry.
+    - **service_role / local** — ``create_client(url, service_role_key)``.
+      Bypasses RLS; no refresh needed.
+    - **login** — user JWT from ``campfire login``. Operates through RLS. With
+      a ``_token_manager`` present the client is wrapped in
+      ``AutoRefreshClient`` so long-running deploys survive JWT expiry; the
+      token is always baked into the client headers (never falls back to anon).
     """
-    url = config['supabase']['url']
-    service_role_key = config['supabase'].get('service_role_key')
-    supabase_token = config['supabase'].get('supabase_token')
-    anon_key = config['supabase'].get('anon_key')
+    sb = config['supabase']
+    url = sb['url']
+    mode = sb.get('_auth_mode')
 
-    if service_role_key:
+    # Infer the mode for configs that weren't tagged by load_config.
+    if mode is None:
+        if sb.get('service_role_key'):
+            mode = 'service_role'
+        elif sb.get('supabase_token') and sb.get('anon_key'):
+            mode = 'login'
+
+    if mode in ('service_role', 'local'):
+        service_role_key = sb.get('service_role_key')
+        if not service_role_key:
+            raise ValueError(
+                f"Auth mode '{mode}' requires a Supabase service_role_key."
+            )
         return create_client(url, service_role_key)
 
-    if supabase_token and anon_key:
-        client = create_client(url, anon_key)
-        client.postgrest.auth(supabase_token)
-
-        token_manager = config['supabase'].get('_token_manager')
+    if mode == 'login':
+        supabase_token = sb.get('supabase_token')
+        anon_key = sb.get('anon_key')
+        if not (supabase_token and anon_key):
+            raise ValueError(
+                "Incomplete login credentials (need supabase_token + anon_key). "
+                "Run 'campfire login' again."
+            )
+        token_manager = sb.get('_token_manager')
         if token_manager:
-            return AutoRefreshClient(client, token_manager)
-        return client
+            return AutoRefreshClient(url, anon_key, supabase_token, token_manager)
+        # No manager (no auto-refresh) but still authenticated as the user —
+        # _make_user_client bakes the JWT in, so this is never an anon client.
+        return _make_user_client(url, anon_key, supabase_token)
 
     raise ValueError(
         "No Supabase credentials available. "
@@ -75,32 +129,20 @@ def get_supabase_client(config: dict):
 
 
 def get_user_id_from_token(config: dict) -> str | None:
-    """Extract user_id (sub claim) from the stored Supabase token."""
+    """Extract user_id (``sub`` claim) from the stored Supabase token."""
     token = config.get('supabase', {}).get('supabase_token')
-    if not token:
-        return None
-    try:
-        import json
-        import base64
-        # Decode JWT payload (second segment) without verification
-        payload_b64 = token.split('.')[1]
-        # Add padding
-        payload_b64 += '=' * (4 - len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        return payload.get('sub')
-    except Exception:
-        return None
+    return get_sub(token) if token else None
 
 
 def insert_deployment(
     client: Client,
-    observation: str,
-    deployed_by: str | None,
+    observation: str | None = None,
+    deployed_by: str | None = None,
     *,
+    field: str | None = None,
     cfpipe_version: str | None = None,
     jwst_version: str | None = None,
     crds_context: str | None = None,
-    reduction_version: str | None = None,
     config_snapshot: dict | None = None,
     stuck_shutters: dict | None = None,
     reduced_at: str | None = None,
@@ -110,30 +152,45 @@ def insert_deployment(
     force_overwrite: bool = False,
     source_ids_filter: list[int] | None = None,
     supabase_only: bool = False,
+    status: str = 'published',
 ) -> int | None:
     """
     Insert a deployment record and return its ID.
 
-    Returns None if the insert fails (e.g. deployed_by is not set).
-    """
-    if not deployed_by:
-        print("  Warning: No user_id available, skipping deployment record")
-        return None
+    ``status`` is the deployment lifecycle (epic #210): 'published' for a normal
+    deploy (stamps published_at=now), 'draft' for a draft / incomplete deploy.
 
+    A deployment is anchored to EXACTLY ONE of a NIRSpec ``observation`` or a NIRCam
+    ``field`` (epic #261; enforced by deployments_scope_check). NIRCam field deploys
+    record the same provenance and drive the same draft->published->revoked lifecycle.
+
+    The deployment record is ALWAYS written (it is the admin-review anchor for the
+    draft lifecycle). On a service-role / `--local` deploy there is no user JWT, so
+    ``deployed_by`` is NULL (the column is nullable as of B5); prod `login` deploys
+    still record the real user. Returns the new id, or None only on insert failure.
+    """
+    if (observation is None) == (field is None):
+        raise ValueError("insert_deployment requires exactly one of observation/field")
     data = {
         'observation': observation,
-        'deployed_by': deployed_by,
+        'field': field,
+        'deployed_by': deployed_by,  # may be NULL on service-role / local deploys
         'force_overwrite': force_overwrite,
         'supabase_only': supabase_only,
+        'status': status,
     }
+    # A normal (published) deploy stamps published_at so the lifecycle timeline is
+    # complete without a separate publish step; drafts leave it NULL until
+    # an admin publishes via set_deployment_status.
+    if status == 'published':
+        from datetime import datetime, timezone
+        data['published_at'] = datetime.now(timezone.utc).isoformat()
     if cfpipe_version:
         data['cfpipe_version'] = cfpipe_version
     if jwst_version:
         data['jwst_version'] = jwst_version
     if crds_context:
         data['crds_context'] = crds_context
-    if reduction_version:
-        data['reduction_version'] = reduction_version
     if config_snapshot is not None:
         data['config_snapshot'] = config_snapshot
     if stuck_shutters is not None:
@@ -153,6 +210,211 @@ def insert_deployment(
     if resp.data and len(resp.data) > 0:
         return resp.data[0]['id']
     return None
+
+
+def get_lifecycle_status(client: Client) -> dict:
+    """Return the target DB's intermediate-lifecycle capability (epic #210, B2).
+
+    The marker the deploy CLI gates ``--in-prep`` on: it introspects the live
+    catalog and returns ``{'enabled': bool, 'checks': {...}, 'version': int}``,
+    enabled only when B1 (#217) is applied (deploy_status column + reader RPCs
+    threaded with p_include_unpublished). Returns ``{'enabled': False, ...}`` when
+    the RPC itself is missing (deploy code newer than the DB) so the caller can
+    abort cleanly instead of crashing.
+    """
+    try:
+        resp = client.rpc('get_lifecycle_status', {}).execute()
+    except Exception as e:
+        return {'enabled': False, 'error': f'get_lifecycle_status unavailable: {e}'}
+    data = resp.data if resp.data is not None else {}
+    if isinstance(data, dict):
+        return data
+    return {'enabled': False, 'error': 'unexpected get_lifecycle_status response'}
+
+
+def deploy_event_metadata(
+    instrument: str,
+    *,
+    field: str | None = None,
+    observation: str | None = None,
+    filters: list[str] | None = None,
+    planned: int | None = None,
+    succeeded: int | None = None,
+    failed: int | None = None,
+    skipped: int | None = None,
+    items: int | None = None,
+    draft: bool = False,
+    supabase_only: bool = False,
+    **extra,
+) -> dict:
+    """Build the normalized deploy_events metadata envelope (audit B5, Phase 3).
+
+    One shape across every producer, so the consumer parses one thing:
+        {instrument, scope:{field, observation, filters},
+         counts:{planned, succeeded, failed, skipped, items},
+         flags:{draft, partial, supabase_only}}
+    ``partial`` is derived (failed > 0). Only non-None counts are included so a
+    producer that doesn't track a given count leaves it absent rather than 0.
+    ``extra`` folds in any producer-specific keys (e.g. exposures details).
+    """
+    scope = {}
+    if field is not None:
+        scope['field'] = field
+    if observation is not None:
+        scope['observation'] = observation
+    if filters:
+        scope['filters'] = filters
+
+    counts = {}
+    for k, v in (('planned', planned), ('succeeded', succeeded),
+                 ('failed', failed), ('skipped', skipped), ('items', items)):
+        if v is not None:
+            counts[k] = v
+
+    flags = {'draft': draft, 'partial': bool(failed)}
+    if supabase_only:
+        flags['supabase_only'] = True
+
+    meta = {'instrument': instrument, 'scope': scope, 'counts': counts, 'flags': flags}
+    meta.update(extra)
+    return meta
+
+
+def log_deploy_event(
+    client: Client,
+    *,
+    action: str,
+    actor: str | None = None,
+    deployment_id: int | None = None,
+    observation: str | None = None,
+    field: str | None = None,
+    affected_count: int | None = None,
+    metadata: dict | None = None,
+    host: str | None = None,
+) -> str | None:
+    """Append one row to the deploy_events audit log via the SECURITY DEFINER RPC
+    (the only sanctioned write path — the table has no client INSERT policy).
+    Returns the event id, or None on failure (audit is best-effort; never blocks
+    the deploy)."""
+    try:
+        resp = client.rpc('log_deploy_event', {
+            'p_action': action,
+            'p_actor': actor,
+            'p_deployment_id': deployment_id,
+            'p_observation': observation,
+            'p_field': field,
+            'p_affected_count': affected_count,
+            'p_metadata': metadata,
+            'p_host': host,
+        }).execute()
+        return resp.data if resp.data else None
+    except Exception as e:
+        print(f"  Warning: could not write deploy_event ({action}): {e}")
+        return None
+
+
+def get_deploy_scope_version(client: Client, scope_type: str, scope_key: str) -> int:
+    """The current optimistic-concurrency version of a deploy scope (0 if new).
+
+    Read at the START of a deploy; passed back to claim_deploy_scope at finalize
+    to detect a concurrent deploy of the same scope (epic #210, B4).
+    """
+    try:
+        resp = client.rpc('get_deploy_scope_version', {
+            'p_scope_type': scope_type, 'p_scope_key': scope_key,
+        }).execute()
+        return int(resp.data) if resp.data is not None else 0
+    except Exception:
+        # Multi-reducer detection is advisory; never block a deploy on it.
+        return 0
+
+
+def claim_deploy_scope(
+    client: Client, scope_type: str, scope_key: str, expected_version: int,
+    *, actor: str | None = None,
+) -> dict:
+    """Compare-and-set a deploy scope's version at finalize (epic #210, B4).
+
+    Returns the RPC json: ``{'claimed': bool, 'conflict': bool, ...}``. A
+    conflict (claimed=False) means another reducer deployed the same scope
+    concurrently. Advisory — never raises into the deploy path.
+    """
+    try:
+        resp = client.rpc('claim_deploy_scope', {
+            'p_scope_type': scope_type, 'p_scope_key': scope_key,
+            'p_expected_version': expected_version, 'p_actor': actor,
+        }).execute()
+        return resp.data if isinstance(resp.data, dict) else {'claimed': True, 'conflict': False}
+    except Exception as e:
+        return {'claimed': True, 'conflict': False, 'error': str(e)}
+
+
+def get_latest_deployment_id(client: Client, observation: str) -> int | None:
+    """The most recent deployment id for an observation (lifecycle anchor)."""
+    resp = (client.table('deployments')
+            .select('id')
+            .eq('observation', observation)
+            .order('id', desc=True)
+            .limit(1)
+            .execute())
+    if resp.data:
+        return resp.data[0]['id']
+    return None
+
+
+def get_latest_field_deployment_id(client: Client, field: str) -> int | None:
+    """The most recent deployment id for a NIRCam field (epic #261 lifecycle anchor)."""
+    resp = (client.table('deployments')
+            .select('id')
+            .eq('field', field)
+            .order('id', desc=True)
+            .limit(1)
+            .execute())
+    if resp.data:
+        return resp.data[0]['id']
+    return None
+
+
+def get_field_deployment_ids(client: Client, field: str) -> list[int]:
+    """ALL deployment ids for a NIRCam field, newest first (epic #261).
+
+    publish/revoke act on a whole field, but a field's objects can be spread across
+    several deployments (a ``--filter`` subset re-deploy re-points only that subset,
+    leaving other filters on an earlier deployment). Flipping just the latest would
+    partially publish — or, worse, leave part of a revoked field public — so the
+    lifecycle transition flips every deployment the field has.
+    """
+    resp = (client.table('deployments')
+            .select('id')
+            .eq('field', field)
+            .order('id', desc=True)
+            .execute())
+    return [r['id'] for r in (resp.data or [])]
+
+
+def set_deployment_status(
+    client: Client,
+    deployment_id: int,
+    to_status: str,
+    *,
+    actor: str | None = None,
+    host: str | None = None,
+) -> dict | None:
+    """Transition a deployment's lifecycle (publish/revoke/draft) via the
+    SECURITY DEFINER RPC: flips the deployment + its spectra + recomputes
+    has_published_spectrum + writes audit rows, all server-side. Returns the RPC
+    result json, or None on failure."""
+    try:
+        resp = client.rpc('set_deployment_status', {
+            'p_deployment_id': deployment_id,
+            'p_to': to_status,
+            'p_actor': actor,
+            'p_host': host,
+        }).execute()
+        return resp.data
+    except Exception as e:
+        print(f"  Warning: set_deployment_status({deployment_id} -> {to_status}) failed: {e}")
+        return None
 
 
 def update_latest_deployment(
@@ -532,7 +794,7 @@ def fetch_deployment_config(client: Client, obs_name: str) -> dict | None:
     # Query latest deployment
     dep_resp = client.table('deployments').select(
         'id, config_snapshot, stuck_shutters, deployed_at, reduced_at, '
-        'deployed_by, cfpipe_version, jwst_version, crds_context, reduction_version'
+        'deployed_by, cfpipe_version, jwst_version, crds_context'
     ).eq('id', dep_id).execute()
 
     if not dep_resp.data:

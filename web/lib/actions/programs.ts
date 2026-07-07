@@ -23,7 +23,6 @@ export interface ProgramOverview {
 // Source: most recent deployments row WHERE source_ids_filter IS NULL
 // (a "full" reduction). Patch deployments contribute only to n_patches_since_full.
 export interface ObservationProvenance {
-  reduction_version: string | null;
   crds_context: string | null;
   cfpipe_version: string | null;
   jwst_version: string | null;
@@ -68,7 +67,7 @@ export interface DatabaseOverview {
   n_spectra: number;
   total_size_bytes: number;
   latest_deployed_at: string | null;
-  latest_reduction_version: string | null;
+  latest_cfpipe_version: string | null;
 }
 
 export interface ProgramsOverviewResult {
@@ -209,7 +208,6 @@ export async function getProgramDetail(programSlug: string): Promise<ProgramDeta
         spectrum_count: Number(o.spectrum_count) || 0,
         total_size_bytes: Number(o.total_size_bytes) || 0,
         pointings: (o.pointings as Pointing[] | null) ?? null,
-        reduction_version: o.reduction_version ?? null,
         crds_context: o.crds_context ?? null,
         cfpipe_version: o.cfpipe_version ?? null,
         jwst_version: o.jwst_version ?? null,
@@ -280,7 +278,6 @@ export async function getObservationsOverview(): Promise<ObservationsOverviewRes
         target_count: Number(o.target_count) || 0,
         spectrum_count: Number(o.spectrum_count) || 0,
         total_size_bytes: Number(o.total_size_bytes) || 0,
-        reduction_version: o.reduction_version ?? null,
         crds_context: o.crds_context ?? null,
         cfpipe_version: o.cfpipe_version ?? null,
         jwst_version: o.jwst_version ?? null,
@@ -328,7 +325,7 @@ export async function getDatabaseOverview(): Promise<DatabaseOverviewResult> {
       n_spectra: Number(row.n_spectra) || 0,
       total_size_bytes: Number(row.total_size_bytes) || 0,
       latest_deployed_at: row.latest_deployed_at ?? null,
-      latest_reduction_version: row.latest_reduction_version ?? null,
+      latest_cfpipe_version: row.latest_cfpipe_version ?? null,
     };
 
     return { overview, isAuthenticated: true };

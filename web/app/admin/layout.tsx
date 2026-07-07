@@ -4,16 +4,47 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import { Shield, KeyRound, Users, Loader2, AlertTriangle, FolderOpen, Activity, UserPlus, Download, Camera } from 'lucide-react';
+import { Shield, KeyRound, Users, Loader2, AlertTriangle, FolderOpen, Activity, Telescope, Download, Camera, Database, GitBranch, LayoutDashboard } from 'lucide-react';
 
-const adminNavItems = [
-  { href: '/admin/activity', label: 'Activity', icon: Activity },
-  { href: '/admin/downloads', label: 'Downloads', icon: Download },
-  { href: '/admin/nircam', label: 'NIRCam', icon: Camera },
-  { href: '/admin/requests', label: 'Account Requests', icon: UserPlus },
-  { href: '/admin/codes', label: 'Access Codes', icon: KeyRound },
-  { href: '/admin/users', label: 'Users', icon: Users },
-  { href: '/admin/programs', label: 'Programs', icon: FolderOpen },
+// Sections mirror the panel's three concerns (admin audit 2026-07-03, §3.A):
+// the reduction loop, access management, and usage analytics. Dashboard sits
+// on top as the /admin landing page.
+const adminNavSections: {
+  title: string | null;
+  items: { href: string; label: string; icon: React.ElementType; exact?: boolean }[];
+}[] = [
+  {
+    title: null,
+    items: [
+      { href: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
+    ],
+  },
+  {
+    title: 'Reduction',
+    items: [
+      { href: '/admin/nircam', label: 'NIRCam', icon: Camera },
+      { href: '/admin/nirspec/rate', label: 'NIRSpec Rate', icon: Telescope },
+      { href: '/admin/nirspec/nods', label: 'NIRSpec Nods', icon: Telescope },
+      { href: '/admin/deployments', label: 'Deployments', icon: GitBranch },
+      { href: '/admin/intermediate-products', label: 'Storage', icon: Database },
+    ],
+  },
+  {
+    title: 'Access',
+    items: [
+      { href: '/admin/users', label: 'Users', icon: Users },
+      { href: '/admin/codes', label: 'Access Codes', icon: KeyRound },
+      { href: '/admin/programs', label: 'Programs', icon: FolderOpen },
+      { href: '/admin/inspection-requests', label: 'Inspection Requests', icon: Telescope },
+    ],
+  },
+  {
+    title: 'Analytics',
+    items: [
+      { href: '/admin/activity', label: 'Activity', icon: Activity },
+      { href: '/admin/downloads', label: 'Downloads', icon: Download },
+    ],
+  },
 ];
 
 export default function AdminLayout({
@@ -94,28 +125,43 @@ export default function AdminLayout({
             <h1 className="text-xl font-semibold text-text-primary">Admin</h1>
           </div>
 
-          <nav className="space-y-1">
-            {adminNavItems.map((item) => {
-              const isActive = pathname.startsWith(item.href);
-              const Icon = item.icon;
+          <nav className="space-y-4">
+            {adminNavSections.map((section, i) => (
+              <div key={section.title ?? `section-${i}`}>
+                {section.title && (
+                  <div className="px-4 mb-1 text-xs font-medium uppercase tracking-wider text-text-secondary">
+                    {section.title}
+                  </div>
+                )}
+                <div className="space-y-1">
+                  {section.items.map((item) => {
+                    // Exact match for /admin so the Dashboard item doesn't
+                    // light up on every subpage.
+                    const isActive = item.exact
+                      ? pathname === item.href
+                      : pathname.startsWith(item.href);
+                    const Icon = item.icon;
 
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`
-                    flex items-center gap-3 px-4 py-2 rounded-lg transition-colors
-                    ${isActive
-                      ? 'bg-primary text-on-primary'
-                      : 'text-text-secondary hover:bg-card dark:hover:bg-card-hover hover:text-text-primary'
-                    }
-                  `}
-                >
-                  <Icon className="w-5 h-5" />
-                  {item.label}
-                </Link>
-              );
-            })}
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        className={`
+                          flex items-center gap-3 px-4 py-2 rounded-lg transition-colors
+                          ${isActive
+                            ? 'bg-primary text-on-primary'
+                            : 'text-text-secondary hover:bg-card dark:hover:bg-card-hover hover:text-text-primary'
+                          }
+                        `}
+                      >
+                        <Icon className="w-5 h-5" />
+                        {item.label}
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </nav>
         </aside>
 

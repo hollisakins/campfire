@@ -25,12 +25,41 @@ import type { SlitRegion, Shutter } from '@/lib/actions/map';
 
 import 'leaflet/dist/leaflet.css';
 
-// Nearest-neighbor rendering for FITS tile images (crisp pixels when zoomed past native level)
-// Matches FITSMap's TileNearestNeighbor.css approach
-const pixelatedTileStyle = `
+// Leaflet chrome + tile rendering overrides.
+// - Nearest-neighbor tile rendering (crisp pixels past native zoom), matching
+//   FITSMap's TileNearestNeighbor.css approach.
+// - Theme Leaflet's default white popup/zoom controls onto the design tokens so
+//   the map chrome follows Ember & Dusk in both themes (data overlays unchanged).
+const mapChromeStyle = `
 .leaflet-container .leaflet-tile-pane img {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+}
+.leaflet-popup-content-wrapper {
+  background: var(--card);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+.leaflet-popup-tip {
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+.leaflet-popup-close-button {
+  color: var(--text-tertiary) !important;
+}
+.leaflet-popup-close-button:hover {
+  color: var(--text-primary) !important;
+}
+.leaflet-bar a,
+.leaflet-bar a:hover {
+  background: var(--card);
+  color: var(--text-primary);
+  border-bottom-color: var(--border);
+}
+.leaflet-bar a:hover {
+  background: var(--card-hover);
 }`;
 
 // ============================================
@@ -339,7 +368,7 @@ export function MapViewer({
   if (!activeLayer || !mapConfig) {
     if (layers.length === 0) {
       return (
-        <div className="flex items-center justify-center h-full bg-surface dark:bg-background">
+        <div className="flex items-center justify-center h-full bg-surface-2">
           <div className="text-center text-text-secondary">
             <p className="text-lg font-medium mb-2">No map layers available</p>
             <p className="text-sm">Map tiles have not been generated yet.</p>
@@ -354,7 +383,7 @@ export function MapViewer({
 
   return (
     <div ref={mapWrapperRef} className="relative h-full w-full">
-      <style dangerouslySetInnerHTML={{ __html: pixelatedTileStyle }} />
+      <style dangerouslySetInnerHTML={{ __html: mapChromeStyle }} />
       <MapContainer
         key={`${selectedField}-${activeLayer.max_zoom}-${activeLayer.wcs_params.naxis2}`}
         center={mapConfig.center}
@@ -365,7 +394,7 @@ export function MapViewer({
         minZoom={activeLayer.min_zoom}
         maxZoom={activeLayer.max_zoom + 3}
         preferCanvas={true}
-        style={{ height: '100%', width: '100%', background: '#0f172a' }}
+        style={{ height: '100%', width: '100%', background: 'var(--header)' }}
         attributionControl={false}
       >
         <TileLayer
@@ -420,7 +449,7 @@ export function MapViewer({
                 <div className="font-mono font-bold mb-1">
                   <Link
                     href={`/nirspec/objects/${encodeURIComponent(popupState.marker.object_id)}`}
-                    className="text-blue-600 hover:text-blue-800 underline"
+                    className="text-primary-text hover:text-primary underline"
                     onClick={() => sessionStorage.setItem('campfire-map-return-url', window.location.href)}
                   >
                     {popupState.marker.object_id}
@@ -433,10 +462,10 @@ export function MapViewer({
                   <div>
                     Quality: {qualityLabel?.icon} {qualityLabel?.label || 'Unknown'}
                   </div>
-                  <div className="text-gray-500">
+                  <div className="text-text-tertiary">
                     {popupState.marker.n_targets} target{popupState.marker.n_targets !== 1 ? 's' : ''}, {popupState.marker.n_spectra} spectr{popupState.marker.n_spectra !== 1 ? 'a' : 'um'}
                   </div>
-                  <div className="text-gray-500">
+                  <div className="text-text-tertiary">
                     RA: {popupState.marker.ra.toFixed(5)}, Dec: {popupState.marker.dec.toFixed(5)}
                   </div>
                 </div>

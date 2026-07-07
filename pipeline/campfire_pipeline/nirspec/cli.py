@@ -210,11 +210,13 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
     """
     import numpy as np
     import toml as _toml
+    from astropy.io import fits
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec.stage2 import resample_single_exposure
     from campfire_pipeline.nirspec.stuck_shutters import (
         detect_stuck_shutters, merge_stuck_shutters,
-        write_stuck_shutters_toml, _get_n_shutters,
+        write_stuck_shutters_toml, load_stuck_shutters_tagged,
+        _get_n_shutters,
     )
     from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
 
@@ -226,9 +228,28 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
         stage_config['detect_stuck_shutters'] = True
 
         sids = _resolve_source_ids(source_ids)
-        files = obs_obj.discover_files(ext='cal', source_ids=sids)
+        files = obs_obj.discover_files(ext='canonical', source_ids=sids)
         files = Observation.group_files(files)
-        log(f'Found {len(files)} cal files for {obs_name}')
+        log(f'Found {len(files)} canonical files for {obs_name}')
+
+        # Guard: detect-stuck must run on calibrated (pre-stage2b) canonicals.
+        # resample_single_exposure caches the un-bkgsub S2D_SCI view from the
+        # canonical's *live* slit SCI, which stage2b overwrites in place with the
+        # background-subtracted frame. Running after stage2b would resample
+        # bkgsub'd data and mislabel it S2D_SCI, corrupting stuck-shutter
+        # detection. CFP_BKG carries a timestamp once a nod is actually
+        # subtracted; the skipped:/excluded: markers leave the live SCI calibrated.
+        def _is_subtracted(path):
+            v = fits.getheader(path).get('CFP_BKG')
+            return bool(v) and not str(v).startswith(('skipped', 'excluded'))
+        subtracted = [f['path'] for f in files if _is_subtracted(f['path'])]
+        if subtracted:
+            log(f'ERROR: {len(subtracted)} canonical(s) for {obs_name} are already '
+                f'background-subtracted (CFP_BKG set); detect-stuck must run BEFORE '
+                f'stage2b. Re-run stage2a to restore the calibrated frame '
+                f'(cfpipe nirspec run --obs {obs_name} --stage2a --overwrite), '
+                f'then re-run detect-stuck.')
+            continue
 
         # Ensure s2d files exist (skips if already present)
         dispatch(resample_single_exposure, list(files), n_processes=processes)
@@ -238,25 +259,30 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
 
         if detected:
             if overwrite:
-                # Write fresh detection results, replacing existing TOML
-                all_detected = set(
-                    (root, sid)
-                    for root, sources in detected.items()
-                    for sid in sources.keys()
-                )
+                # Write fresh detection results, replacing existing TOML — every
+                # entry is auto-detected, so tag them all `# auto`.
+                data = {r: {str(s): sh for s, sh in srcs.items()}
+                        for r, srcs in detected.items()}
+                provenance = {(r, str(s)): 'auto'
+                              for r, sources in detected.items()
+                              for s in sources.keys()}
                 write_stuck_shutters_toml(
-                    {r: {str(s): sh for s, sh in srcs.items()}
-                     for r, srcs in detected.items()},
-                    obs_obj.stuck_closed_shutters_file, obs_obj.name,
-                    auto_detected=all_detected,
+                    data, obs_obj.stuck_closed_shutters_file, obs_obj.name,
+                    provenance=provenance,
                 )
             else:
-                # Merge with existing TOML entries (manual entries preserved)
+                # Merge with existing TOML entries (manual entries preserved),
+                # carrying each entry's provenance tag (hand/web/auto) through the
+                # rewrite so a later pull-stuck-shutters merge still tells them apart.
+                prior_tags = load_stuck_shutters_tagged(obs_obj.stuck_closed_shutters_file)
                 existing = _toml.load(obs_obj.stuck_closed_shutters_file)
                 merged, updated = merge_stuck_shutters(existing, detected)
+                provenance = {k: tag for k, (_sh, tag) in prior_tags.items()}
+                for (root, sid) in updated:
+                    provenance[(root, str(sid))] = 'auto'
                 write_stuck_shutters_toml(
                     merged, obs_obj.stuck_closed_shutters_file, obs_obj.name,
-                    auto_detected=updated,
+                    provenance=provenance,
                 )
 
             # Generate diagnostic plots
@@ -357,15 +383,13 @@ def mask_validate(config, obs):
               help='Single exposure (rate file basename without _rate.fits) to clear. '
                    'If omitted, clears all masks for the observation.')
 def mask_clear(config, obs, exposure):
-    """Remove a mask entry from observations.toml.
+    """Remove a manual mask (.reg) from reference/nirspec/<obs>/masks/.
 
     Does NOT modify any rate files — run `cfpipe nirspec mask apply` afterwards
     to clear the mask DQ bits and re-run bkg sub.
     """
-    from campfire_pipeline.config import resolve_observations_file
-    from campfire_pipeline.nirspec.masks import write_masks_to_observations_toml
+    from campfire_pipeline.nirspec.masks import write_reference_masks
 
-    obs_file = resolve_observations_file(None)
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
         if not obs_obj.manual_masks:
@@ -375,11 +399,11 @@ def mask_clear(config, obs, exposure):
             if exposure not in obs_obj.manual_masks:
                 log(f"{obs_name}: no mask for {exposure}; nothing to clear.")
                 continue
-            write_masks_to_observations_toml(obs_file, obs_name, {exposure: None})
+            write_reference_masks(obs_obj, {exposure: None})
             log(f"{obs_name}: cleared mask for {exposure}")
         else:
             cleared = {k: None for k in obs_obj.manual_masks}
-            write_masks_to_observations_toml(obs_file, obs_name, cleared)
+            write_reference_masks(obs_obj, cleared)
             log(f"{obs_name}: cleared {len(cleared)} mask(s)")
         log(f"  run `cfpipe nirspec mask apply --obs {obs_name}` to update rate files.")
 
@@ -399,13 +423,11 @@ def mask_edit(config, obs, exposure):
     Does NOT auto-apply the new masks — run `cfpipe nirspec mask apply`
     afterwards to update rate files.
     """
-    from campfire_pipeline.config import resolve_observations_file
     from campfire_pipeline.nirspec.mpl_editor import edit_masks_in_matplotlib
 
-    obs_file = resolve_observations_file(None)
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
-        edit_masks_in_matplotlib(obs_obj, obs_file, exposure=exposure)
+        edit_masks_in_matplotlib(obs_obj, exposure=exposure)
 
 
 def _run_summary(cfg, obs_obj):
@@ -430,7 +452,7 @@ def _run_summary(cfg, obs_obj):
     consensus_config = cfg.get('nirspec', {}).get('redshift_consensus', {})
     obs_dir = Path(obs_obj.workspace_dir)
     summary_table = generate_observation_summary(obs_obj.name, obs_dir,
-                                                  reduction_version=version,
+                                                  cfpipe_version=version,
                                                   field=obs_obj.field,
                                                   program_slug=obs_obj.program,
                                                   consensus_config=consensus_config)

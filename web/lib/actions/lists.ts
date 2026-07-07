@@ -503,11 +503,16 @@ export async function getListBySlug(
     creator_name: listFields.created_by ? nameMap.get(listFields.created_by) ?? null : null,
   };
 
-  // Fetch paginated members with joined object data
+  // Fetch paginated members with joined object data. NOTE: n_spectra / max_snr
+  // are NOT read off the objects row — those stored aggregates are computed
+  // across ALL member programs at deploy time, so reading them directly would
+  // leak proprietary member metadata on mixed-program objects (same class of
+  // leak fixed on the catalog/detail/CSV/map paths). redshift / redshift_quality
+  // stay visible (object science, per the access policy).
   const offset = (page - 1) * pageSize;
   const { data: membersData, error: membersError } = await supabase
     .from('object_list_members')
-    .select('*, object:objects(id, object_id, field, ra, dec, redshift, redshift_quality, n_spectra, max_snr)')
+    .select('*, object:objects(id, object_id, field, ra, dec, redshift, redshift_quality)')
     .eq('list_id', list.id)
     .order('added_at', { ascending: false })
     .range(offset, offset + pageSize - 1);
@@ -516,9 +521,42 @@ export async function getListBySlug(
     return { list, members: [], totalMembers, error: membersError.message };
   }
 
+  // Scope n_spectra / max_snr to the viewer's accessible programs by recomputing
+  // from member targets + spectra, which RLS filters to accessible programs
+  // (mirrors object_scoped_aggregates()). One extra query for the page.
+  const memberObjectIds = (membersData ?? [])
+    .map(m => (m.object as { id: number } | null)?.id)
+    .filter((id): id is number => id != null);
+
+  const scopedAgg = new Map<number, { n_spectra: number; max_snr: number | null }>();
+  if (memberObjectIds.length > 0) {
+    const { data: scopeRows } = await supabase
+      .from('targets')
+      .select('object_id, spectra(signal_to_noise)')
+      .in('object_id', memberObjectIds);
+    for (const t of (scopeRows ?? []) as { object_id: number | null; spectra: { signal_to_noise: number | null }[] | null }[]) {
+      if (t.object_id == null) continue;
+      const entry = scopedAgg.get(t.object_id) ?? { n_spectra: 0, max_snr: null };
+      for (const s of t.spectra ?? []) {
+        entry.n_spectra += 1;
+        if (s.signal_to_noise != null) {
+          entry.max_snr = entry.max_snr == null ? s.signal_to_noise : Math.max(entry.max_snr, s.signal_to_noise);
+        }
+      }
+      scopedAgg.set(t.object_id, entry);
+    }
+  }
+
+  const members: ObjectListMemberWithObject[] = (membersData ?? []).map(m => {
+    const obj = m.object as { id: number } | null;
+    if (!obj) return { ...m, object: null } as ObjectListMemberWithObject;
+    const agg = scopedAgg.get(obj.id) ?? { n_spectra: 0, max_snr: null };
+    return { ...m, object: { ...obj, n_spectra: agg.n_spectra, max_snr: agg.max_snr } } as ObjectListMemberWithObject;
+  });
+
   return {
     list,
-    members: (membersData ?? []) as ObjectListMemberWithObject[],
+    members,
     totalMembers,
   };
 }

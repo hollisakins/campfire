@@ -9,7 +9,23 @@ what ``jhat.align_wcs`` expects via its ``refcat_*col`` knobs):
     mag      float32   AB magnitude in some band
     mag_err  float32   1-sigma magnitude error
 
-Optional columns: ``source`` (str, set by ``merge`` to record provenance
+Optional **epoch / proper-motion** columns (the align phase propagates positions
+to each exposure's mid-time when they are present — see ``refcat/motion.py``):
+
+    source_id  int      catalog identifier (e.g. Gaia source_id)
+    ref_epoch  float64  epoch of RA/DEC as a Julian year (e.g. 2016.0 for Gaia DR3)
+    pmra       float64  proper motion in RA*cos(dec), mas/yr (Gaia ``pmra`` sense)
+    pmdec      float64  proper motion in Dec, mas/yr
+    parallax   float64  mas (optional; carried for provenance)
+    pmra_err   float64  1-sigma pmra error, mas/yr
+    pmdec_err  float64  1-sigma pmdec error, mas/yr
+
+These are optional and additive: a pure-galaxy anchor catalog omits them and is
+treated as stationary (zero motion), exactly the pre-existing behavior. A row
+with non-finite ``pmra``/``pmdec`` is likewise left stationary, so a mixed
+star+galaxy catalog is handled per-row.
+
+Other optional columns: ``source`` (str, set by ``merge`` to record provenance
 per-row), plus any backend-specific extras the user wants to keep.
 
 Provenance for the catalog as a whole lives in ``Table.meta`` (which ECSV
@@ -34,6 +50,23 @@ from astropy.table import Table
 
 SCHEMA_VERSION = "campfire-refcat-v1"
 REFCAT_COLUMNS = ("RA", "DEC", "mag", "mag_err")
+
+# Optional epoch / proper-motion contract (additive; a catalog without them is
+# treated as stationary). ``ref_epoch`` + ``pmra`` + ``pmdec`` are the minimum
+# needed to propagate a position to an observation epoch.
+MOTION_COLUMNS = ("source_id", "ref_epoch", "pmra", "pmdec", "parallax",
+                  "pmra_err", "pmdec_err")
+_MOTION_REQUIRED = ("ref_epoch", "pmra", "pmdec")
+
+
+def has_proper_motion(table):
+    """True iff *table* carries what's needed to propagate positions to an epoch.
+
+    Requires ``ref_epoch``, ``pmra``, and ``pmdec``; ``parallax``/``source_id``/
+    errors are optional provenance. A catalog missing any of the three is
+    stationary (the pre-existing zero-motion behavior).
+    """
+    return all(c in table.colnames for c in _MOTION_REQUIRED)
 
 
 def make_meta(field, source, params=None, notes=None):
@@ -114,6 +147,15 @@ _COLUMN_ALIASES = {
                 "phot_rp_mean_mag_error",
                 "magerr_g", "magerr_r", "magerr_i", "magerr_z",
                 "MAGERR_AUTO", "MAGERR_APER"),
+    # Epoch / proper-motion — Gaia's native names are already canonical; alias
+    # the ``_error`` -> ``_err`` and a few common variants for external dumps.
+    "source_id": ("SOURCE_ID", "gaia_source_id"),
+    "ref_epoch": ("REF_EPOCH", "epoch"),
+    "pmra": ("pm_ra_cosdec",),
+    "pmdec": ("pm_dec",),
+    "parallax": ("plx",),
+    "pmra_err": ("pmra_error",),
+    "pmdec_err": ("pmdec_error",),
 }
 
 

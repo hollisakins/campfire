@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import {
   compositeTileThumbnail,
   type MapLayerInfo,
@@ -64,12 +64,17 @@ export async function GET(request: NextRequest) {
     }
     const fov = Math.min(30, Math.max(1, parsedFov));
 
-    // Look up object
-    const { data: obj, error: objErr } = await supabase
+    // Look up object. Service-role read bypasses RLS, so gate objects with no
+    // published spectrum behind admin. No-op in B1.
+    const isAdmin = await isAdminUser(userId);
+    let objQuery = supabase
       .from('objects')
       .select('ra, dec, field, programs')
-      .eq('object_id', objectId)
-      .single();
+      .eq('object_id', objectId);
+    if (!isAdmin) {
+      objQuery = objQuery.eq('has_published_spectrum', true);
+    }
+    const { data: obj, error: objErr } = await objQuery.single();
 
     if (objErr || !obj) {
       return NextResponse.json(

@@ -19,6 +19,42 @@ def discover_sed_plots(obs_dir: Path) -> list[Path]:
     return sorted(obs_dir.glob('*_sed.pdf'))
 
 
+def discover_spectrum_exposures(obs_dir: Path) -> list[Path]:
+    """Find the canonical NIRSpec spectrum-exposure intermediates (epic #210, B5).
+
+    These are the bare per-(exposure,detector,source) canonical files (issue #212),
+    named ``{root}_{nod}_nrs[12]_{source}.fits`` — e.g.
+    ``jw07076020001_04101_00001_nrs1_117757.fits``. They live in the same products
+    directory as the final ``*_spec.fits`` products; the ``_nrs[12]_`` segment is
+    what distinguishes a per-exposure intermediate from a final (whose name is
+    grating/filter-based and ends ``_spec.fits``). Excludes finals defensively.
+
+    Also excludes the stage-1 detector rate files (``{root}_{nrsN}_rate.fits``,
+    see discover_rate_files): they too match ``*_nrs[12]_*.fits`` but are a
+    separate product (``nirspec_rate``), so without this guard a rate file would be
+    double-discovered here and mis-registered as a spectrum-exposure.
+    """
+    return sorted(
+        p for p in obs_dir.glob('*_nrs[12]_*.fits')
+        if not p.name.endswith('_spec.fits')
+        and not p.name.endswith('_rate.fits')
+    )
+
+
+def discover_rate_files(obs_dir: Path) -> list[Path]:
+    """Find the NIRSpec stage-1 detector rate files (P1, design §3.1).
+
+    Named ``{root}_{nrsN}_rate.fits`` — e.g.
+    ``jw07076020001_04101_00001_nrs1_rate.fits`` — one per (exposure, detector),
+    living in the same products directory as the spectrum-exposures and finals.
+    These are SOURCE-INDEPENDENT detector products (rate-level masks are
+    per-detector, not per-source), so unlike discover_spectrum_exposures the caller
+    must NOT filter them by source id. Deployed uncompressed (the web SCI decoder
+    rejects fpack ZIMAGE); we upload the pipeline's plain rate FITS as-is.
+    """
+    return sorted(obs_dir.glob('*_nrs[12]_rate.fits'))
+
+
 def discover_slits_json(obs_dir: Path, obs_name: str) -> Path | None:
     """Find the slit geometry JSON file, or None if absent."""
     slits_path = obs_dir / f'{obs_name}_slits.json'
@@ -112,6 +148,14 @@ def load_shutters_ecsv(ecsv_path: Path) -> list[dict]:
             'shutter_idx': int(row['shutter_idx']),
             'dither_id': int(row['dither_id']),
             'shutter_state': str(row['shutter_state']),
+            # Aperture geometry (per-row, so fixed-slit apertures and MSA shutters
+            # share one render path). Older ECSVs predate these columns — they are
+            # all MSA, so default to the MSA shutter dimensions.
+            'aperture_name': str(row['aperture_name']) if 'aperture_name' in row else 'MSA',
+            'aperture_width_arcsec': (float(row['aperture_width_arcsec'])
+                                      if 'aperture_width_arcsec' in row else 0.22),
+            'aperture_height_arcsec': (float(row['aperture_height_arcsec'])
+                                       if 'aperture_height_arcsec' in row else 0.46),
         })
     return records
 

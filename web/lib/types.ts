@@ -14,6 +14,7 @@ export interface UserProfile {
   created_at: string;
   is_group_account: boolean;
   can_comment: boolean;
+  can_inspect: boolean;
   is_admin?: boolean;
   preferences?: UserPreferences;
 }
@@ -30,7 +31,7 @@ export type Colorscale2D = 'Viridis' | 'Plasma' | 'Inferno' | 'Magma' | 'Cividis
 // Accent Color System
 // ============================================
 
-export type AccentColorName = 'magenta' | 'blue' | 'emerald' | 'red' | 'orange' | 'violet' | 'cyan' | 'lime';
+export type AccentColorName = 'ember' | 'magenta' | 'blue' | 'emerald' | 'red' | 'orange' | 'violet' | 'cyan' | 'lime';
 
 export interface AccentColor {
   name: AccentColorName;
@@ -46,6 +47,8 @@ export interface AccentColor {
 // Accent colors with light/dark mode variants
 // Dark mode uses more muted/pale versions for better contrast
 export const ACCENT_COLORS: AccentColor[] = [
+  // Ember — Direction 2 (Ember & Dusk) signature accent. AA-verified on card/dusk surfaces.
+  { name: 'ember', label: 'Ember', light: '#c63f0c', dark: '#fb923c', hover: { light: '#ad3408', dark: '#fdba74' } },
   { name: 'magenta', label: 'Magenta', light: '#c026d3', dark: '#e879f9', hover: { light: '#a21caf', dark: '#f0abfc' } },
   { name: 'blue', label: 'Blue', light: '#2563eb', dark: '#60a5fa', hover: { light: '#1d4ed8', dark: '#93c5fd' } },
   { name: 'emerald', label: 'Emerald', light: '#059669', dark: '#34d399', hover: { light: '#047857', dark: '#6ee7b7' } },
@@ -56,7 +59,7 @@ export const ACCENT_COLORS: AccentColor[] = [
   { name: 'lime', label: 'Lime', light: '#65a30d', dark: '#a3e635', hover: { light: '#4d7c0f', dark: '#bef264' } },
 ];
 
-export const DEFAULT_ACCENT_COLOR: AccentColorName = 'magenta';
+export const DEFAULT_ACCENT_COLOR: AccentColorName = 'ember';
 
 // Helper to get accent color by name
 export function getAccentColor(name: AccentColorName): AccentColor {
@@ -179,7 +182,7 @@ export interface Spectrum {
   target_id: string;  // FK to targets.target_id (text)
   grating: string;
   fits_path: string;
-  reduction_version: string;
+  cfpipe_version: string | null;
   signal_to_noise: number | null;
   exposure_time: number | null;
   created_at: string;
@@ -280,8 +283,8 @@ export interface NircamImage {
   tile: string;
   filter: string;
   pixel_scale: string;
-  version: string;
   extension: string;  // sci, err, rms, srcmask
+  epoch?: string;     // exposure-subset name ('' = full field)
   file_path: string;
   file_size?: number; // in bytes, if available
 }
@@ -348,6 +351,70 @@ export interface NircamExposure {
   image_width: number | null;
   image_height: number | null;
   mask_regions: MaskRegionsPayload | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// NIRSpec rate-file detector triage (NIRSpec review loop, P2/P3). Detector-grain
+// analogue of NircamExposure: source-independent rate-level masks reviewed on the
+// web. Mirrors the supabase nirspec_rate_exposures table.
+export interface NirspecRateExposure {
+  id: number;
+  observation: string;
+  exposure_root: string;
+  detector: string;               // 'nrs1' | 'nrs2'
+  filename: string;
+  grating: string | null;
+  image_width: number | null;
+  image_height: number | null;
+  storage_key: string | null;     // canonical nirspec_rate key for the FITS proxy
+  stage: string;
+  review_status: 'pending' | 'approved' | 'excluded';
+  masking: 'none' | 'needed' | 'done';
+  mask_regions: MaskRegionsPayload | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// NIRSpec nods-renderer grid row (review loop P4/P5). One per canonical per-source
+// spectrum-exposure; the web nods renderer groups these as rows=(exp_group, nod) ×
+// cols=detector per source. Mirrors the supabase spectrum_exposures table. NB:
+// exposure_root here is the 2-token pipeline root (nod split out) — different
+// semantics from NirspecRateExposure.exposure_root (3 tokens).
+export interface SpectrumExposure {
+  id: number;
+  observation: string;
+  exposure_root: string;
+  nod: string;
+  detector: string;               // 'nrs1' | 'nrs2'
+  source_id: number;
+  exp_group: number | null;
+  grating: string | null;
+  filename: string;
+  storage_key: string | null;     // canonical nirspec_spectrum_exposure key
+  image_width: number | null;
+  image_height: number | null;
+  stage: string;
+  review_status: 'pending' | 'approved' | 'excluded';
+  masking: 'none' | 'needed' | 'done';
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Source-scoped editable review flags for the NIRSpec nods loop (P6). One row per
+// (observation, exposure_root, source_id). Both jsonb channels mirror the local
+// reference/nirspec/<obs>/ TOMLs 1:1: stuck_shutters is an ordinal list [1,2,3];
+// bkg_overrides is {nod: [bkg nods]} keyed by exposure-sequence number (e.g. {"3":[1]}).
+export interface NirspecSourceReview {
+  id: number;
+  observation: string;
+  exposure_root: string;
+  source_id: number;
+  stuck_shutters: number[] | null;
+  bkg_overrides: Record<string, number[]> | null;
   notes: string | null;
   created_at: string;
   updated_at: string;

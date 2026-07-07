@@ -18,8 +18,12 @@ removed via the existing ``ON DELETE CASCADE`` foreign-key constraints.
 
 from supabase import Client
 
+from campfire_layout import Scope, key_prefix
 from campfire.deploy.supabase import (
+    deploy_event_metadata,
     get_supabase_client,
+    get_user_id_from_token,
+    log_deploy_event,
     refresh_filter_options,
     refresh_programs_overview,
 )
@@ -28,7 +32,9 @@ from campfire.deploy.supabase import (
 BATCH_SIZE = 500
 PAGE_SIZE = 1000
 
-R2_PREFIXES = ('spectra', 'rgb', 'sed')
+# (display label, product_type) — the per-observation key prefixes hard-delete
+# removes. The label keeps the report readable; the product_type drives the key.
+R2_REMOVE_PRODUCTS = (('spectra', 'nirspec_spec'), ('rgb', 'rgb'), ('sed', 'sed'))
 
 INSPECTION_FIELDS = (
     'target_id, id, redshift_quality, redshift_inspected, '
@@ -161,15 +167,17 @@ def _delete_db_rows(sb: Client, obs_name: str, target_ids: list[str]) -> None:
 
 
 def _delete_r2_prefixes(config: dict, obs_name: str) -> dict[str, int]:
+    from campfire.deploy.backend import resolve_backend
     from campfire.deploy.r2 import get_r2_client
     from campfire.deploy.tiles import delete_r2_prefix
 
     client = get_r2_client(config)
-    bucket = config['r2']['bucket_name']
+    bucket = resolve_backend(config, 'data').bucket
+    scope = Scope(obs=obs_name)
     counts: dict[str, int] = {}
-    for prefix in R2_PREFIXES:
-        full = f"{prefix}/{obs_name}/"
-        counts[prefix] = delete_r2_prefix(client, bucket, full)
+    for label, product_type in R2_REMOVE_PRODUCTS:
+        full = f"{key_prefix(product_type, scope)}/"
+        counts[label] = delete_r2_prefix(client, bucket, full)
     return counts
 
 
@@ -251,10 +259,11 @@ def remove_observation(
             summary += f", {n_comments} comments"
         prompt = f"\nProceed with deleting {summary}"
         if not supabase_only:
-            prompt += (
-                f"\n  + R2 prefixes: "
-                f"spectra/{obs_name}/, rgb/{obs_name}/, sed/{obs_name}/"
+            scope = Scope(obs=obs_name)
+            prefixes = ', '.join(
+                f"{key_prefix(pt, scope)}/" for _label, pt in R2_REMOVE_PRODUCTS
             )
+            prompt += f"\n  + R2 prefixes: {prefixes}"
         prompt += "? [y/N] "
         response = input(prompt)
         if response.lower() != 'y':
@@ -265,11 +274,25 @@ def remove_observation(
     _delete_db_rows(sb, obs_name, target_ids)
     print(f"  Done.")
 
+    n_r2_deleted = 0
     if not supabase_only:
         print(f"\nDeleting R2 prefixes...")
         counts = _delete_r2_prefixes(config, obs_name)
         for prefix, n in counts.items():
             print(f"  {prefix}/{obs_name}/: {n} object(s)")
+        n_r2_deleted = sum(counts.values())
+
+    # Audit the un-deploy (audit B3): a hard delete was previously silent — no
+    # deploy_events row, so the ledger drifted from the bucket. Best-effort.
+    log_deploy_event(
+        sb, action='delete', actor=get_user_id_from_token(config),
+        observation=obs_name, affected_count=n_spectra,
+        metadata=deploy_event_metadata(
+            'nirspec', observation=obs_name, items=len(targets),
+            supabase_only=supabase_only,
+            targets=len(targets), spectra=n_spectra, shutters=n_shutters,
+            slit_regions=n_slits, comments=n_comments,
+            r2_objects_deleted=n_r2_deleted))
 
     if not skip_rebuild:
         from campfire.deploy.reconcile import reconcile_field_objects

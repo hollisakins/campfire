@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { generateDownloadUrl } from '@/lib/r2';
+import { storageKey } from '@/lib/layout';
 
 /**
  * GET /api/sed-plot?target_id=<target_id>
@@ -54,19 +55,12 @@ export async function GET(request: NextRequest) {
     // Pattern: {observation}_{srcid} e.g., "ember_cosmos_p1_12345"
     const observation = target.observation || targetId.substring(0, targetId.lastIndexOf('_'));
 
-    // Construct SED plot path in R2
-    const sedPlotPath = `sed/${observation}/${targetId}_sed.pdf`;
+    // Construct SED plot key via the shared layout contract
+    const sedPlotPath = storageKey('sed', { obs: observation }, `${targetId}_sed.pdf`);
 
     // Generate signed URL (expires in 1 hour)
     const signedUrl = await generateDownloadUrl(sedPlotPath, 3600);
 
-    // Check if it's a placeholder URL (R2 not configured)
-    if (signedUrl.startsWith('#download-placeholder')) {
-      return NextResponse.json(
-        { error: 'Download service not configured. Please contact administrator.' },
-        { status: 503 }
-      );
-    }
 
     return NextResponse.json({
       url: signedUrl,

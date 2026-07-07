@@ -43,10 +43,10 @@ from astropy.io import fits
 from astropy.table import Table
 from supabase import Client
 
-# Add deploy package to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'deploy'))
-from campfire_deploy.config import load_config, resolve_products_dir
-from campfire_deploy.supabase import (
+# Add the unified campfire package to path (also pip-installed via -e ./python)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
+from campfire.deploy.config import load_config, resolve_products_dir
+from campfire.deploy.supabase import (
     get_supabase_client,
     refresh_filter_options,
     refresh_programs_overview,

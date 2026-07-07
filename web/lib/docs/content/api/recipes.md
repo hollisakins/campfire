@@ -211,7 +211,7 @@ phot = obj.photometry
 
 fig, ax = plt.subplots(figsize=(10, 5))
 
-good = np.isfinite(spec.fnu) & (spec.fnu_err > 0)
+good = spec.valid  # finite flux & positive error — the canonical mask
 ax.step(spec.wavelength[good], spec.fnu[good], where='mid',
         lw=0.6, color='k', alpha=0.7, label='PRISM spectrum')
 

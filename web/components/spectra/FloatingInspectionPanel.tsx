@@ -23,7 +23,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
   inspection,
 }) => {
   const { user, userProfile } = useAuth();
-  const canEdit = user && userProfile?.can_comment;
+  const canEdit = user && userProfile?.can_inspect;
 
   const setRedshiftQuality = inspection.setRedshiftQuality;
   const save = inspection.save;
@@ -127,7 +127,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
               value={inspection.redshiftInspected}
               onChange={e => inspection.setRedshiftInspected(e.target.value)}
               placeholder="Override"
-              className="w-36 pl-2.5 pr-7 py-1.5 text-sm font-mono border border-border dark:border-border-strong rounded bg-background dark:bg-card-hover text-text-primary focus:outline-none focus:ring-1 focus:ring-primary [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              className="w-36 pl-2.5 pr-7 py-1.5 text-sm font-mono border border-border dark:border-border-strong rounded bg-background dark:bg-card-hover text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-primary [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
             />
             <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-xs text-text-secondary opacity-60">O</kbd>
           </div>

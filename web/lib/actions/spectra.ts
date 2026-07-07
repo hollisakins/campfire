@@ -391,6 +391,8 @@ export async function getTargetMetadata(targetId: string): Promise<{
     // Use service role client to bypass RLS for social media crawlers
     const supabase = createServiceClient();
 
+    // Service-role read with no auth (serves OG/social metadata). Gate on
+    // has_published_spectrum so draft targets return null. No-op in B1.
     const { data, error } = await supabase
       .from('targets')
       .select(`
@@ -400,6 +402,7 @@ export async function getTargetMetadata(targetId: string): Promise<{
         programs:program_slug (program_name)
       `)
       .eq('target_id', targetId)
+      .eq('has_published_spectrum', true)
       .single();
 
     if (error || !data) {
@@ -515,18 +518,40 @@ export async function getObjectById(objectId: string): Promise<{
       (b.max_snr || 0) - (a.max_snr || 0)
     );
 
+    // Display-only access scoping. The objects row stores aggregate columns
+    // (programs, gratings, counts, max_snr/exposure) computed across ALL member
+    // programs at deploy time. This object is visible because the viewer can
+    // access at least one member program (checked above), but the stored
+    // aggregates would leak metadata about proprietary members they cannot
+    // access. Recompute them from the already access-filtered member targets
+    // (members are fetched with .in('program_slug', accessibleProgramSlugs)).
+    // Mirrors the SQL helper object_scoped_aggregates() and the deploy-time
+    // builder in python/campfire/deploy/objects.py. Object-level science
+    // (redshift, photometry) intentionally stays visible.
+    const scopedSpectra = memberTargets.flatMap(m => m.spectra || []);
+    const scopedSnr = scopedSpectra.map(s => s.signal_to_noise).filter((v): v is number => v != null);
+    const scopedExp = scopedSpectra.map(s => s.exposure_time).filter((v): v is number => v != null);
+    const scoped = {
+      n_targets: memberTargets.length,
+      n_spectra: scopedSpectra.length,
+      programs: [...new Set(memberTargets.map(m => m.program_slug))].sort(),
+      gratings: [...new Set(scopedSpectra.map(s => s.grating).filter(Boolean))].sort(),
+      max_snr: scopedSnr.length ? Math.max(...scopedSnr) : null,
+      max_exposure_time: scopedExp.length ? Math.max(...scopedExp) : null,
+    };
+
     const objectDetail: ObjectDetail = {
       id: obj.id,
       object_id: obj.object_id,
       field: obj.field,
       ra: obj.ra,
       dec: obj.dec,
-      n_targets: obj.n_targets,
-      n_spectra: obj.n_spectra,
-      programs: obj.programs,
-      gratings: obj.gratings,
-      max_snr: obj.max_snr,
-      max_exposure_time: obj.max_exposure_time,
+      n_targets: scoped.n_targets,
+      n_spectra: scoped.n_spectra,
+      programs: scoped.programs,
+      gratings: scoped.gratings,
+      max_snr: scoped.max_snr,
+      max_exposure_time: scoped.max_exposure_time,
       redshift: obj.redshift ?? null,
       redshift_quality: obj.redshift_quality ?? 0,
       redshift_inspected: obj.redshift_inspected ?? null,
@@ -579,10 +604,13 @@ export async function getObjectMetadata(objectId: string): Promise<{
   try {
     const supabase = createServiceClient();
 
+    // Service-role read with no auth (serves OG/social metadata). Gate on
+    // has_published_spectrum so draft objects return null. No-op in B1.
     const { data, error } = await supabase
       .from('objects')
       .select('object_id, redshift, field')
       .eq('object_id', objectId)
+      .eq('has_published_spectrum', true)
       .single();
 
     if (error || !data) {

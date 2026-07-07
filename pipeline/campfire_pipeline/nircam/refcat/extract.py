@@ -24,15 +24,16 @@ from campfire_pipeline.common.io import log
 
 
 # Mosaic naming convention: produced by `cfpipe nircam resample`. See
-# pipeline/campfire_pipeline/nircam/steps/resample.py.
+# pipeline/campfire_pipeline/nircam/steps/resample.py. The version axis is
+# retired (epic #261, N2 / D3) — one canonical name per (field, filter, tile,
+# scale):
 #
-#   mosaic_nircam_<filter>_<field>_<scale>mas_<version>_<tile>_i2d.fits
+#   mosaic_nircam_<filter>_<field>_<scale>_<tile>_i2d.fits
 #
-# Examples:
-#   mosaic_nircam_f277w_rj0911_30mas_v0_1_venus_i2d.fits
-#   mosaic_nircam_f277w_rj0911_30mas_latest_venus_i2d.fits
+# Example:
+#   mosaic_nircam_f277w_rj0911_30mas_venus_i2d.fits
 _MOSAIC_TEMPLATE = (
-    "mosaic_nircam_{filter}_{field}_{scale}_{version}_{tile}_i2d.fits"
+    "mosaic_nircam_{filter}_{field}_{scale}_{tile}_i2d.fits"
 )
 
 
@@ -40,9 +41,8 @@ _MOSAIC_TEMPLATE = (
 # Mosaic resolution + IO
 # ---------------------------------------------------------------------------
 
-def resolve_mosaic_path(field, *, filter_name, tile, scale="30mas",
-                        version="latest"):
-    """Build the canonical mosaic path for ``filter / tile / scale / version``.
+def resolve_mosaic_path(field, *, filter_name, tile, scale="30mas"):
+    """Build the canonical mosaic path for ``filter / tile / scale``.
 
     ``field`` is a :class:`Field` with workspace already set up. Returns
     the full path; raises ``FileNotFoundError`` if the mosaic does not
@@ -50,8 +50,7 @@ def resolve_mosaic_path(field, *, filter_name, tile, scale="30mas",
     SEP failure.
     """
     fname = _MOSAIC_TEMPLATE.format(
-        filter=filter_name.lower(), field=field.name, scale=scale,
-        version=version, tile=tile,
+        filter=filter_name.lower(), field=field.name, scale=scale, tile=tile,
     )
     path = os.path.join(field.filter_dir(filter_name.lower()), fname)
     if not os.path.exists(path):
