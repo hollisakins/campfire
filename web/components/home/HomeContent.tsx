@@ -3,7 +3,8 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
-import { Flame, Camera, Sparkles, LogIn, BookOpen, Settings, Loader2 } from 'lucide-react';
+import { Camera, Sparkles, LogIn, BookOpen, Settings, Loader2 } from 'lucide-react';
+import { Logo } from '@/components/brand/Logo';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
 /** Hero + data-access cards for the landing page. Auth-dependent, so this stays
@@ -20,7 +21,7 @@ export function HomeContent() {
       {/* Hero Section */}
       <div className="text-center mb-12">
         <div className="flex items-center justify-center mb-4">
-          <Flame className="w-16 h-16 text-primary" />
+          <Logo size={64} title="" aria-hidden />
         </div>
         <h1 className="text-5xl font-bold text-text-primary mb-4">
           CAMPFIRE
