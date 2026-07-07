@@ -19,7 +19,7 @@ package in the same repository that isn't on PyPI, so install it alongside:
 
 ```
 pip install \
-  "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
+  "campfire-layout @ git+https://github.com/hollisakins/campfire.git@pipeline-vX.Y.Z#subdirectory=layout" \
   "campfire-pipeline @ git+https://github.com/hollisakins/campfire.git@pipeline-vX.Y.Z#subdirectory=pipeline"
 ```
 
