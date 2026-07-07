@@ -4,6 +4,8 @@ import React, { useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Download, Loader2 } from 'lucide-react';
 import type { Spectrum } from '@/lib/types';
+import { generateObjectFitsDownloadUrls } from '@/lib/actions/download';
+import { downloadFilesAsZip } from '@/lib/utils/zip-download';
 
 interface DownloadButtonsProps {
   spectra: Spectrum[];
@@ -20,42 +22,39 @@ export const DownloadButtons: React.FC<DownloadButtonsProps> = ({ spectra, targe
 
     setDownloading(true);
     setError(null);
+    setBatchProgress(null);
 
     try {
       const allPaths = spectra.map(s => s.fits_path);
 
-      // Batch into chunks of 10 (API limit)
-      const BATCH_SIZE = 10;
-      const batches: string[][] = [];
-      for (let i = 0; i < allPaths.length; i += BATCH_SIZE) {
-        batches.push(allPaths.slice(i, i + BATCH_SIZE));
+      // Authorize all of this object's spectra server-side (RLS) and get
+      // ready-to-fetch proxy URLs, then bundle them into a single ZIP in the
+      // browser. Fetching cross-origin presigned URLs through the proxy (which
+      // supplies CORS) and zipping is the only reliable way to deliver multiple
+      // files — sequential per-file anchor downloads get popup-blocked after the
+      // first, so only one file ever saved.
+      const result = await generateObjectFitsDownloadUrls(allPaths, targetId);
+
+      if (result.error || !result.files) {
+        setError(result.error || 'Failed to generate download URLs');
+        return;
       }
 
-      for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-        if (batches.length > 1) {
-          setError(null); // Clear between batches
-          setBatchProgress(`Batch ${batchIdx + 1}/${batches.length}`);
-        }
+      const { files, zipFilename } = result;
+      setBatchProgress(`0/${files.length}`);
 
-        const response = await fetch('/api/download', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ paths: batches[batchIdx], context: 'object_detail' }),
-        });
+      const res = await downloadFilesAsZip(
+        files,
+        zipFilename || `${targetId}_spectra.zip`,
+        (done, total) => setBatchProgress(`${done}/${total}`),
+      );
 
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.error || 'Failed to generate download URLs');
-        }
-
-        const { urls } = await response.json();
-
-        // Download each file
-        for (const [path, url] of Object.entries(urls)) {
-          const filename = path.split('/').pop() || `${targetId}.fits`;
-          await downloadFile(url as string, filename);
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
+      if (!res.ok) {
+        setError(res.error || 'Download failed');
+        return;
+      }
+      if (res.failed.length > 0) {
+        setError(`${res.failed.length} file(s) failed to download`);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Download failed');
