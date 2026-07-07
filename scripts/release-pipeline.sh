@@ -130,7 +130,7 @@ if $PUSH; then
   echo "Install with (campfire-layout is a monorepo sibling, not on PyPI):"
   echo "  pip install \\"
   echo "    \"campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout\" \\"
-  echo "    \"git+https://github.com/hollisakins/campfire.git@${TAG}#subdirectory=pipeline\""
+  echo "    \"campfire-pipeline @ git+https://github.com/hollisakins/campfire.git@${TAG}#subdirectory=pipeline\""
 else
   echo
   echo "Tag created locally only. To publish:"

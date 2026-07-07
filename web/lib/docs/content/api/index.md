@@ -18,7 +18,7 @@ that isn't on PyPI. Install both from the monorepo in one command:
 ```bash
 pip install \
   "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
-  "git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
+  "campfire @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
 Optional extras — keep the `campfire-layout` line and add the extra to the

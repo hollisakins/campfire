@@ -16,7 +16,7 @@ command:
 ```bash
 pip install \
   "campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" \
-  "git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
+  "campfire @ git+https://github.com/hollisakins/campfire.git#subdirectory=python/"
 ```
 
 For the figures and stacking shown later in this guide, add the optional extras
