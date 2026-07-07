@@ -70,6 +70,21 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None):
                        'bkg', status, overwrite):
         return
 
+    # Guard against double-correcting legacy canonical files. Products reduced
+    # before this unification carry the retired CFP_1F/CFP_SKY/CFP_VAR stamps
+    # (their SCI is already striping/sky/variance-corrected) but no CFP_BKG, so
+    # the skip check above would let bkg run and compound the pedestal/1f +
+    # rescale VAR_RNOISE again. Those keys are no longer in the keyset, so read
+    # the raw header. Fail loud — rebuild from uncal rather than corrupt.
+    with fits.open(exposure_file, memmap=False) as _hdul:
+        _legacy = [k for k in ('CFP_1F', 'CFP_SKY', 'CFP_VAR')
+                   if k in _hdul[0].header]
+    if _legacy:
+        raise RuntimeError(
+            f"{rootname}: reduced with the retired {'/'.join(_legacy)} chain; "
+            f"the unified bkg step would double-subtract. Rebuild from uncal "
+            f"(or `cfpipe nircam reset --from image2`) before running bkg.")
+
     log(f"Running bkg on {rootname}")
 
     from jwst.datamodels import ImageModel, dqflags
@@ -166,8 +181,11 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None):
             resid -= step
             correction += step
 
-        # (5) VARIANCE rescale on the final mask
-        factor = oneoverf.variance_rescale(sci0, model.var_rnoise, srcmask,
+        # (5) VARIANCE rescale on the final mask. Measure the sky variance on
+        #     the *corrected* residual (sci0 - correction), not sci0: the old
+        #     variance step ran after striping + sky, so the pedestal/1f/banding
+        #     must be removed first or their structure biases VAR_RNOISE high.
+        factor = oneoverf.variance_rescale(resid, model.var_rnoise, srcmask,
                                            block_size)
 
         # (6) Write. SCI = original - accumulated correction.
